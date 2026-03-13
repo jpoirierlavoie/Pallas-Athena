@@ -44,7 +44,7 @@ CSP = (
 def _add_security_headers(response: Response) -> Response:
     """Attach hardened security headers to every response."""
     h = response.headers
-    h["Content-Security-Policy"] = CSP
+    h["Content-Security-Policy-Report-Only"] = CSP
     h["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains; preload"
     )

@@ -48,13 +48,17 @@ def verify_and_create_session(id_token: str) -> bool:
     """
     try:
         decoded = firebase_auth.verify_id_token(id_token)
-    except Exception:
+    except Exception as exc:
+        current_app.logger.error("Firebase token verification failed: %s", exc)
         return False
 
     email = decoded.get("email", "")
     authorized_email = current_app.config["AUTHORIZED_USER_EMAIL"]
 
     if email.lower() != authorized_email.lower():
+        current_app.logger.warning(
+            "Unauthorized login attempt: %s (expected %s)", email, authorized_email
+        )
         return False
 
     lifetime = current_app.config.get("SESSION_LIFETIME_HOURS", 12)

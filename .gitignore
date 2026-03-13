@@ -25,4 +25,9 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment files (local configs)
+/.env
 /.env.*
+
+# Service account keys
+**/service-account*.json
+**/*-adminsdk-*.json

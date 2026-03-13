@@ -23,7 +23,12 @@ def login() -> str:
         return redirect(url_for("dashboard.index"))
 
     firebase_project_id = current_app.config["FIREBASE_PROJECT_ID"]
-    return render_template("auth/login.html", firebase_project_id=firebase_project_id)
+    firebase_api_key = current_app.config.get("FIREBASE_API_KEY", "")
+    return render_template(
+        "auth/login.html",
+        firebase_project_id=firebase_project_id,
+        firebase_api_key=firebase_api_key,
+    )
 
 
 @auth_bp.route("/verify-token", methods=["POST"])

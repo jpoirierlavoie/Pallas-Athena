@@ -6,7 +6,11 @@ automatic_scaling:
   target_cpu_utilization: 0.65
 env_variables:
   ENV: "production"
-  # Other env vars set via gcloud app deploy or Secret Manager
+  FIREBASE_API_KEY: "REDACTED_OLD_FIREBASE_API_KEY"
+  FIREBASE_PROJECT_ID: "athena-pallas"
+  FIREBASE_STORAGE_BUCKET: "athena-pallas.firebasestorage.app"
+  AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
+  SECRET_KEY: "CHANGE-ME-use-secret-manager-in-production"
 handlers:
   - url: /static
     static_dir: static

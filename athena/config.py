@@ -12,6 +12,7 @@ class Config:
 
     # Firebase / GCP
     FIREBASE_PROJECT_ID: str = os.environ["FIREBASE_PROJECT_ID"]
+    FIREBASE_API_KEY: str = os.environ.get("FIREBASE_API_KEY", "")
     FIREBASE_STORAGE_BUCKET: str = os.environ["FIREBASE_STORAGE_BUCKET"]
 
     # Single authorized user
