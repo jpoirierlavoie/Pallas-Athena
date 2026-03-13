@@ -1,13 +1,20 @@
 """Flask application factory and WSGI entrypoint for Pallas Athena."""
 
+import os
+import sys
 from datetime import timedelta
+
+# Ensure the athena/ directory is on sys.path so imports work both locally
+# (where Python may resolve the parent package) and on App Engine (where
+# athena/ is the root at /srv/).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import firebase_admin
 from firebase_admin import credentials
 from flask import Flask
 
-from athena.config import Config
-from athena.security import init_security
+from config import Config
+from security import init_security
 
 
 def create_app() -> Flask:
@@ -35,8 +42,8 @@ def create_app() -> Flask:
     init_security(app)
 
     # ── Blueprints ───────────────────────────────────────────────────
-    from athena.routes.auth_routes import auth_bp
-    from athena.routes.dashboard import dashboard_bp
+    from routes.auth_routes import auth_bp
+    from routes.dashboard import dashboard_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)

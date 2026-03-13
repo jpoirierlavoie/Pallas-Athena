@@ -2,7 +2,7 @@
 
 from flask import Blueprint, render_template
 
-from athena.auth import login_required
+from auth import login_required
 
 dashboard_bp = Blueprint("dashboard", __name__)
 

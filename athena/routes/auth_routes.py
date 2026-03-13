@@ -10,8 +10,8 @@ from flask import (
     url_for,
 )
 
-from athena.auth import login_required, verify_and_create_session
-from athena.security import limiter
+from auth import login_required, verify_and_create_session
+from security import limiter
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
