@@ -1,0 +1,20 @@
+{# Empty state placeholder.
+   Pass: icon_svg (optional), message, action_label, action_url
+#}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  {% if icon_svg is defined %}
+    {{ icon_svg|safe }}
+  {% else %}
+    <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round"
+            d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25 2.25M12 13.875l2.25-2.25M12 13.875l-2.25 2.25M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/>
+    </svg>
+  {% endif %}
+  <p class="text-gray-500 text-sm mb-4">{{ message|default('Aucun élément.') }}</p>
+  {% if action_url is defined %}
+    <a href="{{ action_url }}"
+       class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+      {{ action_label|default('Ajouter') }}
+    </a>
+  {% endif %}
+</div>

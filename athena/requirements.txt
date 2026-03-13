@@ -1,0 +1,12 @@
+Flask==3.1.*
+firebase-admin==6.*
+flask-wtf==1.*
+flask-limiter==3.*
+gunicorn==22.*
+google-cloud-firestore==2.*
+google-cloud-storage==2.*
+icalendar==6.*
+vobject==0.9.*
+bcrypt==4.*
+pytz==2024.*
+python-dotenv==1.*

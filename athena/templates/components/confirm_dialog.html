@@ -1,0 +1,30 @@
+{# Confirmation dialog.
+   Pass: confirm_id, confirm_title, confirm_message, confirm_action (URL),
+         confirm_method (default POST), confirm_label (default "Confirmer")
+#}
+<div x-data="{ open: false }"
+     x-show="open"
+     @open-confirm-{{ confirm_id|default('default') }}.window="open = true"
+     @keydown.escape.window="open = false"
+     x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  <div @click.outside="open = false"
+       class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+    <div class="p-6">
+      <h3 class="text-base font-semibold text-gray-900 mb-2">{{ confirm_title|default('Confirmer') }}</h3>
+      <p class="text-sm text-gray-600 mb-6">{{ confirm_message|default('Êtes-vous sûr(e)?') }}</p>
+      <div class="flex gap-3 justify-end">
+        <button @click="open = false"
+                class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+          Annuler
+        </button>
+        <button hx-{{ confirm_method|default('post') }}="{{ confirm_action|default('#') }}"
+                hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'
+                @click="open = false"
+                class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+          {{ confirm_label|default('Confirmer') }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

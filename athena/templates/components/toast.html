@@ -1,0 +1,7 @@
+{# Trigger a toast notification via Alpine.js event.
+   Usage from HTMX response headers:
+     HX-Trigger: {"toast": {"message": "Sauvegardé!", "type": "success"}}
+#}
+<div x-data
+     @toast.window="$dispatch('toast', $event.detail)"
+     class="hidden"></div>

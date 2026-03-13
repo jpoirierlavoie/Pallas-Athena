@@ -1,0 +1,31 @@
+"""Environment-based configuration for Pallas Athena."""
+
+import os
+
+
+class Config:
+    """Base configuration loaded from environment variables."""
+
+    # Flask
+    SECRET_KEY: str = os.environ["SECRET_KEY"]
+    ENV: str = os.environ.get("ENV", "development")
+
+    # Firebase / GCP
+    FIREBASE_PROJECT_ID: str = os.environ["FIREBASE_PROJECT_ID"]
+    FIREBASE_STORAGE_BUCKET: str = os.environ["FIREBASE_STORAGE_BUCKET"]
+
+    # Single authorized user
+    AUTHORIZED_USER_EMAIL: str = os.environ["AUTHORIZED_USER_EMAIL"]
+
+    # Session
+    SESSION_LIFETIME_HOURS: int = int(os.environ.get("SESSION_LIFETIME_HOURS", "12"))
+
+    # DAV Basic Auth (separate from Firebase Auth)
+    DAV_USERNAME: str = os.environ.get("DAV_USERNAME", "")
+    DAV_PASSWORD_HASH: str = os.environ.get("DAV_PASSWORD_HASH", "")
+
+    # Rate limiting
+    RATE_LIMIT_LOGIN: str = os.environ.get("RATE_LIMIT_LOGIN", "5 per minute")
+
+    # Request size limits
+    MAX_CONTENT_LENGTH: int = 16 * 1024 * 1024  # 16 MB (document uploads)
