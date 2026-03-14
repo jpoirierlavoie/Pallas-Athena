@@ -36,9 +36,9 @@
           {{ status_labels.get(d.status, d.status) }}
         </span>
       </div>
-      {# Client name #}
+      {# Client names #}
       <div class="text-xs text-gray-500 mt-1 truncate">
-        {{ d.client_name }}
+        {{ d.clients | map(attribute='name') | join(', ') if d.clients else '' }}
       </div>
     </div>
 

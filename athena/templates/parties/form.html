@@ -1,25 +1,25 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Modifier le contact' if client and client.id else 'Nouveau contact' }} — Pallas Athena{% endblock %}
+{% block title %}{{ 'Modifier le contact' if partie and partie.id else 'Nouveau contact' }} — Pallas Athena{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
-       clientType: '{{ (client.type if client else 'individual') }}',
-       contactRole: '{{ (client.contact_role if client else 'client') }}',
-       prefix: '{{ (client.prefix if client else '') }}',
-       identityVerified: '{{ (client.identity_verified if client else 'non_vérifié') }}',
-       conflictCheck: '{{ (client.conflict_check if client else 'non_vérifié') }}'
+       partieType: '{{ (partie.type if partie else 'individual') }}',
+       contactRole: '{{ (partie.contact_role if partie else 'client') }}',
+       prefix: '{{ (partie.prefix if partie else '') }}',
+       identityVerified: '{{ (partie.identity_verified if partie else 'non_vérifié') }}',
+       conflictCheck: '{{ (partie.conflict_check if partie else 'non_vérifié') }}'
      }">
 
   {# ── Header ──────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
-    <a href="{{ url_for('clients.client_detail', client_id=client.id) if client and client.id else url_for('clients.client_list') }}"
+    <a href="{{ url_for('parties.partie_detail', partie_id=partie.id) if partie and partie.id else url_for('parties.partie_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
       Retour
     </a>
     <h1 class="text-lg font-semibold text-gray-900">
-      {{ 'Modifier le contact' if client and client.id else 'Nouveau contact' }}
+      {{ 'Modifier le contact' if partie and partie.id else 'Nouveau contact' }}
     </h1>
     <div class="w-16"></div>
   </div>
@@ -36,7 +36,7 @@
   {% endif %}
 
   <form method="post"
-        action="{{ url_for('clients.client_update', client_id=client.id) if client and client.id else url_for('clients.client_create') }}"
+        action="{{ url_for('parties.partie_update', partie_id=partie.id) if partie and partie.id else url_for('parties.partie_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -47,7 +47,7 @@
       {# Type toggle #}
       <div class="flex gap-2 mb-4">
         <label class="flex-1">
-          <input type="radio" name="type" value="individual" x-model="clientType" class="sr-only peer">
+          <input type="radio" name="type" value="individual" x-model="partieType" class="sr-only peer">
           <div class="text-center py-2.5 text-sm font-medium rounded-lg border cursor-pointer
                       peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900
                       border-gray-300 text-gray-700 hover:bg-gray-50">
@@ -55,7 +55,7 @@
           </div>
         </label>
         <label class="flex-1">
-          <input type="radio" name="type" value="organization" x-model="clientType" class="sr-only peer">
+          <input type="radio" name="type" value="organization" x-model="partieType" class="sr-only peer">
           <div class="text-center py-2.5 text-sm font-medium rounded-lg border cursor-pointer
                       peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900
                       border-gray-300 text-gray-700 hover:bg-gray-50">
@@ -75,7 +75,7 @@
     </fieldset>
 
     {# ═══ Section 2 — Identité (Individual) ══════════════════════ #}
-    <fieldset x-show="clientType === 'individual'" class="bg-white rounded-xl border border-gray-200 p-5">
+    <fieldset x-show="partieType === 'individual'" class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Identité</legend>
 
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
@@ -91,12 +91,12 @@
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Prénom</label>
-          <input type="text" name="first_name" value="{{ client.first_name if client else '' }}"
+          <input type="text" name="first_name" value="{{ partie.first_name if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Nom <span class="text-red-500">*</span></label>
-          <input type="text" name="last_name" value="{{ client.last_name if client else '' }}" required
+          <input type="text" name="last_name" value="{{ partie.last_name if partie else '' }}" required
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
@@ -106,52 +106,52 @@
           <label class="block text-sm text-gray-700 mb-1">Langue</label>
           <select name="language"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <option value="" {{ 'selected' if not client or not client.language }}>—</option>
-            <option value="fr" {{ 'selected' if client and client.language == 'fr' }}>Français</option>
-            <option value="en" {{ 'selected' if client and client.language == 'en' }}>English</option>
-            <option value="es" {{ 'selected' if client and client.language == 'es' }}>Español</option>
+            <option value="" {{ 'selected' if not partie or not partie.language }}>—</option>
+            <option value="fr" {{ 'selected' if partie and partie.language == 'fr' }}>Français</option>
+            <option value="en" {{ 'selected' if partie and partie.language == 'en' }}>English</option>
+            <option value="es" {{ 'selected' if partie and partie.language == 'es' }}>Español</option>
           </select>
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Genre</label>
           <select name="gender"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <option value="" {{ 'selected' if not client or not client.gender }}>—</option>
-            <option value="M" {{ 'selected' if client and client.gender == 'M' }}>Homme</option>
-            <option value="F" {{ 'selected' if client and client.gender == 'F' }}>Femme</option>
-            <option value="O" {{ 'selected' if client and client.gender == 'O' }}>Autre</option>
-            <option value="N" {{ 'selected' if client and client.gender == 'N' }}>Ne s'applique pas</option>
-            <option value="U" {{ 'selected' if client and client.gender == 'U' }}>Non précisé</option>
+            <option value="" {{ 'selected' if not partie or not partie.gender }}>—</option>
+            <option value="M" {{ 'selected' if partie and partie.gender == 'M' }}>Homme</option>
+            <option value="F" {{ 'selected' if partie and partie.gender == 'F' }}>Femme</option>
+            <option value="O" {{ 'selected' if partie and partie.gender == 'O' }}>Autre</option>
+            <option value="N" {{ 'selected' if partie and partie.gender == 'N' }}>Ne s'applique pas</option>
+            <option value="U" {{ 'selected' if partie and partie.gender == 'U' }}>Non précisé</option>
           </select>
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Pronoms</label>
           <select name="pronouns"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <option value="" {{ 'selected' if not client or not client.pronouns }}>—</option>
-            <option value="il/lui" {{ 'selected' if client and client.pronouns == 'il/lui' }}>il/lui</option>
-            <option value="elle" {{ 'selected' if client and client.pronouns == 'elle' }}>elle</option>
-            <option value="iel" {{ 'selected' if client and client.pronouns == 'iel' }}>iel</option>
-            <option value="he/him" {{ 'selected' if client and client.pronouns == 'he/him' }}>he/him</option>
-            <option value="she/her" {{ 'selected' if client and client.pronouns == 'she/her' }}>she/her</option>
-            <option value="they/them" {{ 'selected' if client and client.pronouns == 'they/them' }}>they/them</option>
+            <option value="" {{ 'selected' if not partie or not partie.pronouns }}>—</option>
+            <option value="il/lui" {{ 'selected' if partie and partie.pronouns == 'il/lui' }}>il/lui</option>
+            <option value="elle" {{ 'selected' if partie and partie.pronouns == 'elle' }}>elle</option>
+            <option value="iel" {{ 'selected' if partie and partie.pronouns == 'iel' }}>iel</option>
+            <option value="he/him" {{ 'selected' if partie and partie.pronouns == 'he/him' }}>he/him</option>
+            <option value="she/her" {{ 'selected' if partie and partie.pronouns == 'she/her' }}>she/her</option>
+            <option value="they/them" {{ 'selected' if partie and partie.pronouns == 'they/them' }}>they/them</option>
           </select>
         </div>
       </div>
     </fieldset>
 
     {# ═══ Section 2b — Identité (Organization) ═══════════════════ #}
-    <fieldset x-show="clientType === 'organization'" class="bg-white rounded-xl border border-gray-200 p-5">
+    <fieldset x-show="partieType === 'organization'" class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Organisation</legend>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Nom de l'organisation <span class="text-red-500">*</span></label>
-          <input type="text" name="organization_name" value="{{ client.organization_name if client else '' }}"
+          <input type="text" name="organization_name" value="{{ partie.organization_name if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Personne-ressource</label>
-          <input type="text" name="contact_person" value="{{ client.contact_person if client else '' }}"
+          <input type="text" name="contact_person" value="{{ partie.contact_person if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
@@ -163,18 +163,18 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Courriel</label>
-          <input type="email" name="email" value="{{ client.email if client else '' }}"
+          <input type="email" name="email" value="{{ partie.email if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Cellulaire</label>
-          <input type="tel" name="phone_cell" value="{{ client.phone_cell if client else '' }}"
+          <input type="tel" name="phone_cell" value="{{ partie.phone_cell if partie else '' }}"
                  placeholder="(514) 555-1234"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Domicile</label>
-          <input type="tel" name="phone_home" value="{{ client.phone_home if client else '' }}"
+          <input type="tel" name="phone_home" value="{{ partie.phone_home if partie else '' }}"
                  placeholder="(514) 555-1234"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
@@ -185,27 +185,27 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div class="sm:col-span-2">
           <label class="block text-sm text-gray-700 mb-1">Rue</label>
-          <input type="text" name="address_street" value="{{ client.address_street if client else '' }}"
+          <input type="text" name="address_street" value="{{ partie.address_street if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Appartement / Bureau</label>
-          <input type="text" name="address_unit" value="{{ client.address_unit if client else '' }}"
+          <input type="text" name="address_unit" value="{{ partie.address_unit if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Ville</label>
-          <input type="text" name="address_city" value="{{ client.address_city if client else '' }}"
+          <input type="text" name="address_city" value="{{ partie.address_city if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Province</label>
-          <input type="text" name="address_province" value="{{ client.address_province if client else 'QC' }}"
+          <input type="text" name="address_province" value="{{ partie.address_province if partie else 'QC' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Code postal</label>
-          <input type="text" name="address_postal_code" value="{{ client.address_postal_code if client else '' }}"
+          <input type="text" name="address_postal_code" value="{{ partie.address_postal_code if partie else '' }}"
                  placeholder="A1A 1A1" maxlength="7"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase">
         </div>
@@ -218,37 +218,37 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Titre professionnel</label>
-          <input type="text" name="job_title" value="{{ client.job_title if client else '' }}"
+          <input type="text" name="job_title" value="{{ partie.job_title if partie else '' }}"
                  placeholder="Associé principal"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Fonction</label>
-          <input type="text" name="job_role" value="{{ client.job_role if client else '' }}"
+          <input type="text" name="job_role" value="{{ partie.job_role if partie else '' }}"
                  placeholder="Directeur des finances"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
-        <div x-show="clientType === 'individual'">
+        <div x-show="partieType === 'individual'">
           <label class="block text-sm text-gray-700 mb-1">Employeur / Cabinet</label>
-          <input type="text" name="organization" value="{{ client.organization if client else '' }}"
+          <input type="text" name="organization" value="{{ partie.organization if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Courriel professionnel</label>
-          <input type="email" name="email_work" value="{{ client.email_work if client else '' }}"
+          <input type="email" name="email_work" value="{{ partie.email_work if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Téléphone professionnel</label>
-          <input type="tel" name="phone_work" value="{{ client.phone_work if client else '' }}"
+          <input type="tel" name="phone_work" value="{{ partie.phone_work if partie else '' }}"
                  placeholder="(514) 555-1234"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Télécopieur</label>
-          <input type="tel" name="fax" value="{{ client.fax if client else '' }}"
+          <input type="tel" name="fax" value="{{ partie.fax if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
@@ -258,27 +258,27 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div class="sm:col-span-2">
           <label class="block text-sm text-gray-700 mb-1">Rue</label>
-          <input type="text" name="work_address_street" value="{{ client.work_address_street if client else '' }}"
+          <input type="text" name="work_address_street" value="{{ partie.work_address_street if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Bureau</label>
-          <input type="text" name="work_address_unit" value="{{ client.work_address_unit if client else '' }}"
+          <input type="text" name="work_address_unit" value="{{ partie.work_address_unit if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Ville</label>
-          <input type="text" name="work_address_city" value="{{ client.work_address_city if client else '' }}"
+          <input type="text" name="work_address_city" value="{{ partie.work_address_city if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Province</label>
-          <input type="text" name="work_address_province" value="{{ client.work_address_province if client else '' }}"
+          <input type="text" name="work_address_province" value="{{ partie.work_address_province if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Code postal</label>
-          <input type="text" name="work_address_postal_code" value="{{ client.work_address_postal_code if client else '' }}"
+          <input type="text" name="work_address_postal_code" value="{{ partie.work_address_postal_code if partie else '' }}"
                  placeholder="A1A 1A1" maxlength="7"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase">
         </div>
@@ -293,20 +293,20 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Numéro du Barreau</label>
-          <input type="text" name="bar_number" value="{{ client.bar_number if client else '' }}"
+          <input type="text" name="bar_number" value="{{ partie.bar_number if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
     </fieldset>
 
-    <fieldset x-show="clientType === 'organization'"
+    <fieldset x-show="partieType === 'organization'"
               class="bg-white rounded-xl border border-gray-200 p-5"
               x-cloak>
       <legend class="text-sm font-semibold text-gray-900 mb-4">Identifiants</legend>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">NEQ (Numéro d'entreprise du Québec)</label>
-          <input type="text" name="company_neq" value="{{ client.company_neq if client else '' }}"
+          <input type="text" name="company_neq" value="{{ partie.company_neq if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
@@ -329,7 +329,7 @@
           </select>
           <label class="block text-sm text-gray-700 mb-1">Notes</label>
           <textarea name="identity_verified_notes" rows="2"
-                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ client.identity_verified_notes if client else '' }}</textarea>
+                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ partie.identity_verified_notes if partie else '' }}</textarea>
         </div>
 
         {# Conflict check #}
@@ -344,7 +344,7 @@
           </select>
           <label class="block text-sm text-gray-700 mb-1">Notes</label>
           <textarea name="conflict_check_notes" rows="2"
-                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ client.conflict_check_notes if client else '' }}</textarea>
+                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ partie.conflict_check_notes if partie else '' }}</textarea>
         </div>
       </div>
 
@@ -363,18 +363,18 @@
     <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Notes</legend>
       <textarea name="notes" rows="4" placeholder="Notes générales…"
-                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ client.notes if client else '' }}</textarea>
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ partie.notes if partie else '' }}</textarea>
     </fieldset>
 
     {# ═══ Submit ═════════════════════════════════════════════════ #}
     <div class="flex gap-3 justify-end pb-6">
-      <a href="{{ url_for('clients.client_detail', client_id=client.id) if client and client.id else url_for('clients.client_list') }}"
+      <a href="{{ url_for('parties.partie_detail', partie_id=partie.id) if partie and partie.id else url_for('parties.partie_list') }}"
          class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Annuler
       </a>
       <button type="submit"
               class="px-5 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        {{ 'Enregistrer' if client and client.id else 'Créer le contact' }}
+        {{ 'Enregistrer' if partie and partie.id else 'Créer le contact' }}
       </button>
     </div>
   </form>

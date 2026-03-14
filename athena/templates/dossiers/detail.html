@@ -55,52 +55,44 @@
 
   {# ── Info cards grid ─────────────────────────────────────────── #}
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-    {# Client card #}
-    <a href="{{ url_for('clients.client_detail', client_id=dossier.client_id) }}"
-       class="bg-white rounded-xl border border-gray-200 p-5 hover:border-gray-300 transition-colors">
-      <h2 class="text-sm font-semibold text-gray-900 mb-2">Client</h2>
-      <p class="text-sm text-indigo-600 font-medium">{{ dossier.client_name }}</p>
-      {% if dossier.role %}
-      <p class="text-xs text-gray-500 mt-1">{{ role_labels.get(dossier.role, dossier.role) }}</p>
-      {% endif %}
-    </a>
-
-    {# Opposing party #}
+    {# Clients card #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-2">Partie adverse</h2>
-      {% if dossier.opposing_party or dossier.opposing_counsel %}
-      <dl class="space-y-1.5 text-sm">
-        {% if dossier.opposing_party %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Partie</dt>
-          <dd class="text-gray-900">{{ dossier.opposing_party }}</dd>
-        </div>
-        {% endif %}
-        {% if dossier.opposing_counsel %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Avocat(e)</dt>
-          <dd class="text-gray-900">{{ dossier.opposing_counsel }}</dd>
-        </div>
-        {% endif %}
-        {% if dossier.opposing_counsel_firm %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Cabinet</dt>
-          <dd class="text-gray-900">{{ dossier.opposing_counsel_firm }}</dd>
-        </div>
-        {% endif %}
-        {% if dossier.opposing_counsel_phone %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Tél.</dt>
-          <dd class="text-gray-900">{{ dossier.opposing_counsel_phone }}</dd>
-        </div>
-        {% endif %}
-        {% if dossier.opposing_counsel_email %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Courriel</dt>
-          <dd class="text-gray-900"><a href="mailto:{{ dossier.opposing_counsel_email }}" class="text-indigo-600 hover:underline">{{ dossier.opposing_counsel_email }}</a></dd>
-        </div>
-        {% endif %}
-      </dl>
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">
+        {{ 'Clients' if dossier.clients | length > 1 else 'Client' }}
+      </h2>
+      {% if dossier.clients %}
+      <div class="space-y-2">
+        {% for c in dossier.clients %}
+        <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
+           class="flex items-center gap-2 text-sm text-indigo-600 font-medium hover:text-indigo-700">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
+          {{ c.name }}
+        </a>
+        {% endfor %}
+      </div>
+      {% if dossier.role %}
+      <p class="text-xs text-gray-500 mt-2">{{ role_labels.get(dossier.role, dossier.role) }}</p>
+      {% endif %}
+      {% else %}
+      <p class="text-gray-400 text-xs">Aucun client associé</p>
+      {% endif %}
+    </div>
+
+    {# Opposing parties card #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">
+        {{ 'Parties adverses' if dossier.opposing_parties | length > 1 else 'Partie adverse' }}
+      </h2>
+      {% if dossier.opposing_parties %}
+      <div class="space-y-2">
+        {% for p in dossier.opposing_parties %}
+        <a href="{{ url_for('parties.partie_detail', partie_id=p.id) }}"
+           class="flex items-center gap-2 text-sm text-red-600 font-medium hover:text-red-700">
+          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
+          {{ p.name }}
+        </a>
+        {% endfor %}
+      </div>
       {% else %}
       <p class="text-gray-400 text-xs">Aucune partie adverse indiquée</p>
       {% endif %}

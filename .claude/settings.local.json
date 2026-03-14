@@ -14,7 +14,8 @@
       "Read(//c/Program Files/**)",
       "Bash(py --version)",
       "Bash(conda --version)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''models/dossier.py''\\).read\\(\\)\\); ast.parse\\(open\\(''models/partie.py''\\).read\\(\\)\\); print\\(''OK''\\)\")"
     ]
   }
 }

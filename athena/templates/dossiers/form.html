@@ -5,10 +5,10 @@
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        feeType: '{{ (dossier.fee_type if dossier else 'hourly') }}',
-       clientId: '{{ (dossier.client_id if dossier else '') }}',
-       clientName: '{{ (dossier.client_name if dossier else '') }}',
-       showClientSearch: false,
-       clientQuery: ''
+       clients: {{ (dossier.clients | tojson) if dossier and dossier.clients else '[]' }},
+       opposingParties: {{ (dossier.opposing_parties | tojson) if dossier and dossier.opposing_parties else '[]' }},
+       clientQuery: '',
+       opposingQuery: ''
      }">
 
   {# ── Header ──────────────────────────────────────────────────── #}
@@ -39,6 +39,10 @@
         action="{{ url_for('dossiers.dossier_update', dossier_id=dossier.id) if dossier and dossier.id else url_for('dossiers.dossier_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# JSON hidden fields for party arrays #}
+    <input type="hidden" name="clients_json" :value="JSON.stringify(clients)">
+    <input type="hidden" name="opposing_parties_json" :value="JSON.stringify(opposingParties)">
 
     {# ═══ Section 1 — Identification ═══════════════════════════════ #}
     <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
@@ -72,56 +76,119 @@
                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                required>
       </div>
+    </fieldset>
 
-      {# Client selector with autocomplete #}
+    {# ═══ Section 2 — Clients ═════════════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Clients <span class="text-red-500">*</span></legend>
+
+      {# Selected clients chips #}
+      <div class="flex flex-wrap gap-2 mb-3" x-show="clients.length > 0">
+        <template x-for="(c, idx) in clients" :key="c.id">
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 text-sm bg-indigo-50 text-indigo-700 rounded-lg">
+            <span x-text="c.name"></span>
+            <button type="button" @click="clients.splice(idx, 1)"
+                    class="text-indigo-400 hover:text-indigo-600">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+            </button>
+          </span>
+        </template>
+      </div>
+
+      {# Search input #}
       <div class="relative">
-        <label class="block text-sm text-gray-700 mb-1">Client <span class="text-red-500">*</span></label>
-        <input type="hidden" name="client_id" :value="clientId">
-        <input type="hidden" name="client_name" :value="clientName">
+        <input type="text"
+               x-ref="clientSearchInput"
+               x-model="clientQuery"
+               placeholder="Rechercher un contact à ajouter…"
+               hx-get="{{ url_for('parties.partie_search') }}"
+               hx-trigger="input changed delay:300ms"
+               hx-target="#client-search-results"
+               hx-include="this"
+               name="q"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+               autocomplete="off">
 
-        {# Display selected client or search input #}
-        <div x-show="clientId && !showClientSearch" class="flex items-center gap-2">
-          <div class="flex-1 px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-900">
-            <span x-text="clientName"></span>
-          </div>
-          <button type="button"
-                  @click="showClientSearch = true; clientQuery = ''; $nextTick(() => $refs.clientSearchInput.focus())"
-                  class="px-3 py-2.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50">
-            Changer
-          </button>
-        </div>
-
-        <div x-show="!clientId || showClientSearch" class="relative">
-          <input type="text"
-                 x-ref="clientSearchInput"
-                 x-model="clientQuery"
-                 placeholder="Rechercher un client…"
-                 hx-get="{{ url_for('clients.client_search') }}"
-                 hx-trigger="input changed delay:300ms"
-                 hx-target="#client-search-results"
-                 hx-include="this"
-                 name="q"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                 autocomplete="off">
-
-          <div id="client-search-results"
-               class="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"
-               @click="
-                 let li = $event.target.closest('[data-client-id]');
-                 if (li) {
-                   clientId = li.dataset.clientId;
-                   clientName = li.dataset.clientName;
-                   showClientSearch = false;
-                   clientQuery = '';
-                   document.getElementById('client-search-results').innerHTML = '';
+        <div id="client-search-results"
+             class="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"
+             @click="
+               let li = $event.target.closest('[data-partie-id]');
+               if (li) {
+                 let id = li.dataset.partieId;
+                 let name = li.dataset.partieName;
+                 if (!clients.find(c => c.id === id)) {
+                   clients.push({id, name});
                  }
-               ">
-          </div>
+                 clientQuery = '';
+                 $refs.clientSearchInput.value = '';
+                 document.getElementById('client-search-results').innerHTML = '';
+               }
+             ">
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <label class="block text-sm text-gray-700 mb-1">Rôle du client</label>
+        <select name="role"
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          {% for key, label in role_labels.items() %}
+          <option value="{{ key }}" {{ 'selected' if dossier and dossier.role == key }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </fieldset>
+
+    {# ═══ Section 3 — Parties adverses ══════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Parties adverses</legend>
+
+      {# Selected opposing parties chips #}
+      <div class="flex flex-wrap gap-2 mb-3" x-show="opposingParties.length > 0">
+        <template x-for="(p, idx) in opposingParties" :key="p.id">
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 text-sm bg-red-50 text-red-700 rounded-lg">
+            <span x-text="p.name"></span>
+            <button type="button" @click="opposingParties.splice(idx, 1)"
+                    class="text-red-400 hover:text-red-600">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+            </button>
+          </span>
+        </template>
+      </div>
+
+      {# Search input #}
+      <div class="relative">
+        <input type="text"
+               x-ref="opposingSearchInput"
+               x-model="opposingQuery"
+               placeholder="Rechercher un contact à ajouter…"
+               hx-get="{{ url_for('parties.partie_search') }}"
+               hx-trigger="input changed delay:300ms"
+               hx-target="#opposing-search-results"
+               hx-include="this"
+               name="q"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+               autocomplete="off">
+
+        <div id="opposing-search-results"
+             class="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"
+             @click="
+               let li = $event.target.closest('[data-partie-id]');
+               if (li) {
+                 let id = li.dataset.partieId;
+                 let name = li.dataset.partieName;
+                 if (!opposingParties.find(p => p.id === id)) {
+                   opposingParties.push({id, name});
+                 }
+                 opposingQuery = '';
+                 $refs.opposingSearchInput.value = '';
+                 document.getElementById('opposing-search-results').innerHTML = '';
+               }
+             ">
         </div>
       </div>
     </fieldset>
 
-    {# ═══ Section 2 — Classification ════════════════════════════════ #}
+    {# ═══ Section 4 — Classification ════════════════════════════════ #}
     <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Classification</legend>
 
@@ -136,18 +203,6 @@
           </select>
         </div>
         <div>
-          <label class="block text-sm text-gray-700 mb-1">Rôle</label>
-          <select name="role"
-                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            {% for key, label in role_labels.items() %}
-            <option value="{{ key }}" {{ 'selected' if dossier and dossier.role == key }}>{{ label }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-        <div>
           <label class="block text-sm text-gray-700 mb-1">Tribunal</label>
           <select name="court"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -157,6 +212,9 @@
             {% endfor %}
           </select>
         </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">District judiciaire</label>
           <select name="district"
@@ -167,9 +225,6 @@
             {% endfor %}
           </select>
         </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Numéro de dossier judiciaire</label>
           <input type="text" name="court_file_number"
@@ -177,6 +232,9 @@
                  placeholder="500-17-______-___"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Date d'ouverture</label>
           <input type="date" name="opened_date"
@@ -186,50 +244,7 @@
       </div>
     </fieldset>
 
-    {# ═══ Section 3 — Parties adverses ══════════════════════════════ #}
-    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
-      <legend class="text-sm font-semibold text-gray-900 mb-4">Parties adverses</legend>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-        <div>
-          <label class="block text-sm text-gray-700 mb-1">Partie adverse</label>
-          <input type="text" name="opposing_party"
-                 value="{{ dossier.opposing_party if dossier else '' }}"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        </div>
-        <div>
-          <label class="block text-sm text-gray-700 mb-1">Avocat(e) adverse</label>
-          <input type="text" name="opposing_counsel"
-                 value="{{ dossier.opposing_counsel if dossier else '' }}"
-                 placeholder="Me"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div>
-          <label class="block text-sm text-gray-700 mb-1">Cabinet</label>
-          <input type="text" name="opposing_counsel_firm"
-                 value="{{ dossier.opposing_counsel_firm if dossier else '' }}"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        </div>
-        <div>
-          <label class="block text-sm text-gray-700 mb-1">Téléphone</label>
-          <input type="tel" name="opposing_counsel_phone"
-                 value="{{ dossier.opposing_counsel_phone if dossier else '' }}"
-                 placeholder="(514) 555-1234"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        </div>
-        <div>
-          <label class="block text-sm text-gray-700 mb-1">Courriel</label>
-          <input type="email" name="opposing_counsel_email"
-                 value="{{ dossier.opposing_counsel_email if dossier else '' }}"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        </div>
-      </div>
-    </fieldset>
-
-    {# ═══ Section 4 — Honoraires ════════════════════════════════════ #}
+    {# ═══ Section 5 — Honoraires ════════════════════════════════════ #}
     <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Honoraires</legend>
 
@@ -274,7 +289,7 @@
       </div>
     </fieldset>
 
-    {# ═══ Section 5 — Prescription ══════════════════════════════════ #}
+    {# ═══ Section 6 — Prescription ══════════════════════════════════ #}
     <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Prescription</legend>
 
@@ -295,7 +310,7 @@
       </div>
     </fieldset>
 
-    {# ═══ Section 6 — Notes ═════════════════════════════════════════ #}
+    {# ═══ Section 7 — Notes ═════════════════════════════════════════ #}
     <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
       <legend class="text-sm font-semibold text-gray-900 mb-4">Notes</legend>
       <div class="space-y-4">

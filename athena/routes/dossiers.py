@@ -1,5 +1,6 @@
 """Dossier management routes — list, detail, create, edit, delete."""
 
+import json
 from datetime import datetime, timezone
 
 from flask import (
@@ -11,8 +12,6 @@ from flask import (
 )
 
 from auth import login_required
-from models.client import display_name as client_display_name
-from models.client import get_client
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -60,26 +59,39 @@ def _parse_date(value: str) -> datetime | None:
         return None
 
 
+def _parse_parties_json(raw: str) -> list[dict]:
+    """Parse a JSON string of [{id, name}, ...] from a hidden form field."""
+    if not raw or not raw.strip():
+        return []
+    try:
+        items = json.loads(raw)
+        if not isinstance(items, list):
+            return []
+        return [
+            {"id": str(p["id"]), "name": str(p["name"])}
+            for p in items
+            if isinstance(p, dict) and p.get("id")
+        ]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return []
+
+
 def _form_data() -> dict:
     """Extract dossier fields from the submitted form."""
     f = request.form
     return {
         "file_number": f.get("file_number", "").strip(),
         "title": f.get("title", "").strip(),
-        "client_id": f.get("client_id", "").strip(),
-        "client_name": f.get("client_name", "").strip(),
+        # Parties (JSON arrays)
+        "clients": _parse_parties_json(f.get("clients_json", "")),
+        "opposing_parties": _parse_parties_json(f.get("opposing_parties_json", "")),
         # Classification
         "matter_type": f.get("matter_type", "litige_civil"),
         "court": f.get("court", ""),
         "district": f.get("district", ""),
         "court_file_number": f.get("court_file_number", "").strip(),
-        # Parties
+        # Role
         "role": f.get("role", "demandeur"),
-        "opposing_party": f.get("opposing_party", "").strip(),
-        "opposing_counsel": f.get("opposing_counsel", "").strip(),
-        "opposing_counsel_firm": f.get("opposing_counsel_firm", "").strip(),
-        "opposing_counsel_phone": f.get("opposing_counsel_phone", "").strip(),
-        "opposing_counsel_email": f.get("opposing_counsel_email", "").strip(),
         # Financial
         "fee_type": f.get("fee_type", "hourly"),
         "hourly_rate": _parse_cents(f.get("hourly_rate", "")),

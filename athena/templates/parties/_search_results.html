@@ -1,10 +1,10 @@
-{# Partial: client search results for autocomplete dropdowns in other modules #}
-{% if clients %}
+{# Partial: partie search results for autocomplete dropdowns in other modules #}
+{% if parties %}
 <ul class="divide-y divide-gray-100">
-  {% for c in clients %}
+  {% for c in parties %}
   <li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"
-      data-client-id="{{ c.id }}"
-      data-client-name="{{ c._display_name }}">
+      data-partie-id="{{ c.id }}"
+      data-partie-name="{{ c._display_name }}">
     <span class="font-medium text-gray-900">{{ c._display_name }}</span>
     {% if c.email %}
     <span class="text-gray-500 text-xs ml-1">{{ c.email }}</span>

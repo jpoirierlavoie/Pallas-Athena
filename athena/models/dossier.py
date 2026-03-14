@@ -6,6 +6,7 @@ from typing import Optional
 
 import icalendar
 
+from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
 
@@ -94,20 +95,18 @@ def _default_doc() -> dict:
         "id": "",
         "file_number": "",
         "title": "",
-        "client_id": "",
-        "client_name": "",
+        # Parties on the dossier (arrays of {id, name} dicts)
+        "clients": [],
+        "client_ids": [],
+        "opposing_parties": [],
+        "opposing_party_ids": [],
         # Case classification
         "matter_type": "litige_civil",
         "court": "",
         "district": "",
         "court_file_number": "",
-        # Parties
+        # Role of the lawyer's client
         "role": "demandeur",
-        "opposing_party": "",
-        "opposing_counsel": "",
-        "opposing_counsel_firm": "",
-        "opposing_counsel_phone": "",
-        "opposing_counsel_email": "",
         # Financial
         "hourly_rate": 25000,
         "flat_fee": None,
@@ -152,8 +151,8 @@ def _validate(data: dict) -> list[str]:
     if not data.get("title", "").strip():
         errors.append("Le titre du dossier est requis.")
 
-    if not data.get("client_id", "").strip():
-        errors.append("Un client doit être associé au dossier.")
+    if not data.get("clients"):
+        errors.append("Au moins un client doit être associé au dossier.")
 
     if not data.get("file_number", "").strip():
         errors.append("Le numéro de dossier est requis.")
@@ -168,10 +167,6 @@ def _validate(data: dict) -> list[str]:
     if fee_type and fee_type not in VALID_FEE_TYPES:
         errors.append("Type d'honoraires invalide.")
 
-    email = data.get("opposing_counsel_email", "").strip()
-    if email and "@" not in email:
-        errors.append("Adresse courriel de l'avocat adverse invalide.")
-
     return errors
 
 
@@ -181,8 +176,8 @@ def _suggest_next_file_number() -> str:
     try:
         query = (
             db.collection(COLLECTION)
-            .where("file_number", ">=", f"{year}-")
-            .where("file_number", "<=", f"{year}-\uf8ff")
+            .where(filter=FieldFilter("file_number", ">=", f"{year}-"))
+            .where(filter=FieldFilter("file_number", "<=", f"{year}-\uf8ff"))
         )
         docs = list(query.stream())
         if not docs:
@@ -218,7 +213,7 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     try:
         existing = (
             db.collection(COLLECTION)
-            .where("file_number", "==", merged["file_number"])
+            .where(filter=FieldFilter("file_number", "==", merged["file_number"]))
             .limit(1)
             .get()
         )
@@ -231,6 +226,10 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     dossier_id = str(uuid.uuid4())
     etag = str(uuid.uuid4())
     vjournal_uid = str(uuid.uuid4())
+
+    # Ensure flat ID arrays are in sync with the object arrays
+    merged["client_ids"] = [c["id"] for c in merged.get("clients", [])]
+    merged["opposing_party_ids"] = [p["id"] for p in merged.get("opposing_parties", [])]
 
     merged.update(
         {
@@ -252,12 +251,30 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def _migrate_parties(doc: dict) -> dict:
+    """Migrate legacy single-client / text opposing fields to arrays."""
+    # Legacy single client_id → clients array
+    if doc.get("client_id") and not doc.get("clients"):
+        doc["clients"] = [{"id": doc["client_id"], "name": doc.get("client_name", "")}]
+        doc["client_ids"] = [doc["client_id"]]
+    # Legacy opposing_party text → opposing_parties array (skip, no ID)
+    if not doc.get("clients"):
+        doc.setdefault("clients", [])
+    if not doc.get("client_ids"):
+        doc["client_ids"] = [c["id"] for c in doc.get("clients", [])]
+    if not doc.get("opposing_parties"):
+        doc.setdefault("opposing_parties", [])
+    if not doc.get("opposing_party_ids"):
+        doc["opposing_party_ids"] = [p["id"] for p in doc.get("opposing_parties", [])]
+    return doc
+
+
 def get_dossier(dossier_id: str) -> Optional[dict]:
     """Fetch a single dossier by ID."""
     try:
         doc = db.collection(COLLECTION).document(dossier_id).get()
         if doc.exists:
-            return doc.to_dict()
+            return _migrate_parties(doc.to_dict())
     except Exception:
         pass
     return None
@@ -266,31 +283,28 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
 def list_dossiers(
     status_filter: Optional[str] = None,
     search: Optional[str] = None,
-    client_id: Optional[str] = None,
     sort_by: str = "opened_date",
 ) -> list[dict]:
-    """Return dossiers, optionally filtered by status, search, or client."""
+    """Return dossiers, optionally filtered by status or search."""
     try:
         query = db.collection(COLLECTION)
 
         if status_filter and status_filter in VALID_STATUSES:
-            query = query.where("status", "==", status_filter)
+            query = query.where(filter=FieldFilter("status", "==", status_filter))
 
-        if client_id:
-            query = query.where("client_id", "==", client_id)
-
-        results = [doc.to_dict() for doc in query.stream()]
+        results = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
 
         # Client-side search (Firestore doesn't support full-text)
         if search:
             term = search.lower()
             filtered = []
             for d in results:
+                client_names = " ".join(c.get("name", "") for c in d.get("clients", []))
                 searchable = " ".join(
                     [
                         d.get("file_number", ""),
                         d.get("title", ""),
-                        d.get("client_name", ""),
+                        client_names,
                         d.get("court_file_number", ""),
                     ]
                 ).lower()
@@ -301,8 +315,6 @@ def list_dossiers(
         # Sort
         if sort_by == "file_number":
             results.sort(key=lambda d: d.get("file_number", ""), reverse=True)
-        elif sort_by == "client_name":
-            results.sort(key=lambda d: d.get("client_name", "").lower())
         else:
             # Default: opened_date, newest first
             results.sort(
@@ -334,7 +346,7 @@ def update_dossier(
         try:
             dup = (
                 db.collection(COLLECTION)
-                .where("file_number", "==", merged["file_number"])
+                .where(filter=FieldFilter("file_number", "==", merged["file_number"]))
                 .limit(1)
                 .get()
             )
@@ -347,6 +359,10 @@ def update_dossier(
     now = datetime.now(timezone.utc)
     merged["updated_at"] = now
     merged["etag"] = str(uuid.uuid4())
+
+    # Sync flat ID arrays
+    merged["client_ids"] = [c["id"] for c in merged.get("clients", [])]
+    merged["opposing_party_ids"] = [p["id"] for p in merged.get("opposing_parties", [])]
 
     # Auto-set closed_date when status changes to fermé or archivé
     if (
@@ -385,18 +401,41 @@ def suggest_file_number() -> str:
     return _suggest_next_file_number()
 
 
-def count_dossiers_for_client(client_id: str) -> int:
-    """Count how many dossiers reference a given client."""
+def count_dossiers_for_partie(partie_id: str) -> int:
+    """Count how many dossiers reference a given partie (as client or opposing)."""
     try:
-        query = db.collection(COLLECTION).where("client_id", "==", client_id)
-        return len(list(query.stream()))
+        q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
+        q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
+        ids = {doc.id for doc in q1.stream()} | {doc.id for doc in q2.stream()}
+        return len(ids)
     except Exception:
         return 0
 
 
-def list_dossiers_for_client(client_id: str) -> list[dict]:
-    """Return all dossiers linked to a client, newest first."""
-    return list_dossiers(client_id=client_id)
+def list_dossiers_for_partie(partie_id: str) -> list[dict]:
+    """Return all dossiers linked to a partie, newest first."""
+    try:
+        q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
+        q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
+        seen: set[str] = set()
+        results: list[dict] = []
+        for doc in q1.stream():
+            d = _migrate_parties(doc.to_dict())
+            if d.get("id") not in seen:
+                seen.add(d["id"])
+                results.append(d)
+        for doc in q2.stream():
+            d = _migrate_parties(doc.to_dict())
+            if d.get("id") not in seen:
+                seen.add(d["id"])
+                results.append(d)
+        results.sort(
+            key=lambda d: d.get("opened_date") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        return results
+    except Exception:
+        return []
 
 
 # ── RFC-5545 VJOURNAL serialization ───────────────────────────────────────
@@ -454,8 +493,8 @@ def dossier_to_vjournal(dossier: dict) -> str:
     # Custom properties for round-trip fidelity
     if dossier.get("file_number"):
         journal.add("x-pallas-file-number", dossier["file_number"])
-    if dossier.get("client_id"):
-        journal.add("x-pallas-client-id", dossier["client_id"])
+    for client in dossier.get("clients", []):
+        journal.add("x-pallas-client-id", client["id"])
     if dossier.get("court_file_number"):
         journal.add("x-pallas-court-file", dossier["court_file_number"])
     if dossier.get("prescription_date") and hasattr(
@@ -528,9 +567,13 @@ def vjournal_to_dossier(ical_str: str) -> dict:
         if file_num:
             data["file_number"] = str(file_num)
 
-        client_id = component.get("x-pallas-client-id")
-        if client_id:
-            data["client_id"] = str(client_id)
+        # Collect all x-pallas-client-id values
+        client_ids = []
+        for line in component.property_items():
+            if line[0].upper() == "X-PALLAS-CLIENT-ID":
+                client_ids.append(str(line[1]))
+        if client_ids:
+            data["client_ids"] = client_ids
 
         court_file = component.get("x-pallas-court-file")
         if court_file:

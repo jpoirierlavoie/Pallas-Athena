@@ -1,4 +1,4 @@
-"""Client/contact Firestore CRUD and vCard 4.0 serialization."""
+"""Partie (contact/party) Firestore CRUD and vCard 4.0 serialization."""
 
 import uuid
 from datetime import datetime, timezone
@@ -6,11 +6,12 @@ from typing import Optional
 
 import vobject
 
+from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
 
 # Firestore collection path (nested under a single-user root)
-COLLECTION = "clients"
+COLLECTION = "parties"
 
 # Valid values for enum fields
 VALID_TYPES = ("individual", "organization")
@@ -53,7 +54,7 @@ ROLE_LABELS = {
 
 
 def _default_doc() -> dict:
-    """Return a dict with every client field set to its default value."""
+    """Return a dict with every partie field set to its default value."""
     return {
         "id": "",
         "type": "individual",
@@ -157,14 +158,14 @@ def _validate(data: dict) -> list[str]:
     return errors
 
 
-def display_name(client: dict) -> str:
+def display_name(partie: dict) -> str:
     """Compute a human-readable display name."""
-    if client.get("type") == "organization":
-        return client.get("organization_name", "")
+    if partie.get("type") == "organization":
+        return partie.get("organization_name", "")
     parts = [
-        client.get("prefix", ""),
-        client.get("first_name", ""),
-        client.get("last_name", ""),
+        partie.get("prefix", ""),
+        partie.get("first_name", ""),
+        partie.get("last_name", ""),
     ]
     return " ".join(p for p in parts if p).strip()
 
@@ -172,7 +173,7 @@ def display_name(client: dict) -> str:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_client(data: dict) -> tuple[Optional[dict], list[str]]:
+def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
     errors = _validate(merged)
@@ -180,33 +181,33 @@ def create_client(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    client_id = str(uuid.uuid4())
+    partie_id = str(uuid.uuid4())
     etag = str(uuid.uuid4())
     vcard_uid = str(uuid.uuid4())
 
     merged.update(
         {
-            "id": client_id,
+            "id": partie_id,
             "created_at": now,
             "updated_at": now,
             "etag": etag,
             "vcard_uid": vcard_uid,
-            "dav_href": f"/dav/addressbook/{client_id}.vcf",
+            "dav_href": f"/dav/addressbook/{partie_id}.vcf",
         }
     )
 
     try:
-        db.collection(COLLECTION).document(client_id).set(merged)
+        db.collection(COLLECTION).document(partie_id).set(merged)
     except Exception as exc:
         return None, [f"Erreur lors de la sauvegarde : {exc}"]
 
     return merged, []
 
 
-def get_client(client_id: str) -> Optional[dict]:
-    """Fetch a single client by ID."""
+def get_partie(partie_id: str) -> Optional[dict]:
+    """Fetch a single partie by ID."""
     try:
-        doc = db.collection(COLLECTION).document(client_id).get()
+        doc = db.collection(COLLECTION).document(partie_id).get()
         if doc.exists:
             return doc.to_dict()
     except Exception:
@@ -214,7 +215,7 @@ def get_client(client_id: str) -> Optional[dict]:
     return None
 
 
-def list_clients(
+def list_parties(
     type_filter: Optional[str] = None,
     role_filter: Optional[str] = None,
     search: Optional[str] = None,
@@ -224,14 +225,14 @@ def list_clients(
         query = db.collection(COLLECTION)
 
         if type_filter and type_filter in VALID_TYPES:
-            query = query.where("type", "==", type_filter)
+            query = query.where(filter=FieldFilter("type", "==", type_filter))
 
         if role_filter and role_filter in VALID_CONTACT_ROLES:
-            query = query.where("contact_role", "==", role_filter)
+            query = query.where(filter=FieldFilter("contact_role", "==", role_filter))
 
         results = [doc.to_dict() for doc in query.stream()]
 
-        # Sort client-side to avoid requiring Firestore composite indexes
+        # Sort in Python to avoid requiring Firestore composite indexes
         results.sort(
             key=lambda c: c.get("updated_at") or datetime.min.replace(
                 tzinfo=timezone.utc
@@ -264,11 +265,11 @@ def list_clients(
         return []
 
 
-def update_client(
-    client_id: str, data: dict
+def update_partie(
+    partie_id: str, data: dict
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing client. Returns (updated_doc, errors)."""
-    existing = get_client(client_id)
+    """Update an existing partie. Returns (updated_doc, errors)."""
+    existing = get_partie(partie_id)
     if not existing:
         return None, ["Contact introuvable."]
 
@@ -295,28 +296,28 @@ def update_client(
         merged["conflict_check_date"] = now
 
     try:
-        db.collection(COLLECTION).document(client_id).set(merged)
+        db.collection(COLLECTION).document(partie_id).set(merged)
     except Exception as exc:
         return None, [f"Erreur lors de la sauvegarde : {exc}"]
 
     return merged, []
 
 
-def delete_client(client_id: str) -> tuple[bool, str]:
-    """Delete a client. Returns (success, error_message)."""
-    existing = get_client(client_id)
+def delete_partie(partie_id: str) -> tuple[bool, str]:
+    """Delete a partie. Returns (success, error_message)."""
+    existing = get_partie(partie_id)
     if not existing:
         return False, "Contact introuvable."
 
     try:
-        db.collection(COLLECTION).document(client_id).delete()
+        db.collection(COLLECTION).document(partie_id).delete()
         return True, ""
     except Exception as exc:
         return False, f"Erreur lors de la suppression : {exc}"
 
 
 def update_kyc_status(
-    client_id: str, field: str, status: str, notes: str = ""
+    partie_id: str, field: str, status: str, notes: str = ""
 ) -> tuple[Optional[dict], list[str]]:
     """Update identity_verified or conflict_check with auto-dated timestamp."""
     if field not in ("identity_verified", "conflict_check"):
@@ -334,14 +335,14 @@ def update_kyc_status(
         field: status,
         f"{field}_notes": sanitize(notes, max_length=2000),
     }
-    return update_client(client_id, update_data)
+    return update_partie(partie_id, update_data)
 
 
 def link_kyc_document(
-    client_id: str, document_id: str
+    partie_id: str, document_id: str
 ) -> tuple[Optional[dict], list[str]]:
     """Append a document ID to kyc_document_ids."""
-    existing = get_client(client_id)
+    existing = get_partie(partie_id)
     if not existing:
         return None, ["Contact introuvable."]
 
@@ -349,57 +350,57 @@ def link_kyc_document(
     if document_id not in ids:
         ids.append(document_id)
 
-    return update_client(client_id, {"kyc_document_ids": ids})
+    return update_partie(partie_id, {"kyc_document_ids": ids})
 
 
 # ── vCard 4.0 serialization ──────────────────────────────────────────────
 
 
-def client_to_vcard(client: dict) -> str:
-    """Serialize a client dict to a vCard 4.0 string (RFC 6350)."""
+def partie_to_vcard(partie: dict) -> str:
+    """Serialize a partie dict to a vCard 4.0 string (RFC 6350)."""
     card = vobject.vCard()
 
     # VERSION — force 4.0
     card.add("version").value = "4.0"
 
     # FN (formatted name)
-    fn = display_name(client)
+    fn = display_name(partie)
     card.add("fn").value = fn
 
     # N (structured name)
     n = card.add("n")
     n.value = vobject.vcard.Name(
-        family=client.get("last_name", ""),
-        given=client.get("first_name", ""),
-        prefix=client.get("prefix", ""),
+        family=partie.get("last_name", ""),
+        given=partie.get("first_name", ""),
+        prefix=partie.get("prefix", ""),
     )
 
     # ORG
     org_value = (
-        client.get("organization_name", "")
-        if client.get("type") == "organization"
-        else client.get("organization", "")
+        partie.get("organization_name", "")
+        if partie.get("type") == "organization"
+        else partie.get("organization", "")
     )
     if org_value:
         card.add("org").value = [org_value]
 
     # TITLE
-    if client.get("job_title"):
-        card.add("title").value = client["job_title"]
+    if partie.get("job_title"):
+        card.add("title").value = partie["job_title"]
 
     # ROLE
-    if client.get("job_role"):
-        card.add("role").value = client["job_role"]
+    if partie.get("job_role"):
+        card.add("role").value = partie["job_role"]
 
     # EMAIL
-    if client.get("email"):
+    if partie.get("email"):
         email_prop = card.add("email")
-        email_prop.value = client["email"]
+        email_prop.value = partie["email"]
         email_prop.type_param = "HOME"
 
-    if client.get("email_work"):
+    if partie.get("email_work"):
         email_prop = card.add("email")
-        email_prop.value = client["email_work"]
+        email_prop.value = partie["email_work"]
         email_prop.type_param = "WORK"
 
     # TEL
@@ -409,64 +410,64 @@ def client_to_vcard(client: dict) -> str:
         ("phone_work", "WORK"),
         ("fax", "FAX"),
     ]:
-        if client.get(field):
+        if partie.get(field):
             tel = card.add("tel")
-            tel.value = client[field]
+            tel.value = partie[field]
             tel.type_param = tel_type
 
     # ADR — home
     home_parts = [
-        client.get("address_street", ""),
-        client.get("address_city", ""),
-        client.get("address_province", ""),
-        client.get("address_postal_code", ""),
-        client.get("address_country", ""),
+        partie.get("address_street", ""),
+        partie.get("address_city", ""),
+        partie.get("address_province", ""),
+        partie.get("address_postal_code", ""),
+        partie.get("address_country", ""),
     ]
     if any(home_parts):
         adr = card.add("adr")
         adr.value = vobject.vcard.Address(
-            street=client.get("address_street", ""),
-            city=client.get("address_city", ""),
-            region=client.get("address_province", ""),
-            code=client.get("address_postal_code", ""),
-            country=client.get("address_country", ""),
-            extended=client.get("address_unit", ""),
+            street=partie.get("address_street", ""),
+            city=partie.get("address_city", ""),
+            region=partie.get("address_province", ""),
+            code=partie.get("address_postal_code", ""),
+            country=partie.get("address_country", ""),
+            extended=partie.get("address_unit", ""),
         )
         adr.type_param = "HOME"
 
     # ADR — work
     work_parts = [
-        client.get("work_address_street", ""),
-        client.get("work_address_city", ""),
-        client.get("work_address_province", ""),
-        client.get("work_address_postal_code", ""),
-        client.get("work_address_country", ""),
+        partie.get("work_address_street", ""),
+        partie.get("work_address_city", ""),
+        partie.get("work_address_province", ""),
+        partie.get("work_address_postal_code", ""),
+        partie.get("work_address_country", ""),
     ]
     if any(work_parts):
         adr = card.add("adr")
         adr.value = vobject.vcard.Address(
-            street=client.get("work_address_street", ""),
-            city=client.get("work_address_city", ""),
-            region=client.get("work_address_province", ""),
-            code=client.get("work_address_postal_code", ""),
-            country=client.get("work_address_country", ""),
-            extended=client.get("work_address_unit", ""),
+            street=partie.get("work_address_street", ""),
+            city=partie.get("work_address_city", ""),
+            region=partie.get("work_address_province", ""),
+            code=partie.get("work_address_postal_code", ""),
+            country=partie.get("work_address_country", ""),
+            extended=partie.get("work_address_unit", ""),
         )
         adr.type_param = "WORK"
 
     # NOTE
-    if client.get("notes"):
-        card.add("note").value = client["notes"]
+    if partie.get("notes"):
+        card.add("note").value = partie["notes"]
 
     # CATEGORIES (contact role label)
-    role_label = ROLE_LABELS.get(client.get("contact_role", ""), "Autre")
+    role_label = ROLE_LABELS.get(partie.get("contact_role", ""), "Autre")
     card.add("categories").value = [role_label]
 
     # UID
-    card.add("uid").value = client.get("vcard_uid", "")
+    card.add("uid").value = partie.get("vcard_uid", "")
 
     # REV
-    updated = client.get("updated_at")
+    updated = partie.get("updated_at")
     if updated:
         if hasattr(updated, "strftime"):
             card.add("rev").value = updated.strftime("%Y%m%dT%H%M%SZ")
@@ -480,12 +481,12 @@ def client_to_vcard(client: dict) -> str:
 
     # Append LANG, GENDER, X-PRONOUN before the final END:VCARD
     extra_lines = []
-    if client.get("language"):
-        extra_lines.append(f"LANG:{client['language']}")
-    if client.get("gender"):
-        extra_lines.append(f"GENDER:{client['gender']}")
-    if client.get("pronouns"):
-        extra_lines.append(f"X-PRONOUN:{client['pronouns']}")
+    if partie.get("language"):
+        extra_lines.append(f"LANG:{partie['language']}")
+    if partie.get("gender"):
+        extra_lines.append(f"GENDER:{partie['gender']}")
+    if partie.get("pronouns"):
+        extra_lines.append(f"X-PRONOUN:{partie['pronouns']}")
 
     if extra_lines:
         vcf = vcf.replace(
@@ -495,8 +496,8 @@ def client_to_vcard(client: dict) -> str:
     return vcf
 
 
-def vcard_to_client(vcard_str: str) -> dict:
-    """Parse a vCard 4.0 string into a client dict (for CardDAV PUT)."""
+def vcard_to_partie(vcard_str: str) -> dict:
+    """Parse a vCard 4.0 string into a partie dict (for CardDAV PUT)."""
     card = vobject.readOne(vcard_str)
     data: dict = {}
 

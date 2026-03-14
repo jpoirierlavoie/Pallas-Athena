@@ -1,8 +1,8 @@
-{# Partial: client list rows (rendered standalone for HTMX updates) #}
-{% if clients %}
+{# Partial: partie list rows (rendered standalone for HTMX updates) #}
+{% if parties %}
 <div class="flex flex-col gap-2">
-  {% for c in clients %}
-  <a href="{{ url_for('clients.client_detail', client_id=c.id) }}"
+  {% for c in parties %}
+  <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
      class="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
     {# Avatar initial #}
     <div class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0">
@@ -51,14 +51,14 @@
 {% else %}
 {% include "components/empty_state.html" with context %}
 {% set message = "Aucun contact pour le moment. Ajoutez votre premier contact." %}
-{% set action_url = url_for('clients.client_new') %}
+{% set action_url = url_for('parties.partie_new') %}
 {% set action_label = "Ajouter un contact" %}
 <div class="flex flex-col items-center justify-center py-16 text-center">
   <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
     <path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z"/>
   </svg>
   <p class="text-gray-500 text-sm mb-4">Aucun contact pour le moment. Ajoutez votre premier contact.</p>
-  <a href="{{ url_for('clients.client_new') }}"
+  <a href="{{ url_for('parties.partie_new') }}"
      class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
     Ajouter un contact
   </a>

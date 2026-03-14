@@ -1,53 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Dossiers — Pallas Athena{% endblock %}
+{% block title %}Parties — Pallas Athena{% endblock %}
 
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-6">
   {# ── Header ──────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
-    <h1 class="text-xl font-semibold text-gray-900">Dossiers</h1>
-    <a href="{{ url_for('dossiers.dossier_new') }}"
+    <h1 class="text-xl font-semibold text-gray-900">Parties</h1>
+    <a href="{{ url_for('parties.partie_new') }}"
        class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-      Nouveau dossier
+      Nouveau contact
     </a>
   </div>
 
-  {# ── Search + status filter row ──────────────────────────────── #}
+  {# ── Search + role filter row ────────────────────────────────── #}
   <div class="flex gap-3 mb-6">
     <input type="search"
            name="q"
            value="{{ search }}"
-           placeholder="Rechercher par numéro, titre, client…"
-           hx-get="{{ url_for('dossiers.dossier_list') }}"
+           placeholder="Rechercher par nom, courriel, téléphone…"
+           hx-get="{{ url_for('parties.partie_list') }}"
            hx-trigger="input changed delay:300ms, search"
-           hx-target="#dossier-rows"
-           hx-include="[name='status']"
+           hx-target="#partie-rows"
+           hx-include="[name='role']"
            hx-push-url="true"
            class="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
            autocomplete="off">
-    <select name="status"
-            hx-get="{{ url_for('dossiers.dossier_list') }}"
+    <select name="role"
+            hx-get="{{ url_for('parties.partie_list') }}"
             hx-trigger="change"
-            hx-target="#dossier-rows"
+            hx-target="#partie-rows"
             hx-include="[name='q']"
             hx-push-url="true"
             class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-      <option value="actif" {{ 'selected' if status_filter == 'actif' }}>Actifs</option>
-      <option value="en_attente" {{ 'selected' if status_filter == 'en_attente' }}>En attente</option>
-      <option value="fermé" {{ 'selected' if status_filter == 'fermé' }}>Fermés</option>
-      <option value="archivé" {{ 'selected' if status_filter == 'archivé' }}>Archivés</option>
-      <option value="tous" {{ 'selected' if status_filter == 'tous' }}>Tous</option>
+      <option value="">Tous les rôles</option>
+      {% for role_key, role_label in role_labels.items() %}
+      <option value="{{ role_key }}" {{ 'selected' if role_filter == role_key }}>{{ role_label }}</option>
+      {% endfor %}
     </select>
   </div>
 
-  {# ── Dossier list ──────────────────────────────────────────── #}
-  <div id="dossier-rows">
-    {% include "dossiers/_dossier_rows.html" %}
+  {# ── Partie list ─────────────────────────────────────────────── #}
+  <div id="partie-rows">
+    {% include "parties/_partie_rows.html" %}
   </div>
 
-  {# ── Mobile FAB ────────────────────────────────────────────── #}
-  <a href="{{ url_for('dossiers.dossier_new') }}"
+  {# ── Mobile FAB ──────────────────────────────────────────────── #}
+  <a href="{{ url_for('parties.partie_new') }}"
      class="md:hidden fixed bottom-20 right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
   </a>

@@ -1,4 +1,4 @@
-"""Client management routes — list, detail, create, edit, delete."""
+"""Partie (contact/party) management routes — list, detail, create, edit, delete."""
 
 from flask import (
     Blueprint,
@@ -9,24 +9,24 @@ from flask import (
 )
 
 from auth import login_required
-from models.client import (
+from models.partie import (
     ROLE_LABELS,
     VALID_CONTACT_ROLES,
-    create_client,
-    delete_client,
+    create_partie,
+    delete_partie,
     display_name,
-    get_client,
-    list_clients,
-    update_client,
+    get_partie,
+    list_parties,
+    update_partie,
 )
 from models.dossier import (
     STATUS_LABELS as DOSSIER_STATUS_LABELS,
     MATTER_TYPE_LABELS as DOSSIER_MATTER_TYPE_LABELS,
-    list_dossiers_for_client,
+    list_dossiers_for_partie,
 )
 
-clients_bp = Blueprint(
-    "clients", __name__, url_prefix="/clients"
+parties_bp = Blueprint(
+    "parties", __name__, url_prefix="/parties"
 )
 
 
@@ -35,7 +35,7 @@ def _is_htmx() -> bool:
 
 
 def _form_data() -> dict:
-    """Extract client fields from the submitted form."""
+    """Extract partie fields from the submitted form."""
     f = request.form
     return {
         "type": f.get("type", "individual"),
@@ -93,35 +93,32 @@ def _form_data() -> dict:
 # ── List ──────────────────────────────────────────────────────────────────
 
 
-@clients_bp.route("/")
+@parties_bp.route("/")
 @login_required
-def client_list() -> str:
-    """Render the client list with optional filters."""
-    type_filter = request.args.get("type", "")
+def partie_list() -> str:
+    """Render the partie list with optional filters."""
     role_filter = request.args.get("role", "")
     search = request.args.get("q", "").strip()
 
-    clients = list_clients(
-        type_filter=type_filter or None,
+    parties = list_parties(
         role_filter=role_filter or None,
         search=search or None,
     )
 
     # Attach display names
-    for c in clients:
-        c["_display_name"] = display_name(c)
+    for p in parties:
+        p["_display_name"] = display_name(p)
 
     if _is_htmx():
         return render_template(
-            "clients/_client_rows.html",
-            clients=clients,
+            "parties/_partie_rows.html",
+            parties=parties,
             role_labels=ROLE_LABELS,
         )
 
     return render_template(
-        "clients/list.html",
-        clients=clients,
-        type_filter=type_filter,
+        "parties/list.html",
+        parties=parties,
         role_filter=role_filter,
         search=search,
         role_labels=ROLE_LABELS,
@@ -132,30 +129,29 @@ def client_list() -> str:
 # ── Search (HTMX autocomplete for other modules) ─────────────────────────
 
 
-@clients_bp.route("/search")
+@parties_bp.route("/search")
 @login_required
-def client_search() -> str:
-    """Return a small HTML fragment of matching clients (for autocomplete)."""
+def partie_search() -> str:
+    """Return a small HTML fragment of matching parties (for autocomplete)."""
     q = request.args.get("q", "").strip()
-    results = list_clients(search=q) if q else []
-    for c in results:
-        c["_display_name"] = display_name(c)
-    return render_template("clients/_search_results.html", clients=results[:10])
+    results = list_parties(search=q) if q else []
+    for p in results:
+        p["_display_name"] = display_name(p)
+    return render_template("parties/_search_results.html", parties=results[:10])
 
 
 # ── Detail ────────────────────────────────────────────────────────────────
 
 
-@clients_bp.route("/<client_id>")
+@parties_bp.route("/<partie_id>")
 @login_required
-def client_detail(client_id: str) -> str:
-    """Render the client detail page."""
-    client = get_client(client_id)
-    if not client:
+def partie_detail(partie_id: str) -> str:
+    """Render the partie detail page."""
+    partie = get_partie(partie_id)
+    if not partie:
         return render_template(
-            "clients/list.html",
-            clients=[],
-            type_filter="",
+            "parties/list.html",
+            parties=[],
             role_filter="",
             search="",
             role_labels=ROLE_LABELS,
@@ -163,11 +159,11 @@ def client_detail(client_id: str) -> str:
             error="Contact introuvable.",
         )
 
-    client["_display_name"] = display_name(client)
-    dossiers = list_dossiers_for_client(client_id)
+    partie["_display_name"] = display_name(partie)
+    dossiers = list_dossiers_for_partie(partie_id)
     return render_template(
-        "clients/detail.html",
-        client=client,
+        "parties/detail.html",
+        partie=partie,
         role_labels=ROLE_LABELS,
         dossiers=dossiers,
         dossier_status_labels=DOSSIER_STATUS_LABELS,
@@ -178,102 +174,102 @@ def client_detail(client_id: str) -> str:
 # ── Create ────────────────────────────────────────────────────────────────
 
 
-@clients_bp.route("/new")
+@parties_bp.route("/new")
 @login_required
-def client_new() -> str:
-    """Render the empty client form."""
+def partie_new() -> str:
+    """Render the empty partie form."""
     return render_template(
-        "clients/form.html",
-        client=None,
+        "parties/form.html",
+        partie=None,
         errors=[],
         role_labels=ROLE_LABELS,
     )
 
 
-@clients_bp.route("/", methods=["POST"])
+@parties_bp.route("/", methods=["POST"])
 @login_required
-def client_create() -> str:
-    """Handle new client form submission."""
+def partie_create() -> str:
+    """Handle new partie form submission."""
     data = _form_data()
-    client, errors = create_client(data)
+    partie, errors = create_partie(data)
 
     if errors:
         return render_template(
-            "clients/form.html",
-            client=data,
+            "parties/form.html",
+            partie=data,
             errors=errors,
             role_labels=ROLE_LABELS,
         )
 
     if _is_htmx():
-        resp = redirect(url_for("clients.client_detail", client_id=client["id"]))
+        resp = redirect(url_for("parties.partie_detail", partie_id=partie["id"]))
         resp.headers["HX-Redirect"] = url_for(
-            "clients.client_detail", client_id=client["id"]
+            "parties.partie_detail", partie_id=partie["id"]
         )
         return resp
 
-    return redirect(url_for("clients.client_detail", client_id=client["id"]))
+    return redirect(url_for("parties.partie_detail", partie_id=partie["id"]))
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────
 
 
-@clients_bp.route("/<client_id>/edit")
+@parties_bp.route("/<partie_id>/edit")
 @login_required
-def client_edit(client_id: str) -> str:
-    """Render the edit form pre-filled with client data."""
-    client = get_client(client_id)
-    if not client:
-        return redirect(url_for("clients.client_list"))
+def partie_edit(partie_id: str) -> str:
+    """Render the edit form pre-filled with partie data."""
+    partie = get_partie(partie_id)
+    if not partie:
+        return redirect(url_for("parties.partie_list"))
 
     return render_template(
-        "clients/form.html",
-        client=client,
+        "parties/form.html",
+        partie=partie,
         errors=[],
         role_labels=ROLE_LABELS,
     )
 
 
-@clients_bp.route("/<client_id>", methods=["POST"])
+@parties_bp.route("/<partie_id>", methods=["POST"])
 @login_required
-def client_update(client_id: str) -> str:
+def partie_update(partie_id: str) -> str:
     """Handle edit form submission."""
     data = _form_data()
-    client, errors = update_client(client_id, data)
+    partie, errors = update_partie(partie_id, data)
 
     if errors:
-        data["id"] = client_id
+        data["id"] = partie_id
         return render_template(
-            "clients/form.html",
-            client=data,
+            "parties/form.html",
+            partie=data,
             errors=errors,
             role_labels=ROLE_LABELS,
         )
 
     if _is_htmx():
-        resp = redirect(url_for("clients.client_detail", client_id=client_id))
+        resp = redirect(url_for("parties.partie_detail", partie_id=partie_id))
         resp.headers["HX-Redirect"] = url_for(
-            "clients.client_detail", client_id=client_id
+            "parties.partie_detail", partie_id=partie_id
         )
         return resp
 
-    return redirect(url_for("clients.client_detail", client_id=client_id))
+    return redirect(url_for("parties.partie_detail", partie_id=partie_id))
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
 
 
-@clients_bp.route("/<client_id>/delete", methods=["POST"])
+@parties_bp.route("/<partie_id>/delete", methods=["POST"])
 @login_required
-def client_delete(client_id: str) -> str:
-    """Delete a client and redirect to the list."""
-    success, error = delete_client(client_id)
+def partie_delete(partie_id: str) -> str:
+    """Delete a partie and redirect to the list."""
+    success, error = delete_partie(partie_id)
 
     if _is_htmx():
         if success:
-            resp = redirect(url_for("clients.client_list"))
-            resp.headers["HX-Redirect"] = url_for("clients.client_list")
+            resp = redirect(url_for("parties.partie_list"))
+            resp.headers["HX-Redirect"] = url_for("parties.partie_list")
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    return redirect(url_for("clients.client_list"))
+    return redirect(url_for("parties.partie_list"))
