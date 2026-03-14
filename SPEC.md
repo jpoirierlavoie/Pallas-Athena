@@ -269,16 +269,16 @@ pytz==2024.*
 ```
 
 ### Testing Criteria for Phase 1
-- [ ] `flask run` starts the app without errors
-- [ ] Visiting any route redirects to `/auth/login`
-- [ ] Login with the correct Firebase Auth email succeeds and redirects to `/` (dashboard placeholder)
-- [ ] Login with an incorrect email (even if valid Firebase Auth) is rejected
-- [ ] After login, session persists across page reloads
-- [ ] Logout clears the session and redirects to login
-- [ ] All responses include the full set of security headers (verify with `curl -I`)
+- [*] `flask run` starts the app without errors
+- [*] Visiting any route redirects to `/auth/login`
+- [*] Login with the correct Firebase Auth email succeeds and redirects to `/` (dashboard placeholder)
+- [*] Login with an incorrect email (even if valid Firebase Auth) is rejected
+- [*] After login, session persists across page reloads
+- [*] Logout clears the session and redirects to login
+- [*] All responses include the full set of security headers (verify with `curl -I`)
 - [ ] Rate limiting blocks login after 5 rapid attempts
-- [ ] CSRF token is present and POST without it returns 400
-- [ ] Mobile viewport renders correctly (test at 375px width)
+- [*] CSRF token is present and POST without it returns 400
+- [*] Mobile viewport renders correctly (test at 375px width)
 
 ---
 
@@ -476,24 +476,24 @@ REV → updated_at (formatted as ISO datetime)
 **DavX5 Note on vCard 4.0:** DavX5 fully supports vCard 4.0. The `vobject` library supports both 3.0 and 4.0; ensure you set `VERSION:4.0` in the serialized output. If `vobject` has limitations with 4.0 properties, fall back to manually appending LANG, GENDER, and X-PRONOUN lines to the serialized string before returning.
 
 ### Testing Criteria for Phase 2
-- [ ] Can create, view, edit, and delete clients (both individual and organization)
-- [ ] Contact role selection works and persists correctly
-- [ ] Contact role filter on list view works
-- [ ] Search filters work correctly
-- [ ] Type toggle filters correctly
+- [*] Can create, view, edit, and delete clients (both individual and organization)
+- [*] Contact role selection works and persists correctly
+- [*] Contact role filter on list view works
+- [*] Search filters work correctly
+- [*] Type toggle filters correctly
 - [ ] Phone and postal code formatting works
-- [ ] Language, gender, and pronoun fields save and display correctly
-- [ ] Professional coordinates (title, role, org) save and display correctly
-- [ ] Work address and work contact fields save and display correctly
-- [ ] Conformité section only appears when contact_role is "client"
-- [ ] Identity verification status change auto-sets the date
-- [ ] Conflict check status change auto-sets the date
+- [*] Language, gender, and pronoun fields save and display correctly
+- [*] Professional coordinates (title, role, org) save and display correctly
+- [*] Work address and work contact fields save and display correctly
+- [*] Conformité section only appears when contact_role is "client"
+- [*] Identity verification status change auto-sets the date
+- [*] Conflict check status change auto-sets the date
 - [ ] KYC document linking works (placeholder until Phase 9 document storage is built)
-- [ ] Unverified client indicator shows on list view
+- [*] Unverified client indicator shows on list view
 - [ ] `client_to_vcard()` produces valid vCard 4.0 output including LANG, GENDER, X-PRONOUN, TITLE, ROLE, ORG, CATEGORIES, and dual ADR/TEL/EMAIL entries
 - [ ] `vcard_to_client()` correctly parses a vCard 4.0 string back into a client dict
 - [ ] Form validation prevents submission of invalid data
-- [ ] Mobile layout is clean with proper spacing and touch targets
+- [*] Mobile layout is clean with proper spacing and touch targets
 
 ---
 

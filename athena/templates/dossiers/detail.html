@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}{{ dossier.file_number }} — {{ dossier.title }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6"
+     x-data="{ activeTab: 'apercu', deleteOpen: false }">
+
+  {# ── Back + actions ──────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <a href="{{ url_for('dossiers.dossier_list') }}"
+       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      Dossiers
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('dossiers.dossier_edit', dossier_id=dossier.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Modifier
+      </a>
+      <button @click="deleteOpen = true"
+              class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+        Supprimer
+      </button>
+    </div>
+  </div>
+
+  {# ── Header card ─────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+    <div class="flex items-start gap-4">
+      <div class="w-14 h-14 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
+        <svg class="w-7 h-7 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-sm font-medium text-indigo-600">{{ dossier.file_number }}</span>
+          {% set status_colors = {
+            'actif': 'bg-green-100 text-green-700',
+            'en_attente': 'bg-amber-100 text-amber-700',
+            'fermé': 'bg-gray-200 text-gray-600',
+            'archivé': 'bg-gray-200 text-gray-500'
+          } %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ status_colors.get(dossier.status, 'bg-gray-100 text-gray-600') }}">
+            {{ status_labels.get(dossier.status, dossier.status) }}
+          </span>
+        </div>
+        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ dossier.title }}</h1>
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+          {{ matter_type_labels.get(dossier.matter_type, dossier.matter_type) }}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  {# ── Info cards grid ─────────────────────────────────────────── #}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+    {# Client card #}
+    <a href="{{ url_for('clients.client_detail', client_id=dossier.client_id) }}"
+       class="bg-white rounded-xl border border-gray-200 p-5 hover:border-gray-300 transition-colors">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Client</h2>
+      <p class="text-sm text-indigo-600 font-medium">{{ dossier.client_name }}</p>
+      {% if dossier.role %}
+      <p class="text-xs text-gray-500 mt-1">{{ role_labels.get(dossier.role, dossier.role) }}</p>
+      {% endif %}
+    </a>
+
+    {# Opposing party #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Partie adverse</h2>
+      {% if dossier.opposing_party or dossier.opposing_counsel %}
+      <dl class="space-y-1.5 text-sm">
+        {% if dossier.opposing_party %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Partie</dt>
+          <dd class="text-gray-900">{{ dossier.opposing_party }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.opposing_counsel %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Avocat(e)</dt>
+          <dd class="text-gray-900">{{ dossier.opposing_counsel }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.opposing_counsel_firm %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Cabinet</dt>
+          <dd class="text-gray-900">{{ dossier.opposing_counsel_firm }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.opposing_counsel_phone %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Tél.</dt>
+          <dd class="text-gray-900">{{ dossier.opposing_counsel_phone }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.opposing_counsel_email %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Courriel</dt>
+          <dd class="text-gray-900"><a href="mailto:{{ dossier.opposing_counsel_email }}" class="text-indigo-600 hover:underline">{{ dossier.opposing_counsel_email }}</a></dd>
+        </div>
+        {% endif %}
+      </dl>
+      {% else %}
+      <p class="text-gray-400 text-xs">Aucune partie adverse indiquée</p>
+      {% endif %}
+    </div>
+
+    {# Court info #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Tribunal et juridiction</h2>
+      <dl class="space-y-1.5 text-sm">
+        {% if dossier.court %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Tribunal</dt>
+          <dd class="text-gray-900">{{ dossier.court }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.district %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">District</dt>
+          <dd class="text-gray-900">{{ dossier.district }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.court_file_number %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">N° judiciaire</dt>
+          <dd class="text-gray-900 font-mono text-xs">{{ dossier.court_file_number }}</dd>
+        </div>
+        {% endif %}
+        {% if not dossier.court and not dossier.district and not dossier.court_file_number %}
+        <p class="text-gray-400 text-xs">Aucune information judiciaire</p>
+        {% endif %}
+      </dl>
+    </div>
+
+    {# Financial summary #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Honoraires</h2>
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Type</dt>
+          <dd class="text-gray-900">{{ fee_type_labels.get(dossier.fee_type, dossier.fee_type) }}</dd>
+        </div>
+        {% if dossier.fee_type in ('hourly', 'mixed') and dossier.hourly_rate %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Taux horaire</dt>
+          <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.hourly_rate / 100) }} $</dd>
+        </div>
+        {% endif %}
+        {% if dossier.fee_type in ('flat', 'mixed') and dossier.flat_fee %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Forfait</dt>
+          <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.flat_fee / 100) }} $</dd>
+        </div>
+        {% endif %}
+        {% if dossier.retainer_amount %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Provision</dt>
+          <dd class="text-gray-900">{{ '%.2f'|format(dossier.retainer_amount / 100) }} $</dd>
+        </div>
+        {% endif %}
+        {% if dossier.retainer_balance %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Solde provision</dt>
+          <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.retainer_balance / 100) }} $</dd>
+        </div>
+        {% endif %}
+      </dl>
+    </div>
+  </div>
+
+  {# ── Tabbed sub-sections ─────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+    {# Tab bar #}
+    <div class="flex overflow-x-auto border-b border-gray-200">
+      {% set tabs = [
+        ('apercu', 'Aperçu'),
+        ('temps', 'Temps & Dépenses'),
+        ('facturation', 'Facturation'),
+        ('audiences', 'Audiences'),
+        ('taches', 'Tâches'),
+        ('protocole', 'Protocole'),
+        ('documents', 'Documents')
+      ] %}
+      {% for key, label in tabs %}
+      <button @click="activeTab = '{{ key }}'"
+              :class="activeTab === '{{ key }}' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+              class="px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors"
+              hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=key) }}"
+              hx-target="#tab-content"
+              hx-trigger="click"
+              hx-swap="innerHTML">
+        {{ label }}
+      </button>
+      {% endfor %}
+    </div>
+
+    {# Tab content area #}
+    <div id="tab-content" class="p-5"
+         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name='apercu') }}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <div class="flex items-center justify-center py-8">
+        <div class="w-5 h-5 border-2 border-gray-300 border-t-indigo-600 rounded-full animate-spin"></div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Delete confirmation dialog ──────────────────────────────── #}
+  <div x-show="deleteOpen"
+       @keydown.escape.window="deleteOpen = false"
+       x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div @click.outside="deleteOpen = false"
+         class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+      <div class="p-6">
+        <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce dossier ?</h3>
+        <p class="text-sm text-gray-600 mb-6">Cette action est irréversible. Toutes les données de ce dossier seront supprimées.</p>
+        <div class="flex gap-3 justify-end">
+          <button @click="deleteOpen = false"
+                  class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+            Annuler
+          </button>
+          <form method="post" action="{{ url_for('dossiers.dossier_delete', dossier_id=dossier.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit"
+                    class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+              Supprimer
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

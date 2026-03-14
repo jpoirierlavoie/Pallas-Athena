@@ -1,0 +1,61 @@
+{# Partial: dossier list rows (rendered standalone for HTMX updates) #}
+{% if dossiers %}
+<div class="flex flex-col gap-2">
+  {% for d in dossiers %}
+  <a href="{{ url_for('dossiers.dossier_detail', dossier_id=d.id) }}"
+     class="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
+    {# File number badge #}
+    <div class="w-16 h-10 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+      <span class="text-xs font-semibold text-gray-600">{{ d.file_number }}</span>
+    </div>
+
+    {# Info #}
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 mb-0.5">
+        <span class="text-sm font-medium text-gray-900 truncate">{{ d.title }}</span>
+        {# Prescription warning dot #}
+        {% if d._prescription_warning == 'red' %}
+        <span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" title="Prescription imminente (< 30 jours)"></span>
+        {% elif d._prescription_warning == 'orange' %}
+        <span class="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Prescription approchante (< 60 jours)"></span>
+        {% endif %}
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        {# Matter type badge #}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+          {{ matter_type_labels.get(d.matter_type, d.matter_type) }}
+        </span>
+        {# Status badge #}
+        {% set status_colors = {
+          'actif': 'bg-green-100 text-green-700',
+          'en_attente': 'bg-amber-100 text-amber-700',
+          'fermé': 'bg-gray-200 text-gray-600',
+          'archivé': 'bg-gray-200 text-gray-500'
+        } %}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ status_colors.get(d.status, 'bg-gray-100 text-gray-600') }}">
+          {{ status_labels.get(d.status, d.status) }}
+        </span>
+      </div>
+      {# Client name #}
+      <div class="text-xs text-gray-500 mt-1 truncate">
+        {{ d.client_name }}
+      </div>
+    </div>
+
+    {# Chevron #}
+    <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
+  </svg>
+  <p class="text-gray-500 text-sm mb-4">Aucun dossier pour le moment. Créez votre premier dossier.</p>
+  <a href="{{ url_for('dossiers.dossier_new') }}"
+     class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    Créer un dossier
+  </a>
+</div>
+{% endif %}

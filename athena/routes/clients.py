@@ -19,6 +19,11 @@ from models.client import (
     list_clients,
     update_client,
 )
+from models.dossier import (
+    STATUS_LABELS as DOSSIER_STATUS_LABELS,
+    MATTER_TYPE_LABELS as DOSSIER_MATTER_TYPE_LABELS,
+    list_dossiers_for_client,
+)
 
 clients_bp = Blueprint(
     "clients", __name__, url_prefix="/clients"
@@ -159,10 +164,14 @@ def client_detail(client_id: str) -> str:
         )
 
     client["_display_name"] = display_name(client)
+    dossiers = list_dossiers_for_client(client_id)
     return render_template(
         "clients/detail.html",
         client=client,
         role_labels=ROLE_LABELS,
+        dossiers=dossiers,
+        dossier_status_labels=DOSSIER_STATUS_LABELS,
+        dossier_matter_type_labels=DOSSIER_MATTER_TYPE_LABELS,
     )
 
 

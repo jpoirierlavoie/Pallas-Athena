@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier le dossier' if dossier and dossier.id else 'Nouveau dossier' }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6"
+     x-data="{
+       feeType: '{{ (dossier.fee_type if dossier else 'hourly') }}',
+       clientId: '{{ (dossier.client_id if dossier else '') }}',
+       clientName: '{{ (dossier.client_name if dossier else '') }}',
+       showClientSearch: false,
+       clientQuery: ''
+     }">
+
+  {# ── Header ──────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) if dossier and dossier.id else url_for('dossiers.dossier_list') }}"
+       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      Retour
+    </a>
+    <h1 class="text-lg font-semibold text-gray-900">
+      {{ 'Modifier le dossier' if dossier and dossier.id else 'Nouveau dossier' }}
+    </h1>
+    <div class="w-16"></div>
+  </div>
+
+  {# ── Validation errors ───────────────────────────────────────── #}
+  {% if errors %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post"
+        action="{{ url_for('dossiers.dossier_update', dossier_id=dossier.id) if dossier and dossier.id else url_for('dossiers.dossier_create') }}"
+        class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# ═══ Section 1 — Identification ═══════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Identification</legend>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Numéro de dossier <span class="text-red-500">*</span></label>
+          <input type="text" name="file_number"
+                 value="{{ dossier.file_number if dossier else suggested_file_number }}"
+                 placeholder="{{ suggested_file_number }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                 required>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Statut</label>
+          <select name="status"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% for key, label in status_labels.items() %}
+            <option value="{{ key }}" {{ 'selected' if dossier and dossier.status == key }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <label class="block text-sm text-gray-700 mb-1">Titre <span class="text-red-500">*</span></label>
+        <input type="text" name="title"
+               value="{{ dossier.title if dossier else '' }}"
+               placeholder="Tremblay c. Lavoie"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+               required>
+      </div>
+
+      {# Client selector with autocomplete #}
+      <div class="relative">
+        <label class="block text-sm text-gray-700 mb-1">Client <span class="text-red-500">*</span></label>
+        <input type="hidden" name="client_id" :value="clientId">
+        <input type="hidden" name="client_name" :value="clientName">
+
+        {# Display selected client or search input #}
+        <div x-show="clientId && !showClientSearch" class="flex items-center gap-2">
+          <div class="flex-1 px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-900">
+            <span x-text="clientName"></span>
+          </div>
+          <button type="button"
+                  @click="showClientSearch = true; clientQuery = ''; $nextTick(() => $refs.clientSearchInput.focus())"
+                  class="px-3 py-2.5 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50">
+            Changer
+          </button>
+        </div>
+
+        <div x-show="!clientId || showClientSearch" class="relative">
+          <input type="text"
+                 x-ref="clientSearchInput"
+                 x-model="clientQuery"
+                 placeholder="Rechercher un client…"
+                 hx-get="{{ url_for('clients.client_search') }}"
+                 hx-trigger="input changed delay:300ms"
+                 hx-target="#client-search-results"
+                 hx-include="this"
+                 name="q"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                 autocomplete="off">
+
+          <div id="client-search-results"
+               class="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"
+               @click="
+                 let li = $event.target.closest('[data-client-id]');
+                 if (li) {
+                   clientId = li.dataset.clientId;
+                   clientName = li.dataset.clientName;
+                   showClientSearch = false;
+                   clientQuery = '';
+                   document.getElementById('client-search-results').innerHTML = '';
+                 }
+               ">
+          </div>
+        </div>
+      </div>
+    </fieldset>
+
+    {# ═══ Section 2 — Classification ════════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Classification</legend>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Type de dossier</label>
+          <select name="matter_type"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% for key, label in matter_type_labels.items() %}
+            <option value="{{ key }}" {{ 'selected' if dossier and dossier.matter_type == key }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Rôle</label>
+          <select name="role"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% for key, label in role_labels.items() %}
+            <option value="{{ key }}" {{ 'selected' if dossier and dossier.role == key }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Tribunal</label>
+          <select name="court"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">—</option>
+            {% for court in valid_courts %}
+            <option value="{{ court }}" {{ 'selected' if dossier and dossier.court == court }}>{{ court }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">District judiciaire</label>
+          <select name="district"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">—</option>
+            {% for dist in valid_districts %}
+            <option value="{{ dist }}" {{ 'selected' if dossier and dossier.district == dist }}>{{ dist }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Numéro de dossier judiciaire</label>
+          <input type="text" name="court_file_number"
+                 value="{{ dossier.court_file_number if dossier else '' }}"
+                 placeholder="500-17-______-___"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Date d'ouverture</label>
+          <input type="date" name="opened_date"
+                 value="{{ dossier.opened_date.strftime('%Y-%m-%d') if dossier and dossier.opened_date and dossier.opened_date.strftime is defined else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+    </fieldset>
+
+    {# ═══ Section 3 — Parties adverses ══════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Parties adverses</legend>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Partie adverse</label>
+          <input type="text" name="opposing_party"
+                 value="{{ dossier.opposing_party if dossier else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Avocat(e) adverse</label>
+          <input type="text" name="opposing_counsel"
+                 value="{{ dossier.opposing_counsel if dossier else '' }}"
+                 placeholder="Me"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Cabinet</label>
+          <input type="text" name="opposing_counsel_firm"
+                 value="{{ dossier.opposing_counsel_firm if dossier else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Téléphone</label>
+          <input type="tel" name="opposing_counsel_phone"
+                 value="{{ dossier.opposing_counsel_phone if dossier else '' }}"
+                 placeholder="(514) 555-1234"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Courriel</label>
+          <input type="email" name="opposing_counsel_email"
+                 value="{{ dossier.opposing_counsel_email if dossier else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+    </fieldset>
+
+    {# ═══ Section 4 — Honoraires ════════════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Honoraires</legend>
+
+      <div class="mb-4">
+        <label class="block text-sm text-gray-700 mb-1">Type d'honoraires</label>
+        <select name="fee_type" x-model="feeType"
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          {% for key, label in fee_type_labels.items() %}
+          <option value="{{ key }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div x-show="feeType === 'hourly' || feeType === 'mixed'">
+          <label class="block text-sm text-gray-700 mb-1">Taux horaire ($)</label>
+          <input type="number" name="hourly_rate" step="0.01" min="0"
+                 value="{{ '%.2f'|format(dossier.hourly_rate / 100) if dossier and dossier.hourly_rate else '250.00' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div x-show="feeType === 'flat' || feeType === 'mixed'">
+          <label class="block text-sm text-gray-700 mb-1">Forfait ($)</label>
+          <input type="number" name="flat_fee" step="0.01" min="0"
+                 value="{{ '%.2f'|format(dossier.flat_fee / 100) if dossier and dossier.flat_fee else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Provision pour frais ($)</label>
+          <input type="number" name="retainer_amount" step="0.01" min="0"
+                 value="{{ '%.2f'|format(dossier.retainer_amount / 100) if dossier and dossier.retainer_amount else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Solde de la provision ($)</label>
+          <input type="number" name="retainer_balance" step="0.01" min="0"
+                 value="{{ '%.2f'|format(dossier.retainer_balance / 100) if dossier and dossier.retainer_balance else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+    </fieldset>
+
+    {# ═══ Section 5 — Prescription ══════════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Prescription</legend>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Date de prescription</label>
+          <input type="date" name="prescription_date"
+                 value="{{ dossier.prescription_date.strftime('%Y-%m-%d') if dossier and dossier.prescription_date and dossier.prescription_date.strftime is defined else '' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Notes</label>
+          <input type="text" name="prescription_notes"
+                 value="{{ dossier.prescription_notes if dossier else '' }}"
+                 placeholder="Détails sur la prescription…"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+    </fieldset>
+
+    {# ═══ Section 6 — Notes ═════════════════════════════════════════ #}
+    <fieldset class="bg-white rounded-xl border border-gray-200 p-5">
+      <legend class="text-sm font-semibold text-gray-900 mb-4">Notes</legend>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Notes</label>
+          <textarea name="notes" rows="3" placeholder="Notes générales sur le dossier…"
+                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ dossier.notes if dossier else '' }}</textarea>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Notes internes</label>
+          <textarea name="internal_notes" rows="3" placeholder="Notes confidentielles (non partagées)…"
+                    class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ dossier.internal_notes if dossier else '' }}</textarea>
+        </div>
+      </div>
+    </fieldset>
+
+    {# ═══ Submit ═════════════════════════════════════════════════ #}
+    <div class="flex gap-3 justify-end pb-6">
+      <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) if dossier and dossier.id else url_for('dossiers.dossier_list') }}"
+         class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Annuler
+      </a>
+      <button type="submit"
+              class="px-5 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ 'Enregistrer' if dossier and dossier.id else 'Créer le dossier' }}
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

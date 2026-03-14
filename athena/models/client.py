@@ -221,9 +221,7 @@ def list_clients(
 ) -> list[dict]:
     """Return clients, optionally filtered by type, role, or search term."""
     try:
-        query = db.collection(COLLECTION).order_by(
-            "updated_at", direction="DESCENDING"
-        )
+        query = db.collection(COLLECTION)
 
         if type_filter and type_filter in VALID_TYPES:
             query = query.where("type", "==", type_filter)
@@ -232,6 +230,14 @@ def list_clients(
             query = query.where("contact_role", "==", role_filter)
 
         results = [doc.to_dict() for doc in query.stream()]
+
+        # Sort client-side to avoid requiring Firestore composite indexes
+        results.sort(
+            key=lambda c: c.get("updated_at") or datetime.min.replace(
+                tzinfo=timezone.utc
+            ),
+            reverse=True,
+        )
 
         # Client-side search filtering (Firestore doesn't support full-text)
         if search:

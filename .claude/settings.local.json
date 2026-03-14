@@ -13,7 +13,8 @@
       "Read(//c/Users/jason/anaconda3/**)",
       "Read(//c/Program Files/**)",
       "Bash(py --version)",
-      "Bash(conda --version)"
+      "Bash(conda --version)",
+      "Bash(python -c \":*)"
     ]
   }
 }

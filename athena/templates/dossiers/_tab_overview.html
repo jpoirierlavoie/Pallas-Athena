@@ -1,0 +1,71 @@
+{# Tab: Aperçu — Overview of the dossier #}
+<div class="space-y-6">
+  {# Prescription warning #}
+  {% if dossier.prescription_date %}
+  <div class="p-4 rounded-lg border
+    {% set pd = dossier.prescription_date %}
+    {{ 'bg-red-50 border-red-200' if dossier._prescription_warning == 'red' else ('bg-amber-50 border-amber-200' if dossier._prescription_warning == 'orange' else 'bg-gray-50 border-gray-200') }}">
+    <div class="flex items-center gap-2 mb-1">
+      <svg class="w-4 h-4 {{ 'text-red-600' if dossier._prescription_warning == 'red' else ('text-amber-600' if dossier._prescription_warning == 'orange' else 'text-gray-500') }}"
+           fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+      </svg>
+      <h3 class="text-sm font-semibold {{ 'text-red-800' if dossier._prescription_warning == 'red' else ('text-amber-800' if dossier._prescription_warning == 'orange' else 'text-gray-700') }}">
+        Date de prescription
+      </h3>
+    </div>
+    <p class="text-sm {{ 'text-red-700' if dossier._prescription_warning == 'red' else ('text-amber-700' if dossier._prescription_warning == 'orange' else 'text-gray-600') }}">
+      {{ dossier.prescription_date.strftime('%d %B %Y') if dossier.prescription_date.strftime is defined else dossier.prescription_date }}
+    </p>
+    {% if dossier.prescription_notes %}
+    <p class="text-xs mt-1 {{ 'text-red-600' if dossier._prescription_warning == 'red' else ('text-amber-600' if dossier._prescription_warning == 'orange' else 'text-gray-500') }}">
+      {{ dossier.prescription_notes }}
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# Key dates #}
+  <div>
+    <h3 class="text-sm font-semibold text-gray-900 mb-3">Dates clés</h3>
+    <dl class="space-y-2 text-sm">
+      {% if dossier.opened_date %}
+      <div class="flex justify-between">
+        <dt class="text-gray-500">Ouverture</dt>
+        <dd class="text-gray-900">{{ dossier.opened_date.strftime('%d %B %Y') if dossier.opened_date.strftime is defined else dossier.opened_date }}</dd>
+      </div>
+      {% endif %}
+      {% if dossier.closed_date %}
+      <div class="flex justify-between">
+        <dt class="text-gray-500">Fermeture</dt>
+        <dd class="text-gray-900">{{ dossier.closed_date.strftime('%d %B %Y') if dossier.closed_date.strftime is defined else dossier.closed_date }}</dd>
+      </div>
+      {% endif %}
+      {% if dossier.created_at %}
+      <div class="flex justify-between">
+        <dt class="text-gray-500">Créé le</dt>
+        <dd class="text-gray-900">{{ dossier.created_at.strftime('%d %B %Y') if dossier.created_at.strftime is defined else dossier.created_at }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+  </div>
+
+  {# Notes #}
+  {% if dossier.notes %}
+  <div>
+    <h3 class="text-sm font-semibold text-gray-900 mb-2">Notes</h3>
+    <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ dossier.notes }}</p>
+  </div>
+  {% endif %}
+
+  {% if dossier.internal_notes %}
+  <div>
+    <h3 class="text-sm font-semibold text-gray-900 mb-2">Notes internes</h3>
+    <p class="text-sm text-gray-600 whitespace-pre-wrap bg-gray-50 rounded-lg p-3">{{ dossier.internal_notes }}</p>
+  </div>
+  {% endif %}
+
+  {% if not dossier.notes and not dossier.internal_notes and not dossier.prescription_date %}
+  <p class="text-gray-400 text-sm text-center py-4">Aucune note pour ce dossier.</p>
+  {% endif %}
+</div>

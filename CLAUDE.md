@@ -68,12 +68,12 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase 2 — Client Management + CardDAV Foundation
+Phase 3 — Dossier (Case File) Management
 
 ## Phase Checklist
 - [*] Phase 1: Scaffolding, Auth, Security
 - [*] Phase 2: Client Management + CardDAV Foundation
-- [ ] Phase 3: Dossier (Case File) Management
+- [*] Phase 3: Dossier (Case File) Management
 - [ ] Phase 4: Time Tracking + Expense Management
 - [ ] Phase 5: Invoicing (GST/QST)
 - [ ] Phase 6: Hearing Dates + CalDAV Foundation

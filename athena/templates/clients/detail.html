@@ -290,10 +290,45 @@
   </div>
   {% endif %}
 
-  {# ── Associated dossiers (placeholder for Phase 3) ──────────── #}
+  {# ── Associated dossiers ─────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Dossiers associés</h2>
-    <p class="text-gray-400 text-xs">Les dossiers liés apparaîtront ici.</p>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-gray-900">Dossiers associés</h2>
+      <a href="{{ url_for('dossiers.dossier_new') }}"
+         class="text-xs text-indigo-600 hover:text-indigo-700 font-medium">+ Nouveau dossier</a>
+    </div>
+    {% if dossiers %}
+    <div class="space-y-2">
+      {% for d in dossiers %}
+      <a href="{{ url_for('dossiers.dossier_detail', dossier_id=d.id) }}"
+         class="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition-colors">
+        <div class="w-12 h-8 rounded bg-gray-100 flex items-center justify-center flex-shrink-0">
+          <span class="text-xs font-semibold text-gray-500">{{ d.file_number }}</span>
+        </div>
+        <div class="flex-1 min-w-0">
+          <span class="text-sm font-medium text-gray-900 truncate block">{{ d.title }}</span>
+          <div class="flex items-center gap-2 mt-0.5">
+            <span class="inline-flex px-1.5 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">
+              {{ dossier_matter_type_labels.get(d.matter_type, d.matter_type) }}
+            </span>
+            {% set status_colors = {
+              'actif': 'bg-green-100 text-green-700',
+              'en_attente': 'bg-amber-100 text-amber-700',
+              'fermé': 'bg-gray-200 text-gray-600',
+              'archivé': 'bg-gray-200 text-gray-500'
+            } %}
+            <span class="inline-flex px-1.5 py-0.5 text-xs rounded-full {{ status_colors.get(d.status, 'bg-gray-100 text-gray-600') }}">
+              {{ dossier_status_labels.get(d.status, d.status) }}
+            </span>
+          </div>
+        </div>
+        <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-xs">Aucun dossier associé à ce contact.</p>
+    {% endif %}
   </div>
 
 </div>
