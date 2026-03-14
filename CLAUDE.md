@@ -71,7 +71,7 @@ athena/
 Phase 1 — Project Scaffolding, Authentication, and Security Hardening
 
 ## Phase Checklist
-- [ ] Phase 1: Scaffolding, Auth, Security
+- [*] Phase 1: Scaffolding, Auth, Security
 - [ ] Phase 2: Client Management + CardDAV Foundation
 - [ ] Phase 3: Dossier (Case File) Management
 - [ ] Phase 4: Time Tracking + Expense Management

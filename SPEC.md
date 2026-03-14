@@ -285,7 +285,7 @@ pytz==2024.*
 ## PHASE 2 — Client Management + CardDAV Foundation
 
 ### Objective
-Build the client (contact) management module with full CRUD in the web UI, and lay the groundwork for CardDAV synchronization. Clients are the foundational entity — dossiers, invoices, and time entries all reference a client.
+Build the client and contact management module with full CRUD in the web UI, and lay the groundwork for CardDAV synchronization. This module manages all contacts — actual clients, opposing parties, opposing counsel, experts, witnesses, and other intervenants. Contacts are the foundational entity — dossiers, invoices, and time entries all reference a client. The schema uses vCard 4.0 (RFC 6350) to support language, gender, and extended properties required for CardDAV sync with DavX5.
 
 ### Firestore Schema: `clients/{clientId}`
 
@@ -293,6 +293,10 @@ Build the client (contact) management module with full CRUD in the web UI, and l
 {
     "id": "uuid-v4",                     # Also the document ID
     "type": "individual" | "organization",
+    
+    # Contact role — distinguishes actual clients from other parties
+    # Maps to vCard CATEGORIES property
+    "contact_role": "client" | "partie_adverse" | "avocat_adverse" | "témoin" | "expert" | "huissier" | "notaire" | "autre",
     
     # For individuals
     "first_name": "Jean",
@@ -303,24 +307,55 @@ Build the client (contact) management module with full CRUD in the web UI, and l
     "organization_name": "ABC Inc.",
     "contact_person": "Marie Lavoie",     # Primary contact at org
     
-    # Shared fields
+    # Demographics (vCard 4.0 properties: LANG, GENDER, GRAMGENDER/X-PRONOUN)
+    "language": "fr" | "en" | "es" | "",  # BCP 47 language tag — maps to vCard LANG
+    "gender": "M" | "F" | "O" | "N" | "U" | "",  # M=male, F=female, O=other, N=none/not applicable, U=unknown — maps to vCard GENDER
+    "pronouns": "il/lui" | "elle" | "iel" | "he/him" | "she/her" | "they/them" | "",  # Maps to vCard X-PRONOUN (no RFC standard yet)
+    
+    # Professional coordinates (vCard TITLE, ROLE, ORG)
+    "job_title": "",                      # e.g., "Associé principal" — maps to vCard TITLE
+    "job_role": "",                       # e.g., "Directeur des finances" — maps to vCard ROLE
+    "organization": "",                   # Employer/firm name for individuals — maps to vCard ORG
+                                          # (For type=organization, use organization_name instead)
+    
+    # Personal contact info
     "email": "jean@example.com",
     "phone_home": "",
-    "phone_work": "",
     "phone_cell": "+15145551234",
+    
+    # Professional contact info
+    "email_work": "",
+    "phone_work": "",
     "fax": "",
     
-    # Address
+    # Personal address
     "address_street": "1234 rue Sherbrooke Ouest",
-    "address_unit": "Bureau 200",
+    "address_unit": "App. 4",
     "address_city": "Montréal",
     "address_province": "QC",
     "address_postal_code": "H3A 1B2",
     "address_country": "CA",
     
+    # Professional address
+    "work_address_street": "",
+    "work_address_unit": "",
+    "work_address_city": "",
+    "work_address_province": "",
+    "work_address_postal_code": "",
+    "work_address_country": "CA",
+    
     # Legal identifiers
-    "bar_number": "",                     # If opposing counsel
+    "bar_number": "",                     # If lawyer (own or opposing counsel)
     "company_neq": "",                    # Numéro d'entreprise du Québec
+    
+    # KYC / Compliance (only relevant when contact_role == "client")
+    "identity_verified": "non_vérifié" | "vérifié" | "exempté",
+    "identity_verified_date": None | datetime,    # Date of last verification or exemption
+    "identity_verified_notes": "",                # Method, exemption reason, etc.
+    "kyc_document_ids": [],                       # List of document IDs (from Phase 9 document storage)
+    "conflict_check": "non_vérifié" | "vérifié" | "conflit_détecté",
+    "conflict_check_date": None | datetime,
+    "conflict_check_notes": "",                   # Details of conflict check or detected conflict
     
     # Notes
     "notes": "",
@@ -341,59 +376,122 @@ Build the client (contact) management module with full CRUD in the web UI, and l
 **Client List View (`/clients`)**
 - Search bar at top (filters by name, email, phone — client-side with Alpine.js for speed, or HTMX for server-side search)
 - Toggle between "Tous" (all), "Particuliers" (individuals), "Organisations" (organizations)
-- Each client shown as a card/row: name, phone, email. Tap to go to detail.
+- Secondary filter by contact role: "Clients", "Avocats", "Autres intervenants" — useful for quickly finding opposing counsel or experts
+- Each client shown as a card/row: name, contact_role badge (colored: client=indigo, avocat_adverse=amber, others=gray), phone, email. Tap to go to detail.
+- Clients with `identity_verified == "non_vérifié"` show a small warning indicator (orange dot) on their card
 - Floating action button (FAB) "+" bottom-right on mobile to add new client
-- Empty state: friendly message "Aucun client pour le moment. Ajoutez votre premier client."
+- Empty state: friendly message "Aucun contact pour le moment. Ajoutez votre premier contact."
 
 **Client Detail View (`/clients/<id>`)**
 - Display all client fields in clean, readable layout
-- Section groupings: Coordonnées (contact info), Adresse, Notes, Identifiants
+- Contact role badge prominently displayed next to name
+- Section groupings:
+  - Coordonnées personnelles (personal contact: email, phone_home, phone_cell, personal address)
+  - Coordonnées professionnelles (work contact: email_work, phone_work, fax, job_title, job_role, organization, work address)
+  - Profil (language, gender, pronouns — displayed subtly, not prominently)
+  - Adresse (personal and professional addresses, side by side on desktop)
+  - Identifiants (bar_number, company_neq)
+  - Notes
+  - **Conformité** (only shown when contact_role == "client"):
+    - Vérification d'identité: status badge (Non vérifié = orange, Vérifié = green, Exempté = blue), date, notes
+    - Conflit d'intérêts: status badge (Non vérifié = orange, Vérifié = green, Conflit détecté = red), date, notes
+    - Documents KYC: list of linked documents (from Phase 9) with view/download links. Upload button to add new KYC documents directly from this section.
 - Quick-action buttons: Appeler (tel: link), Courriel (mailto: link)
 - List of associated dossiers (linked from Phase 3)
 - Edit button (top-right), Delete button (with confirmation dialog)
 
 **Client Form (`/clients/new`, `/clients/<id>/edit`)**
 - Full-screen form on mobile, modal or side-panel on desktop
-- Radio toggle at top: "Particulier" / "Organisation" — conditionally shows relevant fields
+- **Section 1 — Type et rôle:**
+  - Radio toggle: "Particulier" / "Organisation" — conditionally shows relevant fields
+  - Contact role dropdown: "Client", "Partie adverse", "Avocat(e) adverse", "Témoin", "Expert(e)", "Huissier(ère)", "Notaire", "Autre"
+- **Section 2 — Identité** (for individuals):
+  - Prefix, first name, last name
+  - Language dropdown (Français, English, Español, Autre)
+  - Gender dropdown (Homme, Femme, Autre, Ne s'applique pas, Non précisé)
+  - Pronouns dropdown (il/lui, elle, iel, he/him, she/her, they/them, Autre) — optional
+- **Section 3 — Coordonnées personnelles:**
+  - Email, phone_home, phone_cell
+  - Personal address fields
+- **Section 4 — Coordonnées professionnelles:**
+  - Job title, role, organization (employer/firm)
+  - Email (work), phone (work), fax
+  - Work address fields
+- **Section 5 — Identifiants:**
+  - Bar number (shown when contact_role is avocat_adverse or client with "Me" prefix)
+  - NEQ (shown when type is organization)
+- **Section 6 — Conformité** (shown only when contact_role == "client"):
+  - Vérification d'identité: status dropdown (Non vérifié / Vérifié / Exempté), date picker (auto-fills to today on status change), notes textarea
+  - Conflit d'intérêts: status dropdown (Non vérifié / Vérifié / Conflit détecté), date picker, notes textarea
+  - KYC documents: file upload area (links to document storage in Phase 9; before Phase 9, store as a placeholder list of document references)
+- **Section 7 — Notes:**
+  - General notes textarea
 - All fields with French labels
 - Postal code auto-formats to Canadian format (A1A 1A1) with input mask
 - Phone fields auto-format to (514) 555-1234
-- Validation: at minimum, a name is required. Email validated if provided. Postal code pattern validated.
+- Validation: at minimum, a name is required. Email validated if provided. Postal code pattern validated. If contact_role is "client", show a non-blocking reminder if identity is not verified.
 - Save via HTMX POST, returns to list with success toast
 
 **Model Layer (`models/client.py`)**
 - `create_client(data: dict) -> dict` — validates, generates UUID + etag + vcard_uid, writes to Firestore, returns document
 - `get_client(client_id: str) -> dict | None`
-- `list_clients(type_filter: str = None, search: str = None) -> list[dict]`
-- `update_client(client_id: str, data: dict) -> dict` — regenerates etag + updated_at
+- `list_clients(type_filter: str = None, role_filter: str = None, search: str = None) -> list[dict]`
+- `update_client(client_id: str, data: dict) -> dict` — regenerates etag + updated_at. If identity_verified or conflict_check status changes, auto-set the corresponding date to now.
 - `delete_client(client_id: str) -> bool` — verify no linked dossiers before deleting (or soft-delete)
-- `client_to_vcard(client: dict) -> str` — serialize client to vCard 3.0 string using `vobject`
+- `update_kyc_status(client_id: str, field: str, status: str, notes: str) -> dict` — updates identity_verified or conflict_check with auto-dated timestamp
+- `link_kyc_document(client_id: str, document_id: str) -> dict` — appends document_id to kyc_document_ids list
+- `client_to_vcard(client: dict) -> str` — serialize client to vCard 4.0 string using `vobject`
 - `vcard_to_client(vcard_str: str) -> dict` — parse a vCard string into a client dict (for CardDAV PUT)
 
-**vCard Serialization**
-Map the Firestore fields to vCard 3.0 properties:
+**vCard Serialization (vCard 4.0 — RFC 6350)**
+Use vCard version 4.0 (not 3.0) to support LANG, GENDER, and extended properties. Map Firestore fields to vCard properties:
 ```
+VERSION → 4.0
 FN → display name (computed: "prefix first_name last_name" or "organization_name")
 N → last_name;first_name;;;prefix
-ORG → organization_name
-EMAIL → email
+ORG → organization (employer) for individuals, or organization_name for type=organization
+TITLE → job_title
+ROLE → job_role
+
+EMAIL;TYPE=HOME → email
+EMAIL;TYPE=WORK → email_work
 TEL;TYPE=HOME → phone_home
 TEL;TYPE=WORK → phone_work
 TEL;TYPE=CELL → phone_cell
 TEL;TYPE=FAX → fax
-ADR;TYPE=WORK → ;;address_street;address_city;address_province;address_postal_code;address_country
+
+ADR;TYPE=HOME → ;;address_street;address_city;address_province;address_postal_code;address_country
+ADR;TYPE=WORK → ;;work_address_street;work_address_city;work_address_province;work_address_postal_code;work_address_country
+
+LANG → language (BCP 47 tag: "fr", "en", etc.)
+GENDER → gender (single character: M, F, O, N, U)
+X-PRONOUN → pronouns (non-standard; no RFC yet — use X- property for DavX5 compatibility)
+
+CATEGORIES → contact_role (mapped to French label: "Client", "Partie adverse", "Avocat(e) adverse", etc.)
 NOTE → notes
 UID → vcard_uid
 REV → updated_at (formatted as ISO datetime)
 ```
 
+**DavX5 Note on vCard 4.0:** DavX5 fully supports vCard 4.0. The `vobject` library supports both 3.0 and 4.0; ensure you set `VERSION:4.0` in the serialized output. If `vobject` has limitations with 4.0 properties, fall back to manually appending LANG, GENDER, and X-PRONOUN lines to the serialized string before returning.
+
 ### Testing Criteria for Phase 2
 - [ ] Can create, view, edit, and delete clients (both individual and organization)
+- [ ] Contact role selection works and persists correctly
+- [ ] Contact role filter on list view works
 - [ ] Search filters work correctly
 - [ ] Type toggle filters correctly
 - [ ] Phone and postal code formatting works
-- [ ] `client_to_vcard()` produces valid vCard 3.0 output
-- [ ] `vcard_to_client()` correctly parses a vCard string
+- [ ] Language, gender, and pronoun fields save and display correctly
+- [ ] Professional coordinates (title, role, org) save and display correctly
+- [ ] Work address and work contact fields save and display correctly
+- [ ] Conformité section only appears when contact_role is "client"
+- [ ] Identity verification status change auto-sets the date
+- [ ] Conflict check status change auto-sets the date
+- [ ] KYC document linking works (placeholder until Phase 9 document storage is built)
+- [ ] Unverified client indicator shows on list view
+- [ ] `client_to_vcard()` produces valid vCard 4.0 output including LANG, GENDER, X-PRONOUN, TITLE, ROLE, ORG, CATEGORIES, and dual ADR/TEL/EMAIL entries
+- [ ] `vcard_to_client()` correctly parses a vCard 4.0 string back into a client dict
 - [ ] Form validation prevents submission of invalid data
 - [ ] Mobile layout is clean with proper spacing and touch targets
 
@@ -1167,7 +1265,7 @@ Return the collection properties (as Depth: 0) plus a `{DAV:}response` element f
 For `sync-collection`: return all resources changed since the provided sync-token. The sync-token can be a timestamp or a counter. Return `{DAV:}response` elements for changed/new resources and `{DAV:}status` 404 for deleted resources.
 
 **GET `/dav/addressbook/{clientId}.vcf`**
-Return the vCard 3.0 representation of the client. Content-Type: `text/vcard; charset=utf-8`. Include `ETag` header.
+Return the vCard 4.0 representation of the client. Content-Type: `text/vcard; charset=utf-8`. Include `ETag` header.
 
 **PUT `/dav/addressbook/{clientId}.vcf`**
 Parse the incoming vCard, convert to client dict via `vcard_to_client()`, create or update in Firestore. Support `If-Match` header for conditional updates (compare with stored etag). Return `201 Created` or `204 No Content`.
