@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Factures — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+  {# ── Header ──────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-gray-900">Factures</h1>
+    <a href="{{ url_for('invoices.invoice_new') }}"
+       class="w-10 h-10 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-indigo-700 transition-colors">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+    </a>
+  </div>
+
+  {# ── Filters ─────────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <div class="flex flex-wrap gap-3">
+      {# Status filter #}
+      <select name="status"
+              hx-get="{{ url_for('invoices.invoice_list') }}"
+              hx-target="#invoice-rows"
+              hx-include="[name='date_from'],[name='date_to']"
+              class="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white">
+        <option value="" {{ 'selected' if not status_filter }}>Tous les statuts</option>
+        {% for key, label in status_labels.items() %}
+        <option value="{{ key }}" {{ 'selected' if status_filter == key }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      {# Date range #}
+      <input type="date" name="date_from" value="{{ date_from }}"
+             placeholder="Du"
+             hx-get="{{ url_for('invoices.invoice_list') }}"
+             hx-target="#invoice-rows"
+             hx-include="[name='status'],[name='date_to']"
+             class="text-sm border border-gray-300 rounded-lg px-3 py-2">
+      <input type="date" name="date_to" value="{{ date_to }}"
+             placeholder="Au"
+             hx-get="{{ url_for('invoices.invoice_list') }}"
+             hx-target="#invoice-rows"
+             hx-include="[name='status'],[name='date_from']"
+             class="text-sm border border-gray-300 rounded-lg px-3 py-2">
+    </div>
+  </div>
+
+  {# ── Invoice rows ────────────────────────────────────────────── #}
+  <div id="invoice-rows">
+    {% include "invoices/_invoice_rows.html" %}
+  </div>
+
+</div>
+{% endblock %}

@@ -598,13 +598,13 @@ Standard CRUD + `dossier_to_vjournal()` and `vjournal_to_dossier()` for RFC-5545
 
 ### Testing Criteria for Phase 3
 - [ ] Full CRUD for dossiers
-- [ ] Client selector autocomplete works
-- [ ] File number auto-suggestion works
-- [ ] Status filtering works
-- [ ] Prescription date warnings display correctly
-- [ ] Dossier detail "hub" page renders all sections
+- [*] Client selector autocomplete works
+- [*] File number auto-suggestion works
+- [*] Status filtering works
+- [*] Prescription date warnings display correctly
+- [*] Dossier detail "hub" page renders all sections
 - [ ] Tabs load content via HTMX without full page reload
-- [ ] Mobile layout is clean and all sections are accessible
+- [*] Mobile layout is clean and all sections are accessible
 
 ---
 
@@ -696,13 +696,13 @@ Standard CRUD for both `timeentry.py` and `expense.py`, plus:
 - `get_summary(dossier_id)` — returns totals
 
 ### Testing Criteria for Phase 4
-- [ ] Can create, edit, delete time entries and expenses
-- [ ] Amount auto-computes from hours × rate for time entries
-- [ ] Dossier selector correctly links entries
-- [ ] Date grouping displays correctly
+- [*] Can create, edit, delete time entries and expenses
+- [*] Amount auto-computes from hours × rate for time entries
+- [*] Dossier selector correctly links entries
+- [*] Date grouping displays correctly
 - [ ] Filters (date range, dossier, billable status) work
-- [ ] Running totals are accurate
-- [ ] Quick-select description chips work
+- [*] Running totals are accurate
+- [*] Quick-select description chips work
 - [ ] Dossier detail tab shows filtered entries with summary
 - [ ] Mobile layout handles long descriptions gracefully (truncation)
 

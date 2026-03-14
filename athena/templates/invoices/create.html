@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle facture — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+  {# ── Back ──────────────────────────────────────────────────── #}
+  <a href="{{ url_for('invoices.invoice_list') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    Factures
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">Nouvelle facture</h1>
+
+  {# ── Errors ────────────────────────────────────────────────── #}
+  {% if errors %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    {% for err in errors %}
+    <p class="text-red-600 text-sm">{{ err }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if not dossier %}
+  {# ── Step 1: Select dossier ────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-6">
+    <h2 class="text-base font-semibold text-gray-900 mb-4">Sélectionner un dossier</h2>
+
+    {% if dossiers %}
+    <div class="flex flex-col gap-2">
+      {% for d in dossiers %}
+      <a href="{{ url_for('invoices.invoice_new', dossier_id=d.id) }}"
+         class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-colors">
+        <div class="w-12 h-8 rounded bg-indigo-50 flex items-center justify-center flex-shrink-0">
+          <span class="text-xs font-semibold text-indigo-600">{{ d.file_number }}</span>
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-gray-900 truncate">{{ d.title }}</p>
+          {% if d.clients %}
+          <p class="text-xs text-gray-500">{{ d.clients[0].name if d.clients else '' }}</p>
+          {% endif %}
+        </div>
+        <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm text-center py-4">Aucun dossier actif.</p>
+    {% endif %}
+  </div>
+
+  {% else %}
+  {# ── Step 2: Select items & create invoice ─────────────────── #}
+  <form method="post" action="{{ url_for('invoices.invoice_create') }}"
+        x-data="invoiceForm()"
+        x-init="computeTotals()">
+
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="dossier_id" value="{{ dossier.id }}">
+
+    {# Dossier info card #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-8 rounded bg-indigo-50 flex items-center justify-center flex-shrink-0">
+          <span class="text-xs font-semibold text-indigo-600">{{ dossier.file_number }}</span>
+        </div>
+        <div>
+          <p class="text-sm font-medium text-gray-900">{{ dossier.title }}</p>
+          <p class="text-xs text-gray-500">{{ client_name }}</p>
+        </div>
+      </div>
+    </div>
+
+    {# Invoice details #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-4">Détails de la facture</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1">Date de la facture</label>
+          <input type="date" name="invoice_date" value="{{ invoice_date }}"
+                 class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2" required>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1">Date d'échéance</label>
+          <input type="date" name="due_date" value=""
+                 placeholder="Auto : +30 jours"
+                 class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
+        </div>
+        {% if dossier.retainer_balance and dossier.retainer_balance > 0 %}
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1">Provision à appliquer ($)</label>
+          <input type="text" name="retainer_applied" value=""
+                 placeholder="Solde : {{ '%.2f'|format(dossier.retainer_balance / 100) }} $"
+                 class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Unbilled time entries #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-900">Entrées de temps non facturées</h2>
+        {% if unbilled_entries %}
+        <button type="button" @click="toggleAllEntries()"
+                class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+          <span x-text="allEntriesSelected ? 'Tout désélectionner' : 'Tout sélectionner'"></span>
+        </button>
+        {% endif %}
+      </div>
+
+      {% if unbilled_entries %}
+      <div class="flex flex-col gap-2">
+        {% for e in unbilled_entries %}
+        <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:bg-gray-50 cursor-pointer"
+               :class="selectedEntries.includes('{{ e.id }}') ? 'border-indigo-300 bg-indigo-50' : ''">
+          <input type="checkbox" name="selected_entries" value="{{ e.id }}"
+                 x-model="selectedEntries"
+                 @change="computeTotals()"
+                 data-amount="{{ e.amount }}"
+                 data-taxable="true"
+                 data-type="fee"
+                 class="w-4 h-4 text-indigo-600 border-gray-300 rounded">
+          <div class="w-10 h-7 rounded bg-indigo-50 flex items-center justify-center flex-shrink-0">
+            <span class="text-[10px] font-semibold text-indigo-600">{{ e.hours }}h</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <span class="text-xs text-gray-500">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
+            <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
+          </div>
+          <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(e.amount / 100) }} $</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-gray-400 text-sm text-center py-3">Aucune entrée de temps non facturée.</p>
+      {% endif %}
+    </div>
+
+    {# Unbilled expenses #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-900">Dépenses non facturées</h2>
+        {% if unbilled_expenses %}
+        <button type="button" @click="toggleAllExpenses()"
+                class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+          <span x-text="allExpensesSelected ? 'Tout désélectionner' : 'Tout sélectionner'"></span>
+        </button>
+        {% endif %}
+      </div>
+
+      {% if unbilled_expenses %}
+      <div class="flex flex-col gap-2">
+        {% for e in unbilled_expenses %}
+        <label class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:bg-gray-50 cursor-pointer"
+               :class="selectedExpenses.includes('{{ e.id }}') ? 'border-indigo-300 bg-indigo-50' : ''">
+          <input type="checkbox" name="selected_expenses" value="{{ e.id }}"
+                 x-model="selectedExpenses"
+                 @change="computeTotals()"
+                 data-amount="{{ e.amount }}"
+                 data-taxable="{{ 'true' if e.taxable else 'false' }}"
+                 data-type="expense"
+                 class="w-4 h-4 text-indigo-600 border-gray-300 rounded">
+          <div class="flex-1 min-w-0">
+            <span class="text-xs text-gray-500">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
+            <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
+            {% if not e.taxable %}
+            <span class="text-[10px] px-1 py-0.5 bg-gray-200 text-gray-500 rounded-full">Non taxable</span>
+            {% endif %}
+          </div>
+          <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(e.amount / 100) }} $</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-gray-400 text-sm text-center py-3">Aucune dépense non facturée.</p>
+      {% endif %}
+    </div>
+
+    {# Running totals #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Résumé</h2>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Honoraires</dt>
+          <dd class="text-gray-900 font-medium" x-text="formatCents(subtotalFees)"></dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Dépenses</dt>
+          <dd class="text-gray-900 font-medium" x-text="formatCents(subtotalExpenses)"></dd>
+        </div>
+        <div class="flex justify-between border-t border-gray-100 pt-2">
+          <dt class="text-gray-700 font-medium">Sous-total</dt>
+          <dd class="text-gray-900 font-medium" x-text="formatCents(subtotal)"></dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">TPS (5 %)</dt>
+          <dd class="text-gray-900" x-text="formatCents(gstAmount)"></dd>
+        </div>
+        <div class="flex justify-between">
+          <dt class="text-gray-500">TVQ (9,975 %)</dt>
+          <dd class="text-gray-900" x-text="formatCents(qstAmount)"></dd>
+        </div>
+        <div class="flex justify-between border-t border-gray-200 pt-2">
+          <dt class="text-gray-900 font-semibold">Total</dt>
+          <dd class="text-gray-900 font-semibold text-base" x-text="formatCents(total)"></dd>
+        </div>
+      </dl>
+    </div>
+
+    {# Notes & payment terms #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+      <h2 class="text-sm font-semibold text-gray-900 mb-4">Notes et conditions</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1">Notes</label>
+          <textarea name="notes" rows="2"
+                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2"
+                    placeholder="Notes imprimées sur la facture"></textarea>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-700 mb-1">Conditions de paiement</label>
+          <textarea name="payment_terms" rows="2"
+                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">Payable dans les 30 jours suivant la date de facturation.</textarea>
+        </div>
+      </div>
+    </div>
+
+    {# Submit #}
+    <div class="flex justify-end gap-3">
+      <a href="{{ url_for('invoices.invoice_list') }}"
+         class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+        Annuler
+      </a>
+      <button type="submit"
+              class="px-6 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">
+        Créer la facture
+      </button>
+    </div>
+  </form>
+  {% endif %}
+
+</div>
+
+{% if dossier %}
+<script>
+function invoiceForm() {
+  // Build lookup maps from checkbox data attributes
+  const entryIds = [{% for e in unbilled_entries %}'{{ e.id }}'{{ ',' if not loop.last }}{% endfor %}];
+  const expenseIds = [{% for e in unbilled_expenses %}'{{ e.id }}'{{ ',' if not loop.last }}{% endfor %}];
+
+  const amounts = {
+    {% for e in unbilled_entries %}'{{ e.id }}': {{ e.amount }},{% endfor %}
+    {% for e in unbilled_expenses %}'{{ e.id }}': {{ e.amount }},{% endfor %}
+  };
+  const taxableMap = {
+    {% for e in unbilled_entries %}'{{ e.id }}': true,{% endfor %}
+    {% for e in unbilled_expenses %}'{{ e.id }}': {{ 'true' if e.taxable else 'false' }},{% endfor %}
+  };
+  const typeMap = {
+    {% for e in unbilled_entries %}'{{ e.id }}': 'fee',{% endfor %}
+    {% for e in unbilled_expenses %}'{{ e.id }}': 'expense',{% endfor %}
+  };
+
+  return {
+    selectedEntries: [...entryIds],
+    selectedExpenses: [...expenseIds],
+    subtotalFees: 0,
+    subtotalExpenses: 0,
+    subtotal: 0,
+    gstAmount: 0,
+    qstAmount: 0,
+    total: 0,
+
+    get allEntriesSelected() {
+      return entryIds.length > 0 && entryIds.every(id => this.selectedEntries.includes(id));
+    },
+    get allExpensesSelected() {
+      return expenseIds.length > 0 && expenseIds.every(id => this.selectedExpenses.includes(id));
+    },
+
+    toggleAllEntries() {
+      if (this.allEntriesSelected) {
+        this.selectedEntries = [];
+      } else {
+        this.selectedEntries = [...entryIds];
+      }
+      this.computeTotals();
+    },
+    toggleAllExpenses() {
+      if (this.allExpensesSelected) {
+        this.selectedExpenses = [];
+      } else {
+        this.selectedExpenses = [...expenseIds];
+      }
+      this.computeTotals();
+    },
+
+    computeTotals() {
+      let fees = 0, expenses = 0, taxable = 0;
+      const allSelected = [...this.selectedEntries, ...this.selectedExpenses];
+
+      for (const id of allSelected) {
+        const amt = amounts[id] || 0;
+        if (typeMap[id] === 'fee') fees += amt;
+        else expenses += amt;
+        if (taxableMap[id]) taxable += amt;
+      }
+
+      this.subtotalFees = fees;
+      this.subtotalExpenses = expenses;
+      this.subtotal = fees + expenses;
+      this.gstAmount = Math.round(taxable * 0.05);
+      this.qstAmount = Math.round(taxable * 0.09975);
+      this.total = this.subtotal + this.gstAmount + this.qstAmount;
+    },
+
+    formatCents(cents) {
+      return (cents / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + ' $';
+    }
+  };
+}
+</script>
+{% endif %}
+{% endblock %}

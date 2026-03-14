@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier la dépense' if expense and expense.id else 'Nouvelle dépense' }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6"
+     x-data="{
+       dossierId: '{{ (expense.dossier_id or '') if expense else '' }}',
+       dossierDisplay: '{{ (expense.dossier_file_number or '') + (' — ' + expense.dossier_title if expense and expense.dossier_title else '') if expense else '' }}',
+       searchOpen: false
+     }">
+
+  {# ── Back ──────────────────────────────────────────────────── #}
+  <a href="{{ url_for('time_expenses.time_list', tab='depenses') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    Temps & Dépenses
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">
+    {{ 'Modifier la dépense' if expense and expense.id else 'Nouvelle dépense' }}
+  </h1>
+
+  {# ── Errors ────────────────────────────────────────────────── #}
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Form ──────────────────────────────────────────────────── #}
+  <form method="post"
+        action="{{ url_for('time_expenses.expense_update', expense_id=expense.id) if expense and expense.id else url_for('time_expenses.expense_create') }}"
+        class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# Dossier selector #}
+    <div class="relative">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier *</label>
+      <input type="hidden" name="dossier_id" :value="dossierId">
+      <input type="text"
+             x-model="dossierDisplay"
+             @focus="searchOpen = true"
+             @input="searchOpen = true"
+             hx-get="{{ url_for('time_expenses.dossier_search') }}"
+             hx-trigger="input changed delay:300ms"
+             hx-target="#dossier-results"
+             hx-vals='js:{"q": document.querySelector("[x-model=dossierDisplay]").value}'
+             placeholder="Rechercher un dossier…"
+             autocomplete="off"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <div id="dossier-results"
+           x-show="searchOpen"
+           @click.outside="searchOpen = false"
+           x-cloak
+           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto"
+           @click="
+             let li = $event.target.closest('li');
+             if (li) {
+               dossierId = li.dataset.dossierId;
+               dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle;
+               searchOpen = false;
+             }
+           ">
+      </div>
+    </div>
+
+    {# Date #}
+    <div>
+      <label for="date" class="block text-sm font-medium text-gray-700 mb-1">Date *</label>
+      <input type="date" id="date" name="date"
+             value="{{ expense.date.strftime('%Y-%m-%d') if expense and expense.date and expense.date.strftime is defined else '' }}"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+    </div>
+
+    {# Description #}
+    <div>
+      <label for="description" class="block text-sm font-medium text-gray-700 mb-1">Description *</label>
+      <textarea id="description" name="description" rows="3"
+                placeholder="Décrivez la dépense…"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ expense.description if expense and expense.description else '' }}</textarea>
+    </div>
+
+    {# Category + Amount row #}
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="category" class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
+        <select id="category" name="category"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          {% for cat in valid_categories %}
+          <option value="{{ cat }}" {{ 'selected' if expense and expense.category == cat }}>
+            {{ category_labels.get(cat, cat) }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="amount" class="block text-sm font-medium text-gray-700 mb-1">Montant ($) *</label>
+        <input type="number" id="amount" name="amount" step="0.01" min="0.01"
+               value="{{ '%.2f'|format(expense.amount / 100) if expense and expense.amount else '' }}"
+               placeholder="0.00"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
+    </div>
+
+    {# Taxable toggle #}
+    <div class="flex items-center gap-3">
+      <input type="checkbox" id="taxable" name="taxable"
+             {{ 'checked' if not expense or expense.taxable is not defined or expense.taxable }}
+             class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+      <label for="taxable" class="text-sm font-medium text-gray-700">Taxable (TPS/TVQ)</label>
+    </div>
+
+    {# Actions #}
+    <div class="flex gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        {{ 'Enregistrer' if expense and expense.id else 'Créer' }}
+      </button>
+      <a href="{{ url_for('time_expenses.time_list', tab='depenses') }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+    </div>
+  </form>
+
+  {# ── Delete button (edit mode only) ────────────────────────── #}
+  {% if expense and expense.id %}
+  <div x-data="{ deleteOpen: false }" class="mt-6 pt-6 border-t border-gray-200">
+    <button @click="deleteOpen = true"
+            class="text-sm text-red-600 hover:text-red-700 font-medium">
+      Supprimer cette dépense
+    </button>
+    <div x-show="deleteOpen" @keydown.escape.window="deleteOpen = false" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div @click.outside="deleteOpen = false"
+           class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+        <div class="p-6">
+          <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette dépense ?</h3>
+          <p class="text-sm text-gray-600 mb-6">Cette action est irréversible.</p>
+          <div class="flex gap-3 justify-end">
+            <button @click="deleteOpen = false"
+                    class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+              Annuler
+            </button>
+            <form method="post" action="{{ url_for('time_expenses.expense_delete', expense_id=expense.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+                Supprimer
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

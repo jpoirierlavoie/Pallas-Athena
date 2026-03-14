@@ -46,11 +46,15 @@ def create_app() -> Flask:
     from routes.dashboard import dashboard_bp
     from routes.parties import parties_bp
     from routes.dossiers import dossiers_bp
+    from routes.time_expenses import time_expenses_bp
+    from routes.invoices import invoices_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(parties_bp)
     app.register_blueprint(dossiers_bp)
+    app.register_blueprint(time_expenses_bp)
+    app.register_blueprint(invoices_bp)
 
     return app
 

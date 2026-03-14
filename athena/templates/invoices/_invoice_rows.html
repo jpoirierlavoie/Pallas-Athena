@@ -1,0 +1,49 @@
+{# HTMX fragment: invoice list rows #}
+{% if invoices %}
+<div class="flex flex-col gap-2">
+  {% for inv in invoices %}
+  <a href="{{ url_for('invoices.invoice_detail', invoice_id=inv.id) }}"
+     class="flex items-center gap-3 p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
+
+    {# Invoice number badge #}
+    <div class="w-20 h-10 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0">
+      <span class="text-xs font-semibold text-indigo-600">{{ inv.invoice_number }}</span>
+    </div>
+
+    {# Info #}
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 mb-0.5">
+        <span class="text-sm font-medium text-gray-900 truncate">{{ inv.client_name or inv.dossier_title }}</span>
+        {% set status_colors = {
+          'brouillon': 'bg-gray-200 text-gray-600',
+          'envoyée': 'bg-blue-100 text-blue-700',
+          'payée': 'bg-green-100 text-green-700',
+          'en_retard': 'bg-red-100 text-red-700',
+          'annulée': 'bg-gray-200 text-gray-500 line-through'
+        } %}
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ status_colors.get(inv.status, 'bg-gray-100 text-gray-600') }}">
+          {{ status_labels.get(inv.status, inv.status) }}
+        </span>
+      </div>
+      <div class="flex items-center gap-2 text-xs text-gray-500">
+        <span>{{ inv.dossier_file_number }}</span>
+        <span>&middot;</span>
+        <span>{{ inv.date.strftime('%d/%m/%Y') if inv.date and inv.date.strftime is defined else '' }}</span>
+      </div>
+    </div>
+
+    {# Total #}
+    <span class="text-sm font-semibold text-gray-900 flex-shrink-0">{{ '%.2f'|format(inv.total / 100) }} $</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-12">
+  <svg class="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
+  <p class="text-gray-400 text-sm">Aucune facture.</p>
+  <a href="{{ url_for('invoices.invoice_new') }}"
+     class="inline-block mt-3 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    Créer une facture
+  </a>
+</div>
+{% endif %}

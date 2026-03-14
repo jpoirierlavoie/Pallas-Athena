@@ -1,0 +1,66 @@
+{# Partial: time entry list rows (rendered standalone for HTMX updates) #}
+{% if time_entries %}
+<div class="flex flex-col gap-2 mb-4">
+  {% set current_date = namespace(val='') %}
+  {% for e in time_entries %}
+    {# Date group header #}
+    {% set entry_date = e.date.strftime('%Y-%m-%d') if e.date and e.date.strftime is defined else '' %}
+    {% if entry_date != current_date.val %}
+      {% set current_date.val = entry_date %}
+      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mt-3 first:mt-0 mb-1">
+        {{ e.date.strftime('%A %d %B %Y') if e.date and e.date.strftime is defined else 'Date inconnue' }}
+      </div>
+    {% endif %}
+
+    <a href="{{ url_for('time_expenses.time_entry_edit', entry_id=e.id) }}"
+       class="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
+      {# Hours badge #}
+      <div class="w-14 h-10 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0">
+        <span class="text-sm font-semibold text-indigo-600">{{ e.hours }}h</span>
+      </div>
+
+      {# Info #}
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-0.5">
+          <span class="text-xs font-medium text-gray-500">{{ e.dossier_file_number }}</span>
+          {% if not e.billable %}
+          <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-gray-200 text-gray-500">Non fact.</span>
+          {% endif %}
+          {% if e.invoiced %}
+          <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-green-100 text-green-700">Facturé</span>
+          {% endif %}
+        </div>
+        <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
+      </div>
+
+      {# Amount #}
+      <div class="text-sm font-medium text-gray-900 flex-shrink-0">
+        {{ '%.2f'|format(e.amount / 100) }} $
+      </div>
+
+      {# Chevron #}
+      <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+    </a>
+  {% endfor %}
+</div>
+
+{# Running totals #}
+<div class="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+  <span class="text-sm font-medium text-gray-700">Total</span>
+  <div class="flex items-center gap-4">
+    <span class="text-sm text-gray-600">{{ total_hours }} h</span>
+    <span class="text-sm font-semibold text-gray-900">{{ '%.2f'|format(total_amount / 100) }} $</span>
+  </div>
+</div>
+{% else %}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+  </svg>
+  <p class="text-gray-500 text-sm mb-4">Aucune entrée de temps pour le moment.</p>
+  <a href="{{ url_for('time_expenses.time_entry_new') }}"
+     class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    Créer une entrée de temps
+  </a>
+</div>
+{% endif %}

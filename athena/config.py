@@ -30,3 +30,15 @@ class Config:
 
     # Request size limits
     MAX_CONTENT_LENGTH: int = 16 * 1024 * 1024  # 16 MB (document uploads)
+
+    # Firm info (displayed on invoices)
+    FIRM_NAME: str = os.environ.get("FIRM_NAME", "")
+    FIRM_STREET: str = os.environ.get("FIRM_STREET", "")
+    FIRM_UNIT: str = os.environ.get("FIRM_UNIT", "")
+    FIRM_CITY: str = os.environ.get("FIRM_CITY", "")
+    FIRM_PROVINCE: str = os.environ.get("FIRM_PROVINCE", "QC")
+    FIRM_POSTAL_CODE: str = os.environ.get("FIRM_POSTAL_CODE", "")
+    FIRM_PHONE: str = os.environ.get("FIRM_PHONE", "")
+    FIRM_EMAIL: str = os.environ.get("FIRM_EMAIL", "")
+    GST_NUMBER: str = os.environ.get("GST_NUMBER", "")
+    QST_NUMBER: str = os.environ.get("QST_NUMBER", "")

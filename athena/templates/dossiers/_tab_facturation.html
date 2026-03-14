@@ -1,0 +1,66 @@
+{# Tab: Facturation — Invoices for this dossier #}
+<div class="space-y-6">
+
+  {# ── Summary stats ──────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Factures</p>
+      <p class="text-lg font-semibold text-gray-900">{{ invoice_summary.count }}</p>
+    </div>
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Total facturé</p>
+      <p class="text-lg font-semibold text-gray-900">{{ '%.2f'|format(invoice_summary.total_invoiced / 100) }} $</p>
+    </div>
+    <div class="p-3 bg-green-50 rounded-lg text-center">
+      <p class="text-xs text-green-600 mb-1">Payé</p>
+      <p class="text-lg font-semibold text-green-700">{{ '%.2f'|format(invoice_summary.total_paid / 100) }} $</p>
+    </div>
+    <div class="p-3 bg-amber-50 rounded-lg text-center">
+      <p class="text-xs text-amber-600 mb-1">Impayé</p>
+      <p class="text-lg font-semibold text-amber-700">{{ '%.2f'|format(invoice_summary.total_outstanding / 100) }} $</p>
+    </div>
+  </div>
+
+  {# ── Invoice list ───────────────────────────────────────────── #}
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-semibold text-gray-900">Factures</h3>
+      <a href="{{ url_for('invoices.invoice_new', dossier_id=dossier.id) }}"
+         class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+        + Nouvelle facture
+      </a>
+    </div>
+
+    {% if invoices %}
+    <div class="flex flex-col gap-2">
+      {% for inv in invoices %}
+      <a href="{{ url_for('invoices.invoice_detail', invoice_id=inv.id) }}"
+         class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+        <div class="w-16 h-8 rounded bg-indigo-50 flex items-center justify-center flex-shrink-0">
+          <span class="text-[10px] font-semibold text-indigo-600">{{ inv.invoice_number }}</span>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5 mb-0.5">
+            <span class="text-xs text-gray-500">{{ inv.date.strftime('%d/%m/%Y') if inv.date and inv.date.strftime is defined else '' }}</span>
+            {% set status_colors = {
+              'brouillon': 'bg-gray-200 text-gray-600',
+              'envoyée': 'bg-blue-100 text-blue-700',
+              'payée': 'bg-green-100 text-green-700',
+              'en_retard': 'bg-red-100 text-red-700',
+              'annulée': 'bg-gray-200 text-gray-500 line-through'
+            } %}
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ status_colors.get(inv.status, 'bg-gray-100 text-gray-600') }}">
+              {{ status_labels.get(inv.status, inv.status) }}
+            </span>
+          </div>
+        </div>
+        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(inv.total / 100) }} $</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm text-center py-4">Aucune facture pour ce dossier.</p>
+    {% endif %}
+  </div>
+
+</div>

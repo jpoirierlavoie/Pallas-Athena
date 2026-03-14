@@ -12,6 +12,20 @@ from flask import (
 )
 
 from auth import login_required
+from models.time_entry import (
+    get_time_summary,
+    list_time_entries,
+)
+from models.expense import (
+    CATEGORY_LABELS as EXPENSE_CATEGORY_LABELS,
+    get_expense_summary,
+    list_expenses,
+)
+from models.invoice import (
+    STATUS_LABELS as INVOICE_STATUS_LABELS,
+    get_invoice_summary,
+    list_invoices,
+)
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -213,13 +227,27 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
     templates = {
         "apercu": "dossiers/_tab_overview.html",
-        "temps": "dossiers/_tab_placeholder.html",
-        "facturation": "dossiers/_tab_placeholder.html",
+        "temps": "dossiers/_tab_temps.html",
+        "facturation": "dossiers/_tab_facturation.html",
         "audiences": "dossiers/_tab_placeholder.html",
         "taches": "dossiers/_tab_placeholder.html",
         "protocole": "dossiers/_tab_placeholder.html",
         "documents": "dossiers/_tab_placeholder.html",
     }
+
+    # Load time/expense data for the temps tab
+    if tab_name == "temps":
+        ctx["time_entries"] = list_time_entries(dossier_id=dossier_id)
+        ctx["expenses"] = list_expenses(dossier_id=dossier_id)
+        ctx["time_summary"] = get_time_summary(dossier_id)
+        ctx["expense_summary"] = get_expense_summary(dossier_id)
+        ctx["category_labels"] = EXPENSE_CATEGORY_LABELS
+
+    # Load invoice data for the facturation tab
+    if tab_name == "facturation":
+        ctx["invoices"] = list_invoices(dossier_id=dossier_id)
+        ctx["invoice_summary"] = get_invoice_summary(dossier_id)
+        ctx["status_labels"] = INVOICE_STATUS_LABELS
 
     template = templates.get(tab_name, "dossiers/_tab_placeholder.html")
     ctx["tab_name"] = tab_name

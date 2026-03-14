@@ -1,0 +1,372 @@
+"""Invoice management routes — list, create, detail, status updates."""
+
+from datetime import datetime, timezone
+
+from flask import (
+    Blueprint,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
+
+from auth import login_required
+from config import Config
+from models.invoice import (
+    STATUS_LABELS,
+    STATUS_TRANSITIONS,
+    VALID_STATUSES,
+    compute_totals,
+    create_invoice,
+    get_invoice_with_items,
+    list_invoices,
+    update_status,
+    void_invoice,
+)
+from models.dossier import get_dossier, list_dossiers
+from models.partie import display_name, get_partie
+from models.time_entry import get_unbilled_time_entries
+from models.expense import get_unbilled_expenses
+
+invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
+
+
+def _is_htmx() -> bool:
+    return request.headers.get("HX-Request") == "true"
+
+
+def _parse_date(value: str) -> datetime | None:
+    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
+    if not value or not value.strip():
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def _parse_cents(value: str) -> int:
+    """Parse a dollar string (e.g., '250.00') into integer cents."""
+    if not value or not value.strip():
+        return 0
+    try:
+        return int(round(float(value.strip().replace(",", ".")) * 100))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _firm_info() -> dict:
+    """Return firm info from config for invoice display."""
+    return {
+        "name": Config.FIRM_NAME,
+        "street": Config.FIRM_STREET,
+        "unit": Config.FIRM_UNIT,
+        "city": Config.FIRM_CITY,
+        "province": Config.FIRM_PROVINCE,
+        "postal_code": Config.FIRM_POSTAL_CODE,
+        "phone": Config.FIRM_PHONE,
+        "email": Config.FIRM_EMAIL,
+        "gst_number": Config.GST_NUMBER,
+        "qst_number": Config.QST_NUMBER,
+    }
+
+
+def _build_billing_address(partie: dict) -> dict:
+    """Snapshot the billing address from a partie record."""
+    name = display_name(partie)
+    # Prefer work address if available, fall back to personal
+    if partie.get("work_address_street"):
+        return {
+            "name": name,
+            "street": partie.get("work_address_street", ""),
+            "unit": partie.get("work_address_unit", ""),
+            "city": partie.get("work_address_city", ""),
+            "province": partie.get("work_address_province", "QC"),
+            "postal_code": partie.get("work_address_postal_code", ""),
+        }
+    return {
+        "name": name,
+        "street": partie.get("address_street", ""),
+        "unit": partie.get("address_unit", ""),
+        "city": partie.get("address_city", ""),
+        "province": partie.get("address_province", "QC"),
+        "postal_code": partie.get("address_postal_code", ""),
+    }
+
+
+def _template_context() -> dict:
+    """Return shared template context for invoice views."""
+    return {
+        "status_labels": STATUS_LABELS,
+        "firm": _firm_info(),
+    }
+
+
+# ── Invoice list ─────────────────────────────────────────────────────────
+
+
+@invoices_bp.route("/")
+@login_required
+def invoice_list() -> str:
+    """Render the invoice list with optional filters."""
+    status_filter = request.args.get("status", "")
+    dossier_id = request.args.get("dossier_id", "").strip()
+    date_from = _parse_date(request.args.get("date_from", ""))
+    date_to = _parse_date(request.args.get("date_to", ""))
+
+    invoices = list_invoices(
+        status_filter=status_filter or None,
+        dossier_id=dossier_id or None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    ctx = _template_context()
+    ctx.update(
+        invoices=invoices,
+        status_filter=status_filter,
+        dossier_id=dossier_id,
+        date_from=request.args.get("date_from", ""),
+        date_to=request.args.get("date_to", ""),
+    )
+
+    if _is_htmx():
+        return render_template("invoices/_invoice_rows.html", **ctx)
+
+    return render_template("invoices/list.html", **ctx)
+
+
+# ── Invoice creation flow ────────────────────────────────────────────────
+
+
+@invoices_bp.route("/new")
+@login_required
+def invoice_new() -> str:
+    """Step 1: Select a dossier, then show unbilled items."""
+    dossier_id = request.args.get("dossier_id", "").strip()
+
+    ctx = _template_context()
+
+    if not dossier_id:
+        # Show dossier selector
+        dossiers = list_dossiers(status_filter="actif")
+        ctx["dossiers"] = dossiers
+        ctx["errors"] = []
+        return render_template("invoices/create.html", **ctx)
+
+    # Load dossier + unbilled items
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        ctx["dossiers"] = list_dossiers(status_filter="actif")
+        ctx["errors"] = ["Dossier introuvable."]
+        return render_template("invoices/create.html", **ctx)
+
+    unbilled_entries = get_unbilled_time_entries(dossier_id)
+    unbilled_expenses = get_unbilled_expenses(dossier_id)
+
+    # Get first client info for billing address
+    client_partie = None
+    billing_address = {"name": "", "street": "", "unit": "", "city": "", "province": "QC", "postal_code": ""}
+    clients = dossier.get("clients", [])
+    if clients:
+        client_partie = get_partie(clients[0].get("id", ""))
+        if client_partie:
+            billing_address = _build_billing_address(client_partie)
+
+    today = datetime.now(timezone.utc)
+
+    ctx.update(
+        dossier=dossier,
+        unbilled_entries=unbilled_entries,
+        unbilled_expenses=unbilled_expenses,
+        billing_address=billing_address,
+        client_name=clients[0].get("name", "") if clients else "",
+        client_id=clients[0].get("id", "") if clients else "",
+        invoice_date=today.strftime("%Y-%m-%d"),
+        errors=[],
+    )
+    return render_template("invoices/create.html", **ctx)
+
+
+@invoices_bp.route("/unbilled/<dossier_id>")
+@login_required
+def unbilled_items(dossier_id: str) -> str:
+    """HTMX endpoint: return unbilled items for a dossier."""
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        return '<p class="text-red-600 text-sm">Dossier introuvable.</p>', 404
+
+    unbilled_entries = get_unbilled_time_entries(dossier_id)
+    unbilled_expenses = get_unbilled_expenses(dossier_id)
+
+    # Get client info
+    clients = dossier.get("clients", [])
+    billing_address = {"name": "", "street": "", "unit": "", "city": "", "province": "QC", "postal_code": ""}
+    if clients:
+        client_partie = get_partie(clients[0].get("id", ""))
+        if client_partie:
+            billing_address = _build_billing_address(client_partie)
+
+    today = datetime.now(timezone.utc)
+
+    ctx = _template_context()
+    ctx.update(
+        dossier=dossier,
+        unbilled_entries=unbilled_entries,
+        unbilled_expenses=unbilled_expenses,
+        billing_address=billing_address,
+        client_name=clients[0].get("name", "") if clients else "",
+        client_id=clients[0].get("id", "") if clients else "",
+        invoice_date=today.strftime("%Y-%m-%d"),
+        errors=[],
+    )
+    return render_template("invoices/_unbilled_items.html", **ctx)
+
+
+@invoices_bp.route("/", methods=["POST"])
+@login_required
+def invoice_create() -> str:
+    """Handle invoice creation form submission."""
+    f = request.form
+    dossier_id = f.get("dossier_id", "").strip()
+
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        ctx = _template_context()
+        ctx["dossiers"] = list_dossiers(status_filter="actif")
+        ctx["errors"] = ["Dossier introuvable."]
+        return render_template("invoices/create.html", **ctx)
+
+    # Collect selected items
+    selected_entry_ids = f.getlist("selected_entries")
+    selected_expense_ids = f.getlist("selected_expenses")
+
+    # Build client info
+    clients = dossier.get("clients", [])
+    client_name = clients[0].get("name", "") if clients else ""
+    client_id = clients[0].get("id", "") if clients else ""
+
+    billing_address = {"name": "", "street": "", "unit": "", "city": "", "province": "QC", "postal_code": ""}
+    if client_id:
+        client_partie = get_partie(client_id)
+        if client_partie:
+            billing_address = _build_billing_address(client_partie)
+
+    data = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "client_id": client_id,
+        "client_name": client_name,
+        "billing_address": billing_address,
+        "date": _parse_date(f.get("invoice_date", "")),
+        "due_date": _parse_date(f.get("due_date", "")),
+        "notes": f.get("notes", "").strip(),
+        "payment_terms": f.get("payment_terms", "").strip(),
+        "retainer_applied": _parse_cents(f.get("retainer_applied", "")),
+        "gst_number": Config.GST_NUMBER,
+        "qst_number": Config.QST_NUMBER,
+    }
+
+    invoice, errors = create_invoice(
+        dossier_id, selected_entry_ids, selected_expense_ids, data
+    )
+
+    if errors:
+        unbilled_entries = get_unbilled_time_entries(dossier_id)
+        unbilled_expenses = get_unbilled_expenses(dossier_id)
+        ctx = _template_context()
+        ctx.update(
+            dossier=dossier,
+            unbilled_entries=unbilled_entries,
+            unbilled_expenses=unbilled_expenses,
+            billing_address=billing_address,
+            client_name=client_name,
+            client_id=client_id,
+            invoice_date=f.get("invoice_date", ""),
+            errors=errors,
+        )
+        return render_template("invoices/create.html", **ctx)
+
+    target = url_for("invoices.invoice_detail", invoice_id=invoice["id"])
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+
+    return redirect(target)
+
+
+# ── Invoice detail ───────────────────────────────────────────────────────
+
+
+@invoices_bp.route("/<invoice_id>")
+@login_required
+def invoice_detail(invoice_id: str) -> str:
+    """Render the invoice detail / print-ready view."""
+    invoice, items = get_invoice_with_items(invoice_id)
+    if not invoice:
+        return redirect(url_for("invoices.invoice_list"))
+
+    # Separate items by type
+    fee_items = [i for i in items if i.get("type") == "fee"]
+    expense_items = [i for i in items if i.get("type") == "expense"]
+
+    # Available status transitions
+    current_status = invoice.get("status", "")
+    transitions = STATUS_TRANSITIONS.get(current_status, ())
+
+    ctx = _template_context()
+    ctx.update(
+        invoice=invoice,
+        fee_items=fee_items,
+        expense_items=expense_items,
+        transitions=transitions,
+    )
+    return render_template("invoices/detail.html", **ctx)
+
+
+# ── Status transitions ──────────────────────────────────────────────────
+
+
+@invoices_bp.route("/<invoice_id>/status", methods=["POST"])
+@login_required
+def invoice_update_status(invoice_id: str) -> str:
+    """Update invoice status."""
+    new_status = request.form.get("status", "").strip()
+    success, error = update_status(invoice_id, new_status)
+
+    target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
+
+    if not success:
+        if _is_htmx():
+            return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
+        return redirect(target)
+
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)
+
+
+@invoices_bp.route("/<invoice_id>/void", methods=["POST"])
+@login_required
+def invoice_void(invoice_id: str) -> str:
+    """Void an invoice and release linked entries/expenses."""
+    success, error = void_invoice(invoice_id)
+
+    target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
+
+    if not success:
+        if _is_htmx():
+            return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
+        return redirect(target)
+
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)

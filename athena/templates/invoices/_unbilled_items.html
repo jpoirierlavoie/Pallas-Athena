@@ -1,0 +1,41 @@
+{# HTMX fragment: unbilled items for a dossier (used in create flow) #}
+<div class="space-y-4">
+  {% if unbilled_entries %}
+  <div>
+    <h3 class="text-sm font-semibold text-gray-900 mb-2">Entrées de temps ({{ unbilled_entries|length }})</h3>
+    <div class="flex flex-col gap-1">
+      {% for e in unbilled_entries %}
+      <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer text-sm">
+        <input type="checkbox" name="selected_entries" value="{{ e.id }}" checked
+               class="w-4 h-4 text-indigo-600 border-gray-300 rounded">
+        <span class="text-gray-500 w-20">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
+        <span class="flex-1 truncate text-gray-900">{{ e.description }}</span>
+        <span class="text-gray-500">{{ e.hours }}h</span>
+        <span class="font-medium text-gray-900 w-24 text-right">{{ '%.2f'|format(e.amount / 100) }} $</span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if unbilled_expenses %}
+  <div>
+    <h3 class="text-sm font-semibold text-gray-900 mb-2">Dépenses ({{ unbilled_expenses|length }})</h3>
+    <div class="flex flex-col gap-1">
+      {% for e in unbilled_expenses %}
+      <label class="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer text-sm">
+        <input type="checkbox" name="selected_expenses" value="{{ e.id }}" checked
+               class="w-4 h-4 text-indigo-600 border-gray-300 rounded">
+        <span class="text-gray-500 w-20">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
+        <span class="flex-1 truncate text-gray-900">{{ e.description }}</span>
+        <span class="font-medium text-gray-900 w-24 text-right">{{ '%.2f'|format(e.amount / 100) }} $</span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if not unbilled_entries and not unbilled_expenses %}
+  <p class="text-gray-400 text-sm text-center py-4">Aucun élément non facturé pour ce dossier.</p>
+  {% endif %}
+</div>
