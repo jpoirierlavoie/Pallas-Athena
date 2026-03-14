@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+{% block title %}{{ client._display_name }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+  {# ── Back + actions ──────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <a href="{{ url_for('clients.client_list') }}"
+       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      Contacts
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('clients.client_edit', client_id=client.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Modifier
+      </a>
+      <button @click="$dispatch('open-confirm-delete-client')"
+              class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50"
+              x-data>
+        Supprimer
+      </button>
+    </div>
+  </div>
+
+  {# ── Name + role header ─────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+    <div class="flex items-start gap-4">
+      <div class="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0">
+        <span class="text-lg font-semibold text-gray-500">
+          {% if client.type == 'organization' %}
+            {{ (client.organization_name or '?')[0]|upper }}
+          {% else %}
+            {{ (client.first_name or '?')[0]|upper }}{{ (client.last_name or '?')[0]|upper }}
+          {% endif %}
+        </span>
+      </div>
+      <div class="flex-1 min-w-0">
+        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ client._display_name }}</h1>
+        {% set badge_colors = {
+          'client': 'bg-indigo-100 text-indigo-700',
+          'avocat_adverse': 'bg-amber-100 text-amber-700',
+          'partie_adverse': 'bg-red-100 text-red-700'
+        } %}
+        <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full {{ badge_colors.get(client.contact_role, 'bg-gray-100 text-gray-600') }}">
+          {{ role_labels.get(client.contact_role, 'Autre') }}
+        </span>
+        {% if client.type == 'organization' and client.contact_person %}
+        <p class="text-sm text-gray-500 mt-1">Contact : {{ client.contact_person }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Quick action buttons #}
+    <div class="flex gap-3 mt-4 pt-4 border-t border-gray-100">
+      {% if client.phone_cell or client.phone_home or client.phone_work %}
+      <a href="tel:{{ client.phone_cell or client.phone_home or client.phone_work }}"
+         class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 0 0 2.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 0 1-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 0 0-1.091-.852H4.5A2.25 2.25 0 0 0 2.25 4.5v2.25Z"/></svg>
+        Appeler
+      </a>
+      {% endif %}
+      {% if client.email or client.email_work %}
+      <a href="mailto:{{ client.email or client.email_work }}"
+         class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"/></svg>
+        Courriel
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    {# ── Personal contact info ─────────────────────────────────── #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées personnelles</h2>
+      <dl class="space-y-2 text-sm">
+        {% if client.email %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Courriel</dt>
+          <dd class="text-gray-900"><a href="mailto:{{ client.email }}" class="text-indigo-600 hover:underline">{{ client.email }}</a></dd>
+        </div>
+        {% endif %}
+        {% if client.phone_cell %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Cellulaire</dt>
+          <dd class="text-gray-900">{{ client.phone_cell }}</dd>
+        </div>
+        {% endif %}
+        {% if client.phone_home %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Domicile</dt>
+          <dd class="text-gray-900">{{ client.phone_home }}</dd>
+        </div>
+        {% endif %}
+        {% if not client.email and not client.phone_cell and not client.phone_home %}
+        <p class="text-gray-400 text-xs">Aucune coordonnée personnelle</p>
+        {% endif %}
+      </dl>
+    </div>
+
+    {# ── Professional contact info ─────────────────────────────── #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées professionnelles</h2>
+      <dl class="space-y-2 text-sm">
+        {% if client.job_title %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Titre</dt>
+          <dd class="text-gray-900">{{ client.job_title }}</dd>
+        </div>
+        {% endif %}
+        {% if client.job_role %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Fonction</dt>
+          <dd class="text-gray-900">{{ client.job_role }}</dd>
+        </div>
+        {% endif %}
+        {% if client.organization %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Organisation</dt>
+          <dd class="text-gray-900">{{ client.organization }}</dd>
+        </div>
+        {% endif %}
+        {% if client.email_work %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Courriel</dt>
+          <dd class="text-gray-900"><a href="mailto:{{ client.email_work }}" class="text-indigo-600 hover:underline">{{ client.email_work }}</a></dd>
+        </div>
+        {% endif %}
+        {% if client.phone_work %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Téléphone</dt>
+          <dd class="text-gray-900">{{ client.phone_work }}</dd>
+        </div>
+        {% endif %}
+        {% if client.fax %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Télécopieur</dt>
+          <dd class="text-gray-900">{{ client.fax }}</dd>
+        </div>
+        {% endif %}
+        {% if not client.job_title and not client.job_role and not client.organization and not client.email_work and not client.phone_work and not client.fax %}
+        <p class="text-gray-400 text-xs">Aucune coordonnée professionnelle</p>
+        {% endif %}
+      </dl>
+    </div>
+
+    {# ── Profile (language, gender, pronouns) ──────────────────── #}
+    {% if client.language or client.gender or client.pronouns %}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Profil</h2>
+      {% set lang_labels = {'fr': 'Français', 'en': 'English', 'es': 'Español'} %}
+      {% set gender_labels = {'M': 'Homme', 'F': 'Femme', 'O': 'Autre', 'N': 'Ne s\'applique pas', 'U': 'Non précisé'} %}
+      <dl class="space-y-2 text-sm">
+        {% if client.language %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Langue</dt>
+          <dd class="text-gray-900">{{ lang_labels.get(client.language, client.language) }}</dd>
+        </div>
+        {% endif %}
+        {% if client.gender %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Genre</dt>
+          <dd class="text-gray-900">{{ gender_labels.get(client.gender, client.gender) }}</dd>
+        </div>
+        {% endif %}
+        {% if client.pronouns %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Pronoms</dt>
+          <dd class="text-gray-900">{{ client.pronouns }}</dd>
+        </div>
+        {% endif %}
+      </dl>
+    </div>
+    {% endif %}
+
+    {# ── Personal address ──────────────────────────────────────── #}
+    {% if client.address_street or client.address_city %}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Adresse personnelle</h2>
+      <address class="text-sm text-gray-700 not-italic leading-relaxed">
+        {% if client.address_street %}{{ client.address_street }}<br>{% endif %}
+        {% if client.address_unit %}{{ client.address_unit }}<br>{% endif %}
+        {% if client.address_city %}{{ client.address_city }}{% endif %}{% if client.address_province %}, {{ client.address_province }}{% endif %}
+        {% if client.address_postal_code %} {{ client.address_postal_code }}{% endif %}
+        {% if client.address_country and client.address_country != 'CA' %}<br>{{ client.address_country }}{% endif %}
+      </address>
+    </div>
+    {% endif %}
+
+    {# ── Work address ──────────────────────────────────────────── #}
+    {% if client.work_address_street or client.work_address_city %}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Adresse professionnelle</h2>
+      <address class="text-sm text-gray-700 not-italic leading-relaxed">
+        {% if client.work_address_street %}{{ client.work_address_street }}<br>{% endif %}
+        {% if client.work_address_unit %}{{ client.work_address_unit }}<br>{% endif %}
+        {% if client.work_address_city %}{{ client.work_address_city }}{% endif %}{% if client.work_address_province %}, {{ client.work_address_province }}{% endif %}
+        {% if client.work_address_postal_code %} {{ client.work_address_postal_code }}{% endif %}
+        {% if client.work_address_country and client.work_address_country != 'CA' %}<br>{{ client.work_address_country }}{% endif %}
+      </address>
+    </div>
+    {% endif %}
+
+    {# ── Legal identifiers ─────────────────────────────────────── #}
+    {% if client.bar_number or client.company_neq %}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Identifiants</h2>
+      <dl class="space-y-2 text-sm">
+        {% if client.bar_number %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">N° du Barreau</dt>
+          <dd class="text-gray-900">{{ client.bar_number }}</dd>
+        </div>
+        {% endif %}
+        {% if client.company_neq %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">NEQ</dt>
+          <dd class="text-gray-900">{{ client.company_neq }}</dd>
+        </div>
+        {% endif %}
+      </dl>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Notes ───────────────────────────────────────────────────── #}
+  {% if client.notes %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Notes</h2>
+    <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ client.notes }}</p>
+  </div>
+  {% endif %}
+
+  {# ── Compliance (only for clients) ───────────────────────────── #}
+  {% if client.contact_role == 'client' %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-4">Conformité</h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {# Identity verification #}
+      <div>
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Vérification d'identité</h3>
+        {% set id_badge = {
+          'non_vérifié': 'bg-orange-100 text-orange-700',
+          'vérifié': 'bg-green-100 text-green-700',
+          'exempté': 'bg-blue-100 text-blue-700'
+        } %}
+        {% set id_label = {
+          'non_vérifié': 'Non vérifié',
+          'vérifié': 'Vérifié',
+          'exempté': 'Exempté'
+        } %}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ id_badge.get(client.identity_verified, 'bg-gray-100 text-gray-600') }}">
+          {{ id_label.get(client.identity_verified, client.identity_verified) }}
+        </span>
+        {% if client.identity_verified_date %}
+        <p class="text-xs text-gray-500 mt-1">{{ client.identity_verified_date.strftime('%d %B %Y') if client.identity_verified_date }}</p>
+        {% endif %}
+        {% if client.identity_verified_notes %}
+        <p class="text-xs text-gray-600 mt-1">{{ client.identity_verified_notes }}</p>
+        {% endif %}
+      </div>
+
+      {# Conflict check #}
+      <div>
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Conflit d'intérêts</h3>
+        {% set cc_badge = {
+          'non_vérifié': 'bg-orange-100 text-orange-700',
+          'vérifié': 'bg-green-100 text-green-700',
+          'conflit_détecté': 'bg-red-100 text-red-700'
+        } %}
+        {% set cc_label = {
+          'non_vérifié': 'Non vérifié',
+          'vérifié': 'Vérifié',
+          'conflit_détecté': 'Conflit détecté'
+        } %}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ cc_badge.get(client.conflict_check, 'bg-gray-100 text-gray-600') }}">
+          {{ cc_label.get(client.conflict_check, client.conflict_check) }}
+        </span>
+        {% if client.conflict_check_date %}
+        <p class="text-xs text-gray-500 mt-1">{{ client.conflict_check_date.strftime('%d %B %Y') if client.conflict_check_date }}</p>
+        {% endif %}
+        {% if client.conflict_check_notes %}
+        <p class="text-xs text-gray-600 mt-1">{{ client.conflict_check_notes }}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Associated dossiers (placeholder for Phase 3) ──────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Dossiers associés</h2>
+    <p class="text-gray-400 text-xs">Les dossiers liés apparaîtront ici.</p>
+  </div>
+
+</div>
+
+{# ── Delete confirmation dialog ────────────────────────────────── #}
+<div x-data="{ open: false }"
+     x-show="open"
+     @open-confirm-delete-client.window="open = true"
+     @keydown.escape.window="open = false"
+     x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  <div @click.outside="open = false"
+       class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+    <div class="p-6">
+      <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce contact ?</h3>
+      <p class="text-sm text-gray-600 mb-6">Cette action est irréversible. Toutes les données de ce contact seront supprimées.</p>
+      <div class="flex gap-3 justify-end">
+        <button @click="open = false"
+                class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+          Annuler
+        </button>
+        <form method="post" action="{{ url_for('clients.client_delete', client_id=client.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit"
+                  class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+            Supprimer
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

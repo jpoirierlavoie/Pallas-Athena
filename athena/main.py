@@ -44,9 +44,11 @@ def create_app() -> Flask:
     # ── Blueprints ───────────────────────────────────────────────────
     from routes.auth_routes import auth_bp
     from routes.dashboard import dashboard_bp
+    from routes.clients import clients_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
+    app.register_blueprint(clients_bp)
 
     return app
 
