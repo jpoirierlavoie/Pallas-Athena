@@ -1,0 +1,119 @@
+{# HTMX fragment: upcoming + past hearing list #}
+
+{% set type_colors = {
+  'audience': 'bg-indigo-100 text-indigo-700',
+  'conférence_de_gestion': 'bg-blue-100 text-blue-700',
+  'conférence_de_règlement': 'bg-teal-100 text-teal-700',
+  'interrogatoire': 'bg-amber-100 text-amber-700',
+  'médiation': 'bg-green-100 text-green-700',
+  'procès': 'bg-red-100 text-red-700',
+  'appel': 'bg-purple-100 text-purple-700',
+  'autre': 'bg-gray-100 text-gray-600'
+} %}
+
+{% set status_colors = {
+  'confirmée': 'bg-green-100 text-green-700',
+  'à_confirmer': 'bg-amber-100 text-amber-700',
+  'reportée': 'bg-orange-100 text-orange-700',
+  'annulée': 'bg-gray-200 text-gray-500 line-through',
+  'terminée': 'bg-gray-200 text-gray-600'
+} %}
+
+{% macro hearing_card(h, is_past=false) %}
+<a href="{{ url_for('hearings.hearing_detail', hearing_id=h.id) }}"
+   class="block p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors {{ 'opacity-60' if is_past }}">
+  <div class="flex items-start gap-3">
+    {# Date badge #}
+    <div class="w-12 h-12 rounded-lg bg-gray-50 flex flex-col items-center justify-center flex-shrink-0 {{ 'border-l-4 border-indigo-500' if not is_past else 'border-l-4 border-gray-300' }}">
+      {% if h.start_datetime and h.start_datetime.strftime is defined %}
+      <span class="text-[10px] font-medium text-gray-500 uppercase leading-none">
+        {% set day_names = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'] %}
+        {{ day_names[h.start_datetime.weekday()] }}
+      </span>
+      <span class="text-lg font-bold text-gray-900 leading-none">{{ h.start_datetime.strftime('%d') }}</span>
+      {% endif %}
+    </div>
+
+    <div class="flex-1 min-w-0">
+      {# Title row #}
+      <div class="flex items-center gap-1.5 mb-1">
+        <h3 class="text-sm font-semibold text-gray-900 truncate">{{ h.title }}</h3>
+      </div>
+
+      {# Badges row #}
+      <div class="flex flex-wrap items-center gap-1.5 mb-1.5">
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ type_colors.get(h.hearing_type, 'bg-gray-100 text-gray-600') }}">
+          {{ hearing_type_labels.get(h.hearing_type, h.hearing_type) }}
+        </span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ status_colors.get(h.status, 'bg-gray-100 text-gray-600') }}">
+          {{ status_labels.get(h.status, h.status) }}
+        </span>
+      </div>
+
+      {# Details #}
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+        {% if h.start_datetime and h.start_datetime.strftime is defined %}
+        <span>
+          {% if h.all_day %}
+            Toute la journée
+          {% else %}
+            {{ h.start_datetime.strftime('%H:%M') }}{% if h.end_datetime and h.end_datetime.strftime is defined %} – {{ h.end_datetime.strftime('%H:%M') }}{% endif %}
+          {% endif %}
+        </span>
+        {% endif %}
+        {% if h.dossier_file_number %}
+        <span class="font-medium text-indigo-600">{{ h.dossier_file_number }}</span>
+        {% endif %}
+        {% if h.location %}
+        <span class="truncate max-w-[200px]">{{ h.location }}</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {# Month badge on right #}
+    {% if h.start_datetime and h.start_datetime.strftime is defined %}
+    <div class="text-xs text-gray-400 flex-shrink-0 text-right">
+      {% set month_names = ['', 'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juill.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'] %}
+      {{ month_names[h.start_datetime.month] }}
+    </div>
+    {% endif %}
+  </div>
+</a>
+{% endmacro %}
+
+{# ── Upcoming hearings ───────────────────────────────────────── #}
+{% if upcoming %}
+<div class="mb-6">
+  <h2 class="text-sm font-semibold text-gray-900 mb-3">À venir</h2>
+  <div class="flex flex-col gap-2">
+    {% for h in upcoming %}
+    {{ hearing_card(h, is_past=false) }}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Past hearings ───────────────────────────────────────────── #}
+{% if past %}
+<div x-data="{ showPast: false }">
+  <button @click="showPast = !showPast"
+          class="flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-700 mb-3">
+    <svg :class="showPast ? 'rotate-90' : ''" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+    Passées ({{ past|length }})
+  </button>
+  <div x-show="showPast" x-cloak class="flex flex-col gap-2">
+    {% for h in past %}
+    {{ hearing_card(h, is_past=true) }}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Empty state ─────────────────────────────────────────────── #}
+{% if not upcoming and not past %}
+<div class="text-center py-12">
+  <svg class="w-12 h-12 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/></svg>
+  <p class="text-gray-500 text-sm mb-1">Aucune audience pour le moment.</p>
+  <p class="text-gray-400 text-xs">Ajoutez votre première audience pour commencer.</p>
+</div>
+{% endif %}

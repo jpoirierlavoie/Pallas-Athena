@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier l\'audience' if hearing and hearing.id else 'Nouvelle audience' }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6"
+     x-data="{
+       dossierId: '{{ (hearing.dossier_id or '') if hearing else '' }}',
+       dossierDisplay: '{{ (hearing.dossier_file_number or '') + (' — ' + hearing.dossier_title if hearing and hearing.dossier_title else '') if hearing else '' }}',
+       searchOpen: false,
+       hearingType: '{{ (hearing.hearing_type or 'audience') if hearing else 'audience' }}',
+       allDay: {{ 'true' if hearing and hearing.all_day else 'false' }},
+       titleSuggestions: {{ hearing_title_suggestions | tojson }},
+       suggestTitle() {
+         let el = this.$refs.titleInput;
+         if (!el.value || el.value === this.titleSuggestions[this.oldType]) {
+           el.value = this.titleSuggestions[this.hearingType] || '';
+         }
+         this.oldType = this.hearingType;
+       },
+       oldType: '{{ (hearing.hearing_type or 'audience') if hearing else 'audience' }}'
+     }">
+
+  {# ── Back ──────────────────────────────────────────────────── #}
+  <a href="{{ url_for('hearings.hearing_list') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    Agenda
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">
+    {{ 'Modifier l\'audience' if hearing and hearing.id else 'Nouvelle audience' }}
+  </h1>
+
+  {# ── Errors ────────────────────────────────────────────────── #}
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Form ──────────────────────────────────────────────────── #}
+  <form method="post"
+        action="{{ url_for('hearings.hearing_update', hearing_id=hearing.id) if hearing and hearing.id else url_for('hearings.hearing_create') }}"
+        class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# Dossier selector #}
+    <div class="relative">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier *</label>
+      <input type="hidden" name="dossier_id" :value="dossierId">
+      <input type="text"
+             x-model="dossierDisplay"
+             @focus="searchOpen = true"
+             @input="searchOpen = true"
+             hx-get="{{ url_for('hearings.dossier_search') }}"
+             hx-trigger="input changed delay:300ms"
+             hx-target="#dossier-results"
+             hx-vals='js:{"q": document.querySelector("[x-model=dossierDisplay]").value}'
+             placeholder="Rechercher un dossier…"
+             autocomplete="off"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <div id="dossier-results"
+           x-show="searchOpen"
+           @click.outside="searchOpen = false"
+           x-cloak
+           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-48 overflow-y-auto"
+           @click="
+             let li = $event.target.closest('li');
+             if (li) {
+               dossierId = li.dataset.dossierId;
+               dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle;
+               searchOpen = false;
+             }
+           ">
+      </div>
+    </div>
+
+    {# Hearing type #}
+    <div>
+      <label for="hearing_type" class="block text-sm font-medium text-gray-700 mb-1">Type d'audience *</label>
+      <select id="hearing_type" name="hearing_type"
+              x-model="hearingType"
+              @change="suggestTitle()"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for key in valid_hearing_types %}
+        <option value="{{ key }}" {{ 'selected' if hearing and hearing.hearing_type == key }}>
+          {{ hearing_type_labels.get(key, key) }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Title #}
+    <div>
+      <label for="title" class="block text-sm font-medium text-gray-700 mb-1">Titre *</label>
+      <input type="text" id="title" name="title" x-ref="titleInput"
+             value="{{ hearing.title if hearing and hearing.title else '' }}"
+             placeholder="Ex: Audience sur requête en irrecevabilité"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+    </div>
+
+    {# All-day toggle #}
+    <div class="flex items-center gap-3">
+      <input type="checkbox" id="all_day" name="all_day"
+             x-model="allDay"
+             {{ 'checked' if hearing and hearing.all_day }}
+             class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+      <label for="all_day" class="text-sm font-medium text-gray-700">Toute la journée</label>
+    </div>
+
+    {# Date + Time row #}
+    <div class="grid grid-cols-1 gap-4" :class="allDay ? 'md:grid-cols-2' : 'md:grid-cols-3'">
+      <div>
+        <label for="start_date" class="block text-sm font-medium text-gray-700 mb-1">Date *</label>
+        <input type="date" id="start_date" name="start_date"
+               value="{{ hearing.start_datetime.strftime('%Y-%m-%d') if hearing and hearing.start_datetime and hearing.start_datetime.strftime is defined else '' }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
+      <div x-show="!allDay" x-cloak>
+        <label for="start_time" class="block text-sm font-medium text-gray-700 mb-1">Heure de début</label>
+        <input type="time" id="start_time" name="start_time"
+               value="{{ hearing.start_datetime.strftime('%H:%M') if hearing and hearing.start_datetime and hearing.start_datetime.strftime is defined and not hearing.all_day else '09:00' }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
+      <div x-show="!allDay" x-cloak>
+        <label for="end_time" class="block text-sm font-medium text-gray-700 mb-1">Heure de fin</label>
+        <input type="time" id="end_time" name="end_time"
+               value="{{ hearing.end_datetime.strftime('%H:%M') if hearing and hearing.end_datetime and hearing.end_datetime.strftime is defined and not hearing.all_day else '10:00' }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
+      <div x-show="allDay" x-cloak>
+        <label for="end_date" class="block text-sm font-medium text-gray-700 mb-1">Date de fin</label>
+        <input type="date" id="end_date" name="end_date"
+               value="{{ hearing.end_datetime.strftime('%Y-%m-%d') if hearing and hearing.end_datetime and hearing.end_datetime.strftime is defined and hearing.all_day else '' }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
+    </div>
+
+    {# Location #}
+    <div>
+      <label for="location" class="block text-sm font-medium text-gray-700 mb-1">Lieu</label>
+      {# Quick-select courthouse chips #}
+      <div class="flex flex-wrap gap-1.5 mb-2">
+        {% for loc in quick_locations %}
+        <button type="button"
+                @click="$refs.locationInput.value = '{{ loc }}'"
+                class="px-2.5 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors truncate max-w-[200px]">
+          {{ loc.split(',')[0] }}
+        </button>
+        {% endfor %}
+      </div>
+      <input type="text" id="location" name="location" x-ref="locationInput"
+             value="{{ hearing.location if hearing and hearing.location else '' }}"
+             placeholder="Ex: Palais de justice de Montréal, salle 2.14"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+    </div>
+
+    {# Court + Judge row #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <label for="court" class="block text-sm font-medium text-gray-700 mb-1">Tribunal</label>
+        <select id="court" name="court"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          <option value="">— Sélectionner —</option>
+          {% for c in valid_courts %}
+          <option value="{{ c }}" {{ 'selected' if hearing and hearing.court == c }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="judge" class="block text-sm font-medium text-gray-700 mb-1">Juge</label>
+        <input type="text" id="judge" name="judge"
+               value="{{ hearing.judge if hearing and hearing.judge else '' }}"
+               placeholder="L'honorable…"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      </div>
+    </div>
+
+    {# Reminder #}
+    <div>
+      <label for="reminder_minutes" class="block text-sm font-medium text-gray-700 mb-1">Rappel</label>
+      <select id="reminder_minutes" name="reminder_minutes"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for val in valid_reminder_minutes %}
+        <option value="{{ val }}" {{ 'selected' if hearing and hearing.reminder_minutes == val else ('selected' if not hearing and val == 1440) }}>
+          {{ reminder_labels.get(val, val) }} avant
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Status #}
+    <div>
+      <label for="status" class="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+      <select id="status" name="status"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for key in valid_statuses %}
+        <option value="{{ key }}" {{ 'selected' if hearing and hearing.status == key else ('selected' if not hearing and key == 'à_confirmer') }}>
+          {{ status_labels.get(key, key) }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Notes #}
+    <div>
+      <label for="notes" class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+      <textarea id="notes" name="notes" rows="3"
+                placeholder="Notes supplémentaires…"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ hearing.notes if hearing and hearing.notes else '' }}</textarea>
+    </div>
+
+    {# Actions #}
+    <div class="flex gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        {{ 'Enregistrer' if hearing and hearing.id else 'Créer' }}
+      </button>
+      <a href="{{ url_for('hearings.hearing_list') }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+    </div>
+  </form>
+
+  {# ── Delete button (edit mode only) ─────────────────────── #}
+  {% if hearing and hearing.id %}
+  <div x-data="{ deleteOpen: false }" class="mt-6 pt-6 border-t border-gray-200">
+    <button @click="deleteOpen = true"
+            class="text-sm text-red-600 hover:text-red-700 font-medium">
+      Supprimer cette audience
+    </button>
+    <div x-show="deleteOpen" @keydown.escape.window="deleteOpen = false" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div @click.outside="deleteOpen = false"
+           class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+        <div class="p-6">
+          <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette audience ?</h3>
+          <p class="text-sm text-gray-600 mb-6">Cette action est irréversible.</p>
+          <div class="flex gap-3 justify-end">
+            <button @click="deleteOpen = false"
+                    class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+              Annuler
+            </button>
+            <form method="post" action="{{ url_for('hearings.hearing_delete', hearing_id=hearing.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+                Supprimer
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

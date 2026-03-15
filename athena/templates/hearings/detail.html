@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}{{ hearing.title }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6"
+     x-data="{ deleteOpen: false }">
+
+  {# ── Back + actions ──────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <a href="{{ url_for('hearings.hearing_list') }}"
+       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      Agenda
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('hearings.hearing_edit', hearing_id=hearing.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Modifier
+      </a>
+      <button @click="deleteOpen = true"
+              class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+        Supprimer
+      </button>
+    </div>
+  </div>
+
+  {# ── Header card ─────────────────────────────────────────────── #}
+  {% set type_colors = {
+    'audience': 'bg-indigo-50 text-indigo-600',
+    'conférence_de_gestion': 'bg-blue-50 text-blue-600',
+    'conférence_de_règlement': 'bg-teal-50 text-teal-600',
+    'interrogatoire': 'bg-amber-50 text-amber-600',
+    'médiation': 'bg-green-50 text-green-600',
+    'procès': 'bg-red-50 text-red-600',
+    'appel': 'bg-purple-50 text-purple-600',
+    'autre': 'bg-gray-50 text-gray-600'
+  } %}
+  {% set status_colors = {
+    'confirmée': 'bg-green-100 text-green-700',
+    'à_confirmer': 'bg-amber-100 text-amber-700',
+    'reportée': 'bg-orange-100 text-orange-700',
+    'annulée': 'bg-gray-200 text-gray-500',
+    'terminée': 'bg-gray-200 text-gray-600'
+  } %}
+
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+    <div class="flex items-start gap-4">
+      <div class="w-14 h-14 rounded-xl {{ type_colors.get(hearing.hearing_type, 'bg-gray-50 text-gray-600').split(' ')[0] }} flex items-center justify-center flex-shrink-0">
+        <svg class="w-7 h-7 {{ type_colors.get(hearing.hearing_type, 'bg-gray-50 text-gray-600').split(' ')[1] }}" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex flex-wrap items-center gap-2 mb-1">
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ type_colors.get(hearing.hearing_type, 'bg-gray-100 text-gray-600') }}">
+            {{ hearing_type_labels.get(hearing.hearing_type, hearing.hearing_type) }}
+          </span>
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ status_colors.get(hearing.status, 'bg-gray-100 text-gray-600') }}">
+            {{ status_labels.get(hearing.status, hearing.status) }}
+          </span>
+        </div>
+        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ hearing.title }}</h1>
+        {% if hearing.dossier_file_number %}
+        <a href="{{ url_for('dossiers.dossier_detail', dossier_id=hearing.dossier_id) }}"
+           class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">
+          {{ hearing.dossier_file_number }} — {{ hearing.dossier_title }}
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Info cards ───────────────────────────────────────────────── #}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+    {# Date & time #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Date et heure</h2>
+      <dl class="space-y-2 text-sm">
+        {% if hearing.start_datetime and hearing.start_datetime.strftime is defined %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Date</dt>
+          <dd class="text-gray-900 font-medium">
+            {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
+            {{ hearing.start_datetime.strftime('%d') }} {{ month_names[hearing.start_datetime.month] }} {{ hearing.start_datetime.strftime('%Y') }}
+          </dd>
+        </div>
+        {% if hearing.all_day %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Horaire</dt>
+          <dd class="text-gray-900">Toute la journée</dd>
+        </div>
+        {% else %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Début</dt>
+          <dd class="text-gray-900">{{ hearing.start_datetime.strftime('%H:%M') }}</dd>
+        </div>
+        {% if hearing.end_datetime and hearing.end_datetime.strftime is defined %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Fin</dt>
+          <dd class="text-gray-900">{{ hearing.end_datetime.strftime('%H:%M') }}</dd>
+        </div>
+        {% endif %}
+        {% endif %}
+        {% endif %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Rappel</dt>
+          <dd class="text-gray-900">{{ reminder_labels.get(hearing.reminder_minutes, hearing.reminder_minutes) }} avant</dd>
+        </div>
+      </dl>
+    </div>
+
+    {# Location & court #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">Lieu et tribunal</h2>
+      <dl class="space-y-2 text-sm">
+        {% if hearing.location %}
+        <div>
+          <dt class="text-gray-500 mb-0.5">Lieu</dt>
+          <dd class="text-gray-900">{{ hearing.location }}</dd>
+        </div>
+        {% endif %}
+        {% if hearing.court %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Tribunal</dt>
+          <dd class="text-gray-900">{{ hearing.court }}</dd>
+        </div>
+        {% endif %}
+        {% if hearing.judge %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Juge</dt>
+          <dd class="text-gray-900">{{ hearing.judge }}</dd>
+        </div>
+        {% endif %}
+        {% if not hearing.location and not hearing.court and not hearing.judge %}
+        <p class="text-gray-400 text-xs">Aucune information de lieu</p>
+        {% endif %}
+      </dl>
+    </div>
+  </div>
+
+  {# ── Notes ─────────────────────────────────────────────────── #}
+  {% if hearing.notes %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Notes</h2>
+    <p class="text-sm text-gray-700 whitespace-pre-line">{{ hearing.notes }}</p>
+  </div>
+  {% endif %}
+
+  {# ── Delete confirmation dialog ──────────────────────────────── #}
+  <div x-show="deleteOpen"
+       @keydown.escape.window="deleteOpen = false"
+       x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div @click.outside="deleteOpen = false"
+         class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+      <div class="p-6">
+        <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette audience ?</h3>
+        <p class="text-sm text-gray-600 mb-6">Cette action est irréversible.</p>
+        <div class="flex gap-3 justify-end">
+          <button @click="deleteOpen = false"
+                  class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+            Annuler
+          </button>
+          <form method="post" action="{{ url_for('hearings.hearing_delete', hearing_id=hearing.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit"
+                    class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+              Supprimer
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Agenda — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+  {# ── Header ──────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-gray-900">Agenda</h1>
+    <a href="{{ url_for('hearings.hearing_new') }}"
+       class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      Nouvelle audience
+    </a>
+  </div>
+
+  {# ── View toggle + filters ─────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    {# View tabs #}
+    <div class="flex border border-gray-300 rounded-lg overflow-hidden">
+      <a href="{{ url_for('hearings.hearing_list', view='list', type=hearing_type_filter, status=status_filter) }}"
+         class="px-3 py-1.5 text-sm font-medium {{ 'bg-gray-900 text-white' if view == 'list' else 'bg-white text-gray-700 hover:bg-gray-50' }}">
+        Liste
+      </a>
+      <a href="{{ url_for('hearings.hearing_list', view='month', type=hearing_type_filter, status=status_filter) }}"
+         class="px-3 py-1.5 text-sm font-medium {{ 'bg-gray-900 text-white' if view == 'month' else 'bg-white text-gray-700 hover:bg-gray-50' }}">
+        Mois
+      </a>
+    </div>
+
+    {# Type filter #}
+    <select name="type"
+            hx-get="{{ url_for('hearings.hearing_list') }}"
+            hx-trigger="change"
+            hx-target="#hearing-content"
+            hx-include="[name='status'], [name='view'], [name='month']"
+            class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <option value="" {{ 'selected' if not hearing_type_filter }}>Tous les types</option>
+      {% for key in valid_hearing_types %}
+      <option value="{{ key }}" {{ 'selected' if hearing_type_filter == key }}>{{ hearing_type_labels.get(key, key) }}</option>
+      {% endfor %}
+    </select>
+
+    {# Status filter #}
+    <select name="status"
+            hx-get="{{ url_for('hearings.hearing_list') }}"
+            hx-trigger="change"
+            hx-target="#hearing-content"
+            hx-include="[name='type'], [name='view'], [name='month']"
+            class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <option value="" {{ 'selected' if not status_filter }}>Tous les statuts</option>
+      {% for key in valid_statuses %}
+      <option value="{{ key }}" {{ 'selected' if status_filter == key }}>{{ status_labels.get(key, key) }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="view" value="{{ view }}">
+    {% if view == 'month' %}<input type="hidden" name="month" value="{{ current_month }}">{% endif %}
+  </div>
+
+  {# ── Content area ──────────────────────────────────────────── #}
+  <div id="hearing-content">
+    {% if view == 'month' %}
+      {% include "hearings/_month_grid.html" %}
+    {% else %}
+      {% include "hearings/_hearing_rows.html" %}
+    {% endif %}
+  </div>
+
+  {# ── Mobile FAB ────────────────────────────────────────────── #}
+  <div class="md:hidden fixed bottom-20 right-4 z-30">
+    <a href="{{ url_for('hearings.hearing_new') }}"
+       class="w-14 h-14 flex items-center justify-center text-white bg-indigo-600 rounded-full shadow-lg">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+    </a>
+  </div>
+</div>
+{% endblock %}

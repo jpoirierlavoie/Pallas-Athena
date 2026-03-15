@@ -26,6 +26,12 @@ from models.invoice import (
     get_invoice_summary,
     list_invoices,
 )
+from models.hearing import (
+    HEARING_TYPE_LABELS,
+    STATUS_LABELS as HEARING_STATUS_LABELS,
+    get_hearing_summary,
+    list_hearings,
+)
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -229,7 +235,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "apercu": "dossiers/_tab_overview.html",
         "temps": "dossiers/_tab_temps.html",
         "facturation": "dossiers/_tab_facturation.html",
-        "audiences": "dossiers/_tab_placeholder.html",
+        "audiences": "dossiers/_tab_audiences.html",
         "taches": "dossiers/_tab_placeholder.html",
         "protocole": "dossiers/_tab_placeholder.html",
         "documents": "dossiers/_tab_placeholder.html",
@@ -242,6 +248,13 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["time_summary"] = get_time_summary(dossier_id)
         ctx["expense_summary"] = get_expense_summary(dossier_id)
         ctx["category_labels"] = EXPENSE_CATEGORY_LABELS
+
+    # Load hearing data for the audiences tab
+    if tab_name == "audiences":
+        ctx["hearings"] = list_hearings(dossier_id=dossier_id)
+        ctx["hearing_summary"] = get_hearing_summary(dossier_id)
+        ctx["hearing_type_labels"] = HEARING_TYPE_LABELS
+        ctx["status_labels"] = HEARING_STATUS_LABELS
 
     # Load invoice data for the facturation tab
     if tab_name == "facturation":

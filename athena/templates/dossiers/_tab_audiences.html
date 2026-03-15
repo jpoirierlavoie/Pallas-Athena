@@ -1,0 +1,88 @@
+{# Tab: Audiences — Hearings for this dossier #}
+<div class="space-y-6">
+
+  {# ── Summary stats ──────────────────────────────────────────── #}
+  <div class="grid grid-cols-3 gap-3">
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Total</p>
+      <p class="text-lg font-semibold text-gray-900">{{ hearing_summary.total }}</p>
+    </div>
+    <div class="p-3 bg-indigo-50 rounded-lg text-center">
+      <p class="text-xs text-indigo-600 mb-1">À venir</p>
+      <p class="text-lg font-semibold text-indigo-700">{{ hearing_summary.upcoming }}</p>
+    </div>
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Passées</p>
+      <p class="text-lg font-semibold text-gray-900">{{ hearing_summary.past }}</p>
+    </div>
+  </div>
+
+  {# ── Hearing list ─────────────────────────────────────────── #}
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-semibold text-gray-900">Audiences</h3>
+      <a href="{{ url_for('hearings.hearing_new', dossier_id=dossier.id) }}"
+         class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+        + Nouvelle audience
+      </a>
+    </div>
+
+    {% set type_colors = {
+      'audience': 'bg-indigo-100 text-indigo-700',
+      'conférence_de_gestion': 'bg-blue-100 text-blue-700',
+      'conférence_de_règlement': 'bg-teal-100 text-teal-700',
+      'interrogatoire': 'bg-amber-100 text-amber-700',
+      'médiation': 'bg-green-100 text-green-700',
+      'procès': 'bg-red-100 text-red-700',
+      'appel': 'bg-purple-100 text-purple-700',
+      'autre': 'bg-gray-100 text-gray-600'
+    } %}
+    {% set status_colors = {
+      'confirmée': 'bg-green-100 text-green-700',
+      'à_confirmer': 'bg-amber-100 text-amber-700',
+      'reportée': 'bg-orange-100 text-orange-700',
+      'annulée': 'bg-gray-200 text-gray-500 line-through',
+      'terminée': 'bg-gray-200 text-gray-600'
+    } %}
+
+    {% if hearings %}
+    <div class="flex flex-col gap-2">
+      {% for h in hearings %}
+      <a href="{{ url_for('hearings.hearing_detail', hearing_id=h.id) }}"
+         class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors {{ 'opacity-60' if h.status in ('annulée', 'terminée') }}">
+        {# Date badge #}
+        <div class="w-10 h-10 rounded-lg bg-gray-50 flex flex-col items-center justify-center flex-shrink-0">
+          {% if h.start_datetime and h.start_datetime.strftime is defined %}
+          <span class="text-[10px] text-gray-500 leading-none">
+            {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
+            {{ month_short[h.start_datetime.month] }}
+          </span>
+          <span class="text-sm font-bold text-gray-900 leading-none">{{ h.start_datetime.strftime('%d') }}</span>
+          {% endif %}
+        </div>
+
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5 mb-0.5">
+            <span class="text-sm font-medium text-gray-900 truncate">{{ h.title }}</span>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ type_colors.get(h.hearing_type, 'bg-gray-100 text-gray-600') }}">
+              {{ hearing_type_labels.get(h.hearing_type, h.hearing_type) }}
+            </span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ status_colors.get(h.status, 'bg-gray-100 text-gray-600') }}">
+              {{ status_labels.get(h.status, h.status) }}
+            </span>
+            {% if not h.all_day and h.start_datetime and h.start_datetime.strftime is defined %}
+            <span class="text-xs text-gray-500">{{ h.start_datetime.strftime('%H:%M') }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm text-center py-4">Aucune audience pour ce dossier.</p>
+    {% endif %}
+  </div>
+
+</div>

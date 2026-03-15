@@ -1,0 +1,100 @@
+{# HTMX fragment: Monthly calendar grid view #}
+
+{% set type_dot_colors = {
+  'audience': 'bg-indigo-500',
+  'conférence_de_gestion': 'bg-blue-500',
+  'conférence_de_règlement': 'bg-teal-500',
+  'interrogatoire': 'bg-amber-500',
+  'médiation': 'bg-green-500',
+  'procès': 'bg-red-500',
+  'appel': 'bg-purple-500',
+  'autre': 'bg-gray-400'
+} %}
+
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+  {# ── Month navigation ────────────────────────────────────── #}
+  <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+    <a href="{{ url_for('hearings.hearing_list', view='month', month=prev_month, type=hearing_type_filter, status=status_filter) }}"
+       hx-get="{{ url_for('hearings.hearing_list', view='month', month=prev_month, type=hearing_type_filter, status=status_filter) }}"
+       hx-target="#hearing-content"
+       hx-swap="innerHTML"
+       class="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    </a>
+    <h2 class="text-sm font-semibold text-gray-900 capitalize">{{ month_label }}</h2>
+    <a href="{{ url_for('hearings.hearing_list', view='month', month=next_month, type=hearing_type_filter, status=status_filter) }}"
+       hx-get="{{ url_for('hearings.hearing_list', view='month', month=next_month, type=hearing_type_filter, status=status_filter) }}"
+       hx-target="#hearing-content"
+       hx-swap="innerHTML"
+       class="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+    </a>
+  </div>
+
+  {# ── Day-of-week headers ─────────────────────────────────── #}
+  <div class="grid grid-cols-7 text-center text-xs font-medium text-gray-500 py-2 border-b border-gray-100">
+    <span>Lun</span><span>Mar</span><span>Mer</span><span>Jeu</span><span>Ven</span><span>Sam</span><span>Dim</span>
+  </div>
+
+  {# ── Calendar grid ────────────────────────────────────────── #}
+  <div class="divide-y divide-gray-100"
+       x-data="{ selectedDay: 0 }">
+    {% for week in month_days %}
+    <div class="grid grid-cols-7">
+      {% for day in week %}
+      {% if day == 0 %}
+      <div class="min-h-[3rem] p-1 bg-gray-50/50"></div>
+      {% else %}
+      <button @click="selectedDay = selectedDay === {{ day }} ? 0 : {{ day }}"
+              class="min-h-[3rem] p-1 text-left hover:bg-gray-50 transition-colors relative"
+              :class="selectedDay === {{ day }} ? 'bg-indigo-50' : ''">
+        <span class="text-xs text-gray-700 font-medium">{{ day }}</span>
+        {% if day in day_hearings %}
+        <div class="flex gap-0.5 mt-0.5 flex-wrap">
+          {% for h in day_hearings[day][:3] %}
+          <span class="w-1.5 h-1.5 rounded-full {{ type_dot_colors.get(h.hearing_type, 'bg-gray-400') }}"></span>
+          {% endfor %}
+          {% if day_hearings[day]|length > 3 %}
+          <span class="text-[8px] text-gray-400">+{{ day_hearings[day]|length - 3 }}</span>
+          {% endif %}
+        </div>
+        {% endif %}
+      </button>
+      {% endif %}
+      {% endfor %}
+    </div>
+
+    {# Expandable day detail row — shown when a day in this week is selected #}
+    {% for day in week %}
+    {% if day != 0 and day in day_hearings %}
+    <div x-show="selectedDay === {{ day }}" x-cloak
+         class="col-span-7 bg-gray-50 px-3 py-2 space-y-1.5 border-t border-gray-200">
+      {% for h in day_hearings[day] %}
+      <a href="{{ url_for('hearings.hearing_detail', hearing_id=h.id) }}"
+         class="flex items-center gap-2 p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 text-sm">
+        <span class="w-2 h-2 rounded-full flex-shrink-0 {{ type_dot_colors.get(h.hearing_type, 'bg-gray-400') }}"></span>
+        <span class="font-medium text-gray-900 truncate flex-1">{{ h.title }}</span>
+        {% if not h.all_day and h.start_datetime and h.start_datetime.strftime is defined %}
+        <span class="text-xs text-gray-500 flex-shrink-0">{{ h.start_datetime.strftime('%H:%M') }}</span>
+        {% endif %}
+        {% if h.dossier_file_number %}
+        <span class="text-xs text-indigo-600 flex-shrink-0">{{ h.dossier_file_number }}</span>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% endfor %}
+  </div>
+</div>
+
+{# ── Legend ──────────────────────────────────────────────────── #}
+<div class="mt-4 flex flex-wrap gap-3 px-1">
+  {% for key in valid_hearing_types %}
+  <div class="flex items-center gap-1.5 text-xs text-gray-500">
+    <span class="w-2 h-2 rounded-full {{ type_dot_colors.get(key, 'bg-gray-400') }}"></span>
+    {{ hearing_type_labels.get(key, key) }}
+  </div>
+  {% endfor %}
+</div>
