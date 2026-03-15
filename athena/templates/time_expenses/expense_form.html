@@ -20,6 +20,13 @@
     {{ 'Modifier la dépense' if expense and expense.id else 'Nouvelle dépense' }}
   </h1>
 
+  {# ── Invoiced warning ─────────────────────────────────────── #}
+  {% if expense and expense.invoiced %}
+  <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    <p class="text-sm text-amber-700 font-medium">Cette dépense est liée à une facture et ne peut pas être modifiée ni supprimée.</p>
+  </div>
+  {% endif %}
+
   {# ── Errors ────────────────────────────────────────────────── #}
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -116,6 +123,12 @@
 
     {# Actions #}
     <div class="flex gap-3 pt-2">
+      {% if expense and expense.invoiced %}
+      <a href="{{ url_for('time_expenses.time_list', tab='depenses') }}"
+         class="flex-1 px-4 py-2.5 text-sm font-medium text-center text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Retour
+      </a>
+      {% else %}
       <button type="submit"
               class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
         {{ 'Enregistrer' if expense and expense.id else 'Créer' }}
@@ -124,11 +137,12 @@
          class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
+      {% endif %}
     </div>
   </form>
 
-  {# ── Delete button (edit mode only) ────────────────────────── #}
-  {% if expense and expense.id %}
+  {# ── Delete button (edit mode only, not invoiced) ─────────── #}
+  {% if expense and expense.id and not expense.invoiced %}
   <div x-data="{ deleteOpen: false }" class="mt-6 pt-6 border-t border-gray-200">
     <button @click="deleteOpen = true"
             class="text-sm text-red-600 hover:text-red-700 font-medium">

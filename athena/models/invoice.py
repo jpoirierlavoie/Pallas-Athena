@@ -457,6 +457,33 @@ def void_invoice(invoice_id: str) -> tuple[bool, str]:
         return False, f"Erreur : {exc}"
 
 
+def delete_invoice(invoice_id: str) -> tuple[bool, str]:
+    """Delete a cancelled invoice and its line items. Returns (success, error)."""
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return False, "Facture introuvable."
+
+    if invoice.get("status") != "annulée":
+        return False, "Seule une facture annulée peut être supprimée."
+
+    try:
+        # Delete all line items in the subcollection
+        items_ref = (
+            db.collection(COLLECTION)
+            .document(invoice_id)
+            .collection(LINE_ITEMS_SUB)
+            .stream()
+        )
+        for item_doc in items_ref:
+            item_doc.reference.delete()
+
+        # Delete the invoice document
+        db.collection(COLLECTION).document(invoice_id).delete()
+        return True, ""
+    except Exception as exc:
+        return False, f"Erreur lors de la suppression : {exc}"
+
+
 def get_invoice_summary(dossier_id: str) -> dict:
     """Return invoice summary for a dossier."""
     invoices = list_invoices(dossier_id=dossier_id)

@@ -18,6 +18,7 @@ from models.invoice import (
     VALID_STATUSES,
     compute_totals,
     create_invoice,
+    delete_invoice,
     get_invoice_with_items,
     list_invoices,
     update_status,
@@ -365,6 +366,26 @@ def invoice_void(invoice_id: str) -> str:
             return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
         return redirect(target)
 
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)
+
+
+@invoices_bp.route("/<invoice_id>/delete", methods=["POST"])
+@login_required
+def invoice_delete(invoice_id: str) -> str:
+    """Delete a cancelled invoice."""
+    success, error = delete_invoice(invoice_id)
+
+    if not success:
+        target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
+        if _is_htmx():
+            return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
+        return redirect(target)
+
+    target = url_for("invoices.invoice_list")
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target

@@ -36,33 +36,50 @@
         Imprimer
       </button>
       {% for status in transitions %}
-      <form method="post" action="{{ url_for('invoices.invoice_update_status', invoice_id=invoice.id) }}" class="inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="{{ status }}">
         {% if status == 'annulée' %}
-        <button type="submit"
-                class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50"
-                onclick="return confirm('Annuler cette facture ?')">
-          Annuler
-        </button>
-        {% elif status == 'envoyée' %}
-        <button type="submit"
-                class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
-          Marquer comme envoyée
-        </button>
-        {% elif status == 'payée' %}
-        <button type="submit"
-                class="px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">
-          Marquer comme payée
-        </button>
-        {% elif status == 'en_retard' %}
-        <button type="submit"
-                class="px-3 py-1.5 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
-          Marquer en retard
-        </button>
+        {# Cancel uses the /void route to release linked entries/expenses #}
+        <form method="post" action="{{ url_for('invoices.invoice_void', invoice_id=invoice.id) }}" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit"
+                  class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50"
+                  onclick="return confirm('Annuler cette facture ? Les entrées de temps et dépenses seront libérées.')">
+            Annuler
+          </button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ url_for('invoices.invoice_update_status', invoice_id=invoice.id) }}" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="status" value="{{ status }}">
+          {% if status == 'envoyée' %}
+          <button type="submit"
+                  class="px-3 py-1.5 text-sm font-medium text-blue-600 bg-white border border-gray-300 rounded-lg hover:bg-blue-50">
+            Marquer comme envoyée
+          </button>
+          {% elif status == 'payée' %}
+          <button type="submit"
+                  class="px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700">
+            Marquer comme payée
+          </button>
+          {% elif status == 'en_retard' %}
+          <button type="submit"
+                  class="px-3 py-1.5 text-sm font-medium text-red-700 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+            Marquer en retard
+          </button>
+          {% endif %}
+        </form>
         {% endif %}
-      </form>
       {% endfor %}
+      {# Delete button for cancelled invoices #}
+      {% if invoice.status == 'annulée' %}
+      <form method="post" action="{{ url_for('invoices.invoice_delete', invoice_id=invoice.id) }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
+                onclick="return confirm('Supprimer définitivement cette facture ?')">
+          Supprimer
+        </button>
+      </form>
+      {% endif %}
     </div>
   </div>
 
