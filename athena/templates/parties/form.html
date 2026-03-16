@@ -96,7 +96,7 @@
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Nom <span class="text-red-500">*</span></label>
-          <input type="text" name="last_name" value="{{ partie.last_name if partie else '' }}" required
+          <input type="text" name="last_name" value="{{ partie.last_name if partie else '' }}" :required="partieType === 'individual'"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
@@ -146,7 +146,7 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Nom de l'organisation <span class="text-red-500">*</span></label>
-          <input type="text" name="organization_name" value="{{ partie.organization_name if partie else '' }}"
+          <input type="text" name="organization_name" value="{{ partie.organization_name if partie else '' }}" :required="partieType === 'organization'"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
@@ -158,7 +158,7 @@
     </div>
 
     {# ═══ Section 3 — Coordonnées personnelles ═══════════════════ #}
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <div x-show="partieType === 'individual'" class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-4">Coordonnées personnelles</h2>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <div>
@@ -215,7 +215,7 @@
     {# ═══ Section 4 — Coordonnées professionnelles ═══════════════ #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-4">Coordonnées professionnelles</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+      <div x-show="partieType === 'individual'" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Titre professionnel</label>
           <input type="text" name="job_title" value="{{ partie.job_title if partie else '' }}"
@@ -228,7 +228,7 @@
                  placeholder="Directeur des finances"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
-        <div x-show="partieType === 'individual'">
+        <div>
           <label class="block text-sm text-gray-700 mb-1">Employeur / Cabinet</label>
           <input type="text" name="organization" value="{{ partie.organization if partie else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
