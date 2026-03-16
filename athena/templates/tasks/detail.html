@@ -79,10 +79,7 @@
     {# Quick toggle button #}
     {% if task.status not in ('annulée',) %}
     <div class="mt-4 pt-4 border-t border-gray-100">
-      <form method="post" action="{{ url_for('tasks.task_toggle', task_id=task.id) }}"
-            hx-post="{{ url_for('tasks.task_toggle', task_id=task.id) }}"
-            hx-target="body"
-            hx-swap="outerHTML">
+      <form method="post" action="{{ url_for('tasks.task_toggle', task_id=task.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         {% if task.status == 'terminée' %}
         <button type="submit"

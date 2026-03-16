@@ -299,17 +299,28 @@ def task_delete(task_id: str) -> str:
 @tasks_bp.route("/<task_id>/toggle", methods=["POST"])
 @login_required
 def task_toggle(task_id: str) -> str:
-    """Toggle task completion status. Returns updated task row for HTMX."""
+    """Toggle task completion status. Returns updated task list for HTMX."""
     task, errors = toggle_task_complete(task_id)
 
     if errors:
         return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
 
-    ctx = _template_context()
-    ctx["task"] = task
-    ctx["now"] = datetime.now(timezone.utc)
-
     if _is_htmx():
-        return render_template("tasks/_task_row.html", **ctx)
+        # From the list page: re-fetch all tasks and return the full grouped list
+        now = datetime.now(timezone.utc)
+        tasks = list_tasks()
+        active_tasks = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
+        completed_tasks = [t for t in tasks if t.get("status") == "terminée"]
+        cancelled_tasks = [t for t in tasks if t.get("status") == "annulée"]
 
-    return redirect(url_for("tasks.task_list"))
+        ctx = _template_context()
+        ctx.update(
+            active_tasks=active_tasks,
+            completed_tasks=completed_tasks,
+            cancelled_tasks=cancelled_tasks,
+            now=now,
+        )
+        return render_template("tasks/_task_rows.html", **ctx)
+
+    # Non-HTMX (e.g. detail page form): redirect back to the task detail
+    return redirect(url_for("tasks.task_detail", task_id=task_id))
