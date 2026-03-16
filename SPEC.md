@@ -1103,15 +1103,13 @@ This template is **prescriptive**. Steps are auto-generated with fixed offsets f
 
 | # | Step | Offset | C.p.c. Ref. |
 |---|------|--------|-------------|
-| 1 | Signification de la demande | Day 0 | art. 145 |
-| 2 | Dépôt du protocole de l'instance | Day 45 | art. 148-149 |
-| 3 | Contestation écrite (défense) | Day 50 | art. 150 |
-| 4 | Communication des pièces | Day 60 | art. 246-248 |
-| 5 | Déclarations sous serment tenant lieu d'interrogatoire | Day 75 | art. 228 |
-| 6 | Interrogatoires préalables (si autorisés) | Day 90 | art. 229 |
-| 7 | Conférence de gestion (si requise) | Day 100 | art. 154 |
-| 8 | Inscription pour instruction et jugement | Day 120 | art. 173 |
-| 9 | Date limite pour l'audition | Day 180 | art. 173 |
+| 1 | Signification de l'avis d'assignation | Jour 0 | art. 145 — reference date |
+| 2 | Avis de la partie demanderesse | Jour 20 | art. 535.4 |
+| 3 | Dénonciation des moyens préliminaires | Jour 45 | art. 535.5 |
+| 4 | Avis de la partie défenderesse | Jour 95 | art. 535.6 |
+| 5 | Conférence de gestion | Jour 110 | art. 535.8 |
+| 6 | Conférence de règlement à l'amiable | Jour 130 à 160 | art. 535.12 |
+| 7 | Inscription pour instruction et jugement | Jour 180 | art. 535.13 |
 
 **Important:** These offsets are illustrative. The exact delays and articles should be verified against the current *Code de procédure civile* provisions for the Cour du Québec simplified procedure. The user should be able to adjust these templates in a future settings/admin page, but at launch, the above is a reasonable default. A note should be displayed in the UI: *"Les délais sont fournis à titre indicatif. Vérifiez les dispositions applicables du Code de procédure civile."*
 
@@ -1123,15 +1121,14 @@ This template is **suggestive**. It pre-populates the standard milestones that a
 
 | # | Step | Default Offset (suggestion only) | Notes |
 |---|------|----------------------------------|-------|
-| 1 | Dépôt du protocole de l'instance | Day 0 | art. 148 C.p.c. — reference date |
-| 2 | Contestation (défense et demande reconventionnelle) | Day 30 | User sets actual date |
-| 3 | Communication des pièces et déclarations sous serment | Day 90 | User sets actual date |
-| 4 | Interrogatoires préalables | Day 120 | User sets actual date |
-| 5 | Expertises (rapports d'experts) | Day 150 | User sets actual date |
-| 6 | Conférence de règlement à l'amiable | Day 180 | User sets actual date |
-| 7 | Conférence de gestion | Day 210 | User sets actual date |
-| 8 | Inscription pour instruction et jugement | Day 240 | User sets actual date |
-| 9 | Date limite pour l'audition | Day 270 | User sets actual date |
+| 1 | Signification de l'avis d'assignation | Jour 0 | art. 145(1) C.p.c. — reference date |
+| 2 | Réponse | Jour 15 | art. 145(2) C.p.c. |
+| 3 | Premier protocole de l'instance | Jour 45 | art. 149(2) C.p.c. |
+| 4 | Interrogatoires préalables | Jour 120 | User sets actual date |
+| 5 | Expertises (rapports d'experts) | Jour 150 | User sets actual date |
+| 6 | Conférence de règlement à l'amiable | Jour 180 | User sets actual date |
+| 7 | Conférence de gestion | Jour 180 | User sets actual date |
+| 8 | Inscription pour instruction et jugement | Jour 180 | art. 173(1) C.p.c. |
 
 When this template is selected, the "Default Offset" column pre-fills the deadline dates as suggestions. The user is expected to replace these with the actual agreed-upon or court-ordered dates. A note should be displayed: *"Modifiez les dates selon le protocole convenu entre les parties ou ordonné par le tribunal."*
 
