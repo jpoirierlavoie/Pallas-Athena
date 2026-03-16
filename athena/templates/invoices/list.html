@@ -8,8 +8,9 @@
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Factures</h1>
     <a href="{{ url_for('invoices.invoice_new') }}"
-       class="w-10 h-10 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-indigo-700 transition-colors">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+       class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      Nouvelle facture
     </a>
   </div>
 
@@ -49,5 +50,10 @@
     {% include "invoices/_invoice_rows.html" %}
   </div>
 
+  {# ── Mobile FAB ────────────────────────────────────────────── #}
+  <a href="{{ url_for('invoices.invoice_new') }}"
+     class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
+    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+  </a>
 </div>
 {% endblock %}

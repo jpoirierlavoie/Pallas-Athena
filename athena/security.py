@@ -1,7 +1,6 @@
 """Security middleware: headers, CSRF, rate limiting, input sanitization."""
 
 import re
-from html import escape
 from typing import Optional
 
 from flask import Flask, Request, Response, request
@@ -32,11 +31,11 @@ CSP = (
     "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com "
     "https://www.gstatic.com https://apis.google.com; "
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-    "img-src 'self' data: https://*.googleapis.com; "
+    "img-src 'self' data: blob: https://*.googleapis.com https://storage.googleapis.com; "
     "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com "
-    "https://identitytoolkit.googleapis.com; "
+    "https://identitytoolkit.googleapis.com https://storage.googleapis.com; "
     "font-src 'self' https://cdn.jsdelivr.net; "
-    "frame-src https://*.firebaseapp.com; "
+    "frame-src https://*.firebaseapp.com https://storage.googleapis.com blob:; "
     "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 )
 
@@ -81,9 +80,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def sanitize(value: str, max_length: int = 1000) -> str:
-    """Strip HTML tags, escape special characters, and truncate."""
+    """Strip HTML tags and truncate.  Output escaping is handled by Jinja2."""
     cleaned = _TAG_RE.sub("", value)
-    cleaned = escape(cleaned)
     return cleaned[:max_length]
 
 

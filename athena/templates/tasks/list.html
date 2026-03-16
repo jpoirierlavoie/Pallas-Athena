@@ -49,7 +49,7 @@
   </div>
 
   {# ── Mobile FAB ────────────────────────────────────────────── #}
-  <div class="md:hidden fixed bottom-20 right-4 z-30">
+  <div class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30">
     <a href="{{ url_for('tasks.task_new') }}"
        class="w-14 h-14 flex items-center justify-center text-white bg-indigo-600 rounded-full shadow-lg">
       <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>

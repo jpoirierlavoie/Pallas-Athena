@@ -465,6 +465,39 @@ def get_protocol_for_dossier(dossier_id: str) -> Optional[dict]:
         return None
 
 
+def list_protocols(
+    status_filter: Optional[str] = None,
+    protocol_type_filter: Optional[str] = None,
+) -> list[dict]:
+    """Return all protocols, optionally filtered. Steps are NOT loaded."""
+    try:
+        query = db.collection(COLLECTION)
+
+        if status_filter and status_filter in VALID_STATUSES:
+            query = query.where(
+                filter=FieldFilter("status", "==", status_filter)
+            )
+
+        results = [doc.to_dict() for doc in query.stream()]
+
+        if protocol_type_filter and protocol_type_filter in VALID_PROTOCOL_TYPES:
+            results = [
+                r for r in results
+                if r.get("protocol_type") == protocol_type_filter
+            ]
+
+        # Sort by created_at descending (newest first)
+        results.sort(
+            key=lambda p: p.get("created_at") or datetime.min.replace(
+                tzinfo=timezone.utc
+            ),
+            reverse=True,
+        )
+        return results
+    except Exception:
+        return []
+
+
 def update_protocol(
     protocol_id: str, data: dict
 ) -> tuple[Optional[dict], list[str]]:

@@ -29,7 +29,7 @@ class Config:
     RATE_LIMIT_LOGIN: str = os.environ.get("RATE_LIMIT_LOGIN", "5 per minute")
 
     # Request size limits
-    MAX_CONTENT_LENGTH: int = 16 * 1024 * 1024  # 16 MB (document uploads)
+    MAX_CONTENT_LENGTH: int = 25 * 1024 * 1024  # 25 MB (document uploads)
 
     # Firm info (displayed on invoices)
     FIRM_NAME: str = os.environ.get("FIRM_NAME", "")

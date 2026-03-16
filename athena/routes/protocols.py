@@ -29,6 +29,7 @@ from models.protocol import (
     delete_step,
     get_protocol,
     get_protocol_for_dossier,
+    list_protocols,
     recompute_deadlines,
     update_protocol,
     update_step,
@@ -66,6 +67,34 @@ def _template_context() -> dict:
         "valid_statuses": VALID_STATUSES,
         "now": datetime.now(timezone.utc),
     }
+
+
+# ── List ────────────────────────────────────────────────────────────────
+
+
+@protocols_bp.route("/")
+@login_required
+def protocol_list() -> str:
+    """Render the protocol list view."""
+    status_filter = request.args.get("status", "").strip()
+    type_filter = request.args.get("type", "").strip()
+
+    protocols = list_protocols(
+        status_filter=status_filter or None,
+        protocol_type_filter=type_filter or None,
+    )
+
+    ctx = _template_context()
+    ctx.update(
+        protocols=protocols,
+        status_filter=status_filter,
+        type_filter=type_filter,
+    )
+
+    if _is_htmx():
+        return render_template("protocols/_protocol_rows.html", **ctx)
+
+    return render_template("protocols/list.html", **ctx)
 
 
 # ── Create (wizard flow) ───────────────────────────────────────────────

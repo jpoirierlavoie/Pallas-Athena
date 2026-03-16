@@ -1,0 +1,89 @@
+{# Tab: Documents — Documents for this dossier #}
+{% set category_colors = {
+  'procédure': 'bg-blue-100 text-blue-700',
+  'pièce': 'bg-purple-100 text-purple-700',
+  'correspondance': 'bg-teal-100 text-teal-700',
+  'preuve': 'bg-amber-100 text-amber-700',
+  'jugement': 'bg-red-100 text-red-700',
+  'entente': 'bg-green-100 text-green-700',
+  'note': 'bg-gray-100 text-gray-600',
+  'autre': 'bg-gray-100 text-gray-600'
+} %}
+
+<div class="space-y-6">
+
+  {# ── Summary stats ──────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 gap-3">
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Documents</p>
+      <p class="text-lg font-semibold text-gray-900">{{ document_summary.total }}</p>
+    </div>
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Taille totale</p>
+      <p class="text-lg font-semibold text-gray-900">{{ document_summary.total_size_formatted }}</p>
+    </div>
+  </div>
+
+  {# ── Document list ──────────────────────────────────────────── #}
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-semibold text-gray-900">Documents</h3>
+      <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier.id) }}"
+         class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+        + Téléverser
+      </a>
+    </div>
+
+    {% if documents %}
+    <div class="flex flex-col gap-2">
+      {% for d in documents %}
+      <a href="{{ url_for('documents.document_detail', document_id=d.id) }}"
+         class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+
+        {# File type icon #}
+        {% set icon = d._file_icon %}
+        <div class="w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0
+                    {% if icon == 'pdf' %}bg-red-50{% elif icon == 'word' %}bg-blue-50{% elif icon == 'image' %}bg-green-50{% else %}bg-gray-50{% endif %}">
+          {% if icon == 'pdf' %}
+          <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+          </svg>
+          {% elif icon == 'word' %}
+          <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+          </svg>
+          {% elif icon == 'image' %}
+          <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/>
+          </svg>
+          {% else %}
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+          </svg>
+          {% endif %}
+        </div>
+
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5 mb-0.5">
+            <span class="text-sm font-medium text-gray-900 truncate">{{ d.display_name or d.filename }}</span>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ category_colors.get(d.category, 'bg-gray-100 text-gray-600') }}">
+              {{ category_labels.get(d.category, d.category) }}
+            </span>
+            <span class="text-xs text-gray-500">{{ d._file_size_fmt }}</span>
+            {% if d.created_at and d.created_at.strftime is defined %}
+            {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
+            <span class="text-xs text-gray-400">{{ d.created_at.strftime('%d') }} {{ month_short[d.created_at.month] }}</span>
+            {% endif %}
+          </div>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm text-center py-4">Aucun document pour ce dossier.</p>
+    {% endif %}
+  </div>
+
+</div>

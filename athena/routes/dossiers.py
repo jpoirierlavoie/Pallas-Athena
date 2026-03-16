@@ -46,6 +46,13 @@ from models.protocol import (
     get_protocol_for_dossier,
     get_protocol_summary,
 )
+from models.document import (
+    CATEGORY_LABELS as DOCUMENT_CATEGORY_LABELS,
+    format_file_size,
+    get_document_summary,
+    get_file_icon,
+    list_documents,
+)
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -252,7 +259,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "audiences": "dossiers/_tab_audiences.html",
         "taches": "dossiers/_tab_taches.html",
         "protocole": "dossiers/_tab_protocole.html",
-        "documents": "dossiers/_tab_placeholder.html",
+        "documents": "dossiers/_tab_documents.html",
     }
 
     # Load time/expense data for the temps tab
@@ -290,6 +297,16 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["protocol_type_colors"] = PROTOCOL_TYPE_COLORS
         ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS
         ctx["now"] = datetime.now(timezone.utc)
+
+    # Load document data for the documents tab
+    if tab_name == "documents":
+        docs = list_documents(dossier_id=dossier_id)
+        for d in docs:
+            d["_file_size_fmt"] = format_file_size(d.get("file_size", 0))
+            d["_file_icon"] = get_file_icon(d.get("file_type", ""))
+        ctx["documents"] = docs
+        ctx["document_summary"] = get_document_summary(dossier_id)
+        ctx["category_labels"] = DOCUMENT_CATEGORY_LABELS
 
     # Load invoice data for the facturation tab
     if tab_name == "facturation":

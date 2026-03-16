@@ -76,7 +76,7 @@
   </div>
 
   {# ── Mobile FAB ────────────────────────────────────────────── #}
-  <div class="md:hidden fixed bottom-20 right-4 z-30 flex flex-col gap-2"
+  <div class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 flex flex-col gap-2"
        x-data="{ fabOpen: false }">
     <div x-show="fabOpen" x-cloak class="flex flex-col gap-2 mb-2">
       <a href="{{ url_for('time_expenses.time_entry_new') }}"
