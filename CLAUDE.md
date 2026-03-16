@@ -68,7 +68,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase 7 — Task Management + VTODO Foundation
+Phase 8 — Project Scaffolding, Authentication, and Security Hardening
 
 ## Phase Checklist
 - [*] Phase 1: Scaffolding, Auth, Security
@@ -82,6 +82,7 @@ Phase 7 — Task Management + VTODO Foundation
 - [ ] Phase 9: Document Storage
 - [ ] Phase 10: DAV Protocol Layer (CardDAV, CalDAV, RFC-5545)
 - [ ] Phase 11: Dashboard, Polish, Deployment
+- [ ] Phase 12: Firebase App Check + Phone MFA
 
 ## Known Gotchas
 - Firestore does not support `!=` combined with `orderBy` on a different field. Design queries accordingly.

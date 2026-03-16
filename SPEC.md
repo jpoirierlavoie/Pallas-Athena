@@ -1023,7 +1023,13 @@ END:VTODO
 ## PHASE 8 — Case Protocols
 
 ### Objective
-Build the case protocol module. A protocol is a structured timeline of mandatory steps for a case, driven by Québec civil procedure rules (e.g., the 180-day protocol, case management conference deadlines). Protocols consist of ordered steps, each with a deadline, status, and notes.
+Build the case protocol module. A protocol (protocole de l'instance) is the procedural roadmap for a case, defining the steps and deadlines that govern how the matter progresses to trial or resolution. In Québec civil litigation, there are three fundamentally different types of protocols, each with distinct behavior in the application:
+
+1. **Cour du Québec — Procédure simplifiée** (Small claims excluded; this covers contested matters under the CQ's jurisdiction). This protocol is **mandated by law** and follows a **strict, fixed timeline** set out in the *Code de procédure civile*. The steps and their deadlines are prescribed — they cannot be freely modified by the parties. The application should auto-generate all steps with fixed offsets from the start date, and the user should not be able to delete or reorder mandatory steps (though they can add supplementary notes or custom sub-steps).
+
+2. **Cour supérieure — Procédure ordinaire**. This protocol is **more flexible**. The *C.p.c.* requires the parties to file a case protocol (*protocole de l'instance*), but the specific deadlines within it are **proposed by the parties and approved by the court**. The protocol provides a framework of common procedural milestones (communication of exhibits, examinations, expert reports, inscription for trial, etc.), but the user sets the actual deadline dates for each. The application should present the standard milestones as a suggested template, but every deadline is **user-editable** from the start.
+
+3. **Conventionnel — Protocole personnalisé**. This covers cases in appeal courts, administrative tribunals, arbitration, mediation frameworks, or any situation where the parties establish a **fully custom timeline** by agreement. There is no prescribed template — the user creates all steps and deadlines from scratch. The application presents a blank protocol with an "add step" interface.
 
 ### Firestore Schema: `protocols/{protocolId}`
 
@@ -1034,10 +1040,18 @@ Build the case protocol module. A protocol is a structured timeline of mandatory
     "dossier_file_number": "2025-001",
     "dossier_title": "Tremblay c. Lavoie",
     
-    "title": "Protocole de l'instance — 180 jours",
-    "protocol_type": "180_jours" | "270_jours" | "gestion_particulière" | "personnalisé",
-    "start_date": datetime,                # Date from which deadlines are computed (usually date of service)
-    "end_date": datetime,                  # Final deadline (computed or manual)
+    "title": "Protocole de l'instance",    # Auto-generated from type, user can override
+    "protocol_type": "cq_simplifié" | "cs_ordinaire" | "conventionnel",
+    
+    # Start date: the date from which all deadlines are computed
+    # For CQ: typically date of service of the originating application
+    # For CS: typically date the protocol is filed or approved
+    # For Conventionnel: user-defined reference date
+    "start_date": datetime,
+    "end_date": datetime,                  # Final deadline (computed for CQ, user-set for CS/Conv.)
+    
+    # Applicable court (denormalized from dossier for display)
+    "court": "Cour du Québec" | "Cour supérieure" | "Cour d'appel" | "Tribunal administratif" | "Arbitrage" | "autre",
     
     "notes": "",
     "status": "actif" | "complété" | "suspendu",
@@ -1053,61 +1067,159 @@ Build the case protocol module. A protocol is a structured timeline of mandatory
 ```python
 {
     "id": "uuid-v4",
-    "order": 1,                            # Sequential order
-    "title": "Communication des pièces et des déclarations sous serment",
+    "order": 1,                            # Sequential display order
+    "title": "Communication des pièces",
     "description": "Conformément à l'article 246 C.p.c.",
-    "deadline_date": datetime,             # Computed from start_date + offset, or manual
-    "deadline_offset_days": 60,            # Days from protocol start_date (for template computation)
+    "cpc_reference": "art. 246 C.p.c.",   # Optional: Code de procédure civile reference
+    
+    "deadline_date": datetime,             # The actual deadline date
+    "deadline_offset_days": 60,            # Days from protocol start_date (used for template computation; null for conventionnel)
+    
+    # Whether this step is mandatory (prescribed by law) or supplementary (added by user)
+    "mandatory": True,                     # True for CQ prescribed steps; False for user-added steps
+    # Whether the deadline can be edited by the user
+    "deadline_locked": False,              # True for CQ mandatory steps; False for CS and Conventionnel
+    
     "status": "à_venir" | "en_cours" | "complété" | "en_retard",
     "completed_date": None | datetime,
     "linked_task_id": None,                # Optional: auto-create a task for this step
+    "linked_hearing_id": None,             # Optional: link to a hearing (e.g., conférence de gestion)
     "notes": "",
+    
     "created_at": datetime,
     "updated_at": datetime
 }
 ```
 
 ### Protocol Templates
-Pre-define templates for common Québec protocols that auto-populate steps when a protocol type is selected. Each template contains a list of steps with `title`, `description`, and `deadline_offset_days`.
 
-**180-day protocol template (example steps):**
-1. Notification de la demande et protocole de l'instance (Day 0)
-2. Réponse et contestation (Day 30)
-3. Communication des pièces (Day 60)
-4. Interrogatoires préalables (Day 90)
-5. Déclarations sous serment (Day 110)
-6. Conférence de gestion (Day 130)
-7. Inscription pour instruction et jugement (Day 155)
-8. Date limite pour audition (Day 180)
+Each protocol type has a different template behavior:
+
+#### Template A — Cour du Québec, Procédure simplifiée
+
+This template is **prescriptive**. Steps are auto-generated with fixed offsets from `start_date`. The `mandatory` flag is `True` and `deadline_locked` is `True` for all prescribed steps. The user may add supplementary steps (with `mandatory: False` and `deadline_locked: False`) but cannot delete, reorder, or change deadlines of the mandatory steps.
+
+**Steps (approximate — verify against current C.p.c. provisions):**
+
+| # | Step | Offset | C.p.c. Ref. |
+|---|------|--------|-------------|
+| 1 | Signification de la demande | Day 0 | art. 145 |
+| 2 | Dépôt du protocole de l'instance | Day 45 | art. 148-149 |
+| 3 | Contestation écrite (défense) | Day 50 | art. 150 |
+| 4 | Communication des pièces | Day 60 | art. 246-248 |
+| 5 | Déclarations sous serment tenant lieu d'interrogatoire | Day 75 | art. 228 |
+| 6 | Interrogatoires préalables (si autorisés) | Day 90 | art. 229 |
+| 7 | Conférence de gestion (si requise) | Day 100 | art. 154 |
+| 8 | Inscription pour instruction et jugement | Day 120 | art. 173 |
+| 9 | Date limite pour l'audition | Day 180 | art. 173 |
+
+**Important:** These offsets are illustrative. The exact delays and articles should be verified against the current *Code de procédure civile* provisions for the Cour du Québec simplified procedure. The user should be able to adjust these templates in a future settings/admin page, but at launch, the above is a reasonable default. A note should be displayed in the UI: *"Les délais sont fournis à titre indicatif. Vérifiez les dispositions applicables du Code de procédure civile."*
+
+#### Template B — Cour supérieure, Procédure ordinaire
+
+This template is **suggestive**. It pre-populates the standard milestones that a typical Superior Court case protocol would include, but all deadlines are **editable** by the user. `mandatory` is `True` (these are standard milestones, not optional), but `deadline_locked` is `False`. The user sets the actual dates based on what the parties agreed or what the court ordered.
+
+**Steps (standard milestones — all dates user-editable):**
+
+| # | Step | Default Offset (suggestion only) | Notes |
+|---|------|----------------------------------|-------|
+| 1 | Dépôt du protocole de l'instance | Day 0 | art. 148 C.p.c. — reference date |
+| 2 | Contestation (défense et demande reconventionnelle) | Day 30 | User sets actual date |
+| 3 | Communication des pièces et déclarations sous serment | Day 90 | User sets actual date |
+| 4 | Interrogatoires préalables | Day 120 | User sets actual date |
+| 5 | Expertises (rapports d'experts) | Day 150 | User sets actual date |
+| 6 | Conférence de règlement à l'amiable | Day 180 | User sets actual date |
+| 7 | Conférence de gestion | Day 210 | User sets actual date |
+| 8 | Inscription pour instruction et jugement | Day 240 | User sets actual date |
+| 9 | Date limite pour l'audition | Day 270 | User sets actual date |
+
+When this template is selected, the "Default Offset" column pre-fills the deadline dates as suggestions. The user is expected to replace these with the actual agreed-upon or court-ordered dates. A note should be displayed: *"Modifiez les dates selon le protocole convenu entre les parties ou ordonné par le tribunal."*
+
+The user can freely add, remove, or reorder steps.
+
+#### Template C — Conventionnel (personnalisé)
+
+No template. The protocol starts with **zero steps**. The user adds each step manually with a title, description, and deadline. This is used for:
+- Cour d'appel (mémoires, cahiers de sources, audition)
+- Tribunaux administratifs (various procedures)
+- Arbitrage (agreed timeline between parties and arbitrator)
+- Médiation (session dates, document exchange)
+- Any other non-standard procedural context
+
+All steps have `mandatory: False` and `deadline_locked: False`.
 
 ### Web UI Requirements
 
 **Protocol List is accessed through the dossier detail "Protocole" tab** (not a standalone page). One dossier may have at most one active protocol.
 
 **Protocol View (within dossier detail)**
+- Header showing: protocol type badge (CQ Simplifié = blue, CS Ordinaire = indigo, Conventionnel = gray), title, status, start date → end date range
+- Disclaimer text for CQ and CS templates (as described above)
 - Visual timeline: vertical step list with connecting lines
-- Each step: title, deadline date, status badge, days remaining (or days overdue in red)
+- Each step card:
+  - Title + C.p.c. reference (if any) in subtle gray
+  - Deadline date prominently displayed
+  - Status badge: "À venir" (gray), "En cours" (blue), "Complété" (green), "En retard" (red with pulsing dot)
+  - Days remaining (or days overdue in red)
+  - Lock icon on CQ mandatory steps to indicate the deadline is prescribed by law
+  - "Compléter" button (marks as completed, records date)
+  - Linked task indicator (if a task was created for this step) — tap to navigate to the task
+  - Linked hearing indicator (if linked) — tap to navigate to the hearing
 - Progress bar at top showing completed steps / total steps
-- "Compléter" button on each step (marks as completed, records date)
-- Warning indicators for upcoming and overdue steps
+- Warning indicators for upcoming deadlines (within 7 days) and overdue steps
 
 **Protocol Creation**
-- Select protocol type → auto-populates steps from template
-- Set start date → deadlines auto-compute from offsets
-- User can modify individual step dates, add custom steps, or remove steps before saving
-- "Personnalisé" type starts with blank steps for manual entry
+- Step 1: Select protocol type via three clearly described cards:
+  - **Cour du Québec — Simplifié**: "Protocole prescrit par le C.p.c. avec délais fixes. Les étapes obligatoires ne peuvent pas être modifiées."
+  - **Cour supérieure — Ordinaire**: "Protocole standard avec jalons habituels. Les dates sont à adapter selon l'entente des parties ou l'ordonnance du tribunal."
+  - **Conventionnel**: "Protocole entièrement personnalisé. Pour les appels, l'arbitrage, les tribunaux administratifs, ou toute procédure non standard."
+- Step 2: Set start date (with explanation of what start date means for each type)
+- Step 3: Review auto-populated steps (CQ and CS) or start adding steps (Conventionnel)
+  - For CQ: steps are shown as read-only with computed deadlines. User can add supplementary steps but cannot modify or delete mandatory steps.
+  - For CS: steps are shown as editable. Default offset dates are pre-filled but highlighted with an "À modifier" badge until the user explicitly sets them.
+  - For Conventionnel: empty state with "Ajouter une étape" button.
+- Step 4: Optionally toggle "Créer les tâches automatiquement" (auto-creates a linked task for each step)
+- Save creates the protocol and all steps in a batch write.
+
+**Editing Protocols**
+- CQ: Cannot delete mandatory steps. Can edit notes on any step. Can add supplementary steps. Cannot change mandatory deadlines. If the start date changes, all mandatory deadlines auto-recompute.
+- CS: Full editing of all steps — change dates, add, remove, reorder. If the user changes the start date, offer to recompute suggested dates (with confirmation, since the user may have already set custom dates).
+- Conventionnel: Full editing — add, remove, reorder, change everything.
 
 **Automatic Task Creation**
-When a protocol step is created, optionally auto-create a linked task with the same title and deadline. When the task is completed, the protocol step is also marked complete (and vice versa).
+When a protocol step is created and the "auto-create tasks" toggle is on, automatically create a linked task (Phase 7) with the same title and deadline. Bidirectional sync: when the task is completed, the protocol step is also marked complete (and vice versa). When a step has a `linked_hearing_id`, completing the hearing also marks the step complete.
+
+### Model Layer (`models/protocol.py`)
+- `create_protocol(dossier_id, protocol_type, start_date, data)` — creates protocol + auto-generates steps from template (CQ/CS) or empty (Conventionnel)
+- `get_protocol(protocol_id)` — returns protocol with all steps
+- `get_protocol_for_dossier(dossier_id)` — returns the active protocol for a dossier (max one active)
+- `update_protocol(protocol_id, data)` — updates protocol metadata
+- `add_step(protocol_id, step_data)` — adds a custom step
+- `update_step(protocol_id, step_id, data)` — updates a step (validates: cannot change deadline on locked steps)
+- `delete_step(protocol_id, step_id)` — deletes a step (validates: cannot delete mandatory steps)
+- `complete_step(protocol_id, step_id)` — marks step complete, sets completed_date, syncs linked task/hearing
+- `recompute_deadlines(protocol_id, new_start_date)` — recalculates all offset-based deadlines from a new start date (only for steps with deadline_offset_days set)
+- `check_overdue_steps(protocol_id)` — scans steps and updates status to "en_retard" where deadline_date < today and status is not "complété"
+- `get_template(protocol_type)` — returns the step template for a given protocol type
 
 ### Testing Criteria for Phase 8
-- [ ] Protocol templates auto-populate correctly
-- [ ] Deadline computation from start_date + offset is correct
-- [ ] Step status updates work (including overdue auto-detection)
+- [ ] CQ protocol auto-generates all mandatory steps with correct offsets
+- [ ] CQ mandatory steps cannot be deleted or have their deadlines changed
+- [ ] CQ supplementary steps can be added freely
+- [ ] CQ start date change recomputes all mandatory deadlines
+- [ ] CS protocol auto-generates suggested milestones with editable deadlines
+- [ ] CS "À modifier" badge appears on steps with default (unconfirmed) dates
+- [ ] CS steps can be freely added, removed, reordered, and re-dated
+- [ ] Conventionnel protocol starts empty and allows full manual step creation
+- [ ] Deadline computation from start_date + offset is correct for all types
+- [ ] Step status updates work (including automatic overdue detection)
+- [ ] Lock icon appears on CQ mandatory steps
+- [ ] Disclaimer text displays correctly for CQ and CS types
 - [ ] Timeline visualization renders correctly on mobile
 - [ ] Progress tracking is accurate
 - [ ] Linked task creation and bidirectional status sync works
-- [ ] Custom protocols allow adding/removing/reordering steps
+- [ ] Linked hearing completion syncs to protocol step
+- [ ] Protocol type selection cards clearly explain each option
 
 ---
 
@@ -1445,7 +1557,7 @@ service firebase.storage {
 
 **Pre-Launch Checklist**
 - [ ] All security headers verified in production
-- [ ] Firebase Auth email/password only — disable all other providers
+- [ ] Firebase Auth email/password only — disable all other sign-in providers (phone MFA is added in Phase 12, but phone is a second factor, not a sign-in provider)
 - [ ] No debug mode in production
 - [ ] Secret key is truly random and stored securely
 - [ ] DAV password is strong and bcrypt-hashed
@@ -1467,6 +1579,242 @@ service firebase.storage {
 - [ ] DavX5 sync works against the production URL
 - [ ] Mobile experience is smooth and fast (test on actual phone)
 - [ ] Browser "Add to Home Screen" works as a pseudo-PWA (optional: add a manifest.json)
+
+---
+
+## PHASE 12 — Firebase App Check and Multi-Factor Authentication
+
+### Objective
+Harden the application's security posture with two critical Firebase features: **App Check**, which ensures that only your legitimate application can access Firebase backend services (Firestore, Storage, Authentication), and **phone-based Multi-Factor Authentication (MFA)**, which adds a second factor to the login process. After this phase, every Firebase API call from the client is attested, and login requires both the password and a phone verification code.
+
+This phase is intentionally placed last because it modifies the authentication flow established in Phase 1, the Firestore and Storage access patterns used throughout Phases 2–9, and the client-side Firebase SDK initialization. Implementing it on a fully working application minimizes the risk of breaking existing functionality.
+
+### 12A — Firebase App Check
+
+**What App Check does:** App Check adds an attestation layer between your application and Firebase services. Before the client can read/write Firestore, upload/download from Storage, or call Authentication APIs, it must present a valid App Check token. This token proves the request originates from your legitimate app, not from a script, a stolen API key, or a malicious client. Without a valid token, Firebase rejects the request.
+
+**Attestation Provider:**
+Since Pallas Athena is a web application hosted on App Engine, use **reCAPTCHA Enterprise** as the attestation provider. This is Google's recommended provider for web apps. It runs invisibly in the background (no user-facing CAPTCHA puzzles) and issues attestation tokens that App Check validates.
+
+**Server-Side Configuration:**
+
+1. **Enable App Check in Firebase Console:**
+   - Navigate to Firebase Console → App Check
+   - Register your web app with reCAPTCHA Enterprise
+   - Obtain the reCAPTCHA Enterprise site key
+   - Add the site key to `config.py` as `RECAPTCHA_ENTERPRISE_SITE_KEY`
+
+2. **Enforce App Check on Firebase services:**
+   - In the Firebase Console, enable enforcement for:
+     - Cloud Firestore
+     - Cloud Storage
+     - Firebase Authentication
+   - **Critical:** Do NOT enable enforcement until the client-side integration is fully working and tested. Premature enforcement will lock you out of your own app. Enable enforcement only after verifying that all client-side requests include valid App Check tokens.
+
+3. **Backend token verification (`auth.py` modifications):**
+   - For any server-side Firebase Admin SDK operations (which bypass App Check by default since they use service account credentials), no changes are needed — Admin SDK calls are trusted.
+   - For the DAV endpoints (Phase 10), which use HTTP Basic Auth and server-side Firestore calls via the Admin SDK, no App Check changes are needed — these are server-to-server calls.
+   - The protection is primarily on the **client-side path**: the Firebase JS SDK calls from the browser (Authentication sign-in, and any direct client-side Firestore/Storage calls if they exist).
+
+**Client-Side Integration (`templates/base.html` and `templates/auth/login.html`):**
+
+1. **Initialize App Check in the Firebase JS SDK:**
+   ```javascript
+   import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+   
+   const appCheck = initializeAppCheck(app, {
+     provider: new ReCaptchaEnterpriseProvider('{{ config.RECAPTCHA_ENTERPRISE_SITE_KEY }}'),
+     isTokenAutoRefreshEnabled: true  // Automatically refresh tokens before expiry
+   });
+   ```
+   This must be called **before** any Firebase Auth, Firestore, or Storage calls.
+
+2. **Placement:** Initialize App Check immediately after `initializeApp()` in every page that uses the Firebase JS SDK. In Pallas Athena, the primary client-side Firebase usage is:
+   - `login.html`: Firebase Auth `signInWithEmailAndPassword()` and MFA enrollment/verification (Phase 12B)
+   - Any page that makes direct client-side Firestore or Storage calls (if any — the architecture primarily uses server-side Flask calls, so this may be limited to the auth flow)
+
+3. **Debug token for local development:**
+   When running locally (`ENV=development`), App Check will fail because `localhost` is not registered with reCAPTCHA Enterprise. Use a debug provider:
+   ```javascript
+   if (location.hostname === 'localhost') {
+     self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+   }
+   ```
+   Register the debug token in the Firebase Console under App Check → Apps → Manage debug tokens. Add `APPCHECK_DEBUG_TOKEN` to `config.py` for local development.
+
+**CSP Header Update (`security.py`):**
+reCAPTCHA Enterprise requires loading scripts from Google. Update the Content-Security-Policy header:
+```
+script-src: add https://www.google.com https://www.gstatic.com
+frame-src: add https://www.google.com https://recaptcha.google.com
+connect-src: add https://www.google.com https://recaptchaenterprise.googleapis.com
+```
+
+### 12B — Phone-Based Multi-Factor Authentication (MFA)
+
+**What phone MFA does:** After the user successfully authenticates with email + password, Firebase Auth requires a second verification step: a 6-digit code sent via SMS to the user's registered phone number. The user must enter this code to complete the login. This protects against password compromise — an attacker who obtains the password still cannot log in without access to the phone.
+
+**Firebase MFA Architecture:**
+Firebase Auth's MFA is handled entirely through the client-side JS SDK. The flow is:
+1. User signs in with email + password → Firebase returns a `MultiFactorError` if MFA is enrolled
+2. Client-side code catches this error, extracts the MFA resolver
+3. Client requests SMS verification via the resolver → Firebase sends the SMS code
+4. User enters the 6-digit code → client verifies it via the resolver
+5. On success, Firebase returns the fully authenticated ID token (with MFA claims)
+6. Client POSTs this token to Flask backend (`/auth/verify-token`) as in Phase 1
+
+**MFA Enrollment (first-time setup):**
+Since this is a single-user application, MFA enrollment happens once. Build an enrollment page at `/auth/mfa-setup` (accessible only when authenticated):
+1. User navigates to MFA setup (or is redirected there on first login if MFA is not yet enrolled)
+2. Page shows a phone number input field with French label ("Numéro de téléphone pour la vérification en deux étapes")
+3. User enters their phone number (pre-formatted for Canadian numbers: +1XXXXXXXXXX)
+4. Client calls `multiFactor.getSession()` then `PhoneAuthProvider.verifyPhoneNumber()` with a `RecaptchaVerifier` (invisible reCAPTCHA, separate from App Check)
+5. Firebase sends an SMS code to the phone
+6. User enters the 6-digit code on the page
+7. Client calls `PhoneMultiFactorGenerator.assertion()` then `multiFactor.enroll()` with a display name ("Téléphone principal")
+8. Success toast: "Vérification en deux étapes activée."
+9. Redirect to dashboard
+
+**Modified Login Flow (`templates/auth/login.html`):**
+Update the Phase 1 login flow to handle MFA:
+
+```javascript
+// Pseudocode — implement in the login.html Firebase JS SDK logic
+try {
+  const userCredential = await signInWithEmailAndPassword(auth, email, password);
+  // MFA not enrolled or not required — proceed as before
+  await postIdTokenToBackend(userCredential.user);
+} catch (error) {
+  if (error.code === 'auth/multi-factor-auth-required') {
+    // MFA is enrolled — need second factor
+    const resolver = getMultiFactorResolver(auth, error);
+    
+    // Show the MFA verification UI (hide login form, show code input)
+    showMfaCodeInput();
+    
+    // Send SMS verification
+    const phoneInfoOptions = {
+      multiFactorHint: resolver.hints[0],  // First enrolled phone factor
+      session: resolver.session
+    };
+    const phoneAuthProvider = new PhoneAuthProvider(auth);
+    const verificationId = await phoneAuthProvider.verifyPhoneNumber(
+      phoneInfoOptions, 
+      recaptchaVerifier  // Invisible reCAPTCHA widget
+    );
+    
+    // User enters the code...
+    const code = await waitForUserCode();  // Your UI logic
+    const cred = PhoneAuthProvider.credential(verificationId, code);
+    const assertion = PhoneMultiFactorGenerator.assertion(cred);
+    const userCredential = await resolver.resolveSignIn(assertion);
+    
+    // MFA verified — proceed to backend verification
+    await postIdTokenToBackend(userCredential.user);
+  } else {
+    // Other auth error — display to user
+    showError(error.message);
+  }
+}
+```
+
+**Login Page UI Changes:**
+The login page now has two states:
+1. **Initial state:** Email + password fields, "Connexion" button (unchanged from Phase 1)
+2. **MFA state:** Revealed after successful password authentication when MFA is enrolled. Shows:
+   - A message: "Un code de vérification a été envoyé au numéro se terminant par ••••XX." (last 2 digits shown)
+   - A 6-digit code input (individual boxes for each digit, auto-advance on entry)
+   - "Vérifier" button
+   - "Renvoyer le code" link (with cooldown timer: "Renvoyer dans 30s")
+   - "Annuler" link (returns to initial state)
+   - Transition between states should be smooth (HTMX swap or Alpine.js toggle, no full page reload)
+
+**Backend Verification (`auth.py` modifications):**
+The `verify_id_token()` call in Phase 1 does not need modification — Firebase ID tokens issued after MFA verification automatically contain MFA claims. However, add an optional strictness check:
+```python
+# Optional: verify that the token was issued after MFA verification
+decoded_token = firebase_admin.auth.verify_id_token(id_token)
+# The token's 'firebase' claim includes 'sign_in_second_factor' if MFA was used
+if config.REQUIRE_MFA:
+    firebase_claim = decoded_token.get('firebase', {})
+    if 'sign_in_second_factor' not in firebase_claim:
+        # MFA was not completed — reject
+        return jsonify({"error": "Vérification en deux étapes requise."}), 403
+```
+
+Add to `config.py`:
+- `REQUIRE_MFA`: Boolean, default `True` in production. Set to `False` in development if MFA is not yet enrolled. Once enrolled, set to `True` permanently.
+- `MFA_PHONE_NUMBER`: Not stored in config — Firebase manages this. The phone number is registered through the enrollment flow and stored by Firebase Auth, not in your Firestore.
+
+**MFA Management Page (`/auth/mfa-manage`):**
+A simple settings page (accessible from the "Plus" menu) that shows:
+- Current MFA status: Enrolled / Not enrolled
+- Registered phone number (masked: +1 514 •••-••34)
+- "Désinscrire" button (unenroll MFA — requires re-authentication, confirm dialog warning about security implications)
+- "Changer le numéro" button (unenroll + re-enroll flow)
+
+**reCAPTCHA for SMS Verification:**
+Firebase requires a `RecaptchaVerifier` for phone auth to prevent SMS abuse. Use an invisible reCAPTCHA:
+```javascript
+const recaptchaVerifier = new RecaptchaVerifier(auth, 'mfa-recaptcha-container', {
+  size: 'invisible'
+});
+```
+Add a `<div id="mfa-recaptcha-container"></div>` to both the login page and the MFA setup page. This is separate from the App Check reCAPTCHA Enterprise provider — they serve different purposes and coexist without conflict.
+
+**CSP Header Update (`security.py`):**
+The phone auth reCAPTCHA may require additional CSP entries (these likely overlap with App Check's entries, but verify):
+```
+frame-src: https://www.google.com (already added for App Check)
+script-src: https://www.google.com https://www.gstatic.com (already added for App Check)
+```
+
+### Configuration Summary
+
+Add the following to `config.py`:
+```python
+# App Check
+RECAPTCHA_ENTERPRISE_SITE_KEY = os.environ.get('RECAPTCHA_ENTERPRISE_SITE_KEY', '')
+APPCHECK_DEBUG_TOKEN = os.environ.get('APPCHECK_DEBUG_TOKEN', '')  # Local dev only
+
+# MFA
+REQUIRE_MFA = os.environ.get('REQUIRE_MFA', 'true').lower() == 'true'
+```
+
+Add the following environment variables to `app.yaml` (or Secret Manager):
+```yaml
+env_variables:
+  RECAPTCHA_ENTERPRISE_SITE_KEY: "your-site-key-here"
+  REQUIRE_MFA: "true"
+```
+
+### Deployment Order
+
+This phase must be deployed carefully to avoid locking yourself out:
+
+1. **Deploy client-side App Check integration** with enforcement **disabled** in Firebase Console. Verify that all client-side Firebase calls include App Check tokens (check browser network tab for `X-Firebase-AppCheck` headers).
+2. **Enroll MFA** through the `/auth/mfa-setup` page with `REQUIRE_MFA=false`. Verify enrollment works and the SMS code is received.
+3. **Set `REQUIRE_MFA=true`** and redeploy. Verify login requires both password and SMS code.
+4. **Enable App Check enforcement** in Firebase Console for Firestore, Storage, and Authentication. Verify the app still works. If anything breaks, disable enforcement immediately (it takes effect within minutes).
+5. **Verify DAV endpoints still work** — they use server-side Admin SDK calls and should not be affected by App Check, but confirm explicitly.
+
+### Testing Criteria for Phase 12
+- [ ] App Check is initialized before any Firebase JS SDK calls
+- [ ] reCAPTCHA Enterprise runs invisibly (no user-facing puzzle)
+- [ ] Debug token works for local development
+- [ ] With App Check enforcement disabled, all features still work identically
+- [ ] With App Check enforcement enabled, all features still work (client-side calls include valid tokens)
+- [ ] With App Check enforcement enabled, requests without valid tokens are rejected by Firebase
+- [ ] MFA enrollment flow works: phone number entry → SMS received → code verified → enrollment confirmed
+- [ ] Login flow correctly handles MFA: password → SMS code → verified → session established
+- [ ] Login rejects authentication when MFA code is incorrect
+- [ ] Login rejects authentication when MFA is enrolled but `REQUIRE_MFA=true` and MFA step is skipped
+- [ ] "Renvoyer le code" works with appropriate cooldown
+- [ ] MFA management page shows enrollment status and allows unenrollment
+- [ ] Phone number change (unenroll + re-enroll) works
+- [ ] CSP headers updated correctly — no console errors for blocked resources
+- [ ] DAV endpoints (Phase 10) are unaffected by App Check (server-side Admin SDK calls)
+- [ ] Full login flow on mobile: email → password → MFA code → dashboard (smooth, no layout issues)
 
 ---
 
