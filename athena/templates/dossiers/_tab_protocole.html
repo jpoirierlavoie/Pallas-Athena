@@ -1,0 +1,120 @@
+{# Tab: Protocole — Case protocol for this dossier #}
+<div class="space-y-6">
+
+  {% if protocol %}
+  {# ── Summary stats ──────────────────────────────────────────── #}
+  <div class="grid grid-cols-4 gap-3">
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Total</p>
+      <p class="text-lg font-semibold text-gray-900">{{ protocol_summary.total }}</p>
+    </div>
+    <div class="p-3 bg-green-50 rounded-lg text-center">
+      <p class="text-xs text-green-600 mb-1">Complétées</p>
+      <p class="text-lg font-semibold text-green-700">{{ protocol_summary.completed }}</p>
+    </div>
+    <div class="p-3 {{ 'bg-red-50' if protocol_summary.overdue > 0 else 'bg-gray-50' }} rounded-lg text-center">
+      <p class="text-xs {{ 'text-red-600' if protocol_summary.overdue > 0 else 'text-gray-500' }} mb-1">En retard</p>
+      <p class="text-lg font-semibold {{ 'text-red-700' if protocol_summary.overdue > 0 else 'text-gray-900' }}">{{ protocol_summary.overdue }}</p>
+    </div>
+    <div class="p-3 {{ 'bg-amber-50' if protocol_summary.upcoming > 0 else 'bg-gray-50' }} rounded-lg text-center">
+      <p class="text-xs {{ 'text-amber-600' if protocol_summary.upcoming > 0 else 'text-gray-500' }} mb-1">Prochaines</p>
+      <p class="text-lg font-semibold {{ 'text-amber-700' if protocol_summary.upcoming > 0 else 'text-gray-900' }}">{{ protocol_summary.upcoming }}</p>
+    </div>
+  </div>
+
+  {# ── Progress bar ────────────────────────────────────────────── #}
+  {% if protocol_summary.total > 0 %}
+  {% set pct = (protocol_summary.completed / protocol_summary.total * 100) | int %}
+  <div>
+    <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+      <span>{{ protocol_summary.completed }}/{{ protocol_summary.total }} étapes</span>
+      <span>{{ pct }}%</span>
+    </div>
+    <div class="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+      <div class="h-full rounded-full transition-all {{ 'bg-green-500' if pct == 100 else 'bg-indigo-500' }}"
+           style="width: {{ pct }}%"></div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Protocol info + link ────────────────────────────────────── #}
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <h3 class="text-sm font-semibold text-gray-900">{{ protocol.title }}</h3>
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ protocol_type_colors.get(protocol.protocol_type, 'bg-gray-100 text-gray-600') }}">
+          {{ protocol_type_short_labels.get(protocol.protocol_type, protocol.protocol_type) }}
+        </span>
+      </div>
+      <a href="{{ url_for('protocols.protocol_detail', protocol_id=protocol.id) }}"
+         class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+        Voir le protocole
+      </a>
+    </div>
+
+    {# ── Step list (compact) ──────────────────────────────────── #}
+    {% set steps = protocol.steps or [] %}
+    {% set now_utc = now %}
+    {% if steps %}
+    <div class="flex flex-col gap-2">
+      {% for s in steps[:10] %}
+      {% set is_completed = s.status == 'complété' %}
+      {% set is_overdue = s.deadline_date and s.deadline_date < now_utc and not is_completed %}
+      <div class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 {{ 'opacity-60' if is_completed }}">
+        {# Status dot #}
+        {% if is_completed %}
+        <div class="w-5 h-5 rounded border-2 border-green-500 bg-green-500 flex-shrink-0 flex items-center justify-center">
+          <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        </div>
+        {% elif is_overdue %}
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 bg-red-500 animate-pulse"></span>
+        {% else %}
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 bg-gray-300"></span>
+        {% endif %}
+
+        <div class="flex-1 min-w-0">
+          <span class="text-sm text-gray-900 {{ 'line-through' if is_completed }}">{{ s.title }}</span>
+          {% if s.deadline_date and s.deadline_date.strftime is defined %}
+          {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
+          <span class="text-xs {{ 'text-red-600 font-semibold' if is_overdue else 'text-gray-500' }} ml-2">
+            {{ s.deadline_date.strftime('%d') }} {{ month_short[s.deadline_date.month] }}
+            {% if is_overdue %}(en retard){% endif %}
+          </span>
+          {% endif %}
+        </div>
+
+        {% if s.deadline_locked %}
+        <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z"/>
+        </svg>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% if steps | length > 10 %}
+      <a href="{{ url_for('protocols.protocol_detail', protocol_id=protocol.id) }}"
+         class="text-xs text-center text-indigo-600 hover:text-indigo-700 py-2">
+        Voir les {{ steps | length }} étapes
+      </a>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm text-center py-4">Aucune étape dans le protocole.</p>
+    {% endif %}
+  </div>
+
+  {% else %}
+  {# ── No protocol — show creation prompt ──────────────────────── #}
+  <div class="flex flex-col items-center justify-center py-8 text-center">
+    <svg class="w-10 h-10 text-gray-300 mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15a2.25 2.25 0 0 1 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z"/>
+    </svg>
+    <p class="text-sm text-gray-500 mb-3">Aucun protocole pour ce dossier.</p>
+    <a href="{{ url_for('protocols.protocol_new', dossier_id=dossier.id) }}"
+       class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      Créer un protocole
+    </a>
+  </div>
+  {% endif %}
+
+</div>

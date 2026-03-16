@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier le protocole' if protocol and protocol.id else 'Nouveau protocole' }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6"
+     x-data="{
+       protocolType: '{{ (protocol.protocol_type or '') if protocol else '' }}',
+       deleteOpen: false
+     }">
+
+  {# ── Back ──────────────────────────────────────────────────── #}
+  {% if protocol and protocol.id is defined and protocol.id %}
+  <a href="{{ url_for('protocols.protocol_detail', protocol_id=protocol.id) }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    Protocole
+  </a>
+  {% elif dossier %}
+  <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    {{ dossier.file_number }} — {{ dossier.title }}
+  </a>
+  {% endif %}
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">
+    {{ 'Modifier le protocole' if edit_mode is defined and edit_mode else 'Nouveau protocole' }}
+  </h1>
+
+  {# ── Errors ────────────────────────────────────────────────── #}
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Form ──────────────────────────────────────────────────── #}
+  <form method="post"
+        action="{{ url_for('protocols.protocol_update', protocol_id=protocol.id) if edit_mode is defined and edit_mode and protocol and protocol.id else url_for('protocols.protocol_create') }}"
+        class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if dossier %}
+    <input type="hidden" name="dossier_id" value="{{ dossier.id }}">
+    {% endif %}
+
+    {# ── Dossier info (read-only) ─────────────────────────────── #}
+    {% if dossier %}
+    <div class="p-4 bg-gray-50 rounded-xl border border-gray-200">
+      <p class="text-xs text-gray-500 mb-1">Dossier</p>
+      <p class="text-sm font-medium text-gray-900">{{ dossier.file_number }} — {{ dossier.title }}</p>
+    </div>
+    {% endif %}
+
+    {# ── Protocol type selection (create mode only) ───────────── #}
+    {% if not (edit_mode is defined and edit_mode) %}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-3">Type de protocole *</label>
+      <div class="grid grid-cols-1 gap-3">
+
+        {# CQ Simplifié #}
+        <label class="relative cursor-pointer">
+          <input type="radio" name="protocol_type" value="cq_simplifié"
+                 x-model="protocolType"
+                 class="peer sr-only"
+                 {{ 'checked' if protocol and protocol.protocol_type == 'cq_simplifié' }}>
+          <div class="p-4 rounded-xl border-2 transition-colors
+                      peer-checked:border-blue-500 peer-checked:bg-blue-50
+                      border-gray-200 hover:border-gray-300">
+            <div class="flex items-start gap-3">
+              <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 mt-0.5 flex-shrink-0">CQ</span>
+              <div>
+                <p class="text-sm font-semibold text-gray-900">Cour du Québec — Simplifié</p>
+                <p class="text-xs text-gray-500 mt-1">Protocole prescrit par le C.p.c. avec délais fixes. Les étapes obligatoires ne peuvent pas être modifiées.</p>
+              </div>
+            </div>
+          </div>
+        </label>
+
+        {# CS Ordinaire #}
+        <label class="relative cursor-pointer">
+          <input type="radio" name="protocol_type" value="cs_ordinaire"
+                 x-model="protocolType"
+                 class="peer sr-only"
+                 {{ 'checked' if protocol and protocol.protocol_type == 'cs_ordinaire' }}>
+          <div class="p-4 rounded-xl border-2 transition-colors
+                      peer-checked:border-indigo-500 peer-checked:bg-indigo-50
+                      border-gray-200 hover:border-gray-300">
+            <div class="flex items-start gap-3">
+              <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-100 text-indigo-700 mt-0.5 flex-shrink-0">CS</span>
+              <div>
+                <p class="text-sm font-semibold text-gray-900">Cour supérieure — Ordinaire</p>
+                <p class="text-xs text-gray-500 mt-1">Protocole standard avec jalons habituels. Les dates sont à adapter selon l'entente des parties ou l'ordonnance du tribunal.</p>
+              </div>
+            </div>
+          </div>
+        </label>
+
+        {# Conventionnel #}
+        <label class="relative cursor-pointer">
+          <input type="radio" name="protocol_type" value="conventionnel"
+                 x-model="protocolType"
+                 class="peer sr-only"
+                 {{ 'checked' if protocol and protocol.protocol_type == 'conventionnel' }}>
+          <div class="p-4 rounded-xl border-2 transition-colors
+                      peer-checked:border-gray-500 peer-checked:bg-gray-50
+                      border-gray-200 hover:border-gray-300">
+            <div class="flex items-start gap-3">
+              <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-200 text-gray-700 mt-0.5 flex-shrink-0">Conv.</span>
+              <div>
+                <p class="text-sm font-semibold text-gray-900">Conventionnel</p>
+                <p class="text-xs text-gray-500 mt-1">Protocole entièrement personnalisé. Pour les appels, l'arbitrage, les tribunaux administratifs, ou toute procédure non standard.</p>
+              </div>
+            </div>
+          </div>
+        </label>
+
+      </div>
+    </div>
+    {% endif %}
+
+    {# ── Title ─────────────────────────────────────────────────── #}
+    <div>
+      <label for="title" class="block text-sm font-medium text-gray-700 mb-1">Titre</label>
+      <input type="text" id="title" name="title"
+             value="{{ protocol.title if protocol and protocol.title else 'Protocole de l\'instance' }}"
+             placeholder="Protocole de l'instance"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+    </div>
+
+    {# ── Start date ────────────────────────────────────────────── #}
+    <div>
+      <label for="start_date" class="block text-sm font-medium text-gray-700 mb-1">Date de début *</label>
+      <input type="date" id="start_date" name="start_date"
+             value="{{ protocol.start_date.strftime('%Y-%m-%d') if protocol and protocol.start_date and protocol.start_date.strftime is defined else '' }}"
+             required
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <div class="mt-1.5">
+        <p x-show="protocolType === 'cq_simplifié'" x-cloak class="text-xs text-gray-500">
+          Date de la signification de l'avis d'assignation. Les délais seront calculés automatiquement à partir de cette date.
+        </p>
+        <p x-show="protocolType === 'cs_ordinaire'" x-cloak class="text-xs text-gray-500">
+          Date du dépôt ou de l'approbation du protocole. Les dates suggérées seront calculées à partir de cette date, mais vous pourrez les modifier.
+        </p>
+        <p x-show="protocolType === 'conventionnel'" x-cloak class="text-xs text-gray-500">
+          Date de référence pour le protocole. Vous définirez les échéances de chaque étape manuellement.
+        </p>
+      </div>
+    </div>
+
+    {# ── Status (edit mode only) ───────────────────────────────── #}
+    {% if edit_mode is defined and edit_mode %}
+    <div>
+      <label for="status" class="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+      <select id="status" name="status"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for key in valid_statuses %}
+        <option value="{{ key }}" {{ 'selected' if protocol and protocol.status == key }}>
+          {{ status_labels.get(key, key) }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+
+    {# ── Notes ─────────────────────────────────────────────────── #}
+    <div>
+      <label for="notes" class="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+      <textarea id="notes" name="notes" rows="3"
+                placeholder="Notes supplémentaires…"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ protocol.notes if protocol and protocol.notes else '' }}</textarea>
+    </div>
+
+    {# ── Auto-create tasks toggle (create mode only) ──────────── #}
+    {% if not (edit_mode is defined and edit_mode) %}
+    <div class="flex items-center gap-3 p-4 bg-gray-50 rounded-xl">
+      <input type="checkbox" id="auto_create_tasks" name="auto_create_tasks"
+             class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+      <label for="auto_create_tasks" class="text-sm text-gray-700">
+        <span class="font-medium">Créer les tâches automatiquement</span>
+        <span class="block text-xs text-gray-500 mt-0.5">Une tâche sera créée pour chaque étape du protocole.</span>
+      </label>
+    </div>
+    {% endif %}
+
+    {# ── Actions ───────────────────────────────────────────────── #}
+    <div class="flex gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        {{ 'Enregistrer' if edit_mode is defined and edit_mode else 'Créer le protocole' }}
+      </button>
+      {% if edit_mode is defined and edit_mode and protocol and protocol.id %}
+      <a href="{{ url_for('protocols.protocol_detail', protocol_id=protocol.id) }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+      {% elif dossier %}
+      <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+      {% endif %}
+    </div>
+  </form>
+
+  {# ── Delete button (edit mode only) ─────────────────────── #}
+  {% if edit_mode is defined and edit_mode and protocol and protocol.id %}
+  <div class="mt-6 pt-6 border-t border-gray-200">
+    <button @click="deleteOpen = true"
+            class="text-sm text-red-600 hover:text-red-700 font-medium">
+      Supprimer ce protocole
+    </button>
+    <div x-show="deleteOpen" @keydown.escape.window="deleteOpen = false" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div @click.outside="deleteOpen = false"
+           class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+        <div class="p-6">
+          <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce protocole ?</h3>
+          <p class="text-sm text-gray-600 mb-6">Cette action est irréversible. Toutes les étapes seront supprimées.</p>
+          <div class="flex gap-3 justify-end">
+            <button @click="deleteOpen = false"
+                    class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+              Annuler
+            </button>
+            <form method="post" action="{{ url_for('protocols.protocol_delete', protocol_id=protocol.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+                Supprimer
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

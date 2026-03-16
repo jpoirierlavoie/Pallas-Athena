@@ -39,6 +39,13 @@ from models.task import (
     get_task_summary,
     list_tasks,
 )
+from models.protocol import (
+    PROTOCOL_TYPE_COLORS,
+    PROTOCOL_TYPE_SHORT_LABELS,
+    check_overdue_steps,
+    get_protocol_for_dossier,
+    get_protocol_summary,
+)
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -244,7 +251,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "facturation": "dossiers/_tab_facturation.html",
         "audiences": "dossiers/_tab_audiences.html",
         "taches": "dossiers/_tab_taches.html",
-        "protocole": "dossiers/_tab_placeholder.html",
+        "protocole": "dossiers/_tab_protocole.html",
         "documents": "dossiers/_tab_placeholder.html",
     }
 
@@ -270,6 +277,18 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["category_labels"] = TASK_CATEGORY_LABELS
         ctx["priority_labels"] = TASK_PRIORITY_LABELS
         ctx["status_labels"] = TASK_STATUS_LABELS
+        ctx["now"] = datetime.now(timezone.utc)
+
+    # Load protocol data for the protocole tab
+    if tab_name == "protocole":
+        protocol = get_protocol_for_dossier(dossier_id)
+        if protocol:
+            check_overdue_steps(protocol["id"])
+            protocol = get_protocol_for_dossier(dossier_id)
+        ctx["protocol"] = protocol
+        ctx["protocol_summary"] = get_protocol_summary(dossier_id)
+        ctx["protocol_type_colors"] = PROTOCOL_TYPE_COLORS
+        ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS
         ctx["now"] = datetime.now(timezone.utc)
 
     # Load invoice data for the facturation tab
