@@ -68,7 +68,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase 6 — Hearing Dates and Calendar + CalDAV Foundation
+Phase 7 — Task Management + VTODO Foundation
 
 ## Phase Checklist
 - [*] Phase 1: Scaffolding, Auth, Security
@@ -77,7 +77,7 @@ Phase 6 — Hearing Dates and Calendar + CalDAV Foundation
 - [*] Phase 4: Time Tracking + Expense Management
 - [*] Phase 5: Invoicing (GST/QST)
 - [*] Phase 6: Hearing Dates + CalDAV Foundation
-- [ ] Phase 7: Task Management + VTODO Foundation
+- [*] Phase 7: Task Management + VTODO Foundation
 - [ ] Phase 8: Case Protocols
 - [ ] Phase 9: Document Storage
 - [ ] Phase 10: DAV Protocol Layer (CardDAV, CalDAV, RFC-5545)

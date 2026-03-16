@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Tâches — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+  {# ── Header ──────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-gray-900">Tâches</h1>
+    <a href="{{ url_for('tasks.task_new') }}"
+       class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      Nouvelle tâche
+    </a>
+  </div>
+
+  {# ── Filters ─────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3 mb-4">
+    {# Priority filter #}
+    <select name="priority"
+            hx-get="{{ url_for('tasks.task_list') }}"
+            hx-trigger="change"
+            hx-target="#task-content"
+            hx-include="[name='category'], [name='dossier']"
+            class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <option value="" {{ 'selected' if not priority_filter }}>Toutes priorités</option>
+      {% for key in valid_priorities %}
+      <option value="{{ key }}" {{ 'selected' if priority_filter == key }}>{{ priority_labels.get(key, key) }}</option>
+      {% endfor %}
+    </select>
+
+    {# Category filter #}
+    <select name="category"
+            hx-get="{{ url_for('tasks.task_list') }}"
+            hx-trigger="change"
+            hx-target="#task-content"
+            hx-include="[name='priority'], [name='dossier']"
+            class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <option value="" {{ 'selected' if not category_filter }}>Toutes catégories</option>
+      {% for key in valid_categories %}
+      <option value="{{ key }}" {{ 'selected' if category_filter == key }}>{{ category_labels.get(key, key) }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="dossier" value="{{ dossier_filter }}">
+  </div>
+
+  {# ── Content area ──────────────────────────────────────────── #}
+  <div id="task-content">
+    {% include "tasks/_task_rows.html" %}
+  </div>
+
+  {# ── Mobile FAB ────────────────────────────────────────────── #}
+  <div class="md:hidden fixed bottom-20 right-4 z-30">
+    <a href="{{ url_for('tasks.task_new') }}"
+       class="w-14 h-14 flex items-center justify-center text-white bg-indigo-600 rounded-full shadow-lg">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+    </a>
+  </div>
+</div>
+{% endblock %}

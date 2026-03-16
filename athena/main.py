@@ -49,6 +49,7 @@ def create_app() -> Flask:
     from routes.time_expenses import time_expenses_bp
     from routes.invoices import invoices_bp
     from routes.hearings import hearings_bp
+    from routes.tasks import tasks_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
@@ -57,6 +58,7 @@ def create_app() -> Flask:
     app.register_blueprint(time_expenses_bp)
     app.register_blueprint(invoices_bp)
     app.register_blueprint(hearings_bp)
+    app.register_blueprint(tasks_bp)
 
     return app
 

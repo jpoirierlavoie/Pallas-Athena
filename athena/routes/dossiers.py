@@ -32,6 +32,13 @@ from models.hearing import (
     get_hearing_summary,
     list_hearings,
 )
+from models.task import (
+    CATEGORY_LABELS as TASK_CATEGORY_LABELS,
+    PRIORITY_LABELS as TASK_PRIORITY_LABELS,
+    STATUS_LABELS as TASK_STATUS_LABELS,
+    get_task_summary,
+    list_tasks,
+)
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -236,7 +243,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "temps": "dossiers/_tab_temps.html",
         "facturation": "dossiers/_tab_facturation.html",
         "audiences": "dossiers/_tab_audiences.html",
-        "taches": "dossiers/_tab_placeholder.html",
+        "taches": "dossiers/_tab_taches.html",
         "protocole": "dossiers/_tab_placeholder.html",
         "documents": "dossiers/_tab_placeholder.html",
     }
@@ -255,6 +262,15 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["hearing_summary"] = get_hearing_summary(dossier_id)
         ctx["hearing_type_labels"] = HEARING_TYPE_LABELS
         ctx["status_labels"] = HEARING_STATUS_LABELS
+
+    # Load task data for the taches tab
+    if tab_name == "taches":
+        ctx["tasks"] = list_tasks(dossier_id=dossier_id)
+        ctx["task_summary"] = get_task_summary(dossier_id)
+        ctx["category_labels"] = TASK_CATEGORY_LABELS
+        ctx["priority_labels"] = TASK_PRIORITY_LABELS
+        ctx["status_labels"] = TASK_STATUS_LABELS
+        ctx["now"] = datetime.now(timezone.utc)
 
     # Load invoice data for the facturation tab
     if tab_name == "facturation":
