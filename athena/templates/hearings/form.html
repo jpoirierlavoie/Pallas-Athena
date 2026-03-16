@@ -2,6 +2,7 @@
 {% block title %}{{ 'Modifier l\'audience' if hearing and hearing.id else 'Nouvelle audience' }} — Pallas Athena{% endblock %}
 
 {% block content %}
+<script>const TITLE_SUGGESTIONS = {{ hearing_title_suggestions | tojson }};</script>
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        dossierId: '{{ (hearing.dossier_id or '') if hearing else '' }}',
@@ -9,7 +10,7 @@
        searchOpen: false,
        hearingType: '{{ (hearing.hearing_type or 'audience') if hearing else 'audience' }}',
        allDay: {{ 'true' if hearing and hearing.all_day else 'false' }},
-       titleSuggestions: {{ hearing_title_suggestions | tojson }},
+       titleSuggestions: TITLE_SUGGESTIONS,
        suggestTitle() {
          let el = this.$refs.titleInput;
          if (!el.value || el.value === this.titleSuggestions[this.oldType]) {
