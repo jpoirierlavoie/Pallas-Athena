@@ -5,8 +5,8 @@
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        feeType: '{{ (dossier.fee_type if dossier else 'hourly') }}',
-       clients: {{ (dossier.clients | tojson) if dossier and dossier.clients else '[]' }},
-       opposingParties: {{ (dossier.opposing_parties | tojson) if dossier and dossier.opposing_parties else '[]' }},
+       clients: {{ (dossier.clients | tojson | forceescape) if dossier and dossier.clients else '[]' }},
+       opposingParties: {{ (dossier.opposing_parties | tojson | forceescape) if dossier and dossier.opposing_parties else '[]' }},
        clientQuery: '',
        opposingQuery: ''
      }">
