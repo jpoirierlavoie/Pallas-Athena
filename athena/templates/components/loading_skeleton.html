@@ -1,0 +1,13 @@
+{# Loading skeleton for HTMX requests.
+   Use as hx-indicator target, or include directly.
+   Pass: rows (default 3) to control height.
+#}
+<div class="space-y-3 py-4">
+  {% for i in range(rows|default(3)) %}
+    <div class="flex items-center gap-3">
+      <div class="skeleton h-4 w-16 flex-shrink-0"></div>
+      <div class="skeleton h-4 flex-1"></div>
+      <div class="skeleton h-4 w-12 flex-shrink-0"></div>
+    </div>
+  {% endfor %}
+</div>

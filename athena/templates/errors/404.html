@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Page introuvable — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="flex flex-col items-center justify-center min-h-[60vh] p-6 text-center">
+  <svg class="w-16 h-16 text-gray-300 mb-6" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round"
+          d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z"/>
+  </svg>
+  <h1 class="text-2xl font-semibold text-gray-900 mb-2">Page introuvable</h1>
+  <p class="text-sm text-gray-500 mb-6 max-w-sm">
+    La page que vous cherchez n'existe pas ou a été déplacée.
+  </p>
+  <a href="/"
+     class="inline-flex items-center gap-2 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"/></svg>
+    Retour au tableau de bord
+  </a>
+</div>
+{% endblock %}

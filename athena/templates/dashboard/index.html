@@ -3,19 +3,223 @@
 {% block title %}Tableau de bord — Pallas Athena{% endblock %}
 
 {% block content %}
-<div class="p-6 max-w-4xl mx-auto">
-  <h1 class="text-xl font-semibold text-gray-900 mb-6">Tableau de bord</h1>
+<div class="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
 
-  {# Phase 1 placeholder — will be populated in Phase 11 #}
-  <div class="bg-white rounded-2xl border border-gray-200 p-8 text-center">
-    <svg class="mx-auto mb-4 w-12 h-12 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round"
-            d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/>
-    </svg>
-    <p class="text-gray-500 text-sm">
-      Bienvenue dans Pallas Athena.<br>
-      Les modules seront ajoutés progressivement.
-    </p>
+  <h1 class="text-xl font-semibold text-gray-900">Tableau de bord</h1>
+
+  {# ── Quick Stats ──────────────────────────────────────────────────── #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    {# Open dossiers #}
+    <a href="/dossiers?status=actif"
+       class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Dossiers ouverts</p>
+      <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.open_dossiers }}</p>
+    </a>
+
+    {# Unbilled hours #}
+    <a href="/temps"
+       class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Heures non facturées</p>
+      <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.unbilled_hours }}h</p>
+      <p class="text-xs text-gray-400 mt-0.5">{{ "%.2f"|format(stats.unbilled_amount / 100) }}&nbsp;$</p>
+    </a>
+
+    {# Outstanding invoices #}
+    <a href="/factures?status=envoyée"
+       class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Factures impayées</p>
+      <p class="text-2xl font-semibold text-gray-900 mt-1">{{ "%.2f"|format(stats.outstanding_invoices / 100) }}&nbsp;$</p>
+    </a>
+
+    {# Quick actions #}
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Actions rapides</p>
+      <div class="flex flex-col gap-1.5">
+        <a href="/temps/time/form" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          Temps
+        </a>
+        <a href="/dossiers/create" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          Dossier
+        </a>
+        <a href="/taches/create" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          Tâche
+        </a>
+      </div>
+    </div>
   </div>
+
+  {# ── Short-term Schedule (7 days) ────────────────────────────────── #}
+  <section class="bg-white rounded-xl border border-gray-200 p-4 md:p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-2">
+      <svg class="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/></svg>
+      Agenda — 7 prochains jours
+    </h2>
+
+    {% if short_term_hearings %}
+      <div class="divide-y divide-gray-100">
+        {% for h in short_term_hearings %}
+          <a href="/audiences/{{ h.id }}" class="flex items-start gap-3 py-2.5 hover:bg-gray-50 -mx-2 px-2 rounded-lg transition-colors">
+            <div class="flex-shrink-0 w-12 text-center">
+              <p class="text-xs text-gray-400 uppercase">
+                {{ h.start_datetime|to_mtl|default("—") and (h.start_datetime|to_mtl).strftime('%a') if h.start_datetime else '—' }}
+              </p>
+              <p class="text-lg font-semibold text-gray-900">
+                {{ (h.start_datetime|to_mtl).strftime('%d') if h.start_datetime else '—' }}
+              </p>
+              <p class="text-xs text-gray-400">
+                {{ (h.start_datetime|to_mtl).strftime('%b') if h.start_datetime else '' }}
+              </p>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-gray-900 truncate">{{ h.title }}</p>
+              <p class="text-xs text-gray-500 truncate">{{ h.dossier_file_number }} — {{ h.dossier_title }}</p>
+              {% if not h.all_day and h.start_datetime %}
+                <p class="text-xs text-gray-400">{{ (h.start_datetime|to_mtl).strftime('%H:%M') }}{% if h.end_datetime %} – {{ (h.end_datetime|to_mtl).strftime('%H:%M') }}{% endif %}</p>
+              {% endif %}
+              {% if h.location %}
+                <p class="text-xs text-gray-400 truncate">{{ h.location }}</p>
+              {% endif %}
+            </div>
+            <span class="flex-shrink-0 text-xs px-2 py-0.5 rounded-full
+              {% if h.status == 'confirmée' %}bg-green-100 text-green-700
+              {% elif h.status == 'à_confirmer' %}bg-amber-100 text-amber-700
+              {% elif h.status == 'reportée' %}bg-gray-100 text-gray-600
+              {% else %}bg-gray-100 text-gray-500{% endif %}">
+              {{ h.status|replace('_', ' ')|capitalize }}
+            </span>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-400 py-4 text-center">Aucune audience prévue à court terme.</p>
+    {% endif %}
+  </section>
+
+  {# ── Urgent Items ─────────────────────────────────────────────────── #}
+  {% if urgent_tasks or urgent_protocol_steps or prescription_alerts %}
+  <section class="bg-white rounded-xl border border-gray-200 p-4 md:p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-2">
+      <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>
+      Éléments urgents
+    </h2>
+
+    {# Prescription alerts #}
+    {% if prescription_alerts %}
+      <div class="mb-4">
+        <p class="text-xs font-medium text-red-600 uppercase tracking-wide mb-2">Prescriptions à surveiller</p>
+        <div class="space-y-1.5">
+          {% for d in prescription_alerts %}
+            <a href="/dossiers/{{ d.id }}" class="flex items-center justify-between py-1.5 px-2 -mx-2 rounded-lg hover:bg-red-50 transition-colors">
+              <div class="min-w-0">
+                <p class="text-sm text-gray-900 truncate">{{ d.file_number }} — {{ d.title }}</p>
+              </div>
+              <span class="flex-shrink-0 text-xs font-medium
+                {% if d._days_remaining <= 14 %}text-red-600{% elif d._days_remaining <= 30 %}text-amber-600{% else %}text-gray-500{% endif %}">
+                {% if d._days_remaining == 0 %}Aujourd'hui
+                {% elif d._days_remaining == 1 %}Demain
+                {% else %}{{ d._days_remaining }} jours{% endif %}
+              </span>
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+
+    {# Urgent tasks #}
+    {% if urgent_tasks %}
+      <div class="mb-4">
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Tâches à échéance rapprochée</p>
+        <div class="space-y-1.5">
+          {% for t in urgent_tasks[:10] %}
+            <a href="/taches/{{ t.id }}" class="flex items-center justify-between py-1.5 px-2 -mx-2 rounded-lg hover:bg-gray-50 transition-colors">
+              <div class="flex items-center gap-2 min-w-0">
+                {% if t.priority == 'haute' %}
+                  <span class="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0"></span>
+                {% elif t.priority == 'normale' %}
+                  <span class="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0"></span>
+                {% else %}
+                  <span class="w-1.5 h-1.5 rounded-full bg-gray-400 flex-shrink-0"></span>
+                {% endif %}
+                <p class="text-sm text-gray-900 truncate">{{ t.title }}</p>
+                {% if t.dossier_file_number %}
+                  <span class="text-xs text-gray-400 flex-shrink-0">{{ t.dossier_file_number }}</span>
+                {% endif %}
+              </div>
+              <span class="flex-shrink-0 text-xs
+                {% if t._overdue %}text-red-600 font-medium{% else %}text-gray-500{% endif %}">
+                {% if t._overdue %}En retard{% else %}
+                  {% set days_left = ((t.due_date - now).days) %}
+                  {% if days_left == 0 %}Aujourd'hui
+                  {% elif days_left == 1 %}Demain
+                  {% else %}{{ days_left }}j{% endif %}
+                {% endif %}
+              </span>
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+
+    {# Urgent protocol steps #}
+    {% if urgent_protocol_steps %}
+      <div>
+        <p class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Étapes de protocole à échéance</p>
+        <div class="space-y-1.5">
+          {% for s in urgent_protocol_steps[:10] %}
+            <a href="/protocoles/{{ s._protocol_id }}" class="flex items-center justify-between py-1.5 px-2 -mx-2 rounded-lg hover:bg-gray-50 transition-colors">
+              <div class="min-w-0">
+                <p class="text-sm text-gray-900 truncate">{{ s.title }}</p>
+                <p class="text-xs text-gray-400 truncate">{{ s._dossier_file_number }}</p>
+              </div>
+              <span class="flex-shrink-0 text-xs
+                {% if s._overdue %}text-red-600 font-medium{% else %}text-gray-500{% endif %}">
+                {% if s._overdue %}En retard{% else %}
+                  {% set days_left = ((s.deadline_date - now).days) %}
+                  {% if days_left == 0 %}Aujourd'hui
+                  {% elif days_left == 1 %}Demain
+                  {% else %}{{ days_left }}j{% endif %}
+                {% endif %}
+              </span>
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {# ── Long-term Planning (next 2 months, beyond 7 days) ────────────── #}
+  <section class="bg-white rounded-xl border border-gray-200 p-4 md:p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-2">
+      <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/></svg>
+      Planification — 2 prochains mois
+    </h2>
+
+    {% if long_term_hearings %}
+      <div class="divide-y divide-gray-100">
+        {% for h in long_term_hearings %}
+          <a href="/audiences/{{ h.id }}" class="flex items-center gap-3 py-2 hover:bg-gray-50 -mx-2 px-2 rounded-lg transition-colors">
+            <div class="flex-shrink-0 text-xs text-gray-500 w-20">
+              {% if h.start_datetime %}
+                {{ (h.start_datetime|to_mtl).strftime('%d %b %Y') }}
+              {% else %}
+                —
+              {% endif %}
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm text-gray-900 truncate">{{ h.title }}</p>
+              <p class="text-xs text-gray-400 truncate">{{ h.dossier_file_number }} — {{ h.dossier_title }}</p>
+            </div>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-400 py-4 text-center">Aucune audience prévue pour les deux prochains mois.</p>
+    {% endif %}
+  </section>
+
 </div>
 {% endblock %}

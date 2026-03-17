@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import firebase_admin
 from firebase_admin import credentials
-from flask import Flask
+from flask import Flask, render_template as _render_template
 
 from config import Config
 from security import init_security
@@ -85,6 +85,19 @@ def create_app() -> Flask:
     csrf.exempt(carddav_bp)
     csrf.exempt(caldav_bp)
     csrf.exempt(rfc5545_bp)
+
+    # ── Error handlers ─────────────────────────────────────────────────
+    @app.errorhandler(404)
+    def page_not_found(e):  # type: ignore[no-untyped-def]
+        return _render_template("errors/404.html"), 404
+
+    @app.errorhandler(500)
+    def internal_server_error(e):  # type: ignore[no-untyped-def]
+        return _render_template("errors/500.html"), 500
+
+    @app.errorhandler(413)
+    def request_entity_too_large(e):  # type: ignore[no-untyped-def]
+        return _render_template("errors/404.html"), 413
 
     return app
 
