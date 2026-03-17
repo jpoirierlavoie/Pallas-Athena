@@ -29,14 +29,14 @@ dav_bp = Blueprint("dav", __name__)
 
 # ── Well-known redirects (DavX5 discovery) ────────────────────────────────
 
-@dav_bp.route("/.well-known/carddav")
+@dav_bp.route("/.well-known/carddav", methods=["GET", "PROPFIND"])
 def well_known_carddav() -> Response:
-    return redirect("/dav/addressbook/", code=301)
+    return redirect("/dav/", code=301)
 
 
-@dav_bp.route("/.well-known/caldav")
+@dav_bp.route("/.well-known/caldav", methods=["GET", "PROPFIND"])
 def well_known_caldav() -> Response:
-    return redirect("/dav/calendar/", code=301)
+    return redirect("/dav/", code=301)
 
 
 # ── DAV root (principal discovery) ────────────────────────────────────────
