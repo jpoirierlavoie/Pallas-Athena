@@ -29,13 +29,16 @@ limiter = Limiter(
 CSP = (
     "default-src 'self'; "
     "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com "
-    "https://www.gstatic.com https://apis.google.com; "
+    "https://www.gstatic.com https://apis.google.com "
+    "https://www.google.com; "
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "img-src 'self' data: blob: https://*.googleapis.com https://storage.googleapis.com; "
     "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com "
-    "https://identitytoolkit.googleapis.com https://storage.googleapis.com; "
+    "https://identitytoolkit.googleapis.com https://storage.googleapis.com "
+    "https://www.google.com https://recaptchaenterprise.googleapis.com; "
     "font-src 'self' https://cdn.jsdelivr.net; "
-    "frame-src https://*.firebaseapp.com https://storage.googleapis.com blob:; "
+    "frame-src https://*.firebaseapp.com https://storage.googleapis.com blob: "
+    "https://www.google.com https://recaptcha.google.com; "
     "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 )
 

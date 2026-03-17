@@ -40,17 +40,17 @@ def login_required(f: Callable[..., Any]) -> Callable[..., Any]:
     return decorated
 
 
-def verify_and_create_session(id_token: str) -> bool:
+def verify_and_create_session(id_token: str) -> tuple[bool, str]:
     """Verify a Firebase ID token and establish a server-side session.
 
-    Returns ``True`` if the token is valid AND the email matches the
-    single authorized user.  Returns ``False`` otherwise.
+    Returns a tuple of (success: bool, error_message: str).
+    On success error_message is empty.
     """
     try:
         decoded = firebase_auth.verify_id_token(id_token)
     except Exception as exc:
         current_app.logger.error("Firebase token verification failed: %s", exc)
-        return False
+        return False, "Jeton invalide."
 
     email = decoded.get("email", "")
     authorized_email = current_app.config["AUTHORIZED_USER_EMAIL"]
@@ -59,7 +59,17 @@ def verify_and_create_session(id_token: str) -> bool:
         current_app.logger.warning(
             "Unauthorized login attempt: %s (expected %s)", email, authorized_email
         )
-        return False
+        return False, "Accès non autorisé."
+
+    # MFA strictness check: if REQUIRE_MFA is enabled, ensure the token
+    # was issued after MFA verification (contains sign_in_second_factor).
+    if current_app.config.get("REQUIRE_MFA", False):
+        firebase_claim = decoded.get("firebase", {})
+        if "sign_in_second_factor" not in firebase_claim:
+            current_app.logger.warning(
+                "MFA required but token lacks second factor claim for %s", email
+            )
+            return False, "Vérification en deux étapes requise."
 
     lifetime = current_app.config.get("SESSION_LIFETIME_HOURS", 12)
     now = datetime.now(timezone.utc)
@@ -70,4 +80,4 @@ def verify_and_create_session(id_token: str) -> bool:
     session["login_time"] = now
     session["expires_at"] = now + timedelta(hours=lifetime)
 
-    return True
+    return True, ""

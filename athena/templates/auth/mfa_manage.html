@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Gérer la vérification en deux étapes — Pallas Athena{% endblock %}
+
+{% block head %}
+<style>
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { animation: spin 0.7s linear infinite; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-lg mx-auto px-4 py-8">
+  <h1 class="text-xl font-semibold text-gray-900 mb-2">Vérification en deux étapes</h1>
+  <p class="text-sm text-gray-500 mb-6">
+    Gérez la vérification en deux étapes pour votre compte.
+  </p>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6"
+       x-data="mfaManage()"
+       x-init="checkStatus()">
+
+    {# ── Loading state ───────────────────────────────────────────── #}
+    <div x-show="status === 'loading'" class="text-center py-4">
+      <svg class="spinner mx-auto w-6 h-6 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+      </svg>
+      <p class="text-sm text-gray-400 mt-2">Chargement…</p>
+    </div>
+
+    {# ── Enrolled state ──────────────────────────────────────────── #}
+    <div x-show="status === 'enrolled'" x-cloak>
+      <div class="flex items-start gap-4 mb-6">
+        <div class="flex-shrink-0 w-10 h-10 rounded-full bg-green-50 flex items-center justify-center">
+          <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+          </svg>
+        </div>
+        <div>
+          <p class="text-sm font-medium text-gray-900">Activée</p>
+          <p class="text-sm text-gray-500" x-text="maskedPhone"></p>
+        </div>
+      </div>
+
+      <p x-show="error" x-text="error" x-cloak
+         class="text-sm text-red-600 mb-4"></p>
+      <p x-show="successMsg" x-text="successMsg" x-cloak
+         class="text-sm text-green-600 mb-4"></p>
+
+      <div class="flex flex-col gap-3 sm:flex-row">
+        <button @click="confirmUnenroll()"
+                :disabled="loading"
+                class="flex-1 flex items-center justify-center gap-2 rounded-lg border border-red-300 text-red-600
+                       text-sm font-medium py-2.5 hover:bg-red-50 disabled:opacity-60 transition-colors">
+          <svg x-show="loading && action === 'unenroll'" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+          </svg>
+          Désinscrire
+        </button>
+        <a href="/auth/mfa-setup"
+           class="flex-1 flex items-center justify-center gap-2 rounded-lg border border-gray-300 text-gray-700
+                  text-sm font-medium py-2.5 hover:bg-gray-50 transition-colors text-center">
+          Changer le numéro
+        </a>
+      </div>
+    </div>
+
+    {# ── Not enrolled state ──────────────────────────────────────── #}
+    <div x-show="status === 'not_enrolled'" x-cloak>
+      <div class="flex items-start gap-4 mb-6">
+        <div class="flex-shrink-0 w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center">
+          <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+          </svg>
+        </div>
+        <div>
+          <p class="text-sm font-medium text-gray-900">Non activée</p>
+          <p class="text-sm text-gray-500">Votre compte n'est pas protégé par la vérification en deux étapes.</p>
+        </div>
+      </div>
+
+      <a href="/auth/mfa-setup"
+         class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
+                text-sm font-medium py-2.5 hover:bg-gray-800 transition-colors">
+        Activer la vérification
+      </a>
+    </div>
+
+    {# ── Confirmation dialog ─────────────────────────────────────── #}
+    <div x-show="showConfirm" x-cloak
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
+         @click.self="showConfirm = false">
+      <div class="bg-white rounded-2xl shadow-xl border border-gray-200 p-6 max-w-sm w-full">
+        <h3 class="text-base font-semibold text-gray-900 mb-2">Désactiver la vérification ?</h3>
+        <p class="text-sm text-gray-500 mb-6">
+          Votre compte ne sera plus protégé par un code SMS. Cette action prend effet immédiatement.
+        </p>
+        <div class="flex gap-3">
+          <button @click="showConfirm = false"
+                  class="flex-1 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium py-2.5 hover:bg-gray-50">
+            Annuler
+          </button>
+          <button @click="unenroll()"
+                  :disabled="loading"
+                  class="flex-1 flex items-center justify-center gap-2 rounded-lg bg-red-600 text-white text-sm font-medium py-2.5 hover:bg-red-700 disabled:opacity-60">
+            <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+            </svg>
+            Confirmer
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+{# ── Firebase SDK ────────────────────────────────────────────────── #}
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
+
+<script>
+  {% if config.ENV == 'development' %}
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
+  {% endif %}
+
+  const firebaseApp = firebase.initializeApp({
+    apiKey: {{ firebase_api_key|tojson }},
+    authDomain: "{{ firebase_project_id }}.firebaseapp.com",
+    projectId: {{ firebase_project_id|tojson }}
+  });
+
+  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+  firebase.appCheck().activate(
+    new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
+    true
+  );
+  {% endif %}
+
+  const auth = firebase.auth();
+
+  function mfaManage() {
+    return {
+      status: 'loading',
+      maskedPhone: '',
+      error: '',
+      successMsg: '',
+      loading: false,
+      action: '',
+      showConfirm: false,
+      enrolledFactors: [],
+
+      checkStatus() {
+        // Wait for Firebase Auth to settle
+        auth.onAuthStateChanged((user) => {
+          if (!user) {
+            this.status = 'not_enrolled';
+            return;
+          }
+          this.enrolledFactors = user.multiFactor.enrolledFactors || [];
+          if (this.enrolledFactors.length > 0) {
+            const phone = this.enrolledFactors[0].phoneNumber || '';
+            // Mask: +1 514 •••-••34
+            if (phone.length >= 4) {
+              const last2 = phone.slice(-2);
+              const countryArea = phone.slice(0, phone.length - 7) || phone.slice(0, 2);
+              this.maskedPhone = countryArea + ' •••-••' + last2;
+            } else {
+              this.maskedPhone = phone;
+            }
+            this.status = 'enrolled';
+          } else {
+            this.status = 'not_enrolled';
+          }
+        });
+      },
+
+      confirmUnenroll() {
+        this.showConfirm = true;
+      },
+
+      async unenroll() {
+        this.error = '';
+        this.loading = true;
+        this.action = 'unenroll';
+        this.showConfirm = false;
+        try {
+          const user = auth.currentUser;
+          if (!user || this.enrolledFactors.length === 0) {
+            this.error = 'Aucun facteur à désinscrire.';
+            this.loading = false;
+            return;
+          }
+          await user.multiFactor.unenroll(this.enrolledFactors[0]);
+          this.status = 'not_enrolled';
+          this.enrolledFactors = [];
+          this.successMsg = 'Vérification en deux étapes désactivée.';
+        } catch (err) {
+          if (err.code === 'auth/requires-recent-login') {
+            this.error = 'Veuillez vous reconnecter avant de modifier la vérification.';
+          } else {
+            this.error = 'Erreur lors de la désinscription. Réessayez.';
+            console.error('Unenroll error:', err);
+          }
+        } finally {
+          this.loading = false;
+        }
+      }
+    };
+  }
+</script>
+{% endblock %}

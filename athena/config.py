@@ -25,6 +25,13 @@ class Config:
     DAV_USERNAME: str = os.environ.get("AUTHORIZED_USER_EMAIL", "")
     DAV_PASSWORD_HASH: str = os.environ.get("DAV_PASSWORD_HASH", "")
 
+    # App Check (reCAPTCHA Enterprise)
+    RECAPTCHA_ENTERPRISE_SITE_KEY: str = os.environ.get("RECAPTCHA_ENTERPRISE_SITE_KEY", "")
+    APPCHECK_DEBUG_TOKEN: str = os.environ.get("APPCHECK_DEBUG_TOKEN", "")  # local dev only
+
+    # Multi-Factor Authentication
+    REQUIRE_MFA: bool = os.environ.get("REQUIRE_MFA", "true").lower() == "true"
+
     # Rate limiting
     RATE_LIMIT_LOGIN: str = os.environ.get("RATE_LIMIT_LOGIN", "5 per minute")
 

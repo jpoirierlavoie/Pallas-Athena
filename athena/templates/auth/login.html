@@ -15,6 +15,7 @@
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
+    [x-cloak] { display: none !important; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { animation: spin 0.7s linear infinite; }
   </style>
@@ -25,7 +26,6 @@
 
     {# ── Header ──────────────────────────────────────────────────── #}
     <div class="text-center mb-8">
-      {# Shield / owl icon #}
       <svg class="mx-auto mb-4 w-12 h-12 text-gray-800" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round"
               d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z"/>
@@ -36,93 +36,334 @@
     {# ── Login card ──────────────────────────────────────────────── #}
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
 
-      <div class="mb-5">
-        <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Courriel</label>
-        <input id="email" type="email" required autocomplete="email"
-               x-model="email"
-               class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm
-                      focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+      {# ── State 1: email + password ─────────────────────────────── #}
+      <div x-show="step === 'login'" x-cloak:false>
+        <div class="mb-5">
+          <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Courriel</label>
+          <input id="email" type="email" required autocomplete="email"
+                 x-model="email"
+                 class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+        </div>
+
+        <div class="mb-6">
+          <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
+          <input id="password" type="password" required autocomplete="current-password"
+                 x-model="password"
+                 @keydown.enter="submit()"
+                 class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm
+                        focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+        </div>
+
+        {# Error message #}
+        <p x-show="error" x-text="error" x-cloak
+           class="text-sm text-red-600 mb-4"></p>
+
+        <button @click="submit()" :disabled="loading"
+                class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
+                       text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 transition-colors">
+          <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+          </svg>
+          <span x-text="loading ? 'Connexion…' : 'Connexion'"></span>
+        </button>
       </div>
 
-      <div class="mb-6">
-        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
-        <input id="password" type="password" required autocomplete="current-password"
-               x-model="password"
-               @keydown.enter="submit()"
-               class="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm
-                      focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+      {# ── State 2: MFA code entry ───────────────────────────────── #}
+      <div x-show="step === 'mfa'" x-cloak>
+        <div class="text-center mb-6">
+          <svg class="mx-auto mb-3 w-10 h-10 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 0 0 6 3.75v16.5a2.25 2.25 0 0 0 2.25 2.25h7.5A2.25 2.25 0 0 0 18 20.25V3.75a2.25 2.25 0 0 0-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-6 18h6"/>
+          </svg>
+          <p class="text-sm text-gray-600" x-text="mfaMessage"></p>
+        </div>
+
+        {# 6-digit code input #}
+        <div class="flex justify-center gap-2 mb-6">
+          <template x-for="(_, i) in 6" :key="i">
+            <input type="text" inputmode="numeric" maxlength="1"
+                   :id="'mfa-digit-' + i"
+                   x-on:input="handleDigitInput($event, i)"
+                   x-on:keydown.backspace="handleDigitBackspace($event, i)"
+                   x-on:paste.prevent="handlePaste($event)"
+                   class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
+                          focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+          </template>
+        </div>
+
+        <p x-show="error" x-text="error" x-cloak
+           class="text-sm text-red-600 mb-4 text-center"></p>
+
+        <button @click="verifyMfaCode()" :disabled="loading || mfaCode.length < 6"
+                class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
+                       text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 transition-colors mb-3">
+          <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+          </svg>
+          <span x-text="loading ? 'Vérification…' : 'Vérifier'"></span>
+        </button>
+
+        <div class="flex items-center justify-between text-sm">
+          <button @click="resendCode()" :disabled="resendCooldown > 0"
+                  class="text-indigo-600 hover:text-indigo-800 disabled:text-gray-400 disabled:cursor-not-allowed">
+            <span x-text="resendCooldown > 0 ? 'Renvoyer dans ' + resendCooldown + 's' : 'Renvoyer le code'"></span>
+          </button>
+          <button @click="cancelMfa()" class="text-gray-500 hover:text-gray-700">
+            Annuler
+          </button>
+        </div>
       </div>
 
-      {# Error message #}
-      <p x-show="error" x-text="error" x-cloak
-         class="text-sm text-red-600 mb-4"></p>
-
-      <button @click="submit()" :disabled="loading"
-              class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
-                     text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 transition-colors">
-        <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
-        </svg>
-        <span x-text="loading ? 'Connexion…' : 'Connexion'"></span>
-      </button>
     </div>
   </div>
 
-  {# ── Firebase Auth SDK (compat v9) ────────────────────────────── #}
+  {# ── reCAPTCHA container for phone auth ────────────────────────── #}
+  <div id="mfa-recaptcha-container"></div>
+
+  {# ── Firebase Auth SDK (compat v9) + App Check ─────────────────── #}
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
 
   <script>
-    firebase.initializeApp({
-      apiKey: "{{ firebase_api_key|default('') }}",
+    // ── Debug token for local development ──────────────────────────
+    {% if config.ENV == 'development' %}
+    self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
+    {% endif %}
+
+    // ── Firebase init ──────────────────────────────────────────────
+    const firebaseApp = firebase.initializeApp({
+      apiKey: {{ firebase_api_key|tojson }},
       authDomain: "{{ firebase_project_id }}.firebaseapp.com",
-      projectId: "{{ firebase_project_id }}"
+      projectId: {{ firebase_project_id|tojson }}
     });
+
+    // ── App Check (must be before any other Firebase calls) ────────
+    {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+    firebase.appCheck().activate(
+      new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
+      /* isTokenAutoRefreshEnabled */ true
+    );
+    {% endif %}
+
+    const auth = firebase.auth();
 
     function loginForm() {
       return {
+        // UI state
+        step: 'login',
         email: '',
         password: '',
         error: '',
         loading: false,
 
+        // MFA state
+        mfaMessage: '',
+        mfaCode: '',
+        mfaResolver: null,
+        mfaVerificationId: '',
+        recaptchaVerifier: null,
+        resendCooldown: 0,
+        resendTimer: null,
+
+        // Gather the 6 individual digit inputs into a single code string
+        get mfaCode() {
+          let code = '';
+          for (let i = 0; i < 6; i++) {
+            const el = document.getElementById('mfa-digit-' + i);
+            if (el) code += el.value;
+          }
+          return code;
+        },
+
+        handleDigitInput(event, index) {
+          const value = event.target.value.replace(/\D/g, '');
+          event.target.value = value.slice(0, 1);
+          if (value && index < 5) {
+            document.getElementById('mfa-digit-' + (index + 1)).focus();
+          }
+        },
+
+        handleDigitBackspace(event, index) {
+          if (!event.target.value && index > 0) {
+            document.getElementById('mfa-digit-' + (index - 1)).focus();
+          }
+        },
+
+        handlePaste(event) {
+          const text = (event.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+          for (let i = 0; i < 6 && i < text.length; i++) {
+            const el = document.getElementById('mfa-digit-' + i);
+            if (el) el.value = text[i];
+          }
+          // Focus the last filled or the next empty
+          const focusIndex = Math.min(text.length, 5);
+          document.getElementById('mfa-digit-' + focusIndex)?.focus();
+        },
+
+        clearDigits() {
+          for (let i = 0; i < 6; i++) {
+            const el = document.getElementById('mfa-digit-' + i);
+            if (el) el.value = '';
+          }
+        },
+
+        initRecaptcha() {
+          if (this.recaptchaVerifier) return;
+          this.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('mfa-recaptcha-container', {
+            size: 'invisible'
+          });
+        },
+
+        startResendCooldown() {
+          this.resendCooldown = 30;
+          if (this.resendTimer) clearInterval(this.resendTimer);
+          this.resendTimer = setInterval(() => {
+            this.resendCooldown--;
+            if (this.resendCooldown <= 0) clearInterval(this.resendTimer);
+          }, 1000);
+        },
+
         async submit() {
           this.error = '';
           this.loading = true;
           try {
-            const cred = await firebase.auth()
-              .signInWithEmailAndPassword(this.email, this.password);
-            const idToken = await cred.user.getIdToken();
-
-            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-            const body = new URLSearchParams({ id_token: idToken });
-            const res = await fetch('/auth/verify-token', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'X-CSRFToken': csrfToken
-              },
-              body
-            });
-
-            const data = await res.json();
-            if (data.ok) {
-              window.location.href = data.redirect;
-            } else {
-              this.error = data.error || 'Erreur inconnue.';
-            }
+            const cred = await auth.signInWithEmailAndPassword(this.email, this.password);
+            // MFA not enrolled or not required — proceed to backend
+            await this.postIdToken(cred.user);
           } catch (err) {
-            if (err.code === 'auth/invalid-credential' ||
-                err.code === 'auth/wrong-password' ||
-                err.code === 'auth/user-not-found') {
+            if (err.code === 'auth/multi-factor-auth-required') {
+              // MFA is enrolled — need second factor
+              this.mfaResolver = err.resolver;
+              const hint = this.mfaResolver.hints[0];
+              const lastDigits = hint.phoneNumber ? hint.phoneNumber.slice(-2) : '??';
+              this.mfaMessage = 'Un code de vérification a été envoyé au numéro se terminant par ••••' + lastDigits + '.';
+
+              this.initRecaptcha();
+              try {
+                const phoneInfoOptions = {
+                  multiFactorHint: hint,
+                  session: this.mfaResolver.session
+                };
+                const phoneAuthProvider = new firebase.auth.PhoneAuthProvider();
+                this.mfaVerificationId = await phoneAuthProvider.verifyPhoneNumber(
+                  phoneInfoOptions,
+                  this.recaptchaVerifier
+                );
+                this.step = 'mfa';
+                this.startResendCooldown();
+                this.$nextTick(() => {
+                  document.getElementById('mfa-digit-0')?.focus();
+                });
+              } catch (smsErr) {
+                this.error = 'Impossible d\u2019envoyer le code SMS. Réessayez.';
+                console.error('SMS send error:', smsErr);
+              }
+            } else if (
+              err.code === 'auth/invalid-credential' ||
+              err.code === 'auth/wrong-password' ||
+              err.code === 'auth/user-not-found'
+            ) {
               this.error = 'Courriel ou mot de passe invalide.';
             } else if (err.code === 'auth/too-many-requests') {
               this.error = 'Trop de tentatives. Réessayez plus tard.';
             } else {
               this.error = 'Erreur de connexion. Réessayez.';
+              console.error('Login error:', err);
             }
           } finally {
             this.loading = false;
+          }
+        },
+
+        async verifyMfaCode() {
+          const code = this.mfaCode;
+          if (code.length < 6) return;
+
+          this.error = '';
+          this.loading = true;
+          try {
+            const cred = firebase.auth.PhoneAuthProvider.credential(
+              this.mfaVerificationId, code
+            );
+            const assertion = firebase.auth.PhoneMultiFactorGenerator.assertion(cred);
+            const userCredential = await this.mfaResolver.resolveSignIn(assertion);
+            await this.postIdToken(userCredential.user);
+          } catch (err) {
+            if (err.code === 'auth/invalid-verification-code') {
+              this.error = 'Code invalide. Réessayez.';
+            } else if (err.code === 'auth/code-expired') {
+              this.error = 'Code expiré. Renvoyez un nouveau code.';
+            } else {
+              this.error = 'Erreur de vérification. Réessayez.';
+              console.error('MFA verify error:', err);
+            }
+            this.clearDigits();
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async resendCode() {
+          if (this.resendCooldown > 0 || !this.mfaResolver) return;
+          this.error = '';
+          this.loading = true;
+          try {
+            // Reset reCAPTCHA for a new verification
+            if (this.recaptchaVerifier) {
+              this.recaptchaVerifier.clear();
+              this.recaptchaVerifier = null;
+            }
+            this.initRecaptcha();
+
+            const hint = this.mfaResolver.hints[0];
+            const phoneInfoOptions = {
+              multiFactorHint: hint,
+              session: this.mfaResolver.session
+            };
+            const phoneAuthProvider = new firebase.auth.PhoneAuthProvider();
+            this.mfaVerificationId = await phoneAuthProvider.verifyPhoneNumber(
+              phoneInfoOptions,
+              this.recaptchaVerifier
+            );
+            this.startResendCooldown();
+            this.clearDigits();
+          } catch (err) {
+            this.error = 'Impossible de renvoyer le code. Réessayez.';
+            console.error('Resend error:', err);
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        cancelMfa() {
+          this.step = 'login';
+          this.error = '';
+          this.mfaResolver = null;
+          this.mfaVerificationId = '';
+          this.clearDigits();
+          if (this.resendTimer) clearInterval(this.resendTimer);
+          this.resendCooldown = 0;
+        },
+
+        async postIdToken(user) {
+          const idToken = await user.getIdToken();
+          const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+          const body = new URLSearchParams({ id_token: idToken });
+          const res = await fetch('/auth/verify-token', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRFToken': csrfToken
+            },
+            body
+          });
+
+          const data = await res.json();
+          if (data.ok) {
+            window.location.href = data.redirect;
+          } else {
+            this.error = data.error || 'Erreur inconnue.';
           }
         }
       };

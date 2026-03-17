@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Vérification en deux étapes — Pallas Athena{% endblock %}
+
+{% block head %}
+<style>
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { animation: spin 0.7s linear infinite; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-lg mx-auto px-4 py-8">
+  <h1 class="text-xl font-semibold text-gray-900 mb-2">Vérification en deux étapes</h1>
+  <p class="text-sm text-gray-500 mb-6">
+    Ajoutez un numéro de téléphone pour sécuriser votre compte avec un code SMS à chaque connexion.
+  </p>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6"
+       x-data="mfaSetup()">
+
+    {# ── Step 1: Phone number entry ──────────────────────────────── #}
+    <div x-show="step === 'phone'">
+      <label for="phone" class="block text-sm font-medium text-gray-700 mb-1">
+        Numéro de téléphone pour la vérification en deux étapes
+      </label>
+      <div class="flex gap-2 mb-1">
+        <span class="inline-flex items-center px-3 text-sm text-gray-500 bg-gray-50 border border-gray-300 rounded-lg">
+          +1
+        </span>
+        <input id="phone" type="tel" inputmode="numeric"
+               x-model="phoneNumber"
+               placeholder="514 555 1234"
+               maxlength="12"
+               class="flex-1 rounded-lg border border-gray-300 px-3 py-2.5 text-sm
+                      focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+      </div>
+      <p class="text-xs text-gray-400 mb-5">Format : 514 555 1234</p>
+
+      <p x-show="error" x-text="error" x-cloak
+         class="text-sm text-red-600 mb-4"></p>
+
+      <button @click="sendCode()" :disabled="loading || !phoneNumber.trim()"
+              class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
+                     text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 transition-colors">
+        <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+        </svg>
+        <span x-text="loading ? 'Envoi…' : 'Envoyer le code'"></span>
+      </button>
+    </div>
+
+    {# ── Step 2: Code verification ───────────────────────────────── #}
+    <div x-show="step === 'verify'" x-cloak>
+      <div class="text-center mb-6">
+        <svg class="mx-auto mb-3 w-10 h-10 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 0 0 6 3.75v16.5a2.25 2.25 0 0 0 2.25 2.25h7.5A2.25 2.25 0 0 0 18 20.25V3.75a2.25 2.25 0 0 0-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-6 18h6"/>
+        </svg>
+        <p class="text-sm text-gray-600">
+          Entrez le code à 6 chiffres envoyé à votre téléphone.
+        </p>
+      </div>
+
+      <div class="flex justify-center gap-2 mb-6">
+        <template x-for="(_, i) in 6" :key="i">
+          <input type="text" inputmode="numeric" maxlength="1"
+                 :id="'setup-digit-' + i"
+                 x-on:input="handleDigitInput($event, i)"
+                 x-on:keydown.backspace="handleDigitBackspace($event, i)"
+                 x-on:paste.prevent="handlePaste($event)"
+                 class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
+                        focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+        </template>
+      </div>
+
+      <p x-show="error" x-text="error" x-cloak
+         class="text-sm text-red-600 mb-4 text-center"></p>
+
+      <button @click="verifyCode()" :disabled="loading || getCode().length < 6"
+              class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
+                     text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 transition-colors">
+        <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+        </svg>
+        <span x-text="loading ? 'Vérification…' : 'Vérifier et activer'"></span>
+      </button>
+    </div>
+
+    {# ── Step 3: Success ─────────────────────────────────────────── #}
+    <div x-show="step === 'done'" x-cloak class="text-center">
+      <svg class="mx-auto mb-4 w-12 h-12 text-green-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+      </svg>
+      <h2 class="text-lg font-semibold text-gray-900 mb-2">Vérification en deux étapes activée</h2>
+      <p class="text-sm text-gray-500 mb-6">
+        Un code SMS sera désormais requis à chaque connexion.
+      </p>
+      <a href="/"
+         class="inline-block rounded-lg bg-gray-900 text-white text-sm font-medium px-6 py-2.5 hover:bg-gray-800 transition-colors">
+        Retour au tableau de bord
+      </a>
+    </div>
+
+  </div>
+</div>
+
+{# ── reCAPTCHA container ─────────────────────────────────────────── #}
+<div id="mfa-recaptcha-container"></div>
+
+{# ── Firebase SDK ────────────────────────────────────────────────── #}
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
+
+<script>
+  {% if config.ENV == 'development' %}
+  self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
+  {% endif %}
+
+  const firebaseApp = firebase.initializeApp({
+    apiKey: {{ firebase_api_key|tojson }},
+    authDomain: "{{ firebase_project_id }}.firebaseapp.com",
+    projectId: {{ firebase_project_id|tojson }}
+  });
+
+  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+  firebase.appCheck().activate(
+    new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
+    true
+  );
+  {% endif %}
+
+  const auth = firebase.auth();
+
+  function mfaSetup() {
+    return {
+      step: 'phone',
+      phoneNumber: '',
+      error: '',
+      loading: false,
+      verificationId: '',
+      recaptchaVerifier: null,
+
+      formatPhone() {
+        // Strip non-digits and prepend +1
+        const digits = this.phoneNumber.replace(/\D/g, '');
+        return '+1' + digits;
+      },
+
+      getCode() {
+        let code = '';
+        for (let i = 0; i < 6; i++) {
+          const el = document.getElementById('setup-digit-' + i);
+          if (el) code += el.value;
+        }
+        return code;
+      },
+
+      handleDigitInput(event, index) {
+        const value = event.target.value.replace(/\D/g, '');
+        event.target.value = value.slice(0, 1);
+        if (value && index < 5) {
+          document.getElementById('setup-digit-' + (index + 1)).focus();
+        }
+      },
+
+      handleDigitBackspace(event, index) {
+        if (!event.target.value && index > 0) {
+          document.getElementById('setup-digit-' + (index - 1)).focus();
+        }
+      },
+
+      handlePaste(event) {
+        const text = (event.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+        for (let i = 0; i < 6 && i < text.length; i++) {
+          const el = document.getElementById('setup-digit-' + i);
+          if (el) el.value = text[i];
+        }
+        const focusIndex = Math.min(text.length, 5);
+        document.getElementById('setup-digit-' + focusIndex)?.focus();
+      },
+
+      initRecaptcha() {
+        if (this.recaptchaVerifier) return;
+        this.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('mfa-recaptcha-container', {
+          size: 'invisible'
+        });
+      },
+
+      async sendCode() {
+        this.error = '';
+        this.loading = true;
+        try {
+          const user = auth.currentUser;
+          if (!user) {
+            this.error = 'Vous devez être connecté pour activer la vérification en deux étapes.';
+            this.loading = false;
+            return;
+          }
+
+          this.initRecaptcha();
+          const multiFactorSession = await user.multiFactor.getSession();
+          const phoneInfoOptions = {
+            phoneNumber: this.formatPhone(),
+            session: multiFactorSession
+          };
+          const phoneAuthProvider = new firebase.auth.PhoneAuthProvider();
+          this.verificationId = await phoneAuthProvider.verifyPhoneNumber(
+            phoneInfoOptions,
+            this.recaptchaVerifier
+          );
+          this.step = 'verify';
+          this.$nextTick(() => {
+            document.getElementById('setup-digit-0')?.focus();
+          });
+        } catch (err) {
+          if (err.code === 'auth/invalid-phone-number') {
+            this.error = 'Numéro de téléphone invalide.';
+          } else if (err.code === 'auth/requires-recent-login') {
+            this.error = 'Veuillez vous reconnecter avant d\u2019activer la vérification.';
+          } else {
+            this.error = 'Impossible d\u2019envoyer le code. Réessayez.';
+            console.error('MFA setup send error:', err);
+          }
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async verifyCode() {
+        const code = this.getCode();
+        if (code.length < 6) return;
+
+        this.error = '';
+        this.loading = true;
+        try {
+          const cred = firebase.auth.PhoneAuthProvider.credential(this.verificationId, code);
+          const assertion = firebase.auth.PhoneMultiFactorGenerator.assertion(cred);
+          const user = auth.currentUser;
+          await user.multiFactor.enroll(assertion, 'Téléphone principal');
+          this.step = 'done';
+        } catch (err) {
+          if (err.code === 'auth/invalid-verification-code') {
+            this.error = 'Code invalide. Réessayez.';
+          } else if (err.code === 'auth/code-expired') {
+            this.error = 'Code expiré. Retournez à l\u2019étape précédente.';
+          } else {
+            this.error = 'Erreur lors de l\u2019activation. Réessayez.';
+            console.error('MFA enroll error:', err);
+          }
+        } finally {
+          this.loading = false;
+        }
+      }
+    };
+  }
+</script>
+{% endblock %}

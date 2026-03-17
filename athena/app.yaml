@@ -13,6 +13,8 @@ env_variables:
   FIREBASE_PROJECT_ID: "athena-pallas"
   FIREBASE_STORAGE_BUCKET: "athena-pallas.firebasestorage.app"
   AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
+  RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
+  REQUIRE_MFA: "false"
   # Sensitive — override via Secret Manager or gcloud deploy --set-env-vars
   SECRET_KEY: "CHANGE-ME-use-secret-manager-in-production"
   DAV_PASSWORD_HASH: "REDACTED_OLD_BCRYPT_HASH"

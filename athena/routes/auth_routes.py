@@ -1,4 +1,6 @@
-"""Authentication routes: login, token verification, logout."""
+"""Authentication routes: login, token verification, logout, MFA setup/manage."""
+
+import json
 
 from flask import (
     Blueprint,
@@ -42,11 +44,34 @@ def verify_token() -> tuple[str, int]:
     if not id_token:
         return '{"ok":false,"error":"Jeton manquant."}', 400
 
-    if verify_and_create_session(id_token):
+    success, error_msg = verify_and_create_session(id_token)
+    if success:
         next_url = request.args.get("next", url_for("dashboard.index"))
         return f'{{"ok":true,"redirect":"{next_url}"}}', 200
 
-    return '{"ok":false,"error":"Accès non autorisé."}', 403
+    return json.dumps({"ok": False, "error": error_msg or "Accès non autorisé."}), 403
+
+
+@auth_bp.route("/mfa-setup")
+@login_required
+def mfa_setup() -> str:
+    """Render the MFA enrollment page."""
+    return render_template(
+        "auth/mfa_setup.html",
+        firebase_project_id=current_app.config["FIREBASE_PROJECT_ID"],
+        firebase_api_key=current_app.config.get("FIREBASE_API_KEY", ""),
+    )
+
+
+@auth_bp.route("/mfa-manage")
+@login_required
+def mfa_manage() -> str:
+    """Render the MFA management page."""
+    return render_template(
+        "auth/mfa_manage.html",
+        firebase_project_id=current_app.config["FIREBASE_PROJECT_ID"],
+        firebase_api_key=current_app.config.get("FIREBASE_API_KEY", ""),
+    )
 
 
 @auth_bp.route("/logout", methods=["POST"])
