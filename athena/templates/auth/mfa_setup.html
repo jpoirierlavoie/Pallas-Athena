@@ -64,9 +64,9 @@
         <template x-for="(_, i) in 6" :key="i">
           <input type="text" inputmode="numeric" maxlength="1"
                  :id="'setup-digit-' + i"
-                 x-on:input="handleDigitInput($event, i)"
+                 x-on:input="handleDigitInput($event, i); updateCode()"
                  x-on:keydown.backspace="handleDigitBackspace($event, i)"
-                 x-on:paste.prevent="handlePaste($event)"
+                 x-on:paste.prevent="handlePaste($event); updateCode()"
                  class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
                         focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
         </template>
@@ -75,7 +75,7 @@
       <p x-show="error" x-text="error" x-cloak
          class="text-sm text-red-600 mb-4 text-center"></p>
 
-      <button @click="verifyCode()" :disabled="loading || getCode().length < 6"
+      <button @click="verifyCode()" :disabled="loading || codeValue.length < 6"
               class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white
                      text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 transition-colors">
         <svg x-show="loading" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
@@ -136,10 +136,20 @@
     return {
       step: 'phone',
       phoneNumber: '',
+      codeValue: '',
       error: '',
       loading: false,
       verificationId: '',
       recaptchaVerifier: null,
+
+      updateCode() {
+        let code = '';
+        for (let i = 0; i < 6; i++) {
+          const el = document.getElementById('setup-digit-' + i);
+          if (el) code += el.value;
+        }
+        this.codeValue = code;
+      },
 
       formatPhone() {
         // Strip non-digits and prepend +1
@@ -228,7 +238,7 @@
       },
 
       async verifyCode() {
-        const code = this.getCode();
+        const code = this.codeValue;
         if (code.length < 6) return;
 
         this.error = '';

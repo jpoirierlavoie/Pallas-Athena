@@ -83,9 +83,9 @@
           <template x-for="(_, i) in 6" :key="i">
             <input type="text" inputmode="numeric" maxlength="1"
                    :id="'mfa-digit-' + i"
-                   x-on:input="handleDigitInput($event, i)"
+                   x-on:input="handleDigitInput($event, i); updateMfaCode()"
                    x-on:keydown.backspace="handleDigitBackspace($event, i)"
-                   x-on:paste.prevent="handlePaste($event)"
+                   x-on:paste.prevent="handlePaste($event); updateMfaCode()"
                    class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
                           focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
           </template>
@@ -167,14 +167,13 @@
         resendCooldown: 0,
         resendTimer: null,
 
-        // Gather the 6 individual digit inputs into a single code string
-        get mfaCode() {
+        updateMfaCode() {
           let code = '';
           for (let i = 0; i < 6; i++) {
             const el = document.getElementById('mfa-digit-' + i);
             if (el) code += el.value;
           }
-          return code;
+          this.mfaCode = code;
         },
 
         handleDigitInput(event, index) {
@@ -207,6 +206,7 @@
             const el = document.getElementById('mfa-digit-' + i);
             if (el) el.value = '';
           }
+          this.mfaCode = '';
         },
 
         initRecaptcha() {
