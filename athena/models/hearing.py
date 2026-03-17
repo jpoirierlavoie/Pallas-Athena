@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import icalendar
 
@@ -336,7 +337,9 @@ def hearing_to_vevent(hearing: dict) -> str:
     event.add("uid", hearing.get("vevent_uid", ""))
     event.add("summary", hearing.get("title", ""))
 
-    # DTSTART / DTEND
+    # DTSTART / DTEND — emit in America/Montreal so CalDAV clients
+    # display the correct local time and include a VTIMEZONE component.
+    mtl = ZoneInfo("America/Montreal")
     start = hearing.get("start_datetime")
     end = hearing.get("end_datetime")
     if hearing.get("all_day"):
@@ -346,8 +349,12 @@ def hearing_to_vevent(hearing: dict) -> str:
             event.add("dtend", end.date())
     else:
         if start:
+            if start.tzinfo is None or start.tzinfo == timezone.utc:
+                start = start.replace(tzinfo=timezone.utc).astimezone(mtl)
             event.add("dtstart", start)
         if end:
+            if end.tzinfo is None or end.tzinfo == timezone.utc:
+                end = end.replace(tzinfo=timezone.utc).astimezone(mtl)
             event.add("dtend", end)
 
     # LOCATION
