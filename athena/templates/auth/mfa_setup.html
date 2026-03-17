@@ -119,7 +119,8 @@
   const firebaseApp = firebase.initializeApp({
     apiKey: {{ firebase_api_key|tojson }},
     authDomain: "{{ firebase_project_id }}.firebaseapp.com",
-    projectId: {{ firebase_project_id|tojson }}
+    projectId: {{ firebase_project_id|tojson }},
+    appId: {{ firebase_app_id|tojson }}
   });
 
   {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}

@@ -18,19 +18,22 @@ from security import limiter
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
 
+def _firebase_template_vars() -> dict[str, str]:
+    """Return common Firebase JS SDK config vars for templates."""
+    return {
+        "firebase_project_id": current_app.config["FIREBASE_PROJECT_ID"],
+        "firebase_api_key": current_app.config.get("FIREBASE_API_KEY", ""),
+        "firebase_app_id": current_app.config.get("FIREBASE_APP_ID", ""),
+    }
+
+
 @auth_bp.route("/login")
 def login() -> str:
     """Render the login page (or redirect if already authenticated)."""
     if session.get("user_id"):
         return redirect(url_for("dashboard.index"))
 
-    firebase_project_id = current_app.config["FIREBASE_PROJECT_ID"]
-    firebase_api_key = current_app.config.get("FIREBASE_API_KEY", "")
-    return render_template(
-        "auth/login.html",
-        firebase_project_id=firebase_project_id,
-        firebase_api_key=firebase_api_key,
-    )
+    return render_template("auth/login.html", **_firebase_template_vars())
 
 
 @auth_bp.route("/verify-token", methods=["POST"])
@@ -56,22 +59,14 @@ def verify_token() -> tuple[str, int]:
 @login_required
 def mfa_setup() -> str:
     """Render the MFA enrollment page."""
-    return render_template(
-        "auth/mfa_setup.html",
-        firebase_project_id=current_app.config["FIREBASE_PROJECT_ID"],
-        firebase_api_key=current_app.config.get("FIREBASE_API_KEY", ""),
-    )
+    return render_template("auth/mfa_setup.html", **_firebase_template_vars())
 
 
 @auth_bp.route("/mfa-manage")
 @login_required
 def mfa_manage() -> str:
     """Render the MFA management page."""
-    return render_template(
-        "auth/mfa_manage.html",
-        firebase_project_id=current_app.config["FIREBASE_PROJECT_ID"],
-        firebase_api_key=current_app.config.get("FIREBASE_API_KEY", ""),
-    )
+    return render_template("auth/mfa_manage.html", **_firebase_template_vars())
 
 
 @auth_bp.route("/logout", methods=["POST"])

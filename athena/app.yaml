@@ -11,6 +11,7 @@ env_variables:
   ENV: "production"
   FIREBASE_API_KEY: "REDACTED_OLD_FIREBASE_API_KEY"
   FIREBASE_PROJECT_ID: "athena-pallas"
+  FIREBASE_APP_ID: "1:1073430388324:web:6d60d0d67d74ce1b730971"
   FIREBASE_STORAGE_BUCKET: "athena-pallas.firebasestorage.app"
   AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
