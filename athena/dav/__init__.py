@@ -87,21 +87,58 @@ def dav_root_propfind() -> Response:
         chs = ET.SubElement(prop, caldav_tag("calendar-home-set"))
         ET.SubElement(chs, dav_tag("href")).text = "/dav/"
 
-    # Depth:1 — include child collections
+    # Depth:1 — include child collections with proper resource types
     if depth == "1":
-        for coll_path, coll_name in [
-            ("/dav/addressbook/", "Clients"),
-            ("/dav/calendar/", "Audiences"),
-            ("/dav/tasks/", "T\u00e2ches"),
-            ("/dav/journals/", "Dossiers"),
-        ]:
+        from dav.xml_utils import carddav_tag
+        from dav.sync import get_ctag
+
+        # (path, display_name, type, component)
+        collections = [
+            ("/dav/addressbook/", "Clients", "addressbook", None),
+            ("/dav/calendar/", "Audiences", "calendar", "VEVENT"),
+            ("/dav/tasks/", "T\u00e2ches", "calendar", "VTODO"),
+            ("/dav/journals/", "Dossiers", "calendar", "VJOURNAL"),
+        ]
+        # Map path → Firestore sync collection name for ctag
+        ctag_names = {
+            "/dav/addressbook/": "parties",
+            "/dav/calendar/": "hearings",
+            "/dav/tasks/": "tasks",
+            "/dav/journals/": "dossiers",
+        }
+
+        for coll_path, coll_name, coll_type, component in collections:
             child = add_response(multistatus, coll_path)
             child_prop = add_propstat(child)
+
+            # resourcetype — must include the protocol-specific type
             rt = ET.SubElement(child_prop, dav_tag("resourcetype"))
             ET.SubElement(rt, dav_tag("collection"))
+            if coll_type == "addressbook":
+                ET.SubElement(rt, carddav_tag("addressbook"))
+            elif coll_type == "calendar":
+                ET.SubElement(rt, caldav_tag("calendar"))
+
+            # displayname
             ET.SubElement(child_prop, dav_tag("displayname")).text = (
                 f"Pallas Athena \u2014 {coll_name}"
             )
+
+            # supported-calendar-component-set (CalDAV collections only)
+            if component:
+                sccs = ET.SubElement(
+                    child_prop,
+                    caldav_tag("supported-calendar-component-set"),
+                )
+                comp_el = ET.SubElement(sccs, caldav_tag("comp"))
+                comp_el.set("name", component)
+
+            # getctag
+            sync_name = ctag_names.get(coll_path)
+            if sync_name:
+                ET.SubElement(child_prop, cs_tag("getctag")).text = (
+                    get_ctag(sync_name)
+                )
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
