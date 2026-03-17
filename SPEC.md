@@ -1535,9 +1535,8 @@ The dashboard is the landing page after login. It should provide an at-a-glance 
 - If none: "Aucune audience prévue aujourd'hui"
 
 **Urgent Items**
-- Overdue tasks (sorted by due_date, oldest first)
-- Tasks due this week
-- Protocol steps due within 7 days or overdue
+- Tasks due within 14 days or overdue
+- Protocol steps due within 14 days or overdue
 - Prescription dates within 60 days
 
 **Recent Activity**
