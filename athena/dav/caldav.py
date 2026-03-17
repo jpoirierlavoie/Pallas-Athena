@@ -313,7 +313,9 @@ def put_resource(hearing_id: str) -> Response:
         return Response("Bad Request — invalid iCalendar", status=400)
 
     if existing:
-        updated, errors = update_hearing(hearing_id, data)
+        updated, errors = update_hearing(
+            hearing_id, data, require_dossier=False
+        )
         if errors:
             return Response("\n".join(errors), status=422)
         bump_ctag(COLLECTION_NAME)
@@ -321,7 +323,7 @@ def put_resource(hearing_id: str) -> Response:
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
         data["id"] = hearing_id
-        created, errors = create_hearing(data)
+        created, errors = create_hearing(data, require_dossier=False)
         if errors:
             return Response("\n".join(errors), status=422)
         bump_ctag(COLLECTION_NAME)

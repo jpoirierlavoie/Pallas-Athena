@@ -132,11 +132,17 @@ def _sanitize_data(data: dict) -> dict:
     return out
 
 
-def _validate(data: dict) -> list[str]:
-    """Return a list of validation error messages (empty = valid)."""
+def _validate(data: dict, *, require_dossier: bool = True) -> list[str]:
+    """Return a list of validation error messages (empty = valid).
+
+    Args:
+        require_dossier: When False, skip the dossier_id check.  DAV-created
+            events may not have a dossier link; the user can assign one later
+            via the web UI.
+    """
     errors: list[str] = []
 
-    if not data.get("dossier_id", "").strip():
+    if require_dossier and not data.get("dossier_id", "").strip():
         errors.append("Un dossier doit être associé à cette audience.")
 
     if not data.get("title", "").strip():
@@ -165,7 +171,9 @@ def _validate(data: dict) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
+def create_hearing(
+    data: dict, *, require_dossier: bool = True
+) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
 
@@ -173,7 +181,7 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
     if merged.get("start_datetime") and not merged.get("end_datetime"):
         merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
 
-    errors = _validate(merged)
+    errors = _validate(merged, require_dossier=require_dossier)
     if errors:
         return None, errors
 
@@ -248,7 +256,7 @@ def list_hearings(
 
 
 def update_hearing(
-    hearing_id: str, data: dict
+    hearing_id: str, data: dict, *, require_dossier: bool = True
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing hearing. Returns (updated_doc, errors)."""
     existing = get_hearing(hearing_id)
@@ -261,7 +269,7 @@ def update_hearing(
     if merged.get("start_datetime") and not merged.get("end_datetime"):
         merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
 
-    errors = _validate(merged)
+    errors = _validate(merged, require_dossier=require_dossier)
     if errors:
         return None, errors
 
