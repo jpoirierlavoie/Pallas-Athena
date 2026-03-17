@@ -117,10 +117,10 @@
     {# Dates #}
     <div class="mt-4 pt-4 border-t border-gray-100 flex flex-wrap gap-4 text-xs text-gray-400">
       {% if document.created_at and document.created_at.strftime is defined %}
-      <span>Ajouté le {{ document.created_at.strftime('%d/%m/%Y à %H:%M') }}</span>
+      <span>Ajouté le {{ (document.created_at|to_mtl).strftime('%d/%m/%Y à %H:%M') }}</span>
       {% endif %}
       {% if document.updated_at and document.updated_at.strftime is defined and document.updated_at != document.created_at %}
-      <span>Modifié le {{ document.updated_at.strftime('%d/%m/%Y à %H:%M') }}</span>
+      <span>Modifié le {{ (document.updated_at|to_mtl).strftime('%d/%m/%Y à %H:%M') }}</span>
       {% endif %}
     </div>
   </div>

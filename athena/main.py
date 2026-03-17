@@ -41,6 +41,10 @@ def create_app() -> Flask:
     # ── Security (headers, CSRF, rate limiter) ───────────────────────
     init_security(app)
 
+    # ── Jinja2 timezone filter ────────────────────────────────────────
+    from tz import to_mtl
+    app.jinja_env.filters["to_mtl"] = to_mtl
+
     # ── Blueprints ───────────────────────────────────────────────────
     from routes.auth_routes import auth_bp
     from routes.dashboard import dashboard_bp

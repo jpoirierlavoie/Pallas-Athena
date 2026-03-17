@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone, timedelta
 
+from tz import mtl_to_utc, to_mtl
+
 from flask import (
     Blueprint,
     redirect,
@@ -53,20 +55,23 @@ def _parse_date(value: str) -> datetime | None:
 
 
 def _parse_datetime(date_str: str, time_str: str) -> datetime | None:
-    """Parse separate date and time strings into a UTC datetime."""
+    """Parse separate date and time strings into a UTC datetime.
+
+    The user enters times in Montreal local time; we convert to UTC
+    before storage.
+    """
     if not date_str or not date_str.strip():
         return None
     date_str = date_str.strip()
     time_str = (time_str or "").strip()
     try:
         if time_str:
-            return datetime.strptime(
+            naive = datetime.strptime(
                 f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-            ).replace(tzinfo=timezone.utc)
-        else:
-            return datetime.strptime(date_str, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
             )
+        else:
+            naive = datetime.strptime(date_str, "%Y-%m-%d")
+        return mtl_to_utc(naive)
     except ValueError:
         return None
 
@@ -180,16 +185,17 @@ def hearing_list() -> str:
     month_str = request.args.get("month", "")
 
     now = datetime.now(timezone.utc)
+    now_mtl = to_mtl(now)
 
     if view == "month":
-        # Parse month param (YYYY-MM) or use current month
+        # Parse month param (YYYY-MM) or use current month (in Montreal tz)
         if month_str:
             try:
                 year, month = int(month_str[:4]), int(month_str[5:7])
             except (ValueError, IndexError):
-                year, month = now.year, now.month
+                year, month = now_mtl.year, now_mtl.month
         else:
-            year, month = now.year, now.month
+            year, month = now_mtl.year, now_mtl.month
 
         # Compute month boundaries
         month_start = datetime(year, month, 1, tzinfo=timezone.utc)
@@ -210,12 +216,13 @@ def hearing_list() -> str:
         cal = calendar.Calendar(firstweekday=0)  # Monday first
         month_days = cal.monthdayscalendar(year, month)
 
-        # Map day → list of hearings
+        # Map day → list of hearings (use Montreal time for grouping)
         day_hearings: dict[int, list[dict]] = {}
         for h in hearings:
             sd = h.get("start_datetime")
             if sd:
-                day = sd.day
+                local_sd = to_mtl(sd)
+                day = local_sd.day
                 day_hearings.setdefault(day, []).append(h)
 
         # Prev / next month

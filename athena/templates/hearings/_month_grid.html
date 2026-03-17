@@ -75,7 +75,7 @@
         <span class="w-2 h-2 rounded-full flex-shrink-0 {{ type_dot_colors.get(h.hearing_type, 'bg-gray-400') }}"></span>
         <span class="font-medium text-gray-900 truncate flex-1">{{ h.title }}</span>
         {% if not h.all_day and h.start_datetime and h.start_datetime.strftime is defined %}
-        <span class="text-xs text-gray-500 flex-shrink-0">{{ h.start_datetime.strftime('%H:%M') }}</span>
+        <span class="text-xs text-gray-500 flex-shrink-0">{{ (h.start_datetime|to_mtl).strftime('%H:%M') }}</span>
         {% endif %}
         {% if h.dossier_file_number %}
         <span class="text-xs text-indigo-600 flex-shrink-0">{{ h.dossier_file_number }}</span>

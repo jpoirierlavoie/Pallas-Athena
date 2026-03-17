@@ -55,9 +55,9 @@
           {% if h.start_datetime and h.start_datetime.strftime is defined %}
           <span class="text-[10px] text-gray-500 leading-none">
             {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
-            {{ month_short[h.start_datetime.month] }}
+            {{ month_short[(h.start_datetime|to_mtl).month] }}
           </span>
-          <span class="text-sm font-bold text-gray-900 leading-none">{{ h.start_datetime.strftime('%d') }}</span>
+          <span class="text-sm font-bold text-gray-900 leading-none">{{ (h.start_datetime|to_mtl).strftime('%d') }}</span>
           {% endif %}
         </div>
 
@@ -73,7 +73,7 @@
               {{ status_labels.get(h.status, h.status) }}
             </span>
             {% if not h.all_day and h.start_datetime and h.start_datetime.strftime is defined %}
-            <span class="text-xs text-gray-500">{{ h.start_datetime.strftime('%H:%M') }}</span>
+            <span class="text-xs text-gray-500">{{ (h.start_datetime|to_mtl).strftime('%H:%M') }}</span>
             {% endif %}
           </div>
         </div>

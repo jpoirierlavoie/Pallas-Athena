@@ -81,7 +81,7 @@
           <dt class="text-gray-500">Date</dt>
           <dd class="text-gray-900 font-medium">
             {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
-            {{ hearing.start_datetime.strftime('%d') }} {{ month_names[hearing.start_datetime.month] }} {{ hearing.start_datetime.strftime('%Y') }}
+            {{ (hearing.start_datetime|to_mtl).strftime('%d') }} {{ month_names[(hearing.start_datetime|to_mtl).month] }} {{ (hearing.start_datetime|to_mtl).strftime('%Y') }}
           </dd>
         </div>
         {% if hearing.all_day %}
@@ -92,12 +92,12 @@
         {% else %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Début</dt>
-          <dd class="text-gray-900">{{ hearing.start_datetime.strftime('%H:%M') }}</dd>
+          <dd class="text-gray-900">{{ (hearing.start_datetime|to_mtl).strftime('%H:%M') }}</dd>
         </div>
         {% if hearing.end_datetime and hearing.end_datetime.strftime is defined %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Fin</dt>
-          <dd class="text-gray-900">{{ hearing.end_datetime.strftime('%H:%M') }}</dd>
+          <dd class="text-gray-900">{{ (hearing.end_datetime|to_mtl).strftime('%H:%M') }}</dd>
         </div>
         {% endif %}
         {% endif %}

@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import icalendar
 
@@ -319,14 +320,26 @@ def task_to_vtodo(task: dict) -> str:
     }
     todo.add("status", status_map.get(task.get("status", ""), "NEEDS-ACTION"))
 
-    # DUE
+    # DUE — emit in America/Montreal for datetime values
+    mtl = ZoneInfo("America/Montreal")
     due = task.get("due_date")
     if due:
-        todo.add("due", due)
+        if hasattr(due, "hour") and due.hour == 0 and due.minute == 0:
+            # Date-only stored as midnight — emit as date
+            todo.add("due", due.date())
+        elif hasattr(due, "hour"):
+            if due.tzinfo is None or due.tzinfo == timezone.utc:
+                due = due.replace(tzinfo=timezone.utc).astimezone(mtl)
+            todo.add("due", due)
+        else:
+            todo.add("due", due)
 
     # COMPLETED
     completed = task.get("completed_date")
     if completed:
+        if hasattr(completed, "hour"):
+            if completed.tzinfo is None or completed.tzinfo == timezone.utc:
+                completed = completed.replace(tzinfo=timezone.utc).astimezone(mtl)
         todo.add("completed", completed)
 
     # CATEGORIES
@@ -398,22 +411,30 @@ def vtodo_to_task(ical_str: str) -> dict:
             }
             data["status"] = reverse_map.get(status_str, "à_faire")
 
-        # DUE → due_date
+        # DUE → due_date (normalize to UTC)
         due = component.get("due")
         if due:
             dt = due.dt
             if hasattr(dt, "hour"):
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 data["due_date"] = dt
             else:
                 data["due_date"] = datetime.combine(
                     dt, datetime.min.time(), tzinfo=timezone.utc
                 )
 
-        # COMPLETED → completed_date
+        # COMPLETED → completed_date (normalize to UTC)
         completed = component.get("completed")
         if completed:
             dt = completed.dt
             if hasattr(dt, "hour"):
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 data["completed_date"] = dt
             else:
                 data["completed_date"] = datetime.combine(

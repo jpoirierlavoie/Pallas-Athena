@@ -28,9 +28,9 @@
       {% if h.start_datetime and h.start_datetime.strftime is defined %}
       <span class="text-[10px] font-medium text-gray-500 uppercase leading-none">
         {% set day_names = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'] %}
-        {{ day_names[h.start_datetime.weekday()] }}
+        {{ day_names[(h.start_datetime|to_mtl).weekday()] }}
       </span>
-      <span class="text-lg font-bold text-gray-900 leading-none">{{ h.start_datetime.strftime('%d') }}</span>
+      <span class="text-lg font-bold text-gray-900 leading-none">{{ (h.start_datetime|to_mtl).strftime('%d') }}</span>
       {% endif %}
     </div>
 
@@ -57,7 +57,7 @@
           {% if h.all_day %}
             Toute la journée
           {% else %}
-            {{ h.start_datetime.strftime('%H:%M') }}{% if h.end_datetime and h.end_datetime.strftime is defined %} – {{ h.end_datetime.strftime('%H:%M') }}{% endif %}
+            {{ (h.start_datetime|to_mtl).strftime('%H:%M') }}{% if h.end_datetime and h.end_datetime.strftime is defined %} – {{ (h.end_datetime|to_mtl).strftime('%H:%M') }}{% endif %}
           {% endif %}
         </span>
         {% endif %}
@@ -74,7 +74,7 @@
     {% if h.start_datetime and h.start_datetime.strftime is defined %}
     <div class="text-xs text-gray-400 flex-shrink-0 text-right">
       {% set month_names = ['', 'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juill.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'] %}
-      {{ month_names[h.start_datetime.month] }}
+      {{ month_names[(h.start_datetime|to_mtl).month] }}
     </div>
     {% endif %}
   </div>

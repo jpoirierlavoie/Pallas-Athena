@@ -441,11 +441,15 @@ def vevent_to_hearing(ical_str: str) -> dict:
         if summary:
             data["title"] = str(summary)
 
-        # DTSTART → start_datetime
+        # DTSTART → start_datetime (normalize to UTC for storage)
         dtstart = component.get("dtstart")
         if dtstart:
             dt = dtstart.dt
             if hasattr(dt, "hour"):
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 data["start_datetime"] = dt
                 data["all_day"] = False
             else:
@@ -454,11 +458,15 @@ def vevent_to_hearing(ical_str: str) -> dict:
                 )
                 data["all_day"] = True
 
-        # DTEND → end_datetime
+        # DTEND → end_datetime (normalize to UTC for storage)
         dtend = component.get("dtend")
         if dtend:
             dt = dtend.dt
             if hasattr(dt, "hour"):
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 data["end_datetime"] = dt
             else:
                 data["end_datetime"] = datetime.combine(

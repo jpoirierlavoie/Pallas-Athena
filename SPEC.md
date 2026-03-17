@@ -1530,18 +1530,17 @@ Build the home dashboard, refine the overall UI, and deploy to Google App Engine
 ### Dashboard (`/`)
 The dashboard is the landing page after login. It should provide an at-a-glance summary of:
 
-**Today's Schedule**
-- Hearings today and tomorrow, chronologically
-- If none: "Aucune audience prévue aujourd'hui"
+**Short-term Schedule**
+- Meetings over the course of the next 7 days, chronologically
+- If none: "Aucune audience prévue à court terme."
 
 **Urgent Items**
 - Tasks due within 14 days or overdue
 - Protocol steps due within 14 days or overdue
 - Prescription dates within 60 days
 
-**Recent Activity**
-- Last 5 time entries (quick reference for ongoing work)
-- Last 5 invoices with status
+**Long-term Planning**
+- Hearings over the course of the next two months, chronologically
 
 **Quick Stats**
 - Open dossiers count
