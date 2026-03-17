@@ -9,15 +9,13 @@ entrypoint: gunicorn -b :$PORT main:app
 
 env_variables:
   ENV: "production"
+  FIREBASE_API_KEY: "REDACTED_OLD_FIREBASE_API_KEY"
   FIREBASE_PROJECT_ID: "athena-pallas"
   FIREBASE_STORAGE_BUCKET: "athena-pallas.firebasestorage.app"
-  # Sensitive values below should be set via Secret Manager or
-  # `gcloud app deploy --set-env-vars` rather than checked into source.
-  # The placeholders here exist so the app knows which keys to expect.
-  FIREBASE_API_KEY: "SET-VIA-SECRET-MANAGER"
-  AUTHORIZED_USER_EMAIL: "SET-VIA-SECRET-MANAGER"
-  SECRET_KEY: "SET-VIA-SECRET-MANAGER"
-  DAV_PASSWORD_HASH: "SET-VIA-SECRET-MANAGER"
+  AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
+  # Sensitive — override via Secret Manager or gcloud deploy --set-env-vars
+  SECRET_KEY: "CHANGE-ME-use-secret-manager-in-production"
+  DAV_PASSWORD_HASH: "REDACTED_OLD_BCRYPT_HASH"
 
 handlers:
   - url: /static
