@@ -27,7 +27,6 @@ class Config:
     DAV_PASSWORD_HASH: str = os.environ.get("DAV_PASSWORD_HASH", "")
 
     # App Check (reCAPTCHA Enterprise)
-    APPCHECK_ENABLED: bool = os.environ.get("APPCHECK_ENABLED", "false").lower() == "true"
     RECAPTCHA_ENTERPRISE_SITE_KEY: str = os.environ.get("RECAPTCHA_ENTERPRISE_SITE_KEY", "")
     APPCHECK_DEBUG_TOKEN: str = os.environ.get("APPCHECK_DEBUG_TOKEN", "")  # local dev only
 
