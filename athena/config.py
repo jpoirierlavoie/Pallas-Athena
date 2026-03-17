@@ -22,7 +22,7 @@ class Config:
     SESSION_LIFETIME_HOURS: int = int(os.environ.get("SESSION_LIFETIME_HOURS", "12"))
 
     # DAV Basic Auth (separate from Firebase Auth)
-    DAV_USERNAME: str = os.environ.get("DAV_USERNAME", "")
+    DAV_USERNAME: str = os.environ.get("AUTHORIZED_USER_EMAIL", "")
     DAV_PASSWORD_HASH: str = os.environ.get("DAV_PASSWORD_HASH", "")
 
     # Rate limiting
