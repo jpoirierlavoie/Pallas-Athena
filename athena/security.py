@@ -65,7 +65,10 @@ UPLOAD_PATHS = ("/documents/upload",)
 
 
 def _enforce_request_size() -> Optional[Response]:
-    """Reject oversized requests for non-upload endpoints."""
+    """Reject oversized requests for non-upload and non-DAV endpoints."""
+    # DAV endpoints handle their own payloads (vCard, iCal); exempt them.
+    if request.path.startswith("/dav/") or request.path.startswith("/.well-known/"):
+        return None
     if request.content_length and request.path not in UPLOAD_PATHS:
         if request.content_length > 1 * 1024 * 1024:  # 1 MB
             from flask import abort
