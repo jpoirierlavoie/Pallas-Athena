@@ -53,6 +53,7 @@ from models.document import (
     get_file_icon,
     list_documents,
 )
+from models.folder import list_folders
 from models.dossier import (
     FEE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
@@ -300,7 +301,16 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
     # Load document data for the documents tab
     if tab_name == "documents":
-        docs = list_documents(dossier_id=dossier_id)
+        # Root-level folders with item counts
+        root_folders = list_folders(dossier_id, parent_folder_id=None)
+        from models.folder import _count_items
+        for f in root_folders:
+            counts = _count_items(dossier_id, f["id"])
+            f["_item_count"] = counts["folders"] + counts["documents"]
+        ctx["root_folders"] = root_folders
+
+        # Root-level documents only (no folder_id)
+        docs = list_documents(dossier_id=dossier_id, folder_id=None)
         for d in docs:
             d["_file_size_fmt"] = format_file_size(d.get("file_size", 0))
             d["_file_icon"] = get_file_icon(d.get("file_type", ""))

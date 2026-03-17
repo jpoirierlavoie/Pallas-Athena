@@ -1223,7 +1223,23 @@ When a protocol step is created and the "auto-create tasks" toggle is on, automa
 ## PHASE 9 — Document Storage
 
 ### Objective
-Build the document storage module — a simple file management system for procedural documents. Uses Firebase Storage (Google Cloud Storage) for file storage and Firestore for metadata. The UI should feel like a lightweight file browser (similar to Google Drive but much simpler).
+Build the document storage module — a file management system for procedural documents with hierarchical folder organization. Uses Firebase Storage (Google Cloud Storage) for file storage and Firestore for metadata. Folders are a Firestore-only concept — files remain at flat Storage paths regardless of folder placement. The UI should feel like a lightweight file browser (similar to Google Drive but much simpler).
+
+### Firestore Schema: `dossiers/{dossierId}/folders/{folderId}`
+
+```python
+{
+    "id": "uuid-v4",
+    "dossier_id": "uuid-ref",
+    "name": "Pièces du demandeur",           # Folder display name (max 100 chars, no / or \)
+    "parent_folder_id": None | "uuid-ref",   # None = root of dossier, uuid = nested inside another folder
+    "order": 0,                               # Display order among siblings
+    "created_at": datetime,
+    "updated_at": datetime
+}
+```
+
+**Folder constraints:** Max nesting depth of 5 levels. No duplicate names within the same parent (case-insensitive). Circular reference prevention on move operations.
 
 ### Firestore Schema: `documents/{documentId}`
 
@@ -1232,6 +1248,7 @@ Build the document storage module — a simple file management system for proced
     "id": "uuid-v4",
     "dossier_id": "uuid-ref",
     "dossier_file_number": "2025-001",
+    "folder_id": None | "uuid-ref",        # None = dossier root level, uuid = inside a folder
     
     "filename": "requête_introductive.pdf",
     "original_filename": "requête_introductive.pdf",
@@ -1265,13 +1282,21 @@ users/{userId}/
 ### Web UI Requirements
 
 **Document Browser (within dossier detail "Documents" tab)**
-- File list showing: icon (by type: PDF, Word, image, other), display_name, category badge, file_size (formatted), upload date
+- **Breadcrumb bar** at top: "Documents > Pièces > Expert Tremblay" — each segment is clickable (HTMX navigation). Root shows "Documents".
+- **Toolbar:** "Nouveau dossier" button, "Téléverser" button, bulk actions (Déplacer, Supprimer) when items are selected via checkboxes
+- **Folders displayed first** as a group, before documents:
+  - Each folder row: folder icon, name, item count, date modified. Tap to navigate into folder.
+- **Document rows** below folders: icon (by type: PDF, Word, image, other), display_name, category badge, file_size (formatted), upload date
 - Category filter tabs
-- Search by name/description
+- Search by name/description — when searching, searches across ALL folders and shows folder path in results
 - Sort by date (default), name, size
-- Upload button: opens file picker (accept common legal file types: PDF, DOCX, DOC, JPG, PNG, TIFF)
+- Upload button: opens file picker (accept common legal file types: PDF, DOCX, DOC, JPG, PNG, TIFF). Files uploaded while inside a folder are automatically assigned to that folder.
 - Multi-file upload support with progress indicator
 - Drag-and-drop upload area on desktop
+- **Create folder inline:** clicking "Nouveau dossier" inserts an editable text input row at the top of the folder list. Enter to save, Escape to cancel.
+- **Move-to-folder modal:** when selecting items and clicking "Déplacer", a modal shows the full folder tree with a "Déplacer ici" button. Supports moving both documents and folders.
+- Empty folder state: "Ce dossier est vide."
+- Empty root state: "Aucun document pour le moment. Téléversez votre premier fichier ou créez un dossier."
 
 **File Upload Flow**
 1. User selects files (or drags and drops)
@@ -1295,12 +1320,24 @@ users/{userId}/
 - Storage security rules: only authenticated user with matching userId can read/write
 
 ### Model Layer (`models/document.py`)
-- `upload_document(dossier_id, file_stream, filename, metadata)` — uploads to Storage, creates Firestore record
+- `upload_document(dossier_id, file_stream, filename, metadata, folder_id=None)` — uploads to Storage, creates Firestore record with folder_id
 - `get_document(document_id)` — returns metadata
 - `get_signed_url(document_id)` — generates a short-lived signed URL
-- `list_documents(dossier_id, category=None, search=None)` — lists with optional filters
+- `list_documents(dossier_id, folder_id=None, category=None, search=None)` — lists with optional filters. When folder_id is passed, returns only documents in that folder. When search is active, ignores folder filter and searches all folders.
 - `delete_document(document_id)` — deletes both Storage file and Firestore record
 - `update_metadata(document_id, data)` — updates display_name, category, tags, description
+- `move_document(dossier_id, document_id, target_folder_id)` — updates folder_id (Firestore only, no Storage change)
+- `move_documents_bulk(dossier_id, document_ids, target_folder_id)` — batch move via Firestore batch write
+
+### Model Layer (`models/folder.py`)
+- `create_folder(dossier_id, name, parent_folder_id=None)` — validates name uniqueness within parent, max depth, creates Firestore doc
+- `get_folder(dossier_id, folder_id)` — returns folder or None
+- `list_folders(dossier_id, parent_folder_id=None)` — returns folders at the given level, alphabetically
+- `rename_folder(dossier_id, folder_id, new_name)` — validates no duplicate name in same parent
+- `move_folder(dossier_id, folder_id, new_parent_folder_id)` — validates no circular references, no duplicate names
+- `delete_folder(dossier_id, folder_id, recursive=False)` — if not recursive, rejects non-empty folders; if recursive, reassigns contents to parent and deletes
+- `get_folder_breadcrumb(dossier_id, folder_id)` — returns path from root to current folder for breadcrumb display
+- `get_folder_tree(dossier_id)` — returns full nested tree structure for the move-to-folder modal
 
 ### Testing Criteria for Phase 9
 - [ ] Single and multi-file upload works with progress indication
@@ -1314,6 +1351,18 @@ users/{userId}/
 - [ ] Category filtering works
 - [ ] File size is displayed in human-readable format (KB/MB)
 - [ ] Upload rejects files over 25MB with a friendly error
+- [ ] Can create folders at dossier root and nested inside other folders
+- [ ] Max folder nesting depth (5 levels) is enforced
+- [ ] Duplicate folder names within same parent are rejected
+- [ ] Can rename and move folders
+- [ ] Circular folder moves are prevented
+- [ ] Breadcrumb navigation works correctly at all levels
+- [ ] Uploading inside a folder assigns the document to that folder
+- [ ] Moving documents between folders works (single and bulk)
+- [ ] Search across all folders works and shows folder context
+- [ ] Deleting an empty folder works; non-empty folder without recursive flag is rejected
+- [ ] Existing documents without folder_id display at root (backward compatible)
+- [ ] Folder tree in move modal renders correctly
 
 ---
 

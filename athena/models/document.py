@@ -79,6 +79,7 @@ def _default_doc() -> dict:
         "category": "autre",
         "description": "",
         "tags": [],
+        "folder_id": None,
         "version": 1,
         "parent_document_id": None,
         "created_at": None,
@@ -187,6 +188,14 @@ def upload_document(
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
 
+    # Validate folder_id if provided
+    folder_id = merged.get("folder_id")
+    if folder_id:
+        from models.folder import get_folder
+        folder = get_folder(dossier_id, folder_id)
+        if not folder:
+            return None, ["Le dossier de destination est introuvable."]
+
     # Validate metadata
     meta_errors = _validate_metadata(merged)
     if meta_errors:
@@ -247,13 +256,25 @@ def get_document(document_id: str) -> Optional[dict]:
     return None
 
 
+# Sentinel value: distinguishes "no folder filter" from "filter to root (None)"
+_UNSET = object()
+
+
 def list_documents(
     dossier_id: Optional[str] = None,
+    folder_id: object = _UNSET,
     category: Optional[str] = None,
     search: Optional[str] = None,
     sort_by: str = "created_at",
 ) -> list[dict]:
-    """Return documents, optionally filtered by dossier, category, search."""
+    """Return documents, optionally filtered by dossier, folder, category, search.
+
+    folder_id behaviour:
+    - _UNSET (default): no folder filter, return all documents
+    - None: return only documents at dossier root (folder_id is None)
+    - str: return only documents in that specific folder
+    - When search is active, folder_id filter is ignored (search across all)
+    """
     try:
         query = db.collection(COLLECTION)
 
@@ -265,7 +286,7 @@ def list_documents(
 
         results = [doc.to_dict() for doc in query.stream()]
 
-        # Client-side search
+        # Client-side search (across all folders)
         if search:
             term = search.lower()
             filtered = []
@@ -279,6 +300,9 @@ def list_documents(
                 if term in searchable:
                     filtered.append(d)
             results = filtered
+        elif folder_id is not _UNSET:
+            # Filter by folder (only when not searching)
+            results = [d for d in results if d.get("folder_id") == folder_id]
 
         # Sort
         if sort_by == "name":
@@ -372,6 +396,85 @@ def get_signed_url(document_id: str, expiry_minutes: int = 15) -> Optional[str]:
         return url
     except Exception:
         return None
+
+
+# ── Move ─────────────────────────────────────────────────────────────────
+
+
+def move_document(
+    dossier_id: str,
+    document_id: str,
+    target_folder_id: Optional[str],
+) -> tuple[Optional[dict], list[str]]:
+    """Move a document to a different folder. Returns (updated_doc, errors)."""
+    doc = get_document(document_id)
+    if not doc:
+        return None, ["Document introuvable."]
+    if doc.get("dossier_id") != dossier_id:
+        return None, ["Le document n'appartient pas à ce dossier."]
+
+    # Validate target folder
+    if target_folder_id:
+        from models.folder import get_folder
+        folder = get_folder(dossier_id, target_folder_id)
+        if not folder:
+            return None, ["Le dossier de destination est introuvable."]
+
+    now = datetime.now(timezone.utc)
+    doc["folder_id"] = target_folder_id
+    doc["updated_at"] = now
+    doc["etag"] = str(uuid.uuid4())
+
+    try:
+        db.collection(COLLECTION).document(document_id).set(doc)
+    except Exception as exc:
+        return None, [f"Erreur lors du déplacement : {exc}"]
+
+    return doc, []
+
+
+def move_documents_bulk(
+    dossier_id: str,
+    document_ids: list[str],
+    target_folder_id: Optional[str],
+) -> tuple[int, list[str]]:
+    """Move multiple documents to a folder. Returns (count_moved, errors)."""
+    # Validate target folder
+    if target_folder_id:
+        from models.folder import get_folder
+        folder = get_folder(dossier_id, target_folder_id)
+        if not folder:
+            return 0, ["Le dossier de destination est introuvable."]
+
+    now = datetime.now(timezone.utc)
+    moved = 0
+    errors: list[str] = []
+    batch = db.batch()
+
+    for doc_id in document_ids:
+        doc = get_document(doc_id)
+        if not doc:
+            errors.append(f"Document {doc_id} introuvable.")
+            continue
+        if doc.get("dossier_id") != dossier_id:
+            errors.append(f"Document {doc_id} n'appartient pas à ce dossier.")
+            continue
+
+        ref = db.collection(COLLECTION).document(doc_id)
+        batch.update(ref, {
+            "folder_id": target_folder_id,
+            "updated_at": now,
+            "etag": str(uuid.uuid4()),
+        })
+        moved += 1
+
+    if moved > 0:
+        try:
+            batch.commit()
+        except Exception as exc:
+            return 0, [f"Erreur lors du déplacement : {exc}"]
+
+    return moved, errors
 
 
 # ── Summary ──────────────────────────────────────────────────────────────

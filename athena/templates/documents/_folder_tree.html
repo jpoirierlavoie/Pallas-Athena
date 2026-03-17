@@ -1,0 +1,37 @@
+{# Recursive folder tree for move modal #}
+{% macro render_tree(nodes, depth=0) %}
+{% for node in nodes %}
+<label class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-gray-100 cursor-pointer"
+       style="padding-left: {{ depth * 1.25 + 0.5 }}rem">
+  <input type="radio"
+         name="target_folder_id"
+         value="{{ node.id }}"
+         class="text-indigo-600 focus:ring-indigo-500">
+  <svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
+  </svg>
+  <span class="text-sm text-gray-900">{{ node.name }}</span>
+</label>
+{% if node.children %}
+{{ render_tree(node.children, depth + 1) }}
+{% endif %}
+{% endfor %}
+{% endmacro %}
+
+<div class="space-y-1">
+  {# Root option #}
+  <label class="flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-gray-100 cursor-pointer">
+    <input type="radio"
+           name="target_folder_id"
+           value=""
+           checked
+           class="text-indigo-600 focus:ring-indigo-500">
+    <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
+    </svg>
+    <span class="text-sm text-gray-900 font-medium">Racine du dossier</span>
+  </label>
+
+  {# Folder tree #}
+  {{ render_tree(folder_tree) }}
+</div>

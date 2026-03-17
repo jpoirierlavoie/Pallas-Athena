@@ -1,4 +1,4 @@
-{# Tab: Documents — Documents for this dossier #}
+{# Tab: Documents — Documents and folders for this dossier #}
 {% set category_colors = {
   'procédure': 'bg-blue-100 text-blue-700',
   'pièce': 'bg-purple-100 text-purple-700',
@@ -13,10 +13,14 @@
 <div class="space-y-6">
 
   {# ── Summary stats ──────────────────────────────────────────── #}
-  <div class="grid grid-cols-2 gap-3">
+  <div class="grid grid-cols-3 gap-3">
     <div class="p-3 bg-gray-50 rounded-lg text-center">
       <p class="text-xs text-gray-500 mb-1">Documents</p>
       <p class="text-lg font-semibold text-gray-900">{{ document_summary.total }}</p>
+    </div>
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Dossiers</p>
+      <p class="text-lg font-semibold text-gray-900">{{ root_folders | length }}</p>
     </div>
     <div class="p-3 bg-gray-50 rounded-lg text-center">
       <p class="text-xs text-gray-500 mb-1">Taille totale</p>
@@ -24,23 +28,49 @@
     </div>
   </div>
 
-  {# ── Document list ──────────────────────────────────────────── #}
+  {# ── Content list ──────────────────────────────────────────── #}
   <div>
     <div class="flex items-center justify-between mb-3">
-      <h3 class="text-sm font-semibold text-gray-900">Documents</h3>
-      <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier.id) }}"
-         class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
-        + Téléverser
-      </a>
+      <h3 class="text-sm font-semibold text-gray-900">Fichiers</h3>
+      <div class="flex items-center gap-3">
+        <a href="{{ url_for('documents.document_list', dossier_id=dossier.id) }}"
+           class="text-xs font-medium text-gray-500 hover:text-gray-700">
+          Ouvrir le navigateur
+        </a>
+        <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier.id) }}"
+           class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+          + Téléverser
+        </a>
+      </div>
     </div>
 
-    {% if documents %}
+    {% if root_folders or documents %}
     <div class="flex flex-col gap-2">
+
+      {# Folders #}
+      {% for f in root_folders %}
+      <a href="{{ url_for('documents.document_list', dossier_id=dossier.id, folder_id=f.id) }}"
+         class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+        <div class="w-8 h-8 rounded-md bg-amber-50 flex items-center justify-center flex-shrink-0">
+          <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
+          </svg>
+        </div>
+        <div class="flex-1 min-w-0">
+          <span class="text-sm font-medium text-gray-900 truncate block">{{ f.name }}</span>
+          <span class="text-xs text-gray-400">{{ f._item_count }} élément{{ 's' if f._item_count != 1 }}</span>
+        </div>
+        <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/>
+        </svg>
+      </a>
+      {% endfor %}
+
+      {# Documents at root level #}
       {% for d in documents %}
       <a href="{{ url_for('documents.document_detail', document_id=d.id) }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
 
-        {# File type icon #}
         {% set icon = d._file_icon %}
         <div class="w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0
                     {% if icon == 'pdf' %}bg-red-50{% elif icon == 'word' %}bg-blue-50{% elif icon == 'image' %}bg-green-50{% else %}bg-gray-50{% endif %}">
@@ -80,6 +110,7 @@
         </div>
       </a>
       {% endfor %}
+
     </div>
     {% else %}
     <p class="text-gray-400 text-sm text-center py-4">Aucun document pour ce dossier.</p>

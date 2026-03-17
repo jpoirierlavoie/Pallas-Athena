@@ -7,7 +7,7 @@
   {# ── Header ───────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Documents</h1>
-    <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id) }}"
+    <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
        class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>
@@ -24,7 +24,7 @@
            placeholder="Rechercher…"
            hx-get="{{ url_for('documents.document_list') }}"
            hx-trigger="input changed delay:300ms, search"
-           hx-target="#document-rows"
+           hx-target="#browser-content"
            hx-include="[name='category'],[name='dossier_id'],[name='sort']"
            hx-push-url="true"
            class="flex-1 min-w-[200px] px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -32,7 +32,7 @@
     <select name="dossier_id"
             hx-get="{{ url_for('documents.document_list') }}"
             hx-trigger="change"
-            hx-target="#document-rows"
+            hx-target="#browser-content"
             hx-include="[name='q'],[name='category'],[name='sort']"
             hx-push-url="true"
             class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -45,7 +45,7 @@
     <select name="category"
             hx-get="{{ url_for('documents.document_list') }}"
             hx-trigger="change"
-            hx-target="#document-rows"
+            hx-target="#browser-content"
             hx-include="[name='q'],[name='dossier_id'],[name='sort']"
             hx-push-url="true"
             class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -58,7 +58,7 @@
     <select name="sort"
             hx-get="{{ url_for('documents.document_list') }}"
             hx-trigger="change"
-            hx-target="#document-rows"
+            hx-target="#browser-content"
             hx-include="[name='q'],[name='dossier_id'],[name='category']"
             hx-push-url="true"
             class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -68,13 +68,13 @@
     </select>
   </div>
 
-  {# ── Document list ────────────────────────────────────────── #}
-  <div id="document-rows">
-    {% include "documents/_document_rows.html" %}
+  {# ── Browser content (folders + documents) ─────────────────── #}
+  <div id="browser-content">
+    {% include "documents/_browser.html" %}
   </div>
 
   {# ── Mobile FAB ───────────────────────────────────────────── #}
-  <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id) }}"
+  <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
      class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
     <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
       <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>

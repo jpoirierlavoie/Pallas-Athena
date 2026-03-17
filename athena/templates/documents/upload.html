@@ -35,6 +35,19 @@
         @submit="submitting = true">
 
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if folder_id %}
+    <input type="hidden" name="folder_id" value="{{ folder_id }}">
+    {% endif %}
+
+    {# Folder context #}
+    {% if folder_breadcrumb %}
+    <div class="px-4 py-2.5 text-sm bg-amber-50 border border-amber-200 rounded-xl text-gray-700">
+      <span class="text-xs text-gray-500">Téléverser dans :</span>
+      <span class="font-medium">
+        {% for crumb in folder_breadcrumb %}{{ crumb.name }}{% if not loop.last %} &rsaquo; {% endif %}{% endfor %}
+      </span>
+    </div>
+    {% endif %}
 
     {# Dossier selector #}
     <div>
