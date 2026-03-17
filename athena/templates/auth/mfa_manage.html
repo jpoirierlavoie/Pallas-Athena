@@ -131,7 +131,7 @@
     appId: {{ firebase_app_id|tojson }}
   });
 
-  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+  {% if config.APPCHECK_ENABLED and config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
   firebase.appCheck().activate(
     new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
     true
