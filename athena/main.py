@@ -86,6 +86,15 @@ def create_app() -> Flask:
     csrf.exempt(caldav_bp)
     csrf.exempt(rfc5545_bp)
 
+    # ── Context processor (Firebase config for all templates) ──────────
+    @app.context_processor
+    def inject_firebase_config() -> dict[str, str]:
+        return {
+            "firebase_project_id": app.config["FIREBASE_PROJECT_ID"],
+            "firebase_api_key": app.config.get("FIREBASE_API_KEY", ""),
+            "firebase_app_id": app.config.get("FIREBASE_APP_ID", ""),
+        }
+
     # ── Error handlers ─────────────────────────────────────────────────
     @app.errorhandler(404)
     def page_not_found(e):  # type: ignore[no-untyped-def]

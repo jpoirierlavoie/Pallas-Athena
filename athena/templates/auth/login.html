@@ -350,13 +350,23 @@
         async postIdToken(user) {
           const idToken = await user.getIdToken();
           const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+          const headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CSRFToken': csrfToken
+          };
+
+          // Attach App Check token if available
+          try {
+            const appCheckResult = await firebase.appCheck().getToken(false);
+            if (appCheckResult && appCheckResult.token) {
+              headers['X-Firebase-AppCheck'] = appCheckResult.token;
+            }
+          } catch (e) { /* App Check token optional on login */ }
+
           const body = new URLSearchParams({ id_token: idToken });
           const res = await fetch('/auth/verify-token', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'X-CSRFToken': csrfToken
-            },
+            headers,
             body
           });
 

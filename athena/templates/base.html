@@ -195,5 +195,47 @@
       </form>
     </div>
   </nav>
+
+  {# ── Firebase App Check (all pages) ────────────────────────────── #}
+  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
+  <script>
+    {% if config.ENV == 'development' %}
+    self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
+    {% endif %}
+
+    var _firebaseApp = firebase.initializeApp({
+      apiKey: {{ firebase_api_key|tojson }},
+      authDomain: "{{ firebase_project_id }}.firebaseapp.com",
+      projectId: {{ firebase_project_id|tojson }},
+      appId: {{ firebase_app_id|tojson }}
+    });
+
+    var _appCheck = firebase.appCheck();
+    _appCheck.activate(
+      new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
+      /* isTokenAutoRefreshEnabled */ true
+    );
+
+    // Cache App Check token and attach to all HTMX requests
+    var _appCheckToken = '';
+
+    (function _refreshToken() {
+      _appCheck.getToken(false).then(function(result) {
+        _appCheckToken = result.token;
+      }).catch(function() {});
+      setTimeout(_refreshToken, 50 * 60 * 1000);
+    })();
+
+    document.body.addEventListener('htmx:configRequest', function(evt) {
+      if (_appCheckToken) {
+        evt.detail.headers['X-Firebase-AppCheck'] = _appCheckToken;
+      }
+    });
+  </script>
+  {% endif %}
+
+  {% block page_scripts %}{% endblock %}
 </body>
 </html>

@@ -114,30 +114,13 @@
   </div>
 </div>
 
-{# ── Firebase SDK ────────────────────────────────────────────────── #}
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+{% endblock %}
+
+{% block page_scripts %}
+{# Firebase Auth SDK (App + App Check already loaded by base.html) #}
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
 
 <script>
-  {% if config.ENV == 'development' %}
-  self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
-  {% endif %}
-
-  const firebaseApp = firebase.initializeApp({
-    apiKey: {{ firebase_api_key|tojson }},
-    authDomain: "{{ firebase_project_id }}.firebaseapp.com",
-    projectId: {{ firebase_project_id|tojson }},
-    appId: {{ firebase_app_id|tojson }}
-  });
-
-  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
-  firebase.appCheck().activate(
-    new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
-    true
-  );
-  {% endif %}
-
   const auth = firebase.auth();
 
   function mfaManage() {
