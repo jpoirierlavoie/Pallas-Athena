@@ -220,13 +220,29 @@
 
     // Cache App Check token and attach to all HTMX requests
     var _appCheckToken = '';
+    var _appCheckPromise = null;
 
-    (function _refreshToken() {
-      _appCheck.getToken(false).then(function(result) {
+    function _fetchAppCheckToken() {
+      _appCheckPromise = _appCheck.getToken(false).then(function(result) {
         _appCheckToken = result.token;
-      }).catch(function() {});
-      setTimeout(_refreshToken, 50 * 60 * 1000);
-    })();
+        _appCheckPromise = null;
+      }).catch(function() {
+        _appCheckPromise = null;
+      });
+      setTimeout(_fetchAppCheckToken, 50 * 60 * 1000);
+      return _appCheckPromise;
+    }
+    _fetchAppCheckToken();
+
+    // Pause HTMX requests until App Check token is available
+    document.body.addEventListener('htmx:confirm', function(evt) {
+      if (_appCheckToken) return;           // token ready — proceed normally
+      if (!_appCheckPromise) return;        // no pending fetch — proceed without token
+      evt.preventDefault();
+      _appCheckPromise.then(function() {
+        evt.detail.issueRequest();
+      });
+    });
 
     document.body.addEventListener('htmx:configRequest', function(evt) {
       if (_appCheckToken) {
