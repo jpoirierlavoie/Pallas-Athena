@@ -375,8 +375,16 @@ def delete_document(document_id: str) -> tuple[bool, str]:
         return False, f"Erreur lors de la suppression : {exc}"
 
 
-def get_signed_url(document_id: str, expiry_minutes: int = 15) -> Optional[str]:
-    """Generate a signed URL for downloading/viewing a document."""
+def get_signed_url(
+    document_id: str,
+    expiry_minutes: int = 15,
+    download: bool = False,
+) -> Optional[str]:
+    """Generate a signed URL for downloading/viewing a document.
+
+    When *download* is True the URL includes response headers that force
+    the browser to save the file instead of displaying it inline.
+    """
     doc = get_document(document_id)
     if not doc:
         return None
@@ -388,10 +396,22 @@ def get_signed_url(document_id: str, expiry_minutes: int = 15) -> Optional[str]:
     try:
         bucket = storage.bucket()
         blob = bucket.blob(storage_path)
+
+        query_params: dict[str, str] = {}
+        if download:
+            filename = doc.get("display_name") or doc.get("original_filename") or doc.get("filename", "document")
+            query_params["response-content-disposition"] = (
+                f'attachment; filename="{filename}"'
+            )
+            content_type = doc.get("file_type")
+            if content_type:
+                query_params["response-content-type"] = content_type
+
         url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=expiry_minutes),
             method="GET",
+            query_parameters=query_params,
         )
         return url
     except Exception:

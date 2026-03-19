@@ -169,7 +169,7 @@ def document_detail(document_id: str) -> str:
 @login_required
 def document_download(document_id: str) -> str:
     """Redirect to a signed download URL."""
-    signed_url = get_signed_url(document_id)
+    signed_url = get_signed_url(document_id, download=True)
     if not signed_url:
         return redirect(url_for("documents.document_list"))
     return redirect(signed_url)
