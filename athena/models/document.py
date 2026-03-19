@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import google.auth
+from google.auth.transport import requests as auth_requests
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
 from models import db
@@ -407,11 +409,20 @@ def get_signed_url(
             if content_type:
                 query_params["response-content-type"] = content_type
 
+        # On App Engine Standard, Application Default Credentials come from
+        # the metadata server and lack a local private key.  Passing the
+        # service account email + access token tells the library to sign
+        # via the IAM signBlob API instead.
+        signing_creds, _ = google.auth.default()
+        signing_creds.refresh(auth_requests.Request())
+
         url = blob.generate_signed_url(
             version="v4",
             expiration=timedelta(minutes=expiry_minutes),
             method="GET",
             query_parameters=query_params,
+            service_account_email=signing_creds.service_account_email,
+            access_token=signing_creds.token,
         )
         return url
     except Exception:
