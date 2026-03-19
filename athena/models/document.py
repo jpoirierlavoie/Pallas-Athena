@@ -1,6 +1,7 @@
 """Document Firestore CRUD and Firebase Storage operations."""
 
 import mimetypes
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -402,6 +403,13 @@ def get_signed_url(
         query_params: dict[str, str] = {}
         if download:
             filename = doc.get("display_name") or doc.get("original_filename") or doc.get("filename", "document")
+            # Ensure the filename has an extension so the OS recognises the file type
+            if "." not in os.path.basename(filename):
+                ext = mimetypes.guess_extension(doc.get("file_type", "")) or ""
+                # mimetypes may return '.jpe' for JPEG; prefer common extensions
+                if ext == ".jpe":
+                    ext = ".jpg"
+                filename += ext
             query_params["response-content-disposition"] = (
                 f'attachment; filename="{filename}"'
             )
