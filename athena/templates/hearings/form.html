@@ -6,7 +6,7 @@
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        dossierId: '{{ (hearing.dossier_id or '') if hearing else '' }}',
-       dossierDisplay: {{ ((hearing.dossier_file_number or '') + (' — ' + hearing.dossier_title if hearing and hearing.dossier_title else '') if hearing else '') | tojson }},
+       dossierDisplay: {{ ((hearing.dossier_file_number or '') + (' — ' + hearing.dossier_title if hearing and hearing.dossier_title else '') if hearing else '') | jsattr }},
        searchOpen: false,
        hearingType: '{{ (hearing.hearing_type or 'audience') if hearing else 'audience' }}',
        allDay: {{ 'true' if hearing and hearing.all_day else 'false' }},

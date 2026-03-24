@@ -41,9 +41,24 @@ def create_app() -> Flask:
     # ── Security (headers, CSRF, rate limiter) ───────────────────────
     init_security(app)
 
-    # ── Jinja2 timezone filter ────────────────────────────────────────
+    # ── Jinja2 custom filters ───────────────────────────────────────────
     from tz import to_mtl
     app.jinja_env.filters["to_mtl"] = to_mtl
+
+    import json as _json
+    from markupsafe import Markup
+
+    def _jsattr(value: str) -> Markup:
+        """Escape a string for safe use as a JS string inside a double-quoted HTML attribute."""
+        js = _json.dumps(str(value), ensure_ascii=False)
+        return Markup(
+            js.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    app.jinja_env.filters["jsattr"] = _jsattr
 
     # ── Blueprints ───────────────────────────────────────────────────
     from routes.auth_routes import auth_bp

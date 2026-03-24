@@ -5,7 +5,7 @@
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        dossierId: '{{ (expense.dossier_id or '') if expense else '' }}',
-       dossierDisplay: {{ ((expense.dossier_file_number or '') + (' — ' + expense.dossier_title if expense and expense.dossier_title else '') if expense else '') | tojson }},
+       dossierDisplay: {{ ((expense.dossier_file_number or '') + (' — ' + expense.dossier_title if expense and expense.dossier_title else '') if expense else '') | jsattr }},
        searchOpen: false
      }">
 
