@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+from tz import MTL
+
 from flask import (
     Blueprint,
     redirect,
@@ -80,6 +82,7 @@ def _template_context() -> dict:
         "category_labels": CATEGORY_LABELS,
         "valid_categories": VALID_CATEGORIES,
         "quick_descriptions": QUICK_DESCRIPTIONS,
+        "today": datetime.now(MTL).strftime("%Y-%m-%d"),
     }
 
 
