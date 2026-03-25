@@ -97,11 +97,11 @@ def _form_data() -> dict:
 @login_required
 def partie_list() -> str:
     """Render the partie list with optional filters."""
-    role_filter = request.args.get("role", "")
+    role_filter = request.args.get("role", "client")
     search = request.args.get("q", "").strip()
 
     parties = list_parties(
-        role_filter=role_filter or None,
+        role_filter=role_filter if role_filter != "tous" else None,
         search=search or None,
     )
 

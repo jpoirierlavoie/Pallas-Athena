@@ -33,10 +33,10 @@
             hx-include="[name='q']"
             hx-push-url="true"
             class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-      <option value="">Tous les rôles</option>
       {% for role_key, role_label in role_labels.items() %}
       <option value="{{ role_key }}" {{ 'selected' if role_filter == role_key }}>{{ role_label }}</option>
       {% endfor %}
+      <option value="tous" {{ 'selected' if role_filter == 'tous' }}>Tous les rôles</option>
     </select>
   </div>
 
