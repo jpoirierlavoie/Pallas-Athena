@@ -1,0 +1,36 @@
+{# Reusable pagination controls.
+   Expects: pagination dict with page, has_prev, has_next, url, target.
+   Optional: pagination.extra_vals dict for additional hx-vals params. #}
+{% if pagination and (pagination.has_prev or pagination.has_next) %}
+<div class="flex items-center justify-between pt-4">
+  {% if pagination.has_prev %}
+  <a hx-get="{{ pagination.url }}"
+     hx-target="{{ pagination.target }}"
+     hx-include="#filters input, #filters select"
+     hx-vals='{"page": "{{ pagination.page - 1 }}"{% if pagination.extra_vals %}{% for k, v in pagination.extra_vals.items() %}, "{{ k }}": "{{ v }}"{% endfor %}{% endif %}}'
+     hx-push-url="true"
+     class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    Précédent
+  </a>
+  {% else %}
+  <span></span>
+  {% endif %}
+
+  <span class="text-sm text-gray-500">Page {{ pagination.page }}</span>
+
+  {% if pagination.has_next %}
+  <a hx-get="{{ pagination.url }}"
+     hx-target="{{ pagination.target }}"
+     hx-include="#filters input, #filters select"
+     hx-vals='{"page": "{{ pagination.page + 1 }}"{% if pagination.extra_vals %}{% for k, v in pagination.extra_vals.items() %}, "{{ k }}": "{{ v }}"{% endfor %}{% endif %}}'
+     hx-push-url="true"
+     class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
+    Suivant
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+  </a>
+  {% else %}
+  <span></span>
+  {% endif %}
+</div>
+{% endif %}

@@ -35,7 +35,7 @@
   </div>
 
   {# ── Filters row ─────────────────────────────────────────────── #}
-  <div class="flex flex-wrap gap-3 mb-4">
+  <div id="filters" class="flex flex-wrap gap-3 mb-4">
     <input type="date" name="date_from"
            value="{{ date_from }}"
            hx-get="{{ url_for('time_expenses.time_list') }}"

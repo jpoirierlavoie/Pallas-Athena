@@ -48,6 +48,7 @@
   </a>
   {% endfor %}
 </div>
+{% include "components/pagination.html" %}
 {% else %}
 {% include "components/empty_state.html" with context %}
 {% set message = "Aucun contact pour le moment. Ajoutez votre premier contact." %}

@@ -13,6 +13,7 @@ from flask import (
 )
 
 from auth import login_required
+from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
 from models.document import (
     CATEGORY_LABELS,
@@ -74,6 +75,7 @@ def document_list() -> str:
     category_filter = request.args.get("category", "").strip()
     search = request.args.get("q", "").strip()
     sort_by = request.args.get("sort", "created_at")
+    page = request.args.get("page", 1, type=int)
 
     # When a dossier is selected and not searching, filter by folder
     if dossier_id and not search:
@@ -109,6 +111,12 @@ def document_list() -> str:
 
     _attach_computed_fields(documents)
 
+    documents, pagination = paginate(documents, page)
+    pagination["url"] = url_for("documents.document_list")
+    pagination["target"] = "#browser-content"
+    if folder_id:
+        pagination["extra_vals"] = {"folder_id": folder_id}
+
     ctx = {
         "documents": documents,
         "folders": folders_list,
@@ -120,6 +128,7 @@ def document_list() -> str:
         "sort_by": sort_by,
         "category_labels": CATEGORY_LABELS,
         "valid_categories": VALID_CATEGORIES,
+        "pagination": pagination,
     }
 
     if _is_htmx():

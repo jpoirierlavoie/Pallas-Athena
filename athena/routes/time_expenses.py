@@ -13,6 +13,7 @@ from flask import (
 )
 
 from auth import login_required
+from pagination import paginate
 from models.time_entry import (
     QUICK_DESCRIPTIONS,
     create_time_entry,
@@ -141,6 +142,7 @@ def time_list() -> str:
     dossier_id = request.args.get("dossier_id", "").strip()
     date_from = _parse_date(request.args.get("date_from", ""))
     date_to = _parse_date(request.args.get("date_to", ""))
+    page = request.args.get("page", 1, type=int)
 
     ctx = _template_context()
     ctx.update(
@@ -151,6 +153,11 @@ def time_list() -> str:
         date_to=request.args.get("date_to", ""),
     )
 
+    pagination_base = {
+        "url": url_for("time_expenses.time_list"),
+        "target": "#entry-rows",
+    }
+
     if active_tab == "depenses":
         entries = list_expenses(
             dossier_id=dossier_id or None,
@@ -158,8 +165,11 @@ def time_list() -> str:
             date_from=date_from,
             date_to=date_to,
         )
-        ctx["expenses"] = entries
         ctx["total_amount"] = sum(e.get("amount", 0) for e in entries)
+        entries, pagination = paginate(entries, page)
+        pagination.update(pagination_base)
+        ctx["expenses"] = entries
+        ctx["pagination"] = pagination
 
         if _is_htmx():
             return render_template("time_expenses/_expense_rows.html", **ctx)
@@ -170,9 +180,12 @@ def time_list() -> str:
             date_from=date_from,
             date_to=date_to,
         )
-        ctx["time_entries"] = entries
         ctx["total_hours"] = round(sum(e.get("hours", 0) for e in entries), 1)
         ctx["total_amount"] = sum(e.get("amount", 0) for e in entries)
+        entries, pagination = paginate(entries, page)
+        pagination.update(pagination_base)
+        ctx["time_entries"] = entries
+        ctx["pagination"] = pagination
 
         if _is_htmx():
             return render_template("time_expenses/_time_rows.html", **ctx)

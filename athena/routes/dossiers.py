@@ -12,6 +12,7 @@ from flask import (
 )
 
 from auth import login_required
+from pagination import paginate
 from models.time_entry import (
     get_time_summary,
     list_time_entries,
@@ -192,6 +193,7 @@ def dossier_list() -> str:
     status_filter = request.args.get("status", "actif")
     search = request.args.get("q", "").strip()
     sort_by = request.args.get("sort", "opened_date")
+    page = request.args.get("page", 1, type=int)
 
     # "tous" means no status filter
     effective_filter = status_filter if status_filter != "tous" else None
@@ -205,12 +207,17 @@ def dossier_list() -> str:
     # Compute prescription warnings
     _attach_prescription_warnings(dossiers)
 
+    dossiers, pagination = paginate(dossiers, page)
+    pagination["url"] = url_for("dossiers.dossier_list")
+    pagination["target"] = "#dossier-rows"
+
     ctx = _template_context()
     ctx.update(
         dossiers=dossiers,
         status_filter=status_filter,
         search=search,
         sort_by=sort_by,
+        pagination=pagination,
     )
 
     if _is_htmx():

@@ -9,6 +9,7 @@ from flask import (
 )
 
 from auth import login_required
+from pagination import paginate
 from models.partie import (
     ROLE_LABELS,
     VALID_CONTACT_ROLES,
@@ -99,6 +100,7 @@ def partie_list() -> str:
     """Render the partie list with optional filters."""
     role_filter = request.args.get("role", "client")
     search = request.args.get("q", "").strip()
+    page = request.args.get("page", 1, type=int)
 
     parties = list_parties(
         role_filter=role_filter if role_filter != "tous" else None,
@@ -109,11 +111,16 @@ def partie_list() -> str:
     for p in parties:
         p["_display_name"] = display_name(p)
 
+    parties, pagination = paginate(parties, page)
+    pagination["url"] = url_for("parties.partie_list")
+    pagination["target"] = "#partie-rows"
+
     if _is_htmx():
         return render_template(
             "parties/_partie_rows.html",
             parties=parties,
             role_labels=ROLE_LABELS,
+            pagination=pagination,
         )
 
     return render_template(
@@ -123,6 +130,7 @@ def partie_list() -> str:
         search=search,
         role_labels=ROLE_LABELS,
         valid_roles=VALID_CONTACT_ROLES,
+        pagination=pagination,
     )
 
 
