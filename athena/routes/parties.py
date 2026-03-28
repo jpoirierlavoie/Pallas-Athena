@@ -9,6 +9,7 @@ from flask import (
 )
 
 from auth import login_required
+from dav.sync import bump_ctag, record_tombstone
 from pagination import paginate
 from models.partie import (
     ROLE_LABELS,
@@ -209,6 +210,8 @@ def partie_create() -> str:
             role_labels=ROLE_LABELS,
         )
 
+    bump_ctag("parties")
+
     if _is_htmx():
         resp = redirect(url_for("parties.partie_detail", partie_id=partie["id"]))
         resp.headers["HX-Redirect"] = url_for(
@@ -254,6 +257,8 @@ def partie_update(partie_id: str) -> str:
             role_labels=ROLE_LABELS,
         )
 
+    bump_ctag("parties")
+
     if _is_htmx():
         resp = redirect(url_for("parties.partie_detail", partie_id=partie_id))
         resp.headers["HX-Redirect"] = url_for(
@@ -272,6 +277,10 @@ def partie_update(partie_id: str) -> str:
 def partie_delete(partie_id: str) -> str:
     """Delete a partie and redirect to the list."""
     success, error = delete_partie(partie_id)
+
+    if success:
+        record_tombstone("parties", partie_id)
+        bump_ctag("parties")
 
     if _is_htmx():
         if success:
