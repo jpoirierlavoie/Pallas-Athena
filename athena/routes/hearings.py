@@ -13,6 +13,7 @@ from flask import (
 )
 
 from auth import login_required
+from dav.sync import bump_ctag, record_tombstone
 from models.hearing import (
     HEARING_TYPE_COLORS,
     HEARING_TYPE_LABELS,
@@ -333,6 +334,8 @@ def hearing_create() -> str:
         ctx.update(hearing=data, errors=errors)
         return render_template("hearings/form.html", **ctx)
 
+    bump_ctag("hearings")
+
     if _is_htmx():
         resp = redirect(url_for("hearings.hearing_list"))
         resp.headers["HX-Redirect"] = url_for("hearings.hearing_list")
@@ -390,6 +393,8 @@ def hearing_update(hearing_id: str) -> str:
         ctx.update(hearing=data, errors=errors)
         return render_template("hearings/form.html", **ctx)
 
+    bump_ctag("hearings")
+
     if _is_htmx():
         resp = redirect(url_for("hearings.hearing_detail", hearing_id=hearing_id))
         resp.headers["HX-Redirect"] = url_for("hearings.hearing_detail", hearing_id=hearing_id)
@@ -406,6 +411,10 @@ def hearing_update(hearing_id: str) -> str:
 def hearing_delete(hearing_id: str) -> str:
     """Delete a hearing and redirect to the list."""
     success, error = delete_hearing(hearing_id)
+
+    if success:
+        record_tombstone("hearings", hearing_id)
+        bump_ctag("hearings")
 
     if _is_htmx():
         if success:

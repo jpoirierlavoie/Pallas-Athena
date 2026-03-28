@@ -13,6 +13,7 @@ from flask import (
 )
 
 from auth import login_required
+from dav.sync import bump_ctag, record_tombstone
 from models.task import (
     CATEGORY_LABELS,
     PRIORITY_COLORS,
@@ -211,6 +212,8 @@ def task_create() -> str:
         ctx.update(task=data, errors=errors)
         return render_template("tasks/form.html", **ctx)
 
+    bump_ctag("tasks")
+
     if _is_htmx():
         resp = redirect(url_for("tasks.task_list"))
         resp.headers["HX-Redirect"] = url_for("tasks.task_list")
@@ -269,6 +272,8 @@ def task_update(task_id: str) -> str:
         ctx.update(task=data, errors=errors)
         return render_template("tasks/form.html", **ctx)
 
+    bump_ctag("tasks")
+
     if _is_htmx():
         resp = redirect(url_for("tasks.task_detail", task_id=task_id))
         resp.headers["HX-Redirect"] = url_for("tasks.task_detail", task_id=task_id)
@@ -285,6 +290,10 @@ def task_update(task_id: str) -> str:
 def task_delete(task_id: str) -> str:
     """Delete a task and redirect to the list."""
     success, error = delete_task(task_id)
+
+    if success:
+        record_tombstone("tasks", task_id)
+        bump_ctag("tasks")
 
     if _is_htmx():
         if success:
@@ -307,6 +316,8 @@ def task_toggle(task_id: str) -> str:
 
     if errors:
         return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+
+    bump_ctag("tasks")
 
     if _is_htmx():
         # From the list page: re-fetch all tasks and return the full grouped list

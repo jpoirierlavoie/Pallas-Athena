@@ -12,6 +12,7 @@ from flask import (
 )
 
 from auth import login_required
+from dav.sync import bump_ctag, record_tombstone
 from pagination import paginate
 from models.time_entry import (
     get_time_summary,
@@ -365,6 +366,8 @@ def dossier_create() -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
+    bump_ctag("dossiers")
+
     if _is_htmx():
         resp = redirect(
             url_for("dossiers.dossier_detail", dossier_id=dossier["id"])
@@ -416,6 +419,8 @@ def dossier_update(dossier_id: str) -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
+    bump_ctag("dossiers")
+
     if _is_htmx():
         resp = redirect(
             url_for("dossiers.dossier_detail", dossier_id=dossier_id)
@@ -438,6 +443,10 @@ def dossier_update(dossier_id: str) -> str:
 def dossier_delete(dossier_id: str) -> str:
     """Delete a dossier and redirect to the list."""
     success, error = delete_dossier(dossier_id)
+
+    if success:
+        record_tombstone("dossiers", dossier_id)
+        bump_ctag("dossiers")
 
     if _is_htmx():
         if success:
