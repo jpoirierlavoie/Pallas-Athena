@@ -51,9 +51,14 @@ athena/
 ├── config.py                # Env-based configuration
 ├── auth.py                  # Firebase Auth verification + @login_required
 ├── security.py              # Security headers, CSRF, rate limiting
+├── tz.py                    # Timezone helpers (UTC ↔ America/Montreal)
+├── pagination.py            # List pagination helper
 ├── models/                  # Firestore data access layer
 ├── routes/                  # Flask blueprints (web UI)
 ├── dav/                     # CardDAV, CalDAV, RFC-5545 endpoints
+├── utils/                   # Utility modules (deadlines, validators, export)
+├── scripts/                 # One-time migration scripts
+├── tests/                   # Unit tests
 ├── templates/               # Jinja2 templates
 │   ├── base.html
 │   ├── components/          # Reusable HTMX partials
@@ -68,21 +73,29 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase 12 — Firebase App Check + Phone MFA
+Phase A — Judicial Deadline Calculator (Improvement Cycle)
 
-## Phase Checklist
-- [*] Phase 1: Scaffolding, Auth, Security
-- [*] Phase 2: Client Management + CardDAV Foundation
-- [*] Phase 3: Dossier (Case File) Management
-- [*] Phase 4: Time Tracking + Expense Management
-- [*] Phase 5: Invoicing (GST/QST)
-- [*] Phase 6: Hearing Dates + CalDAV Foundation
-- [*] Phase 7: Task Management + VTODO Foundation
-- [*] Phase 8: Case Protocols
-- [*] Phase 9: Document Storage
-- [*] Phase 10: DAV Protocol Layer (CardDAV, CalDAV, RFC-5545)
-- [*] Phase 11: Dashboard, Polish, Deployment
-- [*] Phase 12: Firebase App Check + Phone MFA
+## Phase Checklist (Original Build)
+- [x] Phase 1: Scaffolding, Auth, Security
+- [x] Phase 2: Client Management + CardDAV Foundation
+- [x] Phase 3: Dossier (Case File) Management
+- [x] Phase 4: Time Tracking + Expense Management
+- [x] Phase 5: Invoicing (GST/QST)
+- [x] Phase 6: Hearing Dates + CalDAV Foundation
+- [x] Phase 7: Task Management + VTODO Foundation
+- [x] Phase 8: Case Protocols
+- [x] Phase 9: Document Storage
+- [x] Phase 10: DAV Protocol Layer (CardDAV, CalDAV, RFC-5545)
+- [x] Phase 11: Dashboard, Polish, Deployment
+- [x] Phase 12: Firebase App Check + Phone MFA
+
+## Phase Checklist (Improvements)
+- [ ] Phase A: Judicial Deadline Calculator (art. 83 C.p.c.)
+- [ ] Phase B: Input Validation & Normalization (phone E.164, email, postal codes, address defaults)
+- [ ] Phase C: Multiple Protocols + Bidirectional Task-Protocol Sync
+- [ ] Phase D: Dossier Notes + VJOURNAL Notes Serialization
+- [ ] Phase E: VTODO ↔ VJOURNAL Linking (RELATED-TO)
+- [ ] Phase F: Data Export (CSV + PDF via reportlab)
 
 ## Known Gotchas
 - Firestore does not support `!=` combined with `orderBy` on a different field. Design queries accordingly.
@@ -90,3 +103,9 @@ Phase 12 — Firebase App Check + Phone MFA
 - DavX5 is strict about DAV compliance. Partial implementation will cause silent sync failures. Test each DAV endpoint with `curl` before testing with DavX5.
 - QST (9.975%) is applied on the taxable amount directly, NOT compounded on GST (changed in 2013).
 - Canadian postal code format: A1A 1A1 (letter-digit-letter space digit-letter-digit).
+- Quebec judicial delays (art. 83 C.p.c.): all days count, but if deadline lands on weekend or statutory holiday, it extends to next juridical day in the direction of computation. Easter is floating — use Meeus/Jones/Butcher algorithm.
+- Phone numbers: store in E.164 format (+15145551234). Display formatted. Use raw E.164 for tel: links.
+- Bidirectional task-protocol sync: use a module-level _SYNCING set to prevent infinite circular updates.
+- DavX5 does NOT render VTODO→VJOURNAL RELATED-TO as visual parent-child. The property round-trips correctly but the UX benefit is web-UI only.
+- reportlab is pure Python and works on App Engine Standard. Do NOT use weasyprint (requires cairo/pango system libraries).
+- CSV exports: include UTF-8 BOM (\ufeff) for Excel compatibility with French accented characters.
