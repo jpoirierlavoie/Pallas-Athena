@@ -115,6 +115,7 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
     """Return dossiers with prescription dates within 60 days."""
     try:
         from models.dossier import list_dossiers
+        from utils.deadlines import prev_juridical_day
         dossiers = list_dossiers(status_filter="actif")
         cutoff = now + timedelta(days=60)
         alerts = []
@@ -122,6 +123,10 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
             pdate = d.get("prescription_date")
             if pdate and pdate <= cutoff:
                 d["_days_remaining"] = max(0, (pdate - now).days)
+                pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
+                last_action = prev_juridical_day(pdate_as_date)
+                d["_last_action_date"] = last_action
+                d["_last_action_differs"] = last_action != pdate_as_date
                 alerts.append(d)
         alerts.sort(key=lambda d: d.get("prescription_date") or now)
         return alerts

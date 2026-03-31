@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from utils.deadlines import compute_deadline as _judicial_deadline
+
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
@@ -310,8 +312,9 @@ def _validate_step(data: dict) -> list[str]:
 
 
 def _compute_deadline(start_date: datetime, offset_days: int) -> datetime:
-    """Compute a deadline date from a start date and day offset."""
-    return start_date + timedelta(days=offset_days)
+    """Compute a protocol step deadline using judicial delay rules (art. 83 C.p.c.)."""
+    result_date = _judicial_deadline(start_date.date(), offset_days, direction="after")
+    return datetime.combine(result_date, datetime.min.time(), timezone.utc)
 
 
 def _compute_end_date(start_date: datetime, steps: list[dict]) -> datetime:

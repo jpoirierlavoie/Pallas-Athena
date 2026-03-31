@@ -112,11 +112,14 @@
         <p class="text-xs font-medium text-red-600 uppercase tracking-wide mb-2">Prescriptions à surveiller</p>
         <div class="space-y-1.5">
           {% for d in prescription_alerts %}
-            <a href="/dossiers/{{ d.id }}" class="flex items-center justify-between py-1.5 px-2 -mx-2 rounded-lg hover:bg-red-50 transition-colors">
+            <a href="/dossiers/{{ d.id }}" class="flex items-start justify-between py-1.5 px-2 -mx-2 rounded-lg hover:bg-red-50 transition-colors">
               <div class="min-w-0">
                 <p class="text-sm text-gray-900 truncate">{{ d.file_number }} — {{ d.title }}</p>
+                {% if d._last_action_differs %}
+                  <p class="text-xs text-amber-600">Dernier jour ouvrable&nbsp;: {{ d._last_action_date.strftime('%d %b %Y') }}</p>
+                {% endif %}
               </div>
-              <span class="flex-shrink-0 text-xs font-medium
+              <span class="flex-shrink-0 text-xs font-medium ml-2
                 {% if d._days_remaining <= 14 %}text-red-600{% elif d._days_remaining <= 30 %}text-amber-600{% else %}text-gray-500{% endif %}">
                 {% if d._days_remaining == 0 %}Aujourd'hui
                 {% elif d._days_remaining == 1 %}Demain
