@@ -18,7 +18,8 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''models/dossier.py''\\).read\\(\\)\\); ast.parse\\(open\\(''models/partie.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
       "Bash(ls -la \"c:\\\\Users\\\\jason\\\\Documents\\\\GitHub\\\\Athéna Pallas\\\\athena\\\\utils\"\" 2>&1 || echo \"utils directory does not exist \")",
       "Bash(venv/Scripts/pip install:*)",
-      "Bash(venv/Scripts/python -m pytest tests/test_deadlines.py -v)"
+      "Bash(venv/Scripts/python -m pytest tests/test_deadlines.py -v)",
+      "Bash(python -m py_compile athena/routes/protocols.py)"
     ]
   }
 }

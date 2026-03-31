@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+# Circular sync guard — prevents infinite task↔protocol sync loops
+_SYNCING: set[str] = set()
+
 import icalendar
 
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -227,10 +230,17 @@ def update_task(
     if merged["status"] in ("à_faire", "en_cours"):
         merged["completed_date"] = None
 
+    old_status = existing.get("status", "")
+
     try:
         db.collection(COLLECTION).document(task_id).set(merged)
     except Exception as exc:
         return None, [f"Erreur lors de la sauvegarde : {exc}"]
+
+    # Sync to protocol step if status changed
+    new_status = merged.get("status", "")
+    if old_status != new_status:
+        _sync_protocol_step(task_id, new_status)
 
     return merged, []
 
@@ -260,6 +270,62 @@ def toggle_task_complete(task_id: str) -> tuple[Optional[dict], list[str]]:
         new_status = "terminée"
 
     return update_task(task_id, {"status": new_status})
+
+
+# ── Protocol sync ────────────────────────────────────────────────────────
+
+
+def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
+    """Sync a protocol step when its linked task status changes."""
+    if task_id in _SYNCING:
+        return
+    _SYNCING.add(task_id)
+    try:
+        from models.protocol import (
+            COLLECTION as PROTO_COLLECTION,
+            STEPS_SUBCOLLECTION,
+            _check_protocol_completion,
+        )
+
+        # Search active protocols for a step linked to this task
+        protocols = db.collection(PROTO_COLLECTION).stream()
+        for proto_doc in protocols:
+            proto = proto_doc.to_dict()
+            if proto.get("status") != "actif":
+                continue
+            steps_ref = db.collection(PROTO_COLLECTION).document(
+                proto_doc.id
+            ).collection(STEPS_SUBCOLLECTION)
+            for step_doc in steps_ref.stream():
+                step = step_doc.to_dict()
+                if step.get("linked_task_id") == task_id:
+                    now = datetime.now(timezone.utc)
+                    if new_task_status == "terminée" and step.get("status") != "complété":
+                        step_doc.reference.update({
+                            "status": "complété",
+                            "completed_date": now,
+                            "updated_at": now,
+                        })
+                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update({
+                            "updated_at": now,
+                            "etag": str(uuid.uuid4()),
+                        })
+                        _check_protocol_completion(proto_doc.id)
+                    elif new_task_status in ("à_faire", "en_cours") and step.get("status") == "complété":
+                        step_doc.reference.update({
+                            "status": "à_venir",
+                            "completed_date": None,
+                            "updated_at": now,
+                        })
+                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update({
+                            "updated_at": now,
+                            "etag": str(uuid.uuid4()),
+                        })
+                    return  # Found and synced — done
+    except Exception:
+        pass  # Sync failure should not break the task update
+    finally:
+        _SYNCING.discard(task_id)
 
 
 # ── Summary ──────────────────────────────────────────────────────────────

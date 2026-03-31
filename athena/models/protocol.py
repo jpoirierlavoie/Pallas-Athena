@@ -332,6 +332,22 @@ def _compute_end_date(start_date: datetime, steps: list[dict]) -> datetime:
     return max(computed, max_date)
 
 
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+
+def _get_active_protocols(dossier_id: str) -> list[dict]:
+    """Return all protocols with status 'actif' for a dossier."""
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("dossier_id", "==", dossier_id)
+        ).where(
+            filter=FieldFilter("status", "==", "actif")
+        )
+        return [doc.to_dict() for doc in query.stream()]
+    except Exception:
+        return []
+
+
 # ── CRUD ────────────────────────────────────────────────────────────────
 
 
@@ -353,9 +369,12 @@ def create_protocol(
         return None, errors
 
     # Check: only one active protocol per dossier
-    existing = get_protocol_for_dossier(dossier_id)
-    if existing and existing.get("status") == "actif":
-        return None, ["Ce dossier a déjà un protocole actif."]
+    active_protocols = _get_active_protocols(dossier_id)
+    if active_protocols:
+        return None, [
+            "Ce dossier a déjà un protocole actif. "
+            "Complétez ou suspendez le protocole existant avant d'en créer un nouveau."
+        ]
 
     now = datetime.now(timezone.utc)
     protocol_id = str(uuid.uuid4())
@@ -438,8 +457,14 @@ def get_protocol(protocol_id: str) -> Optional[dict]:
         return None
 
 
-def get_protocol_for_dossier(dossier_id: str) -> Optional[dict]:
-    """Return the active protocol for a dossier (max one active)."""
+def get_protocol_for_dossier(
+    dossier_id: str, active_only: bool = True
+) -> Optional[dict]:
+    """Return a protocol for a dossier.
+
+    If active_only is True (default), returns only the 'actif' protocol.
+    If active_only is False, returns the most recent protocol regardless of status.
+    """
     try:
         query = db.collection(COLLECTION).where(
             filter=FieldFilter("dossier_id", "==", dossier_id)
@@ -449,9 +474,10 @@ def get_protocol_for_dossier(dossier_id: str) -> Optional[dict]:
         # Prefer active protocol
         for r in results:
             if r.get("status") == "actif":
-                # Load steps
-                full = get_protocol(r["id"])
-                return full
+                return get_protocol(r["id"])
+
+        if active_only:
+            return None
 
         # Fall back to most recent
         if results:
@@ -466,6 +492,24 @@ def get_protocol_for_dossier(dossier_id: str) -> Optional[dict]:
         return None
     except Exception:
         return None
+
+
+def list_protocols_for_dossier(dossier_id: str) -> list[dict]:
+    """Return all protocols for a dossier, newest first. Steps are NOT loaded."""
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("dossier_id", "==", dossier_id)
+        )
+        results = [doc.to_dict() for doc in query.stream()]
+        results.sort(
+            key=lambda p: p.get("created_at") or datetime.min.replace(
+                tzinfo=timezone.utc
+            ),
+            reverse=True,
+        )
+        return results
+    except Exception:
+        return []
 
 
 def list_protocols(
@@ -821,11 +865,13 @@ def check_overdue_steps(protocol_id: str) -> int:
 
 
 def get_protocol_summary(dossier_id: str) -> dict:
-    """Return protocol summary for a dossier."""
-    protocol = get_protocol_for_dossier(dossier_id)
+    """Return protocol summary for a dossier (active protocol only)."""
+    protocol = get_protocol_for_dossier(dossier_id, active_only=True)
     if not protocol:
+        all_protos = list_protocols_for_dossier(dossier_id)
         return {
             "has_protocol": False,
+            "has_history": len(all_protos) > 0,
             "total": 0,
             "completed": 0,
             "overdue": 0,
@@ -849,8 +895,10 @@ def get_protocol_summary(dossier_id: str) -> dict:
         and s.get("status") not in ("complété",)
     ]
 
+    all_protos = list_protocols_for_dossier(dossier_id)
     return {
         "has_protocol": True,
+        "has_history": len(all_protos) > 1,
         "protocol_id": protocol["id"],
         "protocol_type": protocol.get("protocol_type", ""),
         "total": len(steps),
@@ -899,8 +947,14 @@ def _auto_create_tasks_for_steps(
         pass
 
 
+_SYNCING: set[str] = set()  # Circular sync guard
+
+
 def _sync_task_status(task_id: str, step_status: str) -> None:
     """Sync task status when protocol step status changes."""
+    if task_id in _SYNCING:
+        return
+    _SYNCING.add(task_id)
     try:
         from models.task import update_task
 
@@ -910,6 +964,8 @@ def _sync_task_status(task_id: str, step_status: str) -> None:
             update_task(task_id, {"status": "à_faire"})
     except Exception:
         pass
+    finally:
+        _SYNCING.discard(task_id)
 
 
 def _check_protocol_completion(protocol_id: str) -> None:

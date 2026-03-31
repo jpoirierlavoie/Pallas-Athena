@@ -73,7 +73,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase B (Improvement Cycle)
+Phase C (Improvement Cycle)
 
 ## Phase Checklist (Original Build)
 - [x] Phase 1: Scaffolding, Auth, Security
@@ -91,8 +91,8 @@ Phase B (Improvement Cycle)
 
 ## Phase Checklist (Improvements)
 - [x] Phase A: Judicial Deadline Calculator (art. 83 C.p.c.)
-- [ ] Phase B: Input Validation & Normalization (phone E.164, email, postal codes, address defaults)
-- [ ] Phase C: Multiple Protocols + Bidirectional Task-Protocol Sync
+- [x] Phase B: Input Validation & Normalization (phone E.164, email, postal codes, address defaults)
+- [x] Phase C: Multiple Protocols + Bidirectional Task-Protocol Sync
 - [ ] Phase D: Dossier Notes + VJOURNAL Notes Serialization
 - [ ] Phase E: VTODO ↔ VJOURNAL Linking (RELATED-TO)
 - [ ] Phase F: Data Export (CSV + PDF via reportlab)

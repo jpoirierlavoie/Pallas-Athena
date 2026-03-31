@@ -45,8 +45,10 @@ from models.protocol import (
     PROTOCOL_TYPE_COLORS,
     PROTOCOL_TYPE_SHORT_LABELS,
     check_overdue_steps,
+    get_protocol,
     get_protocol_for_dossier,
     get_protocol_summary,
+    list_protocols_for_dossier,
 )
 from models.document import (
     CATEGORY_LABELS as DOCUMENT_CATEGORY_LABELS,
@@ -297,11 +299,20 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
     # Load protocol data for the protocole tab
     if tab_name == "protocole":
-        protocol = get_protocol_for_dossier(dossier_id)
-        if protocol:
-            check_overdue_steps(protocol["id"])
-            protocol = get_protocol_for_dossier(dossier_id)
-        ctx["protocol"] = protocol
+        active_protocol = get_protocol_for_dossier(dossier_id, active_only=True)
+        if active_protocol:
+            check_overdue_steps(active_protocol["id"])
+            active_protocol = get_protocol(active_protocol["id"])
+
+        # Historical protocols (completed/suspended)
+        all_protocols = list_protocols_for_dossier(dossier_id)
+        historical_protocols = [
+            p for p in all_protocols
+            if p.get("status") in ("complété", "suspendu")
+        ]
+
+        ctx["protocol"] = active_protocol
+        ctx["historical_protocols"] = historical_protocols
         ctx["protocol_summary"] = get_protocol_summary(dossier_id)
         ctx["protocol_type_colors"] = PROTOCOL_TYPE_COLORS
         ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS

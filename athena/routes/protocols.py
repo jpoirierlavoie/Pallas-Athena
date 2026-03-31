@@ -113,8 +113,8 @@ def protocol_new() -> str:
         return redirect(url_for("dossiers.dossier_list"))
 
     # Check if dossier already has an active protocol
-    existing = get_protocol_for_dossier(dossier_id)
-    if existing and existing.get("status") == "actif":
+    existing = get_protocol_for_dossier(dossier_id, active_only=True)
+    if existing:
         return redirect(
             url_for("protocols.protocol_detail", protocol_id=existing["id"])
         )
