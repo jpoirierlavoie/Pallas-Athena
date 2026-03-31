@@ -85,13 +85,13 @@
         {% if partie.phone_cell %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Cellulaire</dt>
-          <dd class="text-gray-900">{{ partie.phone_cell }}</dd>
+          <dd class="text-gray-900"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_home %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Domicile</dt>
-          <dd class="text-gray-900">{{ partie.phone_home }}</dd>
+          <dd class="text-gray-900"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
         </div>
         {% endif %}
         {% if not partie.email and not partie.phone_cell and not partie.phone_home %}
@@ -131,13 +131,13 @@
         {% if partie.phone_work %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Téléphone</dt>
-          <dd class="text-gray-900">{{ partie.phone_work }}</dd>
+          <dd class="text-gray-900"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.fax %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Télécopieur</dt>
-          <dd class="text-gray-900">{{ partie.fax }}</dd>
+          <dd class="text-gray-900">{{ partie.fax|phone }}</dd>
         </div>
         {% endif %}
         {% if not partie.job_title and not partie.job_role and not partie.organization and not partie.email_work and not partie.phone_work and not partie.fax %}

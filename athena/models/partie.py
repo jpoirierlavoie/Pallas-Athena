@@ -9,6 +9,15 @@ import vobject
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils.validators import (
+    apply_address_defaults,
+    normalize_email,
+    normalize_phone,
+    normalize_postal_code,
+    validate_email,
+    validate_phone,
+    validate_postal_code,
+)
 
 # Firestore collection path (nested under a single-user root)
 COLLECTION = "parties"
@@ -147,15 +156,80 @@ def _validate(data: dict) -> list[str]:
     if data.get("contact_role", "") not in VALID_CONTACT_ROLES:
         errors.append("Rôle de contact invalide.")
 
-    email = data.get("email", "").strip()
-    if email and "@" not in email:
-        errors.append("Adresse courriel invalide.")
+    # Phone validation
+    for field, label in [
+        ("phone_home", "Téléphone domicile"),
+        ("phone_cell", "Cellulaire"),
+        ("phone_work", "Téléphone professionnel"),
+        ("fax", "Télécopieur"),
+    ]:
+        raw = data.get(field, "").strip()
+        if raw:
+            normalized, err = validate_phone(raw)
+            if err:
+                errors.append(f"{label} : {err}")
+            else:
+                data[field] = normalized  # store normalized value
 
-    email_work = data.get("email_work", "").strip()
-    if email_work and "@" not in email_work:
-        errors.append("Adresse courriel professionnelle invalide.")
+    # Email validation
+    for field, label in [
+        ("email", "Courriel"),
+        ("email_work", "Courriel professionnel"),
+    ]:
+        raw = data.get(field, "").strip()
+        if raw:
+            normalized, err = validate_email(raw)
+            if err:
+                errors.append(f"{label} : {err}")
+            else:
+                data[field] = normalized
+
+    # Postal code validation
+    for prefix in ("address", "work_address"):
+        country = data.get(f"{prefix}_country", "CA")
+        raw_pc = data.get(f"{prefix}_postal_code", "").strip()
+        if raw_pc:
+            normalized, err = validate_postal_code(raw_pc, country)
+            if err:
+                errors.append(f"Code postal ({prefix.replace('_', ' ')}) : {err}")
+            else:
+                data[f"{prefix}_postal_code"] = normalized
 
     return errors
+
+
+def _normalize(data: dict) -> dict:
+    """Normalize input data before validation."""
+    # Apply address defaults
+    for prefix in ("address", "work_address"):
+        data = apply_address_defaults(data, prefix)
+
+    # Normalize phones
+    for field in ("phone_home", "phone_cell", "phone_work", "fax"):
+        raw = data.get(field, "").strip()
+        if raw:
+            normalized = normalize_phone(raw)
+            if normalized:
+                data[field] = normalized
+
+    # Normalize emails
+    for field in ("email", "email_work"):
+        raw = data.get(field, "").strip()
+        if raw:
+            normalized = normalize_email(raw)
+            if normalized:
+                data[field] = normalized
+
+    # Normalize postal codes
+    for prefix in ("address", "work_address"):
+        country = data.get(f"{prefix}_country", "CA")
+        raw_pc = data.get(f"{prefix}_postal_code", "").strip()
+        if raw_pc:
+            normalized = normalize_postal_code(raw_pc, country)
+            if normalized:
+                data[f"{prefix}_postal_code"] = normalized
+
+    return data
 
 
 def display_name(partie: dict) -> str:
@@ -175,6 +249,7 @@ def display_name(partie: dict) -> str:
 
 def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+    data = _normalize(data)
     merged = {**_default_doc(), **_sanitize_data(data)}
     errors = _validate(merged)
     if errors:
@@ -273,6 +348,7 @@ def update_partie(
     if not existing:
         return None, ["Contact introuvable."]
 
+    data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}
     errors = _validate(merged)
     if errors:
@@ -553,13 +629,16 @@ def vcard_to_partie(vcard_str: str) -> dict:
             else:
                 ttype = ""
             if "FAX" in ttype:
-                data["fax"] = tel.value
+                field = "fax"
             elif "CELL" in ttype:
-                data["phone_cell"] = tel.value
+                field = "phone_cell"
             elif "WORK" in ttype:
-                data["phone_work"] = tel.value
+                field = "phone_work"
             else:
-                data["phone_home"] = tel.value
+                field = "phone_home"
+            raw_tel = tel.value
+            normalized = normalize_phone(raw_tel)
+            data[field] = normalized if normalized else raw_tel
 
     # ADR
     if hasattr(card, "adr_list"):

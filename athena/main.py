@@ -45,6 +45,9 @@ def create_app() -> Flask:
     from tz import to_mtl
     app.jinja_env.filters["to_mtl"] = to_mtl
 
+    from utils.validators import format_phone_display
+    app.jinja_env.filters["phone"] = format_phone_display
+
     import json as _json
     from markupsafe import Markup
 

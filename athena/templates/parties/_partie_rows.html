@@ -39,7 +39,7 @@
       <div class="text-xs text-gray-500 mt-1 truncate">
         {% if c.email %}{{ c.email }}{% endif %}
         {% if c.email and c.phone_cell %} · {% endif %}
-        {% if c.phone_cell %}{{ c.phone_cell }}{% endif %}
+        {% if c.phone_cell %}{{ c.phone_cell|phone }}{% endif %}
       </div>
     </div>
 
