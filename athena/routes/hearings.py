@@ -6,6 +6,7 @@ from tz import mtl_to_utc, to_mtl
 
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -424,3 +425,76 @@ def hearing_delete(hearing_id: str) -> str:
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
     return redirect(url_for("hearings.hearing_list"))
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("start_datetime", "Date"),
+    ("title", "Titre"),
+    ("dossier_file_number", "Dossier"),
+    ("hearing_type", "Type"),
+    ("location", "Lieu"),
+    ("status", "Statut"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("start_datetime", "Date", 1.0),
+    ("title", "Titre", 2.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("hearing_type", "Type", 1.0),
+    ("location", "Lieu", 1.5),
+    ("status", "Statut", 0.8),
+]
+
+
+def _get_export_hearings() -> list[dict]:
+    """Fetch and pre-process hearings for export, respecting current filters."""
+    from utils.export_csv import prepare_export_rows
+
+    hearing_type_filter = request.args.get("type", "").strip()
+    status_filter = request.args.get("status", "").strip()
+
+    hearings = list_hearings(
+        hearing_type_filter=hearing_type_filter or None,
+        status_filter=status_filter or None,
+    )
+    return prepare_export_rows(
+        hearings,
+        label_maps={
+            "hearing_type": HEARING_TYPE_LABELS,
+            "status": STATUS_LABELS,
+        },
+    )
+
+
+@hearings_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export hearings as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_hearings()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"audiences_{date_str}.csv",
+    )
+
+
+@hearings_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export hearings as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_hearings()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Audiences",
+        filename=f"audiences_{date_str}.pdf",
+    )

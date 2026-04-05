@@ -6,11 +6,16 @@
   {# ── Header ──────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Parties</h1>
-    <a href="{{ url_for('parties.partie_new') }}"
-       class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-      Nouveau contact
-    </a>
+    <div class="hidden md:flex items-center gap-2">
+      <a href="{{ url_for('parties.partie_new') }}"
+         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        Nouveau contact
+      </a>
+      {% set csv_url = url_for('parties.export_csv_route', role=role_filter, q=search) %}
+      {% set pdf_url = url_for('parties.export_pdf_route', role=role_filter, q=search) %}
+      {% include "components/_export_dropdown.html" %}
+    </div>
   </div>
 
   {# ── Search + role filter row ────────────────────────────────── #}

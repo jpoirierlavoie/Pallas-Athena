@@ -73,7 +73,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase D3 — RELATED-TO Linking (VTODO ↔ VJOURNAL)
+Phase F — Data Export
 
 ## Phase Checklist (Original Build)
 - [x] Phase 1: Scaffolding, Auth, Security
@@ -95,8 +95,8 @@ Phase D3 — RELATED-TO Linking (VTODO ↔ VJOURNAL)
 - [x] Phase C: Multiple Protocols + Bidirectional Task-Protocol Sync
 - [x] Phase D1: DAV Collection Restructuring (dossiers as CalDAV collections, remove /dav/journals/)
 - [x] Phase D2: Dossier Notes + VJOURNAL Serialization (notes in per-dossier collections)
-- [ ] Phase D3: RELATED-TO Linking (VTODO ↔ VJOURNAL within dossier collections)
-- [ ] Phase F: Data Export (CSV + PDF via reportlab)
+- [x] Phase D3: RELATED-TO Linking (VTODO ↔ VJOURNAL within dossier collections)
+- [x] Phase F: Data Export (CSV + PDF via reportlab)
 
 ## Known Gotchas
 - Firestore does not support `!=` combined with `orderBy` on a different field. Design queries accordingly.

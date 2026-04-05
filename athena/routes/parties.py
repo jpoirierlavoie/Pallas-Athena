@@ -1,7 +1,10 @@
 """Partie (contact/party) management routes — list, detail, create, edit, delete."""
 
+from datetime import datetime
+
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -290,3 +293,73 @@ def partie_delete(partie_id: str) -> str:
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
     return redirect(url_for("parties.partie_list"))
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("_display_name", "Nom"),
+    ("contact_role", "Rôle"),
+    ("email", "Courriel"),
+    ("phone_cell", "Cellulaire"),
+    ("phone_work", "Tél. professionnel"),
+    ("organization", "Organisation"),
+    ("address_city", "Ville"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("_display_name", "Nom", 2.0),
+    ("contact_role", "Rôle", 1.0),
+    ("email", "Courriel", 1.5),
+    ("phone_cell", "Cellulaire", 1.0),
+    ("phone_work", "Tél. professionnel", 1.0),
+    ("organization", "Organisation", 1.5),
+    ("address_city", "Ville", 1.0),
+]
+
+
+def _get_export_parties() -> list[dict]:
+    """Fetch and pre-process parties for export, respecting current filters."""
+    role_filter = request.args.get("role", "client")
+    search = request.args.get("q", "").strip()
+
+    parties = list_parties(
+        role_filter=role_filter if role_filter != "tous" else None,
+        search=search or None,
+    )
+    for p in parties:
+        p["_display_name"] = display_name(p)
+        p["contact_role"] = ROLE_LABELS.get(p.get("contact_role", ""), p.get("contact_role", ""))
+    return parties
+
+
+@parties_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export parties as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_parties()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"parties_{date_str}.csv",
+    )
+
+
+@parties_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export parties as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_parties()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Parties",
+        filename=f"parties_{date_str}.pdf",
+    )

@@ -6,6 +6,7 @@ from tz import MTL
 
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -396,3 +397,79 @@ def task_toggle(task_id: str) -> str:
 
     # Non-HTMX (e.g. detail page form): redirect back to the task detail
     return redirect(url_for("tasks.task_detail", task_id=task_id))
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("title", "Titre"),
+    ("dossier_file_number", "Dossier"),
+    ("priority", "Priorité"),
+    ("category", "Catégorie"),
+    ("status", "Statut"),
+    ("due_date", "Échéance"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("title", "Titre", 2.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("priority", "Priorité", 0.8),
+    ("category", "Catégorie", 1.0),
+    ("status", "Statut", 0.8),
+    ("due_date", "Échéance", 1.0),
+]
+
+
+def _get_export_tasks() -> list[dict]:
+    """Fetch and pre-process tasks for export, respecting current filters."""
+    from utils.export_csv import prepare_export_rows
+
+    dossier_filter = request.args.get("dossier", "").strip()
+    priority_filter = request.args.get("priority", "").strip()
+    category_filter = request.args.get("category", "").strip()
+
+    tasks = list_tasks(
+        dossier_id=dossier_filter or None,
+        priority_filter=priority_filter or None,
+        category_filter=category_filter or None,
+    )
+    return prepare_export_rows(
+        tasks,
+        label_maps={
+            "priority": PRIORITY_LABELS,
+            "category": CATEGORY_LABELS,
+            "status": STATUS_LABELS,
+        },
+    )
+
+
+@tasks_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export tasks as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_tasks()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"taches_{date_str}.csv",
+    )
+
+
+@tasks_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export tasks as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_tasks()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Tâches",
+        filename=f"taches_{date_str}.pdf",
+    )

@@ -1,7 +1,10 @@
 """Dossier note routes — list, detail, create, edit, delete, pin."""
 
+from datetime import datetime
+
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -279,6 +282,76 @@ def note_delete(note_id: str) -> str:
 
 
 # ── Pin toggle ───────────────────────────────────────────────────────────
+
+
+# ── Export ──────────��────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("created_at", "Date"),
+    ("title", "Titre"),
+    ("dossier_file_number", "Dossier"),
+    ("category", "Catégorie"),
+    ("content", "Contenu"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("created_at", "Date", 1.0),
+    ("title", "Titre", 2.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("category", "Catégorie", 1.0),
+    ("content", "Contenu", 3.0),
+]
+
+
+def _get_export_notes() -> list[dict]:
+    """Fetch and pre-process notes for export, respecting current filters."""
+    from utils.export_csv import prepare_export_rows
+
+    dossier_filter = request.args.get("dossier_id", "").strip()
+    category_filter = request.args.get("category", "").strip()
+    search_query = request.args.get("q", "").strip()
+
+    notes = list_notes(
+        dossier_id=dossier_filter or None,
+        category=category_filter or None,
+        search=search_query or None,
+    )
+    return prepare_export_rows(notes, label_maps={"category": CATEGORY_LABELS})
+
+
+@notes_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export notes as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_notes()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"notes_{date_str}.csv",
+    )
+
+
+@notes_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export notes as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_notes()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Notes",
+        filename=f"notes_{date_str}.pdf",
+    )
+
+
+# ── Pin toggle ────────────────────────────────────────���──────────────────
 
 
 @notes_bp.route("/<note_id>/pin", methods=["POST"])

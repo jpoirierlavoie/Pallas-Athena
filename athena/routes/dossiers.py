@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -473,3 +474,78 @@ def dossier_delete(dossier_id: str) -> str:
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
     return redirect(url_for("dossiers.dossier_list"))
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("file_number", "N° dossier"),
+    ("title", "Titre"),
+    ("_client_names", "Client(s)"),
+    ("matter_type", "Type"),
+    ("court", "Tribunal"),
+    ("status", "Statut"),
+    ("opened_date", "Ouverture"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("file_number", "N° dossier", 1.0),
+    ("title", "Titre", 2.0),
+    ("_client_names", "Client(s)", 1.5),
+    ("matter_type", "Type", 1.0),
+    ("court", "Tribunal", 1.0),
+    ("status", "Statut", 0.8),
+    ("opened_date", "Ouverture", 1.0),
+]
+
+
+def _get_export_dossiers() -> list[dict]:
+    """Fetch and pre-process dossiers for export, respecting current filters."""
+    status_filter = request.args.get("status", "actif")
+    search = request.args.get("q", "").strip()
+    sort_by = request.args.get("sort", "opened_date")
+
+    effective_filter = status_filter if status_filter != "tous" else None
+
+    dossiers = list_dossiers(
+        status_filter=effective_filter,
+        search=search or None,
+        sort_by=sort_by,
+    )
+    for d in dossiers:
+        d["_client_names"] = ", ".join(c.get("name", "") for c in d.get("clients", []))
+        d["matter_type"] = MATTER_TYPE_LABELS.get(d.get("matter_type", ""), d.get("matter_type", ""))
+        d["status"] = STATUS_LABELS.get(d.get("status", ""), d.get("status", ""))
+    return dossiers
+
+
+@dossiers_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export dossiers as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_dossiers()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"dossiers_{date_str}.csv",
+    )
+
+
+@dossiers_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export dossiers as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_dossiers()
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Dossiers",
+        filename=f"dossiers_{date_str}.pdf",
+    )
