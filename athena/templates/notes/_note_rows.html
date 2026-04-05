@@ -1,0 +1,66 @@
+{# Note list rows #}
+
+{% set cat_colors = {
+  'appel': 'bg-blue-100 text-blue-700',
+  'rencontre': 'bg-purple-100 text-purple-700',
+  'recherche': 'bg-teal-100 text-teal-700',
+  'stratégie': 'bg-amber-100 text-amber-700',
+  'correspondance': 'bg-orange-100 text-orange-700',
+  'audience': 'bg-red-100 text-red-700',
+  'autre': 'bg-gray-100 text-gray-600'
+} %}
+
+{% if notes %}
+<div class="space-y-2">
+  {% for note in notes %}
+  <a href="{{ url_for('notes.note_detail', note_id=note.id) }}"
+     class="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors group">
+
+    {# Pin indicator #}
+    <div class="w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0
+                {{ 'bg-amber-50' if note.pinned else 'bg-gray-50' }}">
+      {% if note.pinned %}
+      <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+        <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/>
+      </svg>
+      {% else %}
+      <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+      </svg>
+      {% endif %}
+    </div>
+
+    {# Note content #}
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 mb-0.5">
+        <span class="text-sm font-medium text-gray-900 truncate">{{ note.title }}</span>
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ cat_colors.get(note.category, 'bg-gray-100 text-gray-600') }}">
+          {{ category_labels.get(note.category, note.category) }}
+        </span>
+      </div>
+      <p class="text-xs text-gray-500 truncate mb-0.5">{{ note.content[:100] }}</p>
+      <div class="flex flex-wrap items-center gap-1.5">
+        {% if note.dossier_file_number %}
+        <span class="text-xs text-indigo-600 font-medium">{{ note.dossier_file_number }}</span>
+        {% endif %}
+        {% if note.created_at and note.created_at.strftime is defined %}
+        {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
+        <span class="text-xs text-gray-400">{{ note.created_at.strftime('%d') }} {{ month_short[note.created_at.month] }} {{ note.created_at.strftime('%Y') }}</span>
+        {% endif %}
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="flex flex-col items-center justify-center py-16 text-center">
+  <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+  </svg>
+  <p class="text-sm text-gray-500 mb-4">Aucune note pour le moment.</p>
+  <a href="{{ url_for('notes.note_new') }}"
+     class="text-sm font-medium text-indigo-600 hover:text-indigo-700">
+    + Créer une note
+  </a>
+</div>
+{% endif %}

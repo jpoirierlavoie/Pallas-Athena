@@ -12,6 +12,55 @@
 
 <div class="space-y-6">
 
+  {# ── Notes section ──────────────────────────────────────────── #}
+  <div class="mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-semibold text-gray-900">Notes</h3>
+      <a href="{{ url_for('notes.note_new', dossier_id=dossier.id) }}"
+         class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+        + Nouvelle note
+      </a>
+    </div>
+
+    {% if notes %}
+    <div class="flex flex-col gap-2">
+      {% for n in notes[:5] %}
+      <a href="{{ url_for('notes.note_detail', note_id=n.id) }}"
+         class="p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
+        <div class="flex items-center gap-2 mb-1">
+          {% if n.pinned %}
+          <svg class="w-3 h-3 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/>
+          </svg>
+          {% endif %}
+          <span class="text-sm font-medium text-gray-900 truncate">{{ n.title }}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-gray-100 text-gray-600">
+            {{ note_category_labels.get(n.category, n.category) }}
+          </span>
+        </div>
+        <p class="text-xs text-gray-500 truncate">{{ n.content[:120] }}</p>
+        {% if n.created_at and n.created_at.strftime is defined %}
+        <p class="text-xs text-gray-400 mt-1">
+          {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
+          {{ n.created_at.strftime('%d') }} {{ month_short[n.created_at.month] }} {{ n.created_at.strftime('%Y') }}
+        </p>
+        {% endif %}
+      </a>
+      {% endfor %}
+      {% if notes|length > 5 %}
+      <a href="{{ url_for('notes.note_list', dossier_id=dossier.id) }}"
+         class="text-xs text-center text-indigo-600 py-2">
+        Voir les {{ notes|length }} notes
+      </a>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm py-2">Aucune note pour ce dossier.</p>
+    {% endif %}
+  </div>
+
+  <hr class="border-gray-200 mb-6">
+
   {# ── Summary stats ──────────────────────────────────────────── #}
   <div class="grid grid-cols-3 gap-3">
     <div class="p-3 bg-gray-50 rounded-lg text-center">

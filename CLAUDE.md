@@ -73,7 +73,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase D1 — DAV Collection Restructuring
+Phase D3 — RELATED-TO Linking (VTODO ↔ VJOURNAL)
 
 ## Phase Checklist (Original Build)
 - [x] Phase 1: Scaffolding, Auth, Security
@@ -93,8 +93,8 @@ Phase D1 — DAV Collection Restructuring
 - [x] Phase A: Judicial Deadline Calculator (art. 83 C.p.c.)
 - [x] Phase B: Input Validation & Normalization (phone E.164, email, postal codes, address defaults)
 - [x] Phase C: Multiple Protocols + Bidirectional Task-Protocol Sync
-- [ ] Phase D1: DAV Collection Restructuring (dossiers as CalDAV collections, remove /dav/journals/)
-- [ ] Phase D2: Dossier Notes + VJOURNAL Serialization (notes in per-dossier collections)
+- [x] Phase D1: DAV Collection Restructuring (dossiers as CalDAV collections, remove /dav/journals/)
+- [x] Phase D2: Dossier Notes + VJOURNAL Serialization (notes in per-dossier collections)
 - [ ] Phase D3: RELATED-TO Linking (VTODO ↔ VJOURNAL within dossier collections)
 - [ ] Phase F: Data Export (CSV + PDF via reportlab)
 

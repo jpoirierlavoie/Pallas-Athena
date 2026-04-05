@@ -320,6 +320,12 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
     # Load document data for the documents tab
     if tab_name == "documents":
+        # Notes
+        from models.note import list_notes, get_notes_summary, CATEGORY_LABELS as NOTE_CATEGORY_LABELS
+        ctx["notes"] = list_notes(dossier_id=dossier_id)
+        ctx["notes_summary"] = get_notes_summary(dossier_id)
+        ctx["note_category_labels"] = NOTE_CATEGORY_LABELS
+
         # Root-level folders with item counts
         root_folders = list_folders(dossier_id, parent_folder_id=None)
         from models.folder import _count_items

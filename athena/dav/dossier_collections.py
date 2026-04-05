@@ -1,4 +1,4 @@
-"""Per-dossier CalDAV collections -- VTODO tasks (and VJOURNAL notes in D2).
+"""Per-dossier CalDAV collections -- VTODO tasks and VJOURNAL notes.
 
 Each active dossier is exposed as a CalDAV collection at:
     /dav/dossier-{dossierId}/
@@ -6,7 +6,7 @@ Each active dossier is exposed as a CalDAV collection at:
 Resources within the collection:
     /dav/dossier-{dossierId}/{resourceId}.ics
 
-This phase serves VTODO resources only. VJOURNAL support is added in Phase D2.
+VTODO resources map to tasks, VJOURNAL resources map to notes.
 """
 
 import xml.etree.ElementTree as ET
@@ -29,6 +29,15 @@ from dav.xml_utils import (
     serialize_multistatus,
 )
 from models.dossier import get_dossier
+from models.note import (
+    create_note,
+    delete_note,
+    get_note,
+    list_notes,
+    note_to_vjournal,
+    update_note,
+    vjournal_to_note,
+)
 from models.task import (
     create_task,
     delete_task,
@@ -79,7 +88,9 @@ def propfind_collection(dossier_id: str) -> Response:
         for task in tasks:
             _add_task_resource(multistatus, dossier_id, task, body)
 
-        # D2: also list notes here
+        notes = list_notes(dossier_id=dossier_id)
+        for note in notes:
+            _add_note_resource(multistatus, dossier_id, note, body)
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
@@ -162,6 +173,32 @@ def _add_task_resource(
         ET.SubElement(prop, caldav_tag("calendar-data")).text = task_to_vtodo(task)
 
 
+def _add_note_resource(
+    multistatus: ET.Element,
+    dossier_id: str,
+    note: dict,
+    body: ET.Element | None,
+) -> None:
+    """Add a single VJOURNAL resource <D:response>."""
+    href = f"/dav/dossier-{dossier_id}/{note['id']}.ics"
+    resp = add_response(multistatus, href)
+    prop = add_propstat(resp)
+
+    if propfind_requests_prop(body, dav_tag("getetag")):
+        ET.SubElement(prop, dav_tag("getetag")).text = f'"{note.get("etag", "")}"'
+
+    if propfind_requests_prop(body, dav_tag("getcontenttype")):
+        ET.SubElement(prop, dav_tag("getcontenttype")).text = (
+            "text/calendar; charset=utf-8"
+        )
+
+    if propfind_requests_prop(body, dav_tag("resourcetype")):
+        ET.SubElement(prop, dav_tag("resourcetype"))  # Empty for non-collection
+
+    if body is not None and propfind_requests_prop(body, caldav_tag("calendar-data")):
+        ET.SubElement(prop, caldav_tag("calendar-data")).text = note_to_vjournal(note)
+
+
 # -- PROPFIND (Resource) -----------------------------------------------------
 
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["PROPFIND"])
@@ -176,7 +213,13 @@ def propfind_resource(dossier_id: str, resource_id: str) -> Response:
         xml = serialize_multistatus(multistatus)
         return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
-    # D2: try note here
+    note = get_note(resource_id)
+    if note and note.get("dossier_id") == dossier_id:
+        body = parse_propfind_body(request.get_data())
+        multistatus = make_multistatus()
+        _add_note_resource(multistatus, dossier_id, note, body)
+        xml = serialize_multistatus(multistatus)
+        return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
     return Response("Not Found", status=404)
 
@@ -232,7 +275,15 @@ def _handle_sync_collection(dossier_id: str, body_root: ET.Element) -> Response:
                 f'"{task.get("etag", "")}"'
             )
 
-        # D2: also include notes
+        notes = list_notes(dossier_id=dossier_id)
+        for note in notes:
+            resp = add_response(
+                multistatus, f"/dav/dossier-{dossier_id}/{note['id']}.ics"
+            )
+            prop = add_propstat(resp)
+            ET.SubElement(prop, dav_tag("getetag")).text = (
+                f'"{note.get("etag", "")}"'
+            )
 
         tombstones = get_tombstones(sync_name)
         for ts in tombstones:
@@ -271,7 +322,15 @@ def _handle_multiget(dossier_id: str, body_root: ET.Element) -> Response:
             ET.SubElement(prop, caldav_tag("calendar-data")).text = task_to_vtodo(task)
             continue
 
-        # D2: try note
+        note = get_note(resource_id)
+        if note and note.get("dossier_id") == dossier_id:
+            resp = add_response(multistatus, href)
+            prop = add_propstat(resp)
+            ET.SubElement(prop, dav_tag("getetag")).text = (
+                f'"{note.get("etag", "")}"'
+            )
+            ET.SubElement(prop, caldav_tag("calendar-data")).text = note_to_vjournal(note)
+            continue
 
         add_status_response(multistatus, href, 404, "Not Found")
 
@@ -291,7 +350,13 @@ def _handle_calendar_query(dossier_id: str, body_root: ET.Element) -> Response:
         ET.SubElement(prop, dav_tag("getetag")).text = f'"{task.get("etag", "")}"'
         ET.SubElement(prop, caldav_tag("calendar-data")).text = task_to_vtodo(task)
 
-    # D2: also include notes
+    notes = list_notes(dossier_id=dossier_id)
+    for note in notes:
+        href = f"/dav/dossier-{dossier_id}/{note['id']}.ics"
+        resp = add_response(multistatus, href)
+        prop = add_propstat(resp)
+        ET.SubElement(prop, dav_tag("getetag")).text = f'"{note.get("etag", "")}"'
+        ET.SubElement(prop, caldav_tag("calendar-data")).text = note_to_vjournal(note)
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
@@ -309,7 +374,12 @@ def get_resource(dossier_id: str, resource_id: str) -> Response:
         resp.headers["ETag"] = f'"{task.get("etag", "")}"'
         return resp
 
-    # D2: try note
+    note = get_note(resource_id)
+    if note and note.get("dossier_id") == dossier_id:
+        ical = note_to_vjournal(note)
+        resp = Response(ical, status=200, content_type="text/calendar; charset=utf-8")
+        resp.headers["ETag"] = f'"{note.get("etag", "")}"'
+        return resp
 
     return Response("Not Found", status=404)
 
@@ -339,8 +409,7 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
     if component_type == "VTODO":
         return _put_task(dossier_id, dossier, resource_id, ical_str, if_match, if_none_match)
     elif component_type == "VJOURNAL":
-        # D2 will handle this
-        return Response("VJOURNAL support coming soon", status=501)
+        return _put_note(dossier_id, dossier, resource_id, ical_str, if_match, if_none_match)
     else:
         return Response("Unsupported component type", status=400)
 
@@ -405,6 +474,59 @@ def _put_task(
     return resp
 
 
+def _put_note(
+    dossier_id: str,
+    dossier: dict,
+    resource_id: str,
+    ical_str: str,
+    if_match: str | None,
+    if_none_match: str | None,
+) -> Response:
+    """Handle PUT for a VJOURNAL resource."""
+    existing = get_note(resource_id)
+
+    # Precondition checks
+    if if_none_match == "*" and existing:
+        return Response("Precondition Failed", status=412)
+    if if_match and existing:
+        if if_match != f'"{existing.get("etag", "")}"':
+            return Response("Precondition Failed", status=412)
+    if if_match and not existing:
+        return Response("Precondition Failed", status=412)
+
+    try:
+        data = vjournal_to_note(ical_str)
+    except Exception:
+        return Response("Bad Request — invalid iCalendar", status=400)
+
+    data["dossier_id"] = dossier_id
+    data["dossier_file_number"] = dossier.get("file_number", "")
+    data["dossier_title"] = dossier.get("title", "")
+
+    sync_name = f"dossier:{dossier_id}"
+
+    if existing:
+        updated, errors = update_note(resource_id, data)
+        if errors:
+            return Response("\n".join(errors), status=422)
+        bump_ctag(sync_name)
+        resp = Response("", status=204)
+        resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
+    else:
+        data["id"] = resource_id
+        created, errors = create_note(data)
+        if errors:
+            return Response("\n".join(errors), status=422)
+        bump_ctag(sync_name)
+        resp = Response("", status=201)
+        resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+
+    if "return=minimal" in request.headers.get("Prefer", ""):
+        resp.headers["Preference-Applied"] = "return=minimal"
+
+    return resp
+
+
 # -- DELETE ------------------------------------------------------------------
 
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["DELETE"])
@@ -425,7 +547,20 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         bump_ctag(sync_name)
         return Response("", status=204)
 
-    # D2: try note
+    existing_note = get_note(resource_id)
+    if existing_note and existing_note.get("dossier_id") == dossier_id:
+        if_match = request.headers.get("If-Match")
+        if if_match and if_match != f'"{existing_note.get("etag", "")}"':
+            return Response("Precondition Failed", status=412)
+
+        success, error = delete_note(resource_id)
+        if not success:
+            return Response(error, status=500)
+
+        sync_name = f"dossier:{dossier_id}"
+        record_tombstone(sync_name, resource_id)
+        bump_ctag(sync_name)
+        return Response("", status=204)
 
     return Response("Not Found", status=404)
 
