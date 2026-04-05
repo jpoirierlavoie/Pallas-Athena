@@ -212,7 +212,10 @@ def task_create() -> str:
         ctx.update(task=data, errors=errors)
         return render_template("tasks/form.html", **ctx)
 
-    bump_ctag("tasks")
+    if task.get("dossier_id"):
+        bump_ctag(f"dossier:{task['dossier_id']}")
+    else:
+        bump_ctag("tasks")
 
     if _is_htmx():
         resp = redirect(url_for("tasks.task_list"))
@@ -259,6 +262,10 @@ def task_edit(task_id: str) -> str:
 @login_required
 def task_update(task_id: str) -> str:
     """Handle edit form submission."""
+    # Capture the old dossier_id before update
+    existing_task = get_task(task_id)
+    old_dossier_id = existing_task.get("dossier_id") if existing_task else None
+
     data = _form_data()
     data = _enrich_dossier_info(data)
 
@@ -272,7 +279,23 @@ def task_update(task_id: str) -> str:
         ctx.update(task=data, errors=errors)
         return render_template("tasks/form.html", **ctx)
 
-    bump_ctag("tasks")
+    new_dossier_id = task.get("dossier_id")
+    if old_dossier_id != new_dossier_id:
+        # Task moved between dossiers (or to/from standalone)
+        if old_dossier_id:
+            record_tombstone(f"dossier:{old_dossier_id}", task_id)
+            bump_ctag(f"dossier:{old_dossier_id}")
+        else:
+            record_tombstone("tasks", task_id)
+            bump_ctag("tasks")
+        if new_dossier_id:
+            bump_ctag(f"dossier:{new_dossier_id}")
+        else:
+            bump_ctag("tasks")
+    elif new_dossier_id:
+        bump_ctag(f"dossier:{new_dossier_id}")
+    else:
+        bump_ctag("tasks")
 
     if _is_htmx():
         resp = redirect(url_for("tasks.task_detail", task_id=task_id))
@@ -289,11 +312,18 @@ def task_update(task_id: str) -> str:
 @login_required
 def task_delete(task_id: str) -> str:
     """Delete a task and redirect to the list."""
+    existing_task = get_task(task_id)
+    dossier_id = existing_task.get("dossier_id") if existing_task else None
+
     success, error = delete_task(task_id)
 
     if success:
-        record_tombstone("tasks", task_id)
-        bump_ctag("tasks")
+        if dossier_id:
+            record_tombstone(f"dossier:{dossier_id}", task_id)
+            bump_ctag(f"dossier:{dossier_id}")
+        else:
+            record_tombstone("tasks", task_id)
+            bump_ctag("tasks")
 
     if _is_htmx():
         if success:
@@ -317,7 +347,10 @@ def task_toggle(task_id: str) -> str:
     if errors:
         return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
 
-    bump_ctag("tasks")
+    if task.get("dossier_id"):
+        bump_ctag(f"dossier:{task['dossier_id']}")
+    else:
+        bump_ctag("tasks")
 
     if _is_htmx():
         # From the list page: re-fetch all tasks and return the full grouped list
