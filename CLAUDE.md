@@ -73,7 +73,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase C (Improvement Cycle)
+Phase D1 — DAV Collection Restructuring
 
 ## Phase Checklist (Original Build)
 - [x] Phase 1: Scaffolding, Auth, Security
@@ -93,8 +93,9 @@ Phase C (Improvement Cycle)
 - [x] Phase A: Judicial Deadline Calculator (art. 83 C.p.c.)
 - [x] Phase B: Input Validation & Normalization (phone E.164, email, postal codes, address defaults)
 - [x] Phase C: Multiple Protocols + Bidirectional Task-Protocol Sync
-- [ ] Phase D: Dossier Notes + VJOURNAL Notes Serialization
-- [ ] Phase E: VTODO ↔ VJOURNAL Linking (RELATED-TO)
+- [ ] Phase D1: DAV Collection Restructuring (dossiers as CalDAV collections, remove /dav/journals/)
+- [ ] Phase D2: Dossier Notes + VJOURNAL Serialization (notes in per-dossier collections)
+- [ ] Phase D3: RELATED-TO Linking (VTODO ↔ VJOURNAL within dossier collections)
 - [ ] Phase F: Data Export (CSV + PDF via reportlab)
 
 ## Known Gotchas
@@ -106,6 +107,9 @@ Phase C (Improvement Cycle)
 - Quebec judicial delays (art. 83 C.p.c.): all days count, but if deadline lands on weekend or statutory holiday, it extends to next juridical day in the direction of computation. Easter is floating — use Meeus/Jones/Butcher algorithm.
 - Phone numbers: store in E.164 format (+15145551234). Display formatted. Use raw E.164 for tel: links.
 - Bidirectional task-protocol sync: use a module-level _SYNCING set to prevent infinite circular updates.
-- DavX5 does NOT render VTODO→VJOURNAL RELATED-TO as visual parent-child. The property round-trips correctly but the UX benefit is web-UI only.
+- DAV collection structure (post-D1): each active dossier is a CalDAV collection at `/dav/dossier-{id}/`. The `dossier-` prefix prevents URL collision with other DAV paths. Per-dossier collections must be direct children of `/dav/` (the calendar-home-set) for DavX5 Depth:1 discovery.
+- Per-dossier CTags: use `dossier:{id}` as the sync collection name (e.g., `bump_ctag(f"dossier:{dossier_id}")`). The colon is valid in Firestore document IDs.
+- VTODO→VJOURNAL RELATED-TO works visually in jtx Board when both components are in the same CalDAV collection (which they are after D1).
+- `/dav/journals/` is removed after D1. DavX5 accounts must be removed and re-added after deploying D1.
 - reportlab is pure Python and works on App Engine Standard. Do NOT use weasyprint (requires cairo/pango system libraries).
 - CSV exports: include UTF-8 BOM (\ufeff) for Excel compatibility with French accented characters.
