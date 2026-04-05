@@ -83,6 +83,39 @@
     <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ note.content }}</p>
   </div>
 
+  {# ── Actions ─────────────────────────────────────────────────── #}
+  <div class="flex gap-2 mb-4">
+    <a href="{{ url_for('tasks.task_new', dossier_id=note.dossier_id, related_note_id=note.id) }}"
+       class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+      </svg>
+      Créer une tâche liée
+    </a>
+  </div>
+
+  {# ── Linked tasks ───────────────────────────────────────────── #}
+  {% if linked_tasks %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Tâches liées</h2>
+    <div class="flex flex-col gap-2">
+      {% for t in linked_tasks %}
+      <a href="{{ url_for('tasks.task_detail', task_id=t.id) }}"
+         class="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50">
+        {% if t.status == 'terminée' %}
+        <div class="w-4 h-4 rounded border-2 border-green-500 bg-green-500 flex-shrink-0 flex items-center justify-center">
+          <svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        </div>
+        {% else %}
+        <div class="w-4 h-4 rounded border-2 border-gray-300 flex-shrink-0"></div>
+        {% endif %}
+        <span class="text-sm {{ 'text-gray-500 line-through' if t.status == 'terminée' else 'text-gray-900' }}">{{ t.title }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Dates ───────────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-3">Dates</h2>

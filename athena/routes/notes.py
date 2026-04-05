@@ -192,8 +192,14 @@ def note_detail(note_id: str) -> str:
     if not note:
         return redirect(url_for("notes.note_list"))
 
+    # Find tasks linked to this note
+    from models.task import list_tasks
+    all_dossier_tasks = list_tasks(dossier_id=note.get("dossier_id"))
+    linked_tasks = [t for t in all_dossier_tasks if t.get("related_note_id") == note_id]
+
     ctx = _template_context()
     ctx["note"] = note
+    ctx["linked_tasks"] = linked_tasks
     return render_template("notes/detail.html", **ctx)
 
 

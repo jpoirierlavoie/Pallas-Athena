@@ -98,6 +98,7 @@ def _form_data() -> dict:
         "status": f.get("status", "à_faire"),
         "category": f.get("category", "autre"),
         "due_date": _parse_date(f.get("due_date", "")),
+        "related_note_id": f.get("related_note_id", "").strip() or None,
     }
 
 
@@ -183,8 +184,23 @@ def task_new() -> str:
     """Render the empty task form."""
     ctx = _template_context()
     dossier_id = request.args.get("dossier_id", "")
+    related_note_id = request.args.get("related_note_id", "")
     prefilled = None
-    if dossier_id:
+
+    if related_note_id:
+        from models.note import get_note
+        note = get_note(related_note_id)
+        if note:
+            dossier_id = note.get("dossier_id", "")
+            dossier = get_dossier(dossier_id) if dossier_id else None
+            prefilled = {
+                "related_note_id": related_note_id,
+                "dossier_id": dossier_id,
+                "dossier_file_number": dossier.get("file_number", "") if dossier else "",
+                "dossier_title": dossier.get("title", "") if dossier else "",
+            }
+
+    if not prefilled and dossier_id:
         dossier = get_dossier(dossier_id)
         if dossier:
             prefilled = {
@@ -192,6 +208,7 @@ def task_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
+
     ctx.update(task=prefilled, errors=[])
     return render_template("tasks/form.html", **ctx)
 
@@ -239,6 +256,14 @@ def task_detail(task_id: str) -> str:
     ctx = _template_context()
     ctx["task"] = task
     ctx["now"] = datetime.now(timezone.utc)
+
+    # Resolve related note for display
+    related_note = None
+    if task.get("related_note_id"):
+        from models.note import get_note
+        related_note = get_note(task["related_note_id"])
+    ctx["related_note"] = related_note
+
     return render_template("tasks/detail.html", **ctx)
 
 

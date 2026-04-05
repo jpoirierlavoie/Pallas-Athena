@@ -36,6 +36,13 @@
         action="{{ url_for('tasks.task_update', task_id=task.id) if task and task.id else url_for('tasks.task_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="related_note_id" value="{{ task.related_note_id if task and task.related_note_id else '' }}">
+
+    {% if task and task.related_note_id %}
+    <div class="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-700">
+      Tâche liée à une note du dossier.
+    </div>
+    {% endif %}
 
     {# Title #}
     <div>

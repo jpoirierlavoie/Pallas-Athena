@@ -221,6 +221,19 @@ def toggle_pin(note_id: str) -> tuple[Optional[dict], list[str]]:
 # ── Summary ──────────────────────────────────────────────────────────────
 
 
+def _find_note_by_vjournal_uid(vjournal_uid: str) -> Optional[dict]:
+    """Find a note by its VJOURNAL UID. Used for RELATED-TO resolution."""
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("vjournal_uid", "==", vjournal_uid)
+        ).limit(1)
+        for doc in query.stream():
+            return doc.to_dict()
+    except Exception:
+        pass
+    return None
+
+
 def get_notes_summary(dossier_id: str) -> dict:
     """Return {total} for tab display."""
     notes = list_notes(dossier_id=dossier_id)
