@@ -6,6 +6,7 @@ from tz import MTL
 
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -98,6 +99,7 @@ def _form_data() -> dict:
         "status": f.get("status", "à_faire"),
         "category": f.get("category", "autre"),
         "due_date": _parse_date(f.get("due_date", "")),
+        "related_note_id": f.get("related_note_id", "").strip() or None,
     }
 
 
@@ -183,8 +185,23 @@ def task_new() -> str:
     """Render the empty task form."""
     ctx = _template_context()
     dossier_id = request.args.get("dossier_id", "")
+    related_note_id = request.args.get("related_note_id", "")
     prefilled = None
-    if dossier_id:
+
+    if related_note_id:
+        from models.note import get_note
+        note = get_note(related_note_id)
+        if note:
+            dossier_id = note.get("dossier_id", "")
+            dossier = get_dossier(dossier_id) if dossier_id else None
+            prefilled = {
+                "related_note_id": related_note_id,
+                "dossier_id": dossier_id,
+                "dossier_file_number": dossier.get("file_number", "") if dossier else "",
+                "dossier_title": dossier.get("title", "") if dossier else "",
+            }
+
+    if not prefilled and dossier_id:
         dossier = get_dossier(dossier_id)
         if dossier:
             prefilled = {
@@ -192,6 +209,7 @@ def task_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
+
     ctx.update(task=prefilled, errors=[])
     return render_template("tasks/form.html", **ctx)
 
@@ -212,7 +230,10 @@ def task_create() -> str:
         ctx.update(task=data, errors=errors)
         return render_template("tasks/form.html", **ctx)
 
-    bump_ctag("tasks")
+    if task.get("dossier_id"):
+        bump_ctag(f"dossier:{task['dossier_id']}")
+    else:
+        bump_ctag("tasks")
 
     if _is_htmx():
         resp = redirect(url_for("tasks.task_list"))
@@ -236,6 +257,14 @@ def task_detail(task_id: str) -> str:
     ctx = _template_context()
     ctx["task"] = task
     ctx["now"] = datetime.now(timezone.utc)
+
+    # Resolve related note for display
+    related_note = None
+    if task.get("related_note_id"):
+        from models.note import get_note
+        related_note = get_note(task["related_note_id"])
+    ctx["related_note"] = related_note
+
     return render_template("tasks/detail.html", **ctx)
 
 
@@ -259,6 +288,10 @@ def task_edit(task_id: str) -> str:
 @login_required
 def task_update(task_id: str) -> str:
     """Handle edit form submission."""
+    # Capture the old dossier_id before update
+    existing_task = get_task(task_id)
+    old_dossier_id = existing_task.get("dossier_id") if existing_task else None
+
     data = _form_data()
     data = _enrich_dossier_info(data)
 
@@ -272,7 +305,23 @@ def task_update(task_id: str) -> str:
         ctx.update(task=data, errors=errors)
         return render_template("tasks/form.html", **ctx)
 
-    bump_ctag("tasks")
+    new_dossier_id = task.get("dossier_id")
+    if old_dossier_id != new_dossier_id:
+        # Task moved between dossiers (or to/from standalone)
+        if old_dossier_id:
+            record_tombstone(f"dossier:{old_dossier_id}", task_id)
+            bump_ctag(f"dossier:{old_dossier_id}")
+        else:
+            record_tombstone("tasks", task_id)
+            bump_ctag("tasks")
+        if new_dossier_id:
+            bump_ctag(f"dossier:{new_dossier_id}")
+        else:
+            bump_ctag("tasks")
+    elif new_dossier_id:
+        bump_ctag(f"dossier:{new_dossier_id}")
+    else:
+        bump_ctag("tasks")
 
     if _is_htmx():
         resp = redirect(url_for("tasks.task_detail", task_id=task_id))
@@ -289,11 +338,18 @@ def task_update(task_id: str) -> str:
 @login_required
 def task_delete(task_id: str) -> str:
     """Delete a task and redirect to the list."""
+    existing_task = get_task(task_id)
+    dossier_id = existing_task.get("dossier_id") if existing_task else None
+
     success, error = delete_task(task_id)
 
     if success:
-        record_tombstone("tasks", task_id)
-        bump_ctag("tasks")
+        if dossier_id:
+            record_tombstone(f"dossier:{dossier_id}", task_id)
+            bump_ctag(f"dossier:{dossier_id}")
+        else:
+            record_tombstone("tasks", task_id)
+            bump_ctag("tasks")
 
     if _is_htmx():
         if success:
@@ -317,7 +373,10 @@ def task_toggle(task_id: str) -> str:
     if errors:
         return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
 
-    bump_ctag("tasks")
+    if task.get("dossier_id"):
+        bump_ctag(f"dossier:{task['dossier_id']}")
+    else:
+        bump_ctag("tasks")
 
     if _is_htmx():
         # From the list page: re-fetch all tasks and return the full grouped list
@@ -338,3 +397,79 @@ def task_toggle(task_id: str) -> str:
 
     # Non-HTMX (e.g. detail page form): redirect back to the task detail
     return redirect(url_for("tasks.task_detail", task_id=task_id))
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("title", "Titre"),
+    ("dossier_file_number", "Dossier"),
+    ("priority", "Priorité"),
+    ("category", "Catégorie"),
+    ("status", "Statut"),
+    ("due_date", "Échéance"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("title", "Titre", 2.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("priority", "Priorité", 0.8),
+    ("category", "Catégorie", 1.0),
+    ("status", "Statut", 0.8),
+    ("due_date", "Échéance", 1.0),
+]
+
+
+def _get_export_tasks() -> list[dict]:
+    """Fetch and pre-process tasks for export, respecting current filters."""
+    from utils.export_csv import prepare_export_rows
+
+    dossier_filter = request.args.get("dossier", "").strip()
+    priority_filter = request.args.get("priority", "").strip()
+    category_filter = request.args.get("category", "").strip()
+
+    tasks = list_tasks(
+        dossier_id=dossier_filter or None,
+        priority_filter=priority_filter or None,
+        category_filter=category_filter or None,
+    )
+    return prepare_export_rows(
+        tasks,
+        label_maps={
+            "priority": PRIORITY_LABELS,
+            "category": CATEGORY_LABELS,
+            "status": STATUS_LABELS,
+        },
+    )
+
+
+@tasks_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export tasks as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_tasks()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"taches_{date_str}.csv",
+    )
+
+
+@tasks_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export tasks as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_tasks()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Tâches",
+        filename=f"taches_{date_str}.pdf",
+    )

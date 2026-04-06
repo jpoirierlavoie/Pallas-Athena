@@ -82,6 +82,8 @@ def _default_doc() -> dict:
         # DAV-specific
         "vtodo_uid": "",
         "dav_href": "",
+        # Optional link to a parent note (RELATED-TO)
+        "related_note_id": None,
     }
 
 
@@ -426,8 +428,25 @@ def task_to_vtodo(task: dict) -> str:
     if task.get("category"):
         todo.add("x-pallas-category", task["category"])
 
+    # RELATED-TO: link to parent note's VJOURNAL UID
+    related_note_uid = None
+    if task.get("related_note_id"):
+        from models.note import get_note
+        related_note = get_note(task["related_note_id"])
+        if related_note and related_note.get("vjournal_uid"):
+            related_note_uid = related_note["vjournal_uid"]
+            related_prop = icalendar.vText(related_note_uid)
+            todo.add("related-to", related_prop, parameters={"RELTYPE": "PARENT"})
+
     cal.add_component(todo)
-    return cal.to_ical().decode("utf-8")
+    ical_str = cal.to_ical().decode("utf-8")
+
+    # Fallback: if library didn't emit RELTYPE correctly, insert manually
+    if related_note_uid and f"RELTYPE=PARENT" not in ical_str and related_note_uid in ical_str:
+        line = f"RELATED-TO;RELTYPE=PARENT:{related_note_uid}"
+        ical_str = ical_str.replace("END:VTODO", f"{line}\r\nEND:VTODO")
+
+    return ical_str
 
 
 def vtodo_to_task(ical_str: str) -> dict:
@@ -517,6 +536,22 @@ def vtodo_to_task(ical_str: str) -> dict:
             cat = str(category)
             if cat in VALID_CATEGORIES:
                 data["category"] = cat
+
+        # RELATED-TO → resolve parent note link
+        related_tos = component.get("related-to")
+        if related_tos:
+            if not isinstance(related_tos, list):
+                related_tos = [related_tos]
+            for rt in related_tos:
+                rt_str = str(rt)
+                params = getattr(rt, "params", {})
+                reltype = params.get("RELTYPE", "PARENT")
+                if reltype == "PARENT" and rt_str:
+                    from models.note import _find_note_by_vjournal_uid
+                    note = _find_note_by_vjournal_uid(rt_str)
+                    if note:
+                        data["related_note_id"] = note["id"]
+                    break
 
         break  # Only process first VTODO
 

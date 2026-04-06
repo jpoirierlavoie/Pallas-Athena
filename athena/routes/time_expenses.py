@@ -6,6 +6,7 @@ from tz import MTL
 
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -426,3 +427,153 @@ def expense_delete(expense_id: str) -> str:
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
     return redirect(url_for("time_expenses.time_list", tab="depenses"))
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_TIME_EXPORT_COLUMNS_CSV = [
+    ("date", "Date"),
+    ("dossier_file_number", "Dossier"),
+    ("description", "Description"),
+    ("hours", "Heures"),
+    ("rate", "Taux"),
+    ("amount", "Montant"),
+    ("billable", "Facturable"),
+    ("invoiced", "Facturé"),
+]
+
+_TIME_EXPORT_COLUMNS_PDF = [
+    ("date", "Date", 1.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("description", "Description", 2.5),
+    ("hours", "Heures", 0.6),
+    ("rate", "Taux", 0.8),
+    ("amount", "Montant", 0.8),
+    ("billable", "Facturable", 0.6),
+    ("invoiced", "Facturé", 0.6),
+]
+
+_EXPENSE_EXPORT_COLUMNS_CSV = [
+    ("date", "Date"),
+    ("dossier_file_number", "Dossier"),
+    ("description", "Description"),
+    ("category", "Catégorie"),
+    ("amount", "Montant"),
+    ("taxable", "Taxable"),
+    ("invoiced", "Facturé"),
+]
+
+_EXPENSE_EXPORT_COLUMNS_PDF = [
+    ("date", "Date", 1.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("description", "Description", 2.5),
+    ("category", "Catégorie", 1.0),
+    ("amount", "Montant", 0.8),
+    ("taxable", "Taxable", 0.6),
+    ("invoiced", "Facturé", 0.6),
+]
+
+
+def _get_export_filters() -> tuple:
+    """Read shared filter params for time/expense exports."""
+    dossier_id = request.args.get("dossier_id", "").strip()
+    billable_filter = request.args.get("filter", "")
+    date_from = _parse_date(request.args.get("date_from", ""))
+    date_to = _parse_date(request.args.get("date_to", ""))
+    return dossier_id, billable_filter, date_from, date_to
+
+
+@time_expenses_bp.route("/export/csv")
+@login_required
+def export_time_csv_route() -> Response:
+    """Export time entries as CSV."""
+    from utils.export_csv import export_csv
+
+    dossier_id, billable_filter, date_from, date_to = _get_export_filters()
+    entries = list_time_entries(
+        dossier_id=dossier_id or None,
+        billable_filter=billable_filter or None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_csv(
+        rows=entries,
+        columns=_TIME_EXPORT_COLUMNS_CSV,
+        filename=f"heures_{date_str}.csv",
+        cents_fields=["rate", "amount"],
+        hours_fields=["hours"],
+    )
+
+
+@time_expenses_bp.route("/export/pdf")
+@login_required
+def export_time_pdf_route() -> Response:
+    """Export time entries as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    dossier_id, billable_filter, date_from, date_to = _get_export_filters()
+    entries = list_time_entries(
+        dossier_id=dossier_id or None,
+        billable_filter=billable_filter or None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=entries,
+        columns=_TIME_EXPORT_COLUMNS_PDF,
+        title="Heures",
+        filename=f"heures_{date_str}.pdf",
+        cents_fields=["rate", "amount"],
+        hours_fields=["hours"],
+    )
+
+
+@time_expenses_bp.route("/depenses/export/csv")
+@login_required
+def export_expense_csv_route() -> Response:
+    """Export expenses as CSV."""
+    from utils.export_csv import export_csv, prepare_export_rows
+
+    dossier_id, billable_filter, date_from, date_to = _get_export_filters()
+    expenses = list_expenses(
+        dossier_id=dossier_id or None,
+        billable_filter=billable_filter or None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    expenses = prepare_export_rows(expenses, label_maps={"category": CATEGORY_LABELS})
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_csv(
+        rows=expenses,
+        columns=_EXPENSE_EXPORT_COLUMNS_CSV,
+        filename=f"depenses_{date_str}.csv",
+        cents_fields=["amount"],
+    )
+
+
+@time_expenses_bp.route("/depenses/export/pdf")
+@login_required
+def export_expense_pdf_route() -> Response:
+    """Export expenses as PDF report."""
+    from utils.export_pdf import export_pdf
+    from utils.export_csv import prepare_export_rows
+
+    dossier_id, billable_filter, date_from, date_to = _get_export_filters()
+    expenses = list_expenses(
+        dossier_id=dossier_id or None,
+        billable_filter=billable_filter or None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    expenses = prepare_export_rows(expenses, label_maps={"category": CATEGORY_LABELS})
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=expenses,
+        columns=_EXPENSE_EXPORT_COLUMNS_PDF,
+        title="Dépenses",
+        filename=f"depenses_{date_str}.pdf",
+        cents_fields=["amount"],
+    )

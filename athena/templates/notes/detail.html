@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}{{ note.title }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6"
+     x-data="{ deleteOpen: false }">
+
+  {# ── Back + actions ──────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <a href="{{ url_for('notes.note_list') }}"
+       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      Notes
+    </a>
+    <div class="flex items-center gap-2">
+      <form method="post" action="{{ url_for('notes.note_pin', note_id=note.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                class="px-3 py-1.5 text-sm font-medium {{ 'text-amber-600 bg-amber-50 border-amber-200 hover:bg-amber-100' if note.pinned else 'text-gray-700 bg-white border-gray-300 hover:bg-gray-50' }} border rounded-lg">
+          {{ 'Désépingler' if note.pinned else 'Épingler' }}
+        </button>
+      </form>
+      <a href="{{ url_for('notes.note_edit', note_id=note.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Modifier
+      </a>
+      <button @click="deleteOpen = true"
+              class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
+        Supprimer
+      </button>
+    </div>
+  </div>
+
+  {% set cat_colors = {
+    'appel': 'bg-blue-100 text-blue-700',
+    'rencontre': 'bg-purple-100 text-purple-700',
+    'recherche': 'bg-teal-100 text-teal-700',
+    'stratégie': 'bg-amber-100 text-amber-700',
+    'correspondance': 'bg-orange-100 text-orange-700',
+    'audience': 'bg-red-100 text-red-700',
+    'autre': 'bg-gray-100 text-gray-600'
+  } %}
+
+  {# ── Header card ─────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+    <div class="flex items-start gap-4">
+      <div class="w-14 h-14 rounded-xl {{ 'bg-amber-50' if note.pinned else 'bg-gray-50' }} flex items-center justify-center flex-shrink-0">
+        {% if note.pinned %}
+        <svg class="w-7 h-7 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/>
+        </svg>
+        {% else %}
+        <svg class="w-7 h-7 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
+        </svg>
+        {% endif %}
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex flex-wrap items-center gap-2 mb-1">
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ cat_colors.get(note.category, 'bg-gray-100 text-gray-600') }}">
+            {{ category_labels.get(note.category, note.category) }}
+          </span>
+          {% if note.pinned %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-700">
+            Épinglée
+          </span>
+          {% endif %}
+        </div>
+        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ note.title }}</h1>
+        {% if note.dossier_file_number %}
+        <a href="{{ url_for('dossiers.dossier_detail', dossier_id=note.dossier_id) }}"
+           class="text-sm text-indigo-600 hover:text-indigo-700 font-medium">
+          {{ note.dossier_file_number }} — {{ note.dossier_title }}
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Content ─────────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Contenu</h2>
+    <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ note.content }}</p>
+  </div>
+
+  {# ── Actions ─────────────────────────────────────────────────── #}
+  <div class="flex gap-2 mb-4">
+    <a href="{{ url_for('tasks.task_new', dossier_id=note.dossier_id, related_note_id=note.id) }}"
+       class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
+      </svg>
+      Créer une tâche liée
+    </a>
+  </div>
+
+  {# ── Linked tasks ───────────────────────────────────────────── #}
+  {% if linked_tasks %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Tâches liées</h2>
+    <div class="flex flex-col gap-2">
+      {% for t in linked_tasks %}
+      <a href="{{ url_for('tasks.task_detail', task_id=t.id) }}"
+         class="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-50">
+        {% if t.status == 'terminée' %}
+        <div class="w-4 h-4 rounded border-2 border-green-500 bg-green-500 flex-shrink-0 flex items-center justify-center">
+          <svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        </div>
+        {% else %}
+        <div class="w-4 h-4 rounded border-2 border-gray-300 flex-shrink-0"></div>
+        {% endif %}
+        <span class="text-sm {{ 'text-gray-500 line-through' if t.status == 'terminée' else 'text-gray-900' }}">{{ t.title }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Dates ───────────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Dates</h2>
+    <dl class="space-y-2 text-sm">
+      {% if note.created_at and note.created_at.strftime is defined %}
+      <div class="flex justify-between">
+        <dt class="text-gray-500">Créée le</dt>
+        <dd class="text-gray-900">
+          {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
+          {{ note.created_at.strftime('%d') }} {{ month_names[note.created_at.month] }} {{ note.created_at.strftime('%Y') }}
+        </dd>
+      </div>
+      {% endif %}
+      {% if note.updated_at and note.updated_at.strftime is defined %}
+      <div class="flex justify-between">
+        <dt class="text-gray-500">Modifiée le</dt>
+        <dd class="text-gray-900">
+          {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
+          {{ note.updated_at.strftime('%d') }} {{ month_names[note.updated_at.month] }} {{ note.updated_at.strftime('%Y') }}
+        </dd>
+      </div>
+      {% endif %}
+    </dl>
+  </div>
+
+  {# ── Delete confirmation dialog ──────────────────────────────── #}
+  <div x-show="deleteOpen"
+       @keydown.escape.window="deleteOpen = false"
+       x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div @click.outside="deleteOpen = false"
+         class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+      <div class="p-6">
+        <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette note ?</h3>
+        <p class="text-sm text-gray-600 mb-6">Cette action est irréversible.</p>
+        <div class="flex gap-3 justify-end">
+          <button @click="deleteOpen = false"
+                  class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+            Annuler
+          </button>
+          <form method="post" action="{{ url_for('notes.note_delete', note_id=note.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit"
+                    class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+              Supprimer
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

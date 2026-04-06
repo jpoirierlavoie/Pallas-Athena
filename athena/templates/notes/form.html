@@ -1,23 +1,23 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Modifier la tâche' if task and task.id else 'Nouvelle tâche' }} — Pallas Athena{% endblock %}
+{% block title %}{{ 'Modifier la note' if note and note.id else 'Nouvelle note' }} — Pallas Athena{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
-       dossierId: '{{ (task.dossier_id or '') if task else '' }}',
-       dossierDisplay: {{ ((task.dossier_file_number or '') + (' — ' + task.dossier_title if task and task.dossier_title else '') if task else '') | jsattr }},
+       dossierId: '{{ (note.dossier_id or '') if note else '' }}',
+       dossierDisplay: {{ ((note.dossier_file_number or '') + (' — ' + note.dossier_title if note and note.dossier_title else '') if note else '') | jsattr }},
        searchOpen: false
      }">
 
   {# ── Back ──────────────────────────────────────────────────── #}
-  <a href="{{ url_for('tasks.task_list') }}"
+  <a href="{{ url_for('notes.note_list') }}"
      class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
-    Tâches
+    Notes
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
-    {{ 'Modifier la tâche' if task and task.id else 'Nouvelle tâche' }}
+    {{ 'Modifier la note' if note and note.id else 'Nouvelle note' }}
   </h1>
 
   {# ── Errors ────────────────────────────────────────────────── #}
@@ -33,49 +33,34 @@
 
   {# ── Form ──────────────────────────────────────────────────── #}
   <form method="post"
-        action="{{ url_for('tasks.task_update', task_id=task.id) if task and task.id else url_for('tasks.task_create') }}"
+        action="{{ url_for('notes.note_update', note_id=note.id) if note and note.id else url_for('notes.note_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="related_note_id" value="{{ task.related_note_id if task and task.related_note_id else '' }}">
-
-    {% if task and task.related_note_id %}
-    <div class="p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-700">
-      Tâche liée à une note du dossier.
-    </div>
-    {% endif %}
 
     {# Title #}
     <div>
       <label for="title" class="block text-sm font-medium text-gray-700 mb-1">Titre *</label>
       <input type="text" id="title" name="title"
-             value="{{ task.title if task and task.title else '' }}"
-             placeholder="Ex: Déposer la déclaration sous serment"
+             value="{{ note.title if note and note.title else '' }}"
+             placeholder="Ex: Notes de rencontre avec le client"
              required
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
     </div>
 
-    {# Description #}
-    <div>
-      <label for="description" class="block text-sm font-medium text-gray-700 mb-1">Description</label>
-      <textarea id="description" name="description" rows="3"
-                placeholder="Détails supplémentaires…"
-                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ task.description if task and task.description else '' }}</textarea>
-    </div>
-
-    {# Dossier selector (optional) #}
+    {# Dossier selector (required) #}
     <div class="relative">
-      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier</label>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier *</label>
       <input type="hidden" name="dossier_id" :value="dossierId">
       <div class="flex gap-2">
         <input type="text" name="q"
                x-model="dossierDisplay"
                @focus="searchOpen = true"
                @input="searchOpen = true"
-               hx-get="{{ url_for('tasks.dossier_search') }}"
+               hx-get="{{ url_for('notes.dossier_search') }}"
                hx-trigger="input changed delay:300ms"
                hx-target="#dossier-results"
                hx-include="this"
-               placeholder="Rechercher un dossier (optionnel)…"
+               placeholder="Rechercher un dossier…"
                autocomplete="off"
                class="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
         <button type="button"
@@ -102,60 +87,46 @@
       </div>
     </div>
 
-    {# Priority + Category row #}
+    {# Category + Pin row #}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div>
-        <label for="priority" class="block text-sm font-medium text-gray-700 mb-1">Priorité</label>
-        <select id="priority" name="priority"
-                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-          {% for key in valid_priorities %}
-          <option value="{{ key }}" {{ 'selected' if task and task.priority == key else ('selected' if not task and key == 'normale') }}>
-            {{ priority_labels.get(key, key) }}
-          </option>
-          {% endfor %}
-        </select>
-      </div>
       <div>
         <label for="category" class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
         <select id="category" name="category"
                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
           {% for key in valid_categories %}
-          <option value="{{ key }}" {{ 'selected' if task and task.category == key else ('selected' if not task and key == 'autre') }}>
+          <option value="{{ key }}" {{ 'selected' if note and note.category == key else ('selected' if not note and key == 'autre') }}>
             {{ category_labels.get(key, key) }}
           </option>
           {% endfor %}
         </select>
       </div>
+      <div class="flex items-end pb-1">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="pinned"
+                 {{ 'checked' if note and note.pinned }}
+                 class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+          <span class="text-sm text-gray-700">Épingler cette note</span>
+        </label>
+      </div>
     </div>
 
-    {# Due date + Status row #}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div>
-        <label for="due_date" class="block text-sm font-medium text-gray-700 mb-1">Date d'échéance</label>
-        <input type="date" id="due_date" name="due_date"
-               value="{{ task.due_date.strftime('%Y-%m-%d') if task and task.due_date and task.due_date.strftime is defined else today }}"
-               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-      </div>
-      <div>
-        <label for="status" class="block text-sm font-medium text-gray-700 mb-1">Statut</label>
-        <select id="status" name="status"
-                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-          {% for key in valid_statuses %}
-          <option value="{{ key }}" {{ 'selected' if task and task.status == key else ('selected' if not task and key == 'à_faire') }}>
-            {{ status_labels.get(key, key) }}
-          </option>
-          {% endfor %}
-        </select>
-      </div>
+    {# Content #}
+    <div>
+      <label for="content" class="block text-sm font-medium text-gray-700 mb-1">Contenu *</label>
+      <textarea id="content" name="content" rows="10"
+                placeholder="Contenu de la note…"
+                required
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                style="min-height: 200px;">{{ note.content if note and note.content else '' }}</textarea>
     </div>
 
     {# Actions #}
     <div class="flex gap-3 pt-2">
       <button type="submit"
               class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
-        {{ 'Enregistrer' if task and task.id else 'Créer' }}
+        {{ 'Enregistrer' if note and note.id else 'Créer' }}
       </button>
-      <a href="{{ url_for('tasks.task_list') }}"
+      <a href="{{ url_for('notes.note_list') }}"
          class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
@@ -163,25 +134,25 @@
   </form>
 
   {# ── Delete button (edit mode only) ─────────────────────── #}
-  {% if task and task.id %}
+  {% if note and note.id %}
   <div x-data="{ deleteOpen: false }" class="mt-6 pt-6 border-t border-gray-200">
     <button @click="deleteOpen = true"
             class="text-sm text-red-600 hover:text-red-700 font-medium">
-      Supprimer cette tâche
+      Supprimer cette note
     </button>
     <div x-show="deleteOpen" @keydown.escape.window="deleteOpen = false" x-cloak
          class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div @click.outside="deleteOpen = false"
            class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
         <div class="p-6">
-          <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette tâche ?</h3>
+          <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette note ?</h3>
           <p class="text-sm text-gray-600 mb-6">Cette action est irréversible.</p>
           <div class="flex gap-3 justify-end">
             <button @click="deleteOpen = false"
                     class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
               Annuler
             </button>
-            <form method="post" action="{{ url_for('tasks.task_delete', task_id=task.id) }}">
+            <form method="post" action="{{ url_for('notes.note_delete', note_id=note.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit"
                       class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">

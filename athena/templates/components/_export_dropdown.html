@@ -1,0 +1,21 @@
+{# Export dropdown button — include with: csv_url, pdf_url #}
+<div x-data="{ exportOpen: false }" class="relative">
+  <button @click="exportOpen = !exportOpen"
+          class="px-3 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 inline-flex items-center gap-1.5">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+    </svg>
+    Exporter
+  </button>
+  <div x-show="exportOpen" @click.outside="exportOpen = false" x-cloak
+       class="absolute right-0 mt-1 bg-white rounded-lg shadow-lg border border-gray-200 py-1 w-36 z-10">
+    <a href="{{ csv_url }}"
+       class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+      CSV
+    </a>
+    <a href="{{ pdf_url }}"
+       class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+      PDF
+    </a>
+  </div>
+</div>

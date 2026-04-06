@@ -91,27 +91,24 @@ def dav_root_propfind() -> Response:
     if depth == "1":
         from dav.xml_utils import carddav_tag
         from dav.sync import get_ctag
+        from models.dossier import list_dossiers
 
-        # (path, display_name, type, component)
-        collections = [
+        # -- Static collections (addressbook, calendar, standalone tasks) --
+        static_collections = [
             ("/dav/addressbook/", "Clients", "addressbook", None),
             ("/dav/calendar/", "Audiences", "calendar", "VEVENT"),
-            ("/dav/tasks/", "T\u00e2ches", "calendar", "VTODO"),
-            ("/dav/journals/", "Dossiers", "calendar", "VJOURNAL"),
+            ("/dav/tasks/", "T\u00e2ches (sans dossier)", "calendar", "VTODO"),
         ]
-        # Map path → Firestore sync collection name for ctag
         ctag_names = {
             "/dav/addressbook/": "parties",
             "/dav/calendar/": "hearings",
             "/dav/tasks/": "tasks",
-            "/dav/journals/": "dossiers",
         }
 
-        for coll_path, coll_name, coll_type, component in collections:
+        for coll_path, coll_name, coll_type, component in static_collections:
             child = add_response(multistatus, coll_path)
             child_prop = add_propstat(child)
 
-            # resourcetype — must include the protocol-specific type
             rt = ET.SubElement(child_prop, dav_tag("resourcetype"))
             ET.SubElement(rt, dav_tag("collection"))
             if coll_type == "addressbook":
@@ -119,12 +116,10 @@ def dav_root_propfind() -> Response:
             elif coll_type == "calendar":
                 ET.SubElement(rt, caldav_tag("calendar"))
 
-            # displayname
             ET.SubElement(child_prop, dav_tag("displayname")).text = (
                 f"Pallas Athena \u2014 {coll_name}"
             )
 
-            # supported-calendar-component-set (CalDAV collections only)
             if component:
                 sccs = ET.SubElement(
                     child_prop,
@@ -133,12 +128,52 @@ def dav_root_propfind() -> Response:
                 comp_el = ET.SubElement(sccs, caldav_tag("comp"))
                 comp_el.set("name", component)
 
-            # getctag
             sync_name = ctag_names.get(coll_path)
             if sync_name:
                 ET.SubElement(child_prop, cs_tag("getctag")).text = (
                     get_ctag(sync_name)
                 )
+
+        # -- Dynamic per-dossier collections -------------------------------
+        active_dossiers = (
+            list_dossiers(status_filter="actif")
+            + list_dossiers(status_filter="en_attente")
+        )
+        seen_ids: set[str] = set()
+        for dossier in active_dossiers:
+            did = dossier["id"]
+            if did in seen_ids:
+                continue
+            seen_ids.add(did)
+
+            coll_path = f"/dav/dossier-{did}/"
+            display_name = (
+                f"Pallas Athena \u2014 {dossier.get('file_number', '')} "
+                f"\u2014 {dossier.get('title', '')}"
+            )
+            sync_name = f"dossier:{did}"
+
+            child = add_response(multistatus, coll_path)
+            child_prop = add_propstat(child)
+
+            rt = ET.SubElement(child_prop, dav_tag("resourcetype"))
+            ET.SubElement(rt, dav_tag("collection"))
+            ET.SubElement(rt, caldav_tag("calendar"))
+
+            ET.SubElement(child_prop, dav_tag("displayname")).text = display_name
+
+            sccs = ET.SubElement(
+                child_prop,
+                caldav_tag("supported-calendar-component-set"),
+            )
+            comp_todo = ET.SubElement(sccs, caldav_tag("comp"))
+            comp_todo.set("name", "VTODO")
+            comp_journal = ET.SubElement(sccs, caldav_tag("comp"))
+            comp_journal.set("name", "VJOURNAL")
+
+            ET.SubElement(child_prop, cs_tag("getctag")).text = (
+                get_ctag(sync_name)
+            )
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from flask import (
     Blueprint,
+    Response,
     redirect,
     render_template,
     request,
@@ -391,3 +392,93 @@ def invoice_delete(invoice_id: str) -> str:
         resp.headers["HX-Redirect"] = target
         return resp
     return redirect(target)
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+
+_EXPORT_COLUMNS_CSV = [
+    ("invoice_number", "N° facture"),
+    ("date", "Date"),
+    ("dossier_file_number", "Dossier"),
+    ("client_name", "Client"),
+    ("subtotal", "Sous-total"),
+    ("gst_amount", "TPS"),
+    ("qst_amount", "TVQ"),
+    ("total", "Total"),
+    ("status", "Statut"),
+]
+
+_EXPORT_COLUMNS_PDF = [
+    ("invoice_number", "N° facture", 1.0),
+    ("date", "Date", 1.0),
+    ("dossier_file_number", "Dossier", 1.0),
+    ("client_name", "Client", 1.5),
+    ("subtotal", "Sous-total", 0.8),
+    ("gst_amount", "TPS", 0.6),
+    ("qst_amount", "TVQ", 0.6),
+    ("total", "Total", 0.8),
+    ("status", "Statut", 0.8),
+]
+
+
+def _get_export_invoices() -> list[dict]:
+    """Fetch and pre-process invoices for export, respecting current filters."""
+    from utils.export_csv import prepare_export_rows
+
+    status_filter = request.args.get("status", "")
+    dossier_id = request.args.get("dossier_id", "").strip()
+
+    def _parse_date_local(value: str) -> datetime | None:
+        if not value or not value.strip():
+            return None
+        try:
+            return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return None
+
+    date_from = _parse_date_local(request.args.get("date_from", ""))
+    date_to = _parse_date_local(request.args.get("date_to", ""))
+
+    invoices = list_invoices(
+        status_filter=status_filter or None,
+        dossier_id=dossier_id or None,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return prepare_export_rows(invoices, label_maps={"status": STATUS_LABELS})
+
+
+@invoices_bp.route("/export/csv")
+@login_required
+def export_csv_route() -> Response:
+    """Export invoices as CSV."""
+    from utils.export_csv import export_csv
+
+    rows = _get_export_invoices()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_csv(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_CSV,
+        filename=f"factures_{date_str}.csv",
+        cents_fields=["subtotal", "gst_amount", "qst_amount", "total"],
+    )
+
+
+@invoices_bp.route("/export/pdf")
+@login_required
+def export_pdf_route() -> Response:
+    """Export invoices as PDF report."""
+    from utils.export_pdf import export_pdf
+
+    rows = _get_export_invoices()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return export_pdf(
+        rows=rows,
+        columns=_EXPORT_COLUMNS_PDF,
+        title="Factures",
+        filename=f"factures_{date_str}.pdf",
+        cents_fields=["subtotal", "gst_amount", "qst_amount", "total"],
+    )

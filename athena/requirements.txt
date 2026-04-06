@@ -10,3 +10,4 @@ vobject==0.9.*
 bcrypt==4.*
 pytz==2024.*
 python-dotenv==1.*
+reportlab==4.*
