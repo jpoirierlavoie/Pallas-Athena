@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import firebase_admin
 from firebase_admin import credentials
-from flask import Flask, render_template as _render_template
+from flask import Flask, abort, render_template as _render_template, request
 
 from config import Config
 from security import init_security
@@ -112,6 +112,12 @@ def create_app() -> Flask:
             "firebase_api_key": app.config.get("FIREBASE_API_KEY", ""),
             "firebase_app_id": app.config.get("FIREBASE_APP_ID", ""),
         }
+
+    # ── Block direct appspot.com access (traffic must come via Cloudflare) ──
+    @app.before_request
+    def block_appspot() -> None:
+        if "appspot.com" in request.host.lower():
+            abort(403)
 
     # ── Error handlers ─────────────────────────────────────────────────
     @app.errorhandler(404)
