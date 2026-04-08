@@ -102,8 +102,6 @@ def _default_doc() -> dict:
         "opposing_party_ids": [],
         # Case classification
         "matter_type": "litige_civil",
-        "court": "",
-        "district": "",
         "court_file_number": "",
         "district_judiciaire": "",
         "tribunal": "",
@@ -118,8 +116,6 @@ def _default_doc() -> dict:
         "hourly_rate": 25000,
         "flat_fee": None,
         "fee_type": "hourly",
-        "retainer_amount": 0,
-        "retainer_balance": 0,
         # Status
         "status": "actif",
         "opened_date": None,

@@ -108,18 +108,6 @@
           <dd class="text-gray-900 font-mono text-xs">{{ dossier.court_file_number }}</dd>
         </div>
         {% endif %}
-        {% if dossier.court %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Tribunal</dt>
-          <dd class="text-gray-900">{{ dossier.court }}</dd>
-        </div>
-        {% endif %}
-        {% if dossier.district %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">District</dt>
-          <dd class="text-gray-900">{{ dossier.district }}</dd>
-        </div>
-        {% endif %}
         {% if dossier.district_judiciaire %}
         <div class="flex justify-between">
           <dt class="text-gray-500">District judiciaire</dt>
@@ -134,7 +122,7 @@
         {% endif %}
         {% if dossier.tribunal %}
         <div class="flex justify-between">
-          <dt class="text-gray-500">Tribunal (juridiction)</dt>
+          <dt class="text-gray-500">Tribunal</dt>
           <dd class="text-gray-900">{{ dossier.tribunal }}</dd>
         </div>
         {% endif %}
@@ -149,7 +137,7 @@
           <dd class="text-amber-600 text-xs">Tribunal administratif</dd>
         </div>
         {% endif %}
-        {% if not dossier.court and not dossier.district and not dossier.court_file_number %}
+        {% if not dossier.court_file_number and not dossier.tribunal %}
         <p class="text-gray-400 text-xs">Aucune information judiciaire</p>
         {% endif %}
       </dl>
@@ -173,18 +161,6 @@
         <div class="flex justify-between">
           <dt class="text-gray-500">Forfait</dt>
           <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.flat_fee / 100) }} $</dd>
-        </div>
-        {% endif %}
-        {% if dossier.retainer_amount %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Provision</dt>
-          <dd class="text-gray-900">{{ '%.2f'|format(dossier.retainer_amount / 100) }} $</dd>
-        </div>
-        {% endif %}
-        {% if dossier.retainer_balance %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Solde provision</dt>
-          <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.retainer_balance / 100) }} $</dd>
         </div>
         {% endif %}
       </dl>

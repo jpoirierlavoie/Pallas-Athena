@@ -65,8 +65,6 @@ from models.dossier import (
     MATTER_TYPE_LABELS,
     ROLE_LABELS,
     STATUS_LABELS,
-    VALID_COURTS,
-    VALID_DISTRICTS,
     VALID_STATUSES,
     create_dossier,
     delete_dossier,
@@ -135,8 +133,6 @@ def _form_data() -> dict:
         "opposing_parties": _parse_parties_json(f.get("opposing_parties_json", "")),
         # Classification
         "matter_type": f.get("matter_type", "litige_civil"),
-        "court": f.get("court", ""),
-        "district": f.get("district", ""),
         "court_file_number": f.get("court_file_number", "").strip(),
         "district_judiciaire": f.get("district_judiciaire", "").strip(),
         "tribunal": f.get("tribunal", "").strip(),
@@ -151,8 +147,6 @@ def _form_data() -> dict:
         "fee_type": f.get("fee_type", "hourly"),
         "hourly_rate": _parse_cents(f.get("hourly_rate", "")),
         "flat_fee": _parse_cents(f.get("flat_fee", "")) or None,
-        "retainer_amount": _parse_cents(f.get("retainer_amount", "")),
-        "retainer_balance": _parse_cents(f.get("retainer_balance", "")),
         # Status
         "status": f.get("status", "actif"),
         "opened_date": _parse_date(f.get("opened_date", "")),
@@ -173,8 +167,6 @@ def _template_context() -> dict:
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
         "fee_type_labels": FEE_TYPE_LABELS,
-        "valid_courts": VALID_COURTS,
-        "valid_districts": VALID_DISTRICTS,
     }
 
 
@@ -492,7 +484,7 @@ _EXPORT_COLUMNS_CSV = [
     ("title", "Titre"),
     ("_client_names", "Client(s)"),
     ("matter_type", "Type"),
-    ("court", "Tribunal"),
+    ("tribunal", "Tribunal"),
     ("status", "Statut"),
     ("opened_date", "Ouverture"),
 ]
@@ -502,7 +494,7 @@ _EXPORT_COLUMNS_PDF = [
     ("title", "Titre", 2.0),
     ("_client_names", "Client(s)", 1.5),
     ("matter_type", "Type", 1.0),
-    ("court", "Tribunal", 1.0),
+    ("tribunal", "Tribunal", 1.0),
     ("status", "Statut", 0.8),
     ("opened_date", "Ouverture", 1.0),
 ]
