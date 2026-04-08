@@ -1,6 +1,7 @@
 steps:
   - name: 'gcr.io/cloud-builders/gcloud'
     args: ['app', 'deploy', 'app.yaml', '--quiet']
+    dir: 'athena'
 timeout: '600s'
 options:
   logging: CLOUD_LOGGING_ONLY
