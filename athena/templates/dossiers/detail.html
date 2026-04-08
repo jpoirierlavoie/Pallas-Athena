@@ -102,6 +102,12 @@
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-2">Tribunal et juridiction</h2>
       <dl class="space-y-1.5 text-sm">
+        {% if dossier.court_file_number %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">N° judiciaire</dt>
+          <dd class="text-gray-900 font-mono text-xs">{{ dossier.court_file_number }}</dd>
+        </div>
+        {% endif %}
         {% if dossier.court %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Tribunal</dt>
@@ -114,10 +120,33 @@
           <dd class="text-gray-900">{{ dossier.district }}</dd>
         </div>
         {% endif %}
-        {% if dossier.court_file_number %}
+        {% if dossier.district_judiciaire %}
         <div class="flex justify-between">
-          <dt class="text-gray-500">N° judiciaire</dt>
-          <dd class="text-gray-900 font-mono text-xs">{{ dossier.court_file_number }}</dd>
+          <dt class="text-gray-500">District judiciaire</dt>
+          <dd class="text-gray-900">{{ dossier.district_judiciaire }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.palais_de_justice %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Palais de justice</dt>
+          <dd class="text-gray-900">{{ dossier.palais_de_justice }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.tribunal %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Tribunal (juridiction)</dt>
+          <dd class="text-gray-900">{{ dossier.tribunal }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.competence %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Compétence</dt>
+          <dd class="text-gray-900">{{ dossier.competence }}</dd>
+        </div>
+        {% endif %}
+        {% if dossier.is_administrative_tribunal %}
+        <div>
+          <dd class="text-amber-600 text-xs">Tribunal administratif</dd>
         </div>
         {% endif %}
         {% if not dossier.court and not dossier.district and not dossier.court_file_number %}

@@ -105,6 +105,13 @@ def _default_doc() -> dict:
         "court": "",
         "district": "",
         "court_file_number": "",
+        "district_judiciaire": "",
+        "tribunal": "",
+        "competence": "",
+        "palais_de_justice": "",
+        "greffe_number": "",
+        "juridiction_number": "",
+        "is_administrative_tribunal": False,
         # Role of the lawyer's client
         "role": "demandeur",
         # Financial

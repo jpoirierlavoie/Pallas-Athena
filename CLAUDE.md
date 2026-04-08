@@ -73,7 +73,7 @@ athena/
 - Firestore emulator: `gcloud emulators firestore start`
 
 ## Current Phase
-Phase F — Data Export
+Phase G — Court File Number Parsing & Judicial Metadata
 
 ## Phase Checklist (Original Build)
 - [x] Phase 1: Scaffolding, Auth, Security
@@ -97,6 +97,7 @@ Phase F — Data Export
 - [x] Phase D2: Dossier Notes + VJOURNAL Serialization (notes in per-dossier collections)
 - [x] Phase D3: RELATED-TO Linking (VTODO ↔ VJOURNAL within dossier collections)
 - [x] Phase F: Data Export (CSV + PDF via reportlab)
+- [x] Phase G: Court File Number Parsing & Judicial Metadata
 
 ## Known Gotchas
 - Firestore does not support `!=` combined with `orderBy` on a different field. Design queries accordingly.

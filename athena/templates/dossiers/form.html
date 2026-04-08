@@ -8,7 +8,56 @@
        clients: {{ (dossier.clients | tojson | forceescape) if dossier and dossier.clients else '[]' }},
        opposingParties: {{ (dossier.opposing_parties | tojson | forceescape) if dossier and dossier.opposing_parties else '[]' }},
        clientQuery: '',
-       opposingQuery: ''
+       opposingQuery: '',
+       judicialMetadata: {
+         district_judiciaire: '{{ dossier.district_judiciaire if dossier and dossier.district_judiciaire else "" }}',
+         tribunal: '{{ dossier.tribunal if dossier and dossier.tribunal else "" }}',
+         competence: '{{ dossier.competence if dossier and dossier.competence else "" }}',
+         palais_de_justice: '{{ dossier.palais_de_justice if dossier and dossier.palais_de_justice else "" }}',
+         greffe_number: '{{ dossier.greffe_number if dossier and dossier.greffe_number else "" }}',
+         juridiction_number: '{{ dossier.juridiction_number if dossier and dossier.juridiction_number else "" }}',
+         is_administrative: {{ 'true' if dossier and dossier.is_administrative_tribunal else 'false' }},
+       },
+       async parseCourtFile() {
+         const input = document.getElementById('court_file_number').value.trim();
+         const errorEl = document.getElementById('court-file-error');
+         if (!input) {
+           this.judicialMetadata = {
+             district_judiciaire: '', tribunal: '', competence: '',
+             palais_de_justice: '', greffe_number: '', juridiction_number: '',
+             is_administrative: false,
+           };
+           errorEl.classList.add('hidden');
+           return;
+         }
+         const formData = new FormData();
+         formData.append('court_file_number', input);
+         try {
+           const resp = await fetch('{{ url_for("dossiers.parse_court_file") }}', {
+             method: 'POST',
+             headers: { 'X-CSRFToken': '{{ csrf_token() }}' },
+             body: formData,
+           });
+           const data = await resp.json();
+           this.judicialMetadata = {
+             district_judiciaire: data.district_judiciaire || '',
+             tribunal: data.tribunal || '',
+             competence: data.competence || '',
+             palais_de_justice: data.palais_de_justice || '',
+             greffe_number: data.greffe_number || '',
+             juridiction_number: data.juridiction_number || '',
+             is_administrative: data.is_administrative || false,
+           };
+           if (data.parse_error) {
+             errorEl.textContent = data.parse_error;
+             errorEl.classList.remove('hidden');
+           } else {
+             errorEl.classList.add('hidden');
+           }
+         } catch (err) {
+           console.error('Court file parsing failed:', err);
+         }
+       }
      }">
 
   {# ── Header ──────────────────────────────────────────────────── #}
@@ -226,22 +275,76 @@
           </select>
         </div>
         <div>
-          <label class="block text-sm text-gray-700 mb-1">Numéro de dossier judiciaire</label>
-          <input type="text" name="court_file_number"
-                 value="{{ dossier.court_file_number if dossier else '' }}"
-                 placeholder="500-17-______-___"
-                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
           <label class="block text-sm text-gray-700 mb-1">Date d'ouverture</label>
           <input type="date" name="opened_date"
                  value="{{ dossier.opened_date.strftime('%Y-%m-%d') if dossier and dossier.opened_date and dossier.opened_date.strftime is defined else '' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
+    </div>
+
+    {# ═══ Section 4b — Dossier judiciaire ══════════════════════════════ #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-4">Dossier judiciaire</h2>
+
+      <div class="space-y-4">
+        <div>
+          <label for="court_file_number" class="block text-sm text-gray-700 mb-1">
+            Numéro de dossier judiciaire
+          </label>
+          <input type="text"
+                 id="court_file_number"
+                 name="court_file_number"
+                 value="{{ dossier.court_file_number if dossier else '' }}"
+                 placeholder="500-05-123456-241"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                 x-on:blur="parseCourtFile()"
+                 autocomplete="off">
+          <p id="court-file-error" class="text-xs text-red-500 mt-1 hidden"></p>
+        </div>
+
+        {# Auto-populated fields — visible after parsing #}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"
+             x-show="judicialMetadata.district_judiciaire || judicialMetadata.tribunal"
+             x-cloak>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-0.5">District judiciaire</label>
+            <input type="text" name="district_judiciaire"
+                   x-model="judicialMetadata.district_judiciaire"
+                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-0.5">Palais de justice</label>
+            <input type="text" name="palais_de_justice"
+                   x-model="judicialMetadata.palais_de_justice"
+                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-0.5">Tribunal</label>
+            <input type="text" name="tribunal"
+                   x-model="judicialMetadata.tribunal"
+                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500 mb-0.5">Compétence</label>
+            <input type="text" name="competence"
+                   x-model="judicialMetadata.competence"
+                   class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
+          </div>
+        </div>
+
+        {# Administrative tribunal indicator #}
+        <div x-show="judicialMetadata.is_administrative" x-cloak
+             class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+          Dossier devant un tribunal administratif — aucune juridiction déterminée automatiquement.
+        </div>
+      </div>
+
+      {# Hidden fields for parsed codes #}
+      <input type="hidden" name="greffe_number" x-model="judicialMetadata.greffe_number">
+      <input type="hidden" name="juridiction_number" x-model="judicialMetadata.juridiction_number">
+      <input type="hidden" name="is_administrative_tribunal"
+             :value="judicialMetadata.is_administrative ? 'true' : 'false'">
     </div>
 
     {# ═══ Section 5 — Honoraires ════════════════════════════════════ #}

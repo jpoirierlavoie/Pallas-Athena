@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from flask import (
     Blueprint,
     Response,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -137,6 +138,13 @@ def _form_data() -> dict:
         "court": f.get("court", ""),
         "district": f.get("district", ""),
         "court_file_number": f.get("court_file_number", "").strip(),
+        "district_judiciaire": f.get("district_judiciaire", "").strip(),
+        "tribunal": f.get("tribunal", "").strip(),
+        "competence": f.get("competence", "").strip(),
+        "palais_de_justice": f.get("palais_de_justice", "").strip(),
+        "greffe_number": f.get("greffe_number", "").strip(),
+        "juridiction_number": f.get("juridiction_number", "").strip(),
+        "is_administrative_tribunal": f.get("is_administrative_tribunal") == "true",
         # Role
         "role": f.get("role", "demandeur"),
         # Financial
@@ -518,6 +526,45 @@ def _get_export_dossiers() -> list[dict]:
         d["matter_type"] = MATTER_TYPE_LABELS.get(d.get("matter_type", ""), d.get("matter_type", ""))
         d["status"] = STATUS_LABELS.get(d.get("status", ""), d.get("status", ""))
     return dossiers
+
+
+# ── Court file number parsing ─────────────────────────────────────────
+
+
+@dossiers_bp.route("/parse-court-file", methods=["POST"])
+@login_required
+def parse_court_file():
+    """Parse a court file number and return judicial metadata as JSON."""
+    court_file_number = request.form.get("court_file_number", "").strip()
+
+    from models.reference import parse_court_file_number
+    result = parse_court_file_number(court_file_number)
+
+    return jsonify({
+        "district_judiciaire": (
+            result["greffe"]["district_judiciaire"]
+            if result.get("greffe") else ""
+        ),
+        "tribunal": (
+            result["juridiction"]["tribunal"]
+            if result.get("juridiction") else ""
+        ),
+        "competence": (
+            result["juridiction"]["competence"]
+            if result.get("juridiction") else ""
+        ),
+        "palais_de_justice": (
+            result["greffe"]["palais_de_justice"]
+            if result.get("greffe") else ""
+        ),
+        "greffe_number": result.get("greffe_number", ""),
+        "juridiction_number": result.get("juridiction_number", ""),
+        "is_administrative": result.get("is_administrative", False),
+        "parse_error": result.get("parse_error"),
+    })
+
+
+# ── Export ────────────────────────────────────────────────────────────
 
 
 @dossiers_bp.route("/export/csv")
