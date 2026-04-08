@@ -6,7 +6,7 @@ Single-user legal practice management application for a Québec civil litigation
 Full specification: see SPEC.md
 
 ## Tech Stack
-- Python 3.11+ / Flask
+- Python 3.13+ / Flask
 - Google Cloud Firestore (native mode, NOT Datastore mode)
 - Firebase Storage (via google-cloud-storage SDK)
 - Firebase Auth (email/password, single-user only)
