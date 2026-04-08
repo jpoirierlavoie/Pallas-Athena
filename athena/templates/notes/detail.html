@@ -80,7 +80,9 @@
   {# ── Content ─────────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-2">Contenu</h2>
-    <p class="text-sm text-gray-700 whitespace-pre-wrap">{{ note.content }}</p>
+    <div class="note-content text-sm text-gray-700">
+      {{ note.content | markdown | safe }}
+    </div>
   </div>
 
   {# ── Actions ─────────────────────────────────────────────────── #}

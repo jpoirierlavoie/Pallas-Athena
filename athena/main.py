@@ -63,6 +63,34 @@ def create_app() -> Flask:
 
     app.jinja_env.filters["jsattr"] = _jsattr
 
+    import markdown as _markdown_lib
+    import bleach as _bleach
+
+    _MD_EXTENSIONS = ["tables", "fenced_code", "nl2br"]
+    _ALLOWED_TAGS = [
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "p", "br", "hr", "strong", "em", "del",
+        "code", "pre", "ul", "ol", "li", "blockquote",
+        "a", "table", "thead", "tbody", "tr", "th", "td",
+    ]
+    _ALLOWED_ATTRS = {
+        "a": ["href", "title"],
+        "th": ["align"],
+        "td": ["align"],
+    }
+
+    def render_markdown(text: str) -> str:
+        """Convert markdown to sanitized HTML."""
+        html = _markdown_lib.markdown(text, extensions=_MD_EXTENSIONS)
+        return _bleach.clean(
+            html,
+            tags=_ALLOWED_TAGS,
+            attributes=_ALLOWED_ATTRS,
+            strip=True,
+        )
+
+    app.jinja_env.filters["markdown"] = render_markdown
+
     # ── Blueprints ───────────────────────────────────────────────────
     from routes.auth_routes import auth_bp
     from routes.dashboard import dashboard_bp
