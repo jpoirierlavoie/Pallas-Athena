@@ -6,6 +6,10 @@
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>{% block title %}Pallas Athena{% endblock %}</title>
 
+  <!-- Favicon + App Icons -->
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+
   <!-- Tailwind CSS -->
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 
@@ -100,7 +104,10 @@
   <div class="md:flex">
     {# ── Desktop sidebar (≥768px) ──────────────────────────────────── #}
     <nav class="hidden md:flex md:flex-col md:w-56 md:min-h-screen bg-white border-r border-gray-200 p-4">
-      <a href="/" class="text-lg font-semibold text-gray-900 mb-8">Pallas Athena</a>
+      <a href="/" class="flex items-center gap-3 mb-8">
+        <img src="{{ url_for('static', filename='owl.png') }}" alt="Pallas Athena" class="w-8 h-8 object-contain">
+        <span class="text-lg font-semibold text-gray-900">Pallas Athena</span>
+      </a>
       <div class="flex flex-col gap-1">
         <a href="/" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-700">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25a2.25 2.25 0 0 1-2.25-2.25v-2.25Z"/></svg>
