@@ -31,6 +31,38 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    },
+    {
+      "src": "/static/icons/icon-monochrome-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "monochrome"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dossiers",
+      "short_name": "Dossiers",
+      "url": "/dossiers/",
+      "icons": [{ "src": "/static/icons/shortcut-dossiers.png", "sizes": "96x96", "type": "image/png" }]
+    },
+    {
+      "name": "Audiences",
+      "short_name": "Audiences",
+      "url": "/audiences/",
+      "icons": [{ "src": "/static/icons/shortcut-audiences.png", "sizes": "96x96", "type": "image/png" }]
+    },
+    {
+      "name": "Tâches",
+      "short_name": "Tâches",
+      "url": "/taches/",
+      "icons": [{ "src": "/static/icons/shortcut-taches.png", "sizes": "96x96", "type": "image/png" }]
+    },
+    {
+      "name": "Notes",
+      "short_name": "Notes",
+      "url": "/notes/",
+      "icons": [{ "src": "/static/icons/shortcut-notes.png", "sizes": "96x96", "type": "image/png" }]
     }
   ],
   "categories": ["business", "productivity"],
