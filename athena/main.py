@@ -166,7 +166,7 @@ def create_app() -> Flask:
             "target": {
                 "namespace": "android_app",
                 "package_name": "ca.poirierlavoie.athena",
-                "sha256_cert_fingerprints": ["0F:97:FB:B6:FD:38:3C:C0:C5:22:AA:26:33:E3:6B:D3:6F:38:DD:80:E7:77:F2:E9:44:72:41:0D:6E:B4:12:74"]
+                "sha256_cert_fingerprints": ["47:3B:05:FB:50:D9:23:0E:51:FC:12:C7:AB:6A:DB:AD:02:FA:85:CB:3A:C9:BE:8E:80:1F:06:5E:7A:8B:D7:11"]
             }
         }]
         return json.dumps(data), 200, {"Content-Type": "application/json"}
