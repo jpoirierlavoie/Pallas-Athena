@@ -152,6 +152,11 @@ def create_app() -> Flask:
         if "appspot.com" in request.host.lower():
             abort(403)
 
+    # ── Offline fallback (PWA) ─────────────────────────────────────────
+    @app.route("/offline")
+    def offline():
+        return _render_template("offline.html")
+
     # ── Error handlers ─────────────────────────────────────────────────
     @app.errorhandler(404)
     def page_not_found(e):  # type: ignore[no-untyped-def]
