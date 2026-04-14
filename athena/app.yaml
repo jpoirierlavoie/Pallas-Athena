@@ -20,9 +20,6 @@ env_variables:
   SECRET_KEY: "CHANGE-ME-use-secret-manager-in-production"
   DAV_PASSWORD_HASH: "REDACTED_OLD_BCRYPT_HASH"
 
-skip_files:
-  - ^(.*/)?\.(?!well-known).*$
-
 handlers:
   - url: /manifest.json
     static_files: manifest.json
@@ -36,11 +33,6 @@ handlers:
     http_headers:
       Cache-Control: no-cache
       Service-Worker-Allowed: /
-
-  - url: /.well-known/assetlinks.json
-    static_files: .well-known/assetlinks.json
-    upload: .well-known/assetlinks.json
-    mime_type: application/json
 
   - url: /favicon.ico
     static_files: static/icons/favicon.ico

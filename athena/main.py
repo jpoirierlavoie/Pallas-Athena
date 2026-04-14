@@ -157,6 +157,20 @@ def create_app() -> Flask:
     def offline():
         return _render_template("offline.html")
 
+    # ── Digital Asset Links (Android TWA) ─────────────────────────────
+    @app.route("/.well-known/assetlinks.json")
+    def asset_links():
+        import json
+        data = [{
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "ca.poirierlavoie.athena",
+                "sha256_cert_fingerprints": ["0F:97:FB:B6:FD:38:3C:C0:C5:22:AA:26:33:E3:6B:D3:6F:38:DD:80:E7:77:F2:E9:44:72:41:0D:6E:B4:12:74"]
+            }
+        }]
+        return json.dumps(data), 200, {"Content-Type": "application/json"}
+
     # ── Error handlers ─────────────────────────────────────────────────
     @app.errorhandler(404)
     def page_not_found(e):  # type: ignore[no-untyped-def]
