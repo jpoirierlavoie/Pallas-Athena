@@ -59,6 +59,16 @@ handlers:
     upload: static/icons/icon-192.png
     mime_type: image/png
 
+  - url: /privacy
+    static_files: static/legal/privacy.html
+    upload: static/legal/privacy.html
+    mime_type: text/html
+
+  - url: /terms
+    static_files: static/legal/terms.html
+    upload: static/legal/terms.html
+    mime_type: text/html
+
   - url: /static
     static_dir: static
     secure: always

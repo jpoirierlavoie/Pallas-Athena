@@ -185,6 +185,13 @@
     </main>
   </div>
 
+  {# ── Footer (legal links) ─────────────────────────────────────── #}
+  <footer class="hidden md:block border-t border-gray-200 py-4 px-6 text-center text-xs text-gray-400">
+    <a href="/privacy" target="_blank" rel="noopener" class="hover:text-gray-600">Confidentialité</a>
+    <span class="mx-2">·</span>
+    <a href="/terms" target="_blank" rel="noopener" class="hover:text-gray-600">Conditions d'utilisation</a>
+  </footer>
+
   {# ── Mobile bottom nav (< 768px) ─────────────────────────────── #}
   <nav class="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-gray-200 flex justify-around items-center z-40 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"
        x-data="{ moreOpen: false }">
@@ -230,6 +237,11 @@
           Déconnexion
         </button>
       </form>
+      <hr class="my-1 border-gray-200">
+      <div class="px-4 py-2 flex gap-3 text-xs text-gray-400">
+        <a href="/privacy" target="_blank" rel="noopener" class="hover:text-gray-600">Confidentialité</a>
+        <a href="/terms" target="_blank" rel="noopener" class="hover:text-gray-600">Conditions</a>
+      </div>
     </div>
   </nav>
 
