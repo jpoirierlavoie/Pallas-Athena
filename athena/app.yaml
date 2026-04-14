@@ -20,6 +20,9 @@ env_variables:
   SECRET_KEY: "CHANGE-ME-use-secret-manager-in-production"
   DAV_PASSWORD_HASH: "REDACTED_OLD_BCRYPT_HASH"
 
+skip_files:
+  - ^(.*/)?\.(?!well-known).*$
+
 handlers:
   - url: /manifest.json
     static_files: manifest.json
