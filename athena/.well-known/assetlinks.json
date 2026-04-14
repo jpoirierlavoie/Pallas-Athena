@@ -2,7 +2,7 @@
   "relation": ["delegate_permission/common.handle_all_urls"],
   "target": {
     "namespace": "android_app",
-    "package_name": "TODO_PACKAGE_NAME",
-    "sha256_cert_fingerprints": ["TODO_FINGERPRINT"]
+    "package_name": "ca.poirierlavoie.athena",
+    "sha256_cert_fingerprints": ["0F:97:FB:B6:FD:38:3C:C0:C5:22:AA:26:33:E3:6B:D3:6F:38:DD:80:E7:77:F2:E9:44:72:41:0D:6E:B4:12:74"]
   }
 }]
