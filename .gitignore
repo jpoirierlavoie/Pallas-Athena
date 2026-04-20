@@ -31,3 +31,5 @@ yarn-error.log*
 # Service account keys
 **/service-account*.json
 **/*-adminsdk-*.json
+
+.claude
