@@ -1,26 +1,40 @@
 steps:
+  # Step 1: Install dependencies and run tests
+  - name: 'python:3.10-slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install -r athena/requirements.txt
+        # pytest  # Uncomment when your test suite is ready
+
+  # Step 2: Deploy to App Engine
   - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['app', 'deploy', 'app.yaml', '--quiet']
+    args: ['app', 'deploy', 'app.yaml', '--quiet', '--version=$SHORT_SHA']
     dir: 'athena'
 
+  # Step 3: Conditional Cleanup (Keeps the 3 most recent versions)
   - name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
+        # Get versions receiving 0% traffic, excluding the 3 most recent
         OLD_VERSIONS=$$(gcloud app versions list \
           --service=default \
           --filter="traffic_split=0" \
           --format="value(version.id)" \
-          --sort-by="~last_deployed_time" | tail -n +2)
+          --sort-by="~version.createTime" | tail -n +4)
 
         if [ -n "$$OLD_VERSIONS" ]; then
-          echo "Deleting old versions: $$OLD_VERSIONS"
           gcloud app versions delete $$OLD_VERSIONS --quiet
         else
-          echo "No old versions to clean up."
+          echo "Cleanup skipped: No versions beyond the safety buffer found."
         fi
 
-timeout: '600s'
+timeout: '1200s' # Increased slightly for safety
 options:
-  logging: CLOUD_LOGGING_ONLY
+  logging: CLOUD_LOGGING_ONLY 
+
+substitutions:
+  _SERVICE_NAME: default
