@@ -32,7 +32,7 @@ steps:
           echo "Cleanup skipped: No versions beyond the safety buffer found."
         fi
 
-timeout: '1200s' # Increased slightly for safety
+timeout: '1200s'
 options:
   logging: CLOUD_LOGGING_ONLY 
 

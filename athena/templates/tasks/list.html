@@ -12,20 +12,33 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         Nouvelle tâche
       </a>
-      {% set csv_url = url_for('tasks.export_csv_route', dossier=dossier_filter, priority=priority_filter, category=category_filter) %}
-      {% set pdf_url = url_for('tasks.export_pdf_route', dossier=dossier_filter, priority=priority_filter, category=category_filter) %}
+      {% set csv_url = url_for('tasks.export_csv_route', dossier=dossier_filter, status=status_filter, priority=priority_filter, category=category_filter) %}
+      {% set pdf_url = url_for('tasks.export_pdf_route', dossier=dossier_filter, status=status_filter, priority=priority_filter, category=category_filter) %}
       {% include "components/_export_dropdown.html" %}
     </div>
   </div>
 
   {# ── Filters ─────────────────────────────────────────────────── #}
   <div class="flex flex-wrap items-center gap-3 mb-4">
+    {# Status filter #}
+    <select name="status"
+            hx-get="{{ url_for('tasks.task_list') }}"
+            hx-trigger="change"
+            hx-target="#task-content"
+            hx-include="[name='priority'], [name='category'], [name='dossier']"
+            class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <option value="" {{ 'selected' if not status_filter }}>Tous les statuts</option>
+      {% for key in valid_statuses %}
+      <option value="{{ key }}" {{ 'selected' if status_filter == key }}>{{ status_labels.get(key, key) }}</option>
+      {% endfor %}
+    </select>
+
     {# Priority filter #}
     <select name="priority"
             hx-get="{{ url_for('tasks.task_list') }}"
             hx-trigger="change"
             hx-target="#task-content"
-            hx-include="[name='category'], [name='dossier']"
+            hx-include="[name='status'], [name='category'], [name='dossier']"
             class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       <option value="" {{ 'selected' if not priority_filter }}>Toutes priorités</option>
       {% for key in valid_priorities %}
@@ -38,7 +51,7 @@
             hx-get="{{ url_for('tasks.task_list') }}"
             hx-trigger="change"
             hx-target="#task-content"
-            hx-include="[name='priority'], [name='dossier']"
+            hx-include="[name='status'], [name='priority'], [name='dossier']"
             class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       <option value="" {{ 'selected' if not category_filter }}>Toutes catégories</option>
       {% for key in valid_categories %}

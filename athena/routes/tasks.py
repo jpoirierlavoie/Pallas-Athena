@@ -142,11 +142,13 @@ def dossier_search() -> str:
 def task_list() -> str:
     """Render the task list view, grouped by status."""
     dossier_filter = request.args.get("dossier", "").strip()
+    status_filter = request.args.get("status", "").strip()
     priority_filter = request.args.get("priority", "").strip()
     category_filter = request.args.get("category", "").strip()
 
     tasks = list_tasks(
         dossier_id=dossier_filter or None,
+        status_filter=status_filter or None,
         priority_filter=priority_filter or None,
         category_filter=category_filter or None,
     )
@@ -166,6 +168,7 @@ def task_list() -> str:
         all_tasks=tasks,
         now=now,
         dossier_filter=dossier_filter,
+        status_filter=status_filter,
         priority_filter=priority_filter,
         category_filter=category_filter,
     )
@@ -379,9 +382,19 @@ def task_toggle(task_id: str) -> str:
         bump_ctag("tasks")
 
     if _is_htmx():
-        # From the list page: re-fetch all tasks and return the full grouped list
+        # Re-fetch with active filters (posted via hx-include on the toggle buttons)
+        dossier_filter = request.form.get("dossier", "").strip()
+        status_filter = request.form.get("status", "").strip()
+        priority_filter = request.form.get("priority", "").strip()
+        category_filter = request.form.get("category", "").strip()
+
         now = datetime.now(timezone.utc)
-        tasks = list_tasks()
+        tasks = list_tasks(
+            dossier_id=dossier_filter or None,
+            status_filter=status_filter or None,
+            priority_filter=priority_filter or None,
+            category_filter=category_filter or None,
+        )
         active_tasks = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
         completed_tasks = [t for t in tasks if t.get("status") == "terminée"]
         cancelled_tasks = [t for t in tasks if t.get("status") == "annulée"]
@@ -392,6 +405,10 @@ def task_toggle(task_id: str) -> str:
             completed_tasks=completed_tasks,
             cancelled_tasks=cancelled_tasks,
             now=now,
+            dossier_filter=dossier_filter,
+            status_filter=status_filter,
+            priority_filter=priority_filter,
+            category_filter=category_filter,
         )
         return render_template("tasks/_task_rows.html", **ctx)
 
@@ -426,11 +443,13 @@ def _get_export_tasks() -> list[dict]:
     from utils.export_csv import prepare_export_rows
 
     dossier_filter = request.args.get("dossier", "").strip()
+    status_filter = request.args.get("status", "").strip()
     priority_filter = request.args.get("priority", "").strip()
     category_filter = request.args.get("category", "").strip()
 
     tasks = list_tasks(
         dossier_id=dossier_filter or None,
+        status_filter=status_filter or None,
         priority_filter=priority_filter or None,
         category_filter=category_filter or None,
     )
