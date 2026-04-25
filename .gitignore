@@ -32,4 +32,12 @@ yarn-error.log*
 **/service-account*.json
 **/*-adminsdk-*.json
 
+# Claude related files
 .claude
+.claude/settings.local.json
+
+# Python cache files
+/__pycache__
+/__pycache__/*
+/__pycache__/*.pyc
+*.pyc
