@@ -6,7 +6,7 @@ gunicorn==22.*
 google-cloud-firestore==2.*
 google-cloud-storage==3.*
 google-cloud-secret-manager==2.*
-icalendar==6.*
+icalendar==7.*
 vobject==0.9.*
 bcrypt==4.*
 python-dotenv==1.*
