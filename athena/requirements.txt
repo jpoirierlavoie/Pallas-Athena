@@ -2,7 +2,7 @@ Flask==3.1.*
 firebase-admin==6.*
 flask-wtf==1.*
 flask-limiter==3.*
-gunicorn==22.*
+gunicorn==25.*
 google-cloud-firestore==2.*
 google-cloud-storage==2.*
 google-cloud-secret-manager==2.*
