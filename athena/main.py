@@ -10,21 +10,12 @@ from datetime import timedelta
 # athena/ is the root at /srv/).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ── Cloud Logging ──────────────────────────────────────────────────
-# Attach the Google Cloud Logging handler when running on App Engine so
-# unhandled exceptions surface in Error Reporting; fall back to local
-# stderr logging otherwise.
-if os.getenv("GAE_ENV", "").startswith("standard"):
-    import google.cloud.logging
-    from google.cloud.logging.handlers import AppEngineHandler, setup_logging
-
-    _logging_client = google.cloud.logging.Client()
-    _logging_handler = AppEngineHandler(_logging_client, name="pallas-athena")
-    setup_logging(_logging_handler, log_level=logging.INFO)
-else:
-    logging.basicConfig(level=logging.DEBUG)
-
-logger = logging.getLogger(__name__)
+# Bootstrap minimal logging so anything emitted before ``init_logging``
+# attaches the proper handler chain still surfaces somewhere.  The real
+# configuration (Cloud Logging in production, stderr locally, plus the
+# context + redaction filters) is set up by ``utils.logging_setup.init_app``
+# inside ``create_app``.
+logging.basicConfig(level=logging.WARNING)
 
 import firebase_admin
 from firebase_admin import credentials
@@ -32,6 +23,7 @@ from flask import Flask, abort, render_template as _render_template, request
 
 from config import Config
 from security import init_security
+from utils.logging_setup import init_app as init_logging, log_unexpected
 
 
 def create_app() -> Flask:
@@ -46,6 +38,9 @@ def create_app() -> Flask:
     app.permanent_session_lifetime = timedelta(
         hours=Config.SESSION_LIFETIME_HOURS,
     )
+
+    # ── Logging (Cloud Logging + context/redaction filters) ─────────
+    init_logging(app)
 
     # ── Firebase Admin SDK ───────────────────────────────────────────
     if not firebase_admin._apps:
@@ -204,7 +199,7 @@ def create_app() -> Flask:
 
     @app.errorhandler(Exception)
     def handle_unexpected(e):  # type: ignore[no-untyped-def]
-        logger.exception("unhandled exception", extra={"path": request.path})
+        log_unexpected("unhandled exception")
         return _render_template("errors/500.html"), 500
 
     return app
