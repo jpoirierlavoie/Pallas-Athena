@@ -4,7 +4,7 @@ flask-wtf==1.*
 flask-limiter==3.*
 gunicorn==22.*
 google-cloud-firestore==2.*
-google-cloud-storage==2.*
+google-cloud-storage==3.*
 google-cloud-secret-manager==2.*
 icalendar==6.*
 vobject==0.9.*
