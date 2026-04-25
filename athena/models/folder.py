@@ -1,5 +1,6 @@
 """Folder Firestore CRUD — logical folder hierarchy for document organization."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -7,6 +8,8 @@ from typing import Optional
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "folders"
@@ -138,8 +141,8 @@ def get_folder(dossier_id: str, folder_id: str) -> Optional[dict]:
             data = doc.to_dict()
             if data.get("dossier_id") == dossier_id:
                 return data
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_folder failed for %s: %s", folder_id, exc)
     return None
 
 
@@ -314,8 +317,8 @@ def delete_folder(
                     "updated_at": now,
                     "etag": str(uuid.uuid4()),
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("delete_folder: failed to reparent documents under %s: %s", folder_id, exc)
 
     # Delete the folder
     try:
@@ -402,8 +405,8 @@ def _touch_folder(dossier_id: str, folder_id: str) -> None:
         db.collection(COLLECTION).document(folder_id).update({
             "updated_at": datetime.now(timezone.utc),
         })
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("_touch_folder failed for %s: %s", folder_id, exc)
 
 
 def _get_max_subtree_depth(dossier_id: str, folder_id: str) -> int:

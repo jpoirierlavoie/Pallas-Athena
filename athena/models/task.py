@@ -1,5 +1,6 @@
 """Task Firestore CRUD and RFC-5545 VTODO serialization."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -13,6 +14,8 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "tasks"
@@ -162,8 +165,8 @@ def get_task(task_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(task_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_task failed for %s: %s", task_id, exc)
     return None
 
 

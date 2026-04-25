@@ -13,11 +13,14 @@ sync-collection can report 404 for resources deleted since the client's
 last sync token.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from models import db
+
+logger = logging.getLogger(__name__)
 
 SYNC_COLLECTION = "dav_sync"
 
@@ -34,8 +37,8 @@ def get_ctag(collection_name: str) -> str:
         doc = ref.get()
         if doc.exists:
             return doc.to_dict().get("ctag", "")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_ctag failed for %s: %s", collection_name, exc)
     # Initialise with a fresh ctag
     ctag = str(uuid.uuid4())
     ref.set({
@@ -99,5 +102,5 @@ def clear_tombstones(collection_name: str) -> None:
         tombstones_ref = _sync_ref(collection_name).collection("tombstones")
         for doc in tombstones_ref.stream():
             doc.reference.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("clear_tombstones failed for %s: %s", collection_name, exc)

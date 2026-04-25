@@ -4,6 +4,7 @@ Each note becomes a VJOURNAL resource in the dossier's CalDAV collection
 at /dav/dossier-{dossierId}/{noteId}.ics
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -13,6 +14,8 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 COLLECTION = "notes"
 
@@ -123,8 +126,8 @@ def get_note(note_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(note_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_note failed for %s: %s", note_id, exc)
     return None
 
 
@@ -229,8 +232,8 @@ def _find_note_by_vjournal_uid(vjournal_uid: str) -> Optional[dict]:
         ).limit(1)
         for doc in query.stream():
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("_find_note_by_vjournal_uid failed for %s: %s", vjournal_uid, exc)
     return None
 
 

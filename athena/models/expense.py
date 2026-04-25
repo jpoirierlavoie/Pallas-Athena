@@ -1,5 +1,6 @@
 """Expense Firestore CRUD and summary functions."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -7,6 +8,8 @@ from typing import Optional
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "expenses"
@@ -125,8 +128,8 @@ def get_expense(expense_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(expense_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_expense failed for %s: %s", expense_id, exc)
     return None
 
 
@@ -248,5 +251,5 @@ def mark_expenses_invoiced(expense_ids: list[str], invoice_id: str) -> None:
                 "updated_at": now,
                 "etag": str(uuid.uuid4()),
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("mark_expenses_invoiced failed for %s: %s", eid, exc)

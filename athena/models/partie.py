@@ -1,5 +1,6 @@
 """Partie (contact/party) Firestore CRUD and vCard 4.0 serialization."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -18,6 +19,8 @@ from utils.validators import (
     validate_phone,
     validate_postal_code,
 )
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path (nested under a single-user root)
 COLLECTION = "parties"
@@ -285,8 +288,8 @@ def get_partie(partie_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(partie_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_partie failed for %s: %s", partie_id, exc)
     return None
 
 

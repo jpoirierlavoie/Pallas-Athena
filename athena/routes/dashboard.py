@@ -1,10 +1,13 @@
 """Dashboard route — Phase 11: at-a-glance summary after login."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, render_template
 
 from auth import login_required
+
+logger = logging.getLogger(__name__)
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
@@ -147,8 +150,8 @@ def _get_quick_stats() -> dict:
         active = list_dossiers(status_filter="actif")
         pending = list_dossiers(status_filter="en_attente")
         stats["open_dossiers"] = len(active) + len(pending)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("dashboard: open dossiers stat failed: %s", exc)
 
     try:
         from models.time_entry import list_time_entries
@@ -158,8 +161,8 @@ def _get_quick_stats() -> dict:
                 stats["unbilled_hours"] += e.get("hours", 0)
                 stats["unbilled_amount"] += e.get("amount", 0)
         stats["unbilled_hours"] = round(stats["unbilled_hours"], 1)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("dashboard: unbilled time stat failed: %s", exc)
 
     try:
         from models.invoice import list_invoices
@@ -169,7 +172,7 @@ def _get_quick_stats() -> dict:
         overdue_invoices = list_invoices(status_filter="en_retard")
         outstanding += sum(inv.get("amount_due", 0) for inv in overdue_invoices)
         stats["outstanding_invoices"] = outstanding
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("dashboard: outstanding invoices stat failed: %s", exc)
 
     return stats

@@ -1,5 +1,6 @@
 """Case protocol Firestore CRUD — protocols and protocol steps."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -9,6 +10,8 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "protocols"
@@ -853,8 +856,8 @@ def check_overdue_steps(protocol_id: str) -> int:
                         step["id"]
                     ).update({"status": "en_retard", "updated_at": now})
                     count += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("check_overdue_steps: failed to mark step %s overdue: %s", step.get("id"), exc)
             else:
                 count += 1
 
@@ -949,10 +952,10 @@ def _auto_create_tasks_for_steps(
                     ).collection(STEPS_SUBCOLLECTION).document(
                         step["id"]
                     ).update({"linked_task_id": task["id"]})
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as exc:
+                    logger.warning("_auto_create_tasks_for_steps: link step %s → task failed: %s", step.get("id"), exc)
+    except Exception as exc:
+        logger.warning("_auto_create_tasks_for_steps failed for protocol %s: %s", protocol_id, exc)
 
 
 _SYNCING: set[str] = set()  # Circular sync guard
@@ -970,8 +973,8 @@ def _sync_task_status(task_id: str, step_status: str) -> None:
             update_task(task_id, {"status": "terminée"})
         elif step_status in ("à_venir", "en_cours"):
             update_task(task_id, {"status": "à_faire"})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("_sync_task_status failed for task %s: %s", task_id, exc)
     finally:
         _SYNCING.discard(task_id)
 
@@ -995,5 +998,5 @@ def _check_protocol_completion(protocol_id: str) -> None:
                 "updated_at": now,
                 "etag": str(uuid.uuid4()),
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("_check_protocol_completion failed for %s: %s", protocol_id, exc)

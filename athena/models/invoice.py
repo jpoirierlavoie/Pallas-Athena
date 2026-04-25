@@ -1,5 +1,6 @@
 """Invoice Firestore CRUD, tax computation, and line-item management."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -8,6 +9,8 @@ from typing import Optional
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 
 # Firestore collection paths
@@ -188,7 +191,7 @@ def _generate_invoice_number() -> str:
                     seq = int(num[len(prefix):])
                     max_seq = max(max_seq, seq)
                 except (ValueError, IndexError):
-                    pass
+                    continue
         return f"{prefix}{max_seq + 1:03d}"
     except Exception:
         return f"{prefix}001"
@@ -314,8 +317,8 @@ def get_invoice(invoice_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(invoice_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_invoice failed for %s: %s", invoice_id, exc)
     return None
 
 
@@ -338,8 +341,8 @@ def get_invoice_with_items(invoice_id: str) -> tuple[Optional[dict], list[dict]]
         items.sort(
             key=lambda i: i.get("date") or datetime.min.replace(tzinfo=timezone.utc)
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_invoice_with_items: line items load failed for %s: %s", invoice_id, exc)
 
     return invoice, items
 
@@ -443,8 +446,8 @@ def void_invoice(invoice_id: str) -> tuple[bool, str]:
                     "updated_at": now,
                     "etag": str(uuid.uuid4()),
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("void_invoice: failed to release %s/%s: %s", col, source_id, exc)
 
         # Update invoice status
         db.collection(COLLECTION).document(invoice_id).update({

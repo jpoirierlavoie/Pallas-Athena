@@ -1,5 +1,6 @@
 """Dossier (case file) Firestore CRUD and RFC-5545 VJOURNAL serialization."""
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,6 +10,8 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "dossiers"
@@ -196,7 +199,7 @@ def _suggest_next_file_number() -> str:
                     seq = int(parts[1])
                     max_seq = max(max_seq, seq)
                 except ValueError:
-                    pass
+                    continue
         return f"{year}-{max_seq + 1:03d}"
     except Exception:
         return f"{year}-001"
@@ -222,8 +225,8 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
         )
         if list(existing):
             return None, ["Ce numéro de dossier existe déjà."]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("create_dossier: duplicate-check query failed: %s", exc)
 
     now = datetime.now(timezone.utc)
     dossier_id = str(uuid.uuid4())
@@ -278,8 +281,8 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(dossier_id).get()
         if doc.exists:
             return _migrate_parties(doc.to_dict())
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_dossier failed for %s: %s", dossier_id, exc)
     return None
 
 
@@ -356,8 +359,8 @@ def update_dossier(
             for d in dup:
                 if d.id != dossier_id:
                     return None, ["Ce numéro de dossier existe déjà."]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("update_dossier: duplicate-check query failed for %s: %s", dossier_id, exc)
 
     now = datetime.now(timezone.utc)
     merged["updated_at"] = now

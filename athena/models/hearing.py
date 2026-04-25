@@ -1,5 +1,6 @@
 """Hearing (court date) Firestore CRUD and RFC-5545 VEVENT serialization."""
 
+import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -10,6 +11,8 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "hearings"
@@ -213,8 +216,8 @@ def get_hearing(hearing_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(hearing_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_hearing failed for %s: %s", hearing_id, exc)
     return None
 
 

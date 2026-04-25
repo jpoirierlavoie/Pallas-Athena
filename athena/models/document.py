@@ -1,5 +1,6 @@
 """Document Firestore CRUD and Firebase Storage operations."""
 
+import logging
 import mimetypes
 import os
 import uuid
@@ -12,6 +13,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
 from models import db
 from security import sanitize
+
+logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "documents"
@@ -241,8 +244,8 @@ def upload_document(
         try:
             bucket = storage.bucket()
             bucket.blob(storage_path).delete()
-        except Exception:
-            pass
+        except Exception as cleanup_exc:
+            logger.warning("upload_document: storage rollback failed for %s: %s", storage_path, cleanup_exc)
         return None, [f"Erreur lors de la sauvegarde des métadonnées : {exc}"]
 
     return merged, []
@@ -254,8 +257,8 @@ def get_document(document_id: str) -> Optional[dict]:
         doc = db.collection(COLLECTION).document(document_id).get()
         if doc.exists:
             return doc.to_dict()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("get_document failed for %s: %s", document_id, exc)
     return None
 
 
