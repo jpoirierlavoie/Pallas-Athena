@@ -2,12 +2,29 @@
 
 import os
 import sys
+import logging
 from datetime import timedelta
 
 # Ensure the athena/ directory is on sys.path so imports work both locally
 # (where Python may resolve the parent package) and on App Engine (where
 # athena/ is the root at /srv/).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ── Cloud Logging ──────────────────────────────────────────────────
+# Attach the Google Cloud Logging handler when running on App Engine so
+# unhandled exceptions surface in Error Reporting; fall back to local
+# stderr logging otherwise.
+if os.getenv("GAE_ENV", "").startswith("standard"):
+    import google.cloud.logging
+    from google.cloud.logging.handlers import AppEngineHandler, setup_logging
+
+    _logging_client = google.cloud.logging.Client()
+    _logging_handler = AppEngineHandler(_logging_client, name="pallas-athena")
+    setup_logging(_logging_handler, log_level=logging.INFO)
+else:
+    logging.basicConfig(level=logging.DEBUG)
+
+logger = logging.getLogger(__name__)
 
 import firebase_admin
 from firebase_admin import credentials
@@ -184,6 +201,11 @@ def create_app() -> Flask:
     @app.errorhandler(413)
     def request_entity_too_large(e):  # type: ignore[no-untyped-def]
         return _render_template("errors/404.html"), 413
+
+    @app.errorhandler(Exception)
+    def handle_unexpected(e):  # type: ignore[no-untyped-def]
+        logger.exception("unhandled exception", extra={"path": request.path})
+        return _render_template("errors/500.html"), 500
 
     return app
 
