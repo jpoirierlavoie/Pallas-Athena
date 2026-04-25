@@ -34,6 +34,7 @@ yarn-error.log*
 
 # Claude related files
 .claude
+.claude/
 .claude/settings.local.json
 
 # Python cache files
@@ -41,3 +42,10 @@ yarn-error.log*
 /__pycache__/*
 /__pycache__/*.pyc
 *.pyc
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
