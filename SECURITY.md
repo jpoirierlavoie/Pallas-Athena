@@ -88,5 +88,6 @@ This is a single-deployment app — only the currently deployed `main` branch is
 
 - Client data lives in Firestore (native mode) and Firebase Storage, both in `northamerica-northeast1` (Montréal).
 - All access is logged via Cloud Logging; PII is **not** logged at the application level.
-- Backups are not currently automated — this is a known gap.
+- **Firestore:** native scheduled backups, daily (7-day retention) and weekly (14-week retention), stored in `northamerica-northeast1`.
+- **Firebase Storage:** object versioning enabled, with a 180-day non-current version retention policy. GCS bucket-level soft delete provides an additional 7-day window to undelete objects.
 - Data subject rights (access, deletion, rectification) are handled manually by the maintainer.
