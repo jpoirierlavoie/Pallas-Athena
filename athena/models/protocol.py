@@ -917,7 +917,7 @@ def _auto_create_tasks_for_steps(
     """Create linked tasks for each protocol step."""
     try:
         from dav.sync import bump_ctag
-        from models.task import create_task, update_task
+        from models.task import create_task
 
         dossier_id = protocol.get("dossier_id")
 

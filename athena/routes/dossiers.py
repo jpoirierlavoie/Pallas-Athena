@@ -65,7 +65,6 @@ from models.dossier import (
     MATTER_TYPE_LABELS,
     ROLE_LABELS,
     STATUS_LABELS,
-    VALID_STATUSES,
     create_dossier,
     delete_dossier,
     get_dossier,

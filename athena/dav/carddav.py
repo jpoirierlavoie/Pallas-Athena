@@ -13,8 +13,6 @@ from flask import Blueprint, Response, request
 from dav.dav_auth import dav_auth_required
 from dav.sync import bump_ctag, get_ctag, get_sync_token, get_tombstones, record_tombstone
 from dav.xml_utils import (
-    DAV_NS,
-    CARDDAV_NS,
     add_propstat,
     add_response,
     add_status_response,

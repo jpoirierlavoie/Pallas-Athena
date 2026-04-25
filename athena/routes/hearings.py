@@ -1,6 +1,6 @@
 """Hearing / calendar routes — list, detail, create, edit, delete."""
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from tz import mtl_to_utc, to_mtl
 

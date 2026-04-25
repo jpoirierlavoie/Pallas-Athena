@@ -7,7 +7,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import date
-import pytest
 from utils.deadlines import (
     compute_deadline,
     is_juridical_day,

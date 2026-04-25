@@ -21,7 +21,6 @@ from models.document import (
     delete_document,
     format_file_size,
     get_document,
-    get_document_summary,
     get_file_icon,
     get_signed_url,
     list_documents,

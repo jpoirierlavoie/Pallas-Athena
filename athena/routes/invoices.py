@@ -16,8 +16,6 @@ from config import Config
 from models.invoice import (
     STATUS_LABELS,
     STATUS_TRANSITIONS,
-    VALID_STATUSES,
-    compute_totals,
     create_invoice,
     delete_invoice,
     get_invoice_with_items,
