@@ -244,7 +244,7 @@
 </div>
 
 {% if dossier %}
-{# Pre-build lookup maps server-side so the <script> body contains no Jinja control flow. #}
+{# Pre-build lookup maps server-side so the script block contains no Jinja control flow. #}
 {% set _entry_ids = unbilled_entries | map(attribute='id') | list %}
 {% set _expense_ids = unbilled_expenses | map(attribute='id') | list %}
 {% set _maps = namespace(amounts={}, taxable={}, type={}) %}
