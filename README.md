@@ -1,4 +1,4 @@
-# Athéna Pallas
+# Pallas Athéna 
 
 Pallas Athéna est une application propriétaire de gestion de cabinet juridique conçue pour la pratique du litige civil et commercial au Québec.
 L'application permet la gestion centralisée des dossiers, le suivi des audiences et des échéances judiciaires, la gestion des tâches et la prise de notes liées aux dossiers.
