@@ -3,6 +3,8 @@
 import xml.etree.ElementTree as ET
 from typing import Optional
 
+from defusedxml.ElementTree import fromstring as _safe_fromstring
+
 # ── Namespace URIs ────────────────────────────────────────────────────────
 DAV_NS = "DAV:"
 CARDDAV_NS = "urn:ietf:params:xml:ns:carddav"
@@ -102,7 +104,7 @@ def parse_propfind_body(body: bytes) -> Optional[ET.Element]:
     if not body or not body.strip():
         return None
     try:
-        return ET.fromstring(body)
+        return _safe_fromstring(body)
     except ET.ParseError:
         return None
 
@@ -128,6 +130,6 @@ def parse_report_body(body: bytes) -> Optional[ET.Element]:
     if not body or not body.strip():
         return None
     try:
-        return ET.fromstring(body)
+        return _safe_fromstring(body)
     except ET.ParseError:
         return None

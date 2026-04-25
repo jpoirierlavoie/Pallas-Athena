@@ -244,24 +244,29 @@
 </div>
 
 {% if dossier %}
+{# Pre-build lookup maps server-side so the <script> body contains no Jinja control flow. #}
+{% set _entry_ids = unbilled_entries | map(attribute='id') | list %}
+{% set _expense_ids = unbilled_expenses | map(attribute='id') | list %}
+{% set _maps = namespace(amounts={}, taxable={}, type={}) %}
+{% for e in unbilled_entries %}
+  {% set _ = _maps.amounts.update({e.id: e.amount}) %}
+  {% set _ = _maps.taxable.update({e.id: true}) %}
+  {% set _ = _maps.type.update({e.id: 'fee'}) %}
+{% endfor %}
+{% for e in unbilled_expenses %}
+  {% set _ = _maps.amounts.update({e.id: e.amount}) %}
+  {% set _ = _maps.taxable.update({e.id: e.taxable|default(false, true)}) %}
+  {% set _ = _maps.type.update({e.id: 'expense'}) %}
+{% endfor %}
 <script>
 function invoiceForm() {
   // Build lookup maps from checkbox data attributes
-  const entryIds = [{% for e in unbilled_entries %}'{{ e.id }}'{{ ',' if not loop.last }}{% endfor %}];
-  const expenseIds = [{% for e in unbilled_expenses %}'{{ e.id }}'{{ ',' if not loop.last }}{% endfor %}];
+  const entryIds = {{ _entry_ids | tojson }};
+  const expenseIds = {{ _expense_ids | tojson }};
 
-  const amounts = {
-    {% for e in unbilled_entries %}'{{ e.id }}': {{ e.amount }},{% endfor %}
-    {% for e in unbilled_expenses %}'{{ e.id }}': {{ e.amount }},{% endfor %}
-  };
-  const taxableMap = {
-    {% for e in unbilled_entries %}'{{ e.id }}': true,{% endfor %}
-    {% for e in unbilled_expenses %}'{{ e.id }}': {{ 'true' if e.taxable else 'false' }},{% endfor %}
-  };
-  const typeMap = {
-    {% for e in unbilled_entries %}'{{ e.id }}': 'fee',{% endfor %}
-    {% for e in unbilled_expenses %}'{{ e.id }}': 'expense',{% endfor %}
-  };
+  const amounts = {{ _maps.amounts | tojson }};
+  const taxableMap = {{ _maps.taxable | tojson }};
+  const typeMap = {{ _maps.type | tojson }};
 
   return {
     selectedEntries: [...entryIds],

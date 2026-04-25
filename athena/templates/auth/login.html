@@ -127,12 +127,14 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
 
+  {% if config.ENV == 'development' %}
   <script>
     // ── Debug token for local development ──────────────────────────
-    {% if config.ENV == 'development' %}
     self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
-    {% endif %}
+  </script>
+  {% endif %}
 
+  <script>
     // ── Firebase init ──────────────────────────────────────────────
     const firebaseApp = firebase.initializeApp({
       apiKey: {{ firebase_api_key|tojson }},
