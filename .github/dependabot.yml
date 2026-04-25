@@ -19,7 +19,21 @@ updates:
           - "minor"
           - "patch"
 
-  - package-ecosystem: github-actions
-    directory: /
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
-      interval: daily
+      interval: "weekly"
+      day: "sunday"
+      time: "06:00"
+      timezone: "America/Montreal"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
