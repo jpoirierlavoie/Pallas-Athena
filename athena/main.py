@@ -149,7 +149,8 @@ def create_app() -> Flask:
     # ── Block direct appspot.com access (traffic must come via Cloudflare) ──
     @app.before_request
     def block_appspot() -> None:
-        if "appspot.com" in request.host.lower():
+        host = request.host.split(":", 1)[0].lower().rstrip(".")
+        if host == "appspot.com" or host.endswith(".appspot.com"):
             abort(403)
 
     # ── Offline fallback (PWA) ─────────────────────────────────────────
