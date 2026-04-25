@@ -1,7 +1,7 @@
 Flask==3.1.*
 firebase-admin==6.*
 flask-wtf==1.*
-flask-limiter==3.*
+flask-limiter==4.*
 gunicorn==22.*
 google-cloud-firestore==2.*
 google-cloud-storage==2.*
