@@ -144,12 +144,13 @@
     });
 
     // ── App Check (must be before any other Firebase calls) ────────
-    {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
-    firebase.appCheck().activate(
-      new firebase.appCheck.ReCaptchaEnterpriseProvider({{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }}),
-      /* isTokenAutoRefreshEnabled */ true
-    );
-    {% endif %}
+    const recaptchaEnterpriseSiteKey = {{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }};
+    if (recaptchaEnterpriseSiteKey) {
+      firebase.appCheck().activate(
+        new firebase.appCheck.ReCaptchaEnterpriseProvider(recaptchaEnterpriseSiteKey),
+        /* isTokenAutoRefreshEnabled */ true
+      );
+    }
 
     const auth = firebase.auth();
 
