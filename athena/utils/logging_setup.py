@@ -134,8 +134,13 @@ def _derive_auth_context(path: str) -> str:
         try:
             if session.get("user_id"):
                 return "session"
-        except Exception:
-            pass
+        except Exception as exc:
+            log_security_event(
+                "session_lookup_failure",
+                "warning",
+                reason=type(exc).__name__,
+                path=path,
+            )
     return "anonymous"
 
 
@@ -250,10 +255,13 @@ def _build_handler(flask_app: Flask) -> logging.Handler:
 
             client = google.cloud.logging.Client()
             return AppEngineHandler(client, name="pallas-athena")
-        except Exception:
+        except Exception as exc:
             # Fall through to stderr if Cloud Logging is unreachable —
             # we never want logging configuration to fail the boot.
-            pass
+            sys.stderr.write(
+                f"[pallas-athena] Cloud Logging unavailable, "
+                f"falling back to stderr handler: {exc!r}\n"
+            )
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(
         logging.Formatter(
@@ -361,6 +369,7 @@ SecurityEvent = Literal[
     "appspot_blocked",
     "csp_violation",
     "appcheck_failure",
+    "session_lookup_failure",
 ]
 SecuritySeverity = Literal["warning", "error", "critical"]
 

@@ -97,6 +97,7 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 | `appspot_blocked` | warning | Direct `*.appspot.com` traffic rejected |
 | `csp_violation` | warning | CSP report endpoint received a violation report |
 | `appcheck_failure` | warning | Same surface as `log_auth_event("appcheck_failure", ...)` — emit one or the other, not both |
+| `session_lookup_failure` | warning | `_derive_auth_context` raised while reading `session["user_id"]` (corrupted cookie payload, `SECRET_KEY` rotation mid-flight, etc.). Request is downgraded to `auth_context="anonymous"` for logging only — authorization is still enforced by `@login_required`. Fields: `reason` (exception class name), `path` (request path). |
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
