@@ -12,6 +12,9 @@ vobject==0.9.*
 bcrypt==5.0.*
 python-dotenv==1.2.*
 reportlab==4.4.*
+# Pillow is a transitive dependency of reportlab (which only requires >=9.0.0).
+# Pinned explicitly here to keep us off CVE-2023-44271 and subsequent 10.x/11.x security fixes.
+Pillow==11.*
 Markdown==3.10.*
 bleach==6.3.*
 defusedxml==0.7.*
