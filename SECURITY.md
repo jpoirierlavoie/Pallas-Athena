@@ -1,7 +1,6 @@
 # Security Policy
 
 Pallas Athena is a single-user legal practice management app handling confidential client data subject to professional secrecy obligations under the Code of ethics of advocates of the *Barreau du Québec*. Security is taken seriously.
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/jpoirierlavoie/Pallas-Athena/badge)](https://scorecard.dev/viewer/?uri=github.com/jpoirierlavoie/Pallas-Athena)
 
 ## Reporting a vulnerability
 
