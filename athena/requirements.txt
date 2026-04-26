@@ -6,7 +6,7 @@ gunicorn==25.3.*
 google-cloud-firestore==2.27.*
 google-cloud-storage==3.10.*
 google-cloud-secret-manager==2.27.*
-google-cloud-logging>=3.10.0
+google-cloud-logging>=3.15.0
 # OpenTelemetry — distributed tracing → Cloud Trace.
 # Versions paired: SDK 1.27 ↔ instrumentation 0.48b0 (OTel's stable+beta
 # split).  GCP exporter 1.7.* is the latest line tested against SDK 1.27.
