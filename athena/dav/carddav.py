@@ -34,6 +34,7 @@ from models.partie import (
     update_partie,
     vcard_to_partie,
 )
+from utils.tracing_setup import add_attributes, firestore_span
 
 carddav_bp = Blueprint("carddav", __name__)
 
@@ -59,6 +60,13 @@ def options(partie_id: str = None) -> Response:
 @dav_auth_required
 def propfind_collection() -> Response:
     depth = request.headers.get("Depth", "0")
+    add_attributes(
+        **{
+            "dav.collection_type": "addressbook",
+            "dav.operation": "propfind",
+            "dav.depth": depth,
+        }
+    )
     body = parse_propfind_body(request.get_data())
     multistatus = make_multistatus()
 
@@ -67,9 +75,11 @@ def propfind_collection() -> Response:
 
     # Depth:1 — include individual resources
     if depth == "1":
-        parties = list_parties()
+        with firestore_span("query", COLLECTION_NAME):
+            parties = list_parties()
         for partie in parties:
             _add_resource_response(multistatus, partie, body)
+        add_attributes(**{"dav.object_count": len(parties)})
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")

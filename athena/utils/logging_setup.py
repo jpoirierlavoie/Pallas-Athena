@@ -85,26 +85,13 @@ def clear_context() -> None:
     _log_context.set({})
 
 
-# ── Trace header parsing (Cloud Trace correlation) ──────────────────────
-
-_TRACE_HEADER_RE = re.compile(
-    r"^([a-fA-F0-9]+)(?:/(\d+))?(?:;o=\d+)?$"
-)
-
-
-def _format_trace(header_value: str, project_id: str) -> Optional[str]:
-    """Convert ``X-Cloud-Trace-Context`` to the canonical trace resource name.
-
-    Returns ``"projects/{project_id}/traces/{trace_id}"`` (the form Cloud
-    Logging recognizes for automatic correlation with Cloud Trace), or
-    ``None`` if the header is absent or unparseable.
-    """
-    if not header_value or not project_id:
-        return None
-    m = _TRACE_HEADER_RE.match(header_value.strip())
-    if not m:
-        return None
-    return f"projects/{project_id}/traces/{m.group(1)}"
+# ── Trace correlation (read from active OTel span) ──────────────────────
+#
+# We deliberately do *not* parse ``X-Cloud-Trace-Context`` ourselves.  The
+# OTel composite propagator installed by ``tracing_setup`` extracts that
+# header (and W3C ``traceparent``) into the active span context, so reading
+# the active span here yields the same trace ID and avoids divergence
+# between the Cloud Logging ``trace`` field and Cloud Trace.
 
 
 # ── Auth context derivation ─────────────────────────────────────────────
@@ -316,8 +303,16 @@ def init_app(flask_app: Flask) -> None:
             "method": request.method,
             "is_htmx": bool(request.headers.get("HX-Request")),
         }
-        trace_header = request.headers.get("X-Cloud-Trace-Context", "")
-        trace = _format_trace(trace_header, project_id)
+        # Trace ID comes from the active OTel span (populated by the
+        # Flask instrumentation, which extracts ``X-Cloud-Trace-Context``
+        # / W3C ``traceparent`` via the global propagator).  Imported
+        # locally to avoid a hard dep cycle if tracing is not installed.
+        try:
+            from utils.tracing_setup import current_trace_field
+
+            trace = current_trace_field(project_id)
+        except Exception:  # pragma: no cover — tracing optional
+            trace = None
         if trace:
             ctx["trace"] = trace
         _log_context.set(ctx)

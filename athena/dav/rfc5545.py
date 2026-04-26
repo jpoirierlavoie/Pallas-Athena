@@ -37,6 +37,7 @@ from models.task import (
     update_task,
     vtodo_to_task,
 )
+from utils.tracing_setup import add_attributes, firestore_span
 
 rfc5545_bp = Blueprint("rfc5545", __name__)
 
@@ -65,16 +66,25 @@ def tasks_options(task_id: str = None) -> Response:
 @dav_auth_required
 def tasks_propfind_collection() -> Response:
     depth = request.headers.get("Depth", "0")
+    add_attributes(
+        **{
+            "dav.collection_type": "tasks",
+            "dav.operation": "propfind",
+            "dav.depth": depth,
+        }
+    )
     body = parse_propfind_body(request.get_data())
     multistatus = make_multistatus()
 
     _add_tasks_collection_response(multistatus, body)
 
     if depth == "1":
-        tasks = list_tasks()
-        standalone_tasks = [t for t in tasks if not t.get("dossier_id")]
+        with firestore_span("query", "tasks", filter="standalone"):
+            tasks = list_tasks()
+            standalone_tasks = [t for t in tasks if not t.get("dossier_id")]
         for task in standalone_tasks:
             _add_task_resource_response(multistatus, task, body)
+        add_attributes(**{"dav.object_count": len(standalone_tasks)})
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")

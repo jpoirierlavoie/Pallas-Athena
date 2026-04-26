@@ -23,6 +23,7 @@ from dav.xml_utils import (
     propfind_requests_prop,
     serialize_multistatus,
 )
+from utils.tracing_setup import add_attributes, firestore_span
 
 dav_bp = Blueprint("dav", __name__)
 
@@ -59,6 +60,13 @@ def dav_root_propfind() -> Response:
     We respond with the root plus child collection hrefs.
     """
     depth = request.headers.get("Depth", "0")
+    add_attributes(
+        **{
+            "dav.collection_type": "root",
+            "dav.operation": "propfind",
+            "dav.depth": depth,
+        }
+    )
     body = parse_propfind_body(request.get_data())
     multistatus = make_multistatus()
 
@@ -135,10 +143,12 @@ def dav_root_propfind() -> Response:
                 )
 
         # -- Dynamic per-dossier collections -------------------------------
-        active_dossiers = (
-            list_dossiers(status_filter="actif")
-            + list_dossiers(status_filter="en_attente")
-        )
+        with firestore_span("query", "dossiers", filter="status=actif"):
+            actif = list_dossiers(status_filter="actif")
+        with firestore_span("query", "dossiers", filter="status=en_attente"):
+            en_attente = list_dossiers(status_filter="en_attente")
+        active_dossiers = actif + en_attente
+        add_attributes(**{"dav.dossier_count": len(active_dossiers)})
         seen_ids: set[str] = set()
         for dossier in active_dossiers:
             did = dossier["id"]

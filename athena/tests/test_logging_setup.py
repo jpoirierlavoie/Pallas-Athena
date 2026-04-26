@@ -101,6 +101,12 @@ def test_context_filter_call_site_overrides_context():
 
 
 def test_context_filter_in_flask_request(flask_app):
+    # Tracing must be initialized first so the OTel Flask middleware
+    # wraps the WSGI app before logging's before_request hook reads
+    # the active span.
+    from utils.tracing_setup import init_app as init_tracing
+
+    init_tracing(flask_app)
     init_app(flask_app)
     capture = _Capture()
     logging.getLogger().addHandler(capture)
@@ -117,7 +123,6 @@ def test_context_filter_in_flask_request(flask_app):
             headers={
                 "X-Request-Id": "req-fixed",
                 "HX-Request": "true",
-                "X-Cloud-Trace-Context": "deadbeef1234/56;o=1",
             },
         )
     finally:
@@ -132,7 +137,11 @@ def test_context_filter_in_flask_request(flask_app):
     assert fields["route"] == "/dossiers/<dossier_id>"
     assert fields["method"] == "GET"
     assert fields["is_htmx"] is True
-    assert fields["trace"] == "projects/athena-pallas/traces/deadbeef1234"
+    # Trace is sourced from the active OTel span; format is fixed but
+    # the trace ID itself is generated per request.
+    assert fields["trace"].startswith("projects/athena-pallas/traces/")
+    trace_id = fields["trace"].rsplit("/", 1)[-1]
+    assert len(trace_id) == 32 and all(c in "0123456789abcdef" for c in trace_id)
 
 
 # ── auth_context derivation ───────────────────────────────────────────────
@@ -388,24 +397,30 @@ def test_log_unexpected_no_exception_context(caplog):
     assert not rec.exc_info
 
 
-# ── Trace formatting ──────────────────────────────────────────────────────
+# ── Trace correlation (delegates to utils.tracing_setup) ──────────────────
 
-def test_trace_header_formatting():
-    out = logging_setup._format_trace(
-        "abc123def456/789;o=1", "athena-pallas"
-    )
-    assert out == "projects/athena-pallas/traces/abc123def456"
+def test_trace_field_uses_active_otel_span():
+    from utils.tracing_setup import current_trace_field, span as otel_span
+
+    with otel_span("test"):
+        out = current_trace_field("athena-pallas")
+    assert out is not None
+    assert out.startswith("projects/athena-pallas/traces/")
+    trace_id = out.rsplit("/", 1)[-1]
+    assert len(trace_id) == 32
 
 
-def test_trace_header_minimal():
-    out = logging_setup._format_trace("deadbeef", "athena-pallas")
-    assert out == "projects/athena-pallas/traces/deadbeef"
+def test_trace_field_returns_none_without_span():
+    from utils.tracing_setup import current_trace_field
+
+    assert current_trace_field("athena-pallas") is None
 
 
-def test_trace_header_invalid_returns_none():
-    assert logging_setup._format_trace("not a trace!", "p") is None
-    assert logging_setup._format_trace("", "p") is None
-    assert logging_setup._format_trace("abc", "") is None
+def test_trace_field_returns_none_without_project():
+    from utils.tracing_setup import current_trace_field, span as otel_span
+
+    with otel_span("test"):
+        assert current_trace_field("") is None
 
 
 # ── bind_context outside a request ────────────────────────────────────────

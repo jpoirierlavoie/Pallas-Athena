@@ -47,6 +47,7 @@ from models.task import (
     update_task,
     vtodo_to_task,
 )
+from utils.tracing_setup import add_attributes, firestore_span, span
 
 dossier_dav_bp = Blueprint("dossier_dav", __name__)
 
@@ -73,24 +74,46 @@ def propfind_collection(dossier_id: str) -> Response:
     Depth:0 -> return collection properties only.
     Depth:1 -> return collection properties + all resources in the collection.
     """
-    dossier = get_dossier(dossier_id)
+    add_attributes(
+        **{
+            "dav.collection_type": "dossier",
+            "dav.dossier_id": dossier_id,
+            "dav.operation": "propfind",
+        }
+    )
+
+    with firestore_span("get", "dossiers", doc_id=dossier_id):
+        dossier = get_dossier(dossier_id)
     if not dossier or dossier.get("status") not in ("actif", "en_attente"):
         return Response("Not Found", status=404)
 
     depth = request.headers.get("Depth", "0")
+    add_attributes(**{"dav.depth": depth})
     body = parse_propfind_body(request.get_data())
     multistatus = make_multistatus()
 
     _add_collection_props(multistatus, dossier, body)
 
     if depth == "1":
-        tasks = list_tasks(dossier_id=dossier_id)
-        for task in tasks:
-            _add_task_resource(multistatus, dossier_id, task, body)
-
-        notes = list_notes(dossier_id=dossier_id)
-        for note in notes:
-            _add_note_resource(multistatus, dossier_id, note, body)
+        with firestore_span("query", "tasks", dossier_id=dossier_id):
+            tasks = list_tasks(dossier_id=dossier_id)
+        with firestore_span("query", "notes", dossier_id=dossier_id):
+            notes = list_notes(dossier_id=dossier_id)
+        with span(
+            "dav.serialize_objects",
+            **{
+                "dav.task_count": len(tasks),
+                "dav.note_count": len(notes),
+                "dav.object_count": len(tasks) + len(notes),
+            },
+        ):
+            for task in tasks:
+                _add_task_resource(multistatus, dossier_id, task, body)
+            for note in notes:
+                _add_note_resource(multistatus, dossier_id, note, body)
+        add_attributes(
+            **{"dav.object_count": len(tasks) + len(notes)}
+        )
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
@@ -233,7 +256,8 @@ def report_collection(dossier_id: str) -> Response:
 
     Supported reports: sync-collection, calendar-multiget, calendar-query.
     """
-    dossier = get_dossier(dossier_id)
+    with firestore_span("get", "dossiers", doc_id=dossier_id):
+        dossier = get_dossier(dossier_id)
     if not dossier:
         return Response("Not Found", status=404)
 
@@ -242,6 +266,14 @@ def report_collection(dossier_id: str) -> Response:
         return Response("Bad Request", status=400)
 
     local = body_root.tag.split("}")[-1] if "}" in body_root.tag else body_root.tag
+    add_attributes(
+        **{
+            "dav.collection_type": "dossier",
+            "dav.dossier_id": dossier_id,
+            "dav.operation": "report",
+            "dav.report_type": local,
+        }
+    )
 
     if local == "sync-collection":
         return _handle_sync_collection(dossier_id, body_root)
@@ -256,48 +288,93 @@ def report_collection(dossier_id: str) -> Response:
 def _handle_sync_collection(dossier_id: str, body_root: ET.Element) -> Response:
     """sync-collection REPORT -- return all resources + tombstones."""
     sync_name = f"dossier:{dossier_id}"
-    token_el = body_root.find(dav_tag("sync-token"))
-    client_token = ""
-    if token_el is not None and token_el.text:
-        client_token = token_el.text.replace("data:,", "")
+    add_attributes(
+        **{
+            "dav.collection_type": "dossier",
+            "dav.dossier_id": dossier_id,
+            "dav.operation": "sync_collection",
+        }
+    )
+
+    with span("dav.parse_sync_token") as s:
+        token_el = body_root.find(dav_tag("sync-token"))
+        client_token = ""
+        if token_el is not None and token_el.text:
+            client_token = token_el.text.replace("data:,", "")
+        s.set_attribute("dav.sync_token", client_token or "initial")
 
     multistatus = make_multistatus()
-    current_token = get_sync_token(sync_name)
 
+    with firestore_span("get", "dav_sync", doc_id=sync_name):
+        current_token = get_sync_token(sync_name)
+
+    changed_count = 0
+    tombstone_count = 0
     if not client_token or client_token != current_token:
-        tasks = list_tasks(dossier_id=dossier_id)
-        for task in tasks:
-            resp = add_response(
-                multistatus, f"/dav/dossier-{dossier_id}/{task['id']}.ics"
-            )
-            prop = add_propstat(resp)
-            ET.SubElement(prop, dav_tag("getetag")).text = (
-                f'"{task.get("etag", "")}"'
-            )
+        with firestore_span("query", "tasks", dossier_id=dossier_id):
+            tasks = list_tasks(dossier_id=dossier_id)
 
-        notes = list_notes(dossier_id=dossier_id)
-        for note in notes:
-            resp = add_response(
-                multistatus, f"/dav/dossier-{dossier_id}/{note['id']}.ics"
-            )
-            prop = add_propstat(resp)
-            ET.SubElement(prop, dav_tag("getetag")).text = (
-                f'"{note.get("etag", "")}"'
-            )
+        with firestore_span("query", "notes", dossier_id=dossier_id):
+            notes = list_notes(dossier_id=dossier_id)
 
-        tombstones = get_tombstones(sync_name)
-        for ts in tombstones:
-            add_status_response(
-                multistatus,
-                f"/dav/dossier-{dossier_id}/{ts['id']}.ics",
-                404,
-                "Not Found",
-            )
+        changed_count = len(tasks) + len(notes)
+        with span(
+            "dav.serialize_objects",
+            **{
+                "dav.task_count": len(tasks),
+                "dav.note_count": len(notes),
+                "dav.object_count": changed_count,
+            },
+        ):
+            for task in tasks:
+                resp = add_response(
+                    multistatus, f"/dav/dossier-{dossier_id}/{task['id']}.ics"
+                )
+                prop = add_propstat(resp)
+                ET.SubElement(prop, dav_tag("getetag")).text = (
+                    f'"{task.get("etag", "")}"'
+                )
+            for note in notes:
+                resp = add_response(
+                    multistatus, f"/dav/dossier-{dossier_id}/{note['id']}.ics"
+                )
+                prop = add_propstat(resp)
+                ET.SubElement(prop, dav_tag("getetag")).text = (
+                    f'"{note.get("etag", "")}"'
+                )
+
+        with firestore_span(
+            "query",
+            "dav_sync.tombstones",
+            dossier_id=dossier_id,
+        ):
+            tombstones = get_tombstones(sync_name)
+
+        tombstone_count = len(tombstones)
+        if tombstone_count:
+            with span("dav.add_tombstones", **{"dav.tombstone_count": tombstone_count}):
+                for ts in tombstones:
+                    add_status_response(
+                        multistatus,
+                        f"/dav/dossier-{dossier_id}/{ts['id']}.ics",
+                        404,
+                        "Not Found",
+                    )
 
     ET.SubElement(multistatus, dav_tag("sync-token")).text = (
         f"data:,{current_token}"
     )
-    xml = serialize_multistatus(multistatus)
+
+    with span("dav.build_multistatus"):
+        xml = serialize_multistatus(multistatus)
+
+    add_attributes(
+        **{
+            "dav.changed_count": changed_count,
+            "dav.tombstone_count": tombstone_count,
+            "dav.response_status": 207,
+        }
+    )
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
 
@@ -393,7 +470,8 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
 
     Parses the iCalendar body to determine component type (VTODO or VJOURNAL).
     """
-    dossier = get_dossier(dossier_id)
+    with firestore_span("get", "dossiers", doc_id=dossier_id):
+        dossier = get_dossier(dossier_id)
     if not dossier:
         return Response("Not Found", status=404)
 
@@ -405,6 +483,16 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
         return Response("Bad Request", status=400)
 
     component_type = _detect_component_type(ical_str)
+    add_attributes(
+        **{
+            "dav.collection_type": "dossier",
+            "dav.dossier_id": dossier_id,
+            "dav.operation": "put",
+            "dav.component_type": component_type or "unknown",
+            "dav.body_size": len(ical_str),
+            "dav.conditional": bool(if_match or if_none_match),
+        }
+    )
 
     if component_type == "VTODO":
         return _put_task(dossier_id, dossier, resource_id, ical_str, if_match, if_none_match)
@@ -532,6 +620,14 @@ def _put_note(
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["DELETE"])
 @dav_auth_required
 def delete_resource(dossier_id: str, resource_id: str) -> Response:
+    add_attributes(
+        **{
+            "dav.collection_type": "dossier",
+            "dav.dossier_id": dossier_id,
+            "dav.operation": "delete",
+            "dav.resource_id": resource_id,
+        }
+    )
     existing = get_task(resource_id)
     if existing and existing.get("dossier_id") == dossier_id:
         if_match = request.headers.get("If-Match")

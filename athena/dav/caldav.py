@@ -34,6 +34,7 @@ from models.hearing import (
     update_hearing,
     vevent_to_hearing,
 )
+from utils.tracing_setup import add_attributes, firestore_span
 
 caldav_bp = Blueprint("caldav", __name__)
 
@@ -59,15 +60,24 @@ def options(hearing_id: str = None) -> Response:
 @dav_auth_required
 def propfind_collection() -> Response:
     depth = request.headers.get("Depth", "0")
+    add_attributes(
+        **{
+            "dav.collection_type": "calendar",
+            "dav.operation": "propfind",
+            "dav.depth": depth,
+        }
+    )
     body = parse_propfind_body(request.get_data())
     multistatus = make_multistatus()
 
     _add_collection_response(multistatus, body)
 
     if depth == "1":
-        hearings = list_hearings()
+        with firestore_span("query", COLLECTION_NAME):
+            hearings = list_hearings()
         for hearing in hearings:
             _add_resource_response(multistatus, hearing, body)
+        add_attributes(**{"dav.object_count": len(hearings)})
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")

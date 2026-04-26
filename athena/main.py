@@ -24,6 +24,7 @@ from flask import Flask, abort, render_template as _render_template, request
 from config import Config
 from security import init_security
 from utils.logging_setup import init_app as init_logging, log_unexpected
+from utils.tracing_setup import init_app as init_tracing
 
 
 def create_app() -> Flask:
@@ -38,6 +39,12 @@ def create_app() -> Flask:
     app.permanent_session_lifetime = timedelta(
         hours=Config.SESSION_LIFETIME_HOURS,
     )
+
+    # ── Tracing (Cloud Trace + auto-instrumentation) ────────────────
+    # Tracing must run before logging so the OTel Flask middleware wraps
+    # the WSGI app first; this guarantees an active span exists by the
+    # time logging's ``before_request`` reads its trace context.
+    init_tracing(app)
 
     # ── Logging (Cloud Logging + context/redaction filters) ─────────
     init_logging(app)
