@@ -55,7 +55,7 @@
           <span class="w-1.5 h-1.5 rounded-full {{ type_dot_colors.get(h.hearing_type, 'bg-gray-400') }}"></span>
           {% endfor %}
           {% if day_hearings[day]|length > 3 %}
-          <span class="text-[8px] text-gray-400">+{{ day_hearings[day]|length - 3 }}</span>
+          <span class="text-[8px] text-gray-400">+{{ (day_hearings[day]|length) - 3 }}</span>
           {% endif %}
         </div>
         {% endif %}
