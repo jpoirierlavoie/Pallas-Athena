@@ -81,9 +81,13 @@ def test_span_emits_with_attributes(_provider: InMemorySpanExporter) -> None:
 def test_span_records_exception_and_sets_error_status(
     _provider: InMemorySpanExporter,
 ) -> None:
-    with pytest.raises(ValueError):
+    raised = False
+    try:
         with span("op"):
             raise ValueError("boom")
+    except ValueError:
+        raised = True
+    assert raised, "ValueError should have propagated"
 
     spans = _provider.get_finished_spans()
     assert len(spans) == 1
