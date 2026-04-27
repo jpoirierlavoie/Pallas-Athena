@@ -56,3 +56,8 @@
   </a>
 </div>
 {% endif %}
+
+{# ── Export dropdown OOB swap (HTMX only) ─────────────────── #}
+{% set csv_url = url_for('dossiers.export_csv_route', status=status_filter, q=search, sort=sort_by) %}
+{% set pdf_url = url_for('dossiers.export_pdf_route', status=status_filter, q=search, sort=sort_by) %}
+{% include "components/_export_dropdown_oob.html" %}

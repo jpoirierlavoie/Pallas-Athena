@@ -65,3 +65,8 @@
   </a>
 </div>
 {% endif %}
+
+{# ── Export dropdown OOB swap (HTMX only) ─────────────────── #}
+{% set csv_url = url_for('time_expenses.export_time_csv_route', dossier_id=dossier_id, filter=billable_filter, date_from=date_from, date_to=date_to) %}
+{% set pdf_url = url_for('time_expenses.export_time_pdf_route', dossier_id=dossier_id, filter=billable_filter, date_from=date_from, date_to=date_to) %}
+{% include "components/_export_dropdown_oob.html" %}

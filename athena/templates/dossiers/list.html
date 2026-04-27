@@ -12,9 +12,11 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         Nouveau dossier
       </a>
-      {% set csv_url = url_for('dossiers.export_csv_route', status=status_filter, q=search, sort=sort_by) %}
-      {% set pdf_url = url_for('dossiers.export_pdf_route', status=status_filter, q=search, sort=sort_by) %}
-      {% include "components/_export_dropdown.html" %}
+      <div id="export-dropdown">
+        {% set csv_url = url_for('dossiers.export_csv_route', status=status_filter, q=search, sort=sort_by) %}
+        {% set pdf_url = url_for('dossiers.export_pdf_route', status=status_filter, q=search, sort=sort_by) %}
+        {% include "components/_export_dropdown.html" %}
+      </div>
     </div>
   </div>
 

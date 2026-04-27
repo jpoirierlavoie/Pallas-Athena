@@ -1,0 +1,8 @@
+{# OOB swap of the export dropdown — keeps export URLs aligned with active filters.
+   Args: csv_url, pdf_url. Only emits when responding to an HTMX request, so it
+   does not duplicate the dropdown ID during full-page renders. #}
+{% if request.headers.get('HX-Request') == 'true' %}
+<div id="export-dropdown" hx-swap-oob="true">
+  {% include "components/_export_dropdown.html" %}
+</div>
+{% endif %}

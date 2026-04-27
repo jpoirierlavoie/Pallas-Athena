@@ -117,3 +117,8 @@
   <p class="text-gray-400 text-xs">Ajoutez votre première audience pour commencer.</p>
 </div>
 {% endif %}
+
+{# ── Export dropdown OOB swap (HTMX only) ─────────────────── #}
+{% set csv_url = url_for('hearings.export_csv_route', type=hearing_type_filter, status=status_filter) %}
+{% set pdf_url = url_for('hearings.export_pdf_route', type=hearing_type_filter, status=status_filter) %}
+{% include "components/_export_dropdown_oob.html" %}

@@ -12,9 +12,11 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         Nouvelle audience
       </a>
-      {% set csv_url = url_for('hearings.export_csv_route', type=hearing_type_filter, status=status_filter) %}
-      {% set pdf_url = url_for('hearings.export_pdf_route', type=hearing_type_filter, status=status_filter) %}
-      {% include "components/_export_dropdown.html" %}
+      <div id="export-dropdown">
+        {% set csv_url = url_for('hearings.export_csv_route', type=hearing_type_filter, status=status_filter) %}
+        {% set pdf_url = url_for('hearings.export_pdf_route', type=hearing_type_filter, status=status_filter) %}
+        {% include "components/_export_dropdown.html" %}
+      </div>
     </div>
   </div>
 
@@ -38,6 +40,7 @@
             hx-trigger="change"
             hx-target="#hearing-content"
             hx-include="[name='status'], [name='view'], [name='month']"
+            hx-push-url="true"
             class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       <option value="" {{ 'selected' if not hearing_type_filter }}>Tous les types</option>
       {% for key in valid_hearing_types %}
@@ -51,6 +54,7 @@
             hx-trigger="change"
             hx-target="#hearing-content"
             hx-include="[name='type'], [name='view'], [name='month']"
+            hx-push-url="true"
             class="px-3 py-2 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       <option value="" {{ 'selected' if not status_filter }}>Tous les statuts</option>
       {% for key in valid_statuses %}

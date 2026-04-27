@@ -13,9 +13,11 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         Nouvelle facture
       </a>
-      {% set csv_url = url_for('invoices.export_csv_route', status=status_filter, dossier_id=dossier_id, date_from=date_from, date_to=date_to) %}
-      {% set pdf_url = url_for('invoices.export_pdf_route', status=status_filter, dossier_id=dossier_id, date_from=date_from, date_to=date_to) %}
-      {% include "components/_export_dropdown.html" %}
+      <div id="export-dropdown">
+        {% set csv_url = url_for('invoices.export_csv_route', status=status_filter, dossier_id=dossier_id, date_from=date_from, date_to=date_to) %}
+        {% set pdf_url = url_for('invoices.export_pdf_route', status=status_filter, dossier_id=dossier_id, date_from=date_from, date_to=date_to) %}
+        {% include "components/_export_dropdown.html" %}
+      </div>
     </div>
   </div>
 
@@ -27,6 +29,7 @@
               hx-get="{{ url_for('invoices.invoice_list') }}"
               hx-target="#invoice-rows"
               hx-include="[name='date_from'],[name='date_to']"
+              hx-push-url="true"
               class="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white">
         <option value="" {{ 'selected' if not status_filter }}>Tous les statuts</option>
         {% for key, label in status_labels.items() %}
@@ -40,12 +43,14 @@
              hx-get="{{ url_for('invoices.invoice_list') }}"
              hx-target="#invoice-rows"
              hx-include="[name='status'],[name='date_to']"
+             hx-push-url="true"
              class="text-sm border border-gray-300 rounded-lg px-3 py-2">
       <input type="date" name="date_to" value="{{ date_to }}"
              placeholder="Au"
              hx-get="{{ url_for('invoices.invoice_list') }}"
              hx-target="#invoice-rows"
              hx-include="[name='status'],[name='date_from']"
+             hx-push-url="true"
              class="text-sm border border-gray-300 rounded-lg px-3 py-2">
     </div>
   </div>
