@@ -232,6 +232,17 @@ def dossier_list() -> str:
 # ── Detail ────────────────────────────────────────────────────────────────
 
 
+_VALID_TABS = (
+    "apercu",
+    "temps",
+    "facturation",
+    "audiences",
+    "taches",
+    "protocole",
+    "documents",
+)
+
+
 @dossiers_bp.route("/<dossier_id>")
 @login_required
 def dossier_detail(dossier_id: str) -> str:
@@ -242,8 +253,12 @@ def dossier_detail(dossier_id: str) -> str:
 
     _attach_prescription_warnings([dossier])
 
+    requested_tab = request.args.get("tab", "").strip()
+    initial_tab = requested_tab if requested_tab in _VALID_TABS else "apercu"
+
     ctx = _template_context()
     ctx["dossier"] = dossier
+    ctx["initial_tab"] = initial_tab
     return render_template("dossiers/detail.html", **ctx)
 
 
@@ -351,6 +366,10 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
     template = templates.get(tab_name, "dossiers/_tab_placeholder.html")
     ctx["tab_name"] = tab_name
+    # URL that child + / detail / edit links should send the user back to.
+    ctx["tab_return_to"] = url_for(
+        "dossiers.dossier_detail", dossier_id=dossier_id, tab=tab_name
+    )
     return render_template(template, **ctx)
 
 

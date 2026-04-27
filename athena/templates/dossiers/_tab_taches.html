@@ -25,7 +25,7 @@
   <div>
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-sm font-semibold text-gray-900">Tâches</h3>
-      <a href="{{ url_for('tasks.task_new', dossier_id=dossier.id) }}"
+      <a href="{{ url_for('tasks.task_new', dossier_id=dossier.id, return_to=tab_return_to) }}"
          class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
         + Nouvelle tâche
       </a>
@@ -58,7 +58,7 @@
     {% if tasks %}
     <div class="flex flex-col gap-2">
       {% for t in tasks %}
-      <a href="{{ url_for('tasks.task_detail', task_id=t.id) }}"
+      <a href="{{ url_for('tasks.task_detail', task_id=t.id, return_to=tab_return_to) }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors {{ 'opacity-60' if t.status in ('terminée', 'annulée') }}">
         {# Priority dot / completion indicator #}
         {% if t.status == 'terminée' %}

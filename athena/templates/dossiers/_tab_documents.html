@@ -16,7 +16,7 @@
   <div class="mb-6">
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-sm font-semibold text-gray-900">Notes</h3>
-      <a href="{{ url_for('notes.note_new', dossier_id=dossier.id) }}"
+      <a href="{{ url_for('notes.note_new', dossier_id=dossier.id, return_to=tab_return_to) }}"
          class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
         + Nouvelle note
       </a>
@@ -25,7 +25,7 @@
     {% if notes %}
     <div class="flex flex-col gap-2">
       {% for n in notes[:5] %}
-      <a href="{{ url_for('notes.note_detail', note_id=n.id) }}"
+      <a href="{{ url_for('notes.note_detail', note_id=n.id, return_to=tab_return_to) }}"
          class="p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
         <div class="flex items-center gap-2 mb-1">
           {% if n.pinned %}
@@ -86,7 +86,7 @@
            class="text-xs font-medium text-gray-500 hover:text-gray-700">
           Ouvrir le navigateur
         </a>
-        <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier.id) }}"
+        <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier.id, return_to=tab_return_to) }}"
            class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
           + Téléverser
         </a>
@@ -117,7 +117,7 @@
 
       {# Documents at root level #}
       {% for d in documents %}
-      <a href="{{ url_for('documents.document_detail', document_id=d.id) }}"
+      <a href="{{ url_for('documents.document_detail', document_id=d.id, return_to=tab_return_to) }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
 
         {% set icon = d._file_icon %}

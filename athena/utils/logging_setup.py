@@ -365,6 +365,7 @@ SecurityEvent = Literal[
     "csp_violation",
     "appcheck_failure",
     "session_lookup_failure",
+    "redirect_rejected",
 ]
 SecuritySeverity = Literal["warning", "error", "critical"]
 

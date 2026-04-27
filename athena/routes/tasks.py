@@ -15,6 +15,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
+from security import safe_internal_redirect
 from models.task import (
     CATEGORY_LABELS,
     PRIORITY_COLORS,
@@ -214,7 +215,7 @@ def task_new() -> str:
                 "dossier_title": dossier.get("title", ""),
             }
 
-    ctx.update(task=prefilled, errors=[])
+    ctx.update(task=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("tasks/form.html", **ctx)
 
 
@@ -224,6 +225,7 @@ def task_create() -> str:
     """Handle new task form submission."""
     data = _form_data()
     data = _enrich_dossier_info(data)
+    return_to = request.form.get("return_to", "")
 
     task, errors = create_task(data)
 
@@ -231,7 +233,7 @@ def task_create() -> str:
         ctx = _template_context()
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(task=data, errors=errors)
+        ctx.update(task=data, errors=errors, return_to=return_to)
         return render_template("tasks/form.html", **ctx)
 
     if task.get("dossier_id"):
@@ -239,12 +241,13 @@ def task_create() -> str:
     else:
         bump_ctag("tasks")
 
+    target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
     if _is_htmx():
-        resp = redirect(url_for("tasks.task_list"))
-        resp.headers["HX-Redirect"] = url_for("tasks.task_list")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("tasks.task_list"))
+    return redirect(target)
 
 
 # ── Detail ───────────────────────────────────────────────────────────────
@@ -261,6 +264,7 @@ def task_detail(task_id: str) -> str:
     ctx = _template_context()
     ctx["task"] = task
     ctx["now"] = datetime.now(timezone.utc)
+    ctx["return_to"] = request.args.get("return_to", "")
 
     # Resolve related note for display
     related_note = None
@@ -284,7 +288,7 @@ def task_edit(task_id: str) -> str:
         return redirect(url_for("tasks.task_list"))
 
     ctx = _template_context()
-    ctx.update(task=task, errors=[])
+    ctx.update(task=task, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("tasks/form.html", **ctx)
 
 
@@ -298,6 +302,7 @@ def task_update(task_id: str) -> str:
 
     data = _form_data()
     data = _enrich_dossier_info(data)
+    return_to = request.form.get("return_to", "")
 
     task, errors = update_task(task_id, data)
 
@@ -306,7 +311,7 @@ def task_update(task_id: str) -> str:
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(task=data, errors=errors)
+        ctx.update(task=data, errors=errors, return_to=return_to)
         return render_template("tasks/form.html", **ctx)
 
     new_dossier_id = task.get("dossier_id")
@@ -327,12 +332,14 @@ def task_update(task_id: str) -> str:
     else:
         bump_ctag("tasks")
 
+    fallback = url_for("tasks.task_detail", task_id=task_id)
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
-        resp = redirect(url_for("tasks.task_detail", task_id=task_id))
-        resp.headers["HX-Redirect"] = url_for("tasks.task_detail", task_id=task_id)
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("tasks.task_detail", task_id=task_id))
+    return redirect(target)
 
 
 # ── Delete ───────────────────────────────────────────────────────────────
@@ -341,9 +348,10 @@ def task_update(task_id: str) -> str:
 @tasks_bp.route("/<task_id>/delete", methods=["POST"])
 @login_required
 def task_delete(task_id: str) -> str:
-    """Delete a task and redirect to the list."""
+    """Delete a task and redirect to the list (or back to the caller)."""
     existing_task = get_task(task_id)
     dossier_id = existing_task.get("dossier_id") if existing_task else None
+    return_to = request.form.get("return_to", "")
 
     success, error = delete_task(task_id)
 
@@ -355,14 +363,15 @@ def task_delete(task_id: str) -> str:
             record_tombstone("tasks", task_id)
             bump_ctag("tasks")
 
+    target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
     if _is_htmx():
         if success:
-            resp = redirect(url_for("tasks.task_list"))
-            resp.headers["HX-Redirect"] = url_for("tasks.task_list")
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    return redirect(url_for("tasks.task_list"))
+    return redirect(target)
 
 
 # ── Toggle complete (HTMX) ──────────────────────────────────────────────

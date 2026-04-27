@@ -22,10 +22,10 @@
      }">
 
   {# ── Back ──────────────────────────────────────────────────── #}
-  <a href="{{ url_for('hearings.hearing_list') }}"
+  <a href="{{ return_to or url_for('hearings.hearing_list') }}"
      class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
     <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
-    Agenda
+    {{ 'Retour' if return_to else 'Agenda' }}
   </a>
 
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
@@ -48,6 +48,7 @@
         action="{{ url_for('hearings.hearing_update', hearing_id=hearing.id) if hearing and hearing.id else url_for('hearings.hearing_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="return_to" value="{{ return_to or '' }}">
 
     {# Dossier selector #}
     <div class="relative">
@@ -224,7 +225,7 @@
               class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
         {{ 'Enregistrer' if hearing and hearing.id else 'Créer' }}
       </button>
-      <a href="{{ url_for('hearings.hearing_list') }}"
+      <a href="{{ return_to or url_for('hearings.hearing_list') }}"
          class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
@@ -252,6 +253,7 @@
             </button>
             <form method="post" action="{{ url_for('hearings.hearing_delete', hearing_id=hearing.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="return_to" value="{{ return_to or '' }}">
               <button type="submit"
                       class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
                 Supprimer

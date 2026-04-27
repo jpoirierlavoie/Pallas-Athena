@@ -25,7 +25,7 @@
   <div>
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-sm font-semibold text-gray-900">Factures</h3>
-      <a href="{{ url_for('invoices.invoice_new', dossier_id=dossier.id) }}"
+      <a href="{{ url_for('invoices.invoice_new', dossier_id=dossier.id, return_to=tab_return_to) }}"
          class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
         + Nouvelle facture
       </a>
@@ -34,7 +34,7 @@
     {% if invoices %}
     <div class="flex flex-col gap-2">
       {% for inv in invoices %}
-      <a href="{{ url_for('invoices.invoice_detail', invoice_id=inv.id) }}"
+      <a href="{{ url_for('invoices.invoice_detail', invoice_id=inv.id, return_to=tab_return_to) }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
         <div class="w-16 h-8 rounded bg-indigo-50 flex items-center justify-center flex-shrink-0">
           <span class="text-[10px] font-semibold text-indigo-600">{{ inv.invoice_number }}</span>

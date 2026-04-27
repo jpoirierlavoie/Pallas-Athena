@@ -98,6 +98,7 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 | `csp_violation` | warning | CSP report endpoint received a violation report |
 | `appcheck_failure` | warning | Same surface as `log_auth_event("appcheck_failure", ...)` — emit one or the other, not both |
 | `session_lookup_failure` | warning | `_derive_auth_context` raised while reading `session["user_id"]` (corrupted cookie payload, `SECRET_KEY` rotation mid-flight, etc.). Request is downgraded to `auth_context="anonymous"` for logging only — authorization is still enforced by `@login_required`. Fields: `reason` (exception class name), `path` (request path). |
+| `redirect_rejected` | warning | `safe_internal_redirect` rejected a `return_to` value (open-redirect guard). Fields: `reason` (`"not_internal_path"`, `"backslash_in_path"`, `"scheme_or_netloc_present"`). The rejected URL itself is **not** logged — it could be attacker-controlled. |
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 

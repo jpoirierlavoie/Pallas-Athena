@@ -13,6 +13,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import bump_ctag
+from security import safe_internal_redirect
 from models.note import (
     CATEGORY_LABELS,
     VALID_CATEGORIES,
@@ -151,7 +152,7 @@ def note_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
-    ctx.update(note=prefilled, errors=[])
+    ctx.update(note=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("notes/form.html", **ctx)
 
 
@@ -161,6 +162,7 @@ def note_create() -> str:
     """Handle new note form submission."""
     data = _form_data()
     data = _enrich_dossier_info(data)
+    return_to = request.form.get("return_to", "")
 
     note, errors = create_note(data)
 
@@ -170,18 +172,19 @@ def note_create() -> str:
             "dossier_file_number", request.form.get("dossier_display", "")
         )
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(note=data, errors=errors)
+        ctx.update(note=data, errors=errors, return_to=return_to)
         return render_template("notes/form.html", **ctx)
 
     if note.get("dossier_id"):
         bump_ctag(f"dossier:{note['dossier_id']}")
 
+    target = safe_internal_redirect(return_to, url_for("notes.note_list"))
     if _is_htmx():
-        resp = redirect(url_for("notes.note_list"))
-        resp.headers["HX-Redirect"] = url_for("notes.note_list")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("notes.note_list"))
+    return redirect(target)
 
 
 # ── Detail ───────────────────────────────────────────────────────────────
@@ -203,6 +206,7 @@ def note_detail(note_id: str) -> str:
     ctx = _template_context()
     ctx["note"] = note
     ctx["linked_tasks"] = linked_tasks
+    ctx["return_to"] = request.args.get("return_to", "")
     return render_template("notes/detail.html", **ctx)
 
 
@@ -218,7 +222,7 @@ def note_edit(note_id: str) -> str:
         return redirect(url_for("notes.note_list"))
 
     ctx = _template_context()
-    ctx.update(note=note, errors=[])
+    ctx.update(note=note, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("notes/form.html", **ctx)
 
 
@@ -232,6 +236,7 @@ def note_update(note_id: str) -> str:
 
     data = _form_data()
     data = _enrich_dossier_info(data)
+    return_to = request.form.get("return_to", "")
 
     note, errors = update_note(note_id, data)
 
@@ -242,18 +247,20 @@ def note_update(note_id: str) -> str:
         )
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(note=data, errors=errors)
+        ctx.update(note=data, errors=errors, return_to=return_to)
         return render_template("notes/form.html", **ctx)
 
     if note.get("dossier_id"):
         bump_ctag(f"dossier:{note['dossier_id']}")
 
+    fallback = url_for("notes.note_detail", note_id=note_id)
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
-        resp = redirect(url_for("notes.note_detail", note_id=note_id))
-        resp.headers["HX-Redirect"] = url_for("notes.note_detail", note_id=note_id)
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("notes.note_detail", note_id=note_id))
+    return redirect(target)
 
 
 # ── Delete ───────────────────────────────────────────────────────────────
@@ -262,23 +269,25 @@ def note_update(note_id: str) -> str:
 @notes_bp.route("/<note_id>/delete", methods=["POST"])
 @login_required
 def note_delete(note_id: str) -> str:
-    """Delete a note and redirect to the list."""
+    """Delete a note and redirect to the list (or back to the caller)."""
     existing_note = get_note(note_id)
     dossier_id = existing_note.get("dossier_id") if existing_note else None
+    return_to = request.form.get("return_to", "")
 
     success, error = delete_note(note_id)
 
     if success and dossier_id:
         bump_ctag(f"dossier:{dossier_id}")
 
+    target = safe_internal_redirect(return_to, url_for("notes.note_list"))
     if _is_htmx():
         if success:
-            resp = redirect(url_for("notes.note_list"))
-            resp.headers["HX-Redirect"] = url_for("notes.note_list")
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    return redirect(url_for("notes.note_list"))
+    return redirect(target)
 
 
 # ── Pin toggle ───────────────────────────────────────────────────────────

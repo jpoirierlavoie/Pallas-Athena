@@ -25,10 +25,10 @@
 
   {# ── Back + actions (hidden on print) ──────────────────────── #}
   <div class="flex items-center justify-between mb-6 no-print">
-    <a href="{{ url_for('invoices.invoice_list') }}"
+    <a href="{{ return_to or url_for('invoices.invoice_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
-      Factures
+      {{ 'Retour' if return_to else 'Factures' }}
     </a>
     <div class="flex items-center gap-2">
       <button onclick="window.print()"
@@ -73,6 +73,7 @@
       {% if invoice.status == 'annulée' %}
       <form method="post" action="{{ url_for('invoices.invoice_delete', invoice_id=invoice.id) }}" class="inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="return_to" value="{{ return_to or '' }}">
         <button type="submit"
                 class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
                 onclick="return confirm('Supprimer définitivement cette facture ?')">

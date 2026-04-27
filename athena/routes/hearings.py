@@ -15,6 +15,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
+from security import safe_internal_redirect
 from models.hearing import (
     HEARING_TYPE_COLORS,
     HEARING_TYPE_LABELS,
@@ -315,7 +316,7 @@ def hearing_new() -> str:
                 "dossier_title": dossier.get("title", ""),
                 "court": dossier.get("court", ""),
             }
-    ctx.update(hearing=prefilled, errors=[])
+    ctx.update(hearing=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("hearings/form.html", **ctx)
 
 
@@ -325,6 +326,7 @@ def hearing_create() -> str:
     """Handle new hearing form submission."""
     data = _form_data()
     data = _enrich_dossier_info(data)
+    return_to = request.form.get("return_to", "")
 
     hearing, errors = create_hearing(data)
 
@@ -332,17 +334,18 @@ def hearing_create() -> str:
         ctx = _template_context()
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(hearing=data, errors=errors)
+        ctx.update(hearing=data, errors=errors, return_to=return_to)
         return render_template("hearings/form.html", **ctx)
 
     bump_ctag("hearings")
 
+    target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
     if _is_htmx():
-        resp = redirect(url_for("hearings.hearing_list"))
-        resp.headers["HX-Redirect"] = url_for("hearings.hearing_list")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("hearings.hearing_list"))
+    return redirect(target)
 
 
 # ── Detail ────────────────────────────────────────────────────────────────
@@ -358,6 +361,7 @@ def hearing_detail(hearing_id: str) -> str:
 
     ctx = _template_context()
     ctx["hearing"] = hearing
+    ctx["return_to"] = request.args.get("return_to", "")
     return render_template("hearings/detail.html", **ctx)
 
 
@@ -373,7 +377,7 @@ def hearing_edit(hearing_id: str) -> str:
         return redirect(url_for("hearings.hearing_list"))
 
     ctx = _template_context()
-    ctx.update(hearing=hearing, errors=[])
+    ctx.update(hearing=hearing, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("hearings/form.html", **ctx)
 
 
@@ -383,6 +387,7 @@ def hearing_update(hearing_id: str) -> str:
     """Handle edit form submission."""
     data = _form_data()
     data = _enrich_dossier_info(data)
+    return_to = request.form.get("return_to", "")
 
     hearing, errors = update_hearing(hearing_id, data)
 
@@ -391,17 +396,19 @@ def hearing_update(hearing_id: str) -> str:
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(hearing=data, errors=errors)
+        ctx.update(hearing=data, errors=errors, return_to=return_to)
         return render_template("hearings/form.html", **ctx)
 
     bump_ctag("hearings")
 
+    fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
-        resp = redirect(url_for("hearings.hearing_detail", hearing_id=hearing_id))
-        resp.headers["HX-Redirect"] = url_for("hearings.hearing_detail", hearing_id=hearing_id)
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("hearings.hearing_detail", hearing_id=hearing_id))
+    return redirect(target)
 
 
 # ── Delete ────────────────────────────────────────────────────────────────
@@ -410,21 +417,23 @@ def hearing_update(hearing_id: str) -> str:
 @hearings_bp.route("/<hearing_id>/delete", methods=["POST"])
 @login_required
 def hearing_delete(hearing_id: str) -> str:
-    """Delete a hearing and redirect to the list."""
+    """Delete a hearing and redirect to the list (or back to the caller)."""
+    return_to = request.form.get("return_to", "")
     success, error = delete_hearing(hearing_id)
 
     if success:
         record_tombstone("hearings", hearing_id)
         bump_ctag("hearings")
 
+    target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
     if _is_htmx():
         if success:
-            resp = redirect(url_for("hearings.hearing_list"))
-            resp.headers["HX-Redirect"] = url_for("hearings.hearing_list")
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    return redirect(url_for("hearings.hearing_list"))
+    return redirect(target)
 
 
 # ── Export ───────────────────────────────────────────────────────────────

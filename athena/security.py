@@ -2,6 +2,7 @@
 
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 from flask import Flask, Response, abort, current_app, request
 from flask_limiter import Limiter
@@ -89,6 +90,44 @@ def sanitize(value: str, max_length: int = 1000) -> str:
     """Strip HTML tags and truncate.  Output escaping is handled by Jinja2."""
     cleaned = _TAG_RE.sub("", value)
     return cleaned[:max_length]
+
+
+# ---------------------------------------------------------------------------
+# Internal-redirect URL guard
+# ---------------------------------------------------------------------------
+def safe_internal_redirect(target: Optional[str], fallback: str) -> str:
+    """Return ``target`` only if it is a same-origin internal path; else ``fallback``.
+
+    Accepts only paths starting with a single ``/`` and no scheme or host —
+    blocks ``//evil.com/x``, ``https://evil.com``, ``javascript:...``, and
+    backslash-bypass tricks that some browsers normalize to ``/``. Used by
+    forms that thread a ``return_to`` query string back to the caller.
+    """
+    if not isinstance(target, str):
+        return fallback
+    candidate = target.strip()
+    if not candidate or not candidate.startswith("/") or candidate.startswith("//"):
+        _log_redirect_rejection("not_internal_path")
+        return fallback
+    if "\\" in candidate:
+        _log_redirect_rejection("backslash_in_path")
+        return fallback
+    parsed = urlparse(candidate)
+    if parsed.scheme or parsed.netloc:
+        _log_redirect_rejection("scheme_or_netloc_present")
+        return fallback
+    return candidate
+
+
+def _log_redirect_rejection(reason: str) -> None:
+    """Emit a structured security log without leaking the rejected URL."""
+    try:
+        # Late import to avoid circular dependency at module-load time.
+        from utils.logging_setup import log_security_event
+
+        log_security_event("redirect_rejected", "warning", reason=reason)
+    except Exception:  # pragma: no cover — logging must never break the request
+        pass
 
 
 # ---------------------------------------------------------------------------

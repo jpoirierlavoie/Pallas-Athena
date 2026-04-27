@@ -14,6 +14,7 @@ from flask import (
 )
 
 from auth import login_required
+from security import safe_internal_redirect
 from pagination import paginate
 from models.time_entry import (
     QUICK_DESCRIPTIONS,
@@ -214,7 +215,7 @@ def time_entry_new() -> str:
                 "dossier_title": dossier.get("title", ""),
                 "rate": dossier.get("hourly_rate", 0),
             }
-    ctx.update(entry=prefilled, errors=[])
+    ctx.update(entry=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("time_expenses/time_form.html", **ctx)
 
 
@@ -232,6 +233,7 @@ def time_entry_create() -> str:
         "billable": f.get("billable") == "on",
     }
     data = _enrich_dossier_info(data)
+    return_to = f.get("return_to", "")
 
     entry, errors = create_time_entry(data)
 
@@ -240,15 +242,16 @@ def time_entry_create() -> str:
         # Preserve form display values
         data["dossier_file_number"] = data.get("dossier_file_number", f.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(entry=data, errors=errors)
+        ctx.update(entry=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/time_form.html", **ctx)
 
+    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
     if _is_htmx():
-        resp = redirect(url_for("time_expenses.time_list"))
-        resp.headers["HX-Redirect"] = url_for("time_expenses.time_list")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("time_expenses.time_list"))
+    return redirect(target)
 
 
 @time_expenses_bp.route("/<entry_id>/edit")
@@ -260,7 +263,7 @@ def time_entry_edit(entry_id: str) -> str:
         return redirect(url_for("time_expenses.time_list"))
 
     ctx = _template_context()
-    ctx.update(entry=entry, errors=[])
+    ctx.update(entry=entry, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("time_expenses/time_form.html", **ctx)
 
 
@@ -278,6 +281,7 @@ def time_entry_update(entry_id: str) -> str:
         "billable": f.get("billable") == "on",
     }
     data = _enrich_dossier_info(data)
+    return_to = f.get("return_to", "")
 
     entry, errors = update_time_entry(entry_id, data)
 
@@ -286,31 +290,34 @@ def time_entry_update(entry_id: str) -> str:
         data["dossier_file_number"] = data.get("dossier_file_number", f.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(entry=data, errors=errors)
+        ctx.update(entry=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/time_form.html", **ctx)
 
+    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
     if _is_htmx():
-        resp = redirect(url_for("time_expenses.time_list"))
-        resp.headers["HX-Redirect"] = url_for("time_expenses.time_list")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("time_expenses.time_list"))
+    return redirect(target)
 
 
 @time_expenses_bp.route("/<entry_id>/delete", methods=["POST"])
 @login_required
 def time_entry_delete(entry_id: str) -> str:
-    """Delete a time entry and redirect to the list."""
+    """Delete a time entry and redirect to the list (or back to the caller)."""
+    return_to = request.form.get("return_to", "")
     success, error = delete_time_entry(entry_id)
 
+    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
     if _is_htmx():
         if success:
-            resp = redirect(url_for("time_expenses.time_list"))
-            resp.headers["HX-Redirect"] = url_for("time_expenses.time_list")
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    return redirect(url_for("time_expenses.time_list"))
+    return redirect(target)
 
 
 # ── Expense CRUD ─────────────────────────────────────────────────────────
@@ -331,7 +338,7 @@ def expense_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
-    ctx.update(expense=prefilled, errors=[])
+    ctx.update(expense=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("time_expenses/expense_form.html", **ctx)
 
 
@@ -349,6 +356,7 @@ def expense_create() -> str:
         "taxable": f.get("taxable") == "on",
     }
     data = _enrich_dossier_info(data)
+    return_to = f.get("return_to", "")
 
     expense, errors = create_expense(data)
 
@@ -356,15 +364,17 @@ def expense_create() -> str:
         ctx = _template_context()
         data["dossier_file_number"] = data.get("dossier_file_number", f.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(expense=data, errors=errors)
+        ctx.update(expense=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/expense_form.html", **ctx)
 
+    fallback = url_for("time_expenses.time_list", tab="depenses")
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
-        resp = redirect(url_for("time_expenses.time_list", tab="depenses"))
-        resp.headers["HX-Redirect"] = url_for("time_expenses.time_list", tab="depenses")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("time_expenses.time_list", tab="depenses"))
+    return redirect(target)
 
 
 @time_expenses_bp.route("/depenses/<expense_id>/edit")
@@ -376,7 +386,7 @@ def expense_edit(expense_id: str) -> str:
         return redirect(url_for("time_expenses.time_list", tab="depenses"))
 
     ctx = _template_context()
-    ctx.update(expense=expense, errors=[])
+    ctx.update(expense=expense, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("time_expenses/expense_form.html", **ctx)
 
 
@@ -394,6 +404,7 @@ def expense_update(expense_id: str) -> str:
         "taxable": f.get("taxable") == "on",
     }
     data = _enrich_dossier_info(data)
+    return_to = f.get("return_to", "")
 
     expense, errors = update_expense(expense_id, data)
 
@@ -402,31 +413,36 @@ def expense_update(expense_id: str) -> str:
         data["dossier_file_number"] = data.get("dossier_file_number", f.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(expense=data, errors=errors)
+        ctx.update(expense=data, errors=errors, return_to=return_to)
         return render_template("time_expenses/expense_form.html", **ctx)
 
+    fallback = url_for("time_expenses.time_list", tab="depenses")
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
-        resp = redirect(url_for("time_expenses.time_list", tab="depenses"))
-        resp.headers["HX-Redirect"] = url_for("time_expenses.time_list", tab="depenses")
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("time_expenses.time_list", tab="depenses"))
+    return redirect(target)
 
 
 @time_expenses_bp.route("/depenses/<expense_id>/delete", methods=["POST"])
 @login_required
 def expense_delete(expense_id: str) -> str:
-    """Delete an expense and redirect to the list."""
+    """Delete an expense and redirect to the list (or back to the caller)."""
+    return_to = request.form.get("return_to", "")
     success, error = delete_expense(expense_id)
 
+    fallback = url_for("time_expenses.time_list", tab="depenses")
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
         if success:
-            resp = redirect(url_for("time_expenses.time_list", tab="depenses"))
-            resp.headers["HX-Redirect"] = url_for("time_expenses.time_list", tab="depenses")
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    return redirect(url_for("time_expenses.time_list", tab="depenses"))
+    return redirect(target)
 
 
 # ── Export ───────────────────────────────────────────────────────────────

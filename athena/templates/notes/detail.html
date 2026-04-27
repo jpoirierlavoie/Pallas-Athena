@@ -7,10 +7,10 @@
 
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
-    <a href="{{ url_for('notes.note_list') }}"
+    <a href="{{ return_to or url_for('notes.note_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
-      Notes
+      {{ 'Retour' if return_to else 'Notes' }}
     </a>
     <div class="flex items-center gap-2">
       <form method="post" action="{{ url_for('notes.note_pin', note_id=note.id) }}">
@@ -20,7 +20,7 @@
           {{ 'Désépingler' if note.pinned else 'Épingler' }}
         </button>
       </form>
-      <a href="{{ url_for('notes.note_edit', note_id=note.id) }}"
+      <a href="{{ url_for('notes.note_edit', note_id=note.id, return_to=return_to or None) }}"
          class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Modifier
       </a>
@@ -160,6 +160,7 @@
           </button>
           <form method="post" action="{{ url_for('notes.note_delete', note_id=note.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="return_to" value="{{ return_to or '' }}">
             <button type="submit"
                     class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
               Supprimer

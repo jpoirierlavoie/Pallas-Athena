@@ -13,6 +13,7 @@ from flask import (
 )
 
 from auth import login_required
+from security import safe_internal_redirect
 from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
 from models.document import (
@@ -167,6 +168,7 @@ def document_detail(document_id: str) -> str:
         category_labels=CATEGORY_LABELS,
         folder_breadcrumb=folder_breadcrumb,
         folder_tree=folder_tree,
+        return_to=request.args.get("return_to", ""),
     )
 
 
@@ -207,6 +209,7 @@ def document_upload_form() -> str:
         folder_id=folder_id,
         folder_breadcrumb=folder_breadcrumb,
         errors=[],
+        return_to=request.args.get("return_to", ""),
     )
 
 
@@ -217,6 +220,7 @@ def document_upload() -> str:
     dossier_id = request.form.get("dossier_id", "").strip()
     folder_id = request.form.get("folder_id", "").strip() or None
     dossier = get_dossier(dossier_id) if dossier_id else None
+    return_to = request.form.get("return_to", "")
 
     if not dossier:
         errors = ["Veuillez sélectionner un dossier."]
@@ -228,6 +232,7 @@ def document_upload() -> str:
             folder_id=folder_id,
             folder_breadcrumb=[],
             errors=errors,
+            return_to=return_to,
         )
 
     files = request.files.getlist("files")
@@ -242,6 +247,7 @@ def document_upload() -> str:
             folder_id=folder_id,
             folder_breadcrumb=folder_breadcrumb,
             errors=errors,
+            return_to=return_to,
         )
 
     user_id = session.get("user_id", "unknown")
@@ -294,10 +300,14 @@ def document_upload() -> str:
             folder_id=folder_id,
             folder_breadcrumb=folder_breadcrumb,
             errors=all_errors,
+            return_to=return_to,
         )
 
-    # Redirect back to document browser at the current folder
-    target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=folder_id or "")
+    # Redirect to caller (e.g. dossier hub) when provided, else the browser.
+    fallback = url_for(
+        "documents.document_list", dossier_id=dossier_id, folder_id=folder_id or ""
+    )
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -321,6 +331,7 @@ def document_edit(document_id: str) -> str:
         document=doc,
         category_labels=CATEGORY_LABELS,
         errors=[],
+        return_to=request.args.get("return_to", ""),
     )
 
 
@@ -330,6 +341,7 @@ def document_update(document_id: str) -> str:
     """Handle metadata edit form submission."""
     f = request.form
     tags_raw = f.get("tags", "").strip()
+    return_to = f.get("return_to", "")
 
     data = {
         "display_name": f.get("display_name", "").strip(),
@@ -348,9 +360,11 @@ def document_update(document_id: str) -> str:
             document=existing,
             category_labels=CATEGORY_LABELS,
             errors=errors,
+            return_to=return_to,
         )
 
-    target = url_for("documents.document_detail", document_id=document_id)
+    fallback = url_for("documents.document_detail", document_id=document_id)
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -417,27 +431,28 @@ def document_move_bulk() -> str:
 @documents_bp.route("/<document_id>/delete", methods=["POST"])
 @login_required
 def document_delete(document_id: str) -> str:
-    """Delete a document and redirect."""
+    """Delete a document and redirect (caller-supplied URL or document browser)."""
     doc = get_document(document_id)
     dossier_id = doc.get("dossier_id", "") if doc else ""
     folder_id = doc.get("folder_id") if doc else None
+    return_to = request.form.get("return_to", "")
 
     success, error = delete_document(document_id)
 
+    if dossier_id:
+        fallback = url_for("documents.document_list", dossier_id=dossier_id, folder_id=folder_id or "")
+    else:
+        fallback = url_for("documents.document_list")
+    target = safe_internal_redirect(return_to, fallback)
+
     if _is_htmx():
         if success:
-            if dossier_id:
-                target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=folder_id or "")
-            else:
-                target = url_for("documents.document_list")
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{error}</div>', 422
 
-    if dossier_id:
-        return redirect(url_for("documents.document_list", dossier_id=dossier_id, folder_id=folder_id or ""))
-    return redirect(url_for("documents.document_list"))
+    return redirect(target)
 
 
 # ── Folder CRUD routes ───────────────────────────────────────────────────

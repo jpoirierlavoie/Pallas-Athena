@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-6"
-     x-data="{ activeTab: 'apercu', deleteOpen: false }">
+     x-data="{ activeTab: '{{ initial_tab|default('apercu') }}', deleteOpen: false }">
 
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
@@ -193,9 +193,9 @@
       {% endfor %}
     </div>
 
-    {# Tab content area #}
+    {# Tab content area — initial tab honours ?tab= query param. #}
     <div id="tab-content" class="p-5"
-         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name='apercu') }}"
+         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=initial_tab|default('apercu')) }}"
          hx-trigger="load"
          hx-swap="innerHTML">
       <div class="flex items-center justify-center py-8">

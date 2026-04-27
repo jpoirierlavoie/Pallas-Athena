@@ -12,6 +12,7 @@ from flask import (
 )
 
 from auth import login_required
+from security import safe_internal_redirect
 from config import Config
 from models.invoice import (
     STATUS_LABELS,
@@ -146,8 +147,10 @@ def invoice_list() -> str:
 def invoice_new() -> str:
     """Step 1: Select a dossier, then show unbilled items."""
     dossier_id = request.args.get("dossier_id", "").strip()
+    return_to = request.args.get("return_to", "")
 
     ctx = _template_context()
+    ctx["return_to"] = return_to
 
     if not dossier_id:
         # Show dossier selector
@@ -231,12 +234,14 @@ def invoice_create() -> str:
     """Handle invoice creation form submission."""
     f = request.form
     dossier_id = f.get("dossier_id", "").strip()
+    return_to = f.get("return_to", "")
 
     dossier = get_dossier(dossier_id)
     if not dossier:
         ctx = _template_context()
         ctx["dossiers"] = list_dossiers(status_filter="actif")
         ctx["errors"] = ["Dossier introuvable."]
+        ctx["return_to"] = return_to
         return render_template("invoices/create.html", **ctx)
 
     # Collect selected items
@@ -287,10 +292,14 @@ def invoice_create() -> str:
             client_id=client_id,
             invoice_date=f.get("invoice_date", ""),
             errors=errors,
+            return_to=return_to,
         )
         return render_template("invoices/create.html", **ctx)
 
-    target = url_for("invoices.invoice_detail", invoice_id=invoice["id"])
+    # On success, prefer the caller's URL when supplied (e.g. dossier hub) so the
+    # user lands back where they started rather than on the invoice detail.
+    fallback = url_for("invoices.invoice_detail", invoice_id=invoice["id"])
+    target = safe_internal_redirect(return_to, fallback)
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -324,6 +333,7 @@ def invoice_detail(invoice_id: str) -> str:
         fee_items=fee_items,
         expense_items=expense_items,
         transitions=transitions,
+        return_to=request.args.get("return_to", ""),
     )
     return render_template("invoices/detail.html", **ctx)
 
@@ -376,6 +386,7 @@ def invoice_void(invoice_id: str) -> str:
 @login_required
 def invoice_delete(invoice_id: str) -> str:
     """Delete a cancelled invoice."""
+    return_to = request.form.get("return_to", "")
     success, error = delete_invoice(invoice_id)
 
     if not success:
@@ -384,7 +395,7 @@ def invoice_delete(invoice_id: str) -> str:
             return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
         return redirect(target)
 
-    target = url_for("invoices.invoice_list")
+    target = safe_internal_redirect(return_to, url_for("invoices.invoice_list"))
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target

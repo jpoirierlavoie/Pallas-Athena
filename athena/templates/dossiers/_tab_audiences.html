@@ -21,7 +21,7 @@
   <div>
     <div class="flex items-center justify-between mb-3">
       <h3 class="text-sm font-semibold text-gray-900">Audiences</h3>
-      <a href="{{ url_for('hearings.hearing_new', dossier_id=dossier.id) }}"
+      <a href="{{ url_for('hearings.hearing_new', dossier_id=dossier.id, return_to=tab_return_to) }}"
          class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
         + Nouvelle audience
       </a>
@@ -48,7 +48,7 @@
     {% if hearings %}
     <div class="flex flex-col gap-2">
       {% for h in hearings %}
-      <a href="{{ url_for('hearings.hearing_detail', hearing_id=h.id) }}"
+      <a href="{{ url_for('hearings.hearing_detail', hearing_id=h.id, return_to=tab_return_to) }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors {{ 'opacity-60' if h.status in ('annulée', 'terminée') }}">
         {# Date badge #}
         <div class="w-10 h-10 rounded-lg bg-gray-50 flex flex-col items-center justify-center flex-shrink-0">
