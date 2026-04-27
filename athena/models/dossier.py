@@ -286,6 +286,24 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
     return None
 
 
+def get_dossiers_bulk(dossier_ids: list[str]) -> dict[str, dict]:
+    """Fetch many dossiers in a single round-trip. Returns {id: doc} for ids that exist."""
+    unique_ids = [d for d in dict.fromkeys(dossier_ids) if d]
+    if not unique_ids:
+        return {}
+    try:
+        refs = [db.collection(COLLECTION).document(did) for did in unique_ids]
+        snapshots = db.get_all(refs)
+        result: dict[str, dict] = {}
+        for snap in snapshots:
+            if snap.exists:
+                result[snap.id] = _migrate_parties(snap.to_dict())
+        return result
+    except Exception as exc:
+        logger.warning("get_dossiers_bulk failed: %s", exc)
+        return {}
+
+
 def list_dossiers(
     status_filter: Optional[str] = None,
     search: Optional[str] = None,

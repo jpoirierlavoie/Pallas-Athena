@@ -32,6 +32,7 @@ from models.task import (
 )
 from models.dossier import (
     get_dossier,
+    get_dossiers_bulk,
     list_dossiers,
 )
 
@@ -429,38 +430,109 @@ _EXPORT_COLUMNS_CSV = [
 ]
 
 _EXPORT_COLUMNS_PDF = [
-    ("title", "Titre", 2.0),
-    ("dossier_file_number", "Dossier", 1.0),
+    ("title", "Titre", 3.0),
     ("priority", "Priorité", 0.8),
     ("category", "Catégorie", 1.0),
     ("status", "Statut", 0.8),
     ("due_date", "Échéance", 1.0),
 ]
 
+_PRIORITY_RANK = {"haute": 0, "normale": 1, "basse": 2}
+
+
+def _filtered_tasks() -> list[dict]:
+    """Fetch tasks honouring the current query-string filters."""
+    return list_tasks(
+        dossier_id=request.args.get("dossier", "").strip() or None,
+        status_filter=request.args.get("status", "").strip() or None,
+        priority_filter=request.args.get("priority", "").strip() or None,
+        category_filter=request.args.get("category", "").strip() or None,
+    )
+
 
 def _get_export_tasks() -> list[dict]:
-    """Fetch and pre-process tasks for export, respecting current filters."""
+    """Fetch and pre-process tasks for export (CSV — flat, label-mapped)."""
     from utils.export_csv import prepare_export_rows
 
-    dossier_filter = request.args.get("dossier", "").strip()
-    status_filter = request.args.get("status", "").strip()
-    priority_filter = request.args.get("priority", "").strip()
-    category_filter = request.args.get("category", "").strip()
-
-    tasks = list_tasks(
-        dossier_id=dossier_filter or None,
-        status_filter=status_filter or None,
-        priority_filter=priority_filter or None,
-        category_filter=category_filter or None,
-    )
     return prepare_export_rows(
-        tasks,
+        _filtered_tasks(),
         label_maps={
             "priority": PRIORITY_LABELS,
             "category": CATEGORY_LABELS,
             "status": STATUS_LABELS,
         },
     )
+
+
+def _get_export_task_groups() -> list[tuple[str, list[dict]]]:
+    """Group filtered tasks by dossier for the grouped PDF report.
+
+    - Group label: "<file_number> — <title>" or "Sans dossier".
+    - Group order: dossier file_number ascending; "Sans dossier" last.
+    - Within-group order: due_date ascending (None last), then priority desc.
+    - Single batched dossier fetch keeps titles fresh and avoids N+1 reads.
+    """
+    from utils.export_csv import prepare_export_rows
+
+    tasks = _filtered_tasks()
+    if not tasks:
+        return []
+
+    referenced_ids = [t["dossier_id"] for t in tasks if t.get("dossier_id")]
+    dossiers_by_id = get_dossiers_bulk(referenced_ids) if referenced_ids else {}
+
+    buckets: dict[str | None, list[dict]] = {}
+    for task in tasks:
+        key = task.get("dossier_id") or None
+        buckets.setdefault(key, []).append(task)
+
+    def task_sort_key(t: dict):
+        due = t.get("due_date")
+        priority_rank = _PRIORITY_RANK.get(t.get("priority", ""), 99)
+        # Tasks without a due date sort after dated ones; priority ascending
+        # rank means Haute (0) < Normale (1) < Basse (2) → highest priority first.
+        return (
+            1 if due is None else 0,
+            due if due is not None else datetime.max.replace(tzinfo=timezone.utc),
+            priority_rank,
+        )
+
+    def group_label_for(dossier_id: str | None, sample_task: dict) -> str:
+        if dossier_id is None:
+            return "Sans dossier"
+        live = dossiers_by_id.get(dossier_id)
+        if live:
+            file_no = live.get("file_number", "") or sample_task.get("dossier_file_number", "")
+            title = live.get("title", "") or sample_task.get("dossier_title", "")
+        else:
+            # Dossier deleted but tasks linger — fall back to denormalized values.
+            file_no = sample_task.get("dossier_file_number", "")
+            title = sample_task.get("dossier_title", "")
+        if file_no and title:
+            return f"{file_no} — {title}"
+        return file_no or title or "Dossier inconnu"
+
+    def group_sort_key(item: tuple[str | None, list[dict]]):
+        dossier_id, group_tasks = item
+        if dossier_id is None:
+            return (1, "")  # "Sans dossier" → last
+        live = dossiers_by_id.get(dossier_id) or {}
+        file_no = live.get("file_number") or group_tasks[0].get("dossier_file_number", "")
+        return (0, file_no)
+
+    groups: list[tuple[str, list[dict]]] = []
+    for dossier_id, group_tasks in sorted(buckets.items(), key=group_sort_key):
+        sorted_tasks = sorted(group_tasks, key=task_sort_key)
+        labelled = prepare_export_rows(
+            sorted_tasks,
+            label_maps={
+                "priority": PRIORITY_LABELS,
+                "category": CATEGORY_LABELS,
+                "status": STATUS_LABELS,
+            },
+        )
+        groups.append((group_label_for(dossier_id, group_tasks[0]), labelled))
+    return groups
 
 
 @tasks_bp.route("/export/csv")
@@ -481,13 +553,13 @@ def export_csv_route() -> Response:
 @tasks_bp.route("/export/pdf")
 @login_required
 def export_pdf_route() -> Response:
-    """Export tasks as PDF report."""
-    from utils.export_pdf import export_pdf
+    """Export tasks as a PDF report grouped by dossier."""
+    from utils.export_pdf import export_pdf_grouped
 
-    rows = _get_export_tasks()
+    groups = _get_export_task_groups()
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return export_pdf(
-        rows=rows,
+    return export_pdf_grouped(
+        groups=groups,
         columns=_EXPORT_COLUMNS_PDF,
         title="Tâches",
         filename=f"taches_{date_str}.pdf",
