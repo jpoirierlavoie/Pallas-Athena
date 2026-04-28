@@ -15,6 +15,8 @@ env_variables:
   AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   REQUIRE_MFA: "false"
+  PIP_REQUIRE_HASHES: "1"
+  PIP_NO_DEPS: "1"
   # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH) are pulled from
   # Google Cloud Secret Manager at runtime — see config.py.
 
