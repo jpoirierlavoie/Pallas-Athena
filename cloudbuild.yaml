@@ -1,11 +1,11 @@
 steps:
   # Step 1: Install dependencies and run tests
-  - name: 'python:3.10-slim'
+  - name: 'python:3.13-slim'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        pip install -r athena/requirements.txt
+        pip install --require-hashes --no-deps -r athena/requirements.txt
         # pytest  # Uncomment when your test suite is ready
 
   # Step 2: Deploy to App Engine
