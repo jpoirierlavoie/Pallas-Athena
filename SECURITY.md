@@ -6,7 +6,7 @@ Pallas Athena is a single-user legal practice management app handling confidenti
 
 If you discover a security issue, **do not open a public GitHub issue**. Email the maintainer directly:
 
-**Contact:** Jason Poirier Lavoie — `security@poirierlavoie.ca`
+**Contact:** Jason Poirier Lavoie — `jason@poirierlavoie.ca`
 
 Please include:
 - A description of the vulnerability
