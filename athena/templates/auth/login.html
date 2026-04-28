@@ -32,11 +32,14 @@
     <div class="text-center mb-8">
       <img src="{{ url_for('static', filename='owl.png') }}" alt="Pallas Athena"
            class="mx-auto mb-4 w-20 h-20 object-contain">
-      <h1 class="text-2xl font-semibold text-gray-900 tracking-tight">Pallas Athena</h1>
+      <h1 class="text-2xl font-semibold text-gray-900 tracking-tight">Pallas Athéna</h1>
+      <p lang="grc" class="mt-2 text-sm italic text-gray-500">Σὺν Ἀθηνᾷ καὶ χεῖρα κίνει</p>
     </div>
 
     {# ── Login card ──────────────────────────────────────────────── #}
     <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider text-center mb-6">Portail juriste</h2>
 
       {# ── State 1: email + password ─────────────────────────────── #}
       <div x-show="step === 'login'" x-cloak:false>
@@ -116,6 +119,13 @@
         </div>
       </div>
 
+    </div>
+
+    {# ── Legal links ─────────────────────────────────────────────── #}
+    <div class="mt-6 text-center text-xs text-gray-400">
+      <a href="/privacy" target="_blank" rel="noopener" class="hover:text-gray-600">Confidentialité</a>
+      <span class="mx-2">·</span>
+      <a href="/terms" target="_blank" rel="noopener" class="hover:text-gray-600">Conditions d'utilisation</a>
     </div>
   </div>
 

@@ -110,7 +110,7 @@
   {# ── Main content area (bottom-padded for mobile nav) ──────────── #}
   <div class="md:flex">
     {# ── Desktop sidebar (≥768px) ──────────────────────────────────── #}
-    <nav class="hidden md:flex md:flex-col md:w-56 md:min-h-screen bg-white border-r border-gray-200 p-4">
+    <nav class="hidden md:flex md:flex-col md:w-56 md:sticky md:top-0 md:h-screen md:overflow-y-auto bg-white border-r border-gray-200 p-4">
       <a href="/" class="flex items-center gap-3 mb-8">
         <img src="{{ url_for('static', filename='owl.png') }}" alt="Pallas Athena" class="w-8 h-8 object-contain">
         <span class="text-lg font-semibold text-gray-900">Pallas Athena</span>
@@ -176,6 +176,12 @@
             Déconnexion
           </button>
         </form>
+
+        {# Legal links #}
+        <div class="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-x-3 gap-y-1 px-3 text-xs text-gray-400">
+          <a href="/privacy" target="_blank" rel="noopener" class="hover:text-gray-600">Confidentialité</a>
+          <a href="/terms" target="_blank" rel="noopener" class="hover:text-gray-600">Conditions d'utilisation</a>
+        </div>
       </div>
     </nav>
 
@@ -184,13 +190,6 @@
       {% block content %}{% endblock %}
     </main>
   </div>
-
-  {# ── Footer (legal links) ─────────────────────────────────────── #}
-  <footer class="hidden md:block border-t border-gray-200 py-4 px-6 text-center text-xs text-gray-400">
-    <a href="/privacy" target="_blank" rel="noopener" class="hover:text-gray-600">Confidentialité</a>
-    <span class="mx-2">·</span>
-    <a href="/terms" target="_blank" rel="noopener" class="hover:text-gray-600">Conditions d'utilisation</a>
-  </footer>
 
   {# ── Mobile bottom nav (< 768px) ─────────────────────────────── #}
   <nav class="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-gray-200 flex justify-around items-center z-40 pt-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"
