@@ -129,10 +129,8 @@ def _default_doc() -> dict:
         "conflict_check": "non_vérifié",
         "conflict_check_date": None,
         "conflict_check_notes": "",
-        # Mandataire / représentation
-        "mandataire_id": "",
-        "mandataire_kind": "",
-        "mandataire_notes": "",
+        # Mandataires (list of {"id", "kind", "notes"})
+        "mandataires": [],
         # Notes
         "notes": "",
         # Metadata (set by create/update)
@@ -212,31 +210,50 @@ def _validate(data: dict) -> list[str]:
             else:
                 data[f"{prefix}_postal_code"] = normalized
 
-    # Mandataire / représentation validation
-    mandataire_id = (data.get("mandataire_id") or "").strip()
-    mandataire_kind = (data.get("mandataire_kind") or "").strip()
-    if mandataire_id:
-        own_id = data.get("id", "")
-        if own_id and mandataire_id == own_id:
+    # Mandataires (list of representations) validation
+    mandataires = data.get("mandataires") or []
+    if not isinstance(mandataires, list):
+        errors.append("Format des mandataires invalide.")
+        mandataires = []
+
+    own_id = data.get("id", "")
+    seen_ids: set[str] = set()
+    for idx, entry in enumerate(mandataires, start=1):
+        if not isinstance(entry, dict):
+            errors.append(f"Mandataire #{idx} : format invalide.")
+            continue
+        mid = (entry.get("id") or "").strip()
+        kind = (entry.get("kind") or "").strip()
+        if not mid:
+            errors.append(f"Mandataire #{idx} : aucun contact sélectionné.")
+            continue
+        if own_id and mid == own_id:
             errors.append("Un contact ne peut pas être son propre mandataire.")
+            continue
+        if mid in seen_ids:
+            errors.append(f"Mandataire #{idx} : doublon.")
+            continue
+        seen_ids.add(mid)
+        target = get_partie(mid)
+        target_label = display_name(target) if target else f"#{idx}"
+        if not target:
+            errors.append(f"Mandataire #{idx} : contact introuvable.")
         else:
-            target = get_partie(mandataire_id)
-            if not target:
-                errors.append("Le mandataire sélectionné est introuvable.")
-            else:
-                if target.get("type") != "individual":
-                    errors.append(
-                        "Le mandataire doit être une personne physique."
-                    )
-                elif target.get("contact_role") != data.get("contact_role"):
-                    errors.append(
-                        "Le mandataire doit avoir le même rôle "
-                        "que la partie représentée."
-                    )
-        if mandataire_kind not in MANDATAIRE_KIND_LABELS:
-            errors.append("Le type de représentation est requis.")
-    elif mandataire_kind and mandataire_kind not in MANDATAIRE_KIND_LABELS:
-        errors.append("Type de représentation invalide.")
+            if target.get("type") != "individual":
+                errors.append(
+                    f"Mandataire « {target_label} » : "
+                    "doit être une personne physique."
+                )
+            elif target.get("contact_role") != data.get("contact_role"):
+                errors.append(
+                    f"Mandataire « {target_label} » : "
+                    "doit avoir le même rôle que la partie représentée."
+                )
+        if kind not in MANDATAIRE_KIND_LABELS:
+            errors.append(
+                f"Mandataire « {target_label} » : "
+                "type de représentation invalide."
+            )
 
     return errors
 
@@ -272,11 +289,29 @@ def _normalize(data: dict) -> dict:
             if normalized:
                 data[f"{prefix}_postal_code"] = normalized
 
-    # Clear mandataire metadata when no mandataire is selected
-    if not (data.get("mandataire_id") or "").strip():
-        data["mandataire_id"] = ""
-        data["mandataire_kind"] = ""
-        data["mandataire_notes"] = ""
+    # Sanitize the mandataires list: drop empties, dedupe by id, coerce types.
+    raw_list = data.get("mandataires") or []
+    if not isinstance(raw_list, list):
+        raw_list = []
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw_list:
+        if not isinstance(entry, dict):
+            continue
+        mid = str(entry.get("id") or "").strip()
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        cleaned.append({
+            "id": mid,
+            "kind": str(entry.get("kind") or "").strip(),
+            "notes": str(entry.get("notes") or "").strip(),
+        })
+    data["mandataires"] = cleaned
+
+    # Drop any legacy single-mandataire fields so they don't get re-saved.
+    for legacy_key in ("mandataire_id", "mandataire_kind", "mandataire_notes"):
+        data.pop(legacy_key, None)
 
     return data
 
@@ -291,6 +326,32 @@ def display_name(partie: dict) -> str:
         partie.get("last_name", ""),
     ]
     return " ".join(p for p in parts if p).strip()
+
+
+def _migrate_mandataires(partie: Optional[dict]) -> Optional[dict]:
+    """Translate legacy single-mandataire fields into the new list format.
+
+    Older docs stored a single mandataire as `mandataire_id` /
+    `mandataire_kind` / `mandataire_notes`. The current schema uses a
+    `mandataires` list of `{id, kind, notes}`. This helper rewrites
+    on read; the legacy keys are popped from the in-memory dict so
+    they aren't re-saved on the next `set()` (which is a full replace).
+    """
+    if not isinstance(partie, dict):
+        return partie
+    if not partie.get("mandataires"):
+        legacy_id = (partie.get("mandataire_id") or "").strip()
+        if legacy_id:
+            partie["mandataires"] = [{
+                "id": legacy_id,
+                "kind": partie.get("mandataire_kind") or "mandataire",
+                "notes": partie.get("mandataire_notes") or "",
+            }]
+        else:
+            partie["mandataires"] = []
+    for legacy_key in ("mandataire_id", "mandataire_kind", "mandataire_notes"):
+        partie.pop(legacy_key, None)
+    return partie
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
@@ -333,7 +394,7 @@ def get_partie(partie_id: str) -> Optional[dict]:
     try:
         doc = db.collection(COLLECTION).document(partie_id).get()
         if doc.exists:
-            return doc.to_dict()
+            return _migrate_mandataires(doc.to_dict())
     except Exception as exc:
         logger.warning("get_partie failed for %s: %s", partie_id, exc)
     return None

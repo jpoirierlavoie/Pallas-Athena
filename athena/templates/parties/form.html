@@ -3,19 +3,39 @@
 
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6"
-     data-mandataire-name="{{ mandataire._display_name if mandataire else '' }}"
+     data-self-id="{{ partie.id if partie and partie.id else '' }}"
+     data-mandataires-init='{{ mandataires|tojson }}'
+     data-mandataire-kind-labels='{{ mandataire_kind_labels|tojson }}'
      x-data="{
        partieType: '{{ (partie.type if partie else 'individual') }}',
        contactRole: '{{ (partie.contact_role if partie else 'client') }}',
        prefix: '{{ (partie.prefix if partie else '') }}',
        identityVerified: '{{ (partie.identity_verified if partie else 'non_vérifié') }}',
        conflictCheck: '{{ (partie.conflict_check if partie else 'non_vérifié') }}',
-       mandataireId: '{{ (partie.mandataire_id if partie and partie.mandataire_id else '') }}',
-       mandataireName: '',
-       mandataireKind: '{{ (partie.mandataire_kind if partie and partie.mandataire_kind else 'mandataire') }}'
+       selfId: '',
+       mandataires: [],
+       mandataireKindLabels: {},
+       pickerKind: 'mandataire'
      }"
-     x-init="mandataireName = $el.dataset.mandataireName || ''"
-     @mandataire-selected.window="mandataireId = $event.detail.id; mandataireName = $event.detail.name">
+     x-init="
+       selfId = $el.dataset.selfId || '';
+       mandataires = JSON.parse($el.dataset.mandatairesInit || '[]');
+       mandataireKindLabels = JSON.parse($el.dataset.mandataireKindLabels || '{}');
+     "
+     @mandataire-selected.window="
+       if (!mandataires.some(m => m.id === $event.detail.id)) {
+         mandataires.push({
+           id: $event.detail.id,
+           name: $event.detail.name,
+           kind: pickerKind,
+           notes: ''
+         });
+       }
+       const search = $el.querySelector('input[name=mandataire_query]');
+       if (search) search.value = '';
+       const results = document.getElementById('mandataire-results');
+       if (results) results.innerHTML = '';
+     ">
 
   {# ── Header ──────────────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
@@ -339,51 +359,56 @@
       </div>
     </div>
 
-    {# ═══ Section 5b — Mandataire / représentation ═══════════════ #}
+    {# ═══ Section 5b — Mandataires ═══════════════════════════════ #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-1">Mandataire / représentation</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-1"
+          x-text="mandataires.length > 1 ? 'Mandataires' : 'Mandataire'">Mandataire</h2>
       <p class="text-xs text-gray-500 mb-4">
         Pour une partie représentée par mandat, sous tutelle, sous curatelle, etc.
-        Le mandataire doit être une personne physique inscrite et avoir le même rôle
-        que la partie représentée.
+        Chaque mandataire doit être une personne physique inscrite et avoir le même
+        rôle que la partie représentée.
       </p>
 
-      {# Hidden fields holding the selected FK and a marker for the search picker #}
-      <input type="hidden" name="mandataire_id" :value="mandataireId">
+      {# Hidden serialization of the full list — sent to the server on submit. #}
+      <input type="hidden" name="mandataires_json" :value="JSON.stringify(mandataires)">
+
+      {# Hidden exclude list — self + every already-picked mandataire id, used by
+         the search endpoint to filter out invalid candidates. Re-evaluated by
+         Alpine each time `mandataires` or `selfId` changes. #}
       <input type="hidden" id="mandataire-exclude-input" name="exclude"
-             value="{{ partie.id if partie and partie.id else '' }}">
+             :value="[selfId, ...mandataires.map(m => m.id)].filter(Boolean).join(',')">
 
-      {# ── Selected mandataire pill ─────────────────────────────── #}
-      <div x-show="mandataireId" x-cloak class="flex items-center gap-3 p-3 mb-4 rounded-lg bg-indigo-50 border border-indigo-200">
-        <svg class="w-5 h-5 text-indigo-600 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
-        <span class="flex-1 text-sm font-medium text-gray-900" x-text="mandataireName"></span>
-        <button type="button"
-                @click="mandataireId=''; mandataireName=''"
-                class="text-xs font-medium text-indigo-700 hover:text-indigo-900">
-          Retirer
-        </button>
-      </div>
+      {# ── List of currently-added mandataires ─────────────────── #}
+      <ul x-show="mandataires.length > 0" x-cloak class="space-y-2 mb-4">
+        <template x-for="(m, idx) in mandataires" :key="m.id">
+          <li class="flex items-start gap-3 p-3 rounded-lg bg-indigo-50 border border-indigo-200">
+            <svg class="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-sm font-medium text-gray-900" x-text="m.name"></span>
+                <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-white text-gray-700 border border-indigo-200"
+                      x-text="mandataireKindLabels[m.kind] || m.kind"></span>
+              </div>
+              <input type="text"
+                     x-model="m.notes"
+                     placeholder="Notes (facultatif) — ex. : homologué le 2024-03-15"
+                     class="w-full mt-2 px-2 py-1 text-sm bg-white border border-indigo-200 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <button type="button"
+                    @click="mandataires.splice(idx, 1)"
+                    class="text-indigo-700 hover:text-indigo-900 flex-shrink-0"
+                    aria-label="Retirer ce mandataire">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+            </button>
+          </li>
+        </template>
+      </ul>
 
-      {# ── Picker (shown when no mandataire selected) ──────────── #}
-      <div x-show="!mandataireId" x-cloak>
-        <label class="block text-sm text-gray-700 mb-1">Rechercher un mandataire</label>
-        <input type="search"
-               name="q"
-               autocomplete="off"
-               placeholder="Tapez un nom, un courriel, un téléphone…"
-               hx-get="{{ url_for('parties.mandataire_search') }}"
-               hx-trigger="input changed delay:300ms, search"
-               hx-target="#mandataire-results"
-               hx-include="select[name='contact_role'], #mandataire-exclude-input"
-               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        <div id="mandataire-results" class="mt-2"></div>
-      </div>
-
-      {# ── Kind + notes (only relevant when a mandataire is selected) ── #}
-      <div x-show="mandataireId" x-cloak class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+      {# ── Add a new mandataire ────────────────────────────────── #}
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
         <div>
           <label class="block text-sm text-gray-700 mb-1">Type de représentation</label>
-          <select name="mandataire_kind" x-model="mandataireKind"
+          <select x-model="pickerKind"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
             {% for kind_key, kind_label in mandataire_kind_labels.items() %}
             <option value="{{ kind_key }}">{{ kind_label }}</option>
@@ -391,13 +416,19 @@
           </select>
         </div>
         <div>
-          <label class="block text-sm text-gray-700 mb-1">Notes</label>
-          <input type="text" name="mandataire_notes"
-                 value="{{ partie.mandataire_notes if partie else '' }}"
-                 placeholder="Ex. : homologué le 2024-03-15"
+          <label class="block text-sm text-gray-700 mb-1">Ajouter un mandataire</label>
+          <input type="search"
+                 name="mandataire_query"
+                 autocomplete="off"
+                 placeholder="Rechercher un contact…"
+                 hx-get="{{ url_for('parties.mandataire_search') }}"
+                 hx-trigger="input changed delay:300ms, search"
+                 hx-target="#mandataire-results"
+                 hx-include="select[name='contact_role'], #mandataire-exclude-input"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
+      <div id="mandataire-results"></div>
     </div>
 
     {# ═══ Section 6 — Conformité (clients only) ══════════════════ #}

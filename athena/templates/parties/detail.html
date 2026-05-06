@@ -121,18 +121,14 @@
           <dd class="text-gray-900"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
         </div>
         {% endif %}
+        {% if has_personal_address %}
+        {% set prefix = 'address' %}
+        {% include "parties/_address_letter.html" with context %}
+        {% endif %}
         {% if not has_personal_contact and not has_personal_address %}
         <p class="text-gray-400 text-xs">Aucune coordonnée personnelle</p>
         {% endif %}
       </dl>
-
-      {% if has_personal_address %}
-      <div class="{% if has_personal_contact %}mt-4 pt-4 border-t border-gray-100{% endif %}">
-        {% set prefix = 'address' %}
-        {% set heading = 'Adresse personnelle' %}
-        {% include "parties/_address_letter.html" with context %}
-      </div>
-      {% endif %}
     </div>
 
     {# ── Professional contact info ─────────────────────────────── #}
@@ -178,18 +174,14 @@
           <dd class="text-gray-900">{{ partie.fax|phone }}</dd>
         </div>
         {% endif %}
+        {% if has_work_address %}
+        {% set prefix = 'work_address' %}
+        {% include "parties/_address_letter.html" with context %}
+        {% endif %}
         {% if not has_work_contact and not has_work_address %}
         <p class="text-gray-400 text-xs">Aucune coordonnée professionnelle</p>
         {% endif %}
       </dl>
-
-      {% if has_work_address %}
-      <div class="{% if has_work_contact %}mt-4 pt-4 border-t border-gray-100{% endif %}">
-        {% set prefix = 'work_address' %}
-        {% set heading = 'Adresse professionnelle' %}
-        {% include "parties/_address_letter.html" with context %}
-      </div>
-      {% endif %}
     </div>
 
     {# ── Legal identifiers ─────────────────────────────────────── #}
@@ -220,31 +212,35 @@
     {% endif %}
   </div>
 
-  {# ── Mandataire / représentation ─────────────────────────────── #}
-  {% if partie.mandataire_id %}
+  {# ── Mandataires ─────────────────────────────────────────────── #}
+  {% if mandataires %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Mandataire / représentation</h2>
-    {% if mandataire %}
-    <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0">
-        <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
-      </div>
-      <div class="flex-1 min-w-0">
-        <a href="{{ url_for('parties.partie_detail', partie_id=mandataire.id) }}"
-           class="text-sm font-medium text-indigo-600 hover:underline block truncate">
-          {{ mandataire._display_name }}
-        </a>
-        <span class="inline-flex px-2 py-0.5 mt-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
-          {{ mandataire_kind_labels.get(partie.mandataire_kind, partie.mandataire_kind or 'Mandataire') }}
-        </span>
-      </div>
-    </div>
-    {% if partie.mandataire_notes %}
-    <p class="text-sm text-gray-700 mt-3 whitespace-pre-wrap">{{ partie.mandataire_notes }}</p>
-    {% endif %}
-    {% else %}
-    <p class="text-sm text-amber-700">Mandataire référencé mais introuvable. Modifiez le contact pour corriger.</p>
-    {% endif %}
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">
+      {{ 'Mandataires' if mandataires|length > 1 else 'Mandataire' }}
+    </h2>
+    <ul class="space-y-3">
+      {% for m in mandataires %}
+      <li class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0">
+          <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
+        </div>
+        <div class="flex-1 min-w-0">
+          {% if m.found %}
+          <a href="{{ url_for('parties.partie_detail', partie_id=m.id) }}"
+             class="text-sm font-medium text-indigo-600 hover:underline block truncate">{{ m.name }}</a>
+          {% else %}
+          <span class="text-sm font-medium text-amber-700 block truncate">{{ m.name }}</span>
+          {% endif %}
+          <span class="inline-flex px-2 py-0.5 mt-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
+            {{ mandataire_kind_labels.get(m.kind, m.kind or 'Mandataire') }}
+          </span>
+          {% if m.notes %}
+          <p class="text-sm text-gray-700 mt-2 whitespace-pre-wrap">{{ m.notes }}</p>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
   </div>
   {% endif %}
 

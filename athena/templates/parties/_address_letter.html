@@ -1,12 +1,13 @@
-{# Render an address in three-line letter format.
+{# Render an address as a single dl-style row: "Adresse" label on the left,
+   a 3-line letter-format address block on the right. Designed to live inside
+   the same `<dl>` as the rest of a contact card.
 
-Inputs (passed via `with`):
+Inputs (passed via `with` from the parent template):
   - partie: the partie dict
   - prefix: "address" or "work_address"
-  - heading: the sub-section heading text (e.g. "Adresse personnelle")
 
-Format:
-  LINE 1: {unit}-{street}                          (street is rendered exactly as entered)
+Format of the right-hand block:
+  LINE 1: {unit}-{street}                          (street rendered exactly as entered)
   LINE 2: {city} ({province}) {postal_code}        (province in brackets, no comma)
   LINE 3: {country}
 
@@ -42,14 +43,14 @@ records keep displaying correctly until they're rewritten on next save.
 {% endif %}
 
 {% if street or city or country %}
-<div>
-  <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">{{ heading }}</h3>
-  <address class="text-sm text-gray-700 not-italic leading-relaxed">
-    {% if line_one %}{{ line_one }}<br>{% endif %}
-    {% if city or province or postal %}
-      {{ city }}{% if province %} ({{ province }}){% endif %}{% if postal %} {{ postal }}{% endif %}<br>
-    {% endif %}
-    {% if country %}{{ country }}{% endif %}
-  </address>
+<div class="flex justify-between gap-4 items-start">
+  <dt class="text-gray-500 flex-shrink-0">Adresse</dt>
+  <dd class="text-gray-900">
+    <address class="not-italic leading-relaxed">
+      {% if line_one %}{{ line_one }}<br>{% endif %}
+      {% if city or province or postal %}{{ city }}{% if province %} ({{ province }}){% endif %}{% if postal %} {{ postal }}{% endif %}<br>{% endif %}
+      {% if country %}{{ country }}{% endif %}
+    </address>
+  </dd>
 </div>
 {% endif %}

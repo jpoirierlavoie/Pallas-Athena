@@ -1,5 +1,6 @@
 """Partie (contact/party) management routes — list, detail, create, edit, delete."""
 
+import json
 from datetime import datetime
 from typing import Any, Optional
 
@@ -93,26 +94,53 @@ def _form_data() -> dict:
         "identity_verified_notes": f.get("identity_verified_notes", "").strip(),
         "conflict_check": f.get("conflict_check", "non_vérifié"),
         "conflict_check_notes": f.get("conflict_check_notes", "").strip(),
-        # Mandataire / représentation
-        "mandataire_id": f.get("mandataire_id", "").strip(),
-        "mandataire_kind": f.get("mandataire_kind", "").strip(),
-        "mandataire_notes": f.get("mandataire_notes", "").strip(),
+        # Mandataires (parsed from a JSON-encoded list submitted by the form)
+        "mandataires": _parse_mandataires_json(f.get("mandataires_json", "")),
         # Notes
         "notes": f.get("notes", "").strip(),
     }
 
 
-def _resolve_mandataire(partie: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """Look up a partie's mandataire and attach a display name."""
-    if not partie:
-        return None
-    mid = str(partie.get("mandataire_id") or "").strip()
-    if not mid:
-        return None
-    m = get_partie(mid)
-    if m:
-        m["_display_name"] = display_name(m)
-    return m
+def _parse_mandataires_json(raw: str) -> list[dict[str, Any]]:
+    """Parse the form's `mandataires_json` field into a list of dicts.
+
+    Returns [] on any parse failure or if the value isn't a list.
+    Per-entry sanitation (dedup, type coercion) happens in the model's
+    `_normalize`; here we just surface what the form sent.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
+def _hydrate_mandataires(entries: Optional[list]) -> list[dict[str, Any]]:
+    """Resolve each `{id, kind, notes}` entry to include the partie's display name.
+
+    Used to enrich the data passed to detail/form templates so they can render
+    each linked partie's name without doing the lookup themselves.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        mid = str(entry.get("id") or "").strip()
+        if not mid:
+            continue
+        target = get_partie(mid)
+        out.append({
+            "id": mid,
+            "name": display_name(target) if target else "(introuvable)",
+            "kind": str(entry.get("kind") or "mandataire"),
+            "notes": str(entry.get("notes") or ""),
+            "found": target is not None,
+        })
+    return out
 
 
 # ── List ──────────────────────────────────────────────────────────────────
@@ -181,9 +209,10 @@ def mandataire_search() -> str:
     contact_role as the partie being represented. The current partie is
     excluded from results (no self-reference).
     """
-    q = request.args.get("q", "").strip()
+    q = request.args.get("mandataire_query", "").strip() or request.args.get("q", "").strip()
     role = request.args.get("contact_role", "").strip()
-    exclude_id = request.args.get("exclude", "").strip()
+    exclude_raw = request.args.get("exclude", "") or ""
+    exclude_ids = {eid.strip() for eid in exclude_raw.split(",") if eid.strip()}
 
     if role not in VALID_CONTACT_ROLES:
         return render_template(
@@ -197,8 +226,8 @@ def mandataire_search() -> str:
         role_filter=role,
         search=q or None,
     )
-    if exclude_id:
-        results = [p for p in results if p.get("id") != exclude_id]
+    if exclude_ids:
+        results = [p for p in results if p.get("id") not in exclude_ids]
     for p in results:
         p["_display_name"] = display_name(p)
     return render_template(
@@ -228,12 +257,12 @@ def partie_detail(partie_id: str) -> str:
 
     partie["_display_name"] = display_name(partie)
     dossiers = list_dossiers_for_partie(partie_id)
-    mandataire = _resolve_mandataire(partie)
+    mandataires = _hydrate_mandataires(partie.get("mandataires"))
     return render_template(
         "parties/detail.html",
         partie=partie,
         role_labels=ROLE_LABELS,
-        mandataire=mandataire,
+        mandataires=mandataires,
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         dossiers=dossiers,
         dossier_status_labels=DOSSIER_STATUS_LABELS,
@@ -253,7 +282,7 @@ def partie_new() -> str:
         partie=None,
         errors=[],
         role_labels=ROLE_LABELS,
-        mandataire=None,
+        mandataires=[],
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
     )
 
@@ -271,7 +300,7 @@ def partie_create() -> str:
             partie=data,
             errors=errors,
             role_labels=ROLE_LABELS,
-            mandataire=_resolve_mandataire(data),
+            mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         )
 
@@ -303,7 +332,7 @@ def partie_edit(partie_id: str) -> str:
         partie=partie,
         errors=[],
         role_labels=ROLE_LABELS,
-        mandataire=_resolve_mandataire(partie),
+        mandataires=_hydrate_mandataires(partie.get("mandataires")),
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
     )
 
@@ -322,7 +351,7 @@ def partie_update(partie_id: str) -> str:
             partie=data,
             errors=errors,
             role_labels=ROLE_LABELS,
-            mandataire=_resolve_mandataire(data),
+            mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         )
 
