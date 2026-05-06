@@ -17,6 +17,19 @@
   </div>
 
   {# ── Filters ──────────────────────────────────────────────── #}
+  {# Filter row.
+
+     Mobile-first sizing: every child has `min-w-0` so it can shrink inside the
+     flex container, and the selects carry `max-w-full` to cap at the parent's
+     width. Without these, the dossier <select> sizes itself to its widest
+     `<option>` ("file_number — full dossier title"), which routinely exceeds
+     the viewport width on a phone and pushes the row past the right edge.
+     `flex-wrap` lets each control wrap to its own row when there isn't enough
+     space; on tablet+ they sit side-by-side.
+
+     The search input drops the previous `min-w-[200px]` (which fought against
+     shrinking) for `min-w-0`, and keeps `flex-1` so it grows to fill leftover
+     space when there's room. #}
   <div id="filters" class="flex flex-wrap gap-3 mb-6">
     <input type="search"
            name="q"
@@ -27,7 +40,7 @@
            hx-target="#browser-content"
            hx-include="[name='category'],[name='dossier_id'],[name='sort']"
            hx-push-url="true"
-           class="flex-1 min-w-[200px] px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+           class="flex-1 min-w-0 basis-full sm:basis-48 px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
 
     <select name="dossier_id"
             hx-get="{{ url_for('documents.document_list') }}"
@@ -35,7 +48,7 @@
             hx-target="#browser-content"
             hx-include="[name='q'],[name='category'],[name='sort']"
             hx-push-url="true"
-            class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            class="min-w-0 max-w-full truncate px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
       <option value="">Tous les dossiers</option>
       {% for d in dossiers %}
       <option value="{{ d.id }}" {{ 'selected' if dossier_id == d.id }}>{{ d.file_number }} — {{ d.title }}</option>
@@ -48,7 +61,7 @@
             hx-target="#browser-content"
             hx-include="[name='q'],[name='dossier_id'],[name='sort']"
             hx-push-url="true"
-            class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            class="min-w-0 max-w-full truncate px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
       <option value="">Toutes les catégories</option>
       {% for cat_key, cat_label in category_labels.items() %}
       <option value="{{ cat_key }}" {{ 'selected' if category_filter == cat_key }}>{{ cat_label }}</option>
@@ -61,7 +74,7 @@
             hx-target="#browser-content"
             hx-include="[name='q'],[name='dossier_id'],[name='category']"
             hx-push-url="true"
-            class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            class="min-w-0 max-w-full truncate px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
       <option value="created_at" {{ 'selected' if sort_by == 'created_at' }}>Date (récent)</option>
       <option value="name" {{ 'selected' if sort_by == 'name' }}>Nom</option>
       <option value="size" {{ 'selected' if sort_by == 'size' }}>Taille</option>

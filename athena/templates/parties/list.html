@@ -21,6 +21,9 @@
   </div>
 
   {# ── Search + role filter row ────────────────────────────────── #}
+  {# `min-w-0` on the search input is critical: by default a flex item's
+     `min-width: auto` is driven by the input's intrinsic size, which keeps
+     it from shrinking and pushes the select past the viewport on phones. #}
   <div id="filters" class="flex gap-3 mb-6">
     <input type="search"
            name="q"
@@ -31,7 +34,7 @@
            hx-target="#partie-rows"
            hx-include="[name='role']"
            hx-push-url="true"
-           class="flex-1 px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+           class="flex-1 min-w-0 px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
            autocomplete="off">
     <select name="role"
             hx-get="{{ url_for('parties.partie_list') }}"
@@ -39,7 +42,7 @@
             hx-target="#partie-rows"
             hx-include="[name='q']"
             hx-push-url="true"
-            class="px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+            class="flex-shrink-0 px-3 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       {% for role_key, role_label in role_labels.items() %}
       <option value="{{ role_key }}" {{ 'selected' if role_filter == role_key }}>{{ role_label }}</option>
       {% endfor %}
