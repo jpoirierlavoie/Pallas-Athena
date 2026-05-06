@@ -49,6 +49,29 @@
         {% if partie.type == 'organization' and partie.trade_name %}
         <p class="text-sm text-gray-500 mt-1">Aussi connue sous : {{ partie.trade_name }}</p>
         {% endif %}
+
+        {# Profile chips: language, gender, pronouns — folded into the header card #}
+        {% if partie.language or partie.gender or partie.pronouns %}
+        {% set lang_labels = {'fr': 'Français', 'en': 'English', 'es': 'Español'} %}
+        {% set gender_labels = {'M': 'Homme', 'F': 'Femme', 'O': 'Autre', 'N': 'Ne s\'applique pas', 'U': 'Non précisé'} %}
+        <div class="flex flex-wrap gap-1.5 mt-2">
+          {% if partie.language %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
+            {{ lang_labels.get(partie.language, partie.language) }}
+          </span>
+          {% endif %}
+          {% if partie.gender %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
+            {{ gender_labels.get(partie.gender, partie.gender) }}
+          </span>
+          {% endif %}
+          {% if partie.pronouns %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
+            {{ partie.pronouns }}
+          </span>
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
     </div>
 
@@ -73,6 +96,8 @@
 
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     {# ── Personal contact info ─────────────────────────────────── #}
+    {% set has_personal_address = partie.address_street or partie.address_city %}
+    {% set has_personal_contact = partie.email or partie.phone_cell or partie.phone_home %}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées personnelles</h2>
       <dl class="space-y-2 text-sm">
@@ -94,13 +119,24 @@
           <dd class="text-gray-900"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
         </div>
         {% endif %}
-        {% if not partie.email and not partie.phone_cell and not partie.phone_home %}
+        {% if not has_personal_contact and not has_personal_address %}
         <p class="text-gray-400 text-xs">Aucune coordonnée personnelle</p>
         {% endif %}
       </dl>
+
+      {% if has_personal_address %}
+      <div class="{% if has_personal_contact %}mt-4 pt-4 border-t border-gray-100{% endif %}">
+        {% set prefix = 'address' %}
+        {% set heading = 'Adresse personnelle' %}
+        {% include "parties/_address_letter.html" with context %}
+      </div>
+      {% endif %}
     </div>
 
     {# ── Professional contact info ─────────────────────────────── #}
+    {% set has_work_address = partie.work_address_street or partie.work_address_city %}
+    {% set has_work_contact = partie.job_title or partie.job_role or partie.organization
+                              or partie.email_work or partie.phone_work or partie.fax %}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées professionnelles</h2>
       <dl class="space-y-2 text-sm">
@@ -140,68 +176,19 @@
           <dd class="text-gray-900">{{ partie.fax|phone }}</dd>
         </div>
         {% endif %}
-        {% if not partie.job_title and not partie.job_role and not partie.organization and not partie.email_work and not partie.phone_work and not partie.fax %}
+        {% if not has_work_contact and not has_work_address %}
         <p class="text-gray-400 text-xs">Aucune coordonnée professionnelle</p>
         {% endif %}
       </dl>
-    </div>
 
-    {# ── Profile (language, gender, pronouns) ──────────────────── #}
-    {% if partie.language or partie.gender or partie.pronouns %}
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-3">Profil</h2>
-      {% set lang_labels = {'fr': 'Français', 'en': 'English', 'es': 'Español'} %}
-      {% set gender_labels = {'M': 'Homme', 'F': 'Femme', 'O': 'Autre', 'N': 'Ne s\'applique pas', 'U': 'Non précisé'} %}
-      <dl class="space-y-2 text-sm">
-        {% if partie.language %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Langue</dt>
-          <dd class="text-gray-900">{{ lang_labels.get(partie.language, partie.language) }}</dd>
-        </div>
-        {% endif %}
-        {% if partie.gender %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Genre</dt>
-          <dd class="text-gray-900">{{ gender_labels.get(partie.gender, partie.gender) }}</dd>
-        </div>
-        {% endif %}
-        {% if partie.pronouns %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Pronoms</dt>
-          <dd class="text-gray-900">{{ partie.pronouns }}</dd>
-        </div>
-        {% endif %}
-      </dl>
+      {% if has_work_address %}
+      <div class="{% if has_work_contact %}mt-4 pt-4 border-t border-gray-100{% endif %}">
+        {% set prefix = 'work_address' %}
+        {% set heading = 'Adresse professionnelle' %}
+        {% include "parties/_address_letter.html" with context %}
+      </div>
+      {% endif %}
     </div>
-    {% endif %}
-
-    {# ── Personal address ──────────────────────────────────────── #}
-    {% if partie.address_street or partie.address_city %}
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-3">Adresse personnelle</h2>
-      <address class="text-sm text-gray-700 not-italic leading-relaxed">
-        {% if partie.address_street %}{{ partie.address_street }}<br>{% endif %}
-        {% if partie.address_unit %}{{ partie.address_unit }}<br>{% endif %}
-        {% if partie.address_city %}{{ partie.address_city }}{% endif %}{% if partie.address_province %}, {{ partie.address_province }}{% endif %}
-        {% if partie.address_postal_code %} {{ partie.address_postal_code }}{% endif %}
-        {% if partie.address_country and partie.address_country != 'CA' %}<br>{{ partie.address_country }}{% endif %}
-      </address>
-    </div>
-    {% endif %}
-
-    {# ── Work address ──────────────────────────────────────────── #}
-    {% if partie.work_address_street or partie.work_address_city %}
-    <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-3">Adresse professionnelle</h2>
-      <address class="text-sm text-gray-700 not-italic leading-relaxed">
-        {% if partie.work_address_street %}{{ partie.work_address_street }}<br>{% endif %}
-        {% if partie.work_address_unit %}{{ partie.work_address_unit }}<br>{% endif %}
-        {% if partie.work_address_city %}{{ partie.work_address_city }}{% endif %}{% if partie.work_address_province %}, {{ partie.work_address_province }}{% endif %}
-        {% if partie.work_address_postal_code %} {{ partie.work_address_postal_code }}{% endif %}
-        {% if partie.work_address_country and partie.work_address_country != 'CA' %}<br>{{ partie.work_address_country }}{% endif %}
-      </address>
-    </div>
-    {% endif %}
 
     {# ── Legal identifiers ─────────────────────────────────────── #}
     {% if partie.bar_number or partie.company_neq or partie.governing_law %}

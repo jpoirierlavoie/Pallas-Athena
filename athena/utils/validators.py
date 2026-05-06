@@ -134,7 +134,11 @@ def validate_email(raw: str) -> tuple[Optional[str], Optional[str]]:
 
 # ── Postal Code ──────────────────────────────────────────────────────────
 
-def normalize_postal_code(raw: str, country: str = "CA") -> Optional[str]:
+_CANADIAN_COUNTRY_VALUES = {"ca", "can", "canada"}
+_AMERICAN_COUNTRY_VALUES = {"us", "usa", "états-unis", "etats-unis", "united states"}
+
+
+def normalize_postal_code(raw: str, country: str = "Canada") -> Optional[str]:
     """Normalize a postal code.
 
     Canadian format: "A1A 1A1" (letter-digit-letter space digit-letter-digit)
@@ -145,6 +149,9 @@ def normalize_postal_code(raw: str, country: str = "CA") -> Optional[str]:
     US format: "12345" or "12345-6789"
 
     Other countries: return stripped/uppercased as-is (no validation).
+
+    Recognizes both legacy two-letter codes ("CA"/"US") and full names
+    ("Canada", "États-Unis", …) for the *country* argument.
     """
     if not raw:
         return None
@@ -152,7 +159,9 @@ def normalize_postal_code(raw: str, country: str = "CA") -> Optional[str]:
     if not stripped:
         return None
 
-    if country == "CA":
+    country_key = (country or "").strip().lower()
+
+    if country_key in _CANADIAN_COUNTRY_VALUES:
         no_space = stripped.replace(" ", "")
         if len(no_space) == 6:
             formatted = f"{no_space[:3]} {no_space[3:]}"
@@ -160,7 +169,7 @@ def normalize_postal_code(raw: str, country: str = "CA") -> Optional[str]:
                 return formatted
         return None
 
-    if country == "US":
+    if country_key in _AMERICAN_COUNTRY_VALUES:
         if re.match(r"^\d{5}(-\d{4})?$", stripped):
             return stripped
         return None
@@ -170,7 +179,7 @@ def normalize_postal_code(raw: str, country: str = "CA") -> Optional[str]:
 
 
 def validate_postal_code(
-    raw: str, country: str = "CA"
+    raw: str, country: str = "Canada"
 ) -> tuple[Optional[str], Optional[str]]:
     """Validate and normalize a postal code.
 
@@ -189,9 +198,28 @@ def validate_postal_code(
 
 # ── Address Defaults ─────────────────────────────────────────────────────
 
-DEFAULT_COUNTRY = "CA"
-DEFAULT_PROVINCE = "QC"
+DEFAULT_COUNTRY = "Canada"
+DEFAULT_PROVINCE = "Québec"
 DEFAULT_CITY = "Montréal"
+
+# Legacy two-letter codes are migrated to full names on the next save so the
+# stored value matches the rest of the address (which is already long-form).
+_LEGACY_COUNTRY_MAP = {"CA": "Canada", "US": "États-Unis"}
+_LEGACY_PROVINCE_MAP = {
+    "QC": "Québec",
+    "ON": "Ontario",
+    "BC": "Colombie-Britannique",
+    "AB": "Alberta",
+    "MB": "Manitoba",
+    "SK": "Saskatchewan",
+    "NB": "Nouveau-Brunswick",
+    "NS": "Nouvelle-Écosse",
+    "PE": "Île-du-Prince-Édouard",
+    "NL": "Terre-Neuve-et-Labrador",
+    "YT": "Yukon",
+    "NT": "Territoires du Nord-Ouest",
+    "NU": "Nunavut",
+}
 
 
 def apply_address_defaults(data: dict, prefix: str = "address") -> dict:
@@ -202,30 +230,43 @@ def apply_address_defaults(data: dict, prefix: str = "address") -> dict:
         prefix: The address field prefix ("address" for personal,
                 "work_address" for professional).
 
-    Defaults applied when the field is empty/missing:
-    - {prefix}_country → "CA"
-    - {prefix}_province → "QC" (only if country is "CA")
-    - {prefix}_city → "Montréal" (only if province is "QC" and street is non-empty)
+    Behavior:
+    - Migrates legacy 2-letter codes to full names ("CA" → "Canada",
+      "QC" → "Québec", …) so storage stays consistent with the new defaults.
+    - Defaults `{prefix}_country` to "Canada" when empty.
+    - Defaults `{prefix}_province` to "Québec" when country is "Canada".
+    - Defaults `{prefix}_city` to "Montréal" when province is "Québec" and
+      a street is provided.
     """
     country_key = f"{prefix}_country"
     province_key = f"{prefix}_province"
     city_key = f"{prefix}_city"
     street_key = f"{prefix}_street"
 
-    if not data.get(country_key):
+    # Migrate legacy abbreviations to full names
+    raw_country = (data.get(country_key) or "").strip()
+    if raw_country.upper() in _LEGACY_COUNTRY_MAP:
+        data[country_key] = _LEGACY_COUNTRY_MAP[raw_country.upper()]
+
+    raw_province = (data.get(province_key) or "").strip()
+    if raw_province.upper() in _LEGACY_PROVINCE_MAP:
+        data[province_key] = _LEGACY_PROVINCE_MAP[raw_province.upper()]
+
+    # Apply defaults when fields are still empty
+    if not (data.get(country_key) or "").strip():
         data[country_key] = DEFAULT_COUNTRY
 
-    country = data.get(country_key, "")
+    country = (data.get(country_key) or "").strip()
 
-    if country == DEFAULT_COUNTRY and not data.get(province_key):
+    if country == DEFAULT_COUNTRY and not (data.get(province_key) or "").strip():
         data[province_key] = DEFAULT_PROVINCE
 
-    province = data.get(province_key, "")
+    province = (data.get(province_key) or "").strip()
 
     if (
         province == DEFAULT_PROVINCE
-        and not data.get(city_key)
-        and data.get(street_key, "").strip()
+        and not (data.get(city_key) or "").strip()
+        and (data.get(street_key) or "").strip()
     ):
         data[city_key] = DEFAULT_CITY
 

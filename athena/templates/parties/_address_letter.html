@@ -1,0 +1,62 @@
+{# Render an address in three-line letter format.
+
+Inputs (passed via `with`):
+  - partie: the partie dict
+  - prefix: "address" or "work_address"
+  - heading: the sub-section heading text (e.g. "Adresse personnelle")
+
+Format:
+  LINE 1: {unit}-{street_number}, {street_name}    (only one comma — after the number)
+  LINE 2: {city} ({province}) {postal_code}        (province in brackets, no comma)
+  LINE 3: {country}
+
+Legacy two-letter codes ("CA", "QC", …) are expanded to full names so old
+records keep displaying correctly until they're rewritten on next save.
+#}
+{% set street = (partie[prefix ~ '_street'] or '')|trim %}
+{% set unit = (partie[prefix ~ '_unit'] or '')|trim %}
+{% set city = (partie[prefix ~ '_city'] or '')|trim %}
+{% set province_raw = (partie[prefix ~ '_province'] or '')|trim %}
+{% set postal = (partie[prefix ~ '_postal_code'] or '')|trim %}
+{% set country_raw = (partie[prefix ~ '_country'] or '')|trim %}
+
+{% set province_full_map = {
+  'QC': 'Québec', 'ON': 'Ontario', 'BC': 'Colombie-Britannique',
+  'AB': 'Alberta', 'MB': 'Manitoba', 'SK': 'Saskatchewan',
+  'NB': 'Nouveau-Brunswick', 'NS': 'Nouvelle-Écosse',
+  'PE': 'Île-du-Prince-Édouard', 'NL': 'Terre-Neuve-et-Labrador',
+  'YT': 'Yukon', 'NT': 'Territoires du Nord-Ouest', 'NU': 'Nunavut'
+} %}
+{% set country_full_map = {'CA': 'Canada', 'US': 'États-Unis'} %}
+
+{% set province = province_full_map.get(province_raw|upper, province_raw) %}
+{% set country = country_full_map.get(country_raw|upper, country_raw) %}
+
+{# Split a leading street number from the rest of the street so we can
+   insert the comma after the number. Tolerant: if the first whitespace-
+   delimited token doesn't start with a digit, leave the street as-is. #}
+{% set street_parts = street.split(' ', 1) %}
+{% set has_number = street_parts|length == 2 and street_parts[0] and street_parts[0][0] in '0123456789' %}
+{% if has_number %}
+  {% set line_one_main = street_parts[0] ~ ', ' ~ street_parts[1] %}
+{% else %}
+  {% set line_one_main = street %}
+{% endif %}
+{% if unit and street %}
+  {% set line_one = unit ~ '-' ~ line_one_main %}
+{% else %}
+  {% set line_one = line_one_main %}
+{% endif %}
+
+{% if street or city or country %}
+<div>
+  <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">{{ heading }}</h3>
+  <address class="text-sm text-gray-700 not-italic leading-relaxed">
+    {% if line_one %}{{ line_one }}<br>{% endif %}
+    {% if city or province or postal %}
+      {{ city }}{% if province %} ({{ province }}){% endif %}{% if postal %} {{ postal }}{% endif %}<br>
+    {% endif %}
+    {% if country %}{{ country }}{% endif %}
+  </address>
+</div>
+{% endif %}

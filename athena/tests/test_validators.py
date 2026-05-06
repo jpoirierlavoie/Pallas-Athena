@@ -189,8 +189,8 @@ def test_validate_postal_empty():
 def test_address_defaults_empty():
     data = {}
     result = apply_address_defaults(data, "address")
-    assert result["address_country"] == "CA"
-    assert result["address_province"] == "QC"
+    assert result["address_country"] == "Canada"
+    assert result["address_province"] == "Québec"
     # No street → no city default
     assert result.get("address_city", "") == ""
 
@@ -204,27 +204,34 @@ def test_address_city_no_default_without_street():
     result = apply_address_defaults(data, "address")
     assert result.get("address_city", "") == ""
 
-def test_address_existing_country_preserved():
+def test_address_legacy_country_code_migrated():
+    # Legacy "CA" should be rewritten to the full name on save.
+    data = {"address_country": "CA"}
+    result = apply_address_defaults(data, "address")
+    assert result["address_country"] == "Canada"
+    assert result["address_province"] == "Québec"
+
+def test_address_legacy_us_code_migrated():
     data = {"address_country": "US"}
     result = apply_address_defaults(data, "address")
-    assert result["address_country"] == "US"
-    # Province not defaulted for non-CA
+    assert result["address_country"] == "États-Unis"
+    # Province not defaulted for non-Canadian addresses
     assert result.get("address_province", "") == ""
 
-def test_address_existing_values_not_overwritten():
+def test_address_legacy_province_code_migrated():
     data = {
-        "address_country": "CA",
+        "address_country": "Canada",
         "address_province": "ON",
         "address_city": "Toronto",
         "address_street": "1 Bay Street",
     }
     result = apply_address_defaults(data, "address")
-    assert result["address_province"] == "ON"
+    assert result["address_province"] == "Ontario"
     assert result["address_city"] == "Toronto"
 
 def test_work_address_prefix():
     data = {"work_address_street": "1000 De La Gauchetière"}
     result = apply_address_defaults(data, "work_address")
-    assert result["work_address_country"] == "CA"
-    assert result["work_address_province"] == "QC"
+    assert result["work_address_country"] == "Canada"
+    assert result["work_address_province"] == "Québec"
     assert result["work_address_city"] == "Montréal"

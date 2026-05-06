@@ -3,6 +3,7 @@
 
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6"
+     data-mandataire-name="{{ mandataire._display_name if mandataire else '' }}"
      x-data="{
        partieType: '{{ (partie.type if partie else 'individual') }}',
        contactRole: '{{ (partie.contact_role if partie else 'client') }}',
@@ -10,9 +11,10 @@
        identityVerified: '{{ (partie.identity_verified if partie else 'non_vérifié') }}',
        conflictCheck: '{{ (partie.conflict_check if partie else 'non_vérifié') }}',
        mandataireId: '{{ (partie.mandataire_id if partie and partie.mandataire_id else '') }}',
-       mandataireName: {{ (mandataire._display_name if mandataire else '')|tojson }},
+       mandataireName: '',
        mandataireKind: '{{ (partie.mandataire_kind if partie and partie.mandataire_kind else 'mandataire') }}'
      }"
+     x-init="mandataireName = $el.dataset.mandataireName || ''"
      @mandataire-selected.window="mandataireId = $event.detail.id; mandataireName = $event.detail.name">
 
   {# ── Header ──────────────────────────────────────────────────── #}
@@ -192,6 +194,7 @@
         <div class="sm:col-span-2">
           <label class="block text-sm text-gray-700 mb-1">Rue</label>
           <input type="text" name="address_street" value="{{ partie.address_street if partie else '' }}"
+                 placeholder="Ex. : 450 rue Sainte-Catherine Ouest"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
@@ -201,12 +204,12 @@
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Ville</label>
-          <input type="text" name="address_city" value="{{ partie.address_city if partie else '' }}"
+          <input type="text" name="address_city" value="{{ partie.address_city if partie else 'Montréal' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
           <label class="block text-sm text-gray-700 mb-1">Province</label>
-          <input type="text" name="address_province" value="{{ partie.address_province if partie else 'QC' }}"
+          <input type="text" name="address_province" value="{{ partie.address_province if partie else 'Québec' }}"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
@@ -214,6 +217,11 @@
           <input type="text" name="address_postal_code" value="{{ partie.address_postal_code if partie else '' }}"
                  placeholder="A1A 1A1" maxlength="7"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Pays</label>
+          <input type="text" name="address_country" value="{{ partie.address_country if partie else 'Canada' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
     </div>
@@ -266,6 +274,7 @@
         <div class="sm:col-span-2">
           <label class="block text-sm text-gray-700 mb-1">Rue</label>
           <input type="text" name="work_address_street" value="{{ partie.work_address_street if partie else '' }}"
+                 placeholder="Ex. : 1 Place Ville Marie"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
         <div>
@@ -288,6 +297,11 @@
           <input type="text" name="work_address_postal_code" value="{{ partie.work_address_postal_code if partie else '' }}"
                  placeholder="A1A 1A1" maxlength="7"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 uppercase">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Pays</label>
+          <input type="text" name="work_address_country" value="{{ partie.work_address_country if partie else 'Canada' }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
         </div>
       </div>
     </div>
