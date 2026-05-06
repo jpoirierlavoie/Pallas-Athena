@@ -6,7 +6,7 @@ Inputs (passed via `with`):
   - heading: the sub-section heading text (e.g. "Adresse personnelle")
 
 Format:
-  LINE 1: {unit}-{street_number}, {street_name}    (only one comma — after the number)
+  LINE 1: {unit}-{street}                          (street is rendered exactly as entered)
   LINE 2: {city} ({province}) {postal_code}        (province in brackets, no comma)
   LINE 3: {country}
 
@@ -32,20 +32,13 @@ records keep displaying correctly until they're rewritten on next save.
 {% set province = province_full_map.get(province_raw|upper, province_raw) %}
 {% set country = country_full_map.get(country_raw|upper, country_raw) %}
 
-{# Split a leading street number from the rest of the street so we can
-   insert the comma after the number. Tolerant: if the first whitespace-
-   delimited token doesn't start with a digit, leave the street as-is. #}
-{% set street_parts = street.split(' ', 1) %}
-{% set has_number = street_parts|length == 2 and street_parts[0] and street_parts[0][0] in '0123456789' %}
-{% if has_number %}
-  {% set line_one_main = street_parts[0] ~ ', ' ~ street_parts[1] %}
-{% else %}
-  {% set line_one_main = street %}
-{% endif %}
+{# Line 1 = "{unit}-{street}" if a unit is provided, else "{street}".
+   The street is rendered exactly as the user entered it — punctuation
+   (commas, etc.) is the user's responsibility. #}
 {% if unit and street %}
-  {% set line_one = unit ~ '-' ~ line_one_main %}
+  {% set line_one = unit ~ '-' ~ street %}
 {% else %}
-  {% set line_one = line_one_main %}
+  {% set line_one = street %}
 {% endif %}
 
 {% if street or city or country %}

@@ -35,12 +35,16 @@
           {{ role_labels.get(c.contact_role, 'Autre') }}
         </span>
       </div>
-      {# Contact info line #}
+      {# Contact info line — professional first, fall back to personal #}
+      {% set list_email = c.email_work or c.email %}
+      {% set list_phone = c.phone_work or c.phone_cell or c.phone_home %}
+      {% if list_email or list_phone %}
       <div class="text-xs text-gray-500 mt-1 truncate">
-        {% if c.email %}{{ c.email }}{% endif %}
-        {% if c.email and c.phone_cell %} · {% endif %}
-        {% if c.phone_cell %}{{ c.phone_cell|phone }}{% endif %}
+        {% if list_email %}{{ list_email }}{% endif %}
+        {% if list_email and list_phone %} · {% endif %}
+        {% if list_phone %}{{ list_phone|phone }}{% endif %}
       </div>
+      {% endif %}
     </div>
 
     {# Chevron #}
