@@ -1,0 +1,30 @@
+{# Partial: HTMX results for the mandataire picker on the partie form. #}
+{% if message %}
+<p class="text-xs text-gray-400 px-3 py-2">{{ message }}</p>
+{% elif parties %}
+<ul class="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 bg-white max-h-72 overflow-y-auto">
+  {% for p in parties %}
+  <li>
+    <button type="button"
+            class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center gap-3"
+            @click='$dispatch("mandataire-selected", { id: "{{ p.id }}", name: {{ p._display_name|tojson }} })'>
+      <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center flex-shrink-0">
+        <span class="text-xs font-semibold text-gray-500">
+          {{ (p.first_name or '?')[0]|upper }}{{ (p.last_name or '?')[0]|upper }}
+        </span>
+      </div>
+      <div class="flex-1 min-w-0">
+        <span class="font-medium text-gray-900 block truncate">{{ p._display_name }}</span>
+        <span class="text-xs text-gray-500 truncate block">
+          {% if p.email %}{{ p.email }}{% endif %}
+          {% if p.email and p.phone_cell %} · {% endif %}
+          {% if p.phone_cell %}{{ p.phone_cell|phone }}{% endif %}
+        </span>
+      </div>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-xs text-gray-400 px-3 py-2">Aucune personne physique du même rôle ne correspond.</p>
+{% endif %}

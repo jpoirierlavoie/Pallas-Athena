@@ -64,6 +64,15 @@ ROLE_LABELS = {
     "autre": "Autre",
 }
 
+# Mandataire / représentation kinds
+MANDATAIRE_KIND_LABELS = {
+    "mandataire": "Mandataire",
+    "tuteur": "Tuteur(trice)",
+    "curateur": "Curateur(trice)",
+    "représentant_légal": "Représentant(e) légal(e)",
+    "autre": "Autre",
+}
+
 
 def _default_doc() -> dict:
     """Return a dict with every partie field set to its default value."""
@@ -120,6 +129,10 @@ def _default_doc() -> dict:
         "conflict_check": "non_vérifié",
         "conflict_check_date": None,
         "conflict_check_notes": "",
+        # Mandataire / représentation
+        "mandataire_id": "",
+        "mandataire_kind": "",
+        "mandataire_notes": "",
         # Notes
         "notes": "",
         # Metadata (set by create/update)
@@ -199,6 +212,32 @@ def _validate(data: dict) -> list[str]:
             else:
                 data[f"{prefix}_postal_code"] = normalized
 
+    # Mandataire / représentation validation
+    mandataire_id = (data.get("mandataire_id") or "").strip()
+    mandataire_kind = (data.get("mandataire_kind") or "").strip()
+    if mandataire_id:
+        own_id = data.get("id", "")
+        if own_id and mandataire_id == own_id:
+            errors.append("Un contact ne peut pas être son propre mandataire.")
+        else:
+            target = get_partie(mandataire_id)
+            if not target:
+                errors.append("Le mandataire sélectionné est introuvable.")
+            else:
+                if target.get("type") != "individual":
+                    errors.append(
+                        "Le mandataire doit être une personne physique."
+                    )
+                elif target.get("contact_role") != data.get("contact_role"):
+                    errors.append(
+                        "Le mandataire doit avoir le même rôle "
+                        "que la partie représentée."
+                    )
+        if mandataire_kind not in MANDATAIRE_KIND_LABELS:
+            errors.append("Le type de représentation est requis.")
+    elif mandataire_kind and mandataire_kind not in MANDATAIRE_KIND_LABELS:
+        errors.append("Type de représentation invalide.")
+
     return errors
 
 
@@ -232,6 +271,12 @@ def _normalize(data: dict) -> dict:
             normalized = normalize_postal_code(raw_pc, country)
             if normalized:
                 data[f"{prefix}_postal_code"] = normalized
+
+    # Clear mandataire metadata when no mandataire is selected
+    if not (data.get("mandataire_id") or "").strip():
+        data["mandataire_id"] = ""
+        data["mandataire_kind"] = ""
+        data["mandataire_notes"] = ""
 
     return data
 

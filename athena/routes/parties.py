@@ -1,6 +1,7 @@
 """Partie (contact/party) management routes — list, detail, create, edit, delete."""
 
 from datetime import datetime
+from typing import Any, Optional
 
 from flask import (
     Blueprint,
@@ -15,6 +16,7 @@ from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
 from pagination import paginate
 from models.partie import (
+    MANDATAIRE_KIND_LABELS,
     ROLE_LABELS,
     VALID_CONTACT_ROLES,
     create_partie,
@@ -91,9 +93,26 @@ def _form_data() -> dict:
         "identity_verified_notes": f.get("identity_verified_notes", "").strip(),
         "conflict_check": f.get("conflict_check", "non_vérifié"),
         "conflict_check_notes": f.get("conflict_check_notes", "").strip(),
+        # Mandataire / représentation
+        "mandataire_id": f.get("mandataire_id", "").strip(),
+        "mandataire_kind": f.get("mandataire_kind", "").strip(),
+        "mandataire_notes": f.get("mandataire_notes", "").strip(),
         # Notes
         "notes": f.get("notes", "").strip(),
     }
+
+
+def _resolve_mandataire(partie: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Look up a partie's mandataire and attach a display name."""
+    if not partie:
+        return None
+    mid = str(partie.get("mandataire_id") or "").strip()
+    if not mid:
+        return None
+    m = get_partie(mid)
+    if m:
+        m["_display_name"] = display_name(m)
+    return m
 
 
 # ── List ──────────────────────────────────────────────────────────────────
@@ -153,6 +172,41 @@ def partie_search() -> str:
     return render_template("parties/_search_results.html", parties=results[:10])
 
 
+@parties_bp.route("/mandataire-search")
+@login_required
+def mandataire_search() -> str:
+    """Search for a mandataire candidate.
+
+    Restricted to personnes physiques (type=individual) of the same
+    contact_role as the partie being represented. The current partie is
+    excluded from results (no self-reference).
+    """
+    q = request.args.get("q", "").strip()
+    role = request.args.get("contact_role", "").strip()
+    exclude_id = request.args.get("exclude", "").strip()
+
+    if role not in VALID_CONTACT_ROLES:
+        return render_template(
+            "parties/_mandataire_search_results.html",
+            parties=[],
+            message="Sélectionnez d'abord un rôle.",
+        )
+
+    results = list_parties(
+        type_filter="individual",
+        role_filter=role,
+        search=q or None,
+    )
+    if exclude_id:
+        results = [p for p in results if p.get("id") != exclude_id]
+    for p in results:
+        p["_display_name"] = display_name(p)
+    return render_template(
+        "parties/_mandataire_search_results.html",
+        parties=results[:10],
+    )
+
+
 # ── Detail ────────────────────────────────────────────────────────────────
 
 
@@ -174,10 +228,13 @@ def partie_detail(partie_id: str) -> str:
 
     partie["_display_name"] = display_name(partie)
     dossiers = list_dossiers_for_partie(partie_id)
+    mandataire = _resolve_mandataire(partie)
     return render_template(
         "parties/detail.html",
         partie=partie,
         role_labels=ROLE_LABELS,
+        mandataire=mandataire,
+        mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         dossiers=dossiers,
         dossier_status_labels=DOSSIER_STATUS_LABELS,
         dossier_matter_type_labels=DOSSIER_MATTER_TYPE_LABELS,
@@ -196,6 +253,8 @@ def partie_new() -> str:
         partie=None,
         errors=[],
         role_labels=ROLE_LABELS,
+        mandataire=None,
+        mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
     )
 
 
@@ -212,6 +271,8 @@ def partie_create() -> str:
             partie=data,
             errors=errors,
             role_labels=ROLE_LABELS,
+            mandataire=_resolve_mandataire(data),
+            mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         )
 
     bump_ctag("parties")
@@ -242,6 +303,8 @@ def partie_edit(partie_id: str) -> str:
         partie=partie,
         errors=[],
         role_labels=ROLE_LABELS,
+        mandataire=_resolve_mandataire(partie),
+        mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
     )
 
 
@@ -259,6 +322,8 @@ def partie_update(partie_id: str) -> str:
             partie=data,
             errors=errors,
             role_labels=ROLE_LABELS,
+            mandataire=_resolve_mandataire(data),
+            mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         )
 
     bump_ctag("parties")

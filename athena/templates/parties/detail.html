@@ -231,6 +231,34 @@
     {% endif %}
   </div>
 
+  {# ── Mandataire / représentation ─────────────────────────────── #}
+  {% if partie.mandataire_id %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Mandataire / représentation</h2>
+    {% if mandataire %}
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0">
+        <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <a href="{{ url_for('parties.partie_detail', partie_id=mandataire.id) }}"
+           class="text-sm font-medium text-indigo-600 hover:underline block truncate">
+          {{ mandataire._display_name }}
+        </a>
+        <span class="inline-flex px-2 py-0.5 mt-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
+          {{ mandataire_kind_labels.get(partie.mandataire_kind, partie.mandataire_kind or 'Mandataire') }}
+        </span>
+      </div>
+    </div>
+    {% if partie.mandataire_notes %}
+    <p class="text-sm text-gray-700 mt-3 whitespace-pre-wrap">{{ partie.mandataire_notes }}</p>
+    {% endif %}
+    {% else %}
+    <p class="text-sm text-amber-700">Mandataire référencé mais introuvable. Modifiez le contact pour corriger.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {# ── Notes ───────────────────────────────────────────────────── #}
   {% if partie.notes %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
