@@ -46,8 +46,8 @@
         <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full {{ badge_colors.get(partie.contact_role, 'bg-gray-100 text-gray-600') }}">
           {{ role_labels.get(partie.contact_role, 'Autre') }}
         </span>
-        {% if partie.type == 'organization' and partie.contact_person %}
-        <p class="text-sm text-gray-500 mt-1">Contact : {{ partie.contact_person }}</p>
+        {% if partie.type == 'organization' and partie.trade_name %}
+        <p class="text-sm text-gray-500 mt-1">Aussi connue sous : {{ partie.trade_name }}</p>
         {% endif %}
       </div>
     </div>
@@ -204,7 +204,7 @@
     {% endif %}
 
     {# ── Legal identifiers ─────────────────────────────────────── #}
-    {% if partie.bar_number or partie.company_neq %}
+    {% if partie.bar_number or partie.company_neq or partie.governing_law %}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Identifiants</h2>
       <dl class="space-y-2 text-sm">
@@ -218,6 +218,12 @@
         <div class="flex justify-between">
           <dt class="text-gray-500">NEQ</dt>
           <dd class="text-gray-900">{{ partie.company_neq }}</dd>
+        </div>
+        {% endif %}
+        {% if partie.governing_law %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Loi constitutive</dt>
+          <dd class="text-gray-900 text-right">{{ partie.governing_law }}</dd>
         </div>
         {% endif %}
       </dl>

@@ -75,9 +75,10 @@ def _default_doc() -> dict:
         "first_name": "",
         "last_name": "",
         "prefix": "",
-        # Organization
-        "organization_name": "",
-        "contact_person": "",
+        # Organization (personne morale)
+        "organization_name": "",   # Legal name (nom légal)
+        "trade_name": "",          # Trade / "doing business as" name (nom d'emprunt)
+        "governing_law": "",       # Constituting statute (loi constitutive)
         # Demographics
         "language": "",
         "gender": "",
@@ -152,7 +153,7 @@ def _validate(data: dict) -> list[str]:
             errors.append("Le nom de famille est requis.")
     elif client_type == "organization":
         if not data.get("organization_name", "").strip():
-            errors.append("Le nom de l'organisation est requis.")
+            errors.append("Le nom légal de la personne morale est requis.")
     else:
         errors.append("Type de contact invalide.")
 
@@ -328,6 +329,7 @@ def list_parties(
                         c.get("first_name", ""),
                         c.get("last_name", ""),
                         c.get("organization_name", ""),
+                        c.get("trade_name", ""),
                         c.get("email", ""),
                         c.get("phone_cell", ""),
                         c.get("phone_home", ""),

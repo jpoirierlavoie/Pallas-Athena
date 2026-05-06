@@ -33,7 +33,6 @@ yarn-error.log*
 **/*-adminsdk-*.json
 
 # Claude related files
-CLAUDE.md
 .claude
 .claude/
 .claude/settings.local.json

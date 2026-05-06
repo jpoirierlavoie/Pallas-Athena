@@ -49,9 +49,10 @@ def _form_data() -> dict:
         "prefix": f.get("prefix", ""),
         "first_name": f.get("first_name", "").strip(),
         "last_name": f.get("last_name", "").strip(),
-        # Organization
+        # Organization (personne morale)
         "organization_name": f.get("organization_name", "").strip(),
-        "contact_person": f.get("contact_person", "").strip(),
+        "trade_name": f.get("trade_name", "").strip(),
+        "governing_law": f.get("governing_law", "").strip(),
         # Demographics
         "language": f.get("language", ""),
         "gender": f.get("gender", ""),
