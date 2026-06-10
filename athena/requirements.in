@@ -34,3 +34,9 @@ Pillow==12.2.0
 Markdown==3.10.2
 bleach==6.3.0
 defusedxml==0.7.1
+# opentelemetry-instrumentation 0.48b0 imports pkg_resources at runtime,
+# which setuptools removed in 81+ — with a newer setuptools the OTel Flask
+# auto-instrumentation fails ("No module named 'pkg_resources'") and tracing
+# silently disables. Constrain until the OTel stack is bumped to >=0.50b0
+# (which dropped the pkg_resources dependency).
+setuptools<81
