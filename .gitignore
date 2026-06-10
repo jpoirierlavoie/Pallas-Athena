@@ -4,7 +4,8 @@
 .firebaserc
 
 # Firebase Hosting
-/firebase.json
+# (firebase.json is committed — it maps the Firestore/Storage rules files
+# for `firebase deploy --only firestore:rules,storage`)
 *.cache
 hosting/.cache
 
