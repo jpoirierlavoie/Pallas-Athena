@@ -9,12 +9,20 @@ Dossier-linked tasks are served by dav/dossier_collections.py.
 The former /dav/journals/ collection was removed in Phase D1.
 """
 
+import logging
 import xml.etree.ElementTree as ET
 
 from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
-from dav.sync import bump_ctag, get_ctag, get_sync_token, get_tombstones, record_tombstone
+from dav.sync import (
+    bump_ctag,
+    get_ctag,
+    get_sync_token,
+    get_tombstones,
+    record_tombstone,
+    remove_tombstone,
+)
 from dav.xml_utils import (
     add_propstat,
     add_response,
@@ -39,7 +47,11 @@ from models.task import (
 )
 from utils.tracing_setup import add_attributes, firestore_span
 
+logger = logging.getLogger(__name__)
+
 rfc5545_bp = Blueprint("rfc5545", __name__)
+
+_PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -73,7 +85,10 @@ def tasks_propfind_collection() -> Response:
             "dav.depth": depth,
         }
     )
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
 
     _add_tasks_collection_response(multistatus, body)
@@ -94,10 +109,14 @@ def tasks_propfind_collection() -> Response:
 @dav_auth_required
 def tasks_propfind_resource(task_id: str) -> Response:
     task = get_task(task_id)
-    if not task:
+    # Scope check: dossier-linked tasks live in /dav/dossier-{id}/ collections
+    if not task or task.get("dossier_id"):
         return Response("Not Found", status=404)
 
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
     _add_task_resource_response(multistatus, task, body)
 
@@ -185,7 +204,10 @@ def _add_task_resource_response(
 @rfc5545_bp.route("/dav/tasks/", methods=["REPORT"])
 @dav_auth_required
 def tasks_report_collection() -> Response:
-    body_root = parse_report_body(request.get_data())
+    try:
+        body_root = parse_report_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     if body_root is None:
         return Response("Bad Request", status=400)
 
@@ -213,15 +235,20 @@ def _tasks_sync_collection(body_root: ET.Element) -> Response:
     if not client_token or client_token != current_token:
         tasks = list_tasks()
         standalone_tasks = [t for t in tasks if not t.get("dossier_id")]
+        live_ids: set[str] = set()
         for task in standalone_tasks:
+            live_ids.add(task["id"])
             resp = add_response(multistatus, f"/dav/tasks/{task['id']}.ics")
             prop = add_propstat(resp)
             ET.SubElement(prop, dav_tag("getetag")).text = (
                 f'"{task.get("etag", "")}"'
             )
 
+        # Never report a tombstone for a live resource (RFC 6578)
         tombstones = get_tombstones(TASKS_COLLECTION)
         for ts in tombstones:
+            if ts["id"] in live_ids:
+                continue
             add_status_response(
                 multistatus, f"/dav/tasks/{ts['id']}.ics", 404, "Not Found"
             )
@@ -244,7 +271,8 @@ def _tasks_multiget(body_root: ET.Element) -> Response:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
         task = get_task(task_id)
-        if not task:
+        # Scope check: dossier-linked tasks live in /dav/dossier-{id}/ collections
+        if not task or task.get("dossier_id"):
             add_status_response(multistatus, href, 404, "Not Found")
             continue
 
@@ -279,7 +307,8 @@ def _tasks_calendar_query(body_root: ET.Element) -> Response:
 @dav_auth_required
 def tasks_get_resource(task_id: str) -> Response:
     task = get_task(task_id)
-    if not task:
+    # Scope check: dossier-linked tasks live in /dav/dossier-{id}/ collections
+    if not task or task.get("dossier_id"):
         return Response("Not Found", status=404)
 
     ical = task_to_vtodo(task)
@@ -296,6 +325,11 @@ def tasks_put_resource(task_id: str) -> Response:
     if_match = request.headers.get("If-Match")
     if_none_match = request.headers.get("If-None-Match")
     existing = get_task(task_id)
+
+    # Scope check: dossier-linked tasks live in /dav/dossier-{id}/ collections
+    # and must not be touched (nor have this collection's CTag bumped) here.
+    if existing and existing.get("dossier_id"):
+        return Response("Not Found", status=404)
 
     if if_none_match == "*" and existing:
         return Response("Precondition Failed", status=412)
@@ -314,10 +348,21 @@ def tasks_put_resource(task_id: str) -> Response:
     except Exception:
         return Response("Bad Request — invalid iCalendar", status=400)
 
+    # This collection holds standalone tasks ONLY. The payload can carry
+    # X-PALLAS-DOSSIER-ID (clients round-trip unknown X- properties), which
+    # would create/convert a dossier-linked task here while bumping the wrong
+    # collection's CTag — force the standalone scope from the URL instead.
+    data["dossier_id"] = None
+    data["dossier_file_number"] = ""
+    data["dossier_title"] = ""
+
     if existing:
         updated, errors = update_task(task_id, data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "Tasks PUT validation failed for %s: %s", task_id, errors
+            )
+            return Response("Données invalides.", status=422)
         bump_ctag(TASKS_COLLECTION)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
@@ -325,7 +370,12 @@ def tasks_put_resource(task_id: str) -> Response:
         data["id"] = task_id
         created, errors = create_task(data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "Tasks PUT validation failed for %s: %s", task_id, errors
+            )
+            return Response("Données invalides.", status=422)
+        # Resource (re)enters the collection — drop any stale tombstone
+        remove_tombstone(TASKS_COLLECTION, task_id)
         bump_ctag(TASKS_COLLECTION)
         resp = Response("", status=201)
         resp.headers["ETag"] = f'"{created.get("etag", "")}"'
@@ -342,7 +392,9 @@ def tasks_put_resource(task_id: str) -> Response:
 @dav_auth_required
 def tasks_delete_resource(task_id: str) -> Response:
     existing = get_task(task_id)
-    if not existing:
+    # Scope check: dossier-linked tasks live in /dav/dossier-{id}/ collections
+    # — deleting one here would corrupt the wrong collection's CTag/tombstones.
+    if not existing or existing.get("dossier_id"):
         return Response("Not Found", status=404)
 
     if_match = request.headers.get("If-Match")
@@ -351,7 +403,8 @@ def tasks_delete_resource(task_id: str) -> Response:
 
     success, error = delete_task(task_id)
     if not success:
-        return Response(error, status=500)
+        logger.error("Tasks DELETE failed for %s: %s", task_id, error)
+        return Response("Erreur serveur.", status=500)
 
     record_tombstone(TASKS_COLLECTION, task_id)
     bump_ctag(TASKS_COLLECTION)

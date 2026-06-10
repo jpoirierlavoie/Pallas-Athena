@@ -10,10 +10,11 @@
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
 
+  {# Vendored at exact versions, served same-origin (see static/vendor/). #}
   <!-- Tailwind CSS -->
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="{{ url_for('static', filename='vendor/tailwindcss-browser-4.3.0.min.js') }}"></script>
   <!-- Alpine.js -->
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <script defer src="{{ url_for('static', filename='vendor/alpinejs-3.15.12.min.js') }}"></script>
 
   <style>
     body {
@@ -133,9 +134,9 @@
   <div id="mfa-recaptcha-container"></div>
 
   {# ── Firebase Auth SDK (compat v9) + App Check ─────────────────── #}
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
+  <script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/firebase-auth-compat-10.12.2.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
 
   {% if config.ENV == 'development' %}
   <script>

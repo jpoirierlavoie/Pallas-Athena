@@ -17,14 +17,16 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
+  {# Frontend dependencies are vendored at exact versions (static/vendor/) and
+     served same-origin — no CDN trust, no floating-version supply-chain risk. #}
   <!-- Tailwind CSS -->
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="{{ url_for('static', filename='vendor/tailwindcss-browser-4.3.0.min.js') }}"></script>
 
   <!-- HTMX -->
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="{{ url_for('static', filename='vendor/htmx-2.0.4.min.js') }}"></script>
 
   <!-- Alpine.js -->
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script defer src="{{ url_for('static', filename='vendor/alpinejs-3.15.12.min.js') }}"></script>
 
   <style>
     body {
@@ -246,8 +248,8 @@
 
   {# ── Firebase App Check (all pages) ────────────────────────────── #}
   {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
+  <script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
   {% if config.ENV == 'development' %}
   <script>
     self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};

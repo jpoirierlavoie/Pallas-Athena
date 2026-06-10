@@ -1,8 +1,13 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    match /users/{userId}/{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    // All uploads/downloads go through the Flask app: the Admin SDK and
+    // V4 signed URLs, both of which bypass these rules. No Firebase client
+    // SDK is used, so deny all direct client access — this also stops
+    // self-signed-up Firebase accounts from hosting content under their
+    // own /users/{uid}/ prefix in this bucket.
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

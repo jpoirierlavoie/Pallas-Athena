@@ -1,6 +1,9 @@
 """Time tracking and expense management routes."""
 
+import math
 from datetime import datetime, timezone
+
+from markupsafe import escape
 
 from tz import MTL
 
@@ -52,7 +55,11 @@ def _parse_cents(value: str) -> int:
     if not value or not value.strip():
         return 0
     try:
-        return int(round(float(value.strip().replace(",", ".")) * 100))
+        cents = float(value.strip().replace(",", ".")) * 100
+        # Reject NaN/Infinity ("nan"/"inf" parse as floats but corrupt totals)
+        if not math.isfinite(cents):
+            return 0
+        return int(round(cents))
     except (ValueError, TypeError):
         return 0
 
@@ -74,7 +81,11 @@ def _parse_hours(value: str) -> float:
     if not value or not value.strip():
         return 0.0
     try:
-        return round(float(value.strip().replace(",", ".")), 1)
+        hours = float(value.strip().replace(",", "."))
+        # Reject NaN/Infinity ("nan"/"inf" parse as floats but corrupt totals)
+        if not math.isfinite(hours):
+            return 0.0
+        return round(hours, 1)
     except (ValueError, TypeError):
         return 0.0
 
@@ -118,14 +129,19 @@ def dossier_search() -> str:
 
     html_parts = ['<ul class="divide-y divide-gray-100">']
     for d in dossiers:
+        # Escape stored values: this fragment bypasses Jinja autoescaping
+        dossier_id = escape(d["id"])
+        file_number = escape(d.get("file_number", ""))
+        title = escape(d.get("title", ""))
+        rate = escape(d.get("hourly_rate", 0))
         html_parts.append(
             f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{d["id"]}"'
-            f'    data-dossier-file-number="{d.get("file_number", "")}"'
-            f'    data-dossier-title="{d.get("title", "")}"'
-            f'    data-dossier-rate="{d.get("hourly_rate", 0)}">'
-            f'  <span class="font-medium text-gray-900">{d.get("file_number", "")}</span>'
-            f'  <span class="text-gray-500 ml-1">{d.get("title", "")}</span>'
+            f'    data-dossier-id="{dossier_id}"'
+            f'    data-dossier-file-number="{file_number}"'
+            f'    data-dossier-title="{title}"'
+            f'    data-dossier-rate="{rate}">'
+            f'  <span class="font-medium text-gray-900">{file_number}</span>'
+            f'  <span class="text-gray-500 ml-1">{title}</span>'
             f'</li>'
         )
     html_parts.append('</ul>')

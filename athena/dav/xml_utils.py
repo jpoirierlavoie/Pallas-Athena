@@ -5,6 +5,10 @@ from typing import Optional
 
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
+# DAV bodies are exempt from the app-wide 1 MB request cap; refuse anything
+# above this size before parsing (PROPFIND/REPORT bodies are tiny in practice).
+MAX_DAV_BODY_BYTES = 512 * 1024
+
 # ── Namespace URIs ────────────────────────────────────────────────────────
 DAV_NS = "DAV:"
 CARDDAV_NS = "urn:ietf:params:xml:ns:carddav"
@@ -100,7 +104,12 @@ def serialize_multistatus(multistatus: ET.Element) -> str:
 
 
 def parse_propfind_body(body: bytes) -> Optional[ET.Element]:
-    """Parse PROPFIND request body XML.  Returns root element or None."""
+    """Parse PROPFIND request body XML.  Returns root element or None.
+
+    Raises ``ValueError`` if the body exceeds ``MAX_DAV_BODY_BYTES``.
+    """
+    if body and len(body) > MAX_DAV_BODY_BYTES:
+        raise ValueError("DAV request body too large")
     if not body or not body.strip():
         return None
     try:
@@ -126,7 +135,12 @@ def propfind_requests_prop(body_root: Optional[ET.Element], tag: str) -> bool:
 
 
 def parse_report_body(body: bytes) -> Optional[ET.Element]:
-    """Parse REPORT request body XML.  Returns root element or None."""
+    """Parse REPORT request body XML.  Returns root element or None.
+
+    Raises ``ValueError`` if the body exceeds ``MAX_DAV_BODY_BYTES``.
+    """
+    if body and len(body) > MAX_DAV_BODY_BYTES:
+        raise ValueError("DAV request body too large")
     if not body or not body.strip():
         return None
     try:

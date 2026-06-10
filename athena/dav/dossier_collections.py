@@ -9,12 +9,20 @@ Resources within the collection:
 VTODO resources map to tasks, VJOURNAL resources map to notes.
 """
 
+import logging
 import xml.etree.ElementTree as ET
 
 from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
-from dav.sync import bump_ctag, get_ctag, get_sync_token, get_tombstones, record_tombstone
+from dav.sync import (
+    bump_ctag,
+    get_ctag,
+    get_sync_token,
+    get_tombstones,
+    record_tombstone,
+    remove_tombstone,
+)
 from dav.xml_utils import (
     add_propstat,
     add_response,
@@ -49,7 +57,11 @@ from models.task import (
 )
 from utils.tracing_setup import add_attributes, firestore_span, span
 
+logger = logging.getLogger(__name__)
+
 dossier_dav_bp = Blueprint("dossier_dav", __name__)
+
+_PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 
 
 # -- OPTIONS -----------------------------------------------------------------
@@ -89,7 +101,10 @@ def propfind_collection(dossier_id: str) -> Response:
 
     depth = request.headers.get("Depth", "0")
     add_attributes(**{"dav.depth": depth})
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
 
     _add_collection_props(multistatus, dossier, body)
@@ -228,9 +243,13 @@ def _add_note_resource(
 @dav_auth_required
 def propfind_resource(dossier_id: str, resource_id: str) -> Response:
     """PROPFIND on a single resource within a dossier collection."""
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
+
     task = get_task(resource_id)
     if task and task.get("dossier_id") == dossier_id:
-        body = parse_propfind_body(request.get_data())
         multistatus = make_multistatus()
         _add_task_resource(multistatus, dossier_id, task, body)
         xml = serialize_multistatus(multistatus)
@@ -238,7 +257,6 @@ def propfind_resource(dossier_id: str, resource_id: str) -> Response:
 
     note = get_note(resource_id)
     if note and note.get("dossier_id") == dossier_id:
-        body = parse_propfind_body(request.get_data())
         multistatus = make_multistatus()
         _add_note_resource(multistatus, dossier_id, note, body)
         xml = serialize_multistatus(multistatus)
@@ -261,7 +279,10 @@ def report_collection(dossier_id: str) -> Response:
     if not dossier:
         return Response("Not Found", status=404)
 
-    body_root = parse_report_body(request.get_data())
+    try:
+        body_root = parse_report_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     if body_root is None:
         return Response("Bad Request", status=400)
 
@@ -349,6 +370,11 @@ def _handle_sync_collection(dossier_id: str, body_root: ET.Element) -> Response:
             dossier_id=dossier_id,
         ):
             tombstones = get_tombstones(sync_name)
+
+        # Never report a tombstone for a live resource (RFC 6578) — a
+        # resurrected id must not appear as both 200 propstat and 404.
+        live_ids = {t["id"] for t in tasks} | {n["id"] for n in notes}
+        tombstones = [ts for ts in tombstones if ts["id"] not in live_ids]
 
         tombstone_count = len(tombstones)
         if tombstone_count:
@@ -535,15 +561,27 @@ def _put_task(
     sync_name = f"dossier:{dossier_id}"
 
     if existing:
-        # If task was previously in a different dossier, record tombstone there
+        # If task was previously in a different collection, record a
+        # tombstone there: another dossier's collection, or the standalone
+        # /dav/tasks/ collection when it had no dossier at all.
         old_dossier = existing.get("dossier_id")
         if old_dossier and old_dossier != dossier_id:
             record_tombstone(f"dossier:{old_dossier}", resource_id)
             bump_ctag(f"dossier:{old_dossier}")
+        elif not old_dossier:
+            record_tombstone("tasks", resource_id)
+            bump_ctag("tasks")
 
         updated, errors = update_task(resource_id, data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "Dossier DAV PUT (VTODO) validation failed for %s: %s",
+                resource_id, errors,
+            )
+            return Response("Données invalides.", status=422)
+        if old_dossier != dossier_id:
+            # Task (re)enters this collection — drop any stale tombstone
+            remove_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
@@ -551,7 +589,13 @@ def _put_task(
         data["id"] = resource_id
         created, errors = create_task(data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "Dossier DAV PUT (VTODO) validation failed for %s: %s",
+                resource_id, errors,
+            )
+            return Response("Données invalides.", status=422)
+        # Resource (re)enters the collection — drop any stale tombstone
+        remove_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
         resp = Response("", status=201)
         resp.headers["ETag"] = f'"{created.get("etag", "")}"'
@@ -596,7 +640,11 @@ def _put_note(
     if existing:
         updated, errors = update_note(resource_id, data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "Dossier DAV PUT (VJOURNAL) validation failed for %s: %s",
+                resource_id, errors,
+            )
+            return Response("Données invalides.", status=422)
         bump_ctag(sync_name)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
@@ -604,7 +652,13 @@ def _put_note(
         data["id"] = resource_id
         created, errors = create_note(data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "Dossier DAV PUT (VJOURNAL) validation failed for %s: %s",
+                resource_id, errors,
+            )
+            return Response("Données invalides.", status=422)
+        # Resource (re)enters the collection — drop any stale tombstone
+        remove_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
         resp = Response("", status=201)
         resp.headers["ETag"] = f'"{created.get("etag", "")}"'
@@ -636,7 +690,11 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
 
         success, error = delete_task(resource_id)
         if not success:
-            return Response(error, status=500)
+            logger.error(
+                "Dossier DAV DELETE (task) failed for %s: %s",
+                resource_id, error,
+            )
+            return Response("Erreur serveur.", status=500)
 
         sync_name = f"dossier:{dossier_id}"
         record_tombstone(sync_name, resource_id)
@@ -651,7 +709,11 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
 
         success, error = delete_note(resource_id)
         if not success:
-            return Response(error, status=500)
+            logger.error(
+                "Dossier DAV DELETE (note) failed for %s: %s",
+                resource_id, error,
+            )
+            return Response("Erreur serveur.", status=500)
 
         sync_name = f"dossier:{dossier_id}"
         record_tombstone(sync_name, resource_id)

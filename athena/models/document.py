@@ -5,12 +5,14 @@ import mimetypes
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import BinaryIO, Optional
 
 import google.auth
 from google.auth.transport import requests as auth_requests
+from google.cloud.exceptions import NotFound
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
+from werkzeug.utils import secure_filename
 from models import db
 from security import sanitize
 
@@ -31,6 +33,19 @@ ALLOWED_MIME_TYPES = {
 
 # Allowed extensions (fallback when MIME detection fails)
 ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tiff", ".tif"}
+
+# Expected MIME type for each allowed extension (used to detect a
+# mismatch between the sniffed content and the client-supplied name)
+EXTENSION_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+}
 
 # Max upload size: 25 MB
 MAX_FILE_SIZE = 25 * 1024 * 1024
@@ -148,6 +163,39 @@ def _validate_file(filename: str, file_size: int) -> list[str]:
     return errors
 
 
+def _sniff_content_type(file_stream: BinaryIO, ext: str) -> Optional[str]:
+    """Sniff the MIME type from the stream's magic bytes (stdlib only).
+
+    Reads the first bytes of *file_stream* then seeks back to the start.
+    Returns the detected MIME type, or None when no known signature
+    matches. The ZIP signature (PK) is ambiguous — any zip container —
+    so it is only trusted when the extension is .docx.
+    """
+    try:
+        header = file_stream.read(8)
+        file_stream.seek(0)
+    except Exception as exc:
+        logger.warning("_sniff_content_type: stream read failed: %s", type(exc).__name__)
+        return None
+
+    if not isinstance(header, bytes):
+        return None
+    if header.startswith(b"%PDF-"):
+        return "application/pdf"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89\x50\x4e\x47"):
+        return "image/png"
+    if header.startswith(b"\x49\x49\x2a\x00") or header.startswith(b"\x4d\x4d\x00\x2a"):
+        return "image/tiff"
+    if header.startswith(b"\xd0\xcf\x11\xe0"):
+        # OLE2 compound document — legacy MS Word (.doc)
+        return "application/msword"
+    if header.startswith(b"\x50\x4b\x03\x04") and ext == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return None
+
+
 def format_file_size(size_bytes: int) -> str:
     """Format byte count into human-readable string (Ko/Mo)."""
     if size_bytes < 1024:
@@ -184,10 +232,21 @@ def upload_document(
     if file_errors:
         return None, file_errors
 
-    # Detect MIME type
-    content_type, _ = mimetypes.guess_type(filename)
-    if not content_type:
-        content_type = "application/octet-stream"
+    # Extension (already validated against ALLOWED_EXTENSIONS above)
+    ext = ""
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[1].lower()
+
+    # Detect MIME type from the file content (magic bytes) — never trust
+    # the client-supplied filename for the stored/served content type.
+    content_type = _sniff_content_type(file_stream, ext)
+    if not content_type or content_type not in ALLOWED_MIME_TYPES:
+        return None, [
+            "Le contenu du fichier ne correspond à aucun format autorisé. "
+            "Formats acceptés : PDF, DOCX, DOC, JPG, PNG, TIFF."
+        ]
+    if EXTENSION_MIME_TYPES.get(ext) != content_type:
+        return None, ["Le contenu du fichier ne correspond pas à son extension."]
 
     # Build metadata
     merged = {**_default_doc(), **_sanitize_data(metadata)}
@@ -211,8 +270,14 @@ def upload_document(
     document_id = str(uuid.uuid4())
     etag = str(uuid.uuid4())
 
-    # Sanitize filename for storage (keep original for display)
-    safe_filename = filename.replace("/", "_").replace("\\", "_")
+    # Sanitize the filename used in the Storage path. The raw client name
+    # is kept ONLY in original_filename/display_name (display purposes).
+    printable = "".join(ch for ch in filename if ch.isprintable())
+    safe_filename = secure_filename(printable)
+    if len(safe_filename) > 200:
+        safe_filename = safe_filename[: 200 - len(ext)] + ext
+    if not safe_filename or not safe_filename.lower().endswith(ext):
+        safe_filename = "document" + ext
     storage_path = f"users/{user_id}/dossiers/{dossier_id}/documents/{document_id}/{safe_filename}"
 
     merged.update({
@@ -229,24 +294,32 @@ def upload_document(
     })
 
     # Upload to Firebase Storage
+    # (Log only the document ID + exception type — the storage path and
+    # filename embed client names and must not reach the logs.)
     try:
         bucket = storage.bucket()
         blob = bucket.blob(storage_path)
         blob.upload_from_file(file_stream, content_type=content_type)
     except Exception as exc:
-        return None, [f"Erreur lors du téléversement : {exc}"]
+        logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
+        return None, ["Erreur lors du téléversement. Veuillez réessayer."]
 
     # Save metadata to Firestore
     try:
         db.collection(COLLECTION).document(document_id).set(merged)
     except Exception as exc:
+        logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
         # Attempt to clean up the uploaded file
         try:
             bucket = storage.bucket()
             bucket.blob(storage_path).delete()
         except Exception as cleanup_exc:
-            logger.warning("upload_document: storage rollback failed for %s: %s", storage_path, cleanup_exc)
-        return None, [f"Erreur lors de la sauvegarde des métadonnées : {exc}"]
+            logger.warning(
+                "upload_document: storage rollback failed for document %s: %s",
+                document_id,
+                type(cleanup_exc).__name__,
+            )
+        return None, ["Erreur lors du téléversement. Veuillez réessayer."]
 
     return merged, []
 
@@ -370,6 +443,10 @@ def delete_document(document_id: str) -> tuple[bool, str]:
             bucket = storage.bucket()
             blob = bucket.blob(storage_path)
             blob.delete()
+        except NotFound:
+            # Blob already gone — treat as deleted and proceed with the
+            # Firestore delete so the metadata never becomes undeletable.
+            logger.info("delete_document: blob already missing for document %s", document_id)
         except Exception as exc:
             return False, f"Erreur lors de la suppression du fichier : {exc}"
 

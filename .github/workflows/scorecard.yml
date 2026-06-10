@@ -33,8 +33,9 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          repo_token: ${{ secrets.SCORECARD_TOKEN }}
-
+          # The default workflow GITHUB_TOKEN suffices for all checks except
+          # Branch-Protection detail — a standing PAT in repo secrets was an
+          # unnecessary exfiltration target.
           publish_results: true
 
       - name: "Upload artifact"

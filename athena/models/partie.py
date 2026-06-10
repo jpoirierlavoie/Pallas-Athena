@@ -490,11 +490,77 @@ def update_partie(
     return merged, []
 
 
+def _find_mandataire_references(partie_id: str) -> list[str]:
+    """Return display names of parties listing *partie_id* as a mandataire.
+
+    Streams the whole collection (single-user dataset, small) and also
+    checks the legacy single-mandataire field on not-yet-migrated docs.
+    """
+    # Fail CLOSED: errors propagate to delete_partie, which refuses the
+    # deletion when references cannot be established.
+    refs: list[str] = []
+    for doc in db.collection(COLLECTION).stream():
+        other = doc.to_dict()
+        if not other or other.get("id") == partie_id:
+            continue
+        ids = {
+            str(entry.get("id") or "").strip()
+            for entry in (other.get("mandataires") or [])
+            if isinstance(entry, dict)
+        }
+        legacy = str(other.get("mandataire_id") or "").strip()
+        if legacy:
+            ids.add(legacy)
+        if partie_id in ids:
+            refs.append(display_name(other) or other.get("id", ""))
+    return refs
+
+
 def delete_partie(partie_id: str) -> tuple[bool, str]:
-    """Delete a partie. Returns (success, error_message)."""
+    """Delete a partie. Returns (success, error_message).
+
+    Refuses deletion while the partie is still referenced by a dossier
+    (as client or opposing party) or listed as a mandataire by another
+    partie — the FK safety check applies to every caller (UI + DAV).
+    """
     existing = get_partie(partie_id)
     if not existing:
         return False, "Contact introuvable."
+
+    # FK safety — fail CLOSED: if either check cannot be established the
+    # deletion is refused rather than risking dangling references.
+    # Local import: avoids any circular-import risk between models.
+    from models.dossier import count_dossiers_for_partie_strict
+
+    try:
+        linked_count = count_dossiers_for_partie_strict(partie_id)
+        referencing = _find_mandataire_references(partie_id)
+    except Exception as exc:
+        logger.warning(
+            "delete_partie: FK check failed for %s: %s",
+            partie_id, type(exc).__name__,
+        )
+        return False, (
+            "Impossible de vérifier les références de ce contact. "
+            "Veuillez réessayer."
+        )
+
+    if linked_count > 0:
+        return False, (
+            f"Impossible de supprimer : ce contact est lié à {linked_count} "
+            f"dossier{'s' if linked_count > 1 else ''}. "
+            "Retirez-le d'abord de ces dossiers."
+        )
+
+    if referencing:
+        names = ", ".join(referencing[:3])
+        more = len(referencing) - 3
+        if more > 0:
+            names += f" et {more} autre{'s' if more > 1 else ''}"
+        return False, (
+            f"Impossible de supprimer : ce contact est mandataire de {names}. "
+            "Retirez d'abord cette représentation."
+        )
 
     try:
         db.collection(COLLECTION).document(partie_id).delete()

@@ -6,12 +6,20 @@ Endpoints
 /dav/calendar/<hearing_id>.ics     Individual event resource
 """
 
+import logging
 import xml.etree.ElementTree as ET
 
 from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
-from dav.sync import bump_ctag, get_ctag, get_sync_token, get_tombstones, record_tombstone
+from dav.sync import (
+    bump_ctag,
+    get_ctag,
+    get_sync_token,
+    get_tombstones,
+    record_tombstone,
+    remove_tombstone,
+)
 from dav.xml_utils import (
     add_propstat,
     add_response,
@@ -36,10 +44,14 @@ from models.hearing import (
 )
 from utils.tracing_setup import add_attributes, firestore_span
 
+logger = logging.getLogger(__name__)
+
 caldav_bp = Blueprint("caldav", __name__)
 
 COLLECTION_NAME = "hearings"
 COLLECTION_PATH = "/dav/calendar/"
+
+_PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 
 
 # ── OPTIONS ────────────────────────────────────────────────────────────────
@@ -67,7 +79,10 @@ def propfind_collection() -> Response:
             "dav.depth": depth,
         }
     )
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
 
     _add_collection_response(multistatus, body)
@@ -90,7 +105,10 @@ def propfind_resource(hearing_id: str) -> Response:
     if not hearing:
         return Response("Not Found", status=404)
 
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
     _add_resource_response(multistatus, hearing, body)
 
@@ -179,7 +197,10 @@ def _add_resource_response(
 @caldav_bp.route("/dav/calendar/", methods=["REPORT"])
 @dav_auth_required
 def report_collection() -> Response:
-    body_root = parse_report_body(request.get_data())
+    try:
+        body_root = parse_report_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     if body_root is None:
         return Response("Bad Request", status=400)
 
@@ -206,15 +227,20 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
 
     if not client_token or client_token != current_token:
         hearings = list_hearings()
+        live_ids: set[str] = set()
         for hearing in hearings:
+            live_ids.add(hearing["id"])
             resp = add_response(multistatus, f"/dav/calendar/{hearing['id']}.ics")
             prop = add_propstat(resp)
             ET.SubElement(prop, dav_tag("getetag")).text = (
                 f'"{hearing.get("etag", "")}"'
             )
 
+        # Never report a tombstone for a live resource (RFC 6578)
         tombstones = get_tombstones(COLLECTION_NAME)
         for ts in tombstones:
+            if ts["id"] in live_ids:
+                continue
             add_status_response(
                 multistatus,
                 f"/dav/calendar/{ts['id']}.ics",
@@ -325,7 +351,10 @@ def put_resource(hearing_id: str) -> Response:
             hearing_id, data, require_dossier=False
         )
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "CalDAV PUT validation failed for %s: %s", hearing_id, errors
+            )
+            return Response("Données invalides.", status=422)
         bump_ctag(COLLECTION_NAME)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
@@ -333,7 +362,12 @@ def put_resource(hearing_id: str) -> Response:
         data["id"] = hearing_id
         created, errors = create_hearing(data, require_dossier=False)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "CalDAV PUT validation failed for %s: %s", hearing_id, errors
+            )
+            return Response("Données invalides.", status=422)
+        # Resource (re)enters the collection — drop any stale tombstone
+        remove_tombstone(COLLECTION_NAME, hearing_id)
         bump_ctag(COLLECTION_NAME)
         resp = Response("", status=201)
         resp.headers["ETag"] = f'"{created.get("etag", "")}"'
@@ -361,7 +395,8 @@ def delete_resource(hearing_id: str) -> Response:
 
     success, error = delete_hearing(hearing_id)
     if not success:
-        return Response(error, status=500)
+        logger.error("CalDAV DELETE failed for %s: %s", hearing_id, error)
+        return Response("Erreur serveur.", status=500)
 
     record_tombstone(COLLECTION_NAME, hearing_id)
     bump_ctag(COLLECTION_NAME)

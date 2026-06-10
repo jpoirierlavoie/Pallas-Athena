@@ -17,3 +17,15 @@
 __pycache__/
 # Ignored by the build system
 /setup.cfg
+
+# Never ship local secrets or dev artifacts to App Engine (uploaded files
+# are readable application source at /srv/).
+.env
+.env.*
+venv/
+.venv/
+tests/
+.pytest_cache/
+*.pyc
+**/service-account*.json
+**/*-adminsdk-*.json

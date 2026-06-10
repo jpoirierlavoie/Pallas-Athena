@@ -14,9 +14,11 @@ This module is the single entry point for everything observability-related:
 * ``RedactionFilter`` enforces the spec's "Do not log PII" rule
   (CLAUDE.md, Security Rules) at the filter layer: sensitive keys are
   replaced with ``"<redacted>"`` and free-text email / phone / postal-code
-  matches are scrubbed.  Quebec court file numbers are preserved by
-  default (public information once filed) — flip
-  ``REDACT_COURT_FILE_NUMBERS`` to ``True`` to redact them too.
+  matches are scrubbed — in ``json_fields``, in the formatted message
+  (``%``-style args are pre-interpolated so the scrub sees the final
+  text), and in rendered exception tracebacks.  Quebec court file
+  numbers are preserved by default (public information once filed) —
+  flip ``REDACT_COURT_FILE_NUMBERS`` to ``True`` to redact them too.
 * Typed helpers (``log_auth_event``, ``log_dossier_event``,
   ``log_dav_operation``, ``log_security_event``, ``log_unexpected``)
   emit through dedicated logger names (``pallas.auth``, ``pallas.dossier``,
@@ -153,13 +155,18 @@ class ContextFilter(logging.Filter):
 
 
 class RedactionFilter(logging.Filter):
-    """Strip PII and secrets from ``record.json_fields`` and dict messages.
+    """Strip PII and secrets from log records before they are emitted.
 
     Runs after :class:`ContextFilter`.  Drops keys in :data:`SENSITIVE_KEYS`
     (case-insensitive) replacing values with ``"<redacted>"`` so the field
     shape is preserved for log-based metrics.  Walks string values and
     redacts emails, E.164 / North American phone numbers, and Canadian
     postal codes.  Truncates strings longer than :data:`MAX_LEN`.
+
+    Coverage: ``record.json_fields`` (recursively), dict messages, plain
+    string messages, ``%``-style ``args`` (pre-interpolated so the scrub
+    sees the final message), and exception tracebacks (pre-rendered into
+    ``record.exc_text``).
     """
 
     EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -173,12 +180,58 @@ class RedactionFilter(logging.Filter):
     )
     MAX_LEN = 2048
 
+    # Used only to render exc_info into text (thread-safe: delegates to
+    # the ``traceback`` module).
+    _EXC_FORMATTER = logging.Formatter()
+
     def filter(self, record: logging.LogRecord) -> bool:
         json_fields = getattr(record, "json_fields", None)
         if isinstance(json_fields, dict):
             record.json_fields = self._redact_value(json_fields)
         if isinstance(record.msg, dict):
             record.msg = self._redact_value(record.msg)
+        elif record.args:
+            # %-style args are interpolated at emit time — *after* filters
+            # run — so scrubbing record.msg alone would leak the arg
+            # values.  Pre-format here so the redaction regexes see the
+            # final message, then drop the args so handlers don't
+            # re-interpolate.
+            try:
+                record.msg = self._redact_string(record.getMessage())
+                record.args = None
+            except Exception:
+                # Malformed %-interpolation: leave the record untouched
+                # and let the handler's own error handling surface it.
+                pass
+        elif isinstance(record.msg, str):
+            record.msg = self._redact_string(record.msg)
+        if record.exc_info:
+            # Tracebacks render at format time (after filters) from
+            # ``exc_info``, so exception messages embedding emails or
+            # paths would ship verbatim.  Pre-render the traceback here,
+            # scrub it line by line (per-line so MAX_LEN truncation never
+            # swallows the whole stack), cache it in ``exc_text`` and
+            # clear ``exc_info``.  Both the Cloud Logging handler and the
+            # stderr handler format via stdlib ``Formatter.format``, which
+            # appends ``exc_text`` verbatim whenever it is set — so both
+            # paths emit the redacted traceback.
+            #
+            # Trade-off: Cloud Error Reporting groups errors by stack
+            # trace, so scrubbing PII embedded in exception messages may
+            # split or merge some error groups.  Accepted — shipping PII
+            # to Cloud Logging is the worse failure mode.
+            try:
+                exc_text = record.exc_text or self._EXC_FORMATTER.formatException(
+                    record.exc_info
+                )
+                record.exc_text = "\n".join(
+                    self._redact_string(line) for line in exc_text.splitlines()
+                )
+                record.exc_info = None
+            except Exception:
+                # Never let redaction break logging itself; worst case the
+                # handler renders the raw exc_info as before.
+                pass
         return True
 
     def _redact_value(self, value: Any) -> Any:
@@ -482,6 +535,10 @@ def log_unexpected(
     Defaults to ``exc_info=True`` so it can be called bare from inside
     an ``except`` block.  This is what ``main.py``'s ``errorhandler(Exception)``
     invokes.
+
+    The traceback is pre-rendered and PII-scrubbed by
+    :class:`RedactionFilter` before emission (see the filter for the
+    Cloud Error Reporting grouping trade-off).
     """
     fields: dict[str, Any] = {"event": "unexpected", **extra}
     _emit(

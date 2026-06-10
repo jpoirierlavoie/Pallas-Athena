@@ -6,12 +6,20 @@ Endpoints
 /dav/addressbook/<partie_id>.vcf    Individual contact resource
 """
 
+import logging
 import xml.etree.ElementTree as ET
 
 from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
-from dav.sync import bump_ctag, get_ctag, get_sync_token, get_tombstones, record_tombstone
+from dav.sync import (
+    bump_ctag,
+    get_ctag,
+    get_sync_token,
+    get_tombstones,
+    record_tombstone,
+    remove_tombstone,
+)
 from dav.xml_utils import (
     add_propstat,
     add_response,
@@ -36,10 +44,14 @@ from models.partie import (
 )
 from utils.tracing_setup import add_attributes, firestore_span
 
+logger = logging.getLogger(__name__)
+
 carddav_bp = Blueprint("carddav", __name__)
 
 COLLECTION_NAME = "parties"
 COLLECTION_PATH = "/dav/addressbook/"
+
+_PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 
 
 # ── OPTIONS ────────────────────────────────────────────────────────────────
@@ -67,7 +79,10 @@ def propfind_collection() -> Response:
             "dav.depth": depth,
         }
     )
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
 
     # Collection response (always included)
@@ -92,7 +107,10 @@ def propfind_resource(partie_id: str) -> Response:
     if not partie:
         return Response("Not Found", status=404)
 
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     multistatus = make_multistatus()
     _add_resource_response(multistatus, partie, body)
 
@@ -184,7 +202,10 @@ def _add_resource_response(
 @carddav_bp.route("/dav/addressbook/", methods=["REPORT"])
 @dav_auth_required
 def report_collection() -> Response:
-    body_root = parse_report_body(request.get_data())
+    try:
+        body_root = parse_report_body(request.get_data())
+    except ValueError:
+        return Response(_PAYLOAD_TOO_LARGE, status=413)
     if body_root is None:
         return Response("Bad Request", status=400)
 
@@ -215,14 +236,20 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
     if not client_token or client_token != current_token:
         # Full sync — return all current resources
         parties = list_parties()
+        live_ids: set[str] = set()
         for partie in parties:
+            live_ids.add(partie["id"])
             resp = add_response(multistatus, f"/dav/addressbook/{partie['id']}.vcf")
             prop = add_propstat(resp)
             ET.SubElement(prop, dav_tag("getetag")).text = f'"{partie.get("etag", "")}"'
 
-        # Report tombstones (deleted resources)
+        # Report tombstones (deleted resources) — never for live resources,
+        # or the same href would get both a 200 propstat and a 404 status
+        # (RFC 6578 violation).
         tombstones = get_tombstones(COLLECTION_NAME)
         for ts in tombstones:
+            if ts["id"] in live_ids:
+                continue
             add_status_response(
                 multistatus,
                 f"/dav/addressbook/{ts['id']}.vcf",
@@ -339,7 +366,10 @@ def put_resource(partie_id: str) -> Response:
         # Update
         updated, errors = update_partie(partie_id, data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "CardDAV PUT validation failed for %s: %s", partie_id, errors
+            )
+            return Response("Données invalides.", status=422)
         bump_ctag(COLLECTION_NAME)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
@@ -348,7 +378,12 @@ def put_resource(partie_id: str) -> Response:
         data["id"] = partie_id
         created, errors = create_partie(data)
         if errors:
-            return Response("\n".join(errors), status=422)
+            logger.warning(
+                "CardDAV PUT validation failed for %s: %s", partie_id, errors
+            )
+            return Response("Données invalides.", status=422)
+        # Resource (re)enters the collection — drop any stale tombstone
+        remove_tombstone(COLLECTION_NAME, partie_id)
         bump_ctag(COLLECTION_NAME)
         resp = Response("", status=201)
         resp.headers["ETag"] = f'"{created.get("etag", "")}"'
@@ -378,7 +413,8 @@ def delete_resource(partie_id: str) -> Response:
 
     success, error = delete_partie(partie_id)
     if not success:
-        return Response(error, status=500)
+        logger.error("CardDAV DELETE failed for %s: %s", partie_id, error)
+        return Response("Erreur serveur.", status=500)
 
     record_tombstone(COLLECTION_NAME, partie_id)
     bump_ctag(COLLECTION_NAME)

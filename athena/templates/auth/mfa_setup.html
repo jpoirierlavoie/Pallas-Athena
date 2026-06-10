@@ -109,7 +109,7 @@
 
 {% block page_scripts %}
 {# Firebase Auth SDK (App + App Check already loaded by base.html) #}
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="{{ url_for('static', filename='vendor/firebase-auth-compat-10.12.2.js') }}"></script>
 
 <script>
   const auth = firebase.auth();

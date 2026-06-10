@@ -5,7 +5,7 @@ This document is the source of truth for the structured-logging event vocabulary
 All structured logs go through `athena/utils/logging_setup.py`, which:
 
 - Attaches a Cloud Logging `AppEngineHandler` (log name **`pallas-athena`**) in production, or a stderr stream handler locally.
-- Runs every record through `ContextFilter` (injects request-scoped fields) then `RedactionFilter` (drops sensitive keys, scrubs PII from string values).
+- Runs every record through `ContextFilter` (injects request-scoped fields) then `RedactionFilter` (drops sensitive keys; scrubs PII from `json_fields`, the formatted message — including `%`-style args, which are pre-interpolated in the filter — and rendered exception tracebacks).
 - Exposes a small set of typed helpers — call those instead of `logger.info(...)` directly so log-based metrics keep working.
 
 ## Common fields (every record)
@@ -28,9 +28,12 @@ Outside a request (cron jobs, scripts, M365 webhook handlers), call `bind_contex
 Enforced by `RedactionFilter` (CLAUDE.md, Security Rules — "Do not log PII"):
 
 - Keys in `SENSITIVE_KEYS` (case-insensitive) are replaced with `"<redacted>"`. Includes `authorization`, `cookie`, `session`, `password`, `password_hash`, `secret`, `api_key`, `token`, `id_token`, `access_token`, `refresh_token`, `private_key`, `dav_password_hash`, `csrf_token`, `firebase_token`.
-- Free-text matches in string values are scrubbed: emails → `<email>`, phone numbers → `<phone>`, Canadian postal codes → `<postal>`.
+- Free-text matches are scrubbed: emails → `<email>`, phone numbers → `<phone>`, Canadian postal codes → `<postal>`. The scrub covers:
+  - every string inside `record.json_fields` (recursively) and dict messages;
+  - the **formatted message** — records carrying `%`-style `args` are pre-interpolated inside the filter (`record.getMessage()`), scrubbed, and their `args` cleared, so `logger.warning("... %s", value)` call sites cannot leak the arg values; plain string messages without args are scrubbed too;
+  - **exception tracebacks** — when `exc_info` is set, the filter pre-renders the traceback, scrubs it line by line, caches the result in `record.exc_text`, and clears `exc_info`, so both the Cloud Logging handler and the stderr handler emit only the redacted text. Trade-off: Cloud Error Reporting groups errors by stack trace, so scrubbing PII embedded in exception messages may split or merge some error groups — accepted versus shipping PII.
 - Quebec court file numbers (`NNN-NN-NNNNNN-NNN`) are **preserved by default** — they are public information once filed and useful for correlation. Flip `REDACT_COURT_FILE_NUMBERS = True` in `logging_setup.py` to redact them.
-- String values longer than 2048 characters are replaced with `"<truncated, N chars>"`.
+- String values longer than 2048 characters are replaced with `"<truncated, N chars>"` (applied per line for tracebacks, so one oversized frame never swallows the whole stack).
 
 To extend redaction: add the key to `SENSITIVE_KEYS` (a module-level set) — no other change needed.
 
@@ -102,7 +105,7 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
-Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log.
+Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log. The traceback text is PII-scrubbed by `RedactionFilter` before emission (see "PII redaction policy" above for the Error Reporting grouping trade-off).
 
 ## Adding a new event type
 
@@ -119,6 +122,17 @@ Distributed tracing is configured by `athena/utils/tracing_setup.py`. It runs Op
 - Production: 10% of traces, `ParentBased(TraceIdRatioBased(0.1))` — child spans inherit the parent's decision so cross-service traces stay coherent.
 - Dev: 100% by default, `AlwaysOn`. Console exporter prints every span.
 - Override via env var **`TRACE_SAMPLE_RATIO`** (clamped to `[0.0, 1.0]`). Set to `1.0` for a debugging session, `0.0` to disable.
+- **Warning:** `TRACE_SAMPLE_RATIO=1.0` multiplies trace egress ~10× — every request exports spans to Cloud Trace (more ingestion cost, more BatchSpanProcessor queue pressure on 256MB F2 instances, and a larger exfiltration surface for anything the sanitizing layers below might miss). Use it for short debugging windows only, then revert.
+
+### PII controls in traces
+
+Three layers in `utils/tracing_setup.py` keep PII out of exported spans:
+
+1. **Instrumentation hooks.** The Flask request/response hooks overwrite `http.target` (and `http.url` when present) with the request path only, so query strings (e.g. client-name searches like `/parties/?q=Tremblay`) never persist on request spans. The `requests` hook rewrites outbound `http.url` to `scheme://host/path` — and for `*storage.googleapis.com` hosts keeps `scheme://host` only, because both the object path and the `name=` query param embed uid / dossier / filename.
+2. **Sanitizing exporter.** `_SanitizingSpanExporter` wraps the Cloud Trace exporter (and the dev console exporter). Before delegating, it strips query strings from URL-like attribute keys (`http.target`, `http.url`, `http.route`, `url.full`, `url.path`, `url.query`) and applies the same email / phone / postal regex scrub as the logging `RedactionFilter` (the patterns are imported from `logging_setup`, not duplicated) to every string attribute value. This is the defense-in-depth backstop for anything the hooks miss.
+3. **Manual-span guard.** `span()`, `add_attributes()` and `firestore_span()` drop any attribute whose key is in the logging layer's `SENSITIVE_KEYS` and scrub string values before setting them.
+
+These layers are a safety net, not an invitation: as with logs, never attach raw vCard / iCalendar bodies, client names, or signed URLs as span attributes.
 
 ### Trace ↔ log correlation
 
@@ -178,7 +192,7 @@ Production runs at 10% — fine for normal monitoring, sparse for debugging. To 
 gcloud app deploy app.yaml --set-env-vars=TRACE_SAMPLE_RATIO=1.0
 ```
 
-…then revert by removing the override after debugging. Don't leave 100% sampling on in production: F2 instances are 256MB and BatchSpanProcessor's queue grows with span volume.
+…then revert by removing the override after debugging. Don't leave 100% sampling on in production: `TRACE_SAMPLE_RATIO=1.0` multiplies trace egress (~10× the default), F2 instances are 256MB and BatchSpanProcessor's queue grows with span volume — and every additional exported span widens the surface the PII-sanitizing layers have to cover.
 
 ## IAM requirement
 

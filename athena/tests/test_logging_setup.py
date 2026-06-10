@@ -310,6 +310,68 @@ def test_sensitive_keys_set_extendable():
     assert all(k == k.lower() for k in SENSITIVE_KEYS)
 
 
+def test_redaction_scrubs_percent_args_message():
+    # Regression (LOG-ARGS): %s args are interpolated at emit time, after
+    # filters — the filter must pre-format the message and scrub it.
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    try:
+        logging.getLogger("pallas.test").warning(
+            "contact %s at %s",
+            "jane.doe@example.com",
+            "514-555-1234",
+        )
+    finally:
+        logging.getLogger().removeHandler(capture)
+    rec = capture.records[-1]
+    # Args were consumed by the filter so handlers don't re-interpolate.
+    assert rec.args is None
+    formatted = logging.Formatter("%(message)s").format(rec)
+    assert "jane.doe@example.com" not in formatted
+    assert "<email>" in formatted
+    assert "514-555-1234" not in formatted
+    assert "<phone>" in formatted
+
+
+def test_redaction_scrubs_plain_string_msg_without_args():
+    # Regression (LOG-ARGS): plain string messages (no args) must be
+    # scrubbed too, not only dict messages / json_fields.
+    record = _make_record(msg="email jane.doe@example.com at H2T 1S6")
+    RedactionFilter().filter(record)
+    assert "jane.doe@example.com" not in record.msg
+    assert "<email>" in record.msg
+    assert "H2T 1S6" not in record.msg
+    assert "<postal>" in record.msg
+    formatted = logging.Formatter("%(message)s").format(record)
+    assert "jane.doe@example.com" not in formatted
+
+
+def test_redaction_scrubs_traceback_text():
+    # Regression (LOG-TRACEBACK): tracebacks render at format time from
+    # exc_info (after filters), so the filter must pre-render and scrub
+    # them into exc_text and clear exc_info.
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    try:
+        try:
+            raise RuntimeError("lookup failed for jane.doe@example.com")
+        except RuntimeError:
+            logging.getLogger("pallas.test").error("boom", exc_info=True)
+    finally:
+        logging.getLogger().removeHandler(capture)
+    rec = capture.records[-1]
+    assert rec.exc_info is None
+    assert rec.exc_text is not None
+    assert "RuntimeError" in rec.exc_text
+    assert "jane.doe@example.com" not in rec.exc_text
+    assert "<email>" in rec.exc_text
+    # Formatter.format appends exc_text whenever it is set — both the
+    # stderr and Cloud Logging handler paths go through this.
+    formatted = logging.Formatter("%(message)s").format(rec)
+    assert "jane.doe@example.com" not in formatted
+    assert "RuntimeError" in formatted
+
+
 # ── Typed helpers ─────────────────────────────────────────────────────────
 
 def test_log_auth_event_failure_warns(caplog):
@@ -372,20 +434,26 @@ def test_log_security_event_severity_mapping(caplog):
     assert all(r.name == "pallas.security" for r in caplog.records[-3:])
 
 
-def test_log_unexpected_includes_traceback(caplog):
-    with caplog.at_level(logging.DEBUG, logger="pallas.unexpected"):
+def test_log_unexpected_includes_traceback():
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    try:
         try:
             raise RuntimeError("boom")
         except RuntimeError:
             log_unexpected("unhandled")
-    rec = caplog.records[-1]
-    assert rec.name == "pallas.unexpected"
+    finally:
+        logging.getLogger().removeHandler(capture)
+    rec = next(
+        r for r in capture.records if r.name == "pallas.unexpected"
+    )
     assert rec.levelno == logging.ERROR
     assert rec.json_fields["event"] == "unexpected"
-    # exc_info should be populated by the logging framework when
-    # exc_info=True was passed in the helper.
-    assert rec.exc_info is not None
-    assert rec.exc_info[0] is RuntimeError
+    # The RedactionFilter consumes exc_info (so formatters can't render
+    # the raw traceback) and leaves the redacted text in exc_text.
+    assert rec.exc_info is None
+    assert rec.exc_text is not None
+    assert "RuntimeError: boom" in rec.exc_text
 
 
 def test_log_unexpected_no_exception_context(caplog):

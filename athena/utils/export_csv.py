@@ -7,6 +7,22 @@ from typing import Any
 
 from flask import Response
 
+# Leading characters that make Excel/LibreOffice interpret a cell as a
+# formula (CSV injection / DDE). Tab and carriage return are included
+# because they can smuggle a formula prefix past naive filters.
+_FORMULA_PREFIX_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralize_formula(text: str) -> str:
+    """Prefix a single quote so spreadsheets render the text instead of executing it.
+
+    Only applied to user-controlled string cells — numeric formatting
+    outputs (e.g. negative amounts) must keep their leading '-'.
+    """
+    if text.startswith(_FORMULA_PREFIX_CHARS):
+        return "'" + text
+    return text
+
 
 def export_csv(
     rows: list[dict],
@@ -75,7 +91,10 @@ def _format_value(
     if isinstance(val, bool):
         return "Oui" if val else "Non"
     if isinstance(val, list):
-        return ", ".join(str(v) for v in val)
+        # List items are user-controlled strings — neutralize the joined cell.
+        return _neutralize_formula(", ".join(str(v) for v in val))
+    if isinstance(val, str):
+        return _neutralize_formula(val)
     return str(val)
 
 

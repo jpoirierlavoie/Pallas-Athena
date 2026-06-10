@@ -25,9 +25,18 @@ def _from_secret_manager(secret_id: str) -> str:
 
 
 def _secret(secret_id: str, env_var: str, required: bool = True) -> str:
-    """Resolve a sensitive value: Secret Manager in prod, env var locally."""
+    """Resolve a sensitive value: Secret Manager in prod, env var locally.
+
+    Optional secrets (``required=False``) resolve to ``""`` when absent in
+    either source instead of failing application startup.
+    """
     if _is_production():
-        return _from_secret_manager(secret_id)
+        try:
+            return _from_secret_manager(secret_id)
+        except Exception:
+            if required:
+                raise
+            return ""
     value = os.environ.get(env_var, "")
     if required and not value:
         raise RuntimeError(
@@ -64,6 +73,11 @@ class Config:
     # App Check (reCAPTCHA Enterprise)
     RECAPTCHA_ENTERPRISE_SITE_KEY: str = os.environ.get("RECAPTCHA_ENTERPRISE_SITE_KEY", "")
     APPCHECK_DEBUG_TOKEN: str = os.environ.get("APPCHECK_DEBUG_TOKEN", "")  # local dev only
+
+    # Cloudflare origin secret (optional): when set, security.py requires the
+    # X-Origin-Auth header (injected by a Cloudflare Transform Rule) on every
+    # request, defeating direct-to-App-Engine access with a spoofed Host.
+    CF_ORIGIN_SECRET: str = _secret("cf-origin-secret", "CF_ORIGIN_SECRET", required=False)
 
     # Multi-Factor Authentication
     REQUIRE_MFA: bool = os.environ.get("REQUIRE_MFA", "true").lower() == "true"

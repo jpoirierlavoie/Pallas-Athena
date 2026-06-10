@@ -76,5 +76,8 @@ def mfa_manage() -> str:
 @login_required
 def logout() -> str:
     """Clear the session and redirect to login."""
+    from utils.logging_setup import log_auth_event
+
     session.clear()
+    log_auth_event("logout", "success")
     return redirect(url_for("auth.login"))

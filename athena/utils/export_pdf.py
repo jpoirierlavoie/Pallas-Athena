@@ -1,8 +1,10 @@
 """PDF report generation using reportlab."""
 
 import io
+import logging
 from datetime import datetime
 from typing import Any
+from xml.sax.saxutils import escape
 
 from flask import Response
 
@@ -19,6 +21,8 @@ from reportlab.platypus import (
     HRFlowable,
     KeepTogether,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def export_pdf(
@@ -128,7 +132,8 @@ def export_pdf(
         for key, _, _ in columns:
             val = row.get(key, "")
             formatted = _format_value_pdf(val, key, date_format, cents_set, hours_set)
-            data_row.append(Paragraph(str(formatted), cell_style))
+            # Escape &, <, > — Paragraph parses intra-paragraph XML markup.
+            data_row.append(Paragraph(escape(str(formatted)), cell_style))
         table_data.append(data_row)
 
     if not rows:
@@ -182,7 +187,17 @@ def export_pdf(
         Paragraph(f"{len(rows)} entrée{'s' if len(rows) != 1 else ''}", count_style)
     )
 
-    doc.build(elements)
+    try:
+        doc.build(elements)
+    except Exception as exc:
+        # reportlab errors embed flowable text (client names) — log type only.
+        logger.warning("PDF generation failed: %s", type(exc).__name__)
+        buffer.close()
+        return Response(
+            "Erreur lors de la génération du PDF.",
+            status=500,
+            mimetype="text/plain; charset=utf-8",
+        )
     pdf_bytes = buffer.getvalue()
     buffer.close()
 
@@ -350,7 +365,8 @@ def export_pdf_grouped(
                     formatted = _format_value_pdf(
                         val, key, date_format, cents_set, hours_set
                     )
-                    data_row.append(Paragraph(str(formatted), cell_style))
+                    # Escape &, <, > — Paragraph parses intra-paragraph XML markup.
+                    data_row.append(Paragraph(escape(str(formatted)), cell_style))
                 data_rows.append(data_row)
 
             group_table = Table(data_rows, colWidths=col_widths)
@@ -376,7 +392,8 @@ def export_pdf_grouped(
                     width="100%", thickness=0.4, color=colors.HexColor("#D1D5DB")
                 ),
                 Spacer(1, 4),
-                Paragraph(group_label, group_header_style),
+                # Group labels carry user data (dossier titles) — escape them too.
+                Paragraph(escape(group_label), group_header_style),
                 Spacer(1, 6),
                 group_table,
             ]
@@ -397,7 +414,17 @@ def export_pdf_grouped(
         )
     )
 
-    doc.build(elements)
+    try:
+        doc.build(elements)
+    except Exception as exc:
+        # reportlab errors embed flowable text (client names) — log type only.
+        logger.warning("PDF generation failed: %s", type(exc).__name__)
+        buffer.close()
+        return Response(
+            "Erreur lors de la génération du PDF.",
+            status=500,
+            mimetype="text/plain; charset=utf-8",
+        )
     pdf_bytes = buffer.getvalue()
     buffer.close()
 

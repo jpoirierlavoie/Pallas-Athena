@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+from markupsafe import escape
+
 from tz import MTL
 
 from flask import (
@@ -14,7 +16,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, record_tombstone
+from dav.sync import bump_ctag, record_tombstone, remove_tombstone
 from security import safe_internal_redirect
 from models.task import (
     CATEGORY_LABELS,
@@ -123,13 +125,16 @@ def dossier_search() -> str:
 
     html_parts = ['<ul class="divide-y divide-gray-100">']
     for d in dossiers:
+        dossier_id = escape(d["id"])
+        file_number = escape(d.get("file_number", ""))
+        title = escape(d.get("title", ""))
         html_parts.append(
             f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{d["id"]}"'
-            f'    data-dossier-file-number="{d.get("file_number", "")}"'
-            f'    data-dossier-title="{d.get("title", "")}">'
-            f'  <span class="font-medium text-gray-900">{d.get("file_number", "")}</span>'
-            f'  <span class="text-gray-500 ml-1">{d.get("title", "")}</span>'
+            f'    data-dossier-id="{dossier_id}"'
+            f'    data-dossier-file-number="{file_number}"'
+            f'    data-dossier-title="{title}">'
+            f'  <span class="font-medium text-gray-900">{file_number}</span>'
+            f'  <span class="text-gray-500 ml-1">{title}</span>'
             f'</li>'
         )
     html_parts.append("</ul>")
@@ -323,9 +328,13 @@ def task_update(task_id: str) -> str:
         else:
             record_tombstone("tasks", task_id)
             bump_ctag("tasks")
+        # The task (re)enters its new collection — drop any stale tombstone
+        # there so one sync REPORT never reports it as both live and deleted.
         if new_dossier_id:
+            remove_tombstone(f"dossier:{new_dossier_id}", task_id)
             bump_ctag(f"dossier:{new_dossier_id}")
         else:
+            remove_tombstone("tasks", task_id)
             bump_ctag("tasks")
     elif new_dossier_id:
         bump_ctag(f"dossier:{new_dossier_id}")
@@ -369,7 +378,7 @@ def task_delete(task_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 

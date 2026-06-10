@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from markupsafe import escape
+
 from flask import (
     Blueprint,
     Response,
@@ -90,13 +92,16 @@ def dossier_search() -> str:
 
     html_parts = ['<ul class="divide-y divide-gray-100">']
     for d in dossiers:
+        dossier_id = escape(d["id"])
+        file_number = escape(d.get("file_number", ""))
+        title = escape(d.get("title", ""))
         html_parts.append(
             f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{d["id"]}"'
-            f'    data-dossier-file-number="{d.get("file_number", "")}"'
-            f'    data-dossier-title="{d.get("title", "")}">'
-            f'  <span class="font-medium text-gray-900">{d.get("file_number", "")}</span>'
-            f'  <span class="text-gray-500 ml-1">{d.get("title", "")}</span>'
+            f'    data-dossier-id="{dossier_id}"'
+            f'    data-dossier-file-number="{file_number}"'
+            f'    data-dossier-title="{title}">'
+            f'  <span class="font-medium text-gray-900">{file_number}</span>'
+            f'  <span class="text-gray-500 ml-1">{title}</span>'
             f'</li>'
         )
     html_parts.append("</ul>")

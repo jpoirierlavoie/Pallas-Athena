@@ -1,6 +1,7 @@
 """Dossier management routes — list, detail, create, edit, delete."""
 
 import json
+import math
 from datetime import datetime, timezone
 
 from flask import (
@@ -14,7 +15,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, record_tombstone
+from dav.sync import clear_tombstones, delete_sync_state
 from pagination import paginate
 from models.time_entry import (
     get_time_summary,
@@ -87,7 +88,10 @@ def _parse_cents(value: str) -> int:
     if not value or not value.strip():
         return 0
     try:
-        return int(round(float(value.strip().replace(",", ".")) * 100))
+        cents = float(value.strip().replace(",", ".")) * 100
+        if not math.isfinite(cents):
+            return 0
+        return int(round(cents))
     except (ValueError, TypeError):
         return 0
 
@@ -402,8 +406,6 @@ def dossier_create() -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
-    bump_ctag("dossiers")
-
     if _is_htmx():
         resp = redirect(
             url_for("dossiers.dossier_detail", dossier_id=dossier["id"])
@@ -455,8 +457,6 @@ def dossier_update(dossier_id: str) -> str:
         )
         return render_template("dossiers/form.html", **ctx)
 
-    bump_ctag("dossiers")
-
     if _is_htmx():
         resp = redirect(
             url_for("dossiers.dossier_detail", dossier_id=dossier_id)
@@ -481,8 +481,12 @@ def dossier_delete(dossier_id: str) -> str:
     success, error = delete_dossier(dossier_id)
 
     if success:
-        record_tombstone("dossiers", dossier_id)
-        bump_ctag("dossiers")
+        # No DAV endpoint reads a "dossiers" sync collection post-D1; instead,
+        # tear down the deleted dossier's live per-collection DAV sync state
+        # (its /dav/dossier-{id}/ collection no longer exists).
+        sync_name = f"dossier:{dossier_id}"
+        clear_tombstones(sync_name)
+        delete_sync_state(sync_name)
 
     if _is_htmx():
         if success:

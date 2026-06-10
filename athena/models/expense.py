@@ -1,6 +1,7 @@
 """Expense Firestore CRUD and summary functions."""
 
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -86,8 +87,9 @@ def _validate(data: dict) -> list[str]:
     if category and category not in VALID_CATEGORIES:
         errors.append("Catégorie invalide.")
 
+    # math.isfinite rejects NaN/Infinity (NaN passes "<= 0" comparisons)
     amount = data.get("amount", 0)
-    if not isinstance(amount, (int, float)) or amount <= 0:
+    if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
         errors.append("Le montant doit être supérieur à zéro.")
 
     return errors
@@ -240,9 +242,14 @@ def get_unbilled_expenses(dossier_id: str) -> list[dict]:
     return [e for e in entries if not e.get("invoiced")]
 
 
-def mark_expenses_invoiced(expense_ids: list[str], invoice_id: str) -> None:
-    """Batch update expenses as invoiced."""
+def mark_expenses_invoiced(expense_ids: list[str], invoice_id: str) -> list[str]:
+    """Update expenses as invoiced. Returns the IDs that failed to update.
+
+    Note: invoice creation no longer uses this helper — it flips sources
+    inside its own transaction. Kept for callers needing a standalone flip.
+    """
     now = datetime.now(timezone.utc)
+    failed_ids: list[str] = []
     for eid in expense_ids:
         try:
             db.collection(COLLECTION).document(eid).update({
@@ -253,3 +260,5 @@ def mark_expenses_invoiced(expense_ids: list[str], invoice_id: str) -> None:
             })
         except Exception as exc:
             logger.warning("mark_expenses_invoiced failed for %s: %s", eid, exc)
+            failed_ids.append(eid)
+    return failed_ids

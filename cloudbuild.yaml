@@ -1,12 +1,15 @@
 steps:
-  # Step 1: Install dependencies and run tests
+  # Step 1: Install dependencies and run tests — a failing test aborts the
+  # build before the deploy step runs.
   - name: 'python:3.13-slim'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
+        set -euo pipefail
         pip install --require-hashes --no-deps -r athena/requirements.txt
-        # pytest  # Uncomment when your test suite is ready
+        pip install -r athena/requirements-dev.txt
+        cd athena && python -m pytest tests/ -q
 
   # Step 2: Deploy to App Engine
   - name: 'gcr.io/cloud-builders/gcloud'

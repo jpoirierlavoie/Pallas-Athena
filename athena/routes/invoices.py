@@ -1,5 +1,6 @@
 """Invoice management routes — list, create, detail, status updates."""
 
+import math
 from datetime import datetime, timezone
 
 from flask import (
@@ -53,7 +54,11 @@ def _parse_cents(value: str) -> int:
     if not value or not value.strip():
         return 0
     try:
-        return int(round(float(value.strip().replace(",", ".")) * 100))
+        cents = float(value.strip().replace(",", ".")) * 100
+        # Reject NaN/Infinity ("nan"/"inf" parse as floats but corrupt totals)
+        if not math.isfinite(cents):
+            return 0
+        return int(round(cents))
     except (ValueError, TypeError):
         return 0
 

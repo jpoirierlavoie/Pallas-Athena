@@ -1,18 +1,15 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-    match /ref_greffes/{doc} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
-    match /ref_juridictions/{doc} {
-      allow read: if request.auth != null;
-      allow write: if false;
-    }
-    // Deny everything else
+    // The app reads/writes Firestore exclusively through the Admin SDK,
+    // which bypasses these rules. No Firebase client SDK is used, so there
+    // is no legitimate client-side access path: deny everything.
+    //
+    // Rationale (security audit 2026-06): the public Firebase API key lets
+    // anyone mint an authenticated token via self-signup, so any rule keyed
+    // on `request.auth != null` is reachable by arbitrary internet users.
+    // The previous /users/** and ref_* grants served no client and only
+    // widened the attack surface.
     match /{document=**} {
       allow read, write: if false;
     }

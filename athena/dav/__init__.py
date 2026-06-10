@@ -67,7 +67,10 @@ def dav_root_propfind() -> Response:
             "dav.depth": depth,
         }
     )
-    body = parse_propfind_body(request.get_data())
+    try:
+        body = parse_propfind_body(request.get_data())
+    except ValueError:
+        return Response("Corps de requête trop volumineux.", status=413)
     multistatus = make_multistatus()
 
     # Root resource
@@ -98,7 +101,7 @@ def dav_root_propfind() -> Response:
     # Depth:1 — include child collections with proper resource types
     if depth == "1":
         from dav.xml_utils import carddav_tag
-        from dav.sync import get_ctag
+        from dav.sync import get_ctags_bulk
         from models.dossier import list_dossiers
 
         # -- Static collections (addressbook, calendar, standalone tasks) --
@@ -112,6 +115,30 @@ def dav_root_propfind() -> Response:
             "/dav/calendar/": "hearings",
             "/dav/tasks/": "tasks",
         }
+
+        # Resolve active dossiers first so every collection's CTag can be
+        # fetched in a single batched read instead of one get per dossier.
+        with firestore_span("query", "dossiers", filter="status=actif"):
+            actif = list_dossiers(status_filter="actif")
+        with firestore_span("query", "dossiers", filter="status=en_attente"):
+            en_attente = list_dossiers(status_filter="en_attente")
+        active_dossiers = actif + en_attente
+        add_attributes(**{"dav.dossier_count": len(active_dossiers)})
+
+        seen_ids: set[str] = set()
+        unique_dossiers: list[dict] = []
+        for dossier in active_dossiers:
+            did = dossier["id"]
+            if did in seen_ids:
+                continue
+            seen_ids.add(did)
+            unique_dossiers.append(dossier)
+
+        sync_names = list(ctag_names.values()) + [
+            f"dossier:{d['id']}" for d in unique_dossiers
+        ]
+        with firestore_span("get_all", "dav_sync"):
+            ctags = get_ctags_bulk(sync_names)
 
         for coll_path, coll_name, coll_type, component in static_collections:
             child = add_response(multistatus, coll_path)
@@ -139,23 +166,12 @@ def dav_root_propfind() -> Response:
             sync_name = ctag_names.get(coll_path)
             if sync_name:
                 ET.SubElement(child_prop, cs_tag("getctag")).text = (
-                    get_ctag(sync_name)
+                    ctags.get(sync_name, "")
                 )
 
         # -- Dynamic per-dossier collections -------------------------------
-        with firestore_span("query", "dossiers", filter="status=actif"):
-            actif = list_dossiers(status_filter="actif")
-        with firestore_span("query", "dossiers", filter="status=en_attente"):
-            en_attente = list_dossiers(status_filter="en_attente")
-        active_dossiers = actif + en_attente
-        add_attributes(**{"dav.dossier_count": len(active_dossiers)})
-        seen_ids: set[str] = set()
-        for dossier in active_dossiers:
+        for dossier in unique_dossiers:
             did = dossier["id"]
-            if did in seen_ids:
-                continue
-            seen_ids.add(did)
-
             coll_path = f"/dav/dossier-{did}/"
             display_name = (
                 f"Pallas Athena \u2014 {dossier.get('file_number', '')} "
@@ -182,7 +198,7 @@ def dav_root_propfind() -> Response:
             comp_journal.set("name", "VJOURNAL")
 
             ET.SubElement(child_prop, cs_tag("getctag")).text = (
-                get_ctag(sync_name)
+                ctags.get(sync_name, "")
             )
 
     xml = serialize_multistatus(multistatus)

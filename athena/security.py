@@ -1,5 +1,6 @@
 """Security middleware: headers, CSRF, rate limiting, input sanitization, App Check."""
 
+import hmac
 import re
 from typing import Optional
 from urllib.parse import urlparse
@@ -14,11 +15,23 @@ from flask_wtf.csrf import CSRFProtect
 # ---------------------------------------------------------------------------
 csrf = CSRFProtect()
 
+
 # ---------------------------------------------------------------------------
 # Rate limiter (in-memory default; swap to Firestore for multi-instance)
 # ---------------------------------------------------------------------------
+def _client_ip() -> str:
+    """Rate-limit key: the real client IP.
+
+    Behind Cloudflare the direct peer is a proxy address shared by many
+    clients; Cloudflare puts the true client IP in ``CF-Connecting-IP``.
+    The header is only trustworthy when traffic actually transits
+    Cloudflare (enforce with an App Engine firewall / origin secret).
+    """
+    return request.headers.get("CF-Connecting-IP") or get_remote_address()
+
+
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=_client_ip,
     default_limits=[],
     storage_uri="memory://",
 )
@@ -27,21 +40,25 @@ limiter = Limiter(
 # ---------------------------------------------------------------------------
 # Security headers
 # ---------------------------------------------------------------------------
+# Frontend dependencies are vendored in static/vendor/ and served same-origin,
+# so no CDN origins (jsdelivr/unpkg) appear in script-src.  gstatic + google
+# remain only for the reCAPTCHA Enterprise scripts that the Firebase App Check
+# SDK loads at runtime.
 CSP = (
     "default-src 'self'; "
-    "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com "
-    "https://www.gstatic.com https://apis.google.com "
-    "https://www.google.com; "
-    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "script-src 'self' https://www.gstatic.com "
+    "https://apis.google.com https://www.google.com; "
+    "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob: https://*.googleapis.com https://storage.googleapis.com; "
     "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com "
     "https://identitytoolkit.googleapis.com https://storage.googleapis.com "
     "https://content-firebaseappcheck.googleapis.com "
     "https://www.google.com https://recaptchaenterprise.googleapis.com; "
-    "font-src 'self' https://cdn.jsdelivr.net; "
+    "font-src 'self'; "
     "frame-src https://*.firebaseapp.com https://storage.googleapis.com blob: "
     "https://www.google.com https://recaptcha.google.com; "
-    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+    "report-uri /csp-report"
 )
 
 
@@ -67,16 +84,41 @@ def _add_security_headers(response: Response) -> Response:
 # Request size guard (non-upload routes capped at 1 MB)
 # ---------------------------------------------------------------------------
 UPLOAD_PATHS = ("/documents/upload",)
+_DAV_MAX_BODY = 5 * 1024 * 1024  # vCard/iCal payloads are KBs; 5 MB is generous
 
 
 def _enforce_request_size() -> Optional[Response]:
     """Reject oversized requests for non-upload and non-DAV endpoints."""
-    # DAV endpoints handle their own payloads (vCard, iCal); exempt them.
+    # DAV payloads (vCard, iCal, PROPFIND XML) get their own, tighter cap
+    # than the global 25 MB upload allowance.
     if request.path.startswith("/dav/") or request.path.startswith("/.well-known/"):
+        if request.content_length and request.content_length > _DAV_MAX_BODY:
+            abort(413)
         return None
     if request.content_length and request.path not in UPLOAD_PATHS:
         if request.content_length > 1 * 1024 * 1024:  # 1 MB
             abort(413)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare origin check (optional, defense against direct App Engine access)
+# ---------------------------------------------------------------------------
+# The Host-header check in main.py is spoofable: App Engine routes on the
+# TLS/appspot hostname, not the Host header an attacker sends.  When
+# CF_ORIGIN_SECRET is configured (Secret Manager: cf-origin-secret), every
+# request must carry the same value in X-Origin-Auth — configure a Cloudflare
+# Transform Rule to inject the header at the edge, and pair with an App
+# Engine firewall restricted to Cloudflare IP ranges.  Unset = check disabled
+# (local dev, pre-rollout).
+def _enforce_origin_secret() -> Optional[Response]:
+    """Reject requests missing the Cloudflare-injected origin header."""
+    secret = current_app.config.get("CF_ORIGIN_SECRET", "")
+    if not secret:
+        return None
+    supplied = request.headers.get("X-Origin-Auth", "")
+    if not hmac.compare_digest(supplied, secret):
+        abort(403)
     return None
 
 
@@ -140,6 +182,8 @@ _APPCHECK_EXEMPT_PREFIXES = (
     "/auth/",
 )
 
+_APPCHECK_MISSING_WARNED = False
+
 
 def _verify_app_check() -> Optional[Response]:
     """Verify Firebase App Check token on HTMX requests.
@@ -156,8 +200,16 @@ def _verify_app_check() -> Optional[Response]:
         if request.path.startswith(prefix):
             return None
 
-    # Skip if App Check not configured
+    # Skip if App Check not configured — fail-open by design, but loudly in
+    # production so a config regression cannot silently disable the control.
     if not current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):
+        global _APPCHECK_MISSING_WARNED
+        if current_app.config.get("ENV") == "production" and not _APPCHECK_MISSING_WARNED:
+            _APPCHECK_MISSING_WARNED = True
+            current_app.logger.warning(
+                "App Check site key not configured in production — "
+                "App Check verification is disabled"
+            )
         return None
 
     token = request.headers.get("X-Firebase-AppCheck")
@@ -182,6 +234,7 @@ def init_security(app: Flask) -> None:
     """Register all security extensions and hooks on the Flask app."""
     csrf.init_app(app)
     limiter.init_app(app)
+    app.before_request(_enforce_origin_secret)
     app.before_request(_enforce_request_size)
     app.before_request(_verify_app_check)
     app.after_request(_add_security_headers)

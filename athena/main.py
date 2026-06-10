@@ -191,6 +191,28 @@ def create_app() -> Flask:
         }]
         return json.dumps(data), 200, {"Content-Type": "application/json"}
 
+    # ── CSP violation reporting (referenced by report-uri in security.py) ──
+    from security import csrf as _csrf
+
+    @app.route("/csp-report", methods=["POST"])
+    @_csrf.exempt
+    def csp_report():  # type: ignore[no-untyped-def]
+        """Collect browser CSP violation reports (report-only policy)."""
+        try:
+            payload = request.get_json(force=True, silent=True) or {}
+            report = payload.get("csp-report", payload) or {}
+            from utils.logging_setup import log_security_event
+            log_security_event(
+                "csp_violation",
+                "warning",
+                directive=str(report.get("effective-directive")
+                              or report.get("violated-directive") or "")[:120],
+                blocked=str(report.get("blocked-uri") or "")[:200],
+            )
+        except Exception:  # pragma: no cover — reporting must never error
+            pass
+        return "", 204
+
     # ── Error handlers ─────────────────────────────────────────────────
     @app.errorhandler(404)
     def page_not_found(e):  # type: ignore[no-untyped-def]
@@ -204,8 +226,24 @@ def create_app() -> Flask:
     def request_entity_too_large(e):  # type: ignore[no-untyped-def]
         return _render_template("errors/404.html"), 413
 
+    from flask_wtf.csrf import CSRFError
+    from werkzeug.exceptions import HTTPException
+
+    @app.errorhandler(CSRFError)
+    def handle_csrf_error(e):  # type: ignore[no-untyped-def]
+        # Expected security event — WARNING via the typed helper, not an
+        # ERROR-level unhandled exception.
+        from utils.logging_setup import log_security_event
+        log_security_event("csrf_failure", "warning", path=request.path)
+        return _render_template("errors/404.html"), 400
+
     @app.errorhandler(Exception)
     def handle_unexpected(e):  # type: ignore[no-untyped-def]
+        # Intended 4xx/redirect responses (abort(403), 401 from App Check,
+        # 405s…) must keep their status and must NOT be logged as ERROR —
+        # only genuine unhandled exceptions are.
+        if isinstance(e, HTTPException):
+            return e
         log_unexpected("unhandled exception")
         return _render_template("errors/500.html"), 500
 

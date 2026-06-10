@@ -1,6 +1,7 @@
 """Time entry Firestore CRUD and summary functions."""
 
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -63,7 +64,11 @@ def _sanitize_data(data: dict) -> dict:
 
 def _compute_amount(hours: float, rate: int) -> int:
     """Compute amount in cents from hours and rate (cents)."""
-    return int(round(hours * rate))
+    product = hours * rate
+    # Guard against NaN/Infinity (int(round(...)) would raise or corrupt totals)
+    if not math.isfinite(product):
+        return 0
+    return int(round(product))
 
 
 def _validate(data: dict) -> list[str]:
@@ -79,13 +84,18 @@ def _validate(data: dict) -> list[str]:
     if not data.get("description", "").strip():
         errors.append("La description est requise.")
 
+    # math.isfinite rejects NaN/Infinity (NaN passes "<= 0" comparisons)
     hours = data.get("hours", 0)
-    if not isinstance(hours, (int, float)) or hours <= 0:
+    if not isinstance(hours, (int, float)) or not math.isfinite(hours) or hours <= 0:
         errors.append("Le nombre d'heures doit être supérieur à zéro.")
 
     rate = data.get("rate", 0)
-    if not isinstance(rate, (int, float)) or rate < 0:
+    if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate < 0:
         errors.append("Le taux horaire ne peut pas être négatif.")
+
+    amount = data.get("amount", 0)
+    if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount < 0:
+        errors.append("Le montant calculé est invalide.")
 
     return errors
 
@@ -249,9 +259,14 @@ def get_unbilled_time_entries(dossier_id: str) -> list[dict]:
     return [e for e in entries if e.get("billable") and not e.get("invoiced")]
 
 
-def mark_time_entries_invoiced(entry_ids: list[str], invoice_id: str) -> None:
-    """Batch update time entries as invoiced."""
+def mark_time_entries_invoiced(entry_ids: list[str], invoice_id: str) -> list[str]:
+    """Update time entries as invoiced. Returns the IDs that failed to update.
+
+    Note: invoice creation no longer uses this helper — it flips sources
+    inside its own transaction. Kept for callers needing a standalone flip.
+    """
     now = datetime.now(timezone.utc)
+    failed_ids: list[str] = []
     for eid in entry_ids:
         try:
             db.collection(COLLECTION).document(eid).update({
@@ -262,3 +277,5 @@ def mark_time_entries_invoiced(entry_ids: list[str], invoice_id: str) -> None:
             })
         except Exception as exc:
             logger.warning("mark_time_entries_invoiced failed for %s: %s", eid, exc)
+            failed_ids.append(eid)
+    return failed_ids

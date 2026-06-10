@@ -31,6 +31,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Blocking: a vulnerability hit fails the check instead of being
+      # silently swallowed (SARIF still uploads via if: always()).
       - name: Run OSV-Scanner
         uses: google/osv-scanner-action/osv-scanner-action@eb5b619bb565d10623076caba5263750fde3c790  # v2.3.5
         with:
@@ -38,7 +40,6 @@ jobs:
             --format=sarif
             --output=results.sarif
             --lockfile=athena/requirements.txt
-        continue-on-error: true
 
       - name: Upload SARIF
         if: always()

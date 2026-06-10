@@ -407,11 +407,71 @@ def update_dossier(
     return merged, []
 
 
+# Child collections checked before a dossier may be deleted:
+# (collection name, singular French label, plural French label)
+_CHILD_COLLECTIONS = (
+    ("documents", "document", "documents"),
+    ("timeentries", "entrée de temps", "entrées de temps"),
+    ("expenses", "dépense", "dépenses"),
+    ("invoices", "facture", "factures"),
+    ("hearings", "audience", "audiences"),
+    ("tasks", "tâche", "tâches"),
+    ("notes", "note", "notes"),
+    ("protocols", "protocole", "protocoles"),
+    ("folders", "répertoire de documents", "répertoires de documents"),
+)
+
+
+def _count_dossier_children(dossier_id: str) -> list[tuple[int, str]]:
+    """Count child records referencing a dossier.
+
+    Returns a list of (count, French label) tuples for every child type
+    that still has at least one record linked to the dossier.
+    """
+    remaining: list[tuple[int, str]] = []
+    for collection_name, singular, plural in _CHILD_COLLECTIONS:
+        # Fail CLOSED: a count that cannot be established must refuse the
+        # deletion rather than risk orphaning children — let errors propagate
+        # to delete_dossier, which aborts.
+        query = db.collection(collection_name).where(
+            filter=FieldFilter("dossier_id", "==", dossier_id)
+        )
+        count = sum(1 for _ in query.stream())
+        if count > 0:
+            remaining.append((count, singular if count == 1 else plural))
+    return remaining
+
+
 def delete_dossier(dossier_id: str) -> tuple[bool, str]:
-    """Delete a dossier. Returns (success, error_message)."""
+    """Delete a dossier. Returns (success, error_message).
+
+    Deletion is REFUSED while child records (time entries, expenses,
+    invoices, hearings, tasks, notes, protocols, documents, folders)
+    still reference the dossier. Silently cascading the destruction of
+    billing/legal records — or orphaning confidential Storage blobs with
+    no UI path to purge them — would be worse than blocking.
+    """
     existing = get_dossier(dossier_id)
     if not existing:
         return False, "Dossier introuvable."
+
+    try:
+        remaining = _count_dossier_children(dossier_id)
+    except Exception as exc:
+        logger.warning(
+            "delete_dossier: child check failed for %s: %s",
+            dossier_id, type(exc).__name__,
+        )
+        return False, (
+            "Impossible de vérifier le contenu du dossier. "
+            "Veuillez réessayer."
+        )
+    if remaining:
+        details = ", ".join(f"{count} {label}" for count, label in remaining)
+        return False, (
+            f"Impossible de supprimer : le dossier contient encore {details}. "
+            "Archivez le dossier ou supprimez d'abord son contenu."
+        )
 
     try:
         db.collection(COLLECTION).document(dossier_id).delete()
@@ -426,14 +486,27 @@ def suggest_file_number() -> str:
 
 
 def count_dossiers_for_partie(partie_id: str) -> int:
-    """Count how many dossiers reference a given partie (as client or opposing)."""
+    """Count how many dossiers reference a given partie (as client or opposing).
+
+    Returns 0 on query failure — display-only callers degrade gracefully.
+    Safety checks must use :func:`count_dossiers_for_partie_strict`.
+    """
     try:
-        q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
-        q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
-        ids = {doc.id for doc in q1.stream()} | {doc.id for doc in q2.stream()}
-        return len(ids)
+        return count_dossiers_for_partie_strict(partie_id)
     except Exception:
         return 0
+
+
+def count_dossiers_for_partie_strict(partie_id: str) -> int:
+    """Like :func:`count_dossiers_for_partie` but propagates query errors.
+
+    Used by FK safety checks (e.g. partie deletion) that must fail CLOSED
+    when the count cannot be established.
+    """
+    q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
+    q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
+    ids = {doc.id for doc in q1.stream()} | {doc.id for doc in q2.stream()}
+    return len(ids)
 
 
 def list_dossiers_for_partie(partie_id: str) -> list[dict]:

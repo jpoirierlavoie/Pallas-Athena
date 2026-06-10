@@ -1,0 +1,4 @@
+# Development / CI-only dependencies — never deployed to App Engine
+# (.gcloudignore excludes nothing here because this file is only consumed by
+# cloudbuild.yaml's test step and local dev).
+pytest==9.0.3
