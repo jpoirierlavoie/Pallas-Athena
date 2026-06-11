@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ def get_time_entry(entry_id: str) -> Optional[dict]:
         if doc.exists:
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("get_time_entry failed for %s: %s", entry_id, exc)
+        logger.warning("get_time_entry failed for %s: %s", sanitize_log_value(entry_id), exc)
     return None
 
 
@@ -413,6 +414,9 @@ def mark_time_entries_invoiced(entry_ids: list[str], invoice_id: str) -> list[st
                 "etag": str(uuid.uuid4()),
             })
         except Exception as exc:
-            logger.warning("mark_time_entries_invoiced failed for %s: %s", eid, exc)
+            logger.warning(
+                "mark_time_entries_invoiced failed for %s: %s",
+                sanitize_log_value(eid), exc,
+            )
             failed_ids.append(eid)
     return failed_ids

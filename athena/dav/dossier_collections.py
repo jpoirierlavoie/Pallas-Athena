@@ -55,6 +55,7 @@ from models.task import (
     update_task,
     vtodo_to_task,
 )
+from utils.logging_setup import sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span, span
 
 logger = logging.getLogger(__name__)
@@ -576,7 +577,7 @@ def _put_task(
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VTODO) validation failed for %s: %s",
-                resource_id, errors,
+                sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         if old_dossier != dossier_id:
@@ -591,7 +592,7 @@ def _put_task(
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VTODO) validation failed for %s: %s",
-                resource_id, errors,
+                sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         # Resource (re)enters the collection — drop any stale tombstone
@@ -642,7 +643,7 @@ def _put_note(
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VJOURNAL) validation failed for %s: %s",
-                resource_id, errors,
+                sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         bump_ctag(sync_name)
@@ -654,7 +655,7 @@ def _put_note(
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VJOURNAL) validation failed for %s: %s",
-                resource_id, errors,
+                sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         # Resource (re)enters the collection — drop any stale tombstone
@@ -692,7 +693,7 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         if not success:
             logger.error(
                 "Dossier DAV DELETE (task) failed for %s: %s",
-                resource_id, error,
+                sanitize_log_value(resource_id), sanitize_log_value(error),
             )
             return Response("Erreur serveur.", status=500)
 
@@ -711,7 +712,7 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         if not success:
             logger.error(
                 "Dossier DAV DELETE (note) failed for %s: %s",
-                resource_id, error,
+                sanitize_log_value(resource_id), sanitize_log_value(error),
             )
             return Response("Erreur serveur.", status=500)
 

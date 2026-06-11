@@ -10,6 +10,8 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFProtect
 
+from utils.logging_setup import sanitize_log_value
+
 # ---------------------------------------------------------------------------
 # CSRF
 # ---------------------------------------------------------------------------
@@ -217,14 +219,20 @@ def _verify_app_check() -> Optional[Response]:
 
     token = request.headers.get("X-Firebase-AppCheck")
     if not token:
-        current_app.logger.warning("HTMX request missing App Check token: %s", request.path)
+        current_app.logger.warning(
+            "HTMX request missing App Check token: %s",
+            sanitize_log_value(request.path),
+        )
         abort(401)
 
     try:
         from firebase_admin import app_check as firebase_app_check
         firebase_app_check.verify_token(token)
     except Exception as exc:
-        current_app.logger.warning("App Check verification failed for %s: %s", request.path, exc)
+        current_app.logger.warning(
+            "App Check verification failed for %s: %s",
+            sanitize_log_value(request.path), exc,
+        )
         abort(401)
 
     return None

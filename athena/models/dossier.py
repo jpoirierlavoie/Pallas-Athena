@@ -12,6 +12,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,7 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
         if doc.exists:
             return _migrate_parties(doc.to_dict())
     except Exception as exc:
-        logger.warning("get_dossier failed for %s: %s", dossier_id, exc)
+        logger.warning("get_dossier failed for %s: %s", sanitize_log_value(dossier_id), exc)
     return None
 
 
@@ -441,7 +442,10 @@ def update_dossier(
                 if d.id != dossier_id:
                     return None, ["Ce numéro de dossier existe déjà."]
         except Exception as exc:
-            logger.warning("update_dossier: duplicate-check query failed for %s: %s", dossier_id, exc)
+            logger.warning(
+                "update_dossier: duplicate-check query failed for %s: %s",
+                sanitize_log_value(dossier_id), exc,
+            )
 
     now = datetime.now(timezone.utc)
     merged["updated_at"] = now
@@ -523,7 +527,7 @@ def delete_dossier(dossier_id: str) -> tuple[bool, str]:
     except Exception as exc:
         logger.warning(
             "delete_dossier: child check failed for %s: %s",
-            dossier_id, type(exc).__name__,
+            sanitize_log_value(dossier_id), type(exc).__name__,
         )
         return False, (
             "Impossible de vérifier le contenu du dossier. "

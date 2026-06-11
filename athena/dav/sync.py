@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from models import db
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,9 @@ def get_ctag(collection_name: str) -> str:
         if doc.exists:
             return doc.to_dict().get("ctag", "")
     except Exception as exc:
-        logger.warning("get_ctag failed for %s: %s", collection_name, exc)
+        logger.warning(
+            "get_ctag failed for %s: %s", sanitize_log_value(collection_name), exc
+        )
     # Initialise with a fresh ctag
     ctag = str(uuid.uuid4())
     ref.set({
@@ -124,7 +127,7 @@ def remove_tombstone(collection_name: str, resource_id: str) -> None:
     except Exception as exc:
         logger.warning(
             "remove_tombstone failed for %s/%s: %s",
-            collection_name, resource_id, exc,
+            sanitize_log_value(collection_name), sanitize_log_value(resource_id), exc,
         )
 
 
@@ -153,7 +156,7 @@ def get_tombstones(
                 except Exception as exc:
                     logger.warning(
                         "tombstone prune failed for %s/%s: %s",
-                        collection_name, doc.id, exc,
+                        sanitize_log_value(collection_name), doc.id, exc,
                     )
                 continue
             data["id"] = doc.id
@@ -162,7 +165,9 @@ def get_tombstones(
     except Exception as exc:
         # Degrade to an empty list (sync omits deletions) rather than 500,
         # but make the failure visible in the logs.
-        logger.warning("get_tombstones failed for %s: %s", collection_name, exc)
+        logger.warning(
+            "get_tombstones failed for %s: %s", sanitize_log_value(collection_name), exc
+        )
         return []
 
 
@@ -173,7 +178,9 @@ def clear_tombstones(collection_name: str) -> None:
         for doc in tombstones_ref.stream():
             doc.reference.delete()
     except Exception as exc:
-        logger.warning("clear_tombstones failed for %s: %s", collection_name, exc)
+        logger.warning(
+            "clear_tombstones failed for %s: %s", sanitize_log_value(collection_name), exc
+        )
 
 
 def delete_sync_state(collection_name: str) -> None:
@@ -187,5 +194,6 @@ def delete_sync_state(collection_name: str) -> None:
         _sync_ref(collection_name).delete()
     except Exception as exc:
         logger.warning(
-            "delete_sync_state failed for %s: %s", collection_name, exc
+            "delete_sync_state failed for %s: %s",
+            sanitize_log_value(collection_name), exc,
         )

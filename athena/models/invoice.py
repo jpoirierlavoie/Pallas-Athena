@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -430,7 +431,7 @@ def get_invoice(invoice_id: str) -> Optional[dict]:
         if doc.exists:
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("get_invoice failed for %s: %s", invoice_id, exc)
+        logger.warning("get_invoice failed for %s: %s", sanitize_log_value(invoice_id), exc)
     return None
 
 
@@ -454,7 +455,10 @@ def get_invoice_with_items(invoice_id: str) -> tuple[Optional[dict], list[dict]]
             key=lambda i: i.get("date") or datetime.min.replace(tzinfo=timezone.utc)
         )
     except Exception as exc:
-        logger.warning("get_invoice_with_items: line items load failed for %s: %s", invoice_id, exc)
+        logger.warning(
+            "get_invoice_with_items: line items load failed for %s: %s",
+            sanitize_log_value(invoice_id), exc,
+        )
 
     return invoice, items
 
@@ -639,7 +643,7 @@ def void_invoice(invoice_id: str) -> tuple[bool, str]:
         batch.commit()
         return True, ""
     except Exception as exc:
-        logger.error("void_invoice failed for %s: %s", invoice_id, exc)
+        logger.error("void_invoice failed for %s: %s", sanitize_log_value(invoice_id), exc)
         return False, f"Erreur lors de l'annulation : {exc}"
 
 
@@ -677,7 +681,10 @@ def delete_invoice(invoice_id: str) -> tuple[bool, str]:
                 "facture. Elles doivent être libérées avant la suppression."
             )
     except Exception as exc:
-        logger.error("delete_invoice: reference check failed for %s: %s", invoice_id, exc)
+        logger.error(
+            "delete_invoice: reference check failed for %s: %s",
+            sanitize_log_value(invoice_id), exc,
+        )
         return False, f"Erreur lors de la vérification des références : {exc}"
 
     try:

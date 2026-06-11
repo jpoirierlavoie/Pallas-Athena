@@ -12,6 +12,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +219,7 @@ def get_hearing(hearing_id: str) -> Optional[dict]:
         if doc.exists:
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("get_hearing failed for %s: %s", hearing_id, exc)
+        logger.warning("get_hearing failed for %s: %s", sanitize_log_value(hearing_id), exc)
     return None
 
 

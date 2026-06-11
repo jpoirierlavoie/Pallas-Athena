@@ -42,6 +42,7 @@ from models.hearing import (
     update_hearing,
     vevent_to_hearing,
 )
+from utils.logging_setup import sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span
 
 logger = logging.getLogger(__name__)
@@ -352,7 +353,8 @@ def put_resource(hearing_id: str) -> Response:
         )
         if errors:
             logger.warning(
-                "CalDAV PUT validation failed for %s: %s", hearing_id, errors
+                "CalDAV PUT validation failed for %s: %s",
+                sanitize_log_value(hearing_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         bump_ctag(COLLECTION_NAME)
@@ -363,7 +365,8 @@ def put_resource(hearing_id: str) -> Response:
         created, errors = create_hearing(data, require_dossier=False)
         if errors:
             logger.warning(
-                "CalDAV PUT validation failed for %s: %s", hearing_id, errors
+                "CalDAV PUT validation failed for %s: %s",
+                sanitize_log_value(hearing_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         # Resource (re)enters the collection — drop any stale tombstone
@@ -395,7 +398,10 @@ def delete_resource(hearing_id: str) -> Response:
 
     success, error = delete_hearing(hearing_id)
     if not success:
-        logger.error("CalDAV DELETE failed for %s: %s", hearing_id, error)
+        logger.error(
+            "CalDAV DELETE failed for %s: %s",
+            sanitize_log_value(hearing_id), sanitize_log_value(error),
+        )
         return Response("Erreur serveur.", status=500)
 
     record_tombstone(COLLECTION_NAME, hearing_id)

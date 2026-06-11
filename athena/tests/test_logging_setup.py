@@ -23,6 +23,7 @@ from utils.logging_setup import (
     log_dossier_event,
     log_security_event,
     log_unexpected,
+    sanitize_log_value,
 )
 
 
@@ -370,6 +371,108 @@ def test_redaction_scrubs_traceback_text():
     formatted = logging.Formatter("%(message)s").format(rec)
     assert "jane.doe@example.com" not in formatted
     assert "RuntimeError" in formatted
+
+
+# ── Control-character neutralization (log injection, CWE-117) ─────────────
+
+def test_newlines_neutralized_in_plain_message():
+    record = _make_record(msg="line1\n2026-01-01 [ERROR] forged\r\nline2")
+    RedactionFilter().filter(record)
+    assert "\n" not in record.msg
+    assert "\r" not in record.msg
+    assert "\\n" in record.msg
+    assert "forged" in record.msg  # escaped, not silently dropped
+
+
+def test_newlines_neutralized_in_percent_args():
+    # The log-injection scenario: a user-controlled %s arg containing CRLF
+    # must not produce a multi-line formatted message.
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    try:
+        logging.getLogger("pallas.test").warning(
+            "PUT failed for %s", "abc\r\n2026-01-01 [INFO] forged entry"
+        )
+    finally:
+        logging.getLogger().removeHandler(capture)
+    rec = capture.records[-1]
+    formatted = logging.Formatter("%(message)s").format(rec)
+    assert "\n" not in formatted
+    assert "\r" not in formatted
+    assert "forged entry" in formatted
+
+
+def test_control_chars_escaped_to_visible_sequences():
+    record = _make_record(msg="a\tb\x1b[31mc\x00d")
+    RedactionFilter().filter(record)
+    assert "\t" not in record.msg
+    assert "\x1b" not in record.msg
+    assert "\x00" not in record.msg
+    assert record.msg == "a\\tb\\x1b[31mc\\x00d"
+
+
+def test_traceback_multiline_structure_preserved():
+    # Neutralization is applied per traceback line — the real newlines
+    # between frames must survive so the stack stays readable.
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    try:
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            logging.getLogger("pallas.test").error("fail", exc_info=True)
+    finally:
+        logging.getLogger().removeHandler(capture)
+    rec = capture.records[-1]
+    assert rec.exc_text.count("\n") >= 2
+    assert "RuntimeError" in rec.exc_text
+
+
+def test_sanitize_log_value_strips_newlines():
+    assert sanitize_log_value("abc\r\nDEF\nx\ry") == "abc DEF x y"
+    assert "\n" not in sanitize_log_value(["err\n1", "err2"])
+    assert sanitize_log_value("clean-uuid") == "clean-uuid"
+    assert sanitize_log_value(None) == "None"
+
+
+def test_pii_redaction_survives_control_separator():
+    # Regression: neutralization must run AFTER the PII pass — a phone or
+    # postal code split across control whitespace must still redact, since
+    # PHONE_RE/POSTAL_RE rely on \s matching the raw separator char.
+    record = _make_record(msg="appel (514) 555\n1234 svp")
+    RedactionFilter().filter(record)
+    assert "555" not in record.msg
+    assert "<phone>" in record.msg
+    assert "\n" not in record.msg
+
+    record = _make_record(msg="adresse H2T\n1S6 fin")
+    RedactionFilter().filter(record)
+    assert "H2T" not in record.msg
+    assert "<postal>" in record.msg
+
+
+def test_traceback_exotic_separators_neutralized():
+    # Regression: splitlines() also splits on \v \f \x1c-\x1e \x85 U+2028,
+    # which the join would re-emit as REAL newlines — a crafted exception
+    # message could forge a log line. exc_text must escape them instead.
+    capture = _Capture()
+    logging.getLogger().addHandler(capture)
+    try:
+        try:
+            raise RuntimeError("boom\x0c2026-01-01 [ERROR] forged\u2028more")
+        except RuntimeError:
+            logging.getLogger("pallas.test").error("fail", exc_info=True)
+    finally:
+        logging.getLogger().removeHandler(capture)
+    rec = capture.records[-1]
+    assert "\x0c" not in rec.exc_text
+    assert "\u2028" not in rec.exc_text
+    assert "\\x0c" in rec.exc_text
+    assert "\\u2028" in rec.exc_text
+    # The forged text must share its line with the exception, not stand alone.
+    last_line = rec.exc_text.split("\n")[-1]
+    assert "RuntimeError" in last_line
+    assert "forged" in last_line
 
 
 # ── Typed helpers ─────────────────────────────────────────────────────────

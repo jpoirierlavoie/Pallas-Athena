@@ -16,9 +16,14 @@ This module is the single entry point for everything observability-related:
   replaced with ``"<redacted>"`` and free-text email / phone / postal-code
   matches are scrubbed — in ``json_fields``, in the formatted message
   (``%``-style args are pre-interpolated so the scrub sees the final
-  text), and in rendered exception tracebacks.  Quebec court file
+  text), and in rendered exception tracebacks.  Control characters are
+  escaped to visible sequences (``\n`` → ``\\n``) so user-controlled
+  values cannot forge log entries (CWE-117).  Quebec court file
   numbers are preserved by default (public information once filed) —
   flip ``REDACT_COURT_FILE_NUMBERS`` to ``True`` to redact them too.
+* ``sanitize_log_value`` is the call-site companion: wrap user-controlled
+  values (URL path segments, request fields) interpolated into log
+  messages.
 * Typed helpers (``log_auth_event``, ``log_dossier_event``,
   ``log_dav_operation``, ``log_security_event``, ``log_unexpected``)
   emit through dedicated logger names (``pallas.auth``, ``pallas.dossier``,
@@ -178,6 +183,14 @@ class RedactionFilter(logging.Filter):
         r"|\b\d{3}[-.]\d{3}[-.]\d{4}\b"
         r"|\b1?\d{10}\b"
     )
+    # C0 + DEL + C1 control characters and the Unicode line/paragraph
+    # separators. Newlines in a log message enable log forging on
+    # plain-text handlers (CWE-117); C1 \x85 (NEL) and U+2028/U+2029 are
+    # included because str.splitlines() and some log viewers treat them as
+    # line boundaries too. Escaped to visible sequences rather than
+    # stripped so an injection attempt remains visible in the record.
+    CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+    _CONTROL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
     MAX_LEN = 2048
 
     # Used only to render exc_info into text (thread-safe: delegates to
@@ -224,8 +237,14 @@ class RedactionFilter(logging.Filter):
                 exc_text = record.exc_text or self._EXC_FORMATTER.formatException(
                     record.exc_info
                 )
+                # Split on "\n" only — NOT splitlines(), which also treats
+                # \v \f \x1c-\x1e \x85 U+2028/U+2029 as boundaries and would
+                # re-emit them as real newlines after the join, bypassing
+                # control-character neutralization (verified forgeable via
+                # a crafted exception message). With a plain split those
+                # bytes stay inside a line and _redact_string escapes them.
                 record.exc_text = "\n".join(
-                    self._redact_string(line) for line in exc_text.splitlines()
+                    self._redact_string(line) for line in exc_text.split("\n")
                 )
                 record.exc_info = None
             except Exception:
@@ -250,15 +269,31 @@ class RedactionFilter(logging.Filter):
             return "<redacted>"
         return self._redact_value(value)
 
+    @classmethod
+    def _escape_control(cls, m: "re.Match[str]") -> str:
+        ch = m.group(0)
+        mapped = cls._CONTROL_ESCAPES.get(ch)
+        if mapped is not None:
+            return mapped
+        o = ord(ch)
+        return f"\\x{o:02x}" if o <= 0xFF else f"\\u{o:04x}"
+
+    def _neutralize_controls(self, s: str) -> str:
+        return self.CONTROL_RE.sub(self._escape_control, s)
+
     def _redact_string(self, s: str) -> str:
         if len(s) > self.MAX_LEN:
             return f"<truncated, {len(s)} chars>"
+        # Control neutralization runs LAST: the PII regexes rely on \s
+        # matching raw control whitespace (a phone split across "\n" must
+        # still redact), and the \x00 court-file placeholder tokens below
+        # are restored before the controls pass ever sees the string.
         if REDACT_COURT_FILE_NUMBERS:
             s = self.COURT_FILE_RE.sub("<court-file>", s)
             s = self.EMAIL_RE.sub("<email>", s)
             s = self.POSTAL_RE.sub("<postal>", s)
             s = self.PHONE_RE.sub("<phone>", s)
-            return s
+            return self._neutralize_controls(s)
         # Preserve court file numbers: stash them in placeholders, redact
         # the rest, then restore.  This keeps phone / postal regexes from
         # over-matching segments inside a court file number.
@@ -275,7 +310,21 @@ class RedactionFilter(logging.Filter):
         s = self.PHONE_RE.sub("<phone>", s)
         for token, original in placeholders:
             s = s.replace(token, original)
-        return s
+        return self._neutralize_controls(s)
+
+
+def sanitize_log_value(value: Any) -> str:
+    """Return ``value`` as a single-line string safe to interpolate in a log.
+
+    Strips CR/LF so user-controlled values (URL path segments, request
+    fields) cannot forge log entries (CWE-117). The plain ``str.replace``
+    chain is deliberate — CodeQL's log-injection query recognizes it as a
+    sanitizer, so taint is cut at the call site. :class:`RedactionFilter`
+    also neutralizes control characters centrally; this helper exists so
+    the fix is visible where the untrusted value enters the log call.
+    """
+    s = str(value)
+    return s.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
 
 
 # ── Init ────────────────────────────────────────────────────────────────
@@ -563,4 +612,5 @@ __all__: Iterable[str] = (
     "log_dossier_event",
     "log_security_event",
     "log_unexpected",
+    "sanitize_log_value",
 )

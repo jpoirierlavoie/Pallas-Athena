@@ -12,6 +12,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 from utils.validators import (
     apply_address_defaults,
     normalize_email,
@@ -398,7 +399,7 @@ def get_partie(partie_id: str) -> Optional[dict]:
         if doc.exists:
             return _migrate_mandataires(doc.to_dict())
     except Exception as exc:
-        logger.warning("get_partie failed for %s: %s", partie_id, exc)
+        logger.warning("get_partie failed for %s: %s", sanitize_log_value(partie_id), exc)
     return None
 
 
@@ -594,7 +595,7 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
     except Exception as exc:
         logger.warning(
             "delete_partie: FK check failed for %s: %s",
-            partie_id, type(exc).__name__,
+            sanitize_log_value(partie_id), type(exc).__name__,
         )
         return False, (
             "Impossible de vérifier les références de ce contact. "

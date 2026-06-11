@@ -10,6 +10,7 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -1082,4 +1083,7 @@ def _check_protocol_completion(protocol_id: str) -> None:
                 "etag": str(uuid.uuid4()),
             })
         except Exception as exc:
-            logger.warning("_check_protocol_completion failed for %s: %s", protocol_id, exc)
+            logger.warning(
+                "_check_protocol_completion failed for %s: %s",
+                sanitize_log_value(protocol_id), exc,
+            )

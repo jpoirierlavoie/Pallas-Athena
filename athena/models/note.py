@@ -15,6 +15,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ def get_note(note_id: str) -> Optional[dict]:
         if doc.exists:
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("get_note failed for %s: %s", note_id, exc)
+        logger.warning("get_note failed for %s: %s", sanitize_log_value(note_id), exc)
     return None
 
 
@@ -279,7 +280,10 @@ def _find_note_by_vjournal_uid(vjournal_uid: str) -> Optional[dict]:
         for doc in query.stream():
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("_find_note_by_vjournal_uid failed for %s: %s", vjournal_uid, exc)
+        logger.warning(
+            "_find_note_by_vjournal_uid failed for %s: %s",
+            sanitize_log_value(vjournal_uid), exc,
+        )
     return None
 
 

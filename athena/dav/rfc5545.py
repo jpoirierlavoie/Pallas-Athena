@@ -45,6 +45,7 @@ from models.task import (
     update_task,
     vtodo_to_task,
 )
+from utils.logging_setup import sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span
 
 logger = logging.getLogger(__name__)
@@ -360,7 +361,8 @@ def tasks_put_resource(task_id: str) -> Response:
         updated, errors = update_task(task_id, data)
         if errors:
             logger.warning(
-                "Tasks PUT validation failed for %s: %s", task_id, errors
+                "Tasks PUT validation failed for %s: %s",
+                sanitize_log_value(task_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         bump_ctag(TASKS_COLLECTION)
@@ -371,7 +373,8 @@ def tasks_put_resource(task_id: str) -> Response:
         created, errors = create_task(data)
         if errors:
             logger.warning(
-                "Tasks PUT validation failed for %s: %s", task_id, errors
+                "Tasks PUT validation failed for %s: %s",
+                sanitize_log_value(task_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         # Resource (re)enters the collection — drop any stale tombstone
@@ -403,7 +406,10 @@ def tasks_delete_resource(task_id: str) -> Response:
 
     success, error = delete_task(task_id)
     if not success:
-        logger.error("Tasks DELETE failed for %s: %s", task_id, error)
+        logger.error(
+            "Tasks DELETE failed for %s: %s",
+            sanitize_log_value(task_id), sanitize_log_value(error),
+        )
         return Response("Erreur serveur.", status=500)
 
     record_tombstone(TASKS_COLLECTION, task_id)

@@ -15,6 +15,7 @@ from firebase_admin import storage
 from werkzeug.utils import secure_filename
 from models import db
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +332,7 @@ def get_document(document_id: str) -> Optional[dict]:
         if doc.exists:
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("get_document failed for %s: %s", document_id, exc)
+        logger.warning("get_document failed for %s: %s", sanitize_log_value(document_id), exc)
     return None
 
 
@@ -446,7 +447,10 @@ def delete_document(document_id: str) -> tuple[bool, str]:
         except NotFound:
             # Blob already gone — treat as deleted and proceed with the
             # Firestore delete so the metadata never becomes undeletable.
-            logger.info("delete_document: blob already missing for document %s", document_id)
+            logger.info(
+                "delete_document: blob already missing for document %s",
+                sanitize_log_value(document_id),
+            )
         except Exception as exc:
             return False, f"Erreur lors de la suppression du fichier : {exc}"
 

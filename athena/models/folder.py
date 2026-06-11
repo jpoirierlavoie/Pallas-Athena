@@ -8,6 +8,7 @@ from typing import Optional
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ def get_folder(dossier_id: str, folder_id: str) -> Optional[dict]:
             if data.get("dossier_id") == dossier_id:
                 return data
     except Exception as exc:
-        logger.warning("get_folder failed for %s: %s", folder_id, exc)
+        logger.warning("get_folder failed for %s: %s", sanitize_log_value(folder_id), exc)
     return None
 
 
@@ -318,7 +319,10 @@ def delete_folder(
                     "etag": str(uuid.uuid4()),
                 })
         except Exception as exc:
-            logger.warning("delete_folder: failed to reparent documents under %s: %s", folder_id, exc)
+            logger.warning(
+                "delete_folder: failed to reparent documents under %s: %s",
+                sanitize_log_value(folder_id), exc,
+            )
 
     # Delete the folder
     try:
@@ -406,7 +410,7 @@ def _touch_folder(dossier_id: str, folder_id: str) -> None:
             "updated_at": datetime.now(timezone.utc),
         })
     except Exception as exc:
-        logger.warning("_touch_folder failed for %s: %s", folder_id, exc)
+        logger.warning("_touch_folder failed for %s: %s", sanitize_log_value(folder_id), exc)
 
 
 def _get_max_subtree_depth(dossier_id: str, folder_id: str) -> int:

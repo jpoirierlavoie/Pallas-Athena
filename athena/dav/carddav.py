@@ -42,6 +42,7 @@ from models.partie import (
     update_partie,
     vcard_to_partie,
 )
+from utils.logging_setup import sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span
 
 logger = logging.getLogger(__name__)
@@ -367,7 +368,8 @@ def put_resource(partie_id: str) -> Response:
         updated, errors = update_partie(partie_id, data)
         if errors:
             logger.warning(
-                "CardDAV PUT validation failed for %s: %s", partie_id, errors
+                "CardDAV PUT validation failed for %s: %s",
+                sanitize_log_value(partie_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         bump_ctag(COLLECTION_NAME)
@@ -379,7 +381,8 @@ def put_resource(partie_id: str) -> Response:
         created, errors = create_partie(data)
         if errors:
             logger.warning(
-                "CardDAV PUT validation failed for %s: %s", partie_id, errors
+                "CardDAV PUT validation failed for %s: %s",
+                sanitize_log_value(partie_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
         # Resource (re)enters the collection — drop any stale tombstone
@@ -413,7 +416,10 @@ def delete_resource(partie_id: str) -> Response:
 
     success, error = delete_partie(partie_id)
     if not success:
-        logger.error("CardDAV DELETE failed for %s: %s", partie_id, error)
+        logger.error(
+            "CardDAV DELETE failed for %s: %s",
+            sanitize_log_value(partie_id), sanitize_log_value(error),
+        )
         return Response("Erreur serveur.", status=500)
 
     record_tombstone(COLLECTION_NAME, partie_id)

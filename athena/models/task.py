@@ -14,6 +14,7 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils.logging_setup import sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ def get_task(task_id: str) -> Optional[dict]:
         if doc.exists:
             return doc.to_dict()
     except Exception as exc:
-        logger.warning("get_task failed for %s: %s", task_id, exc)
+        logger.warning("get_task failed for %s: %s", sanitize_log_value(task_id), exc)
     return None
 
 
