@@ -32,6 +32,8 @@ from models.hearing import (
     delete_hearing,
     get_hearing,
     list_hearings,
+    list_hearings_in_range,
+    list_hearings_window,
     update_hearing,
 )
 from models.dossier import (
@@ -183,6 +185,29 @@ def dossier_search() -> str:
 # ── List (Calendar view) ─────────────────────────────────────────────────
 
 
+def _matches_filters(
+    hearing: dict, hearing_type_filter: str, status_filter: str
+) -> bool:
+    """Apply the optional type/status filters to one hearing.
+
+    Mirrors the legacy list_hearings semantics: unknown filter values are
+    ignored rather than matching nothing.
+    """
+    if (
+        hearing_type_filter
+        and hearing_type_filter in VALID_HEARING_TYPES
+        and hearing.get("hearing_type") != hearing_type_filter
+    ):
+        return False
+    if (
+        status_filter
+        and status_filter in VALID_STATUSES
+        and hearing.get("status") != status_filter
+    ):
+        return False
+    return True
+
+
 @hearings_bp.route("/")
 @login_required
 def hearing_list() -> str:
@@ -212,12 +237,14 @@ def hearing_list() -> str:
         else:
             month_end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
 
-        hearings = list_hearings(
-            hearing_type_filter=hearing_type_filter or None,
-            status_filter=status_filter or None,
-            date_from=month_start,
-            date_to=month_end,
-        )
+        # The month range is pushed server-side (bounded read) instead of
+        # streaming the whole collection; type/status filters then apply
+        # in Python over the (small) month window.
+        hearings = [
+            h
+            for h in list_hearings_in_range(month_start, month_end)
+            if _matches_filters(h, hearing_type_filter, status_filter)
+        ]
 
         # Build calendar grid data
         import calendar
@@ -271,15 +298,30 @@ def hearing_list() -> str:
         return render_template("hearings/list.html", **ctx)
 
     else:
-        # List view: upcoming hearings (next 30 days by default)
-        hearings = list_hearings(
-            hearing_type_filter=hearing_type_filter or None,
-            status_filter=status_filter or None,
-        )
+        # List view. Not paginated (matching the existing UX), but bounded
+        # server-side instead of streaming the whole collection: the next
+        # 100 upcoming hearings (start_datetime >= now, chronological) and
+        # the 100 most recent past ones (start_datetime < now, reverse
+        # chronological). Type/status filters apply in Python over each
+        # bounded window.
+        upcoming_window = [
+            h
+            for h in list_hearings_window(now, direction="upcoming")
+            if _matches_filters(h, hearing_type_filter, status_filter)
+        ]
+        past_window = [
+            h
+            for h in list_hearings_window(now, direction="past")
+            if _matches_filters(h, hearing_type_filter, status_filter)
+        ]
 
-        # Split into upcoming vs past
-        upcoming = [h for h in hearings if h.get("start_datetime") and h["start_datetime"] >= now and h.get("status") not in ("annulée",)]
-        past = [h for h in hearings if h.get("start_datetime") and h["start_datetime"] < now or h.get("status") in ("annulée",)]
+        # Cancelled future hearings belong with « Passées » (existing UX).
+        upcoming = [
+            h for h in upcoming_window if h.get("status") != "annulée"
+        ]
+        past = [
+            h for h in upcoming_window if h.get("status") == "annulée"
+        ] + past_window
         # Past: reverse chronological
         past.sort(
             key=lambda h: h.get("start_datetime") or datetime.min.replace(tzinfo=timezone.utc),
@@ -290,7 +332,6 @@ def hearing_list() -> str:
         ctx.update(
             upcoming=upcoming,
             past=past,
-            hearings=hearings,
             view=view,
             hearing_type_filter=hearing_type_filter,
             status_filter=status_filter,

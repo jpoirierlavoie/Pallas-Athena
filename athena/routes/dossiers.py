@@ -16,7 +16,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import clear_tombstones, delete_sync_state
-from pagination import paginate
+from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from models.time_entry import (
     get_time_summary,
     list_time_entries,
@@ -70,6 +70,7 @@ from models.dossier import (
     delete_dossier,
     get_dossier,
     list_dossiers,
+    list_dossiers_page,
     suggest_file_number,
     update_dossier,
 )
@@ -200,23 +201,47 @@ def dossier_list() -> str:
     status_filter = request.args.get("status", "actif")
     search = request.args.get("q", "").strip()
     sort_by = request.args.get("sort", "opened_date")
-    page = request.args.get("page", 1, type=int)
 
     # "tous" means no status filter
     effective_filter = status_filter if status_filter != "tous" else None
 
-    dossiers = list_dossiers(
-        status_filter=effective_filter,
-        search=search or None,
-        sort_by=sort_by,
-    )
+    if search or sort_by != "opened_date":
+        # Legacy fallback: Firestore has no full-text search, so the search
+        # path materializes the collection and filters in Python, sliced by
+        # paginate(). Search is occasional — the read cost is acceptable.
+        # The non-default sort (file_number) also falls back here: a cursor
+        # path for it would need its own composite indexes.
+        page = request.args.get("page", 1, type=int)
+        dossiers = list_dossiers(
+            status_filter=effective_filter,
+            search=search or None,
+            sort_by=sort_by,
+        )
+        dossiers, pagination = paginate(dossiers, page)
+        pagination["url"] = url_for("dossiers.dossier_list")
+        pagination["target"] = "#dossier-rows"
+        if sort_by != "opened_date":
+            # q/status travel via hx-include; sort isn't in #filters.
+            pagination["extra_vals"] = {"sort": sort_by}
+    else:
+        # Cursor pagination (default browse path): ~PAGE_SIZE reads per page.
+        cursor = request.args.get("cursor", "") or None
+        trail = parse_trail(request.args.get("trail", ""))
+        dossiers, next_cursor = list_dossiers_page(
+            status_filter=effective_filter,
+            limit=PAGE_SIZE,
+            cursor=cursor,
+        )
+        pagination = cursor_pagination(
+            cursor=cursor,
+            trail=trail,
+            next_cursor=next_cursor,
+            url=url_for("dossiers.dossier_list"),
+            target="#dossier-rows",
+        )
 
     # Compute prescription warnings
     _attach_prescription_warnings(dossiers)
-
-    dossiers, pagination = paginate(dossiers, page)
-    pagination["url"] = url_for("dossiers.dossier_list")
-    pagination["target"] = "#dossier-rows"
 
     ctx = _template_context()
     ctx.update(

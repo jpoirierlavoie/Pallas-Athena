@@ -116,6 +116,9 @@ def _enforce_origin_secret() -> Optional[Response]:
     secret = current_app.config.get("CF_ORIGIN_SECRET", "")
     if not secret:
         return None
+    # App Engine internal requests (warmup, cron) never transit Cloudflare.
+    if request.path.startswith("/_ah/"):
+        return None
     supplied = request.headers.get("X-Origin-Auth", "")
     if not hmac.compare_digest(supplied, secret):
         abort(403)

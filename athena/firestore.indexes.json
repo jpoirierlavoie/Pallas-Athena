@@ -1,0 +1,286 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "billable", "order": "ASCENDING" },
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "hours", "order": "ASCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "billable", "order": "ASCENDING" },
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "hours", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "billable", "order": "ASCENDING" },
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dossier_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "billable", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "hours", "order": "ASCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dossier_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "hours", "order": "ASCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "billable", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "hours", "order": "ASCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "timeentries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "hours", "order": "ASCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dossier_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dossier_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "invoiced", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" },
+        { "fieldPath": "amount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "parties",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "updated_at", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "parties",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "contact_role", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "dossiers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "prescription_date", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "dossiers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "opened_date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "dossiers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "opened_date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "amount_due", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" },
+        { "fieldPath": "id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "due_date", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "tasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dossier_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "due_date", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "pinned", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "dossier_id", "order": "ASCENDING" },
+        { "fieldPath": "pinned", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "steps",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "deadline_date", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "steps",
+      "fieldPath": "deadline_date",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION" },
+        { "order": "DESCENDING", "queryScope": "COLLECTION" },
+        { "arrayConfig": "CONTAINS", "queryScope": "COLLECTION" },
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    }
+  ]
+}

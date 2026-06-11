@@ -6,8 +6,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import aggregation_values, db
+from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 
 logger = logging.getLogger(__name__)
@@ -168,6 +170,100 @@ def list_expenses(
         return results
     except Exception:
         return []
+
+
+def _filtered_query(
+    dossier_id: Optional[str],
+    billable_filter: Optional[str],
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
+) -> "firestore.Query":
+    """Build the filtered, (date DESC, id DESC)-ordered expense query.
+
+    Shared by :func:`list_expenses_page` and
+    :func:`get_filtered_expense_totals` so the exact same composite index
+    serves both the page reads and the totals aggregation. The ``date``
+    range filters ride the primary order field (no extra index dimension).
+    Only ``non_facture`` is meaningful for expenses (mirrors
+    :func:`list_expenses`); the dossier_id + billable_filter combination is
+    NOT supported server-side — callers route it through the legacy
+    :func:`list_expenses` full scan.
+    """
+    query = db.collection(COLLECTION)
+    if dossier_id:
+        query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
+    if billable_filter == "non_facture":
+        query = query.where(filter=FieldFilter("invoiced", "==", False))
+    if date_from:
+        query = query.where(filter=FieldFilter("date", ">=", date_from))
+    if date_to:
+        query = query.where(filter=FieldFilter("date", "<=", date_to))
+    return (
+        query
+        .order_by("date", direction=firestore.Query.DESCENDING)
+        .order_by("id", direction=firestore.Query.DESCENDING)
+    )
+
+
+def list_expenses_page(
+    dossier_id: Optional[str] = None,
+    billable_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    limit: int = PAGE_SIZE,
+    cursor: Optional[str] = None,
+) -> tuple[list[dict], Optional[str]]:
+    """Return one page of expenses plus an opaque next-page cursor.
+
+    Firestore-native cursor pagination: ``order_by(date DESC, id DESC)``
+    with ``start_after`` — reads ~``limit`` docs per page instead of
+    streaming the whole collection (the ``id`` field mirrors the document ID
+    and is always set, giving a total order for ties on ``date``).
+    ``list_expenses`` remains the full-scan path for exports, summaries and
+    the dossier_id + billable_filter combination.
+    """
+    try:
+        query = _filtered_query(dossier_id, billable_filter, date_from, date_to)
+        values = decode_cursor(cursor)
+        if values and len(values) == 2:
+            # decode_cursor preserves encode order: [date, id]
+            query = query.start_after({"date": values[0], "id": values[1]})
+        docs = [d.to_dict() for d in query.limit(limit + 1).stream()]
+        next_cursor = None
+        if len(docs) > limit:
+            docs = docs[:limit]
+            last = docs[-1]
+            next_cursor = encode_cursor([last.get("date"), last.get("id")])
+        return docs, next_cursor
+    except Exception as exc:
+        # PII-free: log the exception only, never filter values or doc content.
+        logger.warning("list_expenses_page: paginated query failed: %s", exc)
+        return [], None
+
+
+def get_filtered_expense_totals(
+    dossier_id: Optional[str] = None,
+    billable_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+) -> dict:
+    """Return ``{"amount": int}`` over the list-view filters.
+
+    Server-side SUM aggregation replacing the legacy "materialize
+    everything, sum in Python" total on the /temps/ dépenses tab. Built on
+    the same ordered query as :func:`list_expenses_page` so the identical
+    composite index serves both. Returns a safe zero on failure — a broken
+    total must never break the list view.
+    """
+    try:
+        query = _filtered_query(dossier_id, billable_filter, date_from, date_to)
+        agg_query = query.sum("amount", alias="amount")
+        values = aggregation_values(agg_query.get())
+        amount = values.get("amount", 0) or 0
+        return {"amount": int(round(amount))}
+    except Exception as exc:
+        logger.warning("get_filtered_expense_totals: aggregation failed: %s", exc)
+        return {"amount": 0}
 
 
 def update_expense(

@@ -7,8 +7,10 @@ from typing import Optional
 
 import icalendar
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import aggregation_values, db
+from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 
 logger = logging.getLogger(__name__)
@@ -177,29 +179,37 @@ def _validate(data: dict) -> list[str]:
 
 
 def _suggest_next_file_number() -> str:
-    """Suggest the next sequential file number for the current year."""
+    """Suggest the next sequential file number for the current year.
+
+    Reads only the lexicographically highest file number of the year
+    (``order_by DESC`` + ``limit(1)`` over the same year-prefix range filter)
+    instead of materializing every dossier of the year. Generated numbers are
+    zero-padded to three digits, so lexicographic order matches numeric order
+    for the sequences this function emits; a non-padded manually-assigned
+    number can skew the suggestion, but uniqueness is still enforced at
+    creation time and the suggestion remains user-editable.
+    """
     year = datetime.now(timezone.utc).year
     try:
         query = (
             db.collection(COLLECTION)
             .where(filter=FieldFilter("file_number", ">=", f"{year}-"))
             .where(filter=FieldFilter("file_number", "<=", f"{year}-\uf8ff"))
+            .order_by("file_number", direction=firestore.Query.DESCENDING)
+            .limit(1)
         )
         docs = list(query.stream())
         if not docs:
             return f"{year}-001"
 
+        fn = (docs[0].to_dict() or {}).get("file_number", "")
         max_seq = 0
-        for doc in docs:
-            d = doc.to_dict()
-            fn = d.get("file_number", "")
-            parts = fn.split("-", 1)
-            if len(parts) == 2:
-                try:
-                    seq = int(parts[1])
-                    max_seq = max(max_seq, seq)
-                except ValueError:
-                    continue
+        parts = fn.split("-", 1)
+        if len(parts) == 2:
+            try:
+                max_seq = int(parts[1])
+            except ValueError:
+                max_seq = 0
         return f"{year}-{max_seq + 1:03d}"
     except Exception:
         return f"{year}-001"
@@ -352,6 +362,59 @@ def list_dossiers(
         return []
 
 
+def list_dossiers_page(
+    status_filter: Optional[str] = None,
+    limit: int = PAGE_SIZE,
+    cursor: Optional[str] = None,
+) -> tuple[list[dict], Optional[str]]:
+    """Return one page of dossiers via Firestore-native cursor pagination.
+
+    Replicates :func:`list_dossiers`'s default ordering (``opened_date``
+    descending, newest first) with ``id`` as a deterministic tiebreaker,
+    reading ~``limit`` documents per page instead of streaming the whole
+    collection. ``status_filter`` is applied server-side when set; no filter
+    means the « tous » tab.
+
+    Required composite indexes (see ``firestore.indexes.json``):
+    - (status ASC, opened_date DESC, id DESC) — status tabs
+    - (opened_date DESC, id DESC) — « tous »
+
+    Returns ``(rows, next_cursor)`` where ``next_cursor`` is an opaque token
+    for the next page, or None on the last page. A malformed cursor degrades
+    to the first page. Returns ``([], None)`` on query failure.
+    """
+    try:
+        query = db.collection(COLLECTION)
+        if status_filter and status_filter in VALID_STATUSES:
+            query = query.where(filter=FieldFilter("status", "==", status_filter))
+        query = query.order_by(
+            "opened_date", direction=firestore.Query.DESCENDING
+        ).order_by("id", direction=firestore.Query.DESCENDING)
+
+        # decode_cursor yields the values in encode order: [opened_date, id].
+        # start_after takes a {field_path: value} dict matched to the
+        # order_by fields (google-cloud-firestore 2.27 BaseQuery API).
+        values = decode_cursor(cursor)
+        if values and len(values) == 2:
+            query = query.start_after({"opened_date": values[0], "id": values[1]})
+
+        # Fetch one extra row to learn whether a next page exists.
+        docs = [
+            _migrate_parties(doc.to_dict())
+            for doc in query.limit(limit + 1).stream()
+        ]
+        next_cursor = None
+        if len(docs) > limit:
+            docs = docs[:limit]
+            last = docs[-1]
+            next_cursor = encode_cursor([last.get("opened_date"), last.get("id")])
+        return docs, next_cursor
+    except Exception as exc:
+        # PII-free: log only the exception type, never dossier content.
+        logger.warning("list_dossiers_page: query failed: %s", type(exc).__name__)
+        return [], None
+
+
 def update_dossier(
     dossier_id: str, data: dict
 ) -> tuple[Optional[dict], list[str]]:
@@ -483,6 +546,67 @@ def delete_dossier(dossier_id: str) -> tuple[bool, str]:
 def suggest_file_number() -> str:
     """Public wrapper for auto-suggesting the next file number."""
     return _suggest_next_file_number()
+
+
+# Shared implementation lives in models/__init__.py; aliased so this module's
+# helpers (and their tests) keep a stable local name.
+_aggregation_values = aggregation_values
+
+
+def count_open() -> int:
+    """Count open dossiers (actif or en_attente) via a COUNT aggregation.
+
+    A single server-side COUNT over ``status in (actif, en_attente)``
+    replaces the dashboard's two full list scans. The ``in`` filter on a
+    single field is served by the automatic single-field index on
+    ``status`` — no composite index required for COUNT.
+
+    Returns 0 on failure (graceful degradation for the dashboard stat).
+    """
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("status", "in", ["actif", "en_attente"])
+        )
+        values = _aggregation_values(query.count(alias="open").get())
+        return int(values.get("open", 0) or 0)
+    except Exception as exc:
+        logger.warning("count_open: aggregation query failed: %s", exc)
+        return 0
+
+
+def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
+    """Return active dossiers with a prescription date on or before *cutoff*.
+
+    Both filters run server-side (``status == actif`` AND
+    ``prescription_date <= cutoff``), ordered by prescription_date ascending
+    and bounded — requires the ``dossiers`` composite index
+    (status ASC, prescription_date ASC); see ``firestore.indexes.json``.
+    Dossiers without a prescription date are excluded automatically: Firestore
+    range filters never match null/missing values, matching the previous
+    Python-side behaviour. Legacy party fields are migrated on read, like
+    every other dossier read path.
+
+    Returns [] on failure (the dashboard degrades gracefully).
+    """
+    try:
+        query = (
+            db.collection(COLLECTION)
+            .where(filter=FieldFilter("status", "==", "actif"))
+            .where(filter=FieldFilter("prescription_date", "<=", cutoff))
+            .order_by("prescription_date")
+            .limit(limit)
+        )
+        alerts = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
+        if len(alerts) >= limit:
+            # Prescription deadlines must never be silently truncated.
+            logger.warning(
+                "list_prescription_alerts: result window full (limit=%d) — "
+                "some alerts may be hidden", limit,
+            )
+        return alerts
+    except Exception as exc:
+        logger.warning("list_prescription_alerts: query failed: %s", exc)
+        return []
 
 
 def count_dossiers_for_partie(partie_id: str) -> int:

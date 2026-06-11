@@ -1,9 +1,18 @@
 runtime: python313
 instance_class: F2
 automatic_scaling:
+  # min_instances: 0 trades a cold start after idle (Flask + firebase_admin +
+  # OTel imports, several seconds) for zero standing cost. Warmup requests
+  # below soften this. Set min_instances: 1 to eliminate cold starts entirely
+  # at the cost of one always-on F2 instance.
   min_instances: 0
   max_instances: 2
   target_cpu_utilization: 0.65
+
+# Ask App Engine to send /_ah/warmup before routing live traffic to a new
+# instance (handled in main.py; primes Firebase/Firestore clients).
+inbound_services:
+  - warmup
 
 # Explicit worker/thread/timeout sizing: gunicorn's defaults (1 sync worker,
 # 30 s timeout) cap the whole app at ~2 concurrent requests across instances
@@ -80,11 +89,24 @@ handlers:
       Referrer-Policy: strict-origin-when-cross-origin
       Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
+  # Vendored assets carry their version/hash in the filename and are therefore
+  # immutable: cache for a year. HARD RULE — a changed asset MUST get a new
+  # filename; never edit a vendor file in place.
+  - url: /static/vendor
+    static_dir: static/vendor
+    secure: always
+    http_headers:
+      Cache-Control: "public, max-age=31536000, immutable"
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+
+  # Other static files (icons, owl.png, legal pages) are NOT version-named, so
+  # they get a moderate lifetime instead of immutable.
   - url: /static
     static_dir: static
     secure: always
     http_headers:
-      Cache-Control: "public, max-age=3600"
+      Cache-Control: "public, max-age=86400"
       X-Content-Type-Options: nosniff
       Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 

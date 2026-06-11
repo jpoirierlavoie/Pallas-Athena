@@ -23,6 +23,7 @@ from models.note import (
     delete_note,
     get_note,
     list_notes,
+    list_notes_recent,
     toggle_pin,
     update_note,
 )
@@ -119,11 +120,25 @@ def note_list() -> str:
     category_filter = request.args.get("category", "").strip()
     search_query = request.args.get("q", "").strip()
 
-    notes = list_notes(
-        dossier_id=dossier_filter or None,
-        category=category_filter or None,
-        search=search_query or None,
-    )
+    # Invalid categories are dropped (the legacy filter ignored them anyway)
+    # so a junk query string cannot force the unbounded fallback.
+    if category_filter not in VALID_CATEGORIES:
+        category_filter = ""
+
+    if search_query or category_filter:
+        # Legacy fallback: search scans title + content and category is a
+        # Python-side filter, so both need the fully materialized list.
+        # These are occasional paths; the default view stays bounded below.
+        notes = list_notes(
+            dossier_id=dossier_filter or None,
+            category=category_filter or None,
+            search=search_query or None,
+        )
+    else:
+        # Bounded default path: pinned notes + most recent unpinned notes,
+        # ordered and limited server-side (~PINNED_LIMIT + RECENT_LIMIT
+        # reads max) while keeping the pinned-first / newest-first order.
+        notes = list_notes_recent(dossier_id=dossier_filter or None)
 
     ctx = _template_context()
     ctx.update(

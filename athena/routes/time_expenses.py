@@ -18,13 +18,15 @@ from flask import (
 
 from auth import login_required
 from security import safe_internal_redirect
-from pagination import paginate
+from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from models.time_entry import (
     QUICK_DESCRIPTIONS,
     create_time_entry,
     delete_time_entry,
+    get_filtered_time_totals,
     get_time_entry,
     list_time_entries,
+    list_time_entries_page,
     update_time_entry,
 )
 from models.expense import (
@@ -33,7 +35,9 @@ from models.expense import (
     create_expense,
     delete_expense,
     get_expense,
+    get_filtered_expense_totals,
     list_expenses,
+    list_expenses_page,
     update_expense,
 )
 from models.dossier import (
@@ -154,13 +158,23 @@ def dossier_search() -> str:
 @time_expenses_bp.route("/")
 @login_required
 def time_list() -> str:
-    """Render the standalone time & expense list."""
+    """Render the standalone time & expense list.
+
+    Both tabs use Firestore-native cursor pagination (~PAGE_SIZE reads per
+    page) with server-side filters, and an aggregation query for the running
+    totals. One exception stays on the legacy in-memory path: dossier_id
+    combined with the billable/invoiced filter — each such pairing would
+    need its own composite index, and a dossier-scoped result set stays
+    small enough for a full scan.
+    """
     active_tab = request.args.get("tab", "heures")
     billable_filter = request.args.get("filter", "")
     dossier_id = request.args.get("dossier_id", "").strip()
     date_from = _parse_date(request.args.get("date_from", ""))
     date_to = _parse_date(request.args.get("date_to", ""))
     page = request.args.get("page", 1, type=int)
+    cursor = request.args.get("cursor", "") or None
+    trail = parse_trail(request.args.get("trail", ""))
 
     ctx = _template_context()
     ctx.update(
@@ -171,37 +185,63 @@ def time_list() -> str:
         date_to=request.args.get("date_to", ""),
     )
 
-    pagination_base = {
-        "url": url_for("time_expenses.time_list"),
-        "target": "#entry-rows",
+    list_url = url_for("time_expenses.time_list")
+    rows_target = "#entry-rows"
+    filters = {
+        "dossier_id": dossier_id or None,
+        "billable_filter": billable_filter or None,
+        "date_from": date_from,
+        "date_to": date_to,
     }
+    # Rare combo without its own composite index → legacy full-scan path.
+    use_legacy = bool(dossier_id and billable_filter)
 
     if active_tab == "depenses":
-        entries = list_expenses(
-            dossier_id=dossier_id or None,
-            billable_filter=billable_filter or None,
-            date_from=date_from,
-            date_to=date_to,
-        )
-        ctx["total_amount"] = sum(e.get("amount", 0) for e in entries)
-        entries, pagination = paginate(entries, page)
-        pagination.update(pagination_base)
+        if use_legacy:
+            entries = list_expenses(**filters)
+            ctx["total_amount"] = sum(e.get("amount", 0) for e in entries)
+            entries, pagination = paginate(entries, page)
+            pagination.update(url=list_url, target=rows_target)
+        else:
+            entries, next_cursor = list_expenses_page(
+                **filters, limit=PAGE_SIZE, cursor=cursor
+            )
+            ctx["total_amount"] = get_filtered_expense_totals(**filters)["amount"]
+            pagination = cursor_pagination(
+                cursor=cursor,
+                trail=trail,
+                next_cursor=next_cursor,
+                url=list_url,
+                target=rows_target,
+                extra_vals={"tab": "depenses"},
+            )
         ctx["expenses"] = entries
         ctx["pagination"] = pagination
 
         if _is_htmx():
             return render_template("time_expenses/_expense_rows.html", **ctx)
     else:
-        entries = list_time_entries(
-            dossier_id=dossier_id or None,
-            billable_filter=billable_filter or None,
-            date_from=date_from,
-            date_to=date_to,
-        )
-        ctx["total_hours"] = round(sum(e.get("hours", 0) for e in entries), 1)
-        ctx["total_amount"] = sum(e.get("amount", 0) for e in entries)
-        entries, pagination = paginate(entries, page)
-        pagination.update(pagination_base)
+        if use_legacy:
+            entries = list_time_entries(**filters)
+            ctx["total_hours"] = round(sum(e.get("hours", 0) for e in entries), 1)
+            ctx["total_amount"] = sum(e.get("amount", 0) for e in entries)
+            entries, pagination = paginate(entries, page)
+            pagination.update(url=list_url, target=rows_target)
+        else:
+            entries, next_cursor = list_time_entries_page(
+                **filters, limit=PAGE_SIZE, cursor=cursor
+            )
+            totals = get_filtered_time_totals(**filters)
+            ctx["total_hours"] = totals["hours"]
+            ctx["total_amount"] = totals["amount"]
+            pagination = cursor_pagination(
+                cursor=cursor,
+                trail=trail,
+                next_cursor=next_cursor,
+                url=list_url,
+                target=rows_target,
+                extra_vals={"tab": "heures"},
+            )
         ctx["time_entries"] = entries
         ctx["pagination"] = pagination
 

@@ -50,10 +50,15 @@ def index() -> str:
 
 
 def _get_hearings_in_range(date_from: datetime, date_to: datetime) -> list[dict]:
-    """Return non-cancelled hearings in a date range, chronologically."""
+    """Return non-cancelled hearings in a date range, chronologically.
+
+    The date range, ordering, and bound (100 rows) run server-side via
+    ``list_hearings_in_range``; only the cancelled-status exclusion stays
+    in Python, over the already-small result.
+    """
     try:
-        from models.hearing import list_hearings
-        hearings = list_hearings(date_from=date_from, date_to=date_to)
+        from models.hearing import list_hearings_in_range
+        hearings = list_hearings_in_range(date_from, date_to)
         return [
             h for h in hearings
             if h.get("status") not in ("annulée",)
@@ -63,19 +68,20 @@ def _get_hearings_in_range(date_from: datetime, date_to: datetime) -> list[dict]
 
 
 def _get_urgent_tasks(now: datetime) -> list[dict]:
-    """Return tasks due within 14 days or overdue (not completed/cancelled)."""
+    """Return tasks due within 14 days or overdue (not completed/cancelled).
+
+    The status/due-date filters, ordering, and bound run server-side via
+    ``list_urgent_tasks`` (tasks without a due_date are excluded by the
+    range filter, matching the previous behaviour); the overdue-first
+    re-sort happens here over the bounded result.
+    """
     try:
-        from models.task import list_tasks
-        all_tasks = list_tasks()
+        from models.task import list_urgent_tasks
         cutoff = now + timedelta(days=14)
-        urgent = []
-        for t in all_tasks:
-            if t.get("status") in ("terminée", "annulée"):
-                continue
+        urgent = list_urgent_tasks(cutoff)
+        for t in urgent:
             due = t.get("due_date")
-            if due and due <= cutoff:
-                t["_overdue"] = due < now
-                urgent.append(t)
+            t["_overdue"] = bool(due and due < now)
         # Overdue first, then by due_date ascending
         urgent.sort(key=lambda t: (not t.get("_overdue", False), t.get("due_date") or now))
         return urgent
@@ -84,27 +90,20 @@ def _get_urgent_tasks(now: datetime) -> list[dict]:
 
 
 def _get_urgent_protocol_steps(now: datetime) -> list[dict]:
-    """Return protocol steps due within 14 days or overdue."""
-    try:
-        from models.protocol import list_protocols, get_protocol
-        protocols = list_protocols(status_filter="actif")
-        urgent_steps: list[dict] = []
-        cutoff = now + timedelta(days=14)
+    """Return protocol steps due within 14 days or overdue.
 
-        for proto in protocols:
-            full = get_protocol(proto["id"])
-            if not full:
-                continue
-            for step in full.get("steps", []):
-                if step.get("status") == "complété":
-                    continue
-                deadline = step.get("deadline_date")
-                if deadline and deadline <= cutoff:
-                    step["_protocol_title"] = full.get("title", "")
-                    step["_protocol_id"] = full["id"]
-                    step["_dossier_file_number"] = full.get("dossier_file_number", "")
-                    step["_overdue"] = deadline < now
-                    urgent_steps.append(step)
+    One collection-group query plus one batched parent-protocol fetch
+    (``list_urgent_steps``) replaces the previous per-protocol N+1 scan.
+    The model attaches ``_protocol_title`` / ``_protocol_id`` /
+    ``_dossier_file_number``; the overdue flag and re-sort happen here.
+    """
+    try:
+        from models.protocol import list_urgent_steps
+        cutoff = now + timedelta(days=14)
+        urgent_steps = list_urgent_steps(cutoff)
+        for step in urgent_steps:
+            deadline = step.get("deadline_date")
+            step["_overdue"] = bool(deadline and deadline < now)
 
         urgent_steps.sort(
             key=lambda s: (not s.get("_overdue", False), s.get("deadline_date") or now)
@@ -115,22 +114,27 @@ def _get_urgent_protocol_steps(now: datetime) -> list[dict]:
 
 
 def _get_prescription_alerts(now: datetime) -> list[dict]:
-    """Return dossiers with prescription dates within 60 days."""
+    """Return dossiers with prescription dates within 60 days.
+
+    Both filters (status actif, prescription_date <= cutoff) run
+    server-side, bounded, via ``list_prescription_alerts``; the
+    juridical-day computation stays here.
+    """
     try:
-        from models.dossier import list_dossiers
+        from models.dossier import list_prescription_alerts
         from utils.deadlines import prev_juridical_day
-        dossiers = list_dossiers(status_filter="actif")
         cutoff = now + timedelta(days=60)
         alerts = []
-        for d in dossiers:
+        for d in list_prescription_alerts(cutoff):
             pdate = d.get("prescription_date")
-            if pdate and pdate <= cutoff:
-                d["_days_remaining"] = max(0, (pdate - now).days)
-                pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
-                last_action = prev_juridical_day(pdate_as_date)
-                d["_last_action_date"] = last_action
-                d["_last_action_differs"] = last_action != pdate_as_date
-                alerts.append(d)
+            if not pdate:
+                continue  # defensive — the range filter excludes these
+            d["_days_remaining"] = max(0, (pdate - now).days)
+            pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
+            last_action = prev_juridical_day(pdate_as_date)
+            d["_last_action_date"] = last_action
+            d["_last_action_differs"] = last_action != pdate_as_date
+            alerts.append(d)
         alerts.sort(key=lambda d: d.get("prescription_date") or now)
         return alerts
     except Exception:
@@ -138,7 +142,12 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
 
 
 def _get_quick_stats() -> dict:
-    """Return counts and amounts for the dashboard stats cards."""
+    """Return counts and amounts for the dashboard stats cards.
+
+    Each stat is a single server-side aggregation query (COUNT/SUM) —
+    O(1) payload instead of full-collection scans. Each stat degrades
+    independently: a failure leaves its safe default in place.
+    """
     stats: dict = {
         "open_dossiers": 0,
         "unbilled_hours": 0.0,
@@ -146,32 +155,22 @@ def _get_quick_stats() -> dict:
         "outstanding_invoices": 0,
     }
     try:
-        from models.dossier import list_dossiers
-        active = list_dossiers(status_filter="actif")
-        pending = list_dossiers(status_filter="en_attente")
-        stats["open_dossiers"] = len(active) + len(pending)
+        from models.dossier import count_open
+        stats["open_dossiers"] = count_open()
     except Exception as exc:
         logger.warning("dashboard: open dossiers stat failed: %s", exc)
 
     try:
-        from models.time_entry import list_time_entries
-        entries = list_time_entries()
-        for e in entries:
-            if e.get("billable") and not e.get("invoiced"):
-                stats["unbilled_hours"] += e.get("hours", 0)
-                stats["unbilled_amount"] += e.get("amount", 0)
-        stats["unbilled_hours"] = round(stats["unbilled_hours"], 1)
+        from models.time_entry import get_unbilled_totals
+        totals = get_unbilled_totals()
+        stats["unbilled_hours"] = totals.get("hours", 0.0)
+        stats["unbilled_amount"] = totals.get("amount", 0)
     except Exception as exc:
         logger.warning("dashboard: unbilled time stat failed: %s", exc)
 
     try:
-        from models.invoice import list_invoices
-        invoices = list_invoices(status_filter="envoyée")
-        outstanding = sum(inv.get("amount_due", 0) for inv in invoices)
-        # Also include overdue
-        overdue_invoices = list_invoices(status_filter="en_retard")
-        outstanding += sum(inv.get("amount_due", 0) for inv in overdue_invoices)
-        stats["outstanding_invoices"] = outstanding
+        from models.invoice import get_outstanding_total
+        stats["outstanding_invoices"] = get_outstanding_total()
     except Exception as exc:
         logger.warning("dashboard: outstanding invoices stat failed: %s", exc)
 

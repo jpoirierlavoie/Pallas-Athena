@@ -168,9 +168,26 @@ def create_app() -> Flask:
     # ── Block direct appspot.com access (traffic must come via Cloudflare) ──
     @app.before_request
     def block_appspot() -> None:
+        # App Engine internal requests (warmup, cron) arrive on the appspot
+        # host without Cloudflare headers — they must not be blocked.
+        if request.path.startswith("/_ah/"):
+            return None
         host = request.host.split(":", 1)[0].lower().rstrip(".")
         if host == "appspot.com" or host.endswith(".appspot.com"):
             abort(403)
+
+    # ── App Engine warmup (inbound_services: warmup in app.yaml) ──────
+    # Fired before a new instance receives live traffic; priming the
+    # Firestore channel here moves connection setup off the first user
+    # request and softens cold starts (min_instances stays 0).
+    @app.route("/_ah/warmup")
+    def warmup() -> tuple[str, int]:
+        try:
+            from models import db
+            db.collection("dav_sync").document("parties").get()
+        except Exception:  # pragma: no cover — warmup must never fail loudly
+            pass
+        return "", 200
 
     # ── Offline fallback (PWA) ─────────────────────────────────────────
     @app.route("/offline")

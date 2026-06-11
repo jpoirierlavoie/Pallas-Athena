@@ -13,15 +13,18 @@ from flask import (
 )
 
 from auth import login_required
+from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import safe_internal_redirect
 from config import Config
 from models.invoice import (
     STATUS_LABELS,
     STATUS_TRANSITIONS,
+    VALID_STATUSES,
     create_invoice,
     delete_invoice,
     get_invoice_with_items,
     list_invoices,
+    list_invoices_page,
     update_status,
     void_invoice,
 )
@@ -118,16 +121,57 @@ def _template_context() -> dict:
 def invoice_list() -> str:
     """Render the invoice list with optional filters."""
     status_filter = request.args.get("status", "")
+    # Normalize garbage status values to "no filter" so the list, its
+    # pagination, and the export links all agree on the same semantics
+    # (legacy list_invoices returned 0 rows; list_invoices_page would
+    # silently ignore the filter).
+    if status_filter not in VALID_STATUSES:
+        status_filter = ""
     dossier_id = request.args.get("dossier_id", "").strip()
     date_from = _parse_date(request.args.get("date_from", ""))
     date_to = _parse_date(request.args.get("date_to", ""))
 
-    invoices = list_invoices(
-        status_filter=status_filter or None,
-        dossier_id=dossier_id or None,
-        date_from=date_from,
-        date_to=date_to,
-    )
+    if dossier_id:
+        # Dossier-scoped fallback: reached only via deep links, and
+        # list_invoices already narrows server-side on dossier_id, so the
+        # scan is bounded by that dossier's invoice count. Sliced with the
+        # legacy paginate() — not worth a third composite index.
+        page = request.args.get("page", 1, type=int)
+        invoices = list_invoices(
+            status_filter=status_filter or None,
+            dossier_id=dossier_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        invoices, pagination = paginate(invoices, page)
+        pagination["url"] = url_for("invoices.invoice_list")
+        pagination["target"] = "#invoice-rows"
+        # The filter inputs travel via hx-include; dossier_id is not a form
+        # field, so it must ride along explicitly on next/prev clicks.
+        pagination["extra_vals"] = {"dossier_id": dossier_id}
+    else:
+        # Default browse path: Firestore-native cursor pagination
+        # (~PAGE_SIZE reads per page). Status and the date range are
+        # pushed server-side by list_invoices_page.
+        cursor = request.args.get("cursor", "") or None
+        trail = parse_trail(request.args.get("trail", ""))
+        invoices, next_cursor = list_invoices_page(
+            status_filter=status_filter or None,
+            date_from=date_from,
+            date_to=date_to,
+            limit=PAGE_SIZE,
+            cursor=cursor,
+        )
+        # No extra_vals needed: pagination links hx-include
+        # "#filters input, #filters select", which carries the active
+        # status + date filters on every next/prev click.
+        pagination = cursor_pagination(
+            cursor=cursor,
+            trail=trail,
+            next_cursor=next_cursor,
+            url=url_for("invoices.invoice_list"),
+            target="#invoice-rows",
+        )
 
     ctx = _template_context()
     ctx.update(
@@ -136,6 +180,7 @@ def invoice_list() -> str:
         dossier_id=dossier_id,
         date_from=request.args.get("date_from", ""),
         date_to=request.args.get("date_to", ""),
+        pagination=pagination,
     )
 
     if _is_htmx():

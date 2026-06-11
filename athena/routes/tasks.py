@@ -30,6 +30,8 @@ from models.task import (
     delete_task,
     get_task,
     list_tasks,
+    list_tasks_by_status,
+    sort_tasks_for_display,
     toggle_task_complete,
     update_task,
 )
@@ -144,6 +146,67 @@ def dossier_search() -> str:
 # ── List ─────────────────────────────────────────────────────────────────
 
 
+def _grouped_tasks(
+    dossier_filter: str,
+    status_filter: str,
+    priority_filter: str,
+    category_filter: str,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return (active, completed, cancelled) task groups for the list view.
+
+    The grouped display does not fit cursor pagination, so the default path
+    bounds reads instead: one server-side ``status ==`` query per displayed
+    group (~STATUS_GROUP_LIMIT docs each) rather than streaming the whole
+    collection. Dossier and status filters run server-side on that path.
+
+    Priority/category are Python-side filters in the legacy model function;
+    applying them to a bounded group could silently drop matches beyond the
+    cap, so those occasional paths fall back to the full-scan list_tasks().
+    Invalid values are dropped (the legacy filter ignored them anyway) so a
+    junk query string cannot force an unbounded scan.
+    """
+    if priority_filter not in VALID_PRIORITIES:
+        priority_filter = ""
+    if category_filter not in VALID_CATEGORIES:
+        category_filter = ""
+    if priority_filter or category_filter:
+        # Legacy fallback: full scan + client-side filters (occasional path).
+        tasks = list_tasks(
+            dossier_id=dossier_filter or None,
+            status_filter=status_filter or None,
+            priority_filter=priority_filter or None,
+            category_filter=category_filter or None,
+        )
+        active = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
+        completed = [t for t in tasks if t.get("status") == "terminée"]
+        cancelled = [t for t in tasks if t.get("status") == "annulée"]
+        return active, completed, cancelled
+
+    dossier_id = dossier_filter or None
+    # An invalid/empty status filter means "all groups" (legacy behavior).
+    statuses = (
+        (status_filter,) if status_filter in VALID_STATUSES else VALID_STATUSES
+    )
+
+    active: list[dict] = []
+    completed: list[dict] = []
+    cancelled: list[dict] = []
+    for status in statuses:
+        group = list_tasks_by_status(status, dossier_id=dossier_id)
+        if status in ("à_faire", "en_cours"):
+            active.extend(group)
+        elif status == "terminée":
+            completed = group
+        else:
+            cancelled = group
+
+    return (
+        sort_tasks_for_display(active),
+        sort_tasks_for_display(completed),
+        sort_tasks_for_display(cancelled),
+    )
+
+
 @tasks_bp.route("/")
 @login_required
 def task_list() -> str:
@@ -153,27 +216,16 @@ def task_list() -> str:
     priority_filter = request.args.get("priority", "").strip()
     category_filter = request.args.get("category", "").strip()
 
-    tasks = list_tasks(
-        dossier_id=dossier_filter or None,
-        status_filter=status_filter or None,
-        priority_filter=priority_filter or None,
-        category_filter=category_filter or None,
+    active_tasks, completed_tasks, cancelled_tasks = _grouped_tasks(
+        dossier_filter, status_filter, priority_filter, category_filter
     )
-
-    now = datetime.now(timezone.utc)
-
-    # Group tasks by status
-    active_tasks = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
-    completed_tasks = [t for t in tasks if t.get("status") == "terminée"]
-    cancelled_tasks = [t for t in tasks if t.get("status") == "annulée"]
 
     ctx = _template_context()
     ctx.update(
         active_tasks=active_tasks,
         completed_tasks=completed_tasks,
         cancelled_tasks=cancelled_tasks,
-        all_tasks=tasks,
-        now=now,
+        now=datetime.now(timezone.utc),
         dossier_filter=dossier_filter,
         status_filter=status_filter,
         priority_filter=priority_filter,
@@ -401,29 +453,23 @@ def task_toggle(task_id: str) -> str:
         bump_ctag("tasks")
 
     if _is_htmx():
-        # Re-fetch with active filters (posted via hx-include on the toggle buttons)
+        # Re-fetch with active filters (posted via hx-include on the toggle
+        # buttons) — same bounded grouping as the list view.
         dossier_filter = request.form.get("dossier", "").strip()
         status_filter = request.form.get("status", "").strip()
         priority_filter = request.form.get("priority", "").strip()
         category_filter = request.form.get("category", "").strip()
 
-        now = datetime.now(timezone.utc)
-        tasks = list_tasks(
-            dossier_id=dossier_filter or None,
-            status_filter=status_filter or None,
-            priority_filter=priority_filter or None,
-            category_filter=category_filter or None,
+        active_tasks, completed_tasks, cancelled_tasks = _grouped_tasks(
+            dossier_filter, status_filter, priority_filter, category_filter
         )
-        active_tasks = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
-        completed_tasks = [t for t in tasks if t.get("status") == "terminée"]
-        cancelled_tasks = [t for t in tasks if t.get("status") == "annulée"]
 
         ctx = _template_context()
         ctx.update(
             active_tasks=active_tasks,
             completed_tasks=completed_tasks,
             cancelled_tasks=cancelled_tasks,
-            now=now,
+            now=datetime.now(timezone.utc),
             dossier_filter=dossier_filter,
             status_filter=status_filter,
             priority_filter=priority_filter,

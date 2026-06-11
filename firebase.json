@@ -1,6 +1,7 @@
 {
   "firestore": {
-    "rules": "athena/firestore.rules"
+    "rules": "athena/firestore.rules",
+    "indexes": "athena/firestore.indexes.json"
   },
   "storage": {
     "rules": "athena/storage.rules"

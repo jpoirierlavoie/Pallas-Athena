@@ -195,18 +195,88 @@ def list_tasks(
         if category_filter and category_filter in VALID_CATEGORIES:
             results = [r for r in results if r.get("category") == category_filter]
 
-        # Sort by due_date (soonest first, None last), then by priority
-        priority_order = {"haute": 0, "normale": 1, "basse": 2}
-        results.sort(
-            key=lambda t: (
-                0 if t.get("due_date") else 1,
-                t.get("due_date") or datetime.max.replace(tzinfo=timezone.utc),
-                priority_order.get(t.get("priority", "normale"), 1),
-            ),
-        )
-
-        return results
+        return sort_tasks_for_display(results)
     except Exception:
+        return []
+
+
+def sort_tasks_for_display(tasks: list[dict]) -> list[dict]:
+    """Sort tasks for list views: dated before undated, soonest due first,
+    then by priority (haute < normale < basse)."""
+    priority_order = {"haute": 0, "normale": 1, "basse": 2}
+    return sorted(
+        tasks,
+        key=lambda t: (
+            0 if t.get("due_date") else 1,
+            t.get("due_date") or datetime.max.replace(tzinfo=timezone.utc),
+            priority_order.get(t.get("priority", "normale"), 1),
+        ),
+    )
+
+
+# Per-group read cap for the grouped /taches/ list view. Generous for a
+# single-user practice; if a group ever exceeds it, the undated and
+# soonest-due tasks are retained (see list_tasks_by_status ordering).
+STATUS_GROUP_LIMIT = 100
+
+
+def list_tasks_by_status(
+    status: str,
+    dossier_id: Optional[str] = None,
+    limit: int = STATUS_GROUP_LIMIT,
+) -> list[dict]:
+    """Return up to *limit* tasks of one status, filtered server-side.
+
+    Bounds the grouped task list view to ~*limit* document reads per
+    displayed status group instead of streaming the entire collection.
+    Ordered by ``due_date`` ascending — Firestore sorts null due_dates
+    first, so when a group exceeds the cap, undated and soonest-due tasks
+    are the ones retained. Callers re-sort the bounded set for display via
+    :func:`sort_tasks_for_display` (undated last, like the legacy view).
+
+    Requires the composite index (status ASC, due_date ASC) and, when
+    *dossier_id* is given, (dossier_id ASC, status ASC, due_date ASC).
+
+    Returns [] on failure (the list view degrades to empty groups).
+    """
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("status", "==", status)
+        )
+        if dossier_id:
+            query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
+        query = query.order_by("due_date").limit(limit)
+        return [doc.to_dict() for doc in query.stream()]
+    except Exception as exc:
+        logger.warning("list_tasks_by_status: query failed: %s", exc)
+        return []
+
+
+def list_urgent_tasks(cutoff: datetime, limit: int = 50) -> list[dict]:
+    """Return open tasks due on or before *cutoff*, soonest first (bounded).
+
+    Filters run server-side: ``status in (à_faire, en_cours)`` AND
+    ``due_date <= cutoff``, ordered by due_date ascending and limited —
+    requires the ``tasks`` composite index (status ASC, due_date ASC); see
+    ``firestore.indexes.json``. Tasks without a due_date are excluded by the
+    range filter automatically (Firestore range filters never match
+    null/missing values), matching the dashboard's previous behaviour where
+    undated tasks are never urgent.
+
+    Returns [] on failure (the dashboard degrades gracefully).
+    """
+    open_statuses = [s for s in VALID_STATUSES if s not in ("terminée", "annulée")]
+    try:
+        query = (
+            db.collection(COLLECTION)
+            .where(filter=FieldFilter("status", "in", open_statuses))
+            .where(filter=FieldFilter("due_date", "<=", cutoff))
+            .order_by("due_date")
+            .limit(limit)
+        )
+        return [doc.to_dict() for doc in query.stream()]
+    except Exception as exc:
+        logger.warning("list_urgent_tasks: query failed: %s", exc)
         return []
 
 

@@ -7,8 +7,10 @@ from typing import Optional
 
 import vobject
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
+from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.validators import (
     apply_address_defaults,
@@ -449,6 +451,60 @@ def list_parties(
         return results
     except Exception:
         return []
+
+
+def list_parties_page(
+    role_filter: Optional[str] = None,
+    limit: int = PAGE_SIZE,
+    cursor: Optional[str] = None,
+) -> tuple[list[dict], Optional[str]]:
+    """Return one page of parties plus an opaque cursor for the next page.
+
+    Cursor-mode counterpart of :func:`list_parties` for the list view:
+    reads ~``limit`` documents per page (server-side ``order_by`` +
+    ``start_after``) instead of streaming the whole collection. The legacy
+    :func:`list_parties` remains the path for search and exports.
+
+    Sort order: ``updated_at DESC, id ASC``. The ``id`` field mirrors the
+    document ID and is always set — a stable tiebreaker when several docs
+    share the same ``updated_at``. Requires the composite indexes
+    ``(updated_at DESC, id ASC)`` and
+    ``(contact_role ASC, updated_at DESC, id ASC)``.
+    """
+    try:
+        query = db.collection(COLLECTION)
+
+        if role_filter and role_filter in VALID_CONTACT_ROLES:
+            query = query.where(
+                filter=FieldFilter("contact_role", "==", role_filter)
+            )
+
+        query = query.order_by(
+            "updated_at", direction=firestore.Query.DESCENDING
+        ).order_by("id")
+
+        # decode_cursor yields values in encode order: [updated_at, id].
+        # Anything malformed (None or wrong arity) degrades to page 1.
+        values = decode_cursor(cursor)
+        if values and len(values) == 2:
+            query = query.start_after(
+                {"updated_at": values[0], "id": values[1]}
+            )
+
+        # Fetch one extra row to know whether a next page exists.
+        docs = [doc.to_dict() for doc in query.limit(limit + 1).stream()]
+
+        next_cursor = None
+        if len(docs) > limit:
+            docs = docs[:limit]
+            last = docs[-1]
+            next_cursor = encode_cursor([last.get("updated_at"), last.get("id")])
+
+        return docs, next_cursor
+    except Exception as exc:
+        # PII-free: log only the exception type, never document contents.
+        logger.warning("list_parties_page failed: %s", type(exc).__name__)
+        return [], None
 
 
 def update_partie(

@@ -11,6 +11,7 @@ from typing import Optional
 
 import icalendar
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
@@ -171,6 +172,51 @@ def list_notes(
 
         return results
     except Exception:
+        return []
+
+
+# Bounded read caps for the default /notes/ list view (no search/category
+# filter). Pinned notes are a small curated set; the recent-unpinned cap
+# covers day-to-day browsing. Older notes stay reachable via search.
+PINNED_LIMIT = 50
+RECENT_LIMIT = 100
+
+
+def list_notes_recent(
+    dossier_id: Optional[str] = None,
+    pinned_limit: int = PINNED_LIMIT,
+    recent_limit: int = RECENT_LIMIT,
+) -> list[dict]:
+    """Return pinned notes plus the most recent unpinned notes, bounded.
+
+    Two server-side queries (``pinned == True`` then ``pinned == False``,
+    each ordered by ``created_at`` descending and limited) replace the
+    full-collection stream of :func:`list_notes` for the default list view.
+    The concatenation preserves the legacy pinned-first / newest-first
+    display order with at most ``pinned_limit + recent_limit`` reads.
+
+    Requires the composite index (pinned ASC, created_at DESC) and, when
+    *dossier_id* is given, (dossier_id ASC, pinned ASC, created_at DESC).
+
+    Returns [] on failure (the list view degrades to an empty state).
+    """
+    try:
+        results: list[dict] = []
+        for pinned, limit in ((True, pinned_limit), (False, recent_limit)):
+            query = db.collection(COLLECTION).where(
+                filter=FieldFilter("pinned", "==", pinned)
+            )
+            if dossier_id:
+                query = query.where(
+                    filter=FieldFilter("dossier_id", "==", dossier_id)
+                )
+            query = query.order_by(
+                "created_at", direction=firestore.Query.DESCENDING
+            ).limit(limit)
+            results.extend(doc.to_dict() for doc in query.stream())
+        return results
+    except Exception as exc:
+        logger.warning("list_notes_recent: query failed: %s", exc)
         return []
 
 

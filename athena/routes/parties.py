@@ -15,7 +15,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
-from pagination import paginate
+from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from models.partie import (
     MANDATAIRE_KIND_LABELS,
     ROLE_LABELS,
@@ -25,6 +25,7 @@ from models.partie import (
     display_name,
     get_partie,
     list_parties,
+    list_parties_page,
     update_partie,
 )
 from models.dossier import (
@@ -152,20 +153,42 @@ def partie_list() -> str:
     """Render the partie list with optional filters."""
     role_filter = request.args.get("role", "client")
     search = request.args.get("q", "").strip()
-    page = request.args.get("page", 1, type=int)
 
-    parties = list_parties(
-        role_filter=role_filter if role_filter != "tous" else None,
-        search=search or None,
-    )
+    if search:
+        # Search fallback: Firestore has no full-text search, so searching
+        # still streams the (role-filtered) collection, filters in Python
+        # and slices via the legacy paginate(). Search is occasional; the
+        # default browse path below costs ~PAGE_SIZE reads per page.
+        page = request.args.get("page", 1, type=int)
+        parties = list_parties(
+            role_filter=role_filter if role_filter != "tous" else None,
+            search=search,
+        )
+        parties, pagination = paginate(parties, page)
+        pagination["url"] = url_for("parties.partie_list")
+        pagination["target"] = "#partie-rows"
+    else:
+        cursor = request.args.get("cursor", "") or None
+        trail = parse_trail(request.args.get("trail", ""))
+        parties, next_cursor = list_parties_page(
+            role_filter=role_filter if role_filter != "tous" else None,
+            limit=PAGE_SIZE,
+            cursor=cursor,
+        )
+        # No extra_vals needed: the pagination links hx-include
+        # "#filters input, #filters select", which carries the active
+        # role tab (and the empty q) on every next/prev click.
+        pagination = cursor_pagination(
+            cursor=cursor,
+            trail=trail,
+            next_cursor=next_cursor,
+            url=url_for("parties.partie_list"),
+            target="#partie-rows",
+        )
 
-    # Attach display names
+    # Attach display names (page rows only)
     for p in parties:
         p["_display_name"] = display_name(p)
-
-    parties, pagination = paginate(parties, page)
-    pagination["url"] = url_for("parties.partie_list")
-    pagination["target"] = "#partie-rows"
 
     if _is_htmx():
         return render_template(
@@ -173,6 +196,8 @@ def partie_list() -> str:
             parties=parties,
             role_labels=ROLE_LABELS,
             pagination=pagination,
+            role_filter=role_filter,
+            search=search,
         )
 
     return render_template(

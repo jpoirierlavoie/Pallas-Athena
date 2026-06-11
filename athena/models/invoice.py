@@ -8,7 +8,8 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import aggregation_values, db
+from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 
 logger = logging.getLogger(__name__)
@@ -493,6 +494,68 @@ def list_invoices(
         return []
 
 
+def list_invoices_page(
+    status_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    limit: int = PAGE_SIZE,
+    cursor: Optional[str] = None,
+) -> tuple[list[dict], Optional[str]]:
+    """Return one page of invoices plus an opaque cursor for the next page.
+
+    Cursor-mode counterpart of :func:`list_invoices` for the list view:
+    reads ~``limit`` documents per page (server-side filters + ``order_by``
+    + ``start_after``) instead of streaming the whole collection. The
+    legacy :func:`list_invoices` remains the path for exports, summaries
+    and dossier-scoped views.
+
+    The status filter is an equality and the optional date range targets
+    ``date`` — the same field as the primary sort — so both composite
+    indexes serve every filter combination here:
+    ``(date DESC, id ASC)`` and ``(status ASC, date DESC, id ASC)``.
+
+    Sort order: ``date DESC, id ASC``. The ``id`` field mirrors the
+    document ID and is always set — a stable tiebreaker when several
+    invoices share the same date.
+    """
+    try:
+        query = db.collection(COLLECTION)
+
+        if status_filter and status_filter in VALID_STATUSES:
+            query = query.where(filter=FieldFilter("status", "==", status_filter))
+
+        # Range filters on the primary order field need no extra index.
+        if date_from:
+            query = query.where(filter=FieldFilter("date", ">=", date_from))
+        if date_to:
+            query = query.where(filter=FieldFilter("date", "<=", date_to))
+
+        query = query.order_by(
+            "date", direction=firestore.Query.DESCENDING
+        ).order_by("id")
+
+        # decode_cursor yields values in encode order: [date, id].
+        # Anything malformed (None or wrong arity) degrades to page 1.
+        values = decode_cursor(cursor)
+        if values and len(values) == 2:
+            query = query.start_after({"date": values[0], "id": values[1]})
+
+        # Fetch one extra row to know whether a next page exists.
+        docs = [doc.to_dict() for doc in query.limit(limit + 1).stream()]
+
+        next_cursor = None
+        if len(docs) > limit:
+            docs = docs[:limit]
+            last = docs[-1]
+            next_cursor = encode_cursor([last.get("date"), last.get("id")])
+
+        return docs, next_cursor
+    except Exception as exc:
+        # PII-free: log only the exception type, never document contents.
+        logger.warning("list_invoices_page failed: %s", type(exc).__name__)
+        return [], None
+
+
 def update_status(invoice_id: str, new_status: str) -> tuple[bool, str]:
     """Transition an invoice to a new status. Returns (success, error)."""
     invoice = get_invoice(invoice_id)
@@ -633,6 +696,34 @@ def delete_invoice(invoice_id: str) -> tuple[bool, str]:
         return True, ""
     except Exception as exc:
         return False, f"Erreur lors de la suppression : {exc}"
+
+
+# Shared implementation lives in models/__init__.py; aliased so this module's
+# helpers (and their tests) keep a stable local name.
+_aggregation_values = aggregation_values
+
+
+def get_outstanding_total() -> int:
+    """Return the total amount due (cents) on outstanding invoices.
+
+    A single server-side SUM aggregation over
+    ``status in (envoyée, en_retard)`` replaces the dashboard's two full
+    list scans. The ``in`` filter counts as an equality for index purposes,
+    so this requires the ``invoices`` composite index
+    (status ASC, amount_due ASC); see ``firestore.indexes.json``.
+
+    Returns 0 on failure (graceful degradation for the dashboard stat).
+    """
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("status", "in", ["envoyée", "en_retard"])
+        )
+        agg_query = query.sum("amount_due", alias="outstanding")
+        values = _aggregation_values(agg_query.get())
+        return int(round(values.get("outstanding", 0) or 0))
+    except Exception as exc:
+        logger.warning("get_outstanding_total: aggregation query failed: %s", exc)
+        return 0
 
 
 def get_invoice_summary(dossier_id: str) -> dict:

@@ -864,6 +864,89 @@ def check_overdue_steps(protocol_id: str) -> int:
     return count
 
 
+def list_urgent_steps(cutoff: datetime, limit: int = 50) -> list[dict]:
+    """Return non-completed steps of active protocols due on/before *cutoff*.
+
+    Replaces the dashboard N+1 (one ``steps`` stream per active protocol)
+    with a single COLLECTION GROUP query on the ``steps`` subcollection plus
+    one batched ``get_all`` round-trip for the distinct parent protocols.
+
+    The non-completed filter is applied server-side with an ``in`` filter
+    over the active step statuses (NOT ``!=``, which complicates indexes) so
+    that old completed steps cannot crowd current ones out of the bounded
+    result window as data grows; a Python-side check is kept as
+    belt-and-suspenders. Requires the COLLECTION_GROUP composite index on
+    ``steps`` (status ASC, deadline_date ASC); see ``firestore.indexes.json``.
+
+    Each returned step dict is enriched with ``_protocol_title``,
+    ``_protocol_id`` and ``_dossier_file_number`` from its parent protocol;
+    steps whose parent protocol is missing or not ``actif`` are dropped.
+    Results keep the query's deadline_date ascending order.
+
+    Returns [] on failure (the dashboard degrades gracefully).
+    """
+    active_step_statuses = [s for s in VALID_STEP_STATUSES if s != "complété"]
+    try:
+        # Over-fetch: steps of suspended/completed protocols pass the
+        # server-side filters (protocol status lives on the parent) and are
+        # dropped after the join below — a 3× window keeps them from crowding
+        # genuinely active steps out of the bounded result.
+        query = (
+            db.collection_group(STEPS_SUBCOLLECTION)
+            .where(filter=FieldFilter("status", "in", active_step_statuses))
+            .where(filter=FieldFilter("deadline_date", "<=", cutoff))
+            .order_by("deadline_date")
+            .limit(limit * 3)
+        )
+        snapshots = list(query.stream())
+    except Exception as exc:
+        logger.warning("list_urgent_steps: collection-group query failed: %s", exc)
+        return []
+
+    # Pair each surviving step with its parent protocol id, deduping parents.
+    candidates: list[tuple[dict, str]] = []
+    parent_refs: dict[str, object] = {}
+    for snap in snapshots:
+        step = snap.to_dict() or {}
+        if step.get("status") == "complété":
+            continue  # defensive — already excluded server-side
+        # steps live at protocols/{protocolId}/steps/{stepId}
+        parent_ref = snap.reference.parent.parent
+        if parent_ref is None:
+            continue
+        parent_refs[parent_ref.id] = parent_ref
+        candidates.append((step, parent_ref.id))
+
+    if not candidates:
+        return []
+
+    # Single round-trip fetch of all distinct parent protocols.
+    protocols: dict[str, dict] = {}
+    try:
+        for proto_snap in db.get_all(list(parent_refs.values())):
+            if proto_snap.exists:
+                protocols[proto_snap.id] = proto_snap.to_dict() or {}
+    except Exception as exc:
+        logger.warning("list_urgent_steps: parent protocol fetch failed: %s", exc)
+        return []
+
+    urgent_steps: list[dict] = []
+    for step, protocol_id in candidates:
+        proto = protocols.get(protocol_id)
+        if not proto or proto.get("status") != "actif":
+            continue
+        step["_protocol_title"] = proto.get("title", "")
+        step["_protocol_id"] = proto.get("id", protocol_id)
+        step["_dossier_file_number"] = proto.get("dossier_file_number", "")
+        urgent_steps.append(step)
+        if len(urgent_steps) >= limit:
+            break
+
+    if len(urgent_steps) >= limit:
+        logger.info("list_urgent_steps: result window full (limit=%d)", limit)
+    return urgent_steps
+
+
 # ── Summary ─────────────────────────────────────────────────────────────
 
 

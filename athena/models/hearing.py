@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import icalendar
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
@@ -256,6 +257,94 @@ def list_hearings(
 
         return results
     except Exception:
+        return []
+
+
+def list_hearings_in_range(
+    date_from: datetime, date_to: datetime, limit: int = 100
+) -> list[dict]:
+    """Return hearings starting within [date_from, date_to], chronologically.
+
+    Unlike :func:`list_hearings` (which streams the whole collection and
+    filters in Python), the date range, ordering, and bound are pushed
+    server-side. Both range filters and the order_by target the same field
+    (start_datetime), so the automatic single-field index serves the query —
+    no composite index required. Status filtering (e.g. excluding annulée)
+    stays with the caller, applied over the bounded result.
+
+    Returns [] on failure (the dashboard degrades gracefully).
+    """
+    try:
+        query = (
+            db.collection(COLLECTION)
+            .where(filter=FieldFilter("start_datetime", ">=", date_from))
+            .where(filter=FieldFilter("start_datetime", "<=", date_to))
+            .order_by("start_datetime")
+            .limit(limit)
+        )
+        hearings = [doc.to_dict() for doc in query.stream()]
+        if len(hearings) >= limit:
+            logger.warning(
+                "list_hearings_in_range: result window full (limit=%d) — "
+                "some hearings may be hidden", limit,
+            )
+        return hearings
+    except Exception as exc:
+        logger.warning("list_hearings_in_range: query failed: %s", exc)
+        return []
+
+
+def list_hearings_window(
+    pivot: datetime,
+    direction: str = "upcoming",
+    limit: int = 100,
+) -> list[dict]:
+    """Return a bounded window of hearings on one side of *pivot*.
+
+    - ``direction="upcoming"``: ``start_datetime >= pivot``, chronological
+      (the next *limit* hearings).
+    - ``direction="past"``: ``start_datetime < pivot``, reverse
+      chronological (the *limit* most recent past hearings).
+
+    Unlike :func:`list_hearings` (full collection stream + Python filter),
+    the range filter, ordering, and bound are pushed server-side. The
+    range filter and the order_by target the same field (start_datetime),
+    so the automatic single-field index serves both queries — no composite
+    index required. Type/status filtering stays with the caller, applied
+    over the bounded window.
+
+    Returns [] on failure (the agenda view degrades gracefully).
+    """
+    try:
+        if direction == "past":
+            query = (
+                db.collection(COLLECTION)
+                .where(filter=FieldFilter("start_datetime", "<", pivot))
+                .order_by(
+                    "start_datetime", direction=firestore.Query.DESCENDING
+                )
+                .limit(limit)
+            )
+        else:
+            query = (
+                db.collection(COLLECTION)
+                .where(filter=FieldFilter("start_datetime", ">=", pivot))
+                .order_by("start_datetime")
+                .limit(limit)
+            )
+        hearings = [doc.to_dict() for doc in query.stream()]
+        if len(hearings) >= limit:
+            logger.warning(
+                "list_hearings_window: result window full "
+                "(direction=%s, limit=%d) — some hearings may be hidden",
+                direction, limit,
+            )
+        return hearings
+    except Exception as exc:
+        # PII-free: log only the exception type, never document contents.
+        logger.warning(
+            "list_hearings_window: query failed: %s", type(exc).__name__
+        )
         return []
 
 

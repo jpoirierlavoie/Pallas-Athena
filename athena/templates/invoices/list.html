@@ -23,7 +23,9 @@
 
   {# ── Filters ─────────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
-    <div class="flex flex-wrap gap-3">
+    {# id="filters" lets the pagination component's hx-include carry the
+       active status + date filters on every next/prev click #}
+    <div id="filters" class="flex flex-wrap gap-3">
       {# Status filter #}
       <select name="status"
               hx-get="{{ url_for('invoices.invoice_list') }}"
