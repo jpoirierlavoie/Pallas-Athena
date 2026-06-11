@@ -1120,7 +1120,7 @@ Sync hygiene rules:
 - Compares username against `DAV_USERNAME` (defaults to `AUTHORIZED_USER_EMAIL`)
 - Compares password against `DAV_PASSWORD_HASH` (bcrypt)
 - On failure: `401` + `WWW-Authenticate: Basic realm="Pallas Athena"`
-- Brute-force brake: per-IP failure tracker (10 failures / 15 min → 429 + Retry-After, before bcrypt runs), fail-fast on malformed/oversized credentials, and a 5-minute SHA-256 success cache so DavX5 polls don't re-run bcrypt. In-memory per instance — a brake, not a guarantee.
+- Brute-force brake: per-IP failure tracker (10 failures / 15 min → 429 + Retry-After, before bcrypt runs), fail-fast on malformed/oversized credentials, and a 5-minute success cache so DavX5 polls don't re-run bcrypt (keyed by HMAC-SHA-256 of the credentials under an ephemeral per-process random key — never a plain hash of the password). In-memory per instance — a brake, not a guarantee.
 - All DAV blueprints are CSRF-exempt (`csrf.exempt(...)` in `main.py`)
 
 ### DavX5 compatibility notes

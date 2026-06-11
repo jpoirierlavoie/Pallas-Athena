@@ -7,8 +7,12 @@ bcrypt verification is deliberately slow, so this module throttles it:
 1. Fail fast (no bcrypt) on malformed or oversized credentials.
 2. An in-memory failed-attempt tracker keyed by client IP returns 429 after
    ``_MAX_FAILURES`` failures within ``_FAILURE_WINDOW_SECONDS``.
-3. A short-lived success cache (SHA-256 digest of the credentials, compared
-   with ``hmac.compare_digest``) lets DavX5's frequent polling skip bcrypt.
+3. A short-lived success cache lets DavX5's frequent polling skip bcrypt.
+   Entries are keyed by an HMAC-SHA-256 of the credentials under an
+   ephemeral per-process random key — a leaked cache entry cannot be
+   brute-forced offline without the key, which never leaves process memory
+   and rotates with the cache itself on instance restart. Lookups compare
+   with ``hmac.compare_digest``.
 
 NOTE: both stores live in process memory. App Engine runs at most two
 instances of this app, so the state is per-instance and resets on restart —
@@ -18,6 +22,7 @@ this is a brake on brute force and bcrypt CPU exhaustion, not a guarantee.
 import functools
 import hashlib
 import hmac
+import secrets
 import threading
 import time
 from typing import Callable
@@ -34,10 +39,15 @@ _FAILURE_WINDOW_SECONDS = 15 * 60
 _MAX_TRACKED_IPS = 1000
 _SUCCESS_CACHE_TTL_SECONDS = 5 * 60
 
+# Ephemeral MAC key for the success cache: random per process, never
+# persisted. The cache it protects is also per-process, so losing the key
+# on restart costs nothing beyond one extra bcrypt round-trip.
+_CACHE_HMAC_KEY = secrets.token_bytes(32)
+
 _lock = threading.Lock()
 # Client IP -> list of failure timestamps (time.time()) within the window.
 _failed_attempts: dict[str, list[float]] = {}
-# SHA-256 digest of (username, password) -> cache-entry expiry timestamp.
+# HMAC-SHA-256 of (username, password) -> cache-entry expiry timestamp.
 _success_cache: dict[bytes, float] = {}
 
 
@@ -51,9 +61,15 @@ def _client_ip() -> str:
 
 
 def _credentials_digest(username: str, password: str) -> bytes:
-    """Return a SHA-256 digest binding username and password together."""
-    return hashlib.sha256(
-        f"{username}\x00{password}".encode("utf-8")
+    """Return a keyed MAC binding username and password together.
+
+    A keyed MAC rather than a plain hash: cache entries that escape process
+    memory are not crackable offline without ``_CACHE_HMAC_KEY``.
+    """
+    return hmac.new(
+        _CACHE_HMAC_KEY,
+        f"{username}\x00{password}".encode("utf-8"),
+        hashlib.sha256,
     ).digest()
 
 
