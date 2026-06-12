@@ -45,10 +45,11 @@ limiter = Limiter(
 # Frontend dependencies are vendored in static/vendor/ and served same-origin,
 # so no CDN origins (jsdelivr/unpkg) appear in script-src.  gstatic + google
 # remain only for the reCAPTCHA Enterprise scripts that the Firebase App Check
-# SDK loads at runtime.
+# SDK loads at runtime.  ajax.cloudflare.com is Cloudflare Rocket Loader
+# (enabled at the edge) — remove it if Rocket Loader is ever turned off.
 CSP = (
     "default-src 'self'; "
-    "script-src 'self' https://www.gstatic.com "
+    "script-src 'self' https://ajax.cloudflare.com https://www.gstatic.com "
     "https://apis.google.com https://www.google.com; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob: https://*.googleapis.com https://storage.googleapis.com; "
@@ -79,7 +80,74 @@ def _add_security_headers(response: Response) -> Response:
     )
     h["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
     h["Pragma"] = "no-cache"
+    _add_early_hints(response)
     return response
+
+
+# ---------------------------------------------------------------------------
+# Early Hints (Link headers — Cloudflare turns these into HTTP 103 responses)
+# ---------------------------------------------------------------------------
+# With the "Early Hints" toggle enabled, Cloudflare caches these Link headers
+# per URL and answers subsequent requests with an immediate 103 so the
+# browser downloads the render-critical assets while App Engine cold-starts
+# (min_instances: 0 makes that window several seconds). Browsers also honor
+# the same header on the final 200.
+#
+# MAINTENANCE: the hashed filenames here must track the asset names used in
+# base.html / auth/login.html and the PRECACHE list in static/sw.js — the
+# CSS regeneration recipe in CLAUDE.md lists every touch point.
+_EARLY_HINTS_BASE = (
+    "</static/vendor/app.5f4afed2.css>; rel=preload; as=style",
+    "</static/vendor/htmx-2.0.4.min.js>; rel=preload; as=script",
+    "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
+)
+_EARLY_HINTS_APPCHECK = (
+    "</static/vendor/firebase-app-compat-10.12.2.js>; rel=preload; as=script",
+    "</static/vendor/firebase-app-check-compat-10.12.2.js>; rel=preload; as=script",
+    "</static/vendor/appcheck-boot.fee929af.js>; rel=preload; as=script",
+    "<https://www.gstatic.com>; rel=preconnect",
+    "<https://www.google.com>; rel=preconnect",
+)
+# The standalone login page loads a different asset set (no htmx/boot, plus
+# the auth SDK — the heaviest script on the cold-start path this feature
+# exists for) and uses reCAPTCHA for phone MFA regardless of App Check.
+_EARLY_HINTS_LOGIN = (
+    "</static/vendor/app.5f4afed2.css>; rel=preload; as=style",
+    "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
+    "</static/vendor/firebase-app-compat-10.12.2.js>; rel=preload; as=script",
+    "</static/vendor/firebase-auth-compat-10.12.2.js>; rel=preload; as=script",
+    "</static/vendor/firebase-app-check-compat-10.12.2.js>; rel=preload; as=script",
+    "<https://www.gstatic.com>; rel=preconnect",
+    "<https://www.google.com>; rel=preconnect",
+)
+
+
+def _add_early_hints(response: Response) -> None:
+    """Add preload/preconnect Link headers to full-page HTML responses.
+
+    HTMX partials, DAV traffic, App Engine internals, and the offline
+    fallback are skipped — the hints only matter where a browser parses a
+    full document that loads the app shell.
+    """
+    if request.method != "GET" or response.status_code != 200:
+        return
+    if request.headers.get("HX-Request"):
+        return
+    if (
+        request.path.startswith("/dav/")
+        or request.path.startswith("/_ah/")
+        or request.path == "/offline"
+    ):
+        return
+    if not (response.content_type or "").startswith("text/html"):
+        return
+    if request.path == "/auth/login":
+        hints = list(_EARLY_HINTS_LOGIN)
+    else:
+        hints = list(_EARLY_HINTS_BASE)
+        if current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):
+            hints.extend(_EARLY_HINTS_APPCHECK)
+    response.headers["Link"] = ", ".join(hints)
 
 
 # ---------------------------------------------------------------------------

@@ -13,8 +13,12 @@
   {# Vendored at exact versions, served same-origin (see static/vendor/).
      CSS is precompiled — body font, [x-cloak] and .spinner live in app.css. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.5f4afed2.css') }}">
-  <!-- Alpine.js -->
-  <script defer src="{{ url_for('static', filename='vendor/alpinejs-3.15.12.min.js') }}"></script>
+  {# reCAPTCHA Enterprise (App Check + phone MFA) loads from these origins. #}
+  <link rel="preconnect" href="https://www.gstatic.com">
+  <link rel="preconnect" href="https://www.google.com">
+  {# Alpine is loaded at the END of <body>, after the inline script that
+     defines loginForm() — document order keeps that safe under Cloudflare
+     Rocket Loader, which defers all scripts but preserves their order. #}
 </head>
 <body class="min-h-screen bg-[#FAFAFA] flex items-center justify-center px-4">
 
@@ -132,7 +136,8 @@
   {% if config.ENV == 'development' %}
   <script>
     // ── Debug token for local development ──────────────────────────
-    self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ config.APPCHECK_DEBUG_TOKEN|tojson|default('true', true) }};
+    // Empty config value → true (SDK auto-generates a debug token).
+    self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ (config.APPCHECK_DEBUG_TOKEN or true)|tojson }};
   </script>
   {% endif %}
 
@@ -387,5 +392,9 @@
       };
     }
   </script>
+
+  {# Alpine LAST — loginForm() above must exist before Alpine evaluates
+     x-data, and only document order guarantees that under Rocket Loader. #}
+  <script defer src="{{ url_for('static', filename='vendor/alpinejs-3.15.12.min.js') }}"></script>
 </body>
 </html>

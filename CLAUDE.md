@@ -20,16 +20,19 @@ This document supersedes the old `SPEC.md` and phase-specific markdown files as 
   npm install --no-save --no-package-lock @tailwindcss/cli@4.3.0 tailwindcss@4.3.0
   npx @tailwindcss/cli@4.3.0 -i athena/static/src/app.input.css -o athena/static/vendor/app.css --minify
   # rename to app.<first-8-of-sha256>.css; update the <link> in base.html +
-  # auth/login.html and the PRECACHE list in static/sw.js; delete the old
-  # hashed file; remove node_modules afterwards
+  # auth/login.html, the PRECACHE list in static/sw.js, AND the Early Hints
+  # lists in security.py (_EARLY_HINTS_*); delete the old hashed file;
+  # remove node_modules afterwards
   ```
+  The Firebase App Check bootstrap is also a vendored, hash-named asset (`static/vendor/appcheck-boot.<hash>.js`), configured via a non-executable JSON block in `base.html` — same rules apply if it changes (re-hash, update base.html + sw.js + security.py).
+  **Script order in `base.html`/`login.html` is load-bearing:** Firebase/App Check boot → page scripts → htmx → Alpine, all at the end of `<body>`. Cloudflare Rocket Loader (enabled at the edge) defers every script but preserves *document order* — position, not sync/defer phases, is the only execution-order guarantee. Never move htmx/Alpine above the App Check boot or above inline component definitions.
   Vendored assets are served `Cache-Control: immutable` (1 year) — **a changed asset MUST get a new filename**; never edit one in place. Dynamically-assembled class names get purged at compile time: keep classes as complete string literals in templates / `routes/*.py` / `models/*.py` (all scanned via `@source`), or safelist them in `app.input.css`.
 - **DAV libraries:** `icalendar`, `vobject`. Custom CardDAV/CalDAV/RFC-5545 endpoints served directly from Flask.
 - **Markdown:** `Markdown` + `bleach` libraries for rendering note content (rendered via Jinja `markdown` filter).
 - **PDF:** `reportlab` (pure Python — do NOT use `weasyprint`; it requires cairo/pango system libs unavailable on App Engine Standard).
 - **Word templates:** (proposed Phase H, not yet implemented) `docxtpl` + `python-docx`.
 - **Hosting:** Google App Engine Standard, Python 3.13 runtime, F2 instance class.
-- **CDN / edge:** Cloudflare (Full Strict SSL, Origin Certificate, Access Zero Trust for `/dav/*`). The App Engine firewall accepts only Cloudflare IP ranges, so the edge is not bypassable (see Security Rules → Edge defense in depth).
+- **CDN / edge:** Cloudflare **Pro plan** (Full Strict SSL, Origin Certificate, Access Zero Trust for `/dav/*`, Argo Smart Routing, **Rocket Loader** — see the script-order rule above, **Early Hints** — `security.py` emits the `Link` preload headers Cloudflare converts to HTTP 103). The App Engine firewall accepts only Cloudflare IP ranges, so the edge is not bypassable (see Security Rules → Edge defense in depth).
 - **PWA:** manifest + service worker (`static/sw.js`) for offline fallback + stale-while-revalidate caching of `/static/vendor/` and `/static/icons/` assets (never authenticated HTML); Trusted Web Activity wrapper for Android (assetlinks.json served at `/.well-known/assetlinks.json`).
 - **Observability:** structured logging to Cloud Logging (`utils/logging_setup.py` — request-context fields + PII redaction filter) and distributed tracing to Cloud Trace via OpenTelemetry (`utils/tracing_setup.py` — Flask/requests/Jinja2 auto-instrumentation, 10% prod sampling, PII-sanitizing exporter). **`athena/OBSERVABILITY.md` is the event/span registry — read it before adding log events or spans.**
 - **CI/CD:** Google Cloud Build trigger on GitHub push to main; `cloudbuild.yaml` runs the pytest suite as a deploy gate (hash-locked install), deploys, and prunes old versions. GitHub Actions provide security scanning (CodeQL, OSV-Scanner, Trivy, Bandit, dependency-review, OpenSSF Scorecard) and Dependabot keeps pins moving (weekly grouped minor/patch PRs).
@@ -69,7 +72,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 ## Security Rules
 
 - **Security headers on every response** (via `security.py` `_add_security_headers` `after_request` hook):
-  - `Content-Security-Policy-Report-Only` (currently report-only — see `CSP` constant in `security.py`). `script-src` is `'self'` + the Google origins the App Check SDK loads reCAPTCHA Enterprise from (`gstatic.com`, `apis.google.com`, `google.com`) — **no CDN origins** (assets are vendored). Violations are posted to `/csp-report` (`report-uri`) and logged as `csp_violation` security events.
+  - `Content-Security-Policy-Report-Only` (currently report-only — see `CSP` constant in `security.py`). `script-src` is `'self'` + `ajax.cloudflare.com` (Rocket Loader — remove if it's ever disabled at the edge) + the Google origins the App Check SDK loads reCAPTCHA Enterprise from (`gstatic.com`, `apis.google.com`, `google.com`) — **no script CDN origins** (assets are vendored). Violations are posted to `/csp-report` (`report-uri`) and logged as `csp_violation` security events.
   - `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload` (2 years)
   - `X-Content-Type-Options: nosniff`
   - `X-Frame-Options: DENY`
@@ -132,7 +135,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── config.py                   # Env + Secret Manager configuration class (incl. firm info + tax numbers)
 │   ├── auth.py                     # Firebase Auth verification, @login_required, MFA gate, token replay guard
 │   ├── security.py                 # Security headers, CSRF, rate limiting, App Check, origin secret,
-│   │                               # request size caps, sanitize(), safe_internal_redirect()
+│   │                               # request size caps, sanitize(), safe_internal_redirect(),
+│   │                               # Early Hints Link headers (_EARLY_HINTS_*)
 │   ├── tz.py                       # UTC ↔ America/Montreal helpers
 │   ├── pagination.py               # Pagination helpers: legacy page mode + cursor mode (encode/decode/trail)
 │   ├── manifest.json               # PWA manifest
@@ -204,7 +208,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_logging_setup.py
 │   │   ├── test_tracing_setup.py
 │   │   ├── test_pagination.py
-│   │   └── test_dashboard_aggregation.py
+│   │   ├── test_dashboard_aggregation.py
+│   │   └── test_security_headers.py
 │   │
 │   ├── templates/
 │   │   ├── base.html
@@ -232,7 +237,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │       ├── src/app.input.css       # Tailwind input (source of the compiled artifact below)
 │       ├── vendor/                 # Vendored, version-named, immutable-cached assets:
 │       │                           # app.<hash>.css (compiled Tailwind), htmx-2.0.4.min.js,
-│       │                           # alpinejs-3.15.12.min.js, firebase-{app,auth,app-check}-compat-10.12.2.js
+│       │                           # alpinejs-3.15.12.min.js, firebase-{app,auth,app-check}-compat-10.12.2.js,
+│       │                           # appcheck-boot.<hash>.js (App Check bootstrap, was inline)
 │       ├── icons/                  # PWA + favicon assets
 │       └── legal/                  # privacy.html, terms.html (served at /privacy, /terms)
 │
@@ -1245,7 +1251,8 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Exact-pin dependencies (`==X.Y.Z`)** in `requirements.in` — wildcard pins (`==X.*`) break OSV-Scanner's version resolution and produce false-positive CVE reports.
 - **Composite indexes must be deployed BEFORE (or with) code that queries them** — `firebase deploy --only firestore:indexes --project athena-pallas`. Until an index builds, the affected queries fail and views gracefully degrade to empty lists. Every new `.where()+.order_by()` combo or filtered aggregation needs an entry in `firestore.indexes.json`.
 - **An index that serves a paginated list does NOT serve its SUM aggregation.** Firestore matches SUM/AVG queries only against an index whose *trailing* fields are the aggregated fields in **alphabetical order** (`amount` before `hours`), with directions **matching the query's last sort** (ASC for equality-only queries; DESC after `date DESC, id DESC`). A same-fields index in the wrong tail order is ignored — the query 400s ("requires an index") even though the index is READY, and totals silently degrade to zero (June 2026 dashboard "heures non facturées" incident).
-- **Never edit a `static/vendor/` file in place** — they're cached `immutable` for a year. A changed asset gets a new version/hash filename, plus updates to the templates that reference it and the precache list in `static/sw.js`.
+- **Never edit a `static/vendor/` file in place** — they're cached `immutable` for a year. A changed asset gets a new version/hash filename, plus updates to the templates that reference it, the precache list in `static/sw.js`, and the Early Hints lists in `security.py`.
+- **Script order at the end of `<body>` is load-bearing under Rocket Loader** (App Check boot → page scripts → htmx → Alpine). Rocket Loader defers all scripts but preserves document order, so position is the only cross-regime execution-order guarantee. Moving htmx above the boot reopens a race where `hx-trigger="load"` requests fire without the `X-Firebase-AppCheck` header and 401; moving Alpine above inline component definitions breaks `x-data` evaluation.
 
 ---
 
