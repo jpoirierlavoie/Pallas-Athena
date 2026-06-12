@@ -252,8 +252,10 @@ def get_filtered_expense_totals(
 
     Server-side SUM aggregation replacing the legacy "materialize
     everything, sum in Python" total on the /temps/ dépenses tab. Built on
-    the same ordered query as :func:`list_expenses_page` so the identical
-    composite index serves both. Returns a safe zero on failure — a broken
+    the same ordered query as :func:`list_expenses_page`, but the
+    aggregation needs its own composite index per filter — (filter,
+    date DESC, id DESC, amount DESC): the SUM field must trail the index,
+    direction matching the sort. Returns a safe zero on failure — a broken
     total must never break the list view.
     """
     try:

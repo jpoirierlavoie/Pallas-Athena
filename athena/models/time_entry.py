@@ -262,9 +262,12 @@ def get_filtered_time_totals(
 
     Server-side aggregation (two SUMs in one RunAggregationQuery) replacing
     the legacy "materialize everything, sum in Python" totals on the /temps/
-    list. Built on the same ordered query as :func:`list_time_entries_page`
-    so the identical composite index serves both. Returns safe zeros on
-    failure — a broken total must never break the list view.
+    list. Built on the same ordered query as :func:`list_time_entries_page`,
+    but the aggregation needs its own composite index per filter —
+    (filter, date DESC, id DESC, amount DESC, hours DESC): the SUM fields
+    must trail the index in alphabetical order, directions matching the
+    sort. Returns safe zeros on failure — a broken total must never break
+    the list view.
     """
     try:
         query = _filtered_query(dossier_id, billable_filter, date_from, date_to)
@@ -339,8 +342,9 @@ def get_unbilled_totals() -> dict:
     request) over ``billable == True AND invoiced == False`` instead of
     materializing the whole collection — O(1) payload for the dashboard.
     Requires the ``timeentries`` composite index
-    (billable ASC, invoiced ASC, hours ASC, amount ASC); see
-    ``firestore.indexes.json``.
+    (billable ASC, invoiced ASC, amount ASC, hours ASC) — Firestore matches
+    aggregations only when the aggregated fields trail the index in
+    alphabetical order; see ``firestore.indexes.json``.
 
     Returns ``{"hours": float, "amount": int}`` with hours rounded to one
     decimal (matching the dashboard's historical display) and amount in
