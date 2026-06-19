@@ -25,6 +25,9 @@ env_variables:
   FIREBASE_APP_ID: "1:1073430388324:web:6d60d0d67d74ce1b730971"
   FIREBASE_STORAGE_BUCKET: "athena-pallas.firebasestorage.app"
   AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
+  # Firm identity — compliance signer (prefixed "Me " if absent) + invoice header.
+  # Remaining FIRM_*/GST_NUMBER/QST_NUMBER stay unset until invoicing needs them.
+  FIRM_NAME: "Me Jason Poirier Lavoie"
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   REQUIRE_MFA: "true"
   PIP_REQUIRE_HASHES: "1"

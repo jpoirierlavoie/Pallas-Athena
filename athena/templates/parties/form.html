@@ -133,9 +133,9 @@
           <select name="language"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
             <option value="" {{ 'selected' if not partie or not partie.language }}>—</option>
-            <option value="fr" {{ 'selected' if partie and partie.language == 'fr' }}>Français</option>
-            <option value="en" {{ 'selected' if partie and partie.language == 'en' }}>English</option>
-            <option value="es" {{ 'selected' if partie and partie.language == 'es' }}>Español</option>
+            <option value="fr" {{ 'selected' if partie and partie.language == 'fr' }}>Francophone</option>
+            <option value="en" {{ 'selected' if partie and partie.language == 'en' }}>Anglophone</option>
+            <option value="es" {{ 'selected' if partie and partie.language == 'es' }}>Hispanophone</option>
           </select>
         </div>
         <div>

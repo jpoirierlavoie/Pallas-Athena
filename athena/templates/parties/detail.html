@@ -43,7 +43,7 @@
           'avocat_adverse': 'bg-amber-100 text-amber-700',
           'partie_adverse': 'bg-red-100 text-red-700'
         } %}
-        {% set lang_labels = {'fr': 'Français', 'en': 'English', 'es': 'Español'} %}
+        {% set lang_labels = {'fr': 'Francophone', 'en': 'Anglophone', 'es': 'Hispanophone'} %}
         {% set gender_labels = {'M': 'Homme', 'F': 'Femme', 'O': 'Autre', 'N': 'Ne s\'applique pas', 'U': 'Non précisé'} %}
         {# Role badge + profile chips (language, gender, pronouns) share one
            wrapping row so they stay on a single line when they fit. #}
@@ -102,21 +102,21 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées personnelles</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.email %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Courriel</dt>
-          <dd class="text-gray-900 col-span-2"><a href="mailto:{{ partie.email }}" class="text-indigo-600 hover:underline">{{ partie.email }}</a></dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Courriel</dt>
+          <dd class="text-gray-900 flex-1 min-w-0"><a href="mailto:{{ partie.email }}" class="text-indigo-600 hover:underline">{{ partie.email }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_cell %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Cellulaire</dt>
-          <dd class="text-gray-900 col-span-2"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Cellulaire</dt>
+          <dd class="text-gray-900 flex-1 min-w-0"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_home %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Domicile</dt>
-          <dd class="text-gray-900 col-span-2"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Domicile</dt>
+          <dd class="text-gray-900 flex-1 min-w-0"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
         </div>
         {% endif %}
         {% if has_personal_address %}
@@ -137,39 +137,39 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées professionnelles</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.job_title %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Titre</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.job_title }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Titre</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.job_title }}</dd>
         </div>
         {% endif %}
         {% if partie.job_role %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Fonction</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.job_role }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Fonction</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.job_role }}</dd>
         </div>
         {% endif %}
         {% if partie.organization %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Organisation</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.organization }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Organisation</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.organization }}</dd>
         </div>
         {% endif %}
         {% if partie.email_work %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Courriel</dt>
-          <dd class="text-gray-900 col-span-2"><a href="mailto:{{ partie.email_work }}" class="text-indigo-600 hover:underline">{{ partie.email_work }}</a></dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Courriel</dt>
+          <dd class="text-gray-900 flex-1 min-w-0"><a href="mailto:{{ partie.email_work }}" class="text-indigo-600 hover:underline">{{ partie.email_work }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_work %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Téléphone</dt>
-          <dd class="text-gray-900 col-span-2"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Téléphone</dt>
+          <dd class="text-gray-900 flex-1 min-w-0"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.fax %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Télécopieur</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.fax|phone }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Télécopieur</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.fax|phone }}</dd>
         </div>
         {% endif %}
         {% if has_work_address %}
@@ -188,21 +188,21 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Identifiants</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.bar_number %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">N° du Barreau</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.bar_number }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">N° du Barreau</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.bar_number }}</dd>
         </div>
         {% endif %}
         {% if partie.company_neq %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">NEQ</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.company_neq }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">NEQ</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.company_neq }}</dd>
         </div>
         {% endif %}
         {% if partie.governing_law %}
-        <div class="grid grid-cols-3 gap-3">
-          <dt class="text-gray-500">Loi constitutive</dt>
-          <dd class="text-gray-900 col-span-2">{{ partie.governing_law }}</dd>
+        <div class="flex gap-3">
+          <dt class="text-gray-500 shrink-0">Loi constitutive</dt>
+          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.governing_law }}</dd>
         </div>
         {% endif %}
       </dl>
@@ -258,6 +258,9 @@
        si FIRM_NAME le contient déjà. #}
     {% set _firm = config.FIRM_NAME %}
     {% set compliance_signer = _firm if (not _firm or _firm.lower().startswith('me ')) else 'Me ' ~ _firm %}
+    {# Mois en français : strftime('%B') dépend de la locale du serveur (anglaise
+       sur App Engine), donc on mappe explicitement. Jour sans zéro initial. #}
+    {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       {# Identity verification #}
@@ -278,7 +281,8 @@
             {{ id_label.get(partie.identity_verified, partie.identity_verified) }}
           </span>
           {% if partie.identity_verified_date %}
-          <span class="text-xs text-gray-500">le {{ partie.identity_verified_date.strftime('%d %B %Y') }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
+          {% set _d = partie.identity_verified_date|to_mtl %}
+          <span class="text-xs text-gray-500">le {{ _d.day }} {{ month_names[_d.month] }} {{ _d.year }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
           {% endif %}
         </div>
         {% if partie.identity_verified_notes %}
@@ -304,7 +308,8 @@
             {{ cc_label.get(partie.conflict_check, partie.conflict_check) }}
           </span>
           {% if partie.conflict_check_date %}
-          <span class="text-xs text-gray-500">le {{ partie.conflict_check_date.strftime('%d %B %Y') }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
+          {% set _d = partie.conflict_check_date|to_mtl %}
+          <span class="text-xs text-gray-500">le {{ _d.day }} {{ month_names[_d.month] }} {{ _d.year }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
           {% endif %}
         </div>
         {% if partie.conflict_check_notes %}
