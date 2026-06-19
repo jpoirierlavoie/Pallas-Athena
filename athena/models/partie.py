@@ -58,8 +58,8 @@ VALID_CONFLICT_STATUSES = ("non_vérifié", "vérifié", "conflit_détecté")
 # Contact-role display labels (French)
 ROLE_LABELS = {
     "client": "Client",
-    "partie_adverse": "Partie adverse",
-    "avocat_adverse": "Avocat(e) adverse",
+    "partie_adverse": "Partie",
+    "avocat_adverse": "Avocat(e)",
     "témoin": "Témoin",
     "expert": "Expert(e)",
     "huissier": "Huissier(ère)",
@@ -911,8 +911,13 @@ def vcard_to_partie(vcard_str: str) -> dict:
             label = cat_val[0]
         else:
             label = str(cat_val)
-        # Reverse-lookup from label to key
+        # Reverse-lookup from label to key. Include the pre-rename labels
+        # ("Partie adverse" → "Partie", "Avocat(e) adverse" → "Avocat(e)")
+        # as aliases so vCards synced before the rename round-trip back to
+        # their original role instead of silently degrading to "autre".
         reverse_map = {v: k for k, v in ROLE_LABELS.items()}
+        reverse_map.setdefault("Partie adverse", "partie_adverse")
+        reverse_map.setdefault("Avocat(e) adverse", "avocat_adverse")
         data["contact_role"] = reverse_map.get(label, "autre")
 
     # UID
