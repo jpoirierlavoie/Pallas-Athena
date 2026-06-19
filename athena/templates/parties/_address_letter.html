@@ -43,9 +43,9 @@ records keep displaying correctly until they're rewritten on next save.
 {% endif %}
 
 {% if street or city or country %}
-<div class="flex justify-between gap-4 items-start">
-  <dt class="text-gray-500 flex-shrink-0">Adresse</dt>
-  <dd class="text-gray-900">
+<div class="grid grid-cols-3 gap-3 items-start">
+  <dt class="text-gray-500">Adresse</dt>
+  <dd class="text-gray-900 col-span-2">
     <address class="not-italic leading-relaxed">
       {% if line_one %}{{ line_one }}<br>{% endif %}
       {% if city or province or postal %}{{ city }}{% if province %} ({{ province }}){% endif %}{% if postal %} {{ postal }}{% endif %}<br>{% endif %}

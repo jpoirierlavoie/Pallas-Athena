@@ -102,21 +102,21 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées personnelles</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.email %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Courriel</dt>
-          <dd class="text-gray-900"><a href="mailto:{{ partie.email }}" class="text-indigo-600 hover:underline">{{ partie.email }}</a></dd>
+          <dd class="text-gray-900 col-span-2"><a href="mailto:{{ partie.email }}" class="text-indigo-600 hover:underline">{{ partie.email }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_cell %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Cellulaire</dt>
-          <dd class="text-gray-900"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
+          <dd class="text-gray-900 col-span-2"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_home %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Domicile</dt>
-          <dd class="text-gray-900"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
+          <dd class="text-gray-900 col-span-2"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
         </div>
         {% endif %}
         {% if has_personal_address %}
@@ -137,39 +137,39 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées professionnelles</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.job_title %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Titre</dt>
-          <dd class="text-gray-900">{{ partie.job_title }}</dd>
+          <dd class="text-gray-900 col-span-2">{{ partie.job_title }}</dd>
         </div>
         {% endif %}
         {% if partie.job_role %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Fonction</dt>
-          <dd class="text-gray-900">{{ partie.job_role }}</dd>
+          <dd class="text-gray-900 col-span-2">{{ partie.job_role }}</dd>
         </div>
         {% endif %}
         {% if partie.organization %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Organisation</dt>
-          <dd class="text-gray-900">{{ partie.organization }}</dd>
+          <dd class="text-gray-900 col-span-2">{{ partie.organization }}</dd>
         </div>
         {% endif %}
         {% if partie.email_work %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Courriel</dt>
-          <dd class="text-gray-900"><a href="mailto:{{ partie.email_work }}" class="text-indigo-600 hover:underline">{{ partie.email_work }}</a></dd>
+          <dd class="text-gray-900 col-span-2"><a href="mailto:{{ partie.email_work }}" class="text-indigo-600 hover:underline">{{ partie.email_work }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_work %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Téléphone</dt>
-          <dd class="text-gray-900"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
+          <dd class="text-gray-900 col-span-2"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.fax %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">Télécopieur</dt>
-          <dd class="text-gray-900">{{ partie.fax|phone }}</dd>
+          <dd class="text-gray-900 col-span-2">{{ partie.fax|phone }}</dd>
         </div>
         {% endif %}
         {% if has_work_address %}
@@ -188,21 +188,21 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Identifiants</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.bar_number %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">N° du Barreau</dt>
-          <dd class="text-gray-900">{{ partie.bar_number }}</dd>
+          <dd class="text-gray-900 col-span-2">{{ partie.bar_number }}</dd>
         </div>
         {% endif %}
         {% if partie.company_neq %}
-        <div class="flex justify-between">
+        <div class="grid grid-cols-3 gap-3">
           <dt class="text-gray-500">NEQ</dt>
-          <dd class="text-gray-900">{{ partie.company_neq }}</dd>
+          <dd class="text-gray-900 col-span-2">{{ partie.company_neq }}</dd>
         </div>
         {% endif %}
         {% if partie.governing_law %}
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Loi constitutive</dt>
-          <dd class="text-gray-900 text-right">{{ partie.governing_law }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Loi constitutive</dt>
+          <dd class="text-gray-900 col-span-2">{{ partie.governing_law }}</dd>
         </div>
         {% endif %}
       </dl>
