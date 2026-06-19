@@ -254,11 +254,15 @@
   {% if partie.contact_role == 'client' %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-4">Conformité</h2>
+    {# Signataire des vérifications : on garantit le « Me » sans le dupliquer
+       si FIRM_NAME le contient déjà. #}
+    {% set _firm = config.FIRM_NAME %}
+    {% set compliance_signer = _firm if (not _firm or _firm.lower().startswith('me ')) else 'Me ' ~ _firm %}
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       {# Identity verification #}
       <div>
-        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Vérification d'identité</h3>
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Identité</h3>
         {% set id_badge = {
           'non_vérifié': 'bg-orange-100 text-orange-700',
           'vérifié': 'bg-green-100 text-green-700',
@@ -269,12 +273,14 @@
           'vérifié': 'Vérifié',
           'exempté': 'Exempté'
         } %}
-        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ id_badge.get(partie.identity_verified, 'bg-gray-100 text-gray-600') }}">
-          {{ id_label.get(partie.identity_verified, partie.identity_verified) }}
-        </span>
-        {% if partie.identity_verified_date %}
-        <p class="text-xs text-gray-500 mt-1">{{ partie.identity_verified_date.strftime('%d %B %Y') if partie.identity_verified_date }}</p>
-        {% endif %}
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ id_badge.get(partie.identity_verified, 'bg-gray-100 text-gray-600') }}">
+            {{ id_label.get(partie.identity_verified, partie.identity_verified) }}
+          </span>
+          {% if partie.identity_verified_date %}
+          <span class="text-xs text-gray-500">le {{ partie.identity_verified_date.strftime('%d %B %Y') }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
+          {% endif %}
+        </div>
         {% if partie.identity_verified_notes %}
         <p class="text-xs text-gray-600 mt-1">{{ partie.identity_verified_notes }}</p>
         {% endif %}
@@ -293,12 +299,14 @@
           'vérifié': 'Vérifié',
           'conflit_détecté': 'Conflit détecté'
         } %}
-        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ cc_badge.get(partie.conflict_check, 'bg-gray-100 text-gray-600') }}">
-          {{ cc_label.get(partie.conflict_check, partie.conflict_check) }}
-        </span>
-        {% if partie.conflict_check_date %}
-        <p class="text-xs text-gray-500 mt-1">{{ partie.conflict_check_date.strftime('%d %B %Y') if partie.conflict_check_date }}</p>
-        {% endif %}
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ cc_badge.get(partie.conflict_check, 'bg-gray-100 text-gray-600') }}">
+            {{ cc_label.get(partie.conflict_check, partie.conflict_check) }}
+          </span>
+          {% if partie.conflict_check_date %}
+          <span class="text-xs text-gray-500">le {{ partie.conflict_check_date.strftime('%d %B %Y') }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
+          {% endif %}
+        </div>
         {% if partie.conflict_check_notes %}
         <p class="text-xs text-gray-600 mt-1">{{ partie.conflict_check_notes }}</p>
         {% endif %}
