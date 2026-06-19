@@ -43,18 +43,14 @@
           'avocat_adverse': 'bg-amber-100 text-amber-700',
           'partie_adverse': 'bg-red-100 text-red-700'
         } %}
-        <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full {{ badge_colors.get(partie.contact_role, 'bg-gray-100 text-gray-600') }}">
-          {{ role_labels.get(partie.contact_role, 'Autre') }}
-        </span>
-        {% if partie.type == 'organization' and partie.trade_name %}
-        <p class="text-sm text-gray-500 mt-1">Aussi connue sous : {{ partie.trade_name }}</p>
-        {% endif %}
-
-        {# Profile chips: language, gender, pronouns — folded into the header card #}
-        {% if partie.language or partie.gender or partie.pronouns %}
         {% set lang_labels = {'fr': 'Français', 'en': 'English', 'es': 'Español'} %}
         {% set gender_labels = {'M': 'Homme', 'F': 'Femme', 'O': 'Autre', 'N': 'Ne s\'applique pas', 'U': 'Non précisé'} %}
-        <div class="flex flex-wrap gap-1.5 mt-2">
+        {# Role badge + profile chips (language, gender, pronouns) share one
+           wrapping row so they stay on a single line when they fit. #}
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full {{ badge_colors.get(partie.contact_role, 'bg-gray-100 text-gray-600') }}">
+            {{ role_labels.get(partie.contact_role, 'Autre') }}
+          </span>
           {% if partie.language %}
           <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
             {{ lang_labels.get(partie.language, partie.language) }}
@@ -71,6 +67,8 @@
           </span>
           {% endif %}
         </div>
+        {% if partie.type == 'organization' and partie.trade_name %}
+        <p class="text-sm text-gray-500 mt-1">Aussi connue sous : {{ partie.trade_name }}</p>
         {% endif %}
       </div>
     </div>
