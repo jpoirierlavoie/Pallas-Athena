@@ -102,21 +102,21 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées personnelles</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.email %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Courriel</dt>
-          <dd class="text-gray-900 flex-1 min-w-0"><a href="mailto:{{ partie.email }}" class="text-indigo-600 hover:underline">{{ partie.email }}</a></dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Courriel</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0"><a href="mailto:{{ partie.email }}" class="text-indigo-600 hover:underline">{{ partie.email }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_cell %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Cellulaire</dt>
-          <dd class="text-gray-900 flex-1 min-w-0"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Cellulaire</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0"><a href="tel:{{ partie.phone_cell }}" class="hover:underline">{{ partie.phone_cell|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_home %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Domicile</dt>
-          <dd class="text-gray-900 flex-1 min-w-0"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Domicile</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0"><a href="tel:{{ partie.phone_home }}" class="hover:underline">{{ partie.phone_home|phone }}</a></dd>
         </div>
         {% endif %}
         {% if has_personal_address %}
@@ -137,39 +137,39 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées professionnelles</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.job_title %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Titre</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.job_title }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Titre</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.job_title }}</dd>
         </div>
         {% endif %}
         {% if partie.job_role %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Fonction</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.job_role }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Fonction</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.job_role }}</dd>
         </div>
         {% endif %}
         {% if partie.organization %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Organisation</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.organization }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Organisation</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.organization }}</dd>
         </div>
         {% endif %}
         {% if partie.email_work %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Courriel</dt>
-          <dd class="text-gray-900 flex-1 min-w-0"><a href="mailto:{{ partie.email_work }}" class="text-indigo-600 hover:underline">{{ partie.email_work }}</a></dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Courriel</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0"><a href="mailto:{{ partie.email_work }}" class="text-indigo-600 hover:underline">{{ partie.email_work }}</a></dd>
         </div>
         {% endif %}
         {% if partie.phone_work %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Téléphone</dt>
-          <dd class="text-gray-900 flex-1 min-w-0"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Téléphone</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0"><a href="tel:{{ partie.phone_work }}" class="hover:underline">{{ partie.phone_work|phone }}</a></dd>
         </div>
         {% endif %}
         {% if partie.fax %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Télécopieur</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.fax|phone }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Télécopieur</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.fax|phone }}</dd>
         </div>
         {% endif %}
         {% if has_work_address %}
@@ -188,21 +188,21 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Identifiants</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.bar_number %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">N° du Barreau</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.bar_number }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">N° du Barreau</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.bar_number }}</dd>
         </div>
         {% endif %}
         {% if partie.company_neq %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">NEQ</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.company_neq }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">NEQ</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.company_neq }}</dd>
         </div>
         {% endif %}
         {% if partie.governing_law %}
-        <div class="flex gap-3">
-          <dt class="text-gray-500 shrink-0">Loi constitutive</dt>
-          <dd class="text-gray-900 flex-1 min-w-0">{{ partie.governing_law }}</dd>
+        <div class="grid grid-cols-3 gap-3">
+          <dt class="text-gray-500">Loi constitutive</dt>
+          <dd class="text-gray-900 col-span-2 min-w-0">{{ partie.governing_law }}</dd>
         </div>
         {% endif %}
       </dl>
@@ -223,15 +223,15 @@
           <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
         </div>
         <div class="flex-1 min-w-0">
-          {% if m.found %}
-          <a href="{{ url_for('parties.partie_detail', partie_id=m.id) }}"
-             class="text-sm font-medium text-indigo-600 hover:underline block truncate">{{ m.name }}</a>
-          {% else %}
-          <span class="text-sm font-medium text-amber-700 block truncate">{{ m.name }}</span>
-          {% endif %}
-          <span class="inline-flex px-2 py-0.5 mt-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">
-            {{ mandataire_kind_labels.get(m.kind, m.kind or 'Mandataire') }}
-          </span>
+          <p class="text-sm">
+            {%- if m.found -%}
+            <a href="{{ url_for('parties.partie_detail', partie_id=m.id) }}"
+               class="font-medium text-indigo-600 hover:underline">{{ m.name }}</a>
+            {%- else -%}
+            <span class="font-medium text-amber-700">{{ m.name }}</span>
+            {%- endif -%}
+            <span class="text-gray-500">, {{ mandataire_kind_labels.get(m.kind, m.kind or 'Mandataire') }}</span>
+          </p>
           {% if m.notes %}
           <p class="text-sm text-gray-700 mt-2 whitespace-pre-wrap">{{ m.notes }}</p>
           {% endif %}
@@ -332,8 +332,8 @@
       {% for d in dossiers %}
       <a href="{{ url_for('dossiers.dossier_detail', dossier_id=d.id) }}"
          class="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition-colors">
-        <div class="w-12 h-8 rounded bg-gray-100 flex items-center justify-center flex-shrink-0">
-          <span class="text-xs font-semibold text-gray-500">{{ d.file_number }}</span>
+        <div class="px-2 h-8 rounded bg-gray-100 flex items-center justify-center flex-shrink-0">
+          <span class="text-xs font-semibold text-gray-500 whitespace-nowrap">{{ d.file_number }}</span>
         </div>
         <div class="flex-1 min-w-0">
           <span class="text-sm font-medium text-gray-900 truncate block">{{ d.title }}</span>
