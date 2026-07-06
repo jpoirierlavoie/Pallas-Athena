@@ -495,6 +495,7 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
 
 ```python
 {
+    # Optional — standalone agenda events have no dossier (all fields "" when unset)
     "dossier_id": str, "dossier_file_number": str, "dossier_title": str,
     "title": str,
     "hearing_type": "audience" | "conférence_de_gestion"
@@ -927,7 +928,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `list_hearings_in_range(date_from, date_to, limit=100) -> list[dict]` — server-side range + order on `start_datetime` (single-field index); the dashboard's bounded hearing windows
 - `hearing_to_vevent(hearing) -> str` — VEVENT with VALARM (TRIGGER -PT{reminder_minutes}M)
 - `vevent_to_hearing(ical_str) -> dict`
-- `create_hearing` and `update_hearing` accept a `require_dossier=False` flag for DAV-created events
+- `create_hearing`/`update_hearing`/`_validate` treat `dossier_id` as **optional** — a hearing may be a standalone agenda event with no dossier (like standalone tasks); `_validate` requires only a title + start datetime. All hearings, linked or standalone, live in the single shared `hearings` / `/dav/calendar/` collection, so standalone events sync to DavX5 with no extra DAV routing (contrast tasks, which split per-dossier). `hearing_to_vevent` omits the `Dossier:` DESCRIPTION line when there is no dossier.
 
 ### `models/task.py`
 - `list_urgent_tasks(cutoff, limit=50) -> list[dict]` — server-side `status in (à_faire, en_cours) AND due_date <= cutoff`, ordered + bounded (dashboard; needs the `tasks` composite index)

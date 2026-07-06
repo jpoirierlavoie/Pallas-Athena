@@ -138,18 +138,14 @@ def _sanitize_data(data: dict) -> dict:
     return out
 
 
-def _validate(data: dict, *, require_dossier: bool = True) -> list[str]:
+def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid).
 
-    Args:
-        require_dossier: When False, skip the dossier_id check.  DAV-created
-            events may not have a dossier link; the user can assign one later
-            via the web UI.
+    A dossier link is optional: hearings may be standalone agenda events with
+    no dossier (mirroring standalone tasks). Such events still sync to DavX5
+    via the shared /dav/calendar/ collection.
     """
     errors: list[str] = []
-
-    if require_dossier and not data.get("dossier_id", "").strip():
-        errors.append("Un dossier doit être associé à cette audience.")
 
     if not data.get("title", "").strip():
         errors.append("Le titre de l'audience est requis.")
@@ -177,9 +173,7 @@ def _validate(data: dict, *, require_dossier: bool = True) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_hearing(
-    data: dict, *, require_dossier: bool = True
-) -> tuple[Optional[dict], list[str]]:
+def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
 
@@ -187,7 +181,7 @@ def create_hearing(
     if merged.get("start_datetime") and not merged.get("end_datetime"):
         merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
 
-    errors = _validate(merged, require_dossier=require_dossier)
+    errors = _validate(merged)
     if errors:
         return None, errors
 
@@ -350,7 +344,7 @@ def list_hearings_window(
 
 
 def update_hearing(
-    hearing_id: str, data: dict, *, require_dossier: bool = True
+    hearing_id: str, data: dict
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing hearing. Returns (updated_doc, errors)."""
     existing = get_hearing(hearing_id)
@@ -363,7 +357,7 @@ def update_hearing(
     if merged.get("start_datetime") and not merged.get("end_datetime"):
         merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
 
-    errors = _validate(merged, require_dossier=require_dossier)
+    errors = _validate(merged)
     if errors:
         return None, errors
 
@@ -458,9 +452,11 @@ def hearing_to_vevent(hearing: dict) -> str:
     desc_parts = []
     if hearing.get("notes"):
         desc_parts.append(hearing["notes"])
-    desc_parts.append(
-        f"Dossier: {hearing.get('dossier_file_number', '')} - {hearing.get('dossier_title', '')}"
-    )
+    # Standalone agenda events have no dossier — omit the line entirely.
+    if hearing.get("dossier_id"):
+        desc_parts.append(
+            f"Dossier: {hearing.get('dossier_file_number', '')} - {hearing.get('dossier_title', '')}"
+        )
     if hearing.get("hearing_type"):
         label = HEARING_TYPE_LABELS.get(hearing["hearing_type"], hearing["hearing_type"])
         desc_parts.append(f"Type: {label}")
@@ -468,7 +464,8 @@ def hearing_to_vevent(hearing: dict) -> str:
         desc_parts.append(f"Cour: {hearing['court']}")
     if hearing.get("judge"):
         desc_parts.append(f"Juge: {hearing['judge']}")
-    event.add("description", "\n".join(desc_parts))
+    if desc_parts:
+        event.add("description", "\n".join(desc_parts))
 
     # STATUS mapping
     status_map = {

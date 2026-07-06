@@ -75,7 +75,9 @@
             </div>
             <div class="flex-1 min-w-0">
               <p class="text-sm font-medium text-gray-900 truncate">{{ h.title }}</p>
-              <p class="text-xs text-gray-500 truncate">{{ h.dossier_file_number }} — {{ h.dossier_title }}</p>
+              {% if h.dossier_file_number %}
+                <p class="text-xs text-gray-500 truncate">{{ h.dossier_file_number }} — {{ h.dossier_title }}</p>
+              {% endif %}
               {% if not h.all_day and h.start_datetime %}
                 <p class="text-xs text-gray-400">{{ (h.start_datetime|to_mtl).strftime('%H:%M') }}{% if h.end_datetime %} – {{ (h.end_datetime|to_mtl).strftime('%H:%M') }}{% endif %}</p>
               {% endif %}
@@ -214,7 +216,9 @@
             </div>
             <div class="flex-1 min-w-0">
               <p class="text-sm text-gray-900 truncate">{{ h.title }}</p>
-              <p class="text-xs text-gray-400 truncate">{{ h.dossier_file_number }} — {{ h.dossier_title }}</p>
+              {% if h.dossier_file_number %}
+                <p class="text-xs text-gray-400 truncate">{{ h.dossier_file_number }} — {{ h.dossier_title }}</p>
+              {% endif %}
             </div>
           </a>
         {% endfor %}

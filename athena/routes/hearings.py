@@ -110,13 +110,24 @@ def _template_context() -> dict:
 
 
 def _enrich_dossier_info(data: dict) -> dict:
-    """Look up dossier and attach denormalized file_number + title."""
+    """Look up dossier and attach denormalized file_number + title.
+
+    Hearings may be standalone agenda events (no dossier). When the dossier
+    field is empty — or references a dossier that no longer exists — clear the
+    id and its denormalized file_number/title so no stale label lingers on a
+    hearing that was detached from its dossier.
+    """
     dossier_id = data.get("dossier_id", "")
     if dossier_id:
         dossier = get_dossier(dossier_id)
         if dossier:
             data["dossier_file_number"] = dossier.get("file_number", "")
             data["dossier_title"] = dossier.get("title", "")
+            return data
+        # Invalid dossier ID — fall through and clear it.
+    data["dossier_id"] = ""
+    data["dossier_file_number"] = ""
+    data["dossier_title"] = ""
     return data
 
 

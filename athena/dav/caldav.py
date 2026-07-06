@@ -348,9 +348,7 @@ def put_resource(hearing_id: str) -> Response:
         return Response("Bad Request — invalid iCalendar", status=400)
 
     if existing:
-        updated, errors = update_hearing(
-            hearing_id, data, require_dossier=False
-        )
+        updated, errors = update_hearing(hearing_id, data)
         if errors:
             logger.warning(
                 "CalDAV PUT validation failed for %s: %s",
@@ -362,7 +360,7 @@ def put_resource(hearing_id: str) -> Response:
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
         data["id"] = hearing_id
-        created, errors = create_hearing(data, require_dossier=False)
+        created, errors = create_hearing(data)
         if errors:
             logger.warning(
                 "CalDAV PUT validation failed for %s: %s",
