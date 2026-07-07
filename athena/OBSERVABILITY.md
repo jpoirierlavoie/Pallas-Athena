@@ -4,7 +4,7 @@ This document is the source of truth for the structured-logging event vocabulary
 
 All structured logs go through `athena/utils/logging_setup.py`, which:
 
-- Attaches a Cloud Logging `AppEngineHandler` (log name **`pallas-athena`**) in production, or a stderr stream handler locally.
+- Attaches a Cloud Logging `CloudLoggingHandler` (log name **`pallas-athena`**) in production, or a stderr stream handler locally. `CloudLoggingHandler` (not the deprecated `AppEngineHandler`, whose `emit` str-formats every record and drops `json_fields`) routes each record's `json_fields` into the LogEntry **`jsonPayload`** — so the event vocabulary below is queryable as `jsonPayload.event`, `jsonPayload.outcome`, etc. The human-readable message lands under `jsonPayload.message`.
 - Runs every record through `ContextFilter` (injects request-scoped fields) then `RedactionFilter` (drops sensitive keys; scrubs PII from `json_fields`, the formatted message — including `%`-style args, which are pre-interpolated in the filter — and rendered exception tracebacks).
 - Exposes a small set of typed helpers — call those instead of `logger.info(...)` directly so log-based metrics keep working.
 

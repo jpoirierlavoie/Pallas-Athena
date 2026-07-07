@@ -3,8 +3,10 @@
 This module is the single entry point for everything observability-related:
 
 * ``init_app(flask_app)`` configures a Cloud Logging handler in production
-  (via ``google.cloud.logging.AppEngineHandler`` named ``pallas-athena``)
-  or a stderr stream handler locally, attaches the context and redaction
+  (via ``google.cloud.logging.handlers.CloudLoggingHandler`` named
+  ``pallas-athena`` — which, unlike the deprecated ``AppEngineHandler``,
+  routes ``record.json_fields`` into the LogEntry ``jsonPayload``) or a
+  stderr stream handler locally, attaches the context and redaction
   filters, and registers a ``before_request`` hook that populates the
   per-request context.
 * Every record emitted through the standard ``logging`` framework carries
@@ -343,10 +345,20 @@ def _build_handler(flask_app: Flask) -> logging.Handler:
     if _is_production(flask_app):
         try:
             import google.cloud.logging
-            from google.cloud.logging.handlers import AppEngineHandler
+            from google.cloud.logging.handlers import CloudLoggingHandler
 
             client = google.cloud.logging.Client()
-            return AppEngineHandler(client, name="pallas-athena")
+            # CloudLoggingHandler, NOT AppEngineHandler: the latter (now
+            # deprecated) str-formats every record in ``emit`` and drops
+            # ``record.json_fields`` entirely, so all our structured events
+            # shipped as ``textPayload`` with a null ``jsonPayload`` —
+            # log-based metrics filtering on ``jsonPayload.event`` matched
+            # nothing. CloudLoggingHandler routes ``json_fields`` into the
+            # LogEntry ``jsonPayload`` (with the human message under
+            # ``message``), keeps the ``pallas-athena`` log name, detects
+            # the ``gae_app`` monitored resource, and infers the trace from
+            # the active OTel span for native Cloud Trace correlation.
+            return CloudLoggingHandler(client, name="pallas-athena")
         except Exception as exc:
             # Fall through to stderr if Cloud Logging is unreachable —
             # we never want logging configuration to fail the boot.

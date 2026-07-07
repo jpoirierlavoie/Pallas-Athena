@@ -594,6 +594,65 @@ def test_trace_field_returns_none_without_project():
         assert current_trace_field("") is None
 
 
+# ── Production handler selection (structured jsonPayload) ─────────────────
+
+def test_production_uses_structured_cloud_logging_handler(flask_app, monkeypatch):
+    # Regression (OBS): AppEngineHandler.emit str-formats the record and
+    # drops record.json_fields, so every structured event shipped as
+    # textPayload with a null jsonPayload — log-based metrics on
+    # jsonPayload.event matched nothing. Production must build a
+    # CloudLoggingHandler (named pallas-athena), which routes json_fields
+    # into the LogEntry jsonPayload.
+    import google.cloud.logging as gcl
+    import google.cloud.logging.handlers as gclh
+
+    captured: dict = {}
+
+    class _FakeCLH(logging.Handler):
+        def __init__(self, client, *, name=None, **kw):
+            super().__init__()
+            captured["client"] = client
+            captured["name"] = name
+
+        def emit(self, record):  # pragma: no cover — never emitted here
+            pass
+
+    monkeypatch.setattr(gcl, "Client", lambda: "fake-client")
+    monkeypatch.setattr(gclh, "CloudLoggingHandler", _FakeCLH)
+
+    flask_app.config["ENV"] = "production"
+    handler = logging_setup._build_handler(flask_app)
+
+    assert isinstance(handler, _FakeCLH)
+    assert captured["name"] == "pallas-athena"
+
+
+def test_cloud_logging_message_parser_emits_json_fields_as_dict():
+    # Proves the mechanism the fix relies on: the library's message parser
+    # turns a record carrying json_fields into a dict payload (→ jsonPayload)
+    # with the human message preserved under "message". Guards against a
+    # library change that would silently regress structured logging.
+    from google.cloud.logging_v2.handlers.handlers import (
+        _format_and_parse_message,
+    )
+
+    record = _make_record(
+        msg="mcp_tool_call",
+        json_fields={"event": "mcp_tool_call", "tool": "get_agenda",
+                     "outcome": "success"},
+    )
+
+    class _Fmt:
+        def format(self, r):
+            return r.getMessage()
+
+    payload = _format_and_parse_message(record, _Fmt())
+    assert isinstance(payload, dict)
+    assert payload["event"] == "mcp_tool_call"
+    assert payload["tool"] == "get_agenda"
+    assert payload["message"] == "mcp_tool_call"
+
+
 # ── bind_context outside a request ────────────────────────────────────────
 
 def test_bind_context_works_outside_request():

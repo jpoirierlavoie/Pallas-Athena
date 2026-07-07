@@ -1136,7 +1136,7 @@ Uses `reportlab.platypus` for tabular reports. Column width ratios (3rd tuple el
 
 ### `utils/logging_setup.py`
 
-Structured logging. `init_app(app)` (called from `create_app`) attaches a Cloud Logging `AppEngineHandler` (log name `pallas-athena`) in production or stderr locally, plus two filters on every record: `ContextFilter` (injects `request_id`, `trace`, `auth_context`, `route`, `method`, `is_htmx`) and `RedactionFilter` (drops `SENSITIVE_KEYS`, scrubs emails/phones/postal codes from messages, `json_fields`, and tracebacks). Emit through the typed helpers, never raw `logger.*`:
+Structured logging. `init_app(app)` (called from `create_app`) attaches a Cloud Logging `CloudLoggingHandler` (log name `pallas-athena`; routes `json_fields` into the LogEntry `jsonPayload` — the deprecated `AppEngineHandler` dropped them to `textPayload`) in production or stderr locally, plus two filters on every record: `ContextFilter` (injects `request_id`, `trace`, `auth_context`, `route`, `method`, `is_htmx`) and `RedactionFilter` (drops `SENSITIVE_KEYS`, scrubs emails/phones/postal codes from messages, `json_fields`, and tracebacks). Emit through the typed helpers, never raw `logger.*`:
 
 ```python
 log_auth_event(event, outcome, *, reason=None, **extra)      # logger pallas.auth
