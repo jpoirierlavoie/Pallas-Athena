@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Autorisation d'accès — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">Autorisation d'accès</h1>
+
+  {% if error_message %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <p class="text-sm text-red-700">{{ error_message }}</p>
+  </div>
+  <a href="/" class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    Retour au tableau de bord
+  </a>
+  {% else %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+    <p class="text-sm text-gray-700 mb-4">
+      <strong>{{ params.client_name }}</strong> demande un accès
+      <strong>en lecture seule</strong> à Pallas Athéna&nbsp;: dossiers,
+      parties, tâches, audiences, notes, métadonnées de documents et
+      facturation.
+    </p>
+    <p class="text-sm text-gray-500 mb-6">
+      Aucune modification de vos données n'est possible avec cet accès.
+      Vous pouvez le révoquer en tout temps.
+    </p>
+
+    <form method="post" action="/oauth/authorize" class="space-y-6">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="client_id" value="{{ params.client_id }}">
+      <input type="hidden" name="redirect_uri" value="{{ params.redirect_uri }}">
+      <input type="hidden" name="response_type" value="{{ params.response_type }}">
+      <input type="hidden" name="code_challenge" value="{{ params.code_challenge }}">
+      <input type="hidden" name="code_challenge_method" value="{{ params.code_challenge_method }}">
+      <input type="hidden" name="scope" value="{{ params.scope }}">
+      <input type="hidden" name="state" value="{{ params.state }}">
+      <input type="hidden" name="resource" value="{{ params.resource }}">
+
+      <div class="flex gap-3">
+        <button type="submit" name="decision" value="allow"
+                class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+          Autoriser
+        </button>
+        <button type="submit" name="decision" value="deny"
+                class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+          Refuser
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -28,6 +28,7 @@ This document supersedes the old `SPEC.md` and phase-specific markdown files as 
   **Script order in `base.html`/`login.html` is load-bearing:** Firebase/App Check boot → page scripts → htmx → Alpine, all at the end of `<body>`. Cloudflare Rocket Loader (enabled at the edge) defers every script but preserves *document order* — position, not sync/defer phases, is the only execution-order guarantee. Never move htmx/Alpine above the App Check boot or above inline component definitions.
   Vendored assets are served `Cache-Control: immutable` (1 year) — **a changed asset MUST get a new filename**; never edit one in place. Dynamically-assembled class names get purged at compile time: keep classes as complete string literals in templates / `routes/*.py` / `models/*.py` (all scanned via `@source`), or safelist them in `app.input.css`.
 - **DAV libraries:** `icalendar`, `vobject`. Custom CardDAV/CalDAV/RFC-5545 endpoints served directly from Flask.
+- **MCP connector (Phase I):** a hand-rolled, stateless **JSON-response-mode Streamable HTTP** MCP server at `POST /mcp` (no SSE, no sessions) plus an **embedded OAuth 2.1 authorization server** (`mcp/` package), exposing 14 read-only tools to Claude as a custom connector. **Zero new Python dependencies** — stdlib (`secrets`, `hashlib`, `base64`) + packages already pinned (Flask, flask-limiter, flask-wtf). Kill switch: `MCP_ENABLED` env var (default `"true"`; `false` → every `/mcp` + `/oauth/*` route 404s).
 - **Markdown:** `Markdown` + `bleach` libraries for rendering note content (rendered via Jinja `markdown` filter).
 - **PDF:** `reportlab` (pure Python — do NOT use `weasyprint`; it requires cairo/pango system libs unavailable on App Engine Standard).
 - **Word templates:** (proposed Phase H, not yet implemented) `docxtpl` + `python-docx`.
@@ -56,12 +57,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 ## Architecture Rules
 
 1. **SINGLE USER.** Exactly one authorized email (`AUTHORIZED_USER_EMAIL` env var). No multi-tenancy, no registration, no roles. Every endpoint that mutates state verifies the session via `@login_required` (Firebase Auth + server-side session). DAV endpoints use a separate HTTP Basic auth.
-2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
+2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, plus the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
 3. **Bilingual code/UI split.** All user-facing text (labels, buttons, placeholders, errors, toasts, empty states) is in **French**. All code (variable names, function names, comments, docstrings) is in **English**.
 4. **Currency in integer cents.** `15000` means $150.00. Never use floats for money. Use `Decimal` only for tax computation intermediates, convert to int cents (with `ROUND_HALF_UP`) before storage.
 5. **Timestamps UTC.** Stored as UTC `datetime` with timezone info. Displayed in `America/Montreal` via the `to_mtl` Jinja filter (registered from `tz.py`).
-6. **UUIDv4 document IDs.** Generated server-side. Never reuse IDs.
-7. **Every Firestore doc has `created_at`, `updated_at`, `etag`** (etag = UUIDv4 regenerated on every write, used for DAV `If-Match` conditional requests). Folders are an exception: they have `created_at`/`updated_at` but no `etag`.
+6. **UUIDv4 document IDs.** Generated server-side. Never reuse IDs. **Documented exception (Phase I):** the OAuth collections use the lookup key as the doc ID — `oauth_clients/{client_id}`, `oauth_codes/{sha256(code)}`, `oauth_tokens/{sha256(token)}` — so raw credentials are never stored and validation is one keyed `get()`.
+7. **Every Firestore doc has `created_at`, `updated_at`, `etag`** (etag = UUIDv4 regenerated on every write, used for DAV `If-Match` conditional requests). Folders and the three OAuth collections are exceptions: they have `created_at`/`updated_at` but no `etag`.
 8. **HTMX first.** Dynamic interactions use HTMX. Flask endpoints check `request.headers.get("HX-Request")`/`HX-Target` and return HTML fragments for HTMX requests, full pages otherwise.
 9. **Mobile-first.** Design for 375px viewport first. Breakpoints at 768px (tablet) and 1024px+ (desktop). Touch targets minimum 44px.
 10. **Minimalist visual language.** Near-white `#FAFAFA` backgrounds, near-black `gray-900` text, `indigo-600` accent. System font stack. Generous white-space.
@@ -86,6 +87,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 - **Secrets live in Google Cloud Secret Manager**, not in `app.yaml`: `flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`. `config.py` resolves them at startup when `ENV=production`; locally they come from `.env` env vars (`SECRET_KEY`, `FIREBASE_API_KEY`, `DAV_PASSWORD_HASH`, `CF_ORIGIN_SECRET`).
 - **Firebase Storage URLs:** always signed, 15-minute expiry. Never expose raw bucket URLs to the client. The signing path uses `iam.signBlob` via `google-auth` impersonation when running on App Engine.
 - **DAV authentication:** HTTP Basic Auth with bcrypt-hashed password (`DAV_PASSWORD_HASH`, from Secret Manager in prod). Username is the same as `AUTHORIZED_USER_EMAIL`. **Separate** from Firebase Auth.
+- **MCP authentication (Phase I):** `POST /mcp` requires an OAuth 2.1 **opaque bearer token** (32 bytes `secrets.token_urlsafe`, stored as SHA-256 hex doc IDs in `oauth_tokens` — no JWTs, no new crypto deps). Access tokens live 60 min, refresh tokens 30 days with **rotation** (a replayed rotated refresh token revokes its whole family; a replayed authorization code does too). The embedded AS (`mcp/oauth.py`) offers **open-but-neutered DCR**: `/oauth/register` accepts only Claude's callback URLs (`https://claude.ai|claude.com/api/mcp/auth_callback`; localhost additionally outside production), and the consent screen sits behind `@login_required` (session + MFA), so no third party can complete a flow. PKCE S256 only; public clients only; `hmac.compare_digest` for PKCE and cache comparisons. Bearer failures feed a **per-IP brake** (20 invalid tokens / 15 min → 429 before Firestore is touched) mirroring the DAV brake, with a 5-min HMAC-keyed success cache (revocation lag ≤ 5 min on a warm instance). CSRF exemptions: `/mcp`, `/oauth/register`, `/oauth/token`, `/oauth/revoke` — **not** the `/oauth/authorize` POST. Rate limits: register 10/h, token + revoke 60/h, `/mcp` 240/min (all keyed by `CF-Connecting-IP`). An `Origin` header on `/mcp` must be `claude.ai`/`claude.com`/the canonical origin (DNS-rebinding defense). Never log tokens, codes, or verifiers. Break-glass: `MCP_ENABLED=false` (kill switch) or `python -m scripts.revoke_mcp_tokens`.
 - **Edge defense in depth — all traffic must transit Cloudflare.** Three layers:
   1. **App Engine firewall** allows only Cloudflare's published IP ranges (ops-side; configured in GCP).
   2. **Origin secret** (`_enforce_origin_secret` in `security.py`): when `CF_ORIGIN_SECRET` is set, every request must carry the matching `X-Origin-Auth` header, injected at the edge by a Cloudflare Transform Rule — defeats direct-to-App-Engine access with a spoofed Host. Unset = disabled (local dev).
@@ -97,7 +99,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 - **Phone MFA** required for the single authorized email when `REQUIRE_MFA=true` (default **true**, and set `"true"` in production `app.yaml`; the verifier in `auth.py` checks for `sign_in_second_factor` in the decoded token).
 - **Input sanitization** via `security.sanitize()` — strips HTML tags, enforces max lengths. Called from `_sanitize_data()` in every model.
 - **Open-redirect guard:** `security.safe_internal_redirect(target, fallback)` validates every `return_to` value (same-origin path only; blocks `//host`, schemes, backslash tricks). Rejections are logged without the URL.
-- **Do not log PII.** Enforced in code, not just by convention: all logging goes through `utils/logging_setup.py`, whose `RedactionFilter` drops sensitive keys, scrubs emails/phones/postal codes, and escapes control characters (log-injection defense, CWE-117) in messages, `json_fields`, and tracebacks; `utils/tracing_setup.py` applies the same scrubbing to exported spans. Use the typed helpers (`log_auth_event`, `log_security_event`, `log_dav_operation`, `log_dossier_event`, `log_unexpected`) instead of raw `logger.*` calls — the event vocabulary is documented in `athena/OBSERVABILITY.md`. When interpolating a user-controlled value (URL path segment, request field) into a log message, wrap it in `sanitize_log_value(...)`.
+- **Do not log PII.** Enforced in code, not just by convention: all logging goes through `utils/logging_setup.py`, whose `RedactionFilter` drops sensitive keys, scrubs emails/phones/postal codes, and escapes control characters (log-injection defense, CWE-117) in messages, `json_fields`, and tracebacks; `utils/tracing_setup.py` applies the same scrubbing to exported spans. Use the typed helpers (`log_auth_event`, `log_security_event`, `log_dav_operation`, `log_dossier_event`, `log_mcp_event`, `log_unexpected`) instead of raw `logger.*` calls — the event vocabulary is documented in `athena/OBSERVABILITY.md`. When interpolating a user-controlled value (URL path segment, request field) into a log message, wrap it in `sanitize_log_value(...)`.
 
 ---
 
@@ -186,6 +188,18 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── xml_utils.py            # Namespace tags, multistatus builders, propfind body parser
 │   │   └── sync.py                 # CTag / sync-token / tombstone management
 │   │
+│   ├── mcp/                        # MCP connector (Phase I) — read-only, zero new deps
+│   │   ├── __init__.py             # mcp_bp + oauth_bp blueprints, register_mcp(app), constants,
+│   │   │                           # MCP_ENABLED kill switch (404s every route when off)
+│   │   ├── jsonrpc.py              # JSON-RPC 2.0 parsing, response/error envelopes, error codes
+│   │   ├── endpoint.py             # POST /mcp dispatcher: initialize/ping/tools list+call
+│   │   ├── bearer.py               # @mcp_auth_required, WWW-Authenticate challenges,
+│   │   │                           # per-IP invalid-token brake (mirrors dav_auth brake)
+│   │   ├── oauth.py                # RFC 8414/9728 metadata, /oauth/register|authorize|token|revoke
+│   │   ├── store.py                # Firestore persistence: oauth_clients / oauth_codes / oauth_tokens
+│   │   ├── tools.py                # TOOLS registry, subset JSON-Schema validator, money/date helpers
+│   │   └── handlers.py             # 14 read-only tool implementations calling models/* + utils/*
+│   │
 │   ├── utils/                      # Utility modules
 │   │   ├── __init__.py
 │   │   ├── deadlines.py            # Quebec art. 83 C.p.c. judicial deadline calc
@@ -198,7 +212,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── scripts/                    # One-time / manual scripts (run with python -m scripts.X)
 │   │   ├── __init__.py
 │   │   ├── normalize_existing.py   # Backfill E.164 phones + normalized postal codes (Phase B)
-│   │   └── seed_reference_data.py  # Populate ref_greffes + ref_juridictions (Phase G)
+│   │   ├── seed_reference_data.py  # Populate ref_greffes + ref_juridictions (Phase G)
+│   │   ├── mint_dev_token.py       # Local-dev MCP bearer minting (refuses ENV=production)
+│   │   └── revoke_mcp_tokens.py    # Break-glass: revoke all MCP tokens (+ optional client purge)
 │   │
 │   ├── tests/                      # pytest unit tests (run by Cloud Build as a deploy gate)
 │   │   ├── __init__.py
@@ -209,7 +225,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_tracing_setup.py
 │   │   ├── test_pagination.py
 │   │   ├── test_dashboard_aggregation.py
-│   │   └── test_security_headers.py
+│   │   ├── test_security_headers.py
+│   │   ├── test_mcp_jsonrpc.py
+│   │   ├── test_mcp_oauth.py
+│   │   └── test_mcp_tools.py
 │   │
 │   ├── templates/
 │   │   ├── base.html
@@ -230,7 +249,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── tasks/                  # list, detail, form + _task_row, _task_rows
 │   │   ├── notes/                  # list, detail, form + _note_rows
 │   │   ├── protocols/              # list, detail, form + _protocol_rows
-│   │   └── documents/              # list, detail, upload, edit + _browser, _document_rows, _folder_tree
+│   │   ├── documents/              # list, detail, upload, edit + _browser, _document_rows, _folder_tree
+│   │   └── mcp/                    # consent.html (OAuth consent screen, French)
 │   │
 │   └── static/
 │       ├── sw.js                   # Service worker (precache + stale-while-revalidate for vendor assets)
@@ -629,6 +649,56 @@ Collection names used:
 - `"tasks"` — standalone tasks only
 - `"dossier:{dossierId}"` — per-dossier collections (Phase D1+). The colon is valid in Firestore document IDs.
 
+### OAuth collections (Phase I — MCP connector)
+
+Three top-level collections backing the embedded OAuth 2.1 authorization server. **Documented exception to Architecture Rule 6:** document IDs are the lookup keys (client_id, or SHA-256 hex of the code/token), never UUIDv4 — raw credentials are never stored. No `etag` (not DAV-exposed). **Expiry is enforced in code on every read** (`expire_at` comparison in `mcp/store.py` callers); the Firestore TTL policies on `oauth_codes.expire_at` / `oauth_tokens.expire_at` are only garbage collection (deletion can lag by days), never a security control. No composite indexes needed (keyed `get()`s; family/client queries are single-field equality, auto-indexed).
+
+#### `oauth_clients/{client_id}`
+
+```python
+{
+    "client_id": str,                 # secrets.token_urlsafe(24); doc ID
+    "client_name": str,               # sanitize()d at write, autoescaped at render
+    "redirect_uris": list[str],       # validated against the Claude-callback allowlist at registration
+    "token_endpoint_auth_method": "none",   # public clients only in v1
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "last_used_at": datetime | None,  # stamped at each successful token issuance
+}
+```
+
+#### `oauth_codes/{sha256(code)}`
+
+```python
+{
+    "client_id": str,
+    "redirect_uri": str,              # exact URI used at /oauth/authorize
+    "scope": str,                     # space-delimited; v1 always "athena:read"
+    "code_challenge": str,            # PKCE, S256 only
+    "code_challenge_method": "S256",
+    "resource": str | None,           # RFC 8707 value received, if any
+    "used": bool,                     # single-use guard (flipped transactionally)
+    "family_id": str | None,          # stamped at consumption; enables replay → family revocation
+    "expire_at": datetime,            # now + 300 s
+}
+```
+
+#### `oauth_tokens/{sha256(token)}`
+
+```python
+{
+    "token_type": "access" | "refresh",
+    "client_id": str,
+    "scope": str,
+    "resource": str | None,
+    "family_id": str,                 # uuid4 hex; shared by all tokens from one auth-code
+    "revoked": bool,
+    "rotated_to": str | None,         # hash of successor refresh token (audit trail)
+    "expire_at": datetime,            # access: +60 min; refresh: +30 days
+    "last_used_at": datetime | None,
+}
+```
+
 ### `ref_greffes/{greffeNumber}` — Quebec courthouse reference (top-level, read-only)
 
 Document ID is the 3-digit greffe number (string). Seeded from `scripts/seed_reference_data.py`.
@@ -845,6 +915,25 @@ The documents blueprint is **mounted at `/documents`** (not nested under `/dossi
 
 All DAV endpoints support: `OPTIONS`, `PROPFIND` (Depth 0/1), `REPORT` (sync-collection / addressbook-multiget / calendar-multiget), `GET`, `PUT` (with `If-Match` / `If-None-Match`), `DELETE` (with `If-Match`).
 
+### MCP connector endpoints (Phase I)
+
+All served through Cloudflare like every other route; **must not** be behind the Cloudflare Access application that fronts `/dav/*`. The `MCP_ENABLED` kill switch 404s every row of this table.
+
+| Route | Methods | Auth | CSRF | Purpose |
+|---|---|---|---|---|
+| `/mcp` | POST | Bearer token | exempt | MCP Streamable HTTP endpoint (stateless JSON mode; one JSON-RPC message per POST) |
+| `/mcp` | GET, DELETE | — | — | `405` (no SSE stream, no sessions — `Mcp-Session-Id` is never issued) |
+| `/.well-known/oauth-protected-resource/mcp` | GET | none | — | RFC 9728 protected-resource metadata |
+| `/.well-known/oauth-protected-resource` | GET | none | — | Same document (fallback) |
+| `/.well-known/oauth-authorization-server` | GET | none | — | RFC 8414 AS metadata |
+| `/oauth/register` | POST | none (10/h per IP) | exempt | RFC 7591 DCR — redirect URIs restricted to Claude's callbacks |
+| `/oauth/authorize` | GET | `@login_required` | n/a | French consent screen (`templates/mcp/consent.html`) |
+| `/oauth/authorize` | POST | `@login_required` | **enforced** | Consent decision → 302 with code (+state) |
+| `/oauth/token` | POST | public client + PKCE (60/h per IP) | exempt | Code exchange + refresh rotation |
+| `/oauth/revoke` | POST | token self-auth (60/h per IP) | exempt | RFC 7009 revocation (refresh token → whole family) |
+
+The 14 read-only tools (`get_agenda`, `list_dossiers`, `get_dossier`, `list_tasks`, `list_hearings`, `list_notes`, `get_note`, `list_documents`, `list_parties`, `get_partie`, `get_billing_snapshot`, `list_protocol_steps`, `compute_judicial_deadline`, `parse_court_file_number`) live in `mcp/handlers.py` with schemas in `mcp/tools.py`. Conventions: money as `*_cents` + fr-CA `*_display`; date-only fields as `YYYY-MM-DD` (UTC calendar date); true timestamps as ISO-8601 America/Montreal; every list tool capped at 50 items with a `truncated` flag; no signed URLs or storage paths ever in tool output.
+
 ### Top-level miscellaneous routes (defined in `main.py`)
 
 | Route | Purpose |
@@ -987,6 +1076,10 @@ Folder functions:
 - `get_juridiction(juridiction_number) -> dict | None`
 - `list_greffes()`, `list_juridictions()`
 - `parse_court_file_number(court_file_number) -> dict` — returns `{greffe_number, juridiction_number, greffe, juridiction, is_administrative, parse_error}`. Letters prefix → `is_administrative=True`, no parsing. Format `NNN-NN-...` required, else `parse_error`.
+
+### MCP (Phase I)
+
+No model-layer changes. The 14 tool handlers in `mcp/handlers.py` compose **existing** model/util functions only; filters the model layer lacks are applied in the handler over a bounded fetch (≤ 200 docs), and **no composite index exists for an MCP-only query**. No tool path writes to Firestore (notably: `list_protocol_steps` derives overdue status by date comparison instead of calling `check_overdue_steps`, which writes).
 
 ---
 
@@ -1254,6 +1347,12 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **An index that serves a paginated list does NOT serve its SUM aggregation.** Firestore matches SUM/AVG queries only against an index whose *trailing* fields are the aggregated fields in **alphabetical order** (`amount` before `hours`), with directions **matching the query's last sort** (ASC for equality-only queries; DESC after `date DESC, id DESC`). A same-fields index in the wrong tail order is ignored — the query 400s ("requires an index") even though the index is READY, and totals silently degrade to zero (June 2026 dashboard "heures non facturées" incident).
 - **Never edit a `static/vendor/` file in place** — they're cached `immutable` for a year. A changed asset gets a new version/hash filename, plus updates to the templates that reference it, the precache list in `static/sw.js`, and the Early Hints lists in `security.py`.
 - **Script order at the end of `<body>` is load-bearing under Rocket Loader** (App Check boot → page scripts → htmx → Alpine). Rocket Loader defers all scripts but preserves document order, so position is the only cross-regime execution-order guarantee. Moving htmx above the boot reopens a race where `hx-trigger="load"` requests fire without the `X-Firebase-AppCheck` header and 401; moving Alpine above inline component definitions breaks `x-data` evaluation.
+- **MCP output: date-only fields must never pass through `to_mtl`.** Fields stored as midnight UTC (`timeentries.date`, `expenses.date`, invoice `date`/`due_date`, task `due_date`, protocol `start_date`/`end_date`/step `deadline_date`, dossier `opened_date`/`closed_date`/`prescription_date`) are emitted as the **UTC calendar date** via `mcp.tools.date_str` — a Montréal conversion shifts them to the previous day. True timestamps go through `mcp.tools.iso_mtl`.
+- **The MCP endpoint is stateless JSON mode — never add SSE** (`GET /mcp` streams) without revisiting the gunicorn `--timeout 60` sizing; long-lived connections would exhaust the 2×4 worker/thread budget.
+- **Firestore TTL is lagging garbage collection, not enforcement.** `oauth_codes`/`oauth_tokens` expiry checks stay in code (`expire_at` comparison on every read); deleted-late docs must still be treated as dead.
+- **Cloudflare bot mitigations can challenge Anthropic's egress** on `/mcp`/`/oauth/*` (non-browser client). A Configuration Rule disables Browser Integrity Check on those paths; if Super Bot Fight Mode challenges Claude's requests, relax its "Definitely automated" action and verify in Security → Events (same class of fight as the Play-Store/Bubblewrap episode).
+- **`athena/mcp/` shadows any installed `mcp` PyPI package** (the app dir is first on `sys.path`). Never add the MCP Python SDK to `requirements.in` without renaming one of them.
+- **The consent screen must reuse class strings that already exist in the compiled CSS** — `athena/mcp/` and `templates/mcp/` are covered by the `@source "../../templates"` scan, but adding a genuinely new utility class still requires the full recompile-and-rehash procedure. Note the app's primary buttons are `bg-gray-900`, not `bg-indigo-600` (which is not in the compiled artifact).
 
 ---
 
@@ -1267,6 +1366,19 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Edge security:** Cloudflare Access Zero Trust on `/dav/*` (service token policy for DavX5, Google SSO for interactive)
 - **Secrets:** Google Cloud Secret Manager — `flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret` (resolved by `config.py` at startup in production)
 - **Email:** MTA-STS policy setup for `poirierlavoie.ca` via Cloudflare Worker
+- **MCP edge/GCP prerequisites (Phase I — perform before connecting Claude):**
+  1. Firestore TTL policies (garbage collection only; expiry stays enforced in code):
+     ```bash
+     gcloud firestore fields ttls update expire_at \
+       --collection-group=oauth_codes --enable-ttl --project=athena-pallas
+     gcloud firestore fields ttls update expire_at \
+       --collection-group=oauth_tokens --enable-ttl --project=athena-pallas
+     ```
+  2. `firebase deploy --only firestore:rules --project athena-pallas` (deny-all covers the new collections).
+  3. Cloudflare Access must match `/dav/*` only — `/mcp`, `/oauth/*`, `/.well-known/oauth*` must **not** be behind Access.
+  4. Cloudflare **Configuration Rule** on `(starts_with(http.request.uri.path, "/mcp") or starts_with(http.request.uri.path, "/oauth/") or starts_with(http.request.uri.path, "/.well-known/oauth"))` disabling Browser Integrity Check; watch Security → Events for Super Bot Fight Mode challenging Anthropic's egress and relax "Definitely automated" if needed.
+  5. Verify the `X-Origin-Auth` Transform Rule is zone-wide (it must cover the new paths).
+  6. Connect from claude.ai: Settings → Connectors → Add custom connector → `https://athena.poirierlavoie.ca/mcp` → Firebase login + MFA → « Autoriser ».
 
 ### CI/CD — `cloudbuild.yaml`
 
@@ -1408,6 +1520,13 @@ gcloud app deploy --project=athena-pallas
 # Seed reference data (one-time after first deploy)
 python -m scripts.seed_reference_data
 
+# Mint a local MCP bearer token (dev only; refuses ENV=production), then
+# point MCP Inspector at http://localhost:8080/mcp with it
+python -m scripts.mint_dev_token
+
+# Break-glass: revoke every MCP token (Claude must re-authorize)
+python -m scripts.revoke_mcp_tokens
+
 # Run unit tests
 python -m pytest tests/ -v
 
@@ -1459,6 +1578,10 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
 
 - **Security remediation** (commit `17269d4` + follow-ups) — 65-finding audit fixed in code: Secret Manager migration, Cloudflare origin-secret + firewall defense stack, auth replay guard + `check_revoked`, DAV brute-force brake, transactional invoicing, fail-closed FK checks, magic-byte upload validation, open-redirect guard, CSP cleanup + `/csp-report`, structured logging with PII redaction, OTel tracing with PII-sanitized spans, GitHub security workflows + Dependabot, hash-locked dependency pipeline.
 - **Performance overhaul** (commit `13951c9`) — Tailwind precompiled to a committed `app.<hash>.css` (in-browser compiler removed); dashboard moved to Firestore aggregation queries; cursor pagination (timeentries/expenses/parties/dossiers/invoices) and bounded-group queries (tasks/notes/hearings); 30 composite indexes in `firestore.indexes.json`; immutable vendor caching; gunicorn sizing; `/_ah/warmup`; service-worker vendor caching.
+
+### Phase I — MCP connector (July 2026, ✅ code complete)
+
+- **I** — MCP server for Claude custom connectors: stateless JSON-mode Streamable HTTP endpoint (`POST /mcp`) with 14 read-only tools; embedded OAuth 2.1 AS (DCR restricted to Claude callbacks, PKCE S256, refresh rotation + family revocation, French consent screen behind session + MFA); opaque SHA-256-at-rest bearer tokens with a per-IP brake; `MCP_ENABLED` kill switch; `log_mcp_event` + `mcp.request`/`mcp.tool.*` spans; zero new dependencies. Side fix: `login_required` now preserves the query string in the login `next` redirect (needed for `/oauth/authorize?...`, also fixes filtered-list deep links). Ops prerequisites before connecting Claude: Firestore TTL policies on `oauth_codes.expire_at`/`oauth_tokens.expire_at`, rules deploy, Cloudflare Configuration Rule for bot mitigations on `/mcp`+`/oauth/*`, verify Cloudflare Access stays scoped to `/dav/*` (§16 of `PHASE_I_MCP.md`).
 
 ### Proposed / not yet implemented
 

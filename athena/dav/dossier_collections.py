@@ -64,6 +64,19 @@ dossier_dav_bp = Blueprint("dossier_dav", __name__)
 
 _PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 
+# A dossier's per-collection resources are exposed to DavX5 only while it is
+# active. Closed/archived dossiers are *drained*, not abruptly removed: the
+# collection still responds (so an enabled client can sync it down without a
+# hard 404) but lists no live resources — only the tombstones recorded on the
+# close transition, which tell DavX5 to delete its local copies. See
+# routes.dossiers._sync_dossier_dav_visibility.
+_ACTIVE_DOSSIER_STATUSES = ("actif", "en_attente")
+
+
+def _dossier_is_active(dossier: dict | None) -> bool:
+    """True when the dossier's DAV collection should expose live resources."""
+    return bool(dossier) and dossier.get("status") in _ACTIVE_DOSSIER_STATUSES
+
 
 # -- OPTIONS -----------------------------------------------------------------
 
@@ -97,11 +110,15 @@ def propfind_collection(dossier_id: str) -> Response:
 
     with firestore_span("get", "dossiers", doc_id=dossier_id):
         dossier = get_dossier(dossier_id)
-    if not dossier or dossier.get("status") not in ("actif", "en_attente"):
+    # A deleted dossier is truly gone (404). A closed/archived one still
+    # responds but as an empty, draining collection (no live resources) so an
+    # enabled DavX5 client can sync it down cleanly instead of erroring.
+    if not dossier:
         return Response("Not Found", status=404)
+    active = _dossier_is_active(dossier)
 
     depth = request.headers.get("Depth", "0")
-    add_attributes(**{"dav.depth": depth})
+    add_attributes(**{"dav.depth": depth, "dav.dossier_active": active})
     try:
         body = parse_propfind_body(request.get_data())
     except ValueError:
@@ -110,7 +127,7 @@ def propfind_collection(dossier_id: str) -> Response:
 
     _add_collection_props(multistatus, dossier, body)
 
-    if depth == "1":
+    if depth == "1" and active:
         with firestore_span("query", "tasks", dossier_id=dossier_id):
             tasks = list_tasks(dossier_id=dossier_id)
         with firestore_span("query", "notes", dossier_id=dossier_id):
@@ -279,6 +296,8 @@ def report_collection(dossier_id: str) -> Response:
         dossier = get_dossier(dossier_id)
     if not dossier:
         return Response("Not Found", status=404)
+    # Closed/archived dossiers report as empty (drained) — see the module note.
+    active = _dossier_is_active(dossier)
 
     try:
         body_root = parse_report_body(request.get_data())
@@ -294,21 +313,28 @@ def report_collection(dossier_id: str) -> Response:
             "dav.dossier_id": dossier_id,
             "dav.operation": "report",
             "dav.report_type": local,
+            "dav.dossier_active": active,
         }
     )
 
     if local == "sync-collection":
-        return _handle_sync_collection(dossier_id, body_root)
+        return _handle_sync_collection(dossier_id, body_root, active)
     elif local == "calendar-multiget":
-        return _handle_multiget(dossier_id, body_root)
+        return _handle_multiget(dossier_id, body_root, active)
     elif local == "calendar-query":
-        return _handle_calendar_query(dossier_id, body_root)
+        return _handle_calendar_query(dossier_id, body_root, active)
 
     return Response("Report type not supported", status=501)
 
 
-def _handle_sync_collection(dossier_id: str, body_root: ET.Element) -> Response:
-    """sync-collection REPORT -- return all resources + tombstones."""
+def _handle_sync_collection(
+    dossier_id: str, body_root: ET.Element, active: bool = True
+) -> Response:
+    """sync-collection REPORT -- return all resources + tombstones.
+
+    When the dossier is not active the live set is empty, so every recorded
+    tombstone is reported as a 404 and DavX5 drains its local copies.
+    """
     sync_name = f"dossier:{dossier_id}"
     add_attributes(
         **{
@@ -333,11 +359,15 @@ def _handle_sync_collection(dossier_id: str, body_root: ET.Element) -> Response:
     changed_count = 0
     tombstone_count = 0
     if not client_token or client_token != current_token:
-        with firestore_span("query", "tasks", dossier_id=dossier_id):
-            tasks = list_tasks(dossier_id=dossier_id)
+        if active:
+            with firestore_span("query", "tasks", dossier_id=dossier_id):
+                tasks = list_tasks(dossier_id=dossier_id)
 
-        with firestore_span("query", "notes", dossier_id=dossier_id):
-            notes = list_notes(dossier_id=dossier_id)
+            with firestore_span("query", "notes", dossier_id=dossier_id):
+                notes = list_notes(dossier_id=dossier_id)
+        else:
+            # Draining collection: no live resources, so all tombstones report.
+            tasks, notes = [], []
 
         changed_count = len(tasks) + len(notes)
         with span(
@@ -405,14 +435,20 @@ def _handle_sync_collection(dossier_id: str, body_root: ET.Element) -> Response:
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
 
-def _handle_multiget(dossier_id: str, body_root: ET.Element) -> Response:
-    """calendar-multiget REPORT -- return specific resources by href."""
+def _handle_multiget(
+    dossier_id: str, body_root: ET.Element, active: bool = True
+) -> Response:
+    """calendar-multiget REPORT -- return specific resources by href.
+
+    A drained (inactive) collection exposes no live resources, so every
+    requested href is reported as 404.
+    """
     multistatus = make_multistatus()
 
     for href_el in body_root.findall(dav_tag("href")):
         href = href_el.text or ""
         resource_id = _extract_resource_id(href)
-        if not resource_id:
+        if not resource_id or not active:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
 
@@ -442,9 +478,18 @@ def _handle_multiget(dossier_id: str, body_root: ET.Element) -> Response:
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
 
-def _handle_calendar_query(dossier_id: str, body_root: ET.Element) -> Response:
-    """calendar-query REPORT -- return all matching resources."""
+def _handle_calendar_query(
+    dossier_id: str, body_root: ET.Element, active: bool = True
+) -> Response:
+    """calendar-query REPORT -- return all matching resources.
+
+    A drained (inactive) collection exposes no live resources.
+    """
     multistatus = make_multistatus()
+
+    if not active:
+        xml = serialize_multistatus(multistatus)
+        return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
     tasks = list_tasks(dossier_id=dossier_id)
     for task in tasks:

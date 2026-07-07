@@ -1,0 +1,60 @@
+"""Mint a local-development MCP bearer token (Phase I).
+
+Creates a dev ``oauth_clients`` record plus an access/refresh pair and
+prints the raw access token ONCE. Hard-refuses to run in production.
+
+Run from the athena/ directory:
+
+    python -m scripts.mint_dev_token [--hours N]
+"""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def main() -> int:
+    if os.environ.get("ENV") == "production":
+        print("REFUSED: mint_dev_token must never run with ENV=production.")
+        return 1
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--hours",
+        type=int,
+        default=1,
+        help="Access-token lifetime in hours (default 1).",
+    )
+    args = parser.parse_args()
+
+    from datetime import datetime, timedelta, timezone
+
+    from mcp import SCOPE_READ
+    from mcp import store
+
+    client = store.create_client(
+        "Dev local (mint_dev_token)", ["http://localhost/dev-callback"]
+    )
+    pair = store.create_token_pair(
+        client_id=client["client_id"], scope=SCOPE_READ, resource=None
+    )
+    if args.hours != 1:
+        expire_at = datetime.now(timezone.utc) + timedelta(hours=args.hours)
+        store.db.collection(store.TOKENS_COLLECTION).document(
+            pair["access_token_hash"]
+        ).update({"expire_at": expire_at})
+
+    print(f"client_id:     {client['client_id']}")
+    print(f"expires in:    {args.hours} hour(s)")
+    print("access token (shown once, never logged):")
+    print(pair["access_token"])
+    print()
+    print("Use it with MCP Inspector or curl:")
+    print('  -H "Authorization: Bearer <token>"')
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

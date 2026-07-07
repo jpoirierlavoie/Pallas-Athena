@@ -15,7 +15,13 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import clear_tombstones, delete_sync_state
+from dav.sync import (
+    bump_ctag,
+    clear_tombstones,
+    delete_sync_state,
+    record_tombstone,
+    remove_tombstone,
+)
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from models.time_entry import (
     get_time_summary,
@@ -465,10 +471,61 @@ def dossier_edit(dossier_id: str) -> str:
     return render_template("dossiers/form.html", **ctx)
 
 
+_ACTIVE_DOSSIER_STATUSES = ("actif", "en_attente")
+
+
+def _sync_dossier_dav_visibility(
+    dossier_id: str, old_status: str, new_status: str
+) -> None:
+    """Drain or restore a dossier's DAV collection on a status transition.
+
+    A dossier's ``/dav/dossier-{id}/`` collection is advertised to DavX5 only
+    while the dossier is ``actif``/``en_attente``. When it is closed or
+    archived the collection leaves discovery; if DavX5 still holds the
+    dossier's tasks/notes when that happens, its sync errors (the stale
+    per-collection worker hits a collection that is gone while local rows still
+    reference it).
+
+    To make the teardown clean we record a tombstone for every task and note
+    and bump the collection CTag: DavX5's next sync then reports them all as
+    deleted and drops its local copies BEFORE the collection disappears.
+    Reopening a dossier removes those tombstones (and bumps the CTag) so the
+    items sync back.
+
+    No task/note documents are touched — tombstones live in ``dav_sync`` and
+    are DAV markers only. The underlying records stay in Firestore and in the
+    web UI regardless of the dossier's status.
+    """
+    was_active = old_status in _ACTIVE_DOSSIER_STATUSES
+    is_active = new_status in _ACTIVE_DOSSIER_STATUSES
+    if was_active == is_active:
+        return  # Visibility unchanged — nothing to drain or restore.
+
+    from models.note import list_notes
+
+    sync_name = f"dossier:{dossier_id}"
+    resource_ids = [t["id"] for t in list_tasks(dossier_id=dossier_id)]
+    resource_ids += [n["id"] for n in list_notes(dossier_id=dossier_id)]
+
+    if is_active:
+        # Reopened: resources re-enter the collection — drop stale tombstones
+        # so one sync REPORT never reports an id as both live and deleted.
+        for rid in resource_ids:
+            remove_tombstone(sync_name, rid)
+    else:
+        # Closed/archived: tombstone every resource so DavX5 drains cleanly.
+        for rid in resource_ids:
+            record_tombstone(sync_name, rid)
+    bump_ctag(sync_name)
+
+
 @dossiers_bp.route("/<dossier_id>", methods=["POST"])
 @login_required
 def dossier_update(dossier_id: str) -> str:
     """Handle edit form submission."""
+    existing = get_dossier(dossier_id)
+    old_status = existing.get("status", "") if existing else ""
+
     data = _form_data()
     dossier, errors = update_dossier(dossier_id, data)
 
@@ -481,6 +538,12 @@ def dossier_update(dossier_id: str) -> str:
             suggested_file_number=data.get("file_number", ""),
         )
         return render_template("dossiers/form.html", **ctx)
+
+    # A status change to/from closed/archived changes the dossier's DAV
+    # collection visibility — drain or restore it so DavX5 syncs cleanly.
+    _sync_dossier_dav_visibility(
+        dossier_id, old_status, dossier.get("status", "")
+    )
 
     if _is_htmx():
         resp = redirect(

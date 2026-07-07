@@ -156,6 +156,15 @@ def create_app() -> Flask:
     csrf.exempt(rfc5545_bp)
     csrf.exempt(dossier_dav_bp)
 
+    # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
+    from mcp import mcp_bp, register_mcp
+    register_mcp(app)
+    # /mcp uses Bearer tokens, never a browser session. The machine-facing
+    # OAuth views (/oauth/register, /oauth/token, /oauth/revoke) are
+    # exempted individually in mcp/oauth.py; the /oauth/authorize POST —
+    # the one browser-origin form in the flow — keeps CSRF enforcement.
+    csrf.exempt(mcp_bp)
+
     # ── Context processor (Firebase config for all templates) ──────────
     @app.context_processor
     def inject_firebase_config() -> dict[str, str]:

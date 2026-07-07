@@ -16,7 +16,7 @@ All structured logs go through `athena/utils/logging_setup.py`, which:
 |---|---|---|
 | `request_id` | string | `X-Request-Id` header if present, else a fresh UUID4 hex |
 | `trace` | string | `projects/{FIREBASE_PROJECT_ID}/traces/{TRACE_ID}` parsed from `X-Cloud-Trace-Context` (omitted if header absent) |
-| `auth_context` | `"session"` \| `"dav_basic"` \| `"anonymous"` | derived from path + session presence |
+| `auth_context` | `"session"` \| `"dav_basic"` \| `"mcp_bearer"` \| `"anonymous"` | derived from path + session presence (`/mcp` → `mcp_bearer`) |
 | `route` | string | matched URL rule (e.g. `/dossiers/<id>/tab/<tab_name>`) — falls back to `request.path` for 404s |
 | `method` | string | HTTP method |
 | `is_htmx` | bool | `HX-Request` header presence |
@@ -104,6 +104,24 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 | `session_lookup_failure` | warning | `_derive_auth_context` raised while reading `session["user_id"]` (corrupted cookie payload, `SECRET_KEY` rotation mid-flight, etc.). Request is downgraded to `auth_context="anonymous"` for logging only — authorization is still enforced by `@login_required`. Fields: `reason` (exception class name), `path` (request path). |
 | `redirect_rejected` | warning | `safe_internal_redirect` rejected a `return_to` value (open-redirect guard). Fields: `reason` (`"not_internal_path"`, `"backslash_in_path"`, `"scheme_or_netloc_present"`). The rejected URL itself is **not** logged — it could be attacker-controlled. |
 
+### `log_mcp_event(event, outcome, *, client_id=None, tool=None, reason=None, **extra)` — logger `pallas.mcp`
+
+`outcome` ∈ `{"success", "failure", "refused"}` — `success` emits at INFO, `failure`/`refused` at WARNING. Optional fields (`client_id`, `tool`, `reason`) are omitted when `None`. `reason` is a short machine-stable string (`"invalid_token"`, `"code_reused"`, `"kill_switch"`) — **never** a token, authorization code, or PKCE verifier (also covered by `SENSITIVE_KEYS` redaction, but don't rely on it).
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `mcp_client_registered` | success | Dynamic Client Registration accepted (`client_id`) |
+| `mcp_consent` | success / refused | Consent screen decision (« Autoriser » / « Refuser ») |
+| `mcp_token_issued` | success | Token endpoint issued a pair; `grant` = `authorization_code` \| `refresh_token` |
+| `mcp_token_refused` | refused | Token endpoint rejection; `reason` = `code_unknown`, `code_reused`, `code_expired`, `client_mismatch`, `redirect_uri_mismatch`, `pkce_mismatch`, `refresh_unknown`, `refresh_replayed`, `refresh_expired`, `unsupported_grant_type` |
+| `mcp_token_revoked` | success | RFC 7009 revocation of a single access token |
+| `mcp_family_revoked` | success | Whole token family revoked (code replay, refresh replay, revocation of a refresh token); `revoked_count` |
+| `mcp_auth_failure` | refused | Bearer validation failed on `/mcp`; `reason` = `missing_token` (OAuth discovery path — expected), `invalid_token`, `oversized_token`, `insufficient_scope`, `resource_mismatch`, `origin_forbidden` |
+| `mcp_brake_engaged` | refused | Per-IP invalid-token brake returned 429 |
+| `mcp_initialize` | success | MCP `initialize` handled; sanitized `client_name`/`client_version`, `protocol_version` |
+| `mcp_tool_call` | success / failure | Tool executed; fields: `tool`, `duration_ms`, `dossier_id` (when the call carries one) |
+| `mcp_disabled_hit` | refused | Kill switch (`MCP_ENABLED=false`) returned 404 on a Phase-I route |
+
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
 Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log. The traceback text is PII-scrubbed by `RedactionFilter` before emission (see "PII redaction policy" above for the Error Reporting grouping trade-off).
@@ -147,6 +165,8 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `dav.*` | Application work inside a DAV handler | `dav.parse_sync_token`, `dav.serialize_objects`, `dav.add_tombstones`, `dav.build_multistatus` |
 | `firestore.*` | Firestore reads/writes wrapped via `firestore_span` | `firestore.get`, `firestore.query`, `firestore.set` |
 | `auth.*` | Reserved — wrap auth verification helpers as needed | (not yet instrumented) |
+| `mcp.request` | MCP JSON-RPC dispatch (one per POST /mcp) | `mcp.request` with `method` attribute |
+| `mcp.tool.*` | One span per tool execution | `mcp.tool.get_agenda`, `mcp.tool.list_dossiers` |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |
 
 ### Standard attributes
@@ -170,6 +190,8 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `dav.body_size` | int | manual | Inbound iCalendar / vCard body length on PUT |
 | `dav.conditional` | bool | manual | Whether the request used `If-Match` / `If-None-Match` |
 | `dav.response_status` | int | manual | HTTP status (only set on outcomes worth highlighting) |
+| `method` | string | manual (`mcp.request`) | JSON-RPC method (`initialize`, `tools/call`, …) |
+| `dossier_id` | string | manual (`mcp.tool.*`) | Set when the tool call carries a `dossier_id` argument — UUIDs only, never names/emails/token material |
 | `db.system` | string | `firestore_span` | Always `firestore` |
 | `db.collection` | string | `firestore_span` | Firestore collection name |
 | `db.document_id` | string | `firestore_span` | Firestore doc ID (omitted for queries) |

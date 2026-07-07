@@ -26,14 +26,19 @@ def login_required(f: Callable[..., Any]) -> Callable[..., Any]:
         user_id = session.get("user_id")
         expires_at = session.get("expires_at")
 
+        # Preserve the query string so parameterized deep links (filtered
+        # lists, /oauth/authorize?client_id=...) survive the login
+        # round-trip; _safe_next re-validates the value on the way back.
+        return_to = request.full_path if request.query_string else request.path
+
         if not user_id or not expires_at:
             session.clear()
-            return redirect(url_for("auth.login", next=request.path))
+            return redirect(url_for("auth.login", next=return_to))
 
         # Check expiry
         if datetime.now(timezone.utc) >= expires_at:
             session.clear()
-            return redirect(url_for("auth.login", next=request.path))
+            return redirect(url_for("auth.login", next=return_to))
 
         return f(*args, **kwargs)
 

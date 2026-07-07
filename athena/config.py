@@ -85,6 +85,15 @@ class Config:
     # Rate limiting
     RATE_LIMIT_LOGIN: str = os.environ.get("RATE_LIMIT_LOGIN", "5 per minute")
 
+    # MCP connector (Phase I) — kill switch + canonical origin.
+    # MCP_CANONICAL_ORIGIN is the OAuth issuer and the base of the RFC 8707
+    # resource identifier; it must never be derived from request.host
+    # (Host-header trust). Override locally for MCP Inspector testing.
+    MCP_ENABLED: bool = os.environ.get("MCP_ENABLED", "true").lower() == "true"
+    MCP_CANONICAL_ORIGIN: str = os.environ.get(
+        "MCP_CANONICAL_ORIGIN", "https://athena.poirierlavoie.ca"
+    ).rstrip("/")
+
     # Request size limits
     MAX_CONTENT_LENGTH: int = 25 * 1024 * 1024  # 25 MB (document uploads)
 

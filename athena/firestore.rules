@@ -10,6 +10,10 @@ service cloud.firestore {
     // on `request.auth != null` is reachable by arbitrary internet users.
     // The previous /users/** and ref_* grants served no client and only
     // widened the attack surface.
+    //
+    // Phase I (MCP): the OAuth collections (oauth_clients, oauth_codes,
+    // oauth_tokens) hold credential hashes and are likewise Admin-SDK-only —
+    // they are intentionally covered by this same deny-all.
     match /{document=**} {
       allow read, write: if false;
     }

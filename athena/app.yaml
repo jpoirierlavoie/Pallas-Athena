@@ -30,6 +30,10 @@ env_variables:
   FIRM_NAME: "Me Jason Poirier Lavoie"
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   REQUIRE_MFA: "true"
+  # MCP connector (Phase I) kill switch — set "false" to 404 every
+  # /mcp + /oauth/* route. MCP_CANONICAL_ORIGIN defaults to
+  # https://athena.poirierlavoie.ca in config.py.
+  MCP_ENABLED: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
   # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH) are pulled from

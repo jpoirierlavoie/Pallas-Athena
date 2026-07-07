@@ -104,6 +104,7 @@ def clear_context() -> None:
 # ── Auth context derivation ─────────────────────────────────────────────
 
 _DAV_PREFIX = "/dav/"
+_MCP_PATH = "/mcp"
 _ANON_PREFIXES: tuple[str, ...] = (
     "/auth/",
     "/static/",
@@ -112,7 +113,7 @@ _ANON_PREFIXES: tuple[str, ...] = (
 
 
 def _derive_auth_context(path: str) -> str:
-    """Classify the request as ``session`` / ``dav_basic`` / ``anonymous``.
+    """Classify the request as ``session`` / ``dav_basic`` / ``mcp_bearer`` / ``anonymous``.
 
     The classification is based on the request path and (for non-public
     paths) the presence of a Firebase session.  We never include the
@@ -121,6 +122,8 @@ def _derive_auth_context(path: str) -> str:
     """
     if path.startswith(_DAV_PREFIX):
         return "dav_basic"
+    if path == _MCP_PATH or path.startswith(_MCP_PATH + "/"):
+        return "mcp_bearer"
     for prefix in _ANON_PREFIXES:
         if path.startswith(prefix):
             return "anonymous"
@@ -431,6 +434,7 @@ _PALLAS_DOSSIER = logging.getLogger("pallas.dossier")
 _PALLAS_DAV = logging.getLogger("pallas.dav")
 _PALLAS_SECURITY = logging.getLogger("pallas.security")
 _PALLAS_UNEXPECTED = logging.getLogger("pallas.unexpected")
+_PALLAS_MCP = logging.getLogger("pallas.mcp")
 
 
 AuthEvent = Literal[
@@ -470,6 +474,20 @@ SecurityEvent = Literal[
     "redirect_rejected",
 ]
 SecuritySeverity = Literal["warning", "error", "critical"]
+McpEvent = Literal[
+    "mcp_client_registered",
+    "mcp_consent",
+    "mcp_token_issued",
+    "mcp_token_refused",
+    "mcp_token_revoked",
+    "mcp_family_revoked",
+    "mcp_auth_failure",
+    "mcp_brake_engaged",
+    "mcp_initialize",
+    "mcp_tool_call",
+    "mcp_disabled_hit",
+]
+McpOutcome = Literal["success", "failure", "refused"]
 
 
 def _emit(
@@ -573,6 +591,34 @@ def log_security_event(
     _emit(_PALLAS_SECURITY, level_map[severity], event, fields)
 
 
+def log_mcp_event(
+    event: McpEvent,
+    outcome: McpOutcome,
+    *,
+    client_id: Optional[str] = None,
+    tool: Optional[str] = None,
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit an MCP connector event (OAuth, bearer auth, tool calls).
+
+    Failures and refusals default to ``WARNING``, successes to ``INFO``.
+    ``reason`` carries a short machine-stable string ("invalid_grant",
+    "kill_switch", "invalid_token") — never a token, code, or verifier.
+    Only non-``None`` optional fields are included so log-based metrics
+    filtering on, e.g., ``tool`` don't pick up structurally-empty records.
+    """
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **extra}
+    if client_id is not None:
+        fields["client_id"] = client_id
+    if tool is not None:
+        fields["tool"] = tool
+    if reason is not None:
+        fields["reason"] = reason
+    level = logging.INFO if outcome == "success" else logging.WARNING
+    _emit(_PALLAS_MCP, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -610,6 +656,7 @@ __all__: Iterable[str] = (
     "log_auth_event",
     "log_dav_operation",
     "log_dossier_event",
+    "log_mcp_event",
     "log_security_event",
     "log_unexpected",
     "sanitize_log_value",
