@@ -15,7 +15,20 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _load_env() -> None:
+    """Load the repo-root .env — config.py resolves required env vars at
+    import time, and ``python -m scripts.X`` doesn't go through Flask's
+    dotenv loading."""
+    try:
+        from dotenv import find_dotenv, load_dotenv
+
+        load_dotenv(find_dotenv(usecwd=True))
+    except ImportError:
+        pass
+
+
 def main() -> int:
+    _load_env()
     if os.environ.get("ENV") == "production":
         print("REFUSED: mint_dev_token must never run with ENV=production.")
         return 1

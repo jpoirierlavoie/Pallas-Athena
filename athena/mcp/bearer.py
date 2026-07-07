@@ -25,6 +25,7 @@ import hmac
 import secrets
 import threading
 import time
+from datetime import timezone
 from typing import Callable, Optional
 
 from flask import Response, current_app, jsonify, request
@@ -242,6 +243,8 @@ def mcp_auth_required(f: Callable) -> Callable:
             return _unauthorized("invalid_token")
 
         expire_at = doc.get("expire_at")
+        if expire_at.tzinfo is None:
+            expire_at = expire_at.replace(tzinfo=timezone.utc)
         _record_success(ip, token, expire_at.timestamp())
         # At most one write per success-cache window, not one per request.
         store.stamp_token_last_used(token_hash)

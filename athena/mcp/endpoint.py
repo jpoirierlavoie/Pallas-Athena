@@ -61,6 +61,20 @@ def _protocol_version() -> tuple[Optional[str], Optional[Response]]:
     return None, resp
 
 
+@mcp_bp.route("/mcp", methods=["GET", "DELETE"])
+def mcp_method_not_allowed() -> Response:
+    """No SSE stream (GET), no sessions to delete (DELETE) — §9.1.
+
+    Registered explicitly (rather than relying on Flask's automatic 405)
+    so the blueprint's kill-switch before_request also covers these
+    methods with a 404 when MCP_ENABLED is off.
+    """
+    resp = jsonify({"error": "method_not_allowed"})
+    resp.status_code = 405
+    resp.headers["Allow"] = "POST"
+    return resp
+
+
 @mcp_bp.route("/mcp", methods=["POST"])
 @limiter.limit("240 per minute")
 @mcp_auth_required

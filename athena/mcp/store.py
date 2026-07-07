@@ -241,38 +241,83 @@ def get_token(token_hash: str) -> Optional[dict]:
     return snap.to_dict() if snap.exists else None
 
 
-def claim_refresh_for_rotation(token_hash: str) -> bool:
-    """Atomically flip a refresh token to revoked for rotation.
+def rotate_refresh_token(token_hash: str) -> tuple[Optional[dict], str]:
+    """Atomically rotate a refresh token in ONE Firestore transaction:
+    revoke the presented token (stamping ``rotated_to``) and persist its
+    successor access+refresh pair together.
 
-    Returns True when this call performed the not-revoked → revoked
-    transition; False when the token was missing or already revoked
-    (concurrent rotation or replay — caller revokes the family).
+    Atomicity matters twice: a transient failure can never burn the old
+    token without persisting the successor (the client's retry still
+    works), and a concurrent replay-loser's ``revoke_family`` scan can
+    never run between the claim and the successor write — they commit at
+    the same instant, so the scan always sees the fresh pair.
+
+    Returns ``(pair, "")`` on success (same shape as
+    :func:`create_token_pair`), or ``(None, reason)`` with reason
+    ``"not_found"`` / ``"replayed"`` (already revoked — caller revokes
+    the family).
     """
-    ref = db.collection(TOKENS_COLLECTION).document(token_hash)
+    old_ref = db.collection(TOKENS_COLLECTION).document(token_hash)
+    now = _now()
+    # Generated outside the closure so transaction retries reuse them.
+    access_token = secrets.token_urlsafe(32)
+    refresh_token = secrets.token_urlsafe(32)
+    access_hash = sha256_hex(access_token)
+    refresh_hash = sha256_hex(refresh_token)
     transaction = db.transaction()
 
     @firestore.transactional
-    def _txn(txn: firestore.Transaction) -> bool:
-        snap = ref.get(transaction=txn)
+    def _txn(txn: firestore.Transaction) -> tuple[Optional[dict], str]:
+        snap = old_ref.get(transaction=txn)
         if not snap.exists:
-            return False
+            return None, "not_found"
         doc = snap.to_dict() or {}
+        if doc.get("token_type") != "refresh":
+            return None, "not_found"
         if doc.get("revoked"):
-            return False
-        txn.update(ref, {"revoked": True, "updated_at": _now()})
-        return True
+            return None, "replayed"
+        base = {
+            "client_id": doc.get("client_id"),
+            "scope": doc.get("scope"),
+            "resource": doc.get("resource"),
+            "family_id": doc.get("family_id"),
+            "revoked": False,
+            "rotated_to": None,
+            "last_used_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        txn.update(
+            old_ref,
+            {"revoked": True, "rotated_to": refresh_hash, "updated_at": now},
+        )
+        txn.set(
+            db.collection(TOKENS_COLLECTION).document(access_hash),
+            {
+                **base,
+                "token_type": "access",
+                "expire_at": now + timedelta(seconds=ACCESS_TOKEN_TTL),
+            },
+        )
+        txn.set(
+            db.collection(TOKENS_COLLECTION).document(refresh_hash),
+            {
+                **base,
+                "token_type": "refresh",
+                "expire_at": now + timedelta(seconds=REFRESH_TOKEN_TTL),
+            },
+        )
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "access_token_hash": access_hash,
+            "refresh_token_hash": refresh_hash,
+            "family_id": doc.get("family_id"),
+            "scope": doc.get("scope"),
+            "expires_in": ACCESS_TOKEN_TTL,
+        }, ""
 
     return _txn(transaction)
-
-
-def set_rotated_to(token_hash: str, successor_hash: str) -> None:
-    """Record the successor of a rotated refresh token (audit trail)."""
-    try:
-        db.collection(TOKENS_COLLECTION).document(token_hash).update(
-            {"rotated_to": successor_hash, "updated_at": _now()}
-        )
-    except Exception as exc:
-        logger.warning("set_rotated_to failed: %s", type(exc).__name__)
 
 
 def revoke_token_hash(token_hash: str) -> bool:
@@ -289,19 +334,29 @@ def revoke_token_hash(token_hash: str) -> bool:
 
 
 def revoke_family(family_id: str) -> int:
-    """Revoke every token in a family (OAuth 2.1 rotation replay defense)."""
+    """Revoke every token in a family (OAuth 2.1 rotation replay defense).
+
+    Re-scans until a pass revokes nothing (max 3): the query snapshot
+    cannot see a pair committed mid-scan by a concurrent auth-code
+    exchange, so a second pass sweeps up stragglers.
+    """
     if not family_id:
         return 0
     revoked = 0
     query = db.collection(TOKENS_COLLECTION).where(
         filter=firestore.FieldFilter("family_id", "==", family_id)
     )
-    now = _now()
-    for snap in query.stream():
-        doc = snap.to_dict() or {}
-        if not doc.get("revoked"):
-            snap.reference.update({"revoked": True, "updated_at": now})
-            revoked += 1
+    for _ in range(3):
+        pass_revoked = 0
+        now = _now()
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if not doc.get("revoked"):
+                snap.reference.update({"revoked": True, "updated_at": now})
+                pass_revoked += 1
+        revoked += pass_revoked
+        if pass_revoked == 0:
+            break
     return revoked
 
 

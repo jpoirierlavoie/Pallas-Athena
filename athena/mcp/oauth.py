@@ -59,7 +59,13 @@ def redirect_uri_allowed(uri: str) -> bool:
     if uri in ALLOWED_REDIRECT_URIS:
         return True
     if current_app.config.get("ENV") != "production":
+        # Backslashes and userinfo can make a WHATWG-parsing browser land
+        # on a different host than urlparse's hostname — reject outright.
+        if "\\" in uri:
+            return False
         parsed = urlparse(uri)
+        if parsed.username or parsed.password:
+            return False
         if parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"):
             return True
     return False
@@ -271,13 +277,19 @@ def _validate_authorize_request(source: dict) -> dict:
     }
 
 
+def _append_query(uri: str, params: dict) -> str:
+    """RFC 6749 §4.1.2: keep any query the redirect URI already carries."""
+    separator = "&" if urlparse(uri).query else "?"
+    return f"{uri}{separator}{urlencode(params)}"
+
+
 def _redirect_with_error(redirect_uri: str, exc: _RedirectError, state: str) -> Response:
     params = {"error": exc.error}
     if exc.description:
         params["error_description"] = exc.description
     if state:
         params["state"] = state
-    return redirect(f"{redirect_uri}?{urlencode(params)}", code=302)
+    return redirect(_append_query(redirect_uri, params), code=302)
 
 
 def _render_error_page(message_fr: str) -> tuple[str, int]:
@@ -337,7 +349,7 @@ def authorize_decision() -> Any:
     query = {"code": code}
     if params["state"]:
         query["state"] = params["state"]
-    return redirect(f"{params['redirect_uri']}?{urlencode(query)}", code=302)
+    return redirect(_append_query(params["redirect_uri"], query), code=302)
 
 
 # ── Token endpoint ──────────────────────────────────────────────────────
@@ -501,10 +513,12 @@ def _grant_refresh_token() -> tuple[Response, int] | Response:
     if store.is_expired(doc):
         return _refused("refresh_expired", client_id)
 
-    # Rotation: atomically claim (revoke) the presented token, then issue
-    # the successor pair in the same family. Losing a race means a
-    # concurrent rotation/replay — kill the family.
-    if not store.claim_refresh_for_rotation(token_hash):
+    # Rotation is ONE transaction (revoke old + persist successor pair):
+    # a transient failure never bricks the family, and a replay-loser's
+    # revoke_family scan always sees the successor. Losing the race means
+    # a concurrent rotation/replay — kill the family.
+    pair, rotate_error = store.rotate_refresh_token(token_hash)
+    if pair is None:
         revoked = store.revoke_family(doc.get("family_id", ""))
         log_mcp_event(
             "mcp_family_revoked",
@@ -513,15 +527,11 @@ def _grant_refresh_token() -> tuple[Response, int] | Response:
             reason="refresh_replayed",
             revoked_count=revoked,
         )
-        return _refused("refresh_replayed", client_id)
+        return _refused(
+            "refresh_replayed" if rotate_error == "replayed" else "refresh_unknown",
+            client_id,
+        )
 
-    pair = store.create_token_pair(
-        client_id=client_id,
-        scope=doc.get("scope", SCOPE_READ),
-        resource=doc.get("resource"),
-        family_id=doc.get("family_id"),
-    )
-    store.set_rotated_to(token_hash, pair["refresh_token_hash"])
     store.touch_client(client_id)
     log_mcp_event(
         "mcp_token_issued", "success", client_id=client_id, grant="refresh_token"
@@ -559,6 +569,9 @@ def revoke() -> tuple[Response, int] | Response:
                     reason="revocation_request",
                 )
     except Exception:
-        # RFC 7009: the response never discloses whether the token existed.
+        # RFC 7009 §2.2.1: a 503 tells the client the token may still
+        # exist — never report a failed revocation as success. (The 200
+        # below stays reserved for hit/miss, which must not be an oracle.)
         log_unexpected("mcp revocation failure")
+        return _token_error("temporarily_unavailable", 503)
     return jsonify({})

@@ -157,16 +157,19 @@ class FakeStore:
         doc = self.tokens.get(token_hash)
         return dict(doc) if doc else None
 
-    def claim_refresh_for_rotation(self, token_hash):
+    def rotate_refresh_token(self, token_hash):
         doc = self.tokens.get(token_hash)
-        if doc is None or doc["revoked"]:
-            return False
+        if doc is None or doc["token_type"] != "refresh":
+            return None, "not_found"
+        if doc["revoked"]:
+            return None, "replayed"
         doc["revoked"] = True
-        return True
-
-    def set_rotated_to(self, token_hash, successor_hash):
-        if token_hash in self.tokens:
-            self.tokens[token_hash]["rotated_to"] = successor_hash
+        pair = self.create_token_pair(
+            doc["client_id"], doc["scope"], doc["resource"],
+            family_id=doc["family_id"],
+        )
+        doc["rotated_to"] = pair["refresh_token_hash"]
+        return pair, ""
 
     def revoke_token_hash(self, token_hash):
         doc = self.tokens.get(token_hash)
@@ -196,8 +199,7 @@ _PATCHED_FUNCS = (
     "consume_auth_code",
     "create_token_pair",
     "get_token",
-    "claim_refresh_for_rotation",
-    "set_rotated_to",
+    "rotate_refresh_token",
     "revoke_token_hash",
     "revoke_family",
     "stamp_token_last_used",
@@ -610,6 +612,15 @@ def test_token_missing_fields_invalid_request(client):
 
 
 # ── Revocation ──────────────────────────────────────────────────────────
+
+def test_revoke_store_failure_returns_503_not_200(client, fake, monkeypatch):
+    def boom(token_hash):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(store, "get_token", boom)
+    resp = client.post("/oauth/revoke", data={"token": "whatever"})
+    assert resp.status_code == 503
+
 
 def test_revoke_refresh_revokes_family_and_unknown_token_is_200(client, fake):
     client_doc = _register_client(fake)

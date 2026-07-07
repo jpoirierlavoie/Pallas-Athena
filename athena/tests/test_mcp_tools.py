@@ -350,7 +350,25 @@ def test_list_hearings_dossier_filter(monkeypatch):
     )
     assert [h["id"] for h in payload["items"]] == ["h2"]
     assert captured["from"] == datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
-    assert captured["to"] == datetime(2026, 7, 31, 23, 59, 59, tzinfo=UTC)
+    # Widened fetch window (+30 h past date_to midnight UTC) so Montreal
+    # evening hearings on date_to are not clipped.
+    assert captured["to"] == datetime(2026, 8, 1, 6, 0, tzinfo=UTC)
+
+
+def test_list_hearings_montreal_evening_boundaries(monkeypatch):
+    # 22:00 EDT on date_to = 02:00 UTC the next day → must be INCLUDED;
+    # 21:00 EDT the evening BEFORE date_from (01:00 UTC on date_from) →
+    # must be EXCLUDED.
+    included = {"id": "in", "all_day": False,
+                "start_datetime": datetime(2026, 7, 9, 2, 0, tzinfo=UTC)}
+    excluded = {"id": "out", "all_day": False,
+                "start_datetime": datetime(2026, 7, 1, 1, 0, tzinfo=UTC)}
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
+                        lambda a, b, limit=200: [included, excluded])
+    payload = handlers.list_hearings(
+        {"date_from": "2026-07-01", "date_to": "2026-07-08"}
+    )
+    assert [h["id"] for h in payload["items"]] == ["in"]
 
 
 def test_list_hearings_all_day_uses_date_only(monkeypatch):
@@ -463,10 +481,19 @@ def test_billing_snapshot_global(monkeypatch):
     assert payload["outstanding_display"] == f"3{NBSP}000,00{NBSP}$"
 
 
+def test_billing_snapshot_unknown_dossier_is_found_false(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    payload = handlers.get_billing_snapshot({"dossier_id": "missing"})
+    assert payload["found"] is False
+    assert "total_invoiced_cents" not in payload
+
+
 def test_billing_snapshot_dossier_caps_rows_at_50(monkeypatch):
     entries = [{"id": f"e{i}", "date": datetime(2026, 6, 1, tzinfo=UTC),
                 "description": "Travail", "hours": 1.0, "rate": 25000,
                 "amount": 25000} for i in range(60)]
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": i, "title": "T"})
     monkeypatch.setattr(handlers.time_entry_model, "get_time_summary",
                         lambda d: {"total_hours": 60.0, "total_billable_amount": 0,
                                    "unbilled_hours": 60.0, "unbilled_amount": 0})
@@ -512,6 +539,52 @@ def test_list_protocol_steps_derives_overdue_without_writes(monkeypatch):
     steps = payload["protocols"][0]["steps"]
     assert [s["is_overdue"] for s in steps] == [True, False, False]
     assert payload["has_active_protocol"] is True
+
+
+def test_step_and_task_due_today_are_not_overdue(monkeypatch):
+    today_midnight = datetime.combine(
+        datetime.now(UTC).date(), datetime.min.time(), tzinfo=UTC
+    )
+    protocol = {"id": "p1", "status": "actif",
+                "steps": [{"id": "s1", "order": 1, "title": "Dépôt",
+                           "status": "à_venir", "deadline_date": today_midnight}]}
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
+                        lambda d, active_only=True: protocol)
+    payload = handlers.list_protocol_steps({"dossier_id": "d1"})
+    assert payload["protocols"][0]["steps"][0]["is_overdue"] is False
+
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
+                        lambda a, b, limit=100: [])
+    monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
+                        lambda cutoff, limit=50: [_task(due=today_midnight)])
+    monkeypatch.setattr(handlers.protocol_model, "list_urgent_steps",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.dossier_model, "list_prescription_alerts",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 0)
+    monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
+                        lambda: {"hours": 0.0, "amount": 0})
+    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
+    agenda = handlers.get_agenda({})
+    assert agenda["urgent_tasks"][0]["is_overdue"] is False
+
+
+def test_list_documents_folder_filter_survives_query(monkeypatch):
+    docs = [
+        {"id": "a", "folder_id": "f1", "display_name": "Contrat.pdf",
+         "file_type": "application/pdf", "file_size": 10, "version": 1},
+        {"id": "b", "folder_id": "f2", "display_name": "Contrat 2.pdf",
+         "file_type": "application/pdf", "file_size": 10, "version": 1},
+    ]
+    monkeypatch.setattr(handlers.document_model, "list_documents",
+                        lambda **kw: docs)
+    monkeypatch.setattr(handlers.folder_model, "get_folder_breadcrumb",
+                        lambda d, f: [{"id": "f1", "name": "Procédures"}])
+    payload = handlers.list_documents(
+        {"dossier_id": "d1", "folder_id": "f1", "query": "contrat"}
+    )
+    assert [d["id"] for d in payload["items"]] == ["a"]
+    assert payload["folder_path"] == "Procédures"
 
 
 def test_list_protocol_steps_history(monkeypatch):

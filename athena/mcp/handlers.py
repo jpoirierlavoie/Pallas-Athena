@@ -124,8 +124,12 @@ def _task_row(t: dict) -> dict:
 
 def _step_row(s: dict, now: datetime) -> dict:
     deadline = _as_utc(s.get("deadline_date"))
+    # Calendar-date comparison (spec §10.12): a step due TODAY is not
+    # overdue yet — deadline_date is a UTC calendar date.
     is_overdue = bool(
-        deadline and deadline < now and s.get("status") != "complété"
+        deadline
+        and deadline.astimezone(timezone.utc).date() < now.date()
+        and s.get("status") != "complété"
     )
     return {
         "id": s.get("id", ""),
@@ -184,7 +188,10 @@ def _prescription_row(d: dict, now: datetime) -> dict:
     days_remaining: Optional[int] = None
     last_action: Optional[str] = None
     if pdate:
-        days_remaining = max(0, (pdate.date() - now.date()).days)
+        # Countdown against the user's (Montreal) calendar date — UTC
+        # "today" runs ahead of the user's evening by up to 5 hours.
+        today = now.astimezone(MTL).date()
+        days_remaining = max(0, (pdate.date() - today).days)
         last_action = deadlines.prev_juridical_day(pdate.date()).isoformat()
     return {
         "dossier_id": d.get("id", ""),
@@ -212,8 +219,11 @@ def get_agenda(args: dict) -> dict:
     urgent_tasks = [
         {
             **_task_row(t),
+            # due_date is a UTC calendar date — due today is not overdue.
             "is_overdue": bool(
-                t.get("due_date") and _as_utc(t["due_date"]) < now
+                t.get("due_date")
+                and _as_utc(t["due_date"]).astimezone(timezone.utc).date()
+                < now.date()
             ),
         }
         for t in task_model.list_urgent_tasks(cutoff, limit=50)
@@ -244,8 +254,8 @@ def get_agenda(args: dict) -> dict:
 
     return {
         "window": {
-            "from": now.date().isoformat(),
-            "to": cutoff.date().isoformat(),
+            "from": now.astimezone(MTL).date().isoformat(),
+            "to": cutoff.astimezone(MTL).date().isoformat(),
             "days_ahead": days_ahead,
         },
         "hearings": hearings,
@@ -413,14 +423,29 @@ def list_hearings(args: dict) -> dict:
     if (date_to - date_from).days > 366:
         raise ToolArgumentError("The date span must be at most 366 days")
 
-    # UTC-midnight boundaries: correct for all-day events (stored midnight
-    # UTC) and inclusive of date_to's timed hearings.
+    # Fetch a widened UTC window, then filter per-hearing: all-day events
+    # live at midnight UTC (a UTC calendar date), while timed hearings are
+    # true instants the user reads in Montreal time — a 22h00 hearing on
+    # date_to is stored past midnight UTC and must not fall off the edge.
+    # +30h covers Montreal's worst-case UTC offset (EST, UTC-5).
     start_dt = datetime.combine(date_from, dtime.min, tzinfo=timezone.utc)
     end_dt = datetime.combine(date_to, dtime.min, tzinfo=timezone.utc) + timedelta(
-        days=1, seconds=-1
+        hours=30
     )
     rows = hearing_model.list_hearings_in_range(start_dt, end_dt, limit=_FETCH_CAP)
     window_full = len(rows) >= _FETCH_CAP
+
+    def _in_window(h: dict) -> bool:
+        start = _as_utc(h.get("start_datetime"))
+        if not isinstance(start, datetime):
+            return False
+        if h.get("all_day"):
+            local_date = start.astimezone(timezone.utc).date()
+        else:
+            local_date = start.astimezone(MTL).date()
+        return date_from <= local_date <= date_to
+
+    rows = [h for h in rows if _in_window(h)]
 
     dossier_id = args.get("dossier_id")
     if dossier_id:
@@ -493,6 +518,11 @@ def list_documents(args: dict) -> dict:
         # (_UNSET) means "no folder filter", while None means dossier root.
         kwargs["folder_id"] = folder_id
     docs = document_model.list_documents(**kwargs)
+    if folder_id and args.get("query"):
+        # The model skips the folder filter when a search term is present
+        # (search spans all folders) — re-apply it so folder_path stays
+        # truthful.
+        docs = [d for d in docs if d.get("folder_id") == folder_id]
 
     truncated = len(docs) > limit
     items = []
@@ -649,12 +679,18 @@ def get_billing_snapshot(args: dict) -> dict:
         )
         return payload
 
+    # Absence is data, not zeros: a bad dossier_id must not fabricate an
+    # all-zero billing picture.
+    if dossier_model.get_dossier(dossier_id) is None:
+        return {"found": False, "dossier_id": dossier_id}
+
     time_summary = time_entry_model.get_time_summary(dossier_id)
     expense_summary = expense_model.get_expense_summary(dossier_id)
     invoice_summary = invoice_model.get_invoice_summary(dossier_id)
 
     payload = {
         "scope": "dossier",
+        "found": True,
         "dossier_id": dossier_id,
         "total_hours": time_summary.get("total_hours", 0.0),
         "unbilled_hours": time_summary.get("unbilled_hours", 0.0),

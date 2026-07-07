@@ -133,6 +133,9 @@ def test_kill_switch_404(monkeypatch):
     c = app.test_client()
     resp = c.post("/mcp", data="{}", content_type="application/json", headers=AUTH)
     assert resp.status_code == 404
+    # The kill switch covers GET/DELETE too (explicit route, not Flask 405).
+    assert c.get("/mcp", headers=AUTH).status_code == 404
+    assert c.delete("/mcp", headers=AUTH).status_code == 404
     assert c.get("/.well-known/oauth-authorization-server").status_code == 404
 
 
