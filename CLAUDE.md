@@ -1565,7 +1565,8 @@ The Cloud Build service account (`firebase-adminsdk-fbsvc@athena-pallas.iam.gser
 
 The App Engine default service account (`athena-pallas@appspot.gserviceaccount.com`) needs:
 - `roles/logging.logWriter` (Cloud Logging) and `roles/cloudtrace.agent` (Cloud Trace)
-- Secret Manager accessor on the four application secrets
+- `roles/secretmanager.secretAccessor` on the four application secrets
+- `roles/iam.serviceAccountTokenCreator` **on itself** (member and resource are both `athena-pallas@appspot.gserviceaccount.com`) — required for the `iam.signBlob` self-impersonation that signs Firebase Storage URLs (`models/document.py`, `models/doc_template.py`). Without it, every document/gabarit upload and download **silently fails to produce a signed URL** on App Engine (local dev using a service-account JSON key signs locally and never hits this path, so the gap only surfaces in production).
 
 ### `app.yaml` (current, abridged)
 
