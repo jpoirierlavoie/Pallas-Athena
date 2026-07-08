@@ -32,8 +32,19 @@ reportlab==4.4.10
 # fixed in 12.2.0), and CVE-2026-40192 (FITS GZIP decompression bomb, fixed in 12.2.0).
 Pillow==12.2.0
 Markdown==3.10.2
-bleach==6.3.0
+# bleach is archived upstream; 6.4.0 is a security release clearing the
+# URI-scheme sanitization advisories (GHSA-gj48-438w-jh9v, GHSA-8rfp-98v4-mmr6)
+# and moving off the 6.3.0-only linkify email-DoS advisory (GHSA-g75f-g53v-794x).
+# Longer term, migrate note sanitization to nh3 (maintained successor) to exit
+# this recurring class of unpatched bleach alerts.
+bleach==6.4.0
 defusedxml==0.7.1
+# Transitive deps pinned explicitly for CVE hygiene (same rationale as Pillow):
+# both arrive via the google/firebase client stack. cryptography 48.0.1 ships a
+# patched bundled OpenSSL (GHSA-537c-gmf6-5ccf); msgpack 1.2.1 fixes an Unpacker
+# out-of-bounds read after a caught error (GHSA-6v7p-g79w-8964).
+cryptography==48.0.1
+msgpack==1.2.1
 # opentelemetry-instrumentation 0.48b0 imports pkg_resources at runtime,
 # which setuptools removed in 81+ — with a newer setuptools the OTel Flask
 # auto-instrumentation fails ("No module named 'pkg_resources'") and tracing
