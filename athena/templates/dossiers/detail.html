@@ -13,6 +13,13 @@
       Dossiers
     </a>
     <div class="flex items-center gap-2">
+      <button type="button"
+              hx-get="{{ url_for('doc_templates.generate_modal', dossier_id=dossier.id, locked=1) }}"
+              hx-target="#gabarit-modal"
+              hx-swap="innerHTML"
+              class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Générer depuis un gabarit
+      </button>
       <a href="{{ url_for('dossiers.dossier_edit', dossier_id=dossier.id) }}"
          class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Modifier
@@ -23,6 +30,9 @@
       </button>
     </div>
   </div>
+
+  {# ── Generation popup mount point (Phase H) ──────────────────── #}
+  <div id="gabarit-modal"></div>
 
   {# ── Header card ─────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">

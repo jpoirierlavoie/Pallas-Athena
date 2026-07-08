@@ -125,3 +125,44 @@ def test_baseline_security_headers_unchanged():
     )
     assert resp.headers["X-Frame-Options"] == "DENY"
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# ── Request size caps (Phase H: template upload exemption) ─────────────────
+#
+# The size guard is an app-level before_request keyed on the path, so it
+# fires even for unrouted paths — a 404 (not 413) response proves the
+# request passed the size check.
+
+_2MB = b"x" * (2 * 1024 * 1024)
+_11MB = b"x" * (11 * 1024 * 1024)
+
+
+def _post_size(path: str, body: bytes) -> int:
+    app = _make_app()
+    return app.test_client().post(path, data=body).status_code
+
+
+def test_template_create_allows_up_to_10mb():
+    assert _post_size("/gabarits/", _2MB) != 413
+
+
+def test_template_create_rejects_over_10mb():
+    assert _post_size("/gabarits/", _11MB) == 413
+
+
+def test_template_update_allows_up_to_10mb():
+    assert _post_size("/gabarits/abc-123", _2MB) != 413
+    assert _post_size("/gabarits/abc-123", _11MB) == 413
+
+
+def test_generation_post_stays_at_1mb():
+    assert _post_size("/gabarits/generer", _2MB) == 413
+
+
+def test_template_sub_routes_stay_at_1mb():
+    # /gabarits/<id>/delete and friends are not upload paths.
+    assert _post_size("/gabarits/abc-123/delete", _2MB) == 413
+
+
+def test_other_routes_still_capped_at_1mb():
+    assert _post_size("/api", _2MB) == 413

@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ template.name }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto px-4 py-6">
+
+  {# ── Back + actions ──────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <a href="{{ url_for('doc_templates.template_list') }}"
+       class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      Gabarits
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('doc_templates.template_edit', template_id=template.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Modifier
+      </a>
+      <button @click="$dispatch('open-confirm-delete-gabarit')"
+              class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50"
+              x-data>
+        Supprimer
+      </button>
+    </div>
+  </div>
+
+  {# ── Header card ─────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+    <div class="flex items-center gap-2 flex-wrap mb-1">
+      <h1 class="text-xl font-semibold text-gray-900">{{ template.name }}</h1>
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+        {{ category_labels.get(template.category, template.category) }}
+      </span>
+      <span class="text-xs text-gray-400">v{{ template.version }}</span>
+    </div>
+    {% if template.description %}
+    <p class="text-sm text-gray-600 mb-3">{{ template.description }}</p>
+    {% endif %}
+    <p class="text-xs text-gray-500 mb-4">
+      {{ template.original_filename }} ·
+      {{ '%.1f'|format(template.file_size / 1024) }} Ko
+      {% if template.updated_at %} · mis à jour le {{ (template.updated_at|to_mtl).strftime('%Y-%m-%d') }}{% endif %}
+    </p>
+    <div class="flex items-center gap-2 flex-wrap">
+      <button type="button"
+              hx-get="{{ url_for('doc_templates.generate_modal', template_id=template.id, fixed=1) }}"
+              hx-target="#gabarit-modal"
+              hx-swap="innerHTML"
+              class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Générer un document
+      </button>
+      <a href="{{ url_for('doc_templates.template_download', template_id=template.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Télécharger le gabarit
+      </a>
+    </div>
+  </div>
+
+  {# ── Split-run warnings ──────────────────────────────────────── #}
+  {% if template.validation_warnings %}
+  <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    <ul class="text-sm text-gray-700 space-y-1">
+      {% for w in template.validation_warnings %}
+      <li>{{ w }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Field inventory ─────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">
+      Champs ({{ template.placeholders|length }})
+    </h2>
+
+    {% if template.auto_fields %}
+    <p class="text-xs text-gray-500 mb-1">Remplis automatiquement</p>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      {% for name in template.auto_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if template.manual_fields %}
+    <p class="text-xs text-gray-500 mb-1">À saisir à la génération</p>
+    <div class="flex items-center gap-2 flex-wrap mb-4">
+      {% for name in template.manual_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if template.block_fields %}
+    <p class="text-xs text-gray-500 mb-1">Blocs (multi-paragraphes)</p>
+    <div class="flex items-center gap-2 flex-wrap">
+      {% for name in template.block_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700">{{ name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not template.placeholders %}
+    <p class="text-sm text-gray-500">Aucun champ détecté dans ce gabarit.</p>
+    {% endif %}
+  </div>
+
+  {# ── Generation popup mount point ───────────────────────────── #}
+  <div id="gabarit-modal"></div>
+
+</div>
+
+{# ── Delete confirmation dialog ────────────────────────────────── #}
+<div x-data="{ open: false }"
+     x-show="open"
+     @open-confirm-delete-gabarit.window="open = true"
+     @keydown.escape.window="open = false"
+     x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  <div @click.outside="open = false"
+       class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+    <div class="p-6">
+      <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce gabarit ?</h3>
+      <p class="text-sm text-gray-600 mb-6">
+        Le fichier du gabarit sera supprimé. Les documents déjà générés
+        dans les dossiers ne seront pas touchés.
+      </p>
+      <div class="flex gap-3 justify-end">
+        <button @click="open = false"
+                class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+          Annuler
+        </button>
+        <form method="post" action="{{ url_for('doc_templates.template_delete', template_id=template.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit"
+                  class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+            Supprimer
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

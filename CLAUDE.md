@@ -31,7 +31,7 @@ This document supersedes the old `SPEC.md` and phase-specific markdown files as 
 - **MCP connector (Phase I):** a hand-rolled, stateless **JSON-response-mode Streamable HTTP** MCP server at `POST /mcp` (no SSE, no sessions) plus an **embedded OAuth 2.1 authorization server** (`mcp/` package), exposing 14 read-only tools to Claude as a custom connector. **Zero new Python dependencies** — stdlib (`secrets`, `hashlib`, `base64`) + packages already pinned (Flask, flask-limiter, flask-wtf). Kill switch: `MCP_ENABLED` env var (default `"true"`; `false` → every `/mcp` + `/oauth/*` route 404s).
 - **Markdown:** `Markdown` + `bleach` libraries for rendering note content (rendered via Jinja `markdown` filter).
 - **PDF:** `reportlab` (pure Python — do NOT use `weasyprint`; it requires cairo/pango system libs unavailable on App Engine Standard).
-- **Word templates:** (proposed Phase H, not yet implemented) `docxtpl` + `python-docx`.
+- **Word templates (Phase H — gabarits):** user-managed `.docx` templates filled by a **stdlib-only engine** (`utils/docx_fill.py`: `zipfile` + `re` + `io` — direct string substitution on the XML zip entries, every other entry copied byte-identical). **`docxtpl`/`python-docx` are explicitly rejected** — their load/save round-trip rewrites enough of the OOXML package that Word refuses to open letterhead templates with multiple headers/footers, `titlePg` sections, and embedded fonts. Zero new Python dependencies.
 - **Hosting:** Google App Engine Standard, Python 3.13 runtime, F2 instance class.
 - **CDN / edge:** Cloudflare **Pro plan** (Full Strict SSL, Origin Certificate, Access Zero Trust for `/dav/*`, Argo Smart Routing, **Rocket Loader** — see the script-order rule above, **Early Hints** — `security.py` emits the `Link` preload headers Cloudflare converts to HTTP 103). The App Engine firewall accepts only Cloudflare IP ranges, so the edge is not bypassable (see Security Rules → Edge defense in depth).
 - **PWA:** manifest + service worker (`static/sw.js`) for offline fallback + stale-while-revalidate caching of `/static/vendor/` and `/static/icons/` assets (never authenticated HTML); Trusted Web Activity wrapper for Android (assetlinks.json served at `/.well-known/assetlinks.json`).
@@ -57,7 +57,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 ## Architecture Rules
 
 1. **SINGLE USER.** Exactly one authorized email (`AUTHORIZED_USER_EMAIL` env var). No multi-tenancy, no registration, no roles. Every endpoint that mutates state verifies the session via `@login_required` (Firebase Auth + server-side session). DAV endpoints use a separate HTTP Basic auth.
-2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, plus the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
+2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, plus the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
 3. **Bilingual code/UI split.** All user-facing text (labels, buttons, placeholders, errors, toasts, empty states) is in **French**. All code (variable names, function names, comments, docstrings) is in **English**.
 4. **Currency in integer cents.** `15000` means $150.00. Never use floats for money. Use `Decimal` only for tax computation intermediates, convert to int cents (with `ROUND_HALF_UP`) before storage.
 5. **Timestamps UTC.** Stored as UTC `datetime` with timezone info. Displayed in `America/Montreal` via the `to_mtl` Jinja filter (registered from `tz.py`).
@@ -83,7 +83,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
   - `Pragma: no-cache`
 - **CSRF** on every POST/PUT/DELETE via `flask-wtf` `CSRFProtect`. HTMX requests include the token via `hx-headers` on `<body>`. Failures are logged as `csrf_failure` security events and return 400.
 - **Rate limiting** on `/auth/login` (configurable via `RATE_LIMIT_LOGIN`, default `5 per minute`) via `flask-limiter` (in-memory store). The rate-limit key is `CF-Connecting-IP` (real client IP behind Cloudflare; falls back to the peer address) — only trustworthy because the firewall guarantees traffic transits Cloudflare.
-- **Request size limits:** 25 MB global cap (`MAX_CONTENT_LENGTH` in `config.py`); routes other than `/documents/upload` are capped at 1 MB and DAV/well-known paths at 5 MB by `_enforce_request_size` in `security.py`.
+- **Request size limits:** 25 MB global cap (`MAX_CONTENT_LENGTH` in `config.py`); routes other than `/documents/upload` are capped at 1 MB and DAV/well-known paths at 5 MB by `_enforce_request_size` in `security.py`. **Phase H exemption:** template upload/replace (`POST /gabarits/` and `POST /gabarits/<id>`) get 10 MB (`_is_template_upload_path`); the generation POST (`/gabarits/generer`) and every other gabarit sub-route stay at 1 MB.
 - **Secrets live in Google Cloud Secret Manager**, not in `app.yaml`: `flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`. `config.py` resolves them at startup when `ENV=production`; locally they come from `.env` env vars (`SECRET_KEY`, `FIREBASE_API_KEY`, `DAV_PASSWORD_HASH`, `CF_ORIGIN_SECRET`).
 - **Firebase Storage URLs:** always signed, 15-minute expiry. Never expose raw bucket URLs to the client. The signing path uses `iam.signBlob` via `google-auth` impersonation when running on App Engine.
 - **DAV authentication:** HTTP Basic Auth with bcrypt-hashed password (`DAV_PASSWORD_HASH`, from Secret Manager in prod). Username is the same as `AUTHORIZED_USER_EMAIL`. **Separate** from Firebase Auth.
@@ -99,7 +99,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 - **Phone MFA** required for the single authorized email when `REQUIRE_MFA=true` (default **true**, and set `"true"` in production `app.yaml`; the verifier in `auth.py` checks for `sign_in_second_factor` in the decoded token).
 - **Input sanitization** via `security.sanitize()` — strips HTML tags, enforces max lengths. Called from `_sanitize_data()` in every model.
 - **Open-redirect guard:** `security.safe_internal_redirect(target, fallback)` validates every `return_to` value (same-origin path only; blocks `//host`, schemes, backslash tricks). Rejections are logged without the URL.
-- **Do not log PII.** Enforced in code, not just by convention: all logging goes through `utils/logging_setup.py`, whose `RedactionFilter` drops sensitive keys, scrubs emails/phones/postal codes, and escapes control characters (log-injection defense, CWE-117) in messages, `json_fields`, and tracebacks; `utils/tracing_setup.py` applies the same scrubbing to exported spans. Use the typed helpers (`log_auth_event`, `log_security_event`, `log_dav_operation`, `log_dossier_event`, `log_mcp_event`, `log_unexpected`) instead of raw `logger.*` calls — the event vocabulary is documented in `athena/OBSERVABILITY.md`. When interpolating a user-controlled value (URL path segment, request field) into a log message, wrap it in `sanitize_log_value(...)`.
+- **Do not log PII.** Enforced in code, not just by convention: all logging goes through `utils/logging_setup.py`, whose `RedactionFilter` drops sensitive keys, scrubs emails/phones/postal codes, and escapes control characters (log-injection defense, CWE-117) in messages, `json_fields`, and tracebacks; `utils/tracing_setup.py` applies the same scrubbing to exported spans. Use the typed helpers (`log_auth_event`, `log_security_event`, `log_dav_operation`, `log_dossier_event`, `log_mcp_event`, `log_template_event`, `log_unexpected`) instead of raw `logger.*` calls — the event vocabulary is documented in `athena/OBSERVABILITY.md`. When interpolating a user-controlled value (URL path segment, request field) into a log message, wrap it in `sanitize_log_value(...)`.
 
 ---
 
@@ -162,6 +162,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── protocol.py             # Case protocols + steps subcollection (incl. CQ/CS templates)
 │   │   ├── document.py             # Document metadata (Firebase Storage files)
 │   │   ├── folder.py               # Document folders (nested, Firestore-only)
+│   │   ├── doc_template.py         # Gabarits .docx (Phase H): CRUD + Storage + placeholder extraction
 │   │   └── reference.py            # Read-only: ref_greffes, ref_juridictions
 │   │
 │   ├── routes/                     # Flask blueprints (web UI)
@@ -176,7 +177,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── tasks.py                # /taches/*
 │   │   ├── notes.py                # /notes/*
 │   │   ├── protocols.py            # /protocoles/*
-│   │   └── documents.py            # /documents/*  (independent of dossier URL; dossier_id passed as query/form arg)
+│   │   ├── documents.py            # /documents/*  (independent of dossier URL; dossier_id passed as query/form arg)
+│   │   └── doc_templates.py        # /gabarits/*  (Phase H: lifecycle + HTMX generation popup)
 │   │
 │   ├── dav/                        # DAV protocol endpoints
 │   │   ├── __init__.py             # Principal + calendar/addressbook home-set; root PROPFIND lists collections dynamically
@@ -203,6 +205,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── utils/                      # Utility modules
 │   │   ├── __init__.py
 │   │   ├── deadlines.py            # Quebec art. 83 C.p.c. judicial deadline calc
+│   │   ├── docx_fill.py            # Phase H: stdlib-only .docx placeholder fill engine (zip XML substitution)
+│   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
 │   │   ├── validators.py           # Phone (E.164), email, postal code normalization, address defaults
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
 │   │   ├── export_pdf.py           # reportlab-based PDF export
@@ -228,7 +232,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_security_headers.py
 │   │   ├── test_mcp_jsonrpc.py
 │   │   ├── test_mcp_oauth.py
-│   │   └── test_mcp_tools.py
+│   │   ├── test_mcp_tools.py
+│   │   ├── test_docx_fill.py
+│   │   └── test_template_fields.py
 │   │
 │   ├── templates/
 │   │   ├── base.html
@@ -250,6 +256,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── notes/                  # list, detail, form + _note_rows
 │   │   ├── protocols/              # list, detail, form + _protocol_rows
 │   │   ├── documents/              # list, detail, upload, edit + _browser, _document_rows, _folder_tree
+│   │   ├── gabarits/               # list, detail, form + _template_rows, _generate_modal, _generate_fields
 │   │   └── mcp/                    # consent.html (OAuth consent screen, French)
 │   │
 │   └── static/
@@ -699,6 +706,31 @@ Three top-level collections backing the embedded OAuth 2.1 authorization server.
 }
 ```
 
+### `doc_templates/{templateId}` — Document templates ("gabarits", Phase H)
+
+Top-level collection; standard common fields (`id`, `created_at`, `updated_at`, `etag`). Not DAV-exposed — no DAV UID, no CTag bumping. Template files live in **Storage** at `users/{userId}/templates/{templateId}/{filename}` (signed URLs, 15-min expiry) and are **not** `documents` records; generated outputs saved into a dossier ARE regular `documents` records (independent copies — deleting a gabarit never touches them). No composite index (small collection: single `order_by("name")`, category/search filtered client-side).
+
+```python
+{
+    "name": str,                       # ≤120 chars, required
+    "description": str,
+    "category": "procédure" | "correspondance" | "autre",
+    "filename": str,                   # secure_filename()d, .docx
+    "original_filename": str,
+    "file_size": int,                  # bytes (≤ 10 MB)
+    "storage_path": "users/{userId}/templates/{templateId}/{filename}",
+    "version": int,                    # starts at 1, +1 on each file replacement
+
+    # Extracted at upload / file replacement (utils/docx_fill + utils/template_fields)
+    "placeholders": list[str],         # distinct {{...}} names, document order
+    "auto_fields": list[str],          # resolvable from the field catalog
+    "manual_fields": list[str],        # scalar user inputs (known manual + unknown)
+    "block_fields": list[str],         # ALL-CAPS names → multi-paragraph textareas
+    "slots_required": list[str],       # ⊆ {"dossier","client","adverse","destinataire"}
+    "validation_warnings": list[str],  # French split-run warnings at last upload
+}
+```
+
 ### `ref_greffes/{greffeNumber}` — Quebec courthouse reference (top-level, read-only)
 
 Document ID is the 3-digit greffe number (string). Seeded from `scripts/seed_reference_data.py`.
@@ -934,6 +966,28 @@ All served through Cloudflare like every other route; **must not** be behind the
 
 The 14 read-only tools (`get_agenda`, `list_dossiers`, `get_dossier`, `list_tasks`, `list_hearings`, `list_notes`, `get_note`, `list_documents`, `list_parties`, `get_partie`, `get_billing_snapshot`, `list_protocol_steps`, `compute_judicial_deadline`, `parse_court_file_number`) live in `mcp/handlers.py` with schemas in `mcp/tools.py`. Conventions: money as `*_cents` + fr-CA `*_display`; date-only fields as `YYYY-MM-DD` (UTC calendar date); true timestamps as ISO-8601 America/Montreal; every list tool capped at 50 items with a `truncated` flag; no signed URLs or storage paths ever in tool output.
 
+### `doc_templates.py` — `/gabarits/*` (Phase H)
+
+All `@login_required`. Template upload/replace POSTs carry multipart `.docx` (10 MB cap — see Security Rules). The generation popup is an HTMX modal whose selection state is **server-owned**: slot changes re-render the field form; clicked search results carry their selection as `set_*` query params (which win over the `hx-include`-carried current state).
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/gabarits/` | GET | List (name, category badge, version, placeholder count, warnings badge); FAB "+"; empty state invites first upload |
+| `/gabarits/new` | GET | Upload form (multipart: file + name + description + category) |
+| `/gabarits/` | POST | Create → redirect to detail (which shows the extracted field inventory + split-run warnings) |
+| `/gabarits/<id>` | GET | Detail: metadata, auto/manual/block field chips, warnings, « Générer », « Télécharger le gabarit », « Modifier », « Supprimer » |
+| `/gabarits/<id>/edit` | GET | Edit form (metadata + optional replacement file) |
+| `/gabarits/<id>` | POST | Update (file replacement → re-validate, re-extract, version += 1, old Storage object deleted) |
+| `/gabarits/<id>/delete` | POST | Delete (Firestore doc + Storage object; generated documents untouched) |
+| `/gabarits/<id>/download` | GET | Redirect to signed URL (15 min) |
+| `/gabarits/dossier-search` | GET | HTMX dossier autocomplete (rows reload the modal with `set_dossier_id`) |
+| `/gabarits/partie-search` | GET | HTMX partie autocomplete (rows reload the field form with `set_destinataire_id`; optional `?role=`) |
+| `/gabarits/generer` | GET | Popup step 1 (modal partial): template select (or fixed via `?template_id=&fixed=1`), dossier picker (locked via `?locked=1`), prefills from `?dossier_id=` / `?partie_id=` (→ destinataire slot) |
+| `/gabarits/generer/champs` | GET | Popup step 2 (field-form partial): slot selects + every placeholder as editable input/textarea, prefilled via `resolve_values`, manual defaults applied |
+| `/gabarits/generer` | POST | Generate: fill → dossier present → save via `document.upload_document` (category from template; display_name `"{name} — {date}"`) + HTMX success partial; no dossier → direct `.docx` attachment (plain POST, `target="_blank"`) |
+
+**Entry points:** dossier detail header + Documents-tab toolbar (« Générer depuis un gabarit », dossier locked), partie detail header (« Générer un document », partie → destinataire), gabarit list rows/detail (« Générer »). Each host page carries a `<div id="gabarit-modal">` mount point.
+
 ### Top-level miscellaneous routes (defined in `main.py`)
 
 | Route | Purpose |
@@ -1070,6 +1124,17 @@ Folder functions:
 - `get_folder_breadcrumb(dossier_id, folder_id) -> list[{id, name}]`
 - `get_folder_tree(dossier_id) -> nested list` — for move modal
 
+### `models/doc_template.py` (Phase H — gabarits)
+
+- `create_template(file_stream, filename, file_size, metadata, user_id) -> tuple[Optional[dict], list[str]]` — validates size (≤10 MB) / `.docx` extension / archive structure (`validate_template`), extracts + classifies placeholders (`classify_placeholders`), uploads to Storage (`users/{userId}/templates/{templateId}/{filename}`), persists the doc with the field inventory; Storage rollback on Firestore failure
+- `get_template(template_id)`, `list_templates(category=None, search=None)` — single `order_by("name")`, filters client-side (small bounded collection, no index)
+- `update_template(template_id, data, file_stream=None, filename=None, file_size=None)` — with a file: re-validate, re-extract, upload NEW Storage object, `version += 1`, delete the old object only after the doc points at the new one
+- `delete_template(template_id)` — Storage object (NotFound tolerated) + Firestore doc
+- `get_template_bytes(template_id) -> Optional[bytes]` — for filling
+- `get_signed_url(template_id, expires_in_minutes=15)` — IAM signBlob signing, attachment disposition
+- `VALID_CATEGORIES = ("procédure", "correspondance", "autre")`, `MAX_TEMPLATE_SIZE`, `DOCX_MIME`
+- Split-run suspects become French `validation_warnings` strings; the upload proceeds (the field simply won't fill until retyped in Word and re-uploaded)
+
 ### `models/reference.py` (read-only)
 
 - `get_greffe(greffe_number) -> dict | None`
@@ -1084,6 +1149,31 @@ No model-layer changes. The 14 tool handlers in `mcp/handlers.py` compose **exis
 ---
 
 ## Utility Modules
+
+### `utils/docx_fill.py` (Phase H — pure stdlib fill engine)
+
+No Firestore, no Flask — fully unit-testable. Operates by direct string substitution on `word/document.xml` + `word/header*.xml` + `word/footer*.xml` inside the zip; every other entry is copied byte-identical (Word must reopen the output without repair — the reason `docxtpl` is rejected).
+
+```python
+PLACEHOLDER_RE                                  # {{name}} — accents, dots, optional inner spaces
+extract_placeholders(docx_bytes) -> list[str]    # distinct names, document order (tag-stripped scan)
+validate_template(docx_bytes) -> TemplateValidation  # .placeholders, .split_run_suspects, .errors (French)
+fill_docx(docx_bytes, values) -> bytes           # raises DocxFillError on structural problems
+```
+
+- **Block expansion first** (values containing blank-line separators): the host `<w:p>` is cloned once per chunk with the placeholder substituted — numbered-list `<w:pPr>` XML is preserved, so chunks continue the list numbering. The paragraph scan covers ALL paragraphs (regression: a previous implementation passed `count=1`).
+- **Scalars second**; single `\n` → one space; XML escaping (`& < >`) + C0 control stripping (except `\t`); **function replacement callbacks only** (a bare replacement string would interpret `\g<0>`/backslashes in user content).
+- Safety caps: compressed ≤ 10 MB, single XML target ≤ 25 MB, total decompressed ≤ 100 MB, ≤ 2000 entries, no absolute/`..` entry names, magic `PK\x03\x04` + `[Content_Types].xml` + `word/document.xml` required.
+- **Split-run detection:** names visible in tag-stripped text but not matchable in raw XML were fragmented across `<w:r>` runs by Word → reported as suspects at upload (user retypes the field in Word in one stroke); never silently rewritten.
+
+### `utils/template_fields.py` (Phase H — field catalog)
+
+Pure functions (mirrors `display_name` locally — must stay importable without the Firestore client). `classify_placeholders(names) -> Classification` (auto map, manual scalars, ALL-CAPS blocks, `slots_required` ⊆ {dossier, client, adverse, destinataire}, unknowns) and `resolve_values(names, *, dossier, client, adverse, destinataire, firm, today) -> dict[str, str]` (only non-empty resolutions; absent = popup shows an empty input).
+
+- Catalog namespaces: `dossier.*` (incl. derived `role_feminin` and demandeur/défendeur **positions** swapped by `dossier.role`; `autre` → unresolved), `client.*`/`adverse.*`/`destinataire.*` (identical field set: civilité from prefix then gender; work-address preference for `avocat_adverse`/`expert`/`huissier`/`notaire`; phone work → cell → home via `format_phone_display`), `cabinet.*` (FIRM_*), `date.aujourdhui` (French long date, `1er` for the 1st) / `date.aujourdhui_iso`.
+- `FLAT_ALIASES` maps the four existing gabarits' flat French names (`{{district}}`, `{{civilité_récipient}}`, …) onto the catalog — one template set serves this module and the user's Claude.ai skills.
+- `MANUAL_FIELDS` (deliberately data-less: `objet_lettre`, `privilège`/`transmission_lettre` selects, `salutations` via `salutations_default(civilité)`, `pièces_jointes` default `"Aucune"`, …).
+- Missing-value strings (exact): auto field left blank → **`[CHAMP MANQUANT : {name}]`**; manual/block/unknown left blank → **`[À COMPLÉTER : {name}]`** (`fallback_value`). Generation never fails on a missing value.
 
 ### `utils/deadlines.py`
 
@@ -1353,6 +1443,11 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Cloudflare bot mitigations can challenge Anthropic's egress** on `/mcp`/`/oauth/*` (non-browser client). A Configuration Rule disables Browser Integrity Check on those paths; if Super Bot Fight Mode challenges Claude's requests, relax its "Definitely automated" action and verify in Security → Events (same class of fight as the Play-Store/Bubblewrap episode).
 - **`athena/mcp/` shadows any installed `mcp` PyPI package** (the app dir is first on `sys.path`). Never add the MCP Python SDK to `requirements.in` without renaming one of them.
 - **The consent screen must reuse class strings that already exist in the compiled CSS** — `athena/mcp/` and `templates/mcp/` are covered by the `@source "../../templates"` scan, but adding a genuinely new utility class still requires the full recompile-and-rehash procedure. Note the app's primary buttons are `bg-gray-900`, not `bg-indigo-600` (which is not in the compiled artifact).
+- **Never fill gabarits with `docxtpl`/`python-docx`** (Phase H): their load/save round-trip corrupts letterhead templates for Word (repair prompt). `utils/docx_fill.py` substitutes strings in the XML zip entries and copies everything else byte-identical — keep it that way.
+- **Word fragments typed placeholders across `<w:r>` runs** (autocorrect, mid-word formatting). A fragmented `{{champ}}` won't fill; it is detected at upload (`split_run_suspects`) and surfaced as a French warning — the fix is retyping the field in Word in one stroke, never a silent run-rewrite.
+- **The docx paragraph scan must cover ALL paragraphs** — a previous implementation passed `count=1` to `re.sub` and silently skipped block placeholders outside the first paragraph (regression-tested in `test_docx_fill.py`).
+- **Fill-engine replacement callbacks must be functions**, never bare strings — user content containing `\g<0>` or backslashes would be interpreted as regex group references (regression-tested).
+- **Template files are NOT `documents` records** — they live at `users/{uid}/templates/…` and are managed only through `/gabarits`; generated outputs saved into a dossier ARE regular documents (independent copies).
 
 ---
 
@@ -1583,9 +1678,12 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
 
 - **I** — MCP server for Claude custom connectors: stateless JSON-mode Streamable HTTP endpoint (`POST /mcp`) with 14 read-only tools; embedded OAuth 2.1 AS (DCR restricted to Claude callbacks, PKCE S256, refresh rotation + family revocation, French consent screen behind session + MFA); opaque SHA-256-at-rest bearer tokens with a per-IP brake; `MCP_ENABLED` kill switch; `log_mcp_event` + `mcp.request`/`mcp.tool.*` spans; zero new dependencies. Side fix: `login_required` now preserves the query string in the login `next` redirect (needed for `/oauth/authorize?...`, also fixes filtered-list deep links). Ops prerequisites before connecting Claude: Firestore TTL policies on `oauth_codes.expire_at`/`oauth_tokens.expire_at`, rules deploy, Cloudflare Configuration Rule for bot mitigations on `/mcp`+`/oauth/*`, verify Cloudflare Access stays scoped to `/dav/*` (§16 of `PHASE_I_MCP.md`).
 
+### Phase H — Document template generation "gabarits" (July 2026, ✅ code complete)
+
+- **H** — User-managed `.docx` templates at `/gabarits` (upload / metadata edit / file replacement with version bump + re-extraction / delete / signed-URL download — templates are data, never a deploy). Stdlib-only fill engine (`utils/docx_fill.py`: XML substitution inside the zip, byte-identical pass-through of everything else; `docxtpl`/`python-docx` rejected — Word repair-prompt issue with letterhead templates). Field catalog + flat-alias table for the four existing gabarits (`utils/template_fields.py`); ALL-CAPS block fields expand by paragraph cloning (numbered lists continue); split-run placeholders detected at upload and reported in French; blanks become visible `[CHAMP MANQUANT : x]` / `[À COMPLÉTER : x]` strings. HTMX generation popup from three entry points (gabarits, dossier detail — locked dossier, partie detail — destinataire prefill); output saved into the dossier's documents or downloaded directly. 10 MB upload size exemption in `security.py`; `log_template_event` + `template.fill` span; zero new dependencies. Spec: `SPEC_PHASE_H_GABARITS.md`.
+
 ### Proposed / not yet implemented
 
-- **Phase H** — Word document template generation (`docxtpl`-based, fill `.docx` templates with client + dossier data for letters, mises en demeure, procedures)
 - **Microsoft 365 bidirectional sync** — Graph API OAuth2 + webhook (change notifications) for native Outlook calendar/contacts integration, with Athena-tagged extensions for loop prevention
 - **Notes tab on dossier detail** — currently notes are accessed only via the standalone `/notes?dossier_id=…` view
 - **Dedicated KYC / conflict-check routes** — model helpers exist (`update_kyc_status`, `link_kyc_document`) but are not yet exposed as discrete routes

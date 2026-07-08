@@ -447,6 +447,7 @@ _PALLAS_DAV = logging.getLogger("pallas.dav")
 _PALLAS_SECURITY = logging.getLogger("pallas.security")
 _PALLAS_UNEXPECTED = logging.getLogger("pallas.unexpected")
 _PALLAS_MCP = logging.getLogger("pallas.mcp")
+_PALLAS_TEMPLATES = logging.getLogger("pallas.templates")
 
 
 AuthEvent = Literal[
@@ -500,6 +501,13 @@ McpEvent = Literal[
     "mcp_disabled_hit",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
+TemplateEvent = Literal[
+    "template_uploaded",
+    "template_updated",
+    "template_deleted",
+    "document_generated",
+    "generation_failed",
+]
 
 
 def _emit(
@@ -631,6 +639,28 @@ def log_mcp_event(
     _emit(_PALLAS_MCP, level, event, fields)
 
 
+def log_template_event(
+    event: TemplateEvent,
+    *,
+    template_id: Optional[str] = None,
+    dossier_id: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit a gabarit lifecycle / generation event (Phase H).
+
+    ``generation_failed`` emits at WARNING (with a machine-stable
+    ``reason`` in **extra), everything else at INFO. Never pass field
+    VALUES (client PII) — placeholder names, counts and IDs only.
+    """
+    fields: dict[str, Any] = {"event": event, **extra}
+    if template_id is not None:
+        fields["template_id"] = template_id
+    if dossier_id is not None:
+        fields["dossier_id"] = dossier_id
+    level = logging.WARNING if event == "generation_failed" else logging.INFO
+    _emit(_PALLAS_TEMPLATES, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -670,6 +700,7 @@ __all__: Iterable[str] = (
     "log_dossier_event",
     "log_mcp_event",
     "log_security_event",
+    "log_template_event",
     "log_unexpected",
     "sanitize_log_value",
 )

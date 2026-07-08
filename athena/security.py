@@ -155,6 +155,21 @@ def _add_early_hints(response: Response) -> None:
 # ---------------------------------------------------------------------------
 UPLOAD_PATHS = ("/documents/upload",)
 _DAV_MAX_BODY = 5 * 1024 * 1024  # vCard/iCal payloads are KBs; 5 MB is generous
+# Template upload/replace (Phase H): POST /gabarits/ and POST /gabarits/<id>
+# carry a .docx (≤ 10 MB, also enforced model-side). The generation POST
+# (/gabarits/generer) and the sub-routes stay under the 1 MB default.
+_TEMPLATE_UPLOAD_MAX = 10 * 1024 * 1024
+_TEMPLATE_RESERVED_SEGMENTS = {"new", "generer", "dossier-search", "partie-search"}
+
+
+def _is_template_upload_path(path: str) -> bool:
+    """True for /gabarits/ (create) and /gabarits/<id> (file replacement)."""
+    parts = path.rstrip("/").split("/")
+    if parts[:2] != ["", "gabarits"]:
+        return False
+    if len(parts) == 2:  # "/gabarits/" — create
+        return True
+    return len(parts) == 3 and parts[2] not in _TEMPLATE_RESERVED_SEGMENTS
 
 
 def _enforce_request_size() -> Optional[Response]:
@@ -163,6 +178,14 @@ def _enforce_request_size() -> Optional[Response]:
     # than the global 25 MB upload allowance.
     if request.path.startswith("/dav/") or request.path.startswith("/.well-known/"):
         if request.content_length and request.content_length > _DAV_MAX_BODY:
+            abort(413)
+        return None
+    if (
+        request.content_length
+        and request.method == "POST"
+        and _is_template_upload_path(request.path)
+    ):
+        if request.content_length > _TEMPLATE_UPLOAD_MAX:
             abort(413)
         return None
     if request.content_length and request.path not in UPLOAD_PATHS:

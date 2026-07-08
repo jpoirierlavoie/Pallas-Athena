@@ -86,6 +86,13 @@
            class="text-xs font-medium text-gray-500 hover:text-gray-700">
           Ouvrir le navigateur
         </a>
+        <button type="button"
+                hx-get="{{ url_for('doc_templates.generate_modal', dossier_id=dossier.id, locked=1) }}"
+                hx-target="#gabarit-modal"
+                hx-swap="innerHTML"
+                class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
+          Générer depuis un gabarit
+        </button>
         <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier.id, return_to=tab_return_to) }}"
            class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
           + Téléverser

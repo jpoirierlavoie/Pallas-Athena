@@ -1,0 +1,110 @@
+{# Generation popup — step 1 (modal shell), swapped into #gabarit-modal.
+   Server owns the selection state: changing the template or picking a
+   dossier reloads this partial with the new context (hx-include of the
+   .gabarit-ctx inputs carries the current state; set_* params carry a
+   new selection from a clicked search result). #}
+<div x-data
+     @keydown.escape.window="$el.parentElement.innerHTML = ''"
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  <div @click.outside="$el.closest('#gabarit-modal').innerHTML = ''"
+       class="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-y-auto"
+       style="max-height: 90vh">
+
+    {# ── Header ────────────────────────────────────────────────── #}
+    <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+      <h2 class="text-base font-semibold text-gray-900">Générer un document</h2>
+      <button type="button"
+              @click="$el.closest('#gabarit-modal').innerHTML = ''"
+              class="p-3 text-gray-400 hover:text-gray-600"
+              aria-label="Fermer">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="p-5 space-y-4">
+
+      {# ── Context carried through modal reloads ─────────────────── #}
+      {% if template_fixed and template %}
+      <input type="hidden" name="template_id" value="{{ template.id }}" class="gabarit-ctx">
+      <input type="hidden" name="fixed" value="1" class="gabarit-ctx">
+      {% endif %}
+      {% if locked %}
+      <input type="hidden" name="locked" value="1" class="gabarit-ctx">
+      {% endif %}
+      {% if dossier_id %}
+      <input type="hidden" name="dossier_id" value="{{ dossier_id }}" class="gabarit-ctx">
+      {% endif %}
+      {% if partie_id %}
+      <input type="hidden" name="partie_id" value="{{ partie_id }}" class="gabarit-ctx">
+      {% endif %}
+
+      {# ── Template selection ─────────────────────────────────────── #}
+      {% if template_fixed and template %}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Gabarit</label>
+        <div class="px-4 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl text-gray-700">
+          {{ template.name }}
+          <span class="text-xs text-gray-400 ml-1">v{{ template.version }}</span>
+        </div>
+      </div>
+      {% else %}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Gabarit *</label>
+        <select name="template_id"
+                class="gabarit-ctx w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                hx-get="{{ url_for('doc_templates.generate_modal') }}"
+                hx-trigger="change"
+                hx-target="#gabarit-modal"
+                hx-swap="innerHTML"
+                hx-include=".gabarit-ctx">
+          <option value="">Sélectionner un gabarit…</option>
+          {% for t in templates %}
+          <option value="{{ t.id }}" {{ 'selected' if template and template.id == t.id }}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+
+      {# ── Dossier slot (chip persists even before a template is
+            chosen — the entry-point prefill must never be dropped) ──── #}
+      {% if dossier or (template and 'dossier' in slots_required) %}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Dossier</label>
+        {% if dossier %}
+        <div class="px-4 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl text-gray-700">
+          {{ dossier.file_number }} — {{ dossier.title }}
+        </div>
+        {% elif not locked %}
+        <p class="text-xs text-gray-400 mb-1">
+          Facultatif — sans dossier, le document est téléchargé sans être classé.
+        </p>
+        {% endif %}
+        {% if template and 'dossier' in slots_required and not locked %}
+        <div class="mt-2">
+          <input type="search" name="q"
+                 autocomplete="off"
+                 placeholder="{{ 'Changer de dossier…' if dossier else 'Rechercher un dossier…' }}"
+                 hx-get="{{ url_for('doc_templates.dossier_search') }}"
+                 hx-trigger="input changed delay:300ms, search"
+                 hx-target="#gabarit-dossier-results"
+                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <div id="gabarit-dossier-results" class="mt-1"></div>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {# ── Fields (step 2) ───────────────────────────────────────── #}
+      {% if template and fields is defined and fields is not none %}
+      {% include "gabarits/_generate_fields.html" %}
+      {% else %}
+      <div id="gabarit-champs">
+        <p class="text-sm text-gray-500 py-4">Sélectionnez un gabarit pour afficher les champs.</p>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+</div>

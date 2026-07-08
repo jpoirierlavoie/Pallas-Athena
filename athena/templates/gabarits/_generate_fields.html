@@ -1,0 +1,184 @@
+{# Generation popup — step 2 (field form), root IS #gabarit-champs so the
+   partial can replace itself (hx-swap="outerHTML") on slot changes,
+   destinataire picks, and after generation (success state). #}
+<div id="gabarit-champs">
+
+  {% if generated %}
+  {# ── Success state ─────────────────────────────────────────────── #}
+  <div class="p-4 bg-green-50 border border-green-200 rounded-xl">
+    <p class="text-sm font-medium text-gray-900 mb-1">Document généré</p>
+    <p class="text-sm text-gray-600 mb-4">{{ generated.display_name }}</p>
+    <div class="flex items-center gap-2 flex-wrap">
+      <a href="{{ generated.detail_url }}"
+         class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Ouvrir le document
+      </a>
+      <a href="{{ generated.download_url }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Télécharger
+      </a>
+      <button type="button" x-data
+              @click="$el.closest('#gabarit-modal').innerHTML = ''"
+              class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Fermer
+      </button>
+    </div>
+  </div>
+
+  {% else %}
+  <form method="post"
+        action="{{ url_for('doc_templates.generate') }}"
+        {% if dossier %}
+        hx-post="{{ url_for('doc_templates.generate') }}"
+        hx-target="#gabarit-champs"
+        hx-swap="outerHTML"
+        {% else %}
+        target="_blank"
+        {% endif %}
+        class="space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="template_id" value="{{ template.id }}" class="gabarit-slot">
+    <input type="hidden" name="dossier_id" value="{{ dossier_id }}" class="gabarit-slot">
+
+    {# ── Slot pickers ──────────────────────────────────────────── #}
+    {% if 'client' in slots_required or 'adverse' in slots_required %}
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {% if 'client' in slots_required %}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Client</label>
+        {% if dossier and clients %}
+        <select name="client_id"
+                class="gabarit-slot w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                hx-get="{{ url_for('doc_templates.generate_fields') }}"
+                hx-trigger="change"
+                hx-target="#gabarit-champs"
+                hx-swap="outerHTML"
+                hx-include=".gabarit-slot">
+          {% for c in clients %}
+          <option value="{{ c.id }}" {{ 'selected' if c.id == client_id }}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        {# No dossier: free partie pick (spec §5 fallback for the client slot). #}
+        <input type="hidden" name="client_id" value="{{ client_id }}" class="gabarit-slot">
+        {% if client %}
+        <div class="px-3 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-lg text-gray-700">
+          {{ client_display }}
+        </div>
+        {% endif %}
+        <input type="search" name="q" x-data
+               @keydown.enter.prevent
+               autocomplete="off"
+               placeholder="{{ 'Changer de client…' if client else 'Rechercher un contact…' }}"
+               hx-get="{{ url_for('doc_templates.partie_search', slot='client') }}"
+               hx-trigger="input changed delay:300ms, search"
+               hx-target="#gabarit-client-results"
+               class="w-full mt-1 px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <div id="gabarit-client-results" class="mt-1"></div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if 'adverse' in slots_required %}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Partie adverse</label>
+        {% if dossier and opposing_parties %}
+        <select name="adverse_id"
+                class="gabarit-slot w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                hx-get="{{ url_for('doc_templates.generate_fields') }}"
+                hx-trigger="change"
+                hx-target="#gabarit-champs"
+                hx-swap="outerHTML"
+                hx-include=".gabarit-slot">
+          {% for p in opposing_parties %}
+          <option value="{{ p.id }}" {{ 'selected' if p.id == adverse_id }}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <p class="text-xs text-gray-400 px-3 py-2">Sélectionnez un dossier pour choisir la partie adverse.</p>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if 'destinataire' in slots_required %}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Destinataire</label>
+      <input type="hidden" name="destinataire_id" value="{{ destinataire_id }}" class="gabarit-slot">
+      {% if destinataire %}
+      <div class="px-4 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl text-gray-700">
+        {{ destinataire_display }}
+        <span class="text-xs text-gray-400 ml-1">{{ partie_role_labels.get(destinataire.contact_role, destinataire.contact_role) }}</span>
+      </div>
+      {% endif %}
+      <div class="mt-2">
+        <input type="search" name="q" x-data
+               @keydown.enter.prevent
+               autocomplete="off"
+               placeholder="{{ 'Changer de destinataire…' if destinataire else 'Rechercher un contact…' }}"
+               hx-get="{{ url_for('doc_templates.partie_search', slot='destinataire') }}"
+               hx-trigger="input changed delay:300ms, search"
+               hx-target="#gabarit-dest-results"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <div id="gabarit-dest-results" class="mt-1"></div>
+      </div>
+    </div>
+    {% endif %}
+
+    {# ── Fields ────────────────────────────────────────────────── #}
+    <div class="space-y-3">
+      {% for f in fields %}
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          {{ f.name }}
+          {% if f.kind == 'auto' %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 ml-1">auto</span>
+          {% elif f.kind == 'block' %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700 ml-1">bloc</span>
+          {% endif %}
+        </label>
+        {% if f.kind == 'block' %}
+        <textarea name="champ__{{ f.name }}" rows="5" maxlength="50000"
+                  class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ f.value }}</textarea>
+        <p class="text-xs text-gray-400 mt-1">Séparez les paragraphes par une ligne vide.</p>
+        {% elif f.options %}
+        <select name="champ__{{ f.name }}"
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <option value=""></option>
+          {% for opt in f.options %}
+          <option value="{{ opt }}" {{ 'selected' if opt == f.value }}>{{ opt }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input type="text" name="champ__{{ f.name }}" maxlength="2000"
+               value="{{ f.value }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <p class="text-xs text-gray-400">
+      Un champ laissé vide apparaît dans le document comme
+      « [CHAMP MANQUANT : nom] » ou « [À COMPLÉTER : nom] ».
+    </p>
+
+    {# ── Submit ────────────────────────────────────────────────── #}
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        Générer le document
+      </button>
+    </div>
+    <p class="text-xs text-gray-400">
+      {% if dossier %}
+      Le document sera enregistré dans les documents du dossier
+      {{ dossier.file_number }}.
+      {% else %}
+      Sans dossier sélectionné, le document sera téléchargé directement.
+      {% endif %}
+    </p>
+  </form>
+  {% endif %}
+
+</div>

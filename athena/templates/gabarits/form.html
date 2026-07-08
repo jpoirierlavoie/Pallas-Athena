@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier le gabarit' if edit_mode is defined and edit_mode else 'Nouveau gabarit' }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_list') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+    Gabarits
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">
+    {{ 'Modifier le gabarit' if edit_mode is defined and edit_mode else 'Nouveau gabarit' }}
+  </h1>
+
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post"
+        action="{{ url_for('doc_templates.template_update', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_create') }}"
+        enctype="multipart/form-data"
+        class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Nom *</label>
+      <input type="text" name="name" required maxlength="120"
+             value="{{ template.name if template and template.name else '' }}"
+             placeholder="ex. : Correspondance avec avocat"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Catégorie</label>
+      <select name="category"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        {% for cat_key, cat_label in category_labels.items() %}
+        <option value="{{ cat_key }}" {{ 'selected' if template and template.category == cat_key }}>{{ cat_label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
+      <textarea name="description" rows="3"
+                placeholder="Description optionnelle…"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none">{{ template.description if template and template.description else '' }}</textarea>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">
+        {{ 'Remplacer le fichier (facultatif)' if edit_mode is defined and edit_mode else 'Fichier .docx *' }}
+      </label>
+      <input type="file" name="file" accept=".docx"
+             {{ '' if edit_mode is defined and edit_mode else 'required' }}
+             class="w-full text-sm text-gray-700">
+      <p class="text-xs text-gray-400 mt-2">
+        Document Word (.docx) contenant des champs
+        <span class="font-medium">{{ '{{champ}}' }}</span> — 10 Mo max.
+        {% if edit_mode is defined and edit_mode %}
+        Le remplacement du fichier incrémente la version et ré-extrait les champs.
+        {% else %}
+        Les champs seront extraits et affichés après le téléversement.
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="flex gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        {{ 'Enregistrer' if edit_mode is defined and edit_mode else 'Téléverser le gabarit' }}
+      </button>
+      <a href="{{ url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_list') }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+    </div>
+  </form>
+
+</div>
+{% endblock %}
