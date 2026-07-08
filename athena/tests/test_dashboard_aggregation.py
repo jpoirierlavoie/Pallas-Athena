@@ -9,7 +9,7 @@ by inspecting google-cloud-firestore 2.27 directly.
 
 Composite indexes required by the new query paths (deploy with
 ``firebase deploy --only firestore:indexes --project athena-pallas`` after
-pointing firebase.json at athena/firestore.indexes.json):
+pointing firebase.json at firestore.indexes.json):
 
 - timeentries (billable ASC, invoiced ASC, hours ASC, amount ASC):
   serves ``get_unbilled_totals`` — one aggregation query running SUM(hours)

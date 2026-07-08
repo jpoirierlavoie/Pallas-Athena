@@ -1,9 +1,9 @@
 {
   "firestore": {
-    "rules": "athena/firestore.rules",
-    "indexes": "athena/firestore.indexes.json"
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   },
   "storage": {
-    "rules": "athena/storage.rules"
+    "rules": "storage.rules"
   }
 }

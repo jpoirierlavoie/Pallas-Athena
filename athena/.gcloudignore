@@ -29,3 +29,12 @@ tests/
 *.pyc
 **/service-account*.json
 **/*-adminsdk-*.json
+
+# Non-runtime files: keep them in the repo but out of the deployed bundle.
+# App Engine installs from requirements.txt only — the lock source and the
+# dev/test deps are never needed at runtime; docs aren't either. (The
+# Firebase rules/index files live at the repo root now, so they no longer
+# ride along in this bundle.)
+requirements.in
+requirements-dev.txt
+OBSERVABILITY.md

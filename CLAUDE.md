@@ -165,11 +165,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── pagination.py               # Pagination helpers: legacy page mode + cursor mode (encode/decode/trail)
 │   ├── manifest.json               # PWA manifest
 │   ├── robots.txt
-│   ├── firestore.rules             # (security rules — Firestore client SDK is not used; rules are defensive)
-│   ├── firestore.indexes.json      # Composite indexes — deploy with `firebase deploy --only firestore:indexes`
-│   ├── storage.rules               # Firebase Storage rules
 │   ├── OBSERVABILITY.md            # Structured-logging event registry + tracing conventions (source of truth)
-│   ├── .gcloudignore               # Keeps tests/venv/dev files out of the deployed bundle
+│   ├── .gcloudignore               # Keeps tests/venv/dev/non-runtime files out of the deployed bundle
 │   │
 │   ├── models/                     # Firestore data access layer
 │   │   ├── __init__.py             # Exposes `db` (Firestore client singleton) + aggregation_values() helper
@@ -292,11 +289,16 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │       └── legal/                  # privacy.html, terms.html (served at /privacy, /terms)
 │
 ├── cloudbuild.yaml                 # Cloud Build pipeline (pytest gate, deploy, prune old versions)
-├── firebase.json                   # Firebase CLI targets (firestore rules+indexes, storage rules)
+├── firebase.json                   # Firebase CLI targets (points at the rules/index files below)
+├── firestore.rules                 # Firestore security rules (deploy via firebase CLI; not an App Engine file)
+├── firestore.indexes.json          # Composite indexes — deploy with `firebase deploy --only firestore:indexes`
+├── storage.rules                   # Firebase Storage rules
 ├── .env.example                    # Template for local-dev env vars
 └── .github/                        # dependabot.yml + workflows: codeql, osv-scanner, trivy, bandit,
                                     # dependency-review, scorecard
 ```
+
+> The Firestore/Storage rules + index files live at the **repo root** (next to `firebase.json`, which references them by bare filename) — they are Firebase-CLI deploy config, **not** part of the App Engine app, so they deliberately sit outside `athena/` and never ship in the deployed bundle.
 
 > Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `apercu`, `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents` — there is no separate `notes` tab in the dossier hub today. Notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
 
