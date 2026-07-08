@@ -51,6 +51,59 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # textarea input frequently carries stray spaces on empty lines).
 _BLANK_LINE_RE = re.compile(r"\n\s*\n")
 
+# ── Run normalization (heal Word's run-splitting so placeholders match) ──
+# Word fragments a typed placeholder across multiple <w:r> runs — proofing
+# (spell/grammar) brackets it in <w:proofErr> markers that force run
+# boundaries, tracked changes wrap edits in <w:ins>, and mid-word format
+# changes split runs. A fragmented {{champ}} then can't be matched. We
+# heal it BEFORE matching with a conservative, byte-level pass (no
+# python-docx round-trip): strip the empty proofing markers, then merge
+# ADJACENT runs that carry identical formatting and whose only content is
+# one <w:t>. Runs holding anything else (<w:br/>, <w:tab/>, <w:drawing>,
+# field codes…) never match the pattern, so they are left untouched; a
+# bookmark or comment marker between two runs also blocks the merge (they
+# are no longer adjacent). Merging identical-format adjacent text runs is
+# exactly what Word itself does on save, so the output still opens without
+# repair.
+_PROOF_ERR_RE = re.compile(r"<w:proofErr\b[^>]*/>|<w:proofErr\b[^>]*>.*?</w:proofErr>",
+                           re.DOTALL)
+# t1/t2 are `[^<]*` — a <w:t> text node never contains a raw '<' (it is
+# escaped as &lt;). This is load-bearing: `.*?` with DOTALL could swallow
+# markup and match ACROSS run/paragraph boundaries, wrongly coalescing
+# unrelated runs. The rPr body stays `.*?` (bounded by the first
+# </w:rPr>; rPr never nests another rPr).
+_ADJACENT_TEXT_RUNS_RE = re.compile(
+    r"<w:r>(?P<rpr1>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t1>[^<]*)</w:t></w:r>"
+    r"<w:r>(?P<rpr2>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t2>[^<]*)</w:t></w:r>",
+    re.DOTALL,
+)
+
+
+def _merge_adjacent_runs(match: re.Match) -> str:
+    # Only merge when the two runs share identical run-properties; else
+    # leave them exactly as they were (formatting must be preserved).
+    if match.group("rpr1") != match.group("rpr2"):
+        return match.group(0)
+    text = match.group("t1") + match.group("t2")
+    # xml:space="preserve" so no boundary whitespace is lost on merge.
+    return (
+        f'<w:r>{match.group("rpr1")}'
+        f'<w:t xml:space="preserve">{text}</w:t></w:r>'
+    )
+
+
+def _normalize_runs(xml: str) -> str:
+    """Strip proofing markers and coalesce same-format adjacent text runs."""
+    xml = _PROOF_ERR_RE.sub("", xml)
+    # Repeat until stable: each sub pass merges at most one boundary per
+    # run pair (the merged run sits behind the scan cursor), so a run split
+    # into N pieces needs up to N-1 passes.
+    while True:
+        merged = _ADJACENT_TEXT_RUNS_RE.sub(_merge_adjacent_runs, xml)
+        if merged == xml:
+            return merged
+        xml = merged
+
 # ── Safety caps (§7.3 — zip-bomb defense) ──────────────────────────────
 MAX_COMPRESSED_BYTES = 10 * 1024 * 1024
 MAX_SINGLE_XML_BYTES = 25 * 1024 * 1024
@@ -163,6 +216,15 @@ def _names_in_text(text: str) -> list[str]:
     return seen
 
 
+def _name_counts(text: str) -> dict[str, int]:
+    """Count every placeholder occurrence (not distinct) by name."""
+    counts: dict[str, int] = {}
+    for match in PLACEHOLDER_RE.finditer(text):
+        name = match.group(1)
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
 def _escape_xml(value: str) -> str:
     """XML-escape a plain-text value and strip stray control characters.
 
@@ -204,8 +266,10 @@ def extract_placeholders(docx_bytes: bytes) -> list[str]:
     names: list[str] = []
     with zf:
         for target in _target_names(zf):
-            xml = _read_entry_bounded(zf, target, MAX_SINGLE_XML_BYTES).decode(
-                "utf-8", errors="replace"
+            xml = _normalize_runs(
+                _read_entry_bounded(zf, target, MAX_SINGLE_XML_BYTES).decode(
+                    "utf-8", errors="replace"
+                )
             )
             for name in _names_in_text(_XML_TAG_RE.sub("", xml)):
                 if name not in names:
@@ -239,12 +303,20 @@ def validate_template(docx_bytes: bytes) -> TemplateValidation:
             except DocxFillError as exc:
                 result.errors.append(str(exc))
                 return result
-            xml = xml_bytes.decode("utf-8", errors="replace")
-            raw_names = set(_names_in_text(xml))
-            for name in _names_in_text(_XML_TAG_RE.sub("", xml)):
+            xml = _normalize_runs(xml_bytes.decode("utf-8", errors="replace"))
+            stripped = _XML_TAG_RE.sub("", xml)
+            raw_counts = _name_counts(xml)
+            strip_counts = _name_counts(stripped)
+            for name in _names_in_text(stripped):
                 if name not in result.placeholders:
                     result.placeholders.append(name)
-                if name not in raw_names and name not in suspects:
+                # Per-OCCURRENCE (not per-name): flag when some occurrences
+                # remain fragmented in the raw XML even though others are
+                # clean — a name-level check would let one clean copy mask
+                # the broken ones (they'd silently fail to fill).
+                if raw_counts.get(name, 0) < strip_counts.get(name, 0) and (
+                    name not in suspects
+                ):
                     suspects.append(name)
 
     result.split_run_suspects = suspects
@@ -252,7 +324,12 @@ def validate_template(docx_bytes: bytes) -> TemplateValidation:
 
 
 def _fill_target_xml(xml: str, values: dict[str, str]) -> str:
-    """Fill one target XML: block expansion first, scalars second."""
+    """Fill one target XML: normalize runs, then block + scalar substitution."""
+    # Heal Word's run-splitting first, so EVERY occurrence of a repeated
+    # placeholder matches — not just the clean ones (a fragmented copy
+    # would otherwise ship as a literal {{name}} while its clean sibling
+    # filled).
+    xml = _normalize_runs(xml)
     block_pairs: list[tuple[str, str]] = []
     scalar_pairs: list[tuple[str, str]] = []
     for name, raw_value in values.items():

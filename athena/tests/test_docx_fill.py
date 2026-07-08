@@ -215,6 +215,72 @@ def test_quotes_escaped_in_values():
     assert '"bonjour"' not in out
 
 
+# ── Run normalization: repeated + Word-fragmented placeholders ───────────
+
+def test_repeated_field_all_occurrences_filled():
+    docx = _make_docx(_doc(
+        _para("Devant le {{tribunal}}"),
+        _para("au {{tribunal}}"),
+        _para("le {{tribunal}} siégeant"),
+    ))
+    out = _document_xml(fill_docx(docx, {"tribunal": "Cour supérieure"}))
+    assert out.count("Cour supérieure") == 3
+    assert "{{tribunal}}" not in out
+
+
+def test_partial_split_repeat_last_clean_still_fills_all():
+    # Two occurrences fragmented by Word, one clean — the reported bug was
+    # that only the clean (last) one filled. Normalization heals the rest.
+    split = ("<w:p><w:r><w:t>{{</w:t></w:r>"
+             "<w:r><w:t>tribunal}}</w:t></w:r></w:p>")
+    docx = _make_docx(_doc(split, split, _para("{{tribunal}}")))
+    out = _document_xml(fill_docx(docx, {"tribunal": "CS"}))
+    assert out.count("CS") == 3
+    assert "{{" not in out
+
+
+def test_proof_err_split_is_healed_and_filled():
+    # Word spell-check brackets the name in <w:proofErr>, splitting the run
+    # around the braces.
+    body = ('<w:p><w:r><w:t>{{</w:t></w:r>'
+            '<w:proofErr w:type="spellStart"/><w:r><w:t>tribunal}}</w:t></w:r>'
+            '<w:proofErr w:type="spellEnd"/></w:p>')
+    docx = _make_docx(_doc(body))
+    assert validate_template(docx).split_run_suspects == []  # healed → no warning
+    out = _document_xml(fill_docx(docx, {"tribunal": "CS"}))
+    assert "CS" in out and "{{" not in out
+    assert "proofErr" not in out
+
+
+def test_normalization_only_merges_identical_formatting():
+    # Different rPr between the braces and the name → cannot merge safely →
+    # stays fragmented and is correctly reported (not silently mis-filled).
+    body = ('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>{{</w:t></w:r>'
+            '<w:r><w:t>tribunal}}</w:t></w:r></w:p>')
+    docx = _make_docx(_doc(body))
+    assert validate_template(docx).split_run_suspects == ["tribunal"]
+
+
+def test_normalization_preserves_non_text_runs():
+    # A run holding <w:br/> (not a plain <w:t>) must never be merged away.
+    body = ('<w:p><w:r><w:t>{{</w:t></w:r><w:r><w:br/></w:r>'
+            '<w:r><w:t>tribunal}}</w:t></w:r></w:p>')
+    docx = _make_docx(_doc(body))
+    out = _document_xml(fill_docx(docx, {"tribunal": "CS"}))
+    assert "<w:br/>" in out  # the break survives
+
+
+def test_per_occurrence_split_detection_not_masked_by_clean_copy():
+    clean = _para("{{tribunal}} en clair")
+    # A split copy whose halves carry DIFFERENT formatting can't be healed.
+    split = ('<w:p><w:r><w:rPr><w:i/></w:rPr><w:t>{{</w:t></w:r>'
+             '<w:r><w:t>tribunal}}</w:t></w:r></w:p>')
+    docx = _make_docx(_doc(clean, split))
+    # Name-level detection would clear it (one clean copy exists); the
+    # per-occurrence check must still flag it.
+    assert validate_template(docx).split_run_suspects == ["tribunal"]
+
+
 # ── Headers / footers ───────────────────────────────────────────────────
 
 def test_header_and_footer_placeholders_filled():
@@ -257,10 +323,12 @@ def test_split_run_detection_flags_fragmented_and_passes_clean():
 
 
 def test_split_run_detected_per_target_not_globally():
-    # Spec §7.4: the B−A difference is per target XML — a name typed
-    # cleanly in the body must not mask its fragmented copy in a header.
+    # A name typed cleanly in the body must not mask an UNHEALABLE
+    # fragmented copy in a header (halves with different formatting can't
+    # be merged — so they stay a genuine suspect).
     fragmented_header = _hdr(
-        "<w:p><w:r><w:t>{{dis</w:t></w:r><w:r><w:t>trict}}</w:t></w:r></w:p>"
+        '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>{{dis</w:t></w:r>'
+        '<w:r><w:t>trict}}</w:t></w:r></w:p>'
     )
     docx = _make_docx(_doc(_para("{{district}}")), headers=[fragmented_header])
     result = validate_template(docx)
