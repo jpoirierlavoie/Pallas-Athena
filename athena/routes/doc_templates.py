@@ -269,14 +269,18 @@ def template_delete(template_id: str) -> Response | str:
     success, error = delete_template(template_id)
     if success:
         log_template_event("template_deleted", template_id=template_id)
-    target = url_for("doc_templates.template_list")
+        target = url_for("doc_templates.template_list")
+        if _is_htmx():
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
+            return resp
+        return redirect(target)
+    # Failure: keep the user on the template (it still exists) rather than
+    # silently redirecting to the list as if the delete had worked. The
+    # detail page's delete is a plain POST form → the non-HTMX branch.
     if _is_htmx():
-        if not success:
-            return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>'  # 200 — htmx swaps
+    return redirect(url_for("doc_templates.template_detail", template_id=template_id))
 
 
 @doc_templates_bp.route("/<template_id>/download")
