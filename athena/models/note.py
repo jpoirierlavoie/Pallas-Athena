@@ -42,6 +42,13 @@ CATEGORY_LABELS = {
 }
 
 
+def _to_utc(dt: datetime) -> datetime:
+    """Coerce a datetime to timezone-aware UTC (for iCalendar UTC stamps)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _default_doc() -> dict:
     """Return a dict with every note field set to its default value."""
     return {
@@ -325,6 +332,16 @@ def note_to_vjournal(note: dict) -> str:
     created = note.get("created_at")
     if created and hasattr(created, "date"):
         journal.add("dtstart", created.date())
+
+    # CREATED + DTSTAMP as UTC date-times. Required for jtx Board: its
+    # icalobject.created column is NOT NULL, and DavX5/ical4android writes
+    # null (SQLITE_CONSTRAINT_NOTNULL on update) when the VJOURNAL omits
+    # CREATED. DTSTAMP is mandatory per RFC 5545 §3.6.3.
+    if created and hasattr(created, "hour"):
+        journal.add("created", _to_utc(created))
+    stamp = note.get("updated_at") or created
+    if stamp and hasattr(stamp, "hour"):
+        journal.add("dtstamp", _to_utc(stamp))
 
     journal.add("status", "FINAL")
 

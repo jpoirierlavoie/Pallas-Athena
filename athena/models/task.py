@@ -66,6 +66,13 @@ PRIORITY_COLORS = {
 }
 
 
+def _to_utc(dt: datetime) -> datetime:
+    """Coerce a datetime to timezone-aware UTC (for iCalendar UTC stamps)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _default_doc() -> dict:
     """Return a dict with every task field set to its default value."""
     return {
@@ -437,6 +444,17 @@ def task_to_vtodo(task: dict) -> str:
     todo = icalendar.Todo()
     todo.add("uid", task.get("vtodo_uid", ""))
     todo.add("summary", task.get("title", ""))
+
+    # CREATED + DTSTAMP as UTC date-times. Required for jtx Board: its
+    # icalobject.created column is NOT NULL, and DavX5/ical4android writes
+    # null (SQLITE_CONSTRAINT_NOTNULL on update) when the VTODO omits
+    # CREATED. DTSTAMP is mandatory per RFC 5545 §3.6.2.
+    created = task.get("created_at")
+    if created and hasattr(created, "hour"):
+        todo.add("created", _to_utc(created))
+    stamp = task.get("updated_at") or created
+    if stamp and hasattr(stamp, "hour"):
+        todo.add("dtstamp", _to_utc(stamp))
 
     # DESCRIPTION — combine description with dossier info
     desc_parts = []
