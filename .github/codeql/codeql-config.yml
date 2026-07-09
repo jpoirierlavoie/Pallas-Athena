@@ -1,0 +1,13 @@
+name: "Athena custom CodeQL config (python only)"
+
+# Add the in-repo custom query pack (referenced BY PATH, not by name).
+queries:
+  - uses: ./.github/codeql/athena-python-queries
+
+# The custom query above re-emits url-redirection findings with
+# safe_internal_redirect() treated as a barrier. Drop the stock query so the
+# 42 false positives it produces are not reported (they auto-resolve on the
+# default branch once this query no longer runs).
+query-filters:
+  - exclude:
+      id: py/url-redirection
