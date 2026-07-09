@@ -19,7 +19,7 @@ Placeholder taxonomy (SPEC_PHASE_H_GABARITS.md §4–§6):
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from utils.validators import format_phone_display
 
@@ -291,7 +291,7 @@ def _firm_field(key: str) -> Callable[[_Context], Optional[str]]:
 
 def _partie_fields(slot: str) -> dict[str, tuple[Optional[str], Callable]]:
     return {
-        f"{slot}.nom_complet": (slot, _partie(slot, lambda p: _display_name(p))),
+        f"{slot}.nom_complet": (slot, _partie(slot, _display_name)),
         f"{slot}.prenom": (slot, _partie(slot, _individual_field("first_name"))),
         f"{slot}.nom": (slot, _partie(slot, _individual_field("last_name"))),
         f"{slot}.civilite": (slot, _partie(slot, _civilite)),

@@ -10,11 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask
 
-import utils.logging_setup as logging_setup
 from utils.logging_setup import (
     ContextFilter,
     RedactionFilter,
+    REDACT_COURT_FILE_NUMBERS,
     SENSITIVE_KEYS,
+    _build_handler,
     bind_context,
     clear_context,
     init_app,
@@ -268,7 +269,7 @@ def test_redaction_redacts_postal_codes():
 
 
 def test_redaction_preserves_court_file_numbers_by_default():
-    assert logging_setup.REDACT_COURT_FILE_NUMBERS is False
+    assert REDACT_COURT_FILE_NUMBERS is False
     record = _make_record(
         json_fields={"v": "dossier 500-05-123456-241 to file"}
     )
@@ -621,7 +622,7 @@ def test_production_uses_structured_cloud_logging_handler(flask_app, monkeypatch
     monkeypatch.setattr(gclh, "CloudLoggingHandler", _FakeCLH)
 
     flask_app.config["ENV"] = "production"
-    handler = logging_setup._build_handler(flask_app)
+    handler = _build_handler(flask_app)
 
     assert isinstance(handler, _FakeCLH)
     assert captured["name"] == "pallas-athena"

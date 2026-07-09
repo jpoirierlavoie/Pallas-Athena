@@ -406,6 +406,7 @@ def update_template(
             bucket = storage.bucket()
             bucket.blob(old_storage_path).delete()
         except NotFound:
+            # Old object already gone — nothing to clean up.
             pass
         except Exception as exc:
             logger.warning(

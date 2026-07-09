@@ -23,11 +23,8 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from flask import Flask
 
 with mock.patch("google.cloud.firestore.Client"):
-    import models  # noqa: F401
     import mcp as mcp_pkg
     import mcp.bearer as bearer
-    import mcp.endpoint as endpoint_module  # noqa: F401
-    import mcp.oauth as oauth_module  # noqa: F401
     import mcp.store as store
 
 UTC = timezone.utc

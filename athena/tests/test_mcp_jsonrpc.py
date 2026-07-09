@@ -23,12 +23,9 @@ from flask import Flask
 # patch the constructor so no credentials are required (same pattern as
 # test_dashboard_aggregation.py).
 with mock.patch("google.cloud.firestore.Client"):
-    import models  # noqa: F401
     import mcp as mcp_pkg
     import mcp.bearer as bearer
-    import mcp.endpoint as endpoint_module  # noqa: F401 — attaches routes
     import mcp.handlers as handlers
-    import mcp.oauth as oauth_module  # noqa: F401 — attaches routes
     import mcp.store as store
 
 UTC = timezone.utc

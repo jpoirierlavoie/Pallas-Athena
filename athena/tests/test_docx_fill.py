@@ -9,7 +9,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import utils.docx_fill as docx_fill
 from utils.docx_fill import (
     DocxFillError,
     extract_placeholders,
@@ -366,14 +365,14 @@ def test_dotdot_entry_name_rejected():
 
 
 def test_oversized_compressed_template_rejected(monkeypatch):
-    monkeypatch.setattr(docx_fill, "MAX_COMPRESSED_BYTES", 64)
+    monkeypatch.setattr("utils.docx_fill.MAX_COMPRESSED_BYTES", 64)
     docx = _make_docx(_doc(_para("beaucoup de texte " * 50)))
     result = validate_template(docx)
     assert any("10 Mo" in e for e in result.errors)
 
 
 def test_oversized_xml_target_rejected(monkeypatch):
-    monkeypatch.setattr(docx_fill, "MAX_SINGLE_XML_BYTES", 32)
+    monkeypatch.setattr("utils.docx_fill.MAX_SINGLE_XML_BYTES", 32)
     docx = _make_docx(_doc(_para("un contenu qui dépasse trente-deux octets")))
     result = validate_template(docx)
     assert any("volumineuse" in e for e in result.errors)
@@ -382,14 +381,14 @@ def test_oversized_xml_target_rejected(monkeypatch):
 
 
 def test_total_decompressed_cap(monkeypatch):
-    monkeypatch.setattr(docx_fill, "MAX_TOTAL_DECOMPRESSED_BYTES", 128)
+    monkeypatch.setattr("utils.docx_fill.MAX_TOTAL_DECOMPRESSED_BYTES", 128)
     docx = _make_docx(_doc(_para("x")), extra={"word/media/big.bin": b"0" * 200})
     result = validate_template(docx)
     assert any("décompressé" in e for e in result.errors)
 
 
 def test_entry_count_cap(monkeypatch):
-    monkeypatch.setattr(docx_fill, "MAX_ENTRY_COUNT", 3)
+    monkeypatch.setattr("utils.docx_fill.MAX_ENTRY_COUNT", 3)
     docx = _make_docx(_doc(_para("x")), extra={"a.txt": b"1", "b.txt": b"2"})
     result = validate_template(docx)
     assert any("entrées" in e for e in result.errors)

@@ -26,6 +26,8 @@ def _load_env() -> None:
 
         load_dotenv(find_dotenv(usecwd=True))
     except ImportError:
+        # python-dotenv is optional; skip .env loading when it isn't installed
+        # (env vars must then already be present in the environment).
         pass
 
 

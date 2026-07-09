@@ -127,7 +127,6 @@ if not _module_available("firebase_admin"):
 # patched so no credentials/emulator are required in any environment
 # (models/__init__.py instantiates the client at import time).
 with mock.patch("google.cloud.firestore.Client"):
-    import models  # noqa: F401  — binds models.db to the patched client
     import models.dossier as dossier_model
     import models.hearing as hearing_model
     import models.invoice as invoice_model

@@ -52,7 +52,6 @@ from models.document import upload_document
 from models.dossier import get_dossier, list_dossiers
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
 from models.partie import display_name, get_partie, list_parties
-from security import safe_internal_redirect
 from tz import MTL
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.logging_setup import log_template_event, log_unexpected

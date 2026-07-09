@@ -1,6 +1,5 @@
 """Tests for the MCP tool layer: validator, formatting, and handlers."""
 
-import json
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -16,10 +15,8 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import models  # noqa: F401
     import mcp.handlers as handlers
     import mcp.tools as tools
-    from mcp.tools import ToolArgumentError, date_str, format_cents, iso_mtl
 
 UTC = timezone.utc
 NBSP = " "
@@ -98,27 +95,27 @@ def test_validator_type_checks():
 # ── Money / date formatting ─────────────────────────────────────────────
 
 def test_format_cents():
-    assert format_cents(1234567) == f"12{NBSP}345,67{NBSP}$"
-    assert format_cents(0) == f"0,00{NBSP}$"
-    assert format_cents(5) == f"0,05{NBSP}$"
-    assert format_cents(-250050) == f"-2{NBSP}500,50{NBSP}$"
+    assert tools.format_cents(1234567) == f"12{NBSP}345,67{NBSP}$"
+    assert tools.format_cents(0) == f"0,00{NBSP}$"
+    assert tools.format_cents(5) == f"0,05{NBSP}$"
+    assert tools.format_cents(-250050) == f"-2{NBSP}500,50{NBSP}$"
 
 
 def test_date_only_fields_never_shift_through_montreal():
     # Midnight-UTC date-only fixture: a Montréal conversion would render
     # 2026-07-06 (the previous day) — the #1 foreseeable bug of Phase I.
     midnight_utc = datetime(2026, 7, 7, 0, 0, tzinfo=UTC)
-    assert date_str(midnight_utc) == "2026-07-07"
-    assert date_str(datetime(2026, 7, 7)) == "2026-07-07"  # naive → UTC
-    assert date_str(date(2026, 7, 7)) == "2026-07-07"
-    assert date_str(None) is None
+    assert tools.date_str(midnight_utc) == "2026-07-07"
+    assert tools.date_str(datetime(2026, 7, 7)) == "2026-07-07"  # naive → UTC
+    assert tools.date_str(date(2026, 7, 7)) == "2026-07-07"
+    assert tools.date_str(None) is None
 
 
 def test_true_timestamps_render_in_montreal():
-    assert iso_mtl(datetime(2026, 7, 7, 12, 0, tzinfo=UTC)) == (
+    assert tools.iso_mtl(datetime(2026, 7, 7, 12, 0, tzinfo=UTC)) == (
         "2026-07-07T08:00:00-04:00"
     )
-    assert iso_mtl(None) is None
+    assert tools.iso_mtl(None) is None
 
 
 def test_tool_result_envelope():
@@ -235,9 +232,9 @@ def test_list_dossiers_query_and_truncation(monkeypatch):
 
 
 def test_get_dossier_requires_exactly_one_selector():
-    with pytest.raises(ToolArgumentError):
+    with pytest.raises(tools.ToolArgumentError):
         handlers.get_dossier({})
-    with pytest.raises(ToolArgumentError):
+    with pytest.raises(tools.ToolArgumentError):
         handlers.get_dossier({"dossier_id": "x", "file_number": "y"})
 
 
@@ -325,11 +322,11 @@ def test_list_tasks_due_date_is_date_only(monkeypatch):
 def test_list_hearings_validates_dates(monkeypatch):
     monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
                         lambda a, b, limit=200: [])
-    with pytest.raises(ToolArgumentError):
+    with pytest.raises(tools.ToolArgumentError):
         handlers.list_hearings({"date_from": "07/10/2026"})
-    with pytest.raises(ToolArgumentError):
+    with pytest.raises(tools.ToolArgumentError):
         handlers.list_hearings({"date_from": "2026-07-10", "date_to": "2026-07-01"})
-    with pytest.raises(ToolArgumentError):
+    with pytest.raises(tools.ToolArgumentError):
         handlers.list_hearings({"date_from": "2024-01-01", "date_to": "2026-01-01"})
 
 

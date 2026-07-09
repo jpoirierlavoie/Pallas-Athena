@@ -4,15 +4,12 @@ import os
 import sys
 from datetime import date
 
-import pytest
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.template_fields import (
     CATALOG,
     FLAT_ALIASES,
     MANUAL_FIELDS,
-    Classification,
     classify_placeholders,
     fallback_value,
     french_long_date,
