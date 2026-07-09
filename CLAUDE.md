@@ -1355,7 +1355,7 @@ Run with `python -m scripts.<name>` from the `athena/` directory.
 
 ### `scripts/seed_reference_data.py` (Phase G)
 
-Populates `ref_greffes` (~55 entries) and `ref_juridictions` (~15 entries) from hardcoded Python lists. Idempotent — overwrites documents. Run once after initial deploy, or when reference data changes.
+Populates `ref_greffes` (56 entries) and `ref_juridictions` (27 entries) from hardcoded Python lists. Idempotent — overwrites documents. Run once after initial deploy, or when reference data changes.
 
 ### `scripts/normalize_existing.py` (Phase B)
 
