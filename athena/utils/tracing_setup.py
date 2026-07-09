@@ -293,7 +293,7 @@ def _requests_request_hook(span_obj: Any, request_obj: Any) -> None:
         # reintroduce inline user:pass@ credentials that the default
         # instrumentation path strips via remove_url_credentials.
         authority = host + (f":{parts.port}" if parts.port else "")
-        if host.endswith("storage.googleapis.com"):
+        if host == "storage.googleapis.com" or host.endswith(".storage.googleapis.com"):
             sanitized = f"{parts.scheme}://{authority}"
         else:
             sanitized = f"{parts.scheme}://{authority}{parts.path}"

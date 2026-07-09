@@ -225,8 +225,15 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def sanitize(value: str, max_length: int = 1000) -> str:
-    """Strip HTML tags and truncate.  Output escaping is handled by Jinja2."""
-    cleaned = _TAG_RE.sub("", value)
+    """Strip HTML tags and truncate.  Output escaping is handled by Jinja2.
+
+    The value is truncated to ``max_length`` *before* the tag-stripping regex
+    runs.  The output is capped at ``max_length`` either way, so no legitimate
+    content is lost, and bounding the regex input first prevents polynomial-time
+    backtracking on adversarial input such as a long run of unclosed ``<``
+    (CWE-1333 / CodeQL ``py/polynomial-redos``).
+    """
+    cleaned = _TAG_RE.sub("", value[:max_length])
     return cleaned[:max_length]
 
 

@@ -40,8 +40,9 @@ def _make_app(**config) -> Flask:
 def test_csp_allows_rocket_loader_origin():
     # Cloudflare Rocket Loader injects its loader from ajax.cloudflare.com;
     # without this origin the (future, enforcing) CSP would break it and the
-    # report-only policy floods /csp-report on every page view.
-    assert "https://ajax.cloudflare.com" in CSP
+    # report-only policy floods /csp-report on every page view. Assert the whole
+    # script-src directive (a bare-substring check trips py/incomplete-url-
+    # substring-sanitization and is weaker than pinning the directive anyway).
     assert "script-src 'self' https://ajax.cloudflare.com" in CSP
 
 

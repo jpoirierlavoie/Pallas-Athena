@@ -11,6 +11,7 @@ from flask import (
     session,
     url_for,
 )
+from markupsafe import escape
 
 from auth import login_required
 from security import safe_internal_redirect
@@ -392,7 +393,7 @@ def document_move(document_id: str) -> str:
 
     if _is_htmx():
         if errors:
-            return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         resp = redirect(url_for("documents.document_detail", document_id=document_id))
         resp.headers["HX-Redirect"] = url_for("documents.document_detail", document_id=document_id)
         return resp
@@ -418,7 +419,7 @@ def document_move_bulk() -> str:
     target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=target_folder_id or "")
     if _is_htmx():
         if errors and moved == 0:
-            return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
         return resp
@@ -450,7 +451,7 @@ def document_delete(document_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 
@@ -475,7 +476,7 @@ def folder_create() -> str:
 
     if _is_htmx():
         if errors:
-            return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         # Refresh the browser at the current folder location
         target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_folder_id or "")
         resp = redirect(target)
@@ -501,7 +502,7 @@ def folder_rename(folder_id: str) -> str:
 
     if _is_htmx():
         if errors:
-            return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         parent_id = folder.get("parent_folder_id") if folder else None
         target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_id or "")
         resp = redirect(target)
@@ -527,7 +528,7 @@ def folder_move(folder_id: str) -> str:
 
     if _is_htmx():
         if errors:
-            return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=new_parent_folder_id or "")
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -556,7 +557,7 @@ def folder_delete_route(folder_id: str) -> str:
 
     if _is_htmx():
         if not success:
-            return f'<div class="text-red-600 text-sm">{error}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
         target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_id or "")
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target

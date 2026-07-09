@@ -11,6 +11,7 @@ from flask import (
     request,
     url_for,
 )
+from markupsafe import escape
 
 from auth import login_required
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
@@ -402,7 +403,7 @@ def invoice_update_status(invoice_id: str) -> str:
 
     if not success:
         if _is_htmx():
-            return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
+            return f'<div class="text-red-600 text-sm p-2">{escape(error)}</div>', 422
         return redirect(target)
 
     if _is_htmx():
@@ -422,7 +423,7 @@ def invoice_void(invoice_id: str) -> str:
 
     if not success:
         if _is_htmx():
-            return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
+            return f'<div class="text-red-600 text-sm p-2">{escape(error)}</div>', 422
         return redirect(target)
 
     if _is_htmx():
@@ -442,7 +443,7 @@ def invoice_delete(invoice_id: str) -> str:
     if not success:
         target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
         if _is_htmx():
-            return f'<div class="text-red-600 text-sm p-2">{error}</div>', 422
+            return f'<div class="text-red-600 text-sm p-2">{escape(error)}</div>', 422
         return redirect(target)
 
     target = safe_internal_redirect(return_to, url_for("invoices.invoice_list"))

@@ -172,7 +172,8 @@ def _check_owner_literals(rpt: Report) -> None:
         if not os.path.exists(path):
             continue
         try:
-            text = open(path, encoding="utf-8").read()
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
         except OSError:
             continue
         rel = os.path.relpath(path, _REPO_ROOT)
@@ -183,7 +184,8 @@ def _check_owner_literals(rpt: Report) -> None:
     # main.py fingerprint (only matters for the Android TWA)
     main_py = os.path.join(_ATHENA_DIR, "main.py")
     if os.path.exists(main_py):
-        text = open(main_py, encoding="utf-8").read()
+        with open(main_py, encoding="utf-8") as fh:
+            text = fh.read()
         if re.search(r"47:3B:05:FB", text):
             found_any = True
             rpt.emit(_WARN, "main.py: assetlinks.json still has the owner's TWA signing fingerprint (only relevant if you ship the Android TWA)")
