@@ -488,7 +488,7 @@ def hearing_delete(hearing_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 

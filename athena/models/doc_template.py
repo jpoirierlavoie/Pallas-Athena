@@ -26,7 +26,7 @@ from werkzeug.utils import secure_filename
 from models import db
 from security import sanitize
 from utils.docx_fill import validate_template
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.template_fields import classify_placeholders
 
 logger = logging.getLogger(__name__)
@@ -432,14 +432,16 @@ def delete_template(template_id: str) -> tuple[bool, str]:
                 "delete_template: blob already missing for %s",
                 sanitize_log_value(template_id),
             )
-        except Exception as exc:
-            return False, f"Erreur lors de la suppression du fichier : {exc}"
+        except Exception:
+            log_unexpected("template file delete failed")
+            return False, "Erreur lors de la suppression du fichier. Veuillez réessayer."
 
     try:
         db.collection(COLLECTION).document(template_id).delete()
         return True, ""
-    except Exception as exc:
-        return False, f"Erreur lors de la suppression : {exc}"
+    except Exception:
+        log_unexpected("template delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
 def get_template_bytes(template_id: str) -> Optional[bytes]:

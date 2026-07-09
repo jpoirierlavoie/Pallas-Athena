@@ -15,7 +15,7 @@ from firebase_admin import storage
 from werkzeug.utils import secure_filename
 from models import db
 from security import sanitize
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -424,8 +424,9 @@ def update_metadata(
 
     try:
         db.collection(COLLECTION).document(document_id).set(merged)
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("document write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     return merged, []
 
@@ -451,15 +452,17 @@ def delete_document(document_id: str) -> tuple[bool, str]:
                 "delete_document: blob already missing for document %s",
                 sanitize_log_value(document_id),
             )
-        except Exception as exc:
-            return False, f"Erreur lors de la suppression du fichier : {exc}"
+        except Exception:
+            log_unexpected("document file delete failed")
+            return False, "Erreur lors de la suppression du fichier. Veuillez réessayer."
 
     # Delete from Firestore
     try:
         db.collection(COLLECTION).document(document_id).delete()
         return True, ""
-    except Exception as exc:
-        return False, f"Erreur lors de la suppression : {exc}"
+    except Exception:
+        log_unexpected("document delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
 def get_signed_url(
@@ -550,8 +553,9 @@ def move_document(
 
     try:
         db.collection(COLLECTION).document(document_id).set(doc)
-    except Exception as exc:
-        return None, [f"Erreur lors du déplacement : {exc}"]
+    except Exception:
+        log_unexpected("document move failed")
+        return None, ["Erreur lors du déplacement. Veuillez réessayer."]
 
     return doc, []
 
@@ -594,8 +598,9 @@ def move_documents_bulk(
     if moved > 0:
         try:
             batch.commit()
-        except Exception as exc:
-            return 0, [f"Erreur lors du déplacement : {exc}"]
+        except Exception:
+            log_unexpected("document bulk move failed")
+            return 0, ["Erreur lors du déplacement. Veuillez réessayer."]
 
     return moved, errors
 

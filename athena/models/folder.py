@@ -8,7 +8,7 @@ from typing import Optional
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +124,9 @@ def create_folder(
 
     try:
         db.collection(COLLECTION).document(folder_id).set(folder)
-    except Exception as exc:
-        return None, [f"Erreur lors de la création : {exc}"]
+    except Exception:
+        log_unexpected("folder create failed")
+        return None, ["Erreur lors de la création. Veuillez réessayer."]
 
     # Touch parent folder's updated_at
     if parent_folder_id:
@@ -199,8 +200,9 @@ def rename_folder(
 
     try:
         db.collection(COLLECTION).document(folder_id).set(existing)
-    except Exception as exc:
-        return None, [f"Erreur lors du renommage : {exc}"]
+    except Exception:
+        log_unexpected("folder rename failed")
+        return None, ["Erreur lors du renommage. Veuillez réessayer."]
 
     # Touch parent
     if existing.get("parent_folder_id"):
@@ -268,8 +270,9 @@ def move_folder(
 
     try:
         db.collection(COLLECTION).document(folder_id).set(existing)
-    except Exception as exc:
-        return None, [f"Erreur lors du déplacement : {exc}"]
+    except Exception:
+        log_unexpected("folder move failed")
+        return None, ["Erreur lors du déplacement. Veuillez réessayer."]
 
     # Touch old and new parent
     if old_parent:
@@ -327,8 +330,9 @@ def delete_folder(
     # Delete the folder
     try:
         db.collection(COLLECTION).document(folder_id).delete()
-    except Exception as exc:
-        return False, f"Erreur lors de la suppression : {exc}"
+    except Exception:
+        log_unexpected("folder delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
 
     # Touch parent
     if parent_id:

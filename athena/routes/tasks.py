@@ -445,7 +445,7 @@ def task_toggle(task_id: str) -> str:
     task, errors = toggle_task_complete(task_id)
 
     if errors:
-        return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
 
     if task.get("dossier_id"):
         bump_ctag(f"dossier:{task['dossier_id']}")

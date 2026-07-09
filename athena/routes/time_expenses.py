@@ -371,7 +371,7 @@ def time_entry_delete(entry_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 
@@ -496,7 +496,7 @@ def expense_delete(expense_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 

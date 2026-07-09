@@ -305,7 +305,7 @@ def note_delete(note_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 
@@ -391,7 +391,7 @@ def note_pin(note_id: str) -> str:
 
     if errors:
         if _is_htmx():
-            return f'<div class="text-red-600 text-sm">{errors[0]}</div>', 422
+            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         return redirect(url_for("notes.note_list"))
 
     if note.get("dossier_id"):

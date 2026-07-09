@@ -11,7 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +121,9 @@ def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
 
     try:
         db.collection(COLLECTION).document(expense_id).set(merged)
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("expense write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     return merged, []
 
@@ -292,8 +293,9 @@ def update_expense(
 
     try:
         db.collection(COLLECTION).document(expense_id).set(merged)
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("expense write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     return merged, []
 
@@ -310,8 +312,9 @@ def delete_expense(expense_id: str) -> tuple[bool, str]:
     try:
         db.collection(COLLECTION).document(expense_id).delete()
         return True, ""
-    except Exception as exc:
-        return False, f"Erreur lors de la suppression : {exc}"
+    except Exception:
+        log_unexpected("expense delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
 # ── Summary & batch operations ────────────────────────────────────────────

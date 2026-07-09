@@ -9,6 +9,7 @@ from flask import (
     request,
     url_for,
 )
+from markupsafe import escape
 
 from auth import login_required
 from models.dossier import get_dossier
@@ -294,7 +295,7 @@ def protocol_delete(protocol_id: str) -> str:
             resp = redirect(target)
             resp.headers["HX-Redirect"] = target
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(target)
 
@@ -319,7 +320,7 @@ def step_add(protocol_id: str) -> str:
     step, errors = add_step(protocol_id, step_data)
 
     if errors and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{errors[0]}</div>', 422
+        return f'<div class="text-red-600 text-sm p-3">{escape(errors[0])}</div>', 422
 
     target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
     if _is_htmx():
@@ -346,7 +347,7 @@ def step_update(protocol_id: str, step_id: str) -> str:
     step, errors = update_step(protocol_id, step_id, data)
 
     if errors and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{errors[0]}</div>', 422
+        return f'<div class="text-red-600 text-sm p-3">{escape(errors[0])}</div>', 422
 
     target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
     if _is_htmx():
@@ -363,7 +364,7 @@ def step_complete(protocol_id: str, step_id: str) -> str:
     step, errors = complete_step(protocol_id, step_id)
 
     if errors and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{errors[0]}</div>', 422
+        return f'<div class="text-red-600 text-sm p-3">{escape(errors[0])}</div>', 422
 
     target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
     if _is_htmx():
@@ -380,7 +381,7 @@ def step_delete(protocol_id: str, step_id: str) -> str:
     success, error = delete_step(protocol_id, step_id)
 
     if not success and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm p-3">{escape(error)}</div>', 422
 
     target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
     if _is_htmx():

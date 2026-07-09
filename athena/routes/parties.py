@@ -12,6 +12,7 @@ from flask import (
     request,
     url_for,
 )
+from markupsafe import escape
 
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
@@ -410,7 +411,7 @@ def partie_delete(partie_id: str) -> str:
             resp = redirect(url_for("parties.partie_list"))
             resp.headers["HX-Redirect"] = url_for("parties.partie_list")
             return resp
-        return f'<div class="text-red-600 text-sm">{error}</div>', 422
+        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
     return redirect(url_for("parties.partie_list"))
 

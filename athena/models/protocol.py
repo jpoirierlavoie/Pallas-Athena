@@ -10,7 +10,7 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -428,8 +428,9 @@ def create_protocol(
             batch.set(step_ref, step)
 
         batch.commit()
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("protocol write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     # Auto-create linked tasks if requested
     if auto_create_tasks and step_docs:
@@ -570,8 +571,9 @@ def update_protocol(
 
     try:
         db.collection(COLLECTION).document(protocol_id).set(merged)
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("protocol write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     merged["steps"] = steps
     return merged, []
@@ -597,8 +599,9 @@ def delete_protocol(protocol_id: str) -> tuple[bool, str]:
         batch.delete(proto_ref)
         batch.commit()
         return True, ""
-    except Exception as exc:
-        return False, f"Erreur lors de la suppression : {exc}"
+    except Exception:
+        log_unexpected("protocol delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
 # ── Step operations ─────────────────────────────────────────────────────
@@ -643,8 +646,9 @@ def add_step(
             "updated_at": now,
             "etag": str(uuid.uuid4()),
         })
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("protocol write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     return merged, []
 
@@ -694,8 +698,9 @@ def update_step(
             "updated_at": now,
             "etag": str(uuid.uuid4()),
         })
-    except Exception as exc:
-        return None, [f"Erreur lors de la sauvegarde : {exc}"]
+    except Exception:
+        log_unexpected("protocol write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
     return merged, []
 
@@ -730,8 +735,9 @@ def delete_step(
             "etag": str(uuid.uuid4()),
         })
         return True, ""
-    except Exception as exc:
-        return False, f"Erreur lors de la suppression : {exc}"
+    except Exception:
+        log_unexpected("protocol delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
 def complete_step(
@@ -827,8 +833,9 @@ def recompute_deadlines(
         })
 
         batch.commit()
-    except Exception as exc:
-        return None, [f"Erreur lors du recalcul : {exc}"]
+    except Exception:
+        log_unexpected("protocol deadline recompute failed")
+        return None, ["Erreur lors du recalcul. Veuillez réessayer."]
 
     return get_protocol(protocol_id), []
 
