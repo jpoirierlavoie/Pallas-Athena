@@ -198,6 +198,63 @@ def test_positions_unresolved_for_role_autre():
     assert "défendeur" not in resolved
 
 
+# ── Names: bare by default, "_avec_civilite" twin keeps the honorific ────
+
+def test_positions_bare_by_default_and_avec_civilite_twin():
+    # The snapshot name carries the honorific (display_name prepends prefix);
+    # the position fields render bare, the twin keeps it.
+    d = _dossier(
+        role="demandeur",
+        clients=[{"id": "p1", "name": "M. Jean Tremblay"}],
+        opposing_parties=[{"id": "p2", "name": "Me Claire Dubois"}],
+    )
+    r = _resolve(
+        ["dossier.demandeur", "dossier.demandeur_avec_civilite",
+         "dossier.defendeur", "dossier.defendeur_avec_civilite"],
+        dossier=d,
+    )
+    assert r["dossier.demandeur"] == "Jean Tremblay"
+    assert r["dossier.demandeur_avec_civilite"] == "M. Jean Tremblay"
+    assert r["dossier.defendeur"] == "Claire Dubois"
+    assert r["dossier.defendeur_avec_civilite"] == "Me Claire Dubois"
+
+
+def test_nom_complet_bare_by_default_and_avec_civilite_twin():
+    r = _resolve(
+        ["destinataire.nom_complet", "destinataire.nom_complet_avec_civilite"],
+        destinataire=_avocat(),  # prefix "Me"
+    )
+    assert r["destinataire.nom_complet"] == "Claire Dubois"
+    assert r["destinataire.nom_complet_avec_civilite"] == "Me Claire Dubois"
+
+
+def test_avec_civilite_accented_and_flat_spellings_resolve():
+    d = _dossier(role="demandeur", clients=[{"id": "1", "name": "M. Jean Tremblay"}])
+    r = _resolve(
+        ["demandeur_avec_civilité", "demandeur_avec_civilite",
+         "destinataire.nom_complet_avec_civilité"],
+        dossier=d, destinataire=_avocat(),
+    )
+    assert r["demandeur_avec_civilité"] == "M. Jean Tremblay"
+    assert r["demandeur_avec_civilite"] == "M. Jean Tremblay"
+    assert r["destinataire.nom_complet_avec_civilité"] == "Me Claire Dubois"
+
+
+def test_side_names_strip_per_name_and_leave_org_untouched():
+    d = _dossier(
+        role="demandeur",
+        clients=[{"id": "1", "name": "Mme Marie Roy"},
+                 {"id": "2", "name": "9123-4567 Québec inc."}],
+        opposing_parties=[{"id": "3", "name": "Marc Lavoie"}],
+    )
+    assert _resolve(["demandeur"], dossier=d)["demandeur"] == (
+        "Marie Roy, 9123-4567 Québec inc."
+    )
+    assert _resolve(["dossier.demandeur_avec_civilite"], dossier=d)[
+        "dossier.demandeur_avec_civilite"
+    ] == "Mme Marie Roy, 9123-4567 Québec inc."
+
+
 # ── Civilité / organisation (§6.3) ──────────────────────────────────────
 
 def test_civilite_is_passthrough_not_resolved():

@@ -116,13 +116,46 @@ def fallback_value(name: str, is_auto: bool) -> str:
 # ── Partie helpers ──────────────────────────────────────────────────────
 
 def _display_name(partie: dict) -> str:
-    """Mirror of models.partie.display_name (kept local — this module must
-    stay importable without the Firestore client)."""
+    """Full name WITH the honorific — mirror of models.partie.display_name.
+
+    Used only by the ``…_avec_civilite`` twin fields; the default name
+    fields use :func:`_nom_bare`. Kept local so this module stays importable
+    without the Firestore client.
+    """
     if partie.get("type") == "organization":
         return partie.get("organization_name", "")
     parts = [partie.get("prefix", ""), partie.get("first_name", ""),
              partie.get("last_name", "")]
     return " ".join(p for p in parts if p).strip()
+
+
+def _nom_bare(partie: dict) -> str:
+    """Full name WITHOUT the honorific — the DEFAULT for ``…nom_complet``.
+
+    A person cited in a procedure is named bare ("Jean Tremblay"); the
+    civility is opt-in via the ``…_avec_civilite`` twin field. Organizations
+    have no honorific, so this equals their legal name.
+    """
+    if partie.get("type") == "organization":
+        return partie.get("organization_name", "")
+    parts = [partie.get("first_name", ""), partie.get("last_name", "")]
+    return " ".join(p for p in parts if p).strip()
+
+
+# Honorific prefixes that models.partie.display_name prepends to a person's
+# name. The demandeur/défendeur position fields resolve from the stored
+# snapshot name (which already carries the prefix), so the default strips a
+# leading one; the "_avec_civilite" twin keeps it.
+_CIVILITY_PREFIXES = ("Me", "Mme", "M.")
+
+
+def _strip_civility_prefix(name: str) -> str:
+    """Drop a leading honorific (Me / Mme / M.) from a display name."""
+    stripped = name.strip()
+    for prefix in _CIVILITY_PREFIXES:
+        if stripped.startswith(prefix + " "):
+            return stripped[len(prefix) + 1:].strip()
+    return stripped
 
 
 def _selected_address(partie: dict) -> tuple[dict[str, str], bool]:
@@ -229,16 +262,28 @@ def _sides(ctx: _Context) -> tuple[Optional[list], Optional[list], Optional[dict
     return None, None, None, None
 
 
-def _joined_names(entries: Optional[list]) -> Optional[str]:
+def _joined_names(entries: Optional[list], *, with_civility: bool = False) -> Optional[str]:
+    """Join a side's party names for {{dossier.demandeur}}/{{…defendeur}}.
+
+    The stored snapshot name carries the honorific (models.partie.display_name
+    prepends the prefix). By DEFAULT a procedure intitulé names the party
+    bare, so the civility is stripped; the ``…_avec_civilite`` twin passes
+    ``with_civility=True`` to keep it.
+    """
     if not entries:
         return None
-    names = [e.get("name", "") for e in entries if e.get("name")]
+    names = [
+        (e.get("name", "") if with_civility else _strip_civility_prefix(e.get("name", "")))
+        for e in entries
+        if e.get("name")
+    ]
+    names = [n.strip() for n in names if n and n.strip()]
     return ", ".join(names) if names else None
 
 
-def _side_names(index: int) -> Callable[[_Context], Optional[str]]:
+def _side_names(index: int, *, with_civility: bool = False) -> Callable[[_Context], Optional[str]]:
     def resolver(ctx: _Context) -> Optional[str]:
-        return _joined_names(_sides(ctx)[index])
+        return _joined_names(_sides(ctx)[index], with_civility=with_civility)
 
     return resolver
 
@@ -299,7 +344,9 @@ def _firm_field(key: str) -> Callable[[_Context], Optional[str]]:
 
 def _partie_fields(slot: str) -> dict[str, tuple[Optional[str], Callable]]:
     return {
-        f"{slot}.nom_complet": (slot, _partie(slot, _display_name)),
+        # Bare by default; the twin keeps the honorific (Me / M. / Mme).
+        f"{slot}.nom_complet": (slot, _partie(slot, _nom_bare)),
+        f"{slot}.nom_complet_avec_civilite": (slot, _partie(slot, _display_name)),
         f"{slot}.prenom": (slot, _partie(slot, _individual_field("first_name"))),
         f"{slot}.nom": (slot, _partie(slot, _individual_field("last_name"))),
         f"{slot}.organisation": (slot, _partie(slot, _organisation)),
@@ -334,9 +381,11 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.role": ("dossier", _dossier_field("role")),
     "dossier.role_feminin": ("dossier", _role_feminin),
     "dossier.role_label": ("dossier", _role_label),
-    # Derived party positions (§6.2)
+    # Derived party positions (§6.2) — bare by default, "_avec_civilite" twin
     "dossier.demandeur": ("dossier", _side_names(0)),
     "dossier.defendeur": ("dossier", _side_names(1)),
+    "dossier.demandeur_avec_civilite": ("dossier", _side_names(0, with_civility=True)),
+    "dossier.defendeur_avec_civilite": ("dossier", _side_names(1, with_civility=True)),
     "dossier.adresse_demandeur": ("dossier", _side_address(0)),
     "dossier.adresse_defendeur": ("dossier", _side_address(1)),
     # cabinet.* (§6.5)
@@ -356,6 +405,20 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     **_partie_fields("destinataire"),
 }
 
+
+def _register_civility_variants() -> None:
+    """Register accented spellings of the ``_avec_civilite`` twins.
+
+    A French-typed ``{{…avec_civilité}}`` then resolves like the ASCII
+    canonical ``{{…avec_civilite}}`` (matching is case-insensitive but not
+    accent-insensitive).
+    """
+    for name in [n for n in CATALOG if n.endswith("_avec_civilite")]:
+        CATALOG[name.replace("_avec_civilite", "_avec_civilité")] = CATALOG[name]
+
+
+_register_civility_variants()
+
 # Flat alias table (§6.6 — exhaustive; compatibility with the four
 # existing gabarits and the user's Claude.ai skills).
 FLAT_ALIASES: dict[str, str] = {
@@ -368,6 +431,10 @@ FLAT_ALIASES: dict[str, str] = {
     "rôle": "dossier.role_feminin",
     "demandeur": "dossier.demandeur",
     "défendeur": "dossier.defendeur",
+    "demandeur_avec_civilité": "dossier.demandeur_avec_civilite",
+    "demandeur_avec_civilite": "dossier.demandeur_avec_civilite",
+    "défendeur_avec_civilité": "dossier.defendeur_avec_civilite",
+    "défendeur_avec_civilite": "dossier.defendeur_avec_civilite",
     "adresse_demandeur": "dossier.adresse_demandeur",
     "adresse_défendeur": "dossier.adresse_defendeur",
     "ville_procédure": "cabinet.ville",
