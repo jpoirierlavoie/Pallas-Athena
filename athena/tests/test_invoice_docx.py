@@ -127,8 +127,23 @@ def test_scalar_money_date_hours_rate_strings():
 def test_taux_horaire_single_vs_mixed_rates():
     same = _build(_invoice(), [_fee("A", 1, 25000, 25000), _fee("B", 2, 25000, 50000)])
     assert same.values["facture.taux_horaire"] == f"250,00{NBSP}$"
+    # Mixed rates, no dossier → blank (itemized per row).
     mixed = _build(_invoice(), [_fee("A", 1, 25000, 25000), _fee("B", 1, 30000, 30000)])
     assert mixed.values["facture.taux_horaire"] == ""
+
+
+def test_taux_horaire_falls_back_to_dossier_rate():
+    dossier = {"hourly_rate": 27500, "clients": [], "opposing_parties": []}
+    # Mixed line-item rates → fall back to the dossier's configured rate.
+    mixed = _build(_invoice(),
+                   [_fee("A", 1, 25000, 25000), _fee("B", 1, 30000, 30000)],
+                   dossier=dossier)
+    assert mixed.values["facture.taux_horaire"] == f"275,00{NBSP}$"
+    # A uniform billed rate still wins over the dossier rate.
+    uniform = _build(_invoice(),
+                     [_fee("A", 1, 25000, 25000), _fee("B", 2, 25000, 50000)],
+                     dossier=dossier)
+    assert uniform.values["facture.taux_horaire"] == f"250,00{NBSP}$"
 
 
 # ── Taxes read, never recomputed (§7.2) ─────────────────────────────────

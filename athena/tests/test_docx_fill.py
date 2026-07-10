@@ -620,6 +620,23 @@ def test_conditional_marker_paragraph_with_other_text_is_kept():
     assert out.count("<w:p>") == 3  # all three paragraphs kept (they hold text)
 
 
+def test_adjacent_tables_after_conditional_get_minimal_separator():
+    # Two kept conditional tables would end up directly adjacent (which Word
+    # merges) — a minimal (~1pt) separator paragraph keeps them distinct with
+    # no visible gap.
+    import xml.etree.ElementTree as ET
+    docx = _make_docx(_doc(
+        _para("{{?si_honoraires}}"), _tbl(_tr(_tc("HON"))), _para("{{/si_honoraires}}"),
+        _para("{{?si_debours_tx}}"), _tbl(_tr(_tc("TX"))), _para("{{/si_debours_tx}}"),
+    ))
+    out = _document_xml(fill_docx(
+        docx, {}, conditions={"si_honoraires": True, "si_debours_tx": True}))
+    ET.fromstring(out)
+    assert "HON" in out and "TX" in out
+    assert "</w:tbl><w:tbl>" not in out          # never directly adjacent
+    assert 'w:line="20"' in out                   # minimal separator inserted
+
+
 def test_conditional_false_removes_whole_span():
     import xml.etree.ElementTree as ET
     docx = _make_docx(_doc(

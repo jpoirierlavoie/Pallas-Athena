@@ -37,7 +37,11 @@ from models.partie import display_name, get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
 from models.doc_template import get_note_honoraires_template, get_template_bytes
-from models.document import upload_document
+from models.document import (
+    GENERATED_FOLDER_NAME,
+    projet_document_name,
+    upload_document,
+)
 from models.folder import get_or_create_folder
 from tz import MTL
 from utils.docx_fill import DocxFillError, fill_docx
@@ -516,16 +520,20 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
         log_template_event("generation_failed", template_id=template_id, reason="fill_error")
         return _note_error("Erreur lors de la génération. Veuillez réessayer.")
 
-    folder = get_or_create_folder(dossier_id, "Notes d'honoraires") if dossier_id else None
+    folder = get_or_create_folder(dossier_id, GENERATED_FOLDER_NAME) if dossier_id else None
     invoice_number = invoice.get("invoice_number", "")
-    out_name = secure_filename(f"Note_honoraires_{invoice_number}.docx")
+    reference = (dossier or {}).get("file_number", "")
+    tmpl_base = template.get("name") or "Note d'honoraires"
+    tmpl_name = f"{tmpl_base} {invoice_number}".strip()
+    display = projet_document_name(reference, tmpl_name, today)
+    out_name = secure_filename(f"{display}.docx")
     if not out_name.lower().endswith(".docx"):
-        out_name = f"note_honoraires_{today.isoformat()}.docx"
+        out_name = f"projet_{today.isoformat()}.docx"
 
     metadata = {
         "category": "correspondance",
         "folder_id": folder["id"] if folder else None,
-        "display_name": f"Note d'honoraires {invoice_number}".strip(),
+        "display_name": display,
         "description": f"Générée depuis la facture {invoice_number}".strip(),
         "tags": ["note_honoraires"],
     }

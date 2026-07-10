@@ -74,6 +74,19 @@ _TABLE_ROW_RE = re.compile(
     r"<w:tr(?:\s[^>]*)?>(?:(?!<w:tr[\s/>]).)*?</w:tr>", re.DOTALL
 )
 
+# Two directly-adjacent <w:tbl> are invalid in Word — it merges them into one
+# table (or auto-inserts a separator paragraph = a visible blank line). After a
+# conditional removes the paragraphs that used to sit between two tables, we
+# insert a MINIMAL (~1pt line, 1pt font) empty paragraph so the tables stay
+# distinct AND the visible gap all but disappears. Lookahead so 3+ adjacent
+# tables all get separated; `<w:tbl[\s>]` never matches <w:tblPr>.
+_ADJACENT_TABLES_RE = re.compile(r"</w:tbl>\s*(?=<w:tbl[\s>])")
+_TABLE_SEPARATOR = (
+    '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" '
+    'w:lineRule="exact"/><w:rPr><w:sz w:val="2"/><w:szCs w:val="2"/></w:rPr>'
+    "</w:pPr></w:p>"
+)
+
 # ── Run normalization (heal Word's run-splitting so placeholders match) ──
 # Word fragments a typed placeholder across multiple <w:r> runs — proofing
 # (spell/grammar) brackets it in <w:proofErr> markers that force run
@@ -446,6 +459,15 @@ def _apply_rows(xml: str, rows_by_region: dict[str, list[dict]]) -> str:
     return xml
 
 
+def _ensure_table_separation(xml: str) -> str:
+    """Insert a minimal empty paragraph between any two directly-adjacent
+    ``<w:tbl>`` (which a conditional may have produced), so Word keeps them as
+    separate tables instead of merging them — with a ~1pt height so no visible
+    gap appears. To avoid even that hair-line, put the section heading INSIDE
+    the ``{{?cond}}`` so a real paragraph separates the tables."""
+    return _ADJACENT_TABLES_RE.sub("</w:tbl>" + _TABLE_SEPARATOR, xml)
+
+
 # ── Public API ──────────────────────────────────────────────────────────
 
 def extract_placeholders(docx_bytes: bytes) -> list[str]:
@@ -548,6 +570,10 @@ def _fill_target_xml(
         xml = _apply_conditions(xml, conditions)
     if rows_by_region:
         xml = _apply_rows(xml, rows_by_region)
+    if conditions or rows_by_region:
+        # A removed conditional can leave two tables adjacent — keep them
+        # distinct (and gap-free) before the block/scalar passes.
+        xml = _ensure_table_separation(xml)
     block_pairs: list[tuple[str, str]] = []
     scalar_pairs: list[tuple[str, str]] = []
     for name, raw_value in values.items():

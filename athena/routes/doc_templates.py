@@ -48,7 +48,12 @@ from models.doc_template import (
     list_templates,
     update_template,
 )
-from models.document import upload_document
+from models.document import (
+    GENERATED_FOLDER_NAME,
+    projet_document_name,
+    upload_document,
+)
+from models.folder import get_or_create_folder
 from models.dossier import get_dossier, list_dossiers
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
 from models.partie import display_name, get_partie, list_parties
@@ -632,15 +637,18 @@ def generate() -> Response | str:
         return redirect(url_for("doc_templates.template_detail", template_id=template_id))
 
     today = datetime.now(MTL).date()
-    reference = (dossier or {}).get("file_number") or template.get("name", "gabarit")
-    out_name = secure_filename(f"{reference}_{today.isoformat()}.docx")
+    reference = (dossier or {}).get("file_number", "")
+    display = projet_document_name(reference, template.get("name", "Gabarit"), today)
+    out_name = secure_filename(f"{display}.docx")
     if not out_name.lower().endswith(".docx"):
-        out_name = f"document_{today.isoformat()}.docx"
+        out_name = f"projet_{today.isoformat()}.docx"
 
     if dossier:
+        folder = get_or_create_folder(dossier_id, GENERATED_FOLDER_NAME)
         metadata = {
             "category": template.get("category", "autre"),
-            "display_name": f"{template.get('name', 'Gabarit')} — {today.isoformat()}",
+            "folder_id": folder["id"] if folder else None,
+            "display_name": display,
             "description": (
                 f"Généré depuis le gabarit «{template.get('name', '')}» "
                 f"v{template.get('version', 1)}"

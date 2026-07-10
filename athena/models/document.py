@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import BinaryIO, Optional
 
 import google.auth
@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 
 # Firestore collection path
 COLLECTION = "documents"
+
+# All generated documents (gabarits + notes d'honoraires) land in this
+# per-dossier folder (Phase H.2).
+GENERATED_FOLDER_NAME = "Projets"
+
+
+def projet_document_name(reference: str, template_name: str, day: date) -> str:
+    """Uniform display name for a generated document (Phase H.2):
+    ``"REF - YYYY-MM-DD - Projet Nom du gabarit"``.
+
+    ``reference`` is the dossier's internal file number (« notre référence »);
+    an empty reference is simply dropped from the front.
+    """
+    parts = [
+        (reference or "").strip(),
+        day.isoformat(),
+        f"Projet {(template_name or '').strip()}".strip(),
+    ]
+    return " - ".join(p for p in parts if p)
 
 # Allowed MIME types for upload
 ALLOWED_MIME_TYPES = {

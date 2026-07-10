@@ -93,7 +93,7 @@ def _facture_values(invoice: dict, line_items: list[dict]) -> dict[str, str]:
     st_ntx = sum(int(e.get("amount", 0) or 0) for e in non_taxable)
 
     total_hours = sum(float(f.get("hours") or 0) for f in fees)
-    rates = {int(f.get("rate") or 0) for f in fees}
+    rates = {r for f in fees if (r := int(f.get("rate") or 0)) > 0}
     taux_horaire = format_cents_fr(next(iter(rates))) if len(rates) == 1 else ""
 
     return {
@@ -183,6 +183,12 @@ def build_invoice_context(
         today=today,
     )
     values.update(_facture_values(invoice, line_items))
+
+    # Hourly rate: prefer the uniform billed rate; when the line items are
+    # mixed or rateless, fall back to the dossier's configured rate so the
+    # note still shows a rate (§6.2).
+    if not values.get("facture.taux_horaire") and dossier and dossier.get("hourly_rate"):
+        values["facture.taux_horaire"] = format_cents_fr(int(dossier["hourly_rate"]))
 
     rows = _build_rows(line_items)
     conditions = {
