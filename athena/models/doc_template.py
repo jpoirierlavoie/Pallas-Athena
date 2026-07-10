@@ -66,7 +66,7 @@ def _default_doc() -> dict:
         "placeholders": [],
         "auto_fields": [],
         "manual_fields": [],
-        "block_fields": [],
+        "passthrough_fields": [],
         "slots_required": [],
         "validation_warnings": [],
         "created_at": None,
@@ -133,7 +133,8 @@ def _extraction_fields(docx_bytes: bytes) -> tuple[Optional[dict], list[str]]:
         return None, validation.errors
 
     classification = classify_placeholders(validation.placeholders)
-    manual_set = set(classification.manual_scalar) | set(classification.unknown)
+    manual_set = set(classification.manual)
+    passthrough_set = set(classification.passthrough)
     fields = {
         "placeholders": validation.placeholders,
         "auto_fields": [
@@ -142,8 +143,10 @@ def _extraction_fields(docx_bytes: bytes) -> tuple[Optional[dict], list[str]]:
         "manual_fields": [
             n for n in validation.placeholders if n in manual_set
         ],
-        "block_fields": [
-            n for n in validation.placeholders if n in classification.blocks
+        # Left verbatim in the output for the user to complete in Word
+        # (former ALL-CAPS blocks, civilité, salutations, unknown names).
+        "passthrough_fields": [
+            n for n in validation.placeholders if n in passthrough_set
         ],
         "slots_required": sorted(classification.slots_required),
         "validation_warnings": [

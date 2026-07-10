@@ -4,17 +4,26 @@ Pure functions — no Firestore, no Flask. Callers pass already-loaded
 dicts (dossier, parties, firm info) plus today's date; everything here is
 fully unit-testable.
 
-Placeholder taxonomy (SPEC_PHASE_H_GABARITS.md §4–§6):
+Placeholder taxonomy:
 
 * **auto** — resolvable from the catalog (``dossier.*``, ``client.*``,
   ``adverse.*``, ``destinataire.*``, ``cabinet.*``, ``date.*``), directly
-  or through :data:`FLAT_ALIASES` (compatibility with the four existing
-  gabarits and their flat French names).
-* **manual** — known fields with no data source (:data:`MANUAL_FIELDS`),
-  edited in the popup, some with suggested defaults.
-* **block** — ALL-CAPS names (``{{FAITS}}``): multi-paragraph textareas,
-  expanded by paragraph cloning in the fill engine.
-* **unknown** — anything else: treated as a manual scalar.
+  or through :data:`FLAT_ALIASES`. Matched **case-insensitively**, so
+  ``{{TRIBUNAL}}`` resolves like ``{{tribunal}}``; when the placeholder is
+  written in ALL-CAPS the resolved value is upper-cased to match (legal
+  headings — ``{{TRIBUNAL}}`` → ``COUR SUPÉRIEURE``).
+* **manual** — the short letter-metadata fields in :data:`MANUAL_FIELDS`
+  (objet, privilège, mode de transmission, pièces jointes, référence
+  externe): prompted in the generation popup, some with a default.
+* **passthrough** — everything else: free-form legal content (the former
+  ALL-CAPS "blocks" such as ``{{FAITS}}`` / ``{{CONCLUSIONS}}``), the
+  ``{{civilité}}`` / ``{{salutations}}`` fields, and any unknown name.
+  These are NOT filled by the app and NOT prompted — the ``{{name}}`` is
+  left verbatim in the generated .docx for the user to complete in Word.
+
+There is deliberately no "block" concept and no civilité auto-resolution:
+civilité belongs in letters but never in court procedures, so the user
+places and fills it themselves (a passthrough field).
 """
 
 from dataclasses import dataclass, field
@@ -34,8 +43,16 @@ _ROLE_FEMININ = {
     "mis en cause": "mise en cause",
 }
 
-_CIVILITE_FROM_PREFIX = {"Me": "Maître", "M.": "Monsieur", "Mme": "Madame"}
-_CIVILITE_FROM_GENDER = {"M": "Monsieur", "F": "Madame"}
+# Capitalized display label for the client's litigation role (mirrors
+# models.dossier.ROLE_LABELS — kept local so this module stays importable
+# without the Firestore client).
+_ROLE_LABEL = {
+    "demandeur": "Demandeur",
+    "défendeur": "Défendeur",
+    "intervenant": "Intervenant",
+    "mis en cause": "Mis en cause",
+    "autre": "Autre",
+}
 
 # Professional roles whose work address is preferred when present (§6.4).
 _WORK_PREFERRED_ROLES = {"avocat_adverse", "expert", "huissier", "notaire"}
@@ -59,32 +76,23 @@ MANUAL_FIELDS: dict[str, dict] = {
         "options": ["courriel", "huissier", "poste recommandée", "télécopieur"],
     },
     "objet_lettre": {"default": "", "options": None},
-    # Default computed at render time from the resolved civilité —
-    # see salutations_default().
-    "salutations": {"default": None, "options": None},
     "pièces_jointes": {"default": "Aucune", "options": None},
     "référence_externe": {"default": "", "options": None},
 }
 
-# Known block names in the existing gabarits (documentation — the actual
-# classification is the ALL-CAPS convention, see is_block_name()).
-KNOWN_BLOCKS = (
-    "PARTIES", "FAITS", "DOMMAGES", "COMPÉTENCE",
-    "CONCLUSIONS", "LISTE_PIÈCES", "CONTENU_LETTRE",
-)
+# NOTE — ``salutations`` and every civilité field are deliberately NOT
+# resolved or prompted: they are passthrough (left as ``{{name}}`` in the
+# output). The closing formula and the recipient's title must appear in
+# letters but never in court procedures, so the user writes them in Word.
 
 
-def is_block_name(name: str) -> bool:
-    """ALL-CAPS convention: at least one letter, no lowercase letters."""
+def is_uppercase_name(name: str) -> bool:
+    """True when *name* has at least one letter and no lowercase letter.
+
+    Drives the case-matching rule: an ALL-CAPS placeholder (``{{TRIBUNAL}}``)
+    gets its resolved value upper-cased so it matches a legal-heading style.
+    """
     return any(c.isalpha() for c in name) and name == name.upper()
-
-
-def salutations_default(civilite: Optional[str]) -> str:
-    """Suggested default for the manual ``salutations`` field."""
-    return (
-        f"Veuillez agréer, {civilite or 'Madame, Monsieur'}, "
-        "l'expression de mes salutations distinguées"
-    )
 
 
 def french_long_date(d: date) -> str:
@@ -155,13 +163,6 @@ def _one_line_address(addr: dict[str, str]) -> Optional[str]:
     return out
 
 
-def _civilite(partie: dict) -> Optional[str]:
-    by_prefix = _CIVILITE_FROM_PREFIX.get(partie.get("prefix") or "")
-    if by_prefix:
-        return by_prefix
-    return _CIVILITE_FROM_GENDER.get(partie.get("gender") or "")
-
-
 def _telephone(partie: dict) -> Optional[str]:
     for key in ("phone_work", "phone_cell", "phone_home"):
         number = (partie.get(key) or "").strip()
@@ -198,6 +199,13 @@ def _role_feminin(ctx: _Context) -> Optional[str]:
     if not ctx.dossier:
         return None
     return _ROLE_FEMININ.get(ctx.dossier.get("role") or "")
+
+
+def _role_label(ctx: _Context) -> Optional[str]:
+    """Capitalized display label of the client's litigation role."""
+    if not ctx.dossier:
+        return None
+    return _ROLE_LABEL.get(ctx.dossier.get("role") or "")
 
 
 def _sides(ctx: _Context) -> tuple[Optional[list], Optional[list], Optional[dict], Optional[dict]]:
@@ -294,7 +302,6 @@ def _partie_fields(slot: str) -> dict[str, tuple[Optional[str], Callable]]:
         f"{slot}.nom_complet": (slot, _partie(slot, _display_name)),
         f"{slot}.prenom": (slot, _partie(slot, _individual_field("first_name"))),
         f"{slot}.nom": (slot, _partie(slot, _individual_field("last_name"))),
-        f"{slot}.civilite": (slot, _partie(slot, _civilite)),
         f"{slot}.organisation": (slot, _partie(slot, _organisation)),
         f"{slot}.adresse_civique": (
             slot, _partie(slot, lambda p: _adresse_civique(_selected_address(p)[0]))
@@ -326,6 +333,7 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.palais": ("dossier", _dossier_field("palais_de_justice")),
     "dossier.role": ("dossier", _dossier_field("role")),
     "dossier.role_feminin": ("dossier", _role_feminin),
+    "dossier.role_label": ("dossier", _role_label),
     # Derived party positions (§6.2)
     "dossier.demandeur": ("dossier", _side_names(0)),
     "dossier.defendeur": ("dossier", _side_names(1)),
@@ -366,8 +374,6 @@ FLAT_ALIASES: dict[str, str] = {
     "ville_lettre": "cabinet.ville",
     "date_procédure": "date.aujourdhui",
     "date_lettre": "date.aujourdhui",
-    "civilité_récipient": "destinataire.civilite",
-    "civilité": "destinataire.civilite",
     "prénom_récipient": "destinataire.prenom",
     "nom_récipient": "destinataire.nom",
     "cabinet_récipient": "destinataire.organisation",
@@ -379,39 +385,66 @@ FLAT_ALIASES: dict[str, str] = {
 }
 
 
+# Case-insensitive lookup indexes: a placeholder resolves to a catalog
+# field whatever its case, so ``{{TRIBUNAL}}``/``{{Tribunal}}`` behave like
+# ``{{tribunal}}``. ``str.lower()`` folds French accents (``É`` → ``é``),
+# and the canonical catalog/alias keys are unique when lower-cased.
+_ALIAS_CI: dict[str, str] = {flat.lower(): canonical for flat, canonical in FLAT_ALIASES.items()}
+_CATALOG_CI: dict[str, str] = {name.lower(): name for name in CATALOG}
+
+
+def _canonical_for(name: str) -> Optional[str]:
+    """Canonical catalog field for *name* (case-insensitive), or None.
+
+    A flat alias wins over a same-spelled namespaced field (the alias table
+    is the compatibility layer for the existing gabarits).
+    """
+    key = name.lower()
+    if key in _ALIAS_CI:
+        return _ALIAS_CI[key]
+    if key in _CATALOG_CI:
+        return _CATALOG_CI[key]
+    return None
+
+
 # ── Public API (§6.8) ───────────────────────────────────────────────────
 
 @dataclass
 class Classification:
+    """Placeholder buckets (see the module docstring).
+
+    * ``auto`` — name → canonical catalog field (case-insensitive match).
+    * ``manual`` — known :data:`MANUAL_FIELDS` prompted in the popup.
+    * ``passthrough`` — everything else (former ALL-CAPS blocks, civilité,
+      salutations, unknown names): left verbatim in the output for Word.
+    """
     auto: dict[str, str] = field(default_factory=dict)
-    manual_scalar: list[str] = field(default_factory=list)
-    blocks: list[str] = field(default_factory=list)
+    manual: list[str] = field(default_factory=list)
+    passthrough: list[str] = field(default_factory=list)
     slots_required: set[str] = field(default_factory=set)
-    unknown: list[str] = field(default_factory=list)
 
 
 def classify_placeholders(names: list[str]) -> Classification:
-    """Classify placeholder names into auto / manual / block / unknown.
+    """Classify placeholder names into auto / manual / passthrough.
 
-    ``auto`` maps each name to its canonical catalog field (through
-    :data:`FLAT_ALIASES` when flat); ``slots_required`` is the union of
-    the slots those fields need. Unknown names behave as manual scalars
-    downstream but are reported separately.
+    ``auto`` maps each name to its canonical catalog field (case-insensitive,
+    through :data:`FLAT_ALIASES` when flat); ``slots_required`` is the union
+    of the slots those fields need. Anything the app does not fill —
+    free-form content, civilité, salutations, unknown names — lands in
+    ``passthrough`` and is left untouched in the generated document.
     """
     result = Classification()
     for name in names:
-        canonical = FLAT_ALIASES.get(name, name)
-        if canonical in CATALOG:
+        canonical = _canonical_for(name)
+        if canonical is not None:
             result.auto[name] = canonical
             slot = CATALOG[canonical][0]
             if slot:
                 result.slots_required.add(slot)
-        elif is_block_name(name):
-            result.blocks.append(name)
         elif name in MANUAL_FIELDS:
-            result.manual_scalar.append(name)
+            result.manual.append(name)
         else:
-            result.unknown.append(name)
+            result.passthrough.append(name)
     return result
 
 
@@ -427,9 +460,12 @@ def resolve_values(
 ) -> dict[str, str]:
     """Resolve every auto-resolvable name that has non-empty source data.
 
-    Names absent from the result are unresolved — the popup shows them as
-    empty inputs, and a blank submission yields the visible French
-    placeholder from :func:`fallback_value`.
+    Matching is case-insensitive; a value resolved for an ALL-CAPS
+    placeholder is upper-cased so it matches a legal-heading style
+    (``{{TRIBUNAL}}`` → ``COUR SUPÉRIEURE``). Names absent from the result
+    are unresolved — the popup shows them as empty inputs, and a blank
+    submission yields the visible French placeholder from
+    :func:`fallback_value`.
     """
     ctx = _Context(
         dossier=dossier,
@@ -441,7 +477,9 @@ def resolve_values(
     )
     resolved: dict[str, str] = {}
     for name in names:
-        canonical = FLAT_ALIASES.get(name, name)
+        canonical = _canonical_for(name)
+        if canonical is None:
+            continue
         entry = CATALOG.get(canonical)
         if entry is None:
             continue
@@ -449,5 +487,5 @@ def resolve_values(
         if isinstance(value, str):
             value = value.strip()
         if value:
-            resolved[name] = value
+            resolved[name] = value.upper() if is_uppercase_name(name) else value
     return resolved

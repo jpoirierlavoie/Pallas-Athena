@@ -745,11 +745,16 @@ Top-level collection; standard common fields (`id`, `created_at`, `updated_at`, 
     "storage_path": "users/{userId}/templates/{templateId}/{filename}",
     "version": int,                    # starts at 1, +1 on each file replacement
 
-    # Extracted at upload / file replacement (utils/docx_fill + utils/template_fields)
+    # Extracted at upload / file replacement (utils/docx_fill + utils/template_fields).
+    # Classification is also recomputed on every render (route re-classifies),
+    # so these stored lists are informational; stale ones on older docs never
+    # drive behavior. (Legacy docs may still carry a `block_fields` list — it
+    # is ignored; the ALL-CAPS→block concept was removed July 2026.)
     "placeholders": list[str],         # distinct {{...}} names, document order
-    "auto_fields": list[str],          # resolvable from the field catalog
-    "manual_fields": list[str],        # scalar user inputs (known manual + unknown)
-    "block_fields": list[str],         # ALL-CAPS names → multi-paragraph textareas
+    "auto_fields": list[str],          # resolvable from the field catalog (case-insensitive)
+    "manual_fields": list[str],        # known letter-metadata inputs (MANUAL_FIELDS)
+    "passthrough_fields": list[str],   # left verbatim in the .docx for Word (blocks,
+                                       # civilité, salutations, unknown names)
     "slots_required": list[str],       # ⊆ {"dossier","client","adverse","destinataire"}
     "validation_warnings": list[str],  # French split-run warnings at last upload
 }
@@ -999,7 +1004,7 @@ All `@login_required`. Template upload/replace POSTs carry multipart `.docx` (10
 | `/gabarits/` | GET | List (name, category badge, version, placeholder count, warnings badge); FAB "+"; empty state invites first upload |
 | `/gabarits/new` | GET | Upload form (multipart: file + name + description + category) |
 | `/gabarits/` | POST | Create → redirect to detail (which shows the extracted field inventory + split-run warnings) |
-| `/gabarits/<id>` | GET | Detail: metadata, auto/manual/block field chips, warnings, « Générer », « Télécharger le gabarit », « Modifier », « Supprimer » |
+| `/gabarits/<id>` | GET | Detail: metadata, auto/manual/passthrough field chips, warnings, « Générer », « Télécharger le gabarit », « Modifier », « Supprimer » |
 | `/gabarits/<id>/edit` | GET | Edit form (metadata + optional replacement file) |
 | `/gabarits/<id>` | POST | Update (file replacement → re-validate, re-extract, version += 1, old Storage object deleted) |
 | `/gabarits/<id>/delete` | POST | Delete (Firestore doc + Storage object; generated documents untouched) |
@@ -1007,7 +1012,7 @@ All `@login_required`. Template upload/replace POSTs carry multipart `.docx` (10
 | `/gabarits/dossier-search` | GET | HTMX dossier autocomplete (rows reload the modal with `set_dossier_id`) |
 | `/gabarits/partie-search` | GET | HTMX partie autocomplete (rows reload the field form with `set_destinataire_id`; optional `?role=`) |
 | `/gabarits/generer` | GET | Popup step 1 (modal partial): template select (or fixed via `?template_id=&fixed=1`), dossier picker (locked via `?locked=1`), prefills from `?dossier_id=` / `?partie_id=` (→ destinataire slot) |
-| `/gabarits/generer/champs` | GET | Popup step 2 (field-form partial): slot selects + every placeholder as editable input/textarea, prefilled via `resolve_values`, manual defaults applied |
+| `/gabarits/generer/champs` | GET | Popup step 2 (field-form partial): slot selects + one editable input per **auto/manual** placeholder (prefilled via `resolve_values`, manual defaults applied); **passthrough** placeholders are listed read-only as « À compléter dans Word » (left verbatim in the output) |
 | `/gabarits/generer` | POST | Generate: fill → dossier present → save via `document.upload_document` (category from template; display_name `"{name} — {date}"`) + HTMX success partial; no dossier → direct `.docx` attachment (plain POST, `target="_blank"`) |
 
 **Entry points:** dossier detail header + Documents-tab toolbar (« Générer depuis un gabarit », dossier locked), partie detail header (« Générer un document », partie → destinataire), gabarit list rows/detail (« Générer »). Each host page carries a `<div id="gabarit-modal">` mount point.
@@ -1185,19 +1190,21 @@ validate_template(docx_bytes) -> TemplateValidation  # .placeholders, .split_run
 fill_docx(docx_bytes, values) -> bytes           # raises DocxFillError on structural problems
 ```
 
-- **Block expansion first** (values containing blank-line separators): the host `<w:p>` is cloned once per chunk with the placeholder substituted — numbered-list `<w:pPr>` XML is preserved, so chunks continue the list numbering. The paragraph scan covers ALL paragraphs (regression: a previous implementation passed `count=1`).
+- **Block expansion first** (values containing blank-line separators): the host `<w:p>` is cloned once per chunk with the placeholder substituted — numbered-list `<w:pPr>` XML is preserved, so chunks continue the list numbering. The paragraph scan covers ALL paragraphs (regression: a previous implementation passed `count=1`). This is **value-driven**, not classification-driven: the engine expands any multi-paragraph value it is *given*. (Since July 2026 the gabarit UI no longer classifies anything as a "block" and leaves such content for Word — see `template_fields.py` passthrough — so this path is dormant for gabarit generation, but the capability is retained and still tested in `test_docx_fill.py`.)
 - **Scalars second**; single `\n` → one space; XML escaping (`& < >`) + C0 control stripping (except `\t`); **function replacement callbacks only** (a bare replacement string would interpret `\g<0>`/backslashes in user content).
 - Safety caps: compressed ≤ 10 MB, single XML target ≤ 25 MB, total decompressed ≤ 100 MB, ≤ 2000 entries, no absolute/`..` entry names, magic `PK\x03\x04` + `[Content_Types].xml` + `word/document.xml` required.
 - **Split-run detection:** names visible in tag-stripped text but not matchable in raw XML were fragmented across `<w:r>` runs by Word → reported as suspects at upload (user retypes the field in Word in one stroke); never silently rewritten.
 
 ### `utils/template_fields.py` (Phase H — field catalog)
 
-Pure functions (mirrors `display_name` locally — must stay importable without the Firestore client). `classify_placeholders(names) -> Classification` (auto map, manual scalars, ALL-CAPS blocks, `slots_required` ⊆ {dossier, client, adverse, destinataire}, unknowns) and `resolve_values(names, *, dossier, client, adverse, destinataire, firm, today) -> dict[str, str]` (only non-empty resolutions; absent = popup shows an empty input).
+Pure functions (mirrors `display_name` locally — must stay importable without the Firestore client). `classify_placeholders(names) -> Classification` (`.auto` map, `.manual` list, `.passthrough` list, `.slots_required` ⊆ {dossier, client, adverse, destinataire}) and `resolve_values(names, *, dossier, client, adverse, destinataire, firm, today) -> dict[str, str]` (only non-empty resolutions; absent = popup shows an empty input).
 
-- Catalog namespaces: `dossier.*` (incl. derived `role_feminin` and demandeur/défendeur **positions** swapped by `dossier.role`; `autre` → unresolved), `client.*`/`adverse.*`/`destinataire.*` (identical field set: civilité from prefix then gender; work-address preference for `avocat_adverse`/`expert`/`huissier`/`notaire`; phone work → cell → home via `format_phone_display`), `cabinet.*` (FIRM_*), `date.aujourdhui` (French long date, `1er` for the 1st) / `date.aujourdhui_iso`.
-- `FLAT_ALIASES` maps the four existing gabarits' flat French names (`{{district}}`, `{{civilité_récipient}}`, …) onto the catalog — one template set serves this module and the user's Claude.ai skills.
-- `MANUAL_FIELDS` (deliberately data-less: `objet_lettre`, `privilège`/`transmission_lettre` selects, `salutations` via `salutations_default(civilité)`, `pièces_jointes` default `"Aucune"`, …).
-- Missing-value strings (exact): auto field left blank → **`[CHAMP MANQUANT : {name}]`**; manual/block/unknown left blank → **`[À COMPLÉTER : {name}]`** (`fallback_value`). Generation never fails on a missing value.
+**Three kinds** (the ALL-CAPS→"block" concept was removed July 2026): **auto** — matches the catalog/aliases **case-insensitively** (`{{TRIBUNAL}}` resolves like `{{tribunal}}`; an ALL-CAPS placeholder gets its value upper-cased — `{{TRIBUNAL}}` → `COUR SUPÉRIEURE` — via `is_uppercase_name`); **manual** — the short `MANUAL_FIELDS` letter-metadata, prompted in the popup; **passthrough** — everything else (former ALL-CAPS blocks like `{{FAITS}}`, the `{{civilité}}`/`{{salutations}}` fields, unknown names): **not resolved and not prompted**, left verbatim as `{{name}}` in the output for the user to complete in Word. The route omits passthrough names from the fill `values`, and `fill_docx` leaves any unlisted placeholder untouched.
+
+- Catalog namespaces: `dossier.*` (incl. derived `role_feminin`, capitalized `role_label`, and demandeur/défendeur **positions** swapped by `dossier.role`; `autre` → unresolved), `client.*`/`adverse.*`/`destinataire.*` (identical field set; **no `civilite` — civilité is passthrough**; work-address preference for `avocat_adverse`/`expert`/`huissier`/`notaire`; phone work → cell → home via `format_phone_display`), `cabinet.*` (FIRM_*), `date.aujourdhui` (French long date, `1er` for the 1st) / `date.aujourdhui_iso`.
+- `FLAT_ALIASES` maps the existing gabarits' flat French names (`{{district}}`, `{{numero_dossier}}`, …) onto the catalog — one template set serves this module and the user's Claude.ai skills. The `civilité`/`civilité_récipient` aliases were **removed** (civilité is now passthrough — it must appear in letters but never in court procedures, so the user places and fills it).
+- `MANUAL_FIELDS` (deliberately data-less letter metadata: `objet_lettre`, `privilège`/`transmission_lettre` selects, `pièces_jointes` default `"Aucune"`, `référence_externe`, …). **`salutations` was removed** — it is passthrough.
+- Missing-value strings (exact): auto field left blank → **`[CHAMP MANQUANT : {name}]`**; manual/unknown-but-prompted left blank → **`[À COMPLÉTER : {name}]`** (`fallback_value`). Passthrough fields get neither — the raw `{{name}}` survives. Generation never fails on a missing value.
 
 ### `utils/deadlines.py`
 
@@ -1472,6 +1479,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **The docx paragraph scan must cover ALL paragraphs** — a previous implementation passed `count=1` to `re.sub` and silently skipped block placeholders outside the first paragraph (regression-tested in `test_docx_fill.py`).
 - **Fill-engine replacement callbacks must be functions**, never bare strings — user content containing `\g<0>` or backslashes would be interpreted as regex group references (regression-tested).
 - **Template files are NOT `documents` records** — they live at `users/{uid}/templates/…` and are managed only through `/gabarits`; generated outputs saved into a dossier ARE regular documents (independent copies).
+- **Gabarit placeholders are three-way, not "block vs scalar" (July 2026):** `classify_placeholders` returns **auto** (catalog/alias, case-insensitive — an ALL-CAPS name upper-cases its value), **manual** (`MANUAL_FIELDS` letter metadata), and **passthrough** (everything else). Passthrough — the former ALL-CAPS blocks, **`{{civilité}}`, `{{salutations}}`**, and unknown names — is deliberately **not resolved and not prompted**; the route omits it from the fill `values` so the raw `{{name}}` survives into the .docx for Word. Do **not** re-add civilité to the catalog or a `salutations` default: civilité must appear in letters but never in court procedures, so it is the user's to place. The route **re-classifies on every render** (`template_detail`, `_fields_context`, `_collect_values`), so a template uploaded before this change (whose stored `block_fields` still exists) classifies correctly without a re-upload.
 
 ---
 
@@ -1705,7 +1713,8 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
 
 ### Phase H — Document template generation "gabarits" (July 2026, ✅ code complete)
 
-- **H** — User-managed `.docx` templates at `/gabarits` (upload / metadata edit / file replacement with version bump + re-extraction / delete / signed-URL download — templates are data, never a deploy). Stdlib-only fill engine (`utils/docx_fill.py`: XML substitution inside the zip, byte-identical pass-through of everything else; `docxtpl`/`python-docx` rejected — Word repair-prompt issue with letterhead templates). Field catalog + flat-alias table for the four existing gabarits (`utils/template_fields.py`); ALL-CAPS block fields expand by paragraph cloning (numbered lists continue); split-run placeholders detected at upload and reported in French; blanks become visible `[CHAMP MANQUANT : x]` / `[À COMPLÉTER : x]` strings. HTMX generation popup from three entry points (gabarits, dossier detail — locked dossier, partie detail — destinataire prefill); output saved into the dossier's documents or downloaded directly. 10 MB upload size exemption in `security.py`; `log_template_event` + `template.fill` span; zero new dependencies. Spec: `SPEC_PHASE_H_GABARITS.md`.
+- **H** — User-managed `.docx` templates at `/gabarits` (upload / metadata edit / file replacement with version bump + re-extraction / delete / signed-URL download — templates are data, never a deploy). Stdlib-only fill engine (`utils/docx_fill.py`: XML substitution inside the zip, byte-identical pass-through of everything else; `docxtpl`/`python-docx` rejected — Word repair-prompt issue with letterhead templates). Field catalog + flat-alias table for the existing gabarits (`utils/template_fields.py`); split-run placeholders detected at upload and reported in French; blanks become visible `[CHAMP MANQUANT : x]` / `[À COMPLÉTER : x]` strings. HTMX generation popup from three entry points (gabarits, dossier detail — locked dossier, partie detail — destinataire prefill); output saved into the dossier's documents or downloaded directly. 10 MB upload size exemption in `security.py`; `log_template_event` + `template.fill` span; zero new dependencies. Spec: `SPEC_PHASE_H_GABARITS.md`.
+  - **Refinement (July 2026 — placeholder handling):** catalog/alias matching is now **case-insensitive** and an ALL-CAPS placeholder upper-cases its resolved value (`{{TRIBUNAL}}` → `COUR SUPÉRIEURE`), fixing headings that read as "blocks" before. The ALL-CAPS→**block** concept was **removed**: the app fills only auto (case data) + a few manual letter-metadata fields, and leaves everything else — the former blocks (`{{FAITS}}` …), **civilité, and salutations** — verbatim as `{{name}}` for the user to complete in Word (per the user's instruction: civilité belongs in letters, never in court procedures). Added `{{dossier.role_label}}` (capitalized client role). Engine and its tests unchanged; `template_fields.py` classification + route/popup only.
 
 ### Proposed / not yet implemented
 

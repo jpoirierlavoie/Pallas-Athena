@@ -13,9 +13,8 @@ from utils.template_fields import (
     classify_placeholders,
     fallback_value,
     french_long_date,
-    is_block_name,
+    is_uppercase_name,
     resolve_values,
-    salutations_default,
 )
 
 TODAY = date(2026, 4, 25)
@@ -131,8 +130,6 @@ _ALIAS_EXPECTATIONS = {
     "ville_lettre": "Montréal",
     "date_procédure": "25 avril 2026",
     "date_lettre": "25 avril 2026",
-    "civilité_récipient": "Maître",
-    "civilité": "Maître",
     "prénom_récipient": "Claire",
     "nom_récipient": "Dubois",
     "cabinet_récipient": "Dubois Avocats inc.",
@@ -203,19 +200,15 @@ def test_positions_unresolved_for_role_autre():
 
 # ── Civilité / organisation (§6.3) ──────────────────────────────────────
 
-def test_civilite_from_prefix_and_gender():
-    assert _resolve(["destinataire.civilite"],
-                    destinataire=_individu(prefix="Mme"))["destinataire.civilite"] == "Madame"
-    assert _resolve(["destinataire.civilite"],
-                    destinataire=_individu(prefix="M."))["destinataire.civilite"] == "Monsieur"
-    assert _resolve(["destinataire.civilite"],
-                    destinataire=_individu(prefix="", gender="F"))["destinataire.civilite"] == "Madame"
-    assert _resolve(["destinataire.civilite"],
-                    destinataire=_individu(prefix="", gender="M"))["destinataire.civilite"] == "Monsieur"
-    # Neither prefix nor recognized gender → unresolved.
-    assert "destinataire.civilite" not in _resolve(
-        ["destinataire.civilite"], destinataire=_individu(prefix="", gender="")
+def test_civilite_is_passthrough_not_resolved():
+    # Civilité must be placed and filled by the user (letters yes, court
+    # procedures no) — it is never auto-resolved, whatever the spelling.
+    avocat = _avocat()
+    resolved = _resolve(
+        ["civilité", "civilité_récipient", "destinataire.civilite", "CIVILITÉ"],
+        destinataire=avocat,
     )
+    assert resolved == {}
 
 
 def test_organization_partie_prenom_unresolved():
@@ -328,22 +321,23 @@ def test_date_iso():
 def test_classification_buckets_and_slots():
     names = [
         "tribunal",                # alias → dossier slot
-        "civilité_récipient",      # alias → destinataire slot
+        "TRIBUNAL",                # ALL-CAPS alias → still auto (case-insensitive)
+        "destinataire.nom",        # canonical → destinataire slot
         "client.nom_complet",      # canonical → client slot
         "date_lettre",             # alias → no slot
         "objet_lettre",            # known manual
-        "FAITS",                   # block
-        "LISTE_PIÈCES",            # block with accented uppercase
-        "champ_mystère",           # unknown
+        "FAITS",                   # former block → passthrough
+        "civilité",                # civilité → passthrough (no longer auto)
+        "champ_mystère",           # unknown → passthrough
     ]
     c = classify_placeholders(names)
     assert c.auto["tribunal"] == "dossier.tribunal"
-    assert c.auto["civilité_récipient"] == "destinataire.civilite"
+    assert c.auto["TRIBUNAL"] == "dossier.tribunal"
+    assert c.auto["destinataire.nom"] == "destinataire.nom"
     assert c.auto["client.nom_complet"] == "client.nom_complet"
     assert c.auto["date_lettre"] == "date.aujourdhui"
-    assert c.manual_scalar == ["objet_lettre"]
-    assert c.blocks == ["FAITS", "LISTE_PIÈCES"]
-    assert c.unknown == ["champ_mystère"]
+    assert c.manual == ["objet_lettre"]
+    assert c.passthrough == ["FAITS", "civilité", "champ_mystère"]
     assert c.slots_required == {"dossier", "client", "destinataire"}
 
 
@@ -352,13 +346,63 @@ def test_cabinet_and_date_require_no_slot():
     assert c.slots_required == set()
 
 
-def test_is_block_name_convention():
-    assert is_block_name("FAITS")
-    assert is_block_name("CONTENU_LETTRE")
-    assert is_block_name("LISTE_PIÈCES")
-    assert not is_block_name("tribunal")
-    assert not is_block_name("dossier.titre")
-    assert not is_block_name("123")  # no letters
+def test_is_uppercase_name():
+    assert is_uppercase_name("FAITS")
+    assert is_uppercase_name("CONTENU_LETTRE")
+    assert is_uppercase_name("LISTE_PIÈCES")
+    assert is_uppercase_name("TRIBUNAL")
+    assert not is_uppercase_name("tribunal")
+    assert not is_uppercase_name("Tribunal")
+    assert not is_uppercase_name("dossier.titre")
+    assert not is_uppercase_name("123")  # no letters
+
+
+# ── Case-insensitive matching + capitalized output ──────────────────────
+
+def test_uppercase_placeholder_resolves_and_uppercases_value():
+    resolved = _resolve(["TRIBUNAL", "DISTRICT"], dossier=_dossier())
+    assert resolved["TRIBUNAL"] == "COUR SUPÉRIEURE"
+    assert resolved["DISTRICT"] == "MONTRÉAL"
+
+
+def test_mixed_and_lower_case_keep_source_casing():
+    resolved = _resolve(["Tribunal", "tribunal"], dossier=_dossier())
+    assert resolved["Tribunal"] == "Cour supérieure"
+    assert resolved["tribunal"] == "Cour supérieure"
+
+
+def test_uppercase_namespaced_field_uppercased():
+    resolved = _resolve(["DOSSIER.TRIBUNAL"], dossier=_dossier())
+    assert resolved["DOSSIER.TRIBUNAL"] == "COUR SUPÉRIEURE"
+
+
+# ── Client role fields (§6.1) ───────────────────────────────────────────
+
+def test_role_fields_raw_label_and_feminin():
+    resolved = _resolve(
+        ["dossier.role", "dossier.role_label", "dossier.role_feminin", "rôle"],
+        dossier=_dossier(role="demandeur"),
+    )
+    assert resolved["dossier.role"] == "demandeur"
+    assert resolved["dossier.role_label"] == "Demandeur"
+    assert resolved["dossier.role_feminin"] == "demanderesse"
+    assert resolved["rôle"] == "demanderesse"
+
+
+def test_role_label_uppercased_when_placeholder_caps():
+    resolved = _resolve(["DOSSIER.ROLE_LABEL"], dossier=_dossier(role="défendeur"))
+    assert resolved["DOSSIER.ROLE_LABEL"] == "DÉFENDEUR"
+
+
+def test_civilite_and_salutations_classified_passthrough():
+    c = classify_placeholders(
+        ["civilité", "civilité_récipient", "destinataire.civilite", "salutations"]
+    )
+    assert c.auto == {}
+    assert c.manual == []
+    assert set(c.passthrough) == {
+        "civilité", "civilité_récipient", "destinataire.civilite", "salutations"
+    }
 
 
 # ── Missing-value strings (§6.7 — exact) ────────────────────────────────
@@ -371,13 +415,6 @@ def test_fallback_value_exact_strings():
     assert fallback_value("champ_mystère", is_auto=False) == (
         "[À COMPLÉTER : champ_mystère]"
     )
-
-
-def test_salutations_default():
-    assert salutations_default("Maître") == (
-        "Veuillez agréer, Maître, l'expression de mes salutations distinguées"
-    )
-    assert "Madame, Monsieur" in salutations_default(None)
 
 
 def test_manual_fields_defaults():

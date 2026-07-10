@@ -57,9 +57,9 @@ from utils.docx_fill import DocxFillError, fill_docx
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import (
     MANUAL_FIELDS,
+    classify_placeholders,
     fallback_value,
     resolve_values,
-    salutations_default,
 )
 from utils.tracing_setup import add_attributes, span
 from utils.validators import format_phone_display
@@ -67,7 +67,6 @@ from utils.validators import format_phone_display
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
 
 _SCALAR_MAX_CHARS = 2000
-_BLOCK_MAX_CHARS = 50000
 _FIELD_PREFIX = "champ__"
 
 
@@ -196,8 +195,17 @@ def template_detail(template_id: str) -> Response | str:
     template = get_template(template_id)
     if not template:
         return redirect(url_for("doc_templates.template_list"))
+    # Re-classify for display so the inventory is correct even for templates
+    # uploaded before this taxonomy (stored *_fields lists may be stale).
+    placeholders = template.get("placeholders", [])
+    classification = classify_placeholders(placeholders)
     ctx = _template_context()
-    ctx.update(template=template)
+    ctx.update(
+        template=template,
+        auto_fields=[n for n in placeholders if n in classification.auto],
+        manual_fields=classification.manual,
+        passthrough_fields=classification.passthrough,
+    )
     return render_template("gabarits/detail.html", **ctx)
 
 
@@ -435,32 +443,29 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         today=today,
     )
 
-    civilite = resolve_values(
-        ["civilité"],
-        dossier=None, client=None, adverse=None,
-        destinataire=destinataire, firm={}, today=today,
-    ).get("civilité")
-
-    auto_set = set(template.get("auto_fields", []))
-    block_set = set(template.get("block_fields", []))
+    # Re-classify on every render so the field set is always correct — even
+    # for templates uploaded before this taxonomy (their stored *_fields
+    # lists may be stale). Only auto + manual fields become form inputs;
+    # passthrough placeholders (blocks, civilité, salutations, unknowns) are
+    # left in the .docx for the user to complete in Word, surfaced as a note.
+    classification = classify_placeholders(placeholders)
+    auto_set = set(classification.auto)
+    manual_set = set(classification.manual)
     fields = []
     for name in placeholders:
-        if name in block_set:
-            kind = "block"
-        elif name in auto_set:
+        if name in auto_set:
             kind = "auto"
-        else:
+        elif name in manual_set:
             kind = "manual"
+        else:
+            continue  # passthrough — not a form field
         value = resolved.get(name, "")
         options = None
-        if kind == "manual" and name in MANUAL_FIELDS:
+        if kind == "manual":
             spec = MANUAL_FIELDS[name]
             options = spec["options"]
             if not value:
-                if name == "salutations":
-                    value = salutations_default(civilite)
-                else:
-                    value = spec["default"] or ""
+                value = spec["default"] or ""
         fields.append({"name": name, "kind": kind, "value": value, "options": options})
 
     return {
@@ -477,8 +482,9 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         "destinataire_id": destinataire_id,
         "destinataire_display": display_name(destinataire) if destinataire else "",
         "partie_role_labels": PARTIE_ROLE_LABELS,
-        "slots_required": template.get("slots_required", []),
+        "slots_required": sorted(classification.slots_required),
         "fields": fields,
+        "passthrough_fields": classification.passthrough,
         "generated": None,
     }
 
@@ -530,18 +536,30 @@ def generate_fields() -> str:
 
 
 def _collect_values(template: dict) -> tuple[dict[str, str], int]:
-    """Pull one value per placeholder from the form; blanks become the
-    visible French fallback strings (§6.7). Returns (values, missing)."""
-    auto_set = set(template.get("auto_fields", []))
-    block_set = set(template.get("block_fields", []))
+    """Pull one value per prompted placeholder from the form; blanks become
+    the visible French fallback strings (§6.7).
+
+    Passthrough placeholders (former blocks, civilité, salutations, unknown
+    names) are omitted from the result, so :func:`fill_docx` leaves each
+    ``{{name}}`` verbatim in the output for the user to complete in Word.
+    Returns ``(values, missing)``.
+    """
+    classification = classify_placeholders(template.get("placeholders", []))
+    auto_set = set(classification.auto)
+    manual_set = set(classification.manual)
     values: dict[str, str] = {}
     missing = 0
     for name in template.get("placeholders", []):
+        if name in auto_set:
+            is_auto = True
+        elif name in manual_set:
+            is_auto = False
+        else:
+            continue  # passthrough — leave {{name}} in the output for Word
         raw = request.form.get(f"{_FIELD_PREFIX}{name}", "")
-        cap = _BLOCK_MAX_CHARS if name in block_set else _SCALAR_MAX_CHARS
-        value = raw[:cap].strip()
+        value = raw[:_SCALAR_MAX_CHARS].strip()
         if not value:
-            value = fallback_value(name, is_auto=name in auto_set)
+            value = fallback_value(name, is_auto=is_auto)
             missing += 1
         values[name] = value
     return values, missing

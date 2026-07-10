@@ -73,29 +73,29 @@
       Champs ({{ template.placeholders|length }})
     </h2>
 
-    {% if template.auto_fields %}
+    {% if auto_fields %}
     <p class="text-xs text-gray-500 mb-1">Remplis automatiquement</p>
     <div class="flex items-center gap-2 flex-wrap mb-4">
-      {% for name in template.auto_fields %}
+      {% for name in auto_fields %}
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">{{ name }}</span>
       {% endfor %}
     </div>
     {% endif %}
 
-    {% if template.manual_fields %}
+    {% if manual_fields %}
     <p class="text-xs text-gray-500 mb-1">À saisir à la génération</p>
     <div class="flex items-center gap-2 flex-wrap mb-4">
-      {% for name in template.manual_fields %}
+      {% for name in manual_fields %}
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">{{ name }}</span>
       {% endfor %}
     </div>
     {% endif %}
 
-    {% if template.block_fields %}
-    <p class="text-xs text-gray-500 mb-1">Blocs (multi-paragraphes)</p>
+    {% if passthrough_fields %}
+    <p class="text-xs text-gray-500 mb-1">À compléter dans Word (laissés tels quels)</p>
     <div class="flex items-center gap-2 flex-wrap">
-      {% for name in template.block_fields %}
-      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700">{{ name }}</span>
+      {% for name in passthrough_fields %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">{{ name }}</span>
       {% endfor %}
     </div>
     {% endif %}
