@@ -149,6 +149,28 @@ def test_client_fallback_to_billing_address_when_partie_missing():
     assert "12 rue Principale" in ctx.values.get("destinataire.adresse_complete", "")
 
 
+def test_flat_alias_header_fields_resolve_like_procedures():
+    # A note template may use the same flat placeholders as the
+    # procedures/letters gabarits — canonical AND alias both resolve.
+    dossier = {
+        "title": "Tremblay c. Lavoie",
+        "court_file_number": "500-05-123456-241",
+        "file_number": "2026-042",
+        "clients": [], "opposing_parties": [],
+    }
+    ctx = _build(_invoice(), [_fee("R", 1, 25000, 25000)],
+                 dossier=dossier, destinataire=None)
+    # Flat aliases (as the existing gabarits type them).
+    assert ctx.values.get("intitulé_dossier") == "Tremblay c. Lavoie"
+    assert ctx.values.get("numero_dossier") == "500-05-123456-241"
+    assert ctx.values.get("référence_interne") == "2026-042"
+    assert ctx.values.get("ville_récipient") == "Montréal"
+    assert ctx.values.get("adresse_civique_récipient") == "12 rue Principale"
+    # Canonical still resolves too.
+    assert ctx.values.get("dossier.titre") == "Tremblay c. Lavoie"
+    assert ctx.values.get("destinataire.ville") == "Montréal"
+
+
 def test_live_partie_used_when_provided():
     partie = {
         "type": "individual", "prefix": "M.", "first_name": "Luc",

@@ -585,6 +585,41 @@ def test_conditional_true_keeps_content_strips_markers():
     assert "{{?si_honoraires}}" not in out and "{{/si_honoraires}}" not in out
 
 
+def test_conditional_true_removes_empty_marker_paragraphs_no_blank_line():
+    # A kept section must not leave a blank line: the marker-only paragraphs
+    # are removed entirely, not merely emptied.
+    import xml.etree.ElementTree as ET
+    docx = _make_docx(_doc(
+        _para("Avant"),
+        _para("{{?si_honoraires}}"),
+        _tbl(_tr(_tc("Honoraires"))),
+        _para("{{/si_honoraires}}"),
+        _para("Après"),
+    ))
+    out = _document_xml(fill_docx(docx, {}, conditions={"si_honoraires": True}))
+    ET.fromstring(out)
+    assert "Honoraires" in out and "Avant" in out and "Après" in out
+    # Only Avant, the cell paragraph, and Après remain — the two marker
+    # paragraphs are gone (no empty <w:p> left behind).
+    assert out.count("<w:p>") == 3
+    assert "{{?" not in out and "{{/" not in out
+
+
+def test_conditional_marker_paragraph_with_other_text_is_kept():
+    # If a marker shares its paragraph with real text, keep the paragraph
+    # (strip only the marker) — don't drop the author's content.
+    docx = _make_docx(_doc(
+        _para("Détail {{?si_honoraires}}important"),
+        _para("corps"),
+        _para("fin {{/si_honoraires}} suite"),
+    ))
+    out = _document_xml(fill_docx(docx, {}, conditions={"si_honoraires": True}))
+    assert "Détail important" in out and "corps" in out
+    assert "fin" in out and "suite" in out
+    assert "{{?si_honoraires}}" not in out and "{{/si_honoraires}}" not in out
+    assert out.count("<w:p>") == 3  # all three paragraphs kept (they hold text)
+
+
 def test_conditional_false_removes_whole_span():
     import xml.etree.ElementTree as ET
     docx = _make_docx(_doc(

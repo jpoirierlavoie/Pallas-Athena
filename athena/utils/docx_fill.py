@@ -340,6 +340,30 @@ def _region_pattern(region: str) -> re.Pattern:
     return re.compile(r"\{\{#\s*" + re.escape(region) + r"\s*\}\}")
 
 
+def _remove_marker_paragraph(xml: str, marker_pat: re.Pattern) -> str:
+    """Strip a conditional marker and, if its paragraph is then empty, drop the
+    whole ``<w:p>``.
+
+    The markers sit on their own line bracketing a table (§5.2), so a KEPT
+    section must leave **no blank line** where the marker was — removing just
+    the marker text would strand an empty paragraph. A paragraph that still
+    holds other text keeps it (marker removed); one carrying ``<w:sectPr>``
+    (section properties) is never dropped.
+    """
+    def repl(match: re.Match) -> str:
+        para = match.group(0)
+        if not marker_pat.search(para):
+            return para
+        stripped = marker_pat.sub("", para)
+        if "<w:sectPr" in stripped:
+            return stripped
+        if _XML_TAG_RE.sub("", stripped).strip():
+            return stripped  # other text remains — keep the paragraph
+        return ""  # marker-only paragraph → drop entirely (no blank line)
+
+    return _PARAGRAPH_RE.sub(repl, xml)
+
+
 def _apply_conditions(xml: str, conditions: dict[str, bool]) -> str:
     """Resolve ``{{?cond}}`` … ``{{/cond}}`` regions (§5).
 
@@ -363,7 +387,10 @@ def _apply_conditions(xml: str, conditions: dict[str, bool]) -> str:
                 "(marqueur d'ouverture ou de fermeture manquant)."
             )
         if keep:
-            xml = close_pat.sub("", open_pat.sub("", xml))
+            # Keep the gated content; remove the marker paragraphs entirely
+            # so no blank line is left where the markers were.
+            xml = _remove_marker_paragraph(xml, open_pat)
+            xml = _remove_marker_paragraph(xml, close_pat)
             continue
         # False → remove the whole marker-paragraph → marker-paragraph span.
         span_re = re.compile(
@@ -379,9 +406,10 @@ def _apply_conditions(xml: str, conditions: dict[str, bool]) -> str:
             xml = new_xml
         else:
             # Markers not in the expected own-paragraph placement (§5.2).
-            # Deleting a partial table would produce invalid XML, so strip
-            # only the markers (no literal token survives; content stays).
-            xml = close_pat.sub("", open_pat.sub("", xml))
+            # Deleting a partial table would produce invalid XML, so just
+            # remove the marker paragraphs (no literal token survives).
+            xml = _remove_marker_paragraph(xml, open_pat)
+            xml = _remove_marker_paragraph(xml, close_pat)
     return xml
 
 

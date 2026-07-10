@@ -28,7 +28,7 @@ from utils.format_fr import (
     format_hours_fr,
     format_rate_fr,
 )
-from utils.template_fields import CATALOG, resolve_values
+from utils.template_fields import CATALOG, FLAT_ALIASES, resolve_values
 
 # The invoice stores GST ×100 and QST ×1000 (models.invoice) — see
 # utils.format_fr.format_rate_fr.
@@ -168,11 +168,13 @@ def build_invoice_context(
     """
     dest = destinataire or _partie_from_billing_address(invoice.get("billing_address") or {})
 
-    # Header namespaces via the Phase H catalog (canonical names). Resolving
-    # the whole catalog is cheap and pure; unused fields are simply ignored
-    # by the fill engine.
+    # Header namespaces via the Phase H catalog — both CANONICAL names and the
+    # flat ALIASES the procedures/letters gabarits use, so a note template can
+    # use the identical placeholders ({{numero_dossier}} as well as
+    # {{dossier.numero_cour}}). Resolving the whole set is cheap and pure;
+    # unused fields are ignored by the fill engine.
     values = resolve_values(
-        list(CATALOG),
+        list(CATALOG) + list(FLAT_ALIASES),
         dossier=dossier,
         client=None,
         adverse=None,
