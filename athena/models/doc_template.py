@@ -40,6 +40,15 @@ CATEGORY_LABELS = {
     "autre": "Autre",
 }
 
+# Discriminator (Phase H.2): an ordinary gabarit vs the invoice
+# note-d'honoraires template the /factures page fills. Kept separate from
+# `category` so the user's own category taxonomy stays free.
+VALID_KINDS = ("gabarit", "note_honoraires")
+KIND_LABELS = {
+    "gabarit": "Gabarit",
+    "note_honoraires": "Note d'honoraires (facture)",
+}
+
 MAX_TEMPLATE_SIZE = 10 * 1024 * 1024  # compressed .docx cap (also in docx_fill)
 DOCX_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -58,6 +67,7 @@ def _default_doc() -> dict:
         "name": "",
         "description": "",
         "category": "autre",
+        "kind": "gabarit",
         "filename": "",
         "original_filename": "",
         "file_size": 0,
@@ -95,6 +105,8 @@ def _validate(data: dict) -> list[str]:
     category = data.get("category") or ""
     if category not in VALID_CATEGORIES:
         errors.append("Catégorie invalide.")
+    if (data.get("kind") or "gabarit") not in VALID_KINDS:
+        errors.append("Type de gabarit invalide.")
     return errors
 
 
@@ -275,6 +287,28 @@ def list_templates(
             in " ".join([t.get("name", ""), t.get("description", "")]).lower()
         ]
     return results
+
+
+def get_note_honoraires_template() -> Optional[dict]:
+    """Most recently updated ``kind == "note_honoraires"`` template, or None.
+
+    Filters the small ``doc_templates`` collection in Python (no index; same
+    bounded-collection approach as :func:`list_templates`). Legacy docs with
+    no ``kind`` field read as ``"gabarit"`` and are excluded.
+    """
+    try:
+        docs = [d.to_dict() for d in db.collection(COLLECTION).stream()]
+    except Exception as exc:
+        logger.warning(
+            "get_note_honoraires_template failed: %s", type(exc).__name__
+        )
+        return None
+    notes = [t for t in docs if t.get("kind") == "note_honoraires"]
+    if not notes:
+        return None
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    notes.sort(key=lambda t: t.get("updated_at") or epoch, reverse=True)
+    return notes[0]
 
 
 def update_template(

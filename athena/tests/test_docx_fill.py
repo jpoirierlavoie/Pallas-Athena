@@ -43,6 +43,20 @@ def _hdr(*paragraphs: str) -> str:
     )
 
 
+def _tc(text: str, tcpr: str = "") -> str:
+    """A table cell holding one paragraph (optional cell properties)."""
+    tcpr_xml = f"<w:tcPr>{tcpr}</w:tcPr>" if tcpr else ""
+    return f"<w:tc>{tcpr_xml}<w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>"
+
+
+def _tr(*cells: str) -> str:
+    return f"<w:tr>{''.join(cells)}</w:tr>"
+
+
+def _tbl(*rows: str) -> str:
+    return f"<w:tbl><w:tblPr/>{''.join(rows)}</w:tbl>"
+
+
 def _make_docx(
     document_xml: str,
     headers: list[str] | None = None,
@@ -492,3 +506,153 @@ def test_filled_document_is_valid_zip_with_deflate():
     assert filled.startswith(b"PK\x03\x04")
     with zipfile.ZipFile(io.BytesIO(filled)) as zf:
         assert zf.testzip() is None
+
+
+# ── Phase H.2: repeating table rows ─────────────────────────────────────
+
+_CELL_BORDER = '<w:tcBorders><w:top w:val="single"/></w:tcBorders>'
+
+
+def test_repeating_rows_clone_tr_preserving_cell_formatting():
+    data_row = _tr(
+        _tc("{{#ligne_honoraire}}{{h.date}}", tcpr=_CELL_BORDER),
+        _tc("{{h.description}}"),
+        _tc("{{h.temps}}"),
+    )
+    header = _tr(_tc("Date"), _tc("Description"), _tc("Temps"))
+    docx = _make_docx(_doc(_tbl(header, data_row)))
+    rows = {"ligne_honoraire": [
+        {"h.date": "1er mai 2026", "h.description": "Recherche", "h.temps": "2,50"},
+        {"h.date": "2 mai 2026", "h.description": "Rédaction", "h.temps": "1,00"},
+        {"h.date": "3 mai 2026", "h.description": "Appel", "h.temps": "0,50"},
+    ]}
+    out = _document_xml(fill_docx(docx, {}, rows_by_region=rows))
+    import xml.etree.ElementTree as ET
+    ET.fromstring(out)
+    assert out.count("<w:tr>") == 4  # header + 3 data rows
+    assert "1er mai 2026" in out and "Rédaction" in out and "0,50" in out
+    assert "{{#ligne_honoraire}}" not in out and "{{h.date}}" not in out
+    # Cell formatting (borders) preserved in each clone (once per data row).
+    assert out.count("<w:tcBorders>") == 3
+    assert out.index("Recherche") < out.index("Rédaction") < out.index("Appel")
+
+
+def test_two_regions_both_expand_no_count_1():
+    r1 = _tr(_tc("{{#ligne_honoraire}}{{h.description}}"))
+    r2 = _tr(_tc("{{#ligne_debours_tx}}{{d.description}}"))
+    docx = _make_docx(_doc(_tbl(r1), _tbl(r2)))
+    rows = {
+        "ligne_honoraire": [{"h.description": "A"}, {"h.description": "B"}],
+        "ligne_debours_tx": [
+            {"d.description": "X"}, {"d.description": "Y"}, {"d.description": "Z"}
+        ],
+    }
+    out = _document_xml(fill_docx(docx, {}, rows_by_region=rows))
+    assert out.count("<w:tr>") == 5  # 2 + 3
+    assert "{{#" not in out
+
+
+def test_empty_region_collapses_to_nothing():
+    data_row = _tr(_tc("{{#ligne_debours_ntx}}{{d.description}}"))
+    docx = _make_docx(_doc(_tbl(_tr(_tc("Entête")), data_row)))
+    out = _document_xml(fill_docx(docx, {}, rows_by_region={"ligne_debours_ntx": []}))
+    assert out.count("<w:tr>") == 1  # only the header row survives
+    assert "{{#ligne_debours_ntx}}" not in out and "{{d.description}}" not in out
+
+
+def test_row_scoped_field_escaping_and_backslash():
+    data_row = _tr(_tc("{{#ligne_honoraire}}{{h.description}}"))
+    docx = _make_docx(_doc(_tbl(data_row)))
+    rows = {"ligne_honoraire": [{"h.description": "A & B <x> \\g<0>"}]}
+    out = _document_xml(fill_docx(docx, {}, rows_by_region=rows))
+    assert "A &amp; B &lt;x&gt;" in out
+    assert "\\g&lt;0&gt;" in out  # function replacement — backslash literal
+    assert "<x>" not in out
+
+
+# ── Phase H.2: conditional regions ──────────────────────────────────────
+
+def test_conditional_true_keeps_content_strips_markers():
+    import xml.etree.ElementTree as ET
+    docx = _make_docx(_doc(
+        _para("{{?si_honoraires}}"),
+        _tbl(_tr(_tc("Honoraires professionnels"))),
+        _para("{{/si_honoraires}}"),
+    ))
+    out = _document_xml(fill_docx(docx, {}, conditions={"si_honoraires": True}))
+    ET.fromstring(out)
+    assert "Honoraires professionnels" in out
+    assert "{{?si_honoraires}}" not in out and "{{/si_honoraires}}" not in out
+
+
+def test_conditional_false_removes_whole_span():
+    import xml.etree.ElementTree as ET
+    docx = _make_docx(_doc(
+        _para("Avant"),
+        _para("{{?si_debours_ntx}}"),
+        _tbl(_tr(_tc("Débours non assujettis"))),
+        _para("{{/si_debours_ntx}}"),
+        _para("Après"),
+    ))
+    out = _document_xml(fill_docx(docx, {}, conditions={"si_debours_ntx": False}))
+    ET.fromstring(out)  # well-formed after span removal
+    assert "Débours non assujettis" not in out
+    assert "Avant" in out and "Après" in out
+    assert "{{?" not in out and "{{/" not in out
+
+
+def test_unbalanced_condition_raises():
+    docx = _make_docx(_doc(_para("{{?si_honoraires}}"), _tbl(_tr(_tc("x")))))
+    with pytest.raises(DocxFillError):
+        fill_docx(docx, {}, conditions={"si_honoraires": True})
+
+
+def test_false_conditional_wrapping_table_skips_row_expansion():
+    # Conditionals run BEFORE rows (§4.3): a removed table's repeating rows
+    # are never expanded and no orphan marker survives.
+    import xml.etree.ElementTree as ET
+    docx = _make_docx(_doc(
+        _para("{{?si_debours_tx}}"),
+        _tbl(_tr(_tc("{{#ligne_debours_tx}}{{d.description}}"))),
+        _para("{{/si_debours_tx}}"),
+    ))
+    out = _document_xml(fill_docx(
+        docx, {},
+        rows_by_region={"ligne_debours_tx": [{"d.description": "NE DOIT PAS PARAÎTRE"}]},
+        conditions={"si_debours_tx": False},
+    ))
+    ET.fromstring(out)
+    assert "NE DOIT PAS PARAÎTRE" not in out
+    assert "{{#ligne_debours_tx}}" not in out
+    assert "<w:tbl>" not in out
+
+
+def test_phase_h_callers_unaffected_without_extras():
+    # No rows/conditions → identical to Phase H behavior.
+    docx = _make_docx(_doc(_para("{{x}} et {{#pasunregion}} littéral")))
+    out = _document_xml(fill_docx(docx, {"x": "rempli"}))
+    assert "rempli" in out
+    # A region marker with no rows_by_region is left untouched.
+    assert "{{#pasunregion}}" in out
+
+
+# ── Phase H.2: marker split-run detection (§3.4) ────────────────────────
+
+def test_structural_split_of_region_marker_flagged():
+    # A <w:br/> inside {{#ligne_honoraire}} can't be bridged → suspect.
+    split = ("<w:tr><w:tc><w:p><w:r><w:t>{{#ligne</w:t></w:r>"
+             "<w:r><w:br/></w:r><w:r><w:t>_honoraire}}</w:t></w:r></w:p></w:tc></w:tr>")
+    docx = _make_docx(_doc(_tbl(split)))
+    result = validate_template(docx)
+    assert "#ligne_honoraire" in result.split_run_suspects
+
+
+def test_clean_markers_not_flagged():
+    docx = _make_docx(_doc(
+        _para("{{?si_honoraires}}"),
+        _tbl(_tr(_tc("{{#ligne_honoraire}}{{h.date}}"))),
+        _para("{{/si_honoraires}}"),
+    ))
+    result = validate_template(docx)
+    assert result.split_run_suspects == []
+    assert result.errors == []

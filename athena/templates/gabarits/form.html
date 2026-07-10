@@ -49,6 +49,19 @@
     </div>
 
     <div>
+      <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
+        <input type="checkbox" name="is_note_honoraires" value="1"
+               {{ 'checked' if template and template.kind == 'note_honoraires' }}
+               class="h-4 w-4 border-gray-300 focus:ring-indigo-500">
+        Gabarit de note d'honoraires (facture)
+      </label>
+      <p class="text-xs text-gray-400 mt-1.5">
+        Cochez si ce gabarit sert à générer la note d'honoraires depuis une facture
+        (tables des honoraires et débours, bloc des totaux). Le plus récent est utilisé.
+      </p>
+    </div>
+
+    <div>
       <label class="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
       <textarea name="description" rows="3"
                 placeholder="Description optionnelle…"

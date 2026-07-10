@@ -51,6 +51,29 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # textarea input frequently carries stray spaces on empty lines).
 _BLANK_LINE_RE = re.compile(r"\n\s*\n")
 
+# ── Phase H.2 structural tokens (repeating table rows + conditional regions)
+# Region open marker for a repeating row: {{#region}}. Conditional section:
+# {{?cond}} … {{/cond}}. Distinct from a {{name}} placeholder by the leading
+# #/?// sigil. Optional inner whitespace tolerated, like PLACEHOLDER_RE.
+_ROW_REGION_RE = re.compile(r"\{\{#\s*([A-Za-z0-9_]+)\s*\}\}")
+_COND_OPEN_RE = re.compile(r"\{\{\?\s*([A-Za-z0-9_]+)\s*\}\}")
+_COND_CLOSE_RE = re.compile(r"\{\{/\s*([A-Za-z0-9_]+)\s*\}\}")
+# Any token — a {{name}} OR a {{#…}}/{{?…}}/{{/…}} marker — used ONLY by the
+# split-run suspect scan so a fragmented marker is reported too (§3.4). The
+# placeholder INVENTORY stays on PLACEHOLDER_RE (markers are structural, not
+# fillable fields).
+_ANY_TOKEN_RE = re.compile(r"\{\{\s*([#?/]?[A-Za-zÀ-ÿ0-9_.]+)\s*\}\}")
+
+# An INNERMOST <w:tr> table row (mirrors _PARAGRAPH_RE). Rows nest when a
+# table sits inside a cell, so the tempered body ((?!<w:tr[\s/>]).) refuses
+# to cross another opening <w:tr> — the match lands on a balanced innermost
+# row, and cloning it never yields unbalanced XML. `<w:tr(?:\s…)?>` matches a
+# row carrying rsid attributes; it never matches <w:trPr> (a letter, not
+# whitespace or '>', follows `<w:tr`).
+_TABLE_ROW_RE = re.compile(
+    r"<w:tr(?:\s[^>]*)?>(?:(?!<w:tr[\s/>]).)*?</w:tr>", re.DOTALL
+)
+
 # ── Run normalization (heal Word's run-splitting so placeholders match) ──
 # Word fragments a typed placeholder across multiple <w:r> runs — proofing
 # (spell/grammar) brackets it in <w:proofErr> markers that force run
@@ -259,6 +282,25 @@ def _name_counts(text: str) -> dict[str, int]:
     return counts
 
 
+def _all_tokens_in_text(text: str) -> list[str]:
+    """Distinct tokens (names AND #/?// markers) in order of first appearance."""
+    seen: list[str] = []
+    for match in _ANY_TOKEN_RE.finditer(text):
+        token = match.group(1)
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+def _all_token_counts(text: str) -> dict[str, int]:
+    """Count every token occurrence (names + markers) — for split detection."""
+    counts: dict[str, int] = {}
+    for match in _ANY_TOKEN_RE.finditer(text):
+        token = match.group(1)
+        counts[token] = counts.get(token, 0) + 1
+    return counts
+
+
 def _escape_xml(value: str) -> str:
     """XML-escape a plain-text value and strip stray control characters.
 
@@ -282,6 +324,98 @@ def _normalize_newlines(value: str) -> str:
 
 def _name_pattern(name: str) -> re.Pattern:
     return re.compile(r"\{\{\s*" + re.escape(name) + r"\s*\}\}")
+
+
+# ── Phase H.2 — conditional regions + repeating table rows ───────────────
+
+def _cond_open_pattern(cond: str) -> re.Pattern:
+    return re.compile(r"\{\{\?\s*" + re.escape(cond) + r"\s*\}\}")
+
+
+def _cond_close_pattern(cond: str) -> re.Pattern:
+    return re.compile(r"\{\{/\s*" + re.escape(cond) + r"\s*\}\}")
+
+
+def _region_pattern(region: str) -> re.Pattern:
+    return re.compile(r"\{\{#\s*" + re.escape(region) + r"\s*\}\}")
+
+
+def _apply_conditions(xml: str, conditions: dict[str, bool]) -> str:
+    """Resolve ``{{?cond}}`` … ``{{/cond}}`` regions (§5).
+
+    Per condition: when ``True`` strip just the two markers (gated content
+    stays); when ``False`` delete the whole span from the opening marker's
+    ``<w:p>`` through the closing marker's ``</w:p>`` inclusive — markers sit
+    in their own paragraphs bracketing the table, so this removes the table
+    cleanly without producing partial-table XML Word would reject. A present
+    open with no matching close (or vice versa) raises :class:`DocxFillError`.
+    """
+    for cond, keep in conditions.items():
+        open_pat = _cond_open_pattern(cond)
+        close_pat = _cond_close_pattern(cond)
+        has_open = open_pat.search(xml) is not None
+        has_close = close_pat.search(xml) is not None
+        if not has_open and not has_close:
+            continue  # template does not use this condition
+        if has_open != has_close:
+            raise DocxFillError(
+                f"Région conditionnelle « {cond} » incomplète dans le gabarit "
+                "(marqueur d'ouverture ou de fermeture manquant)."
+            )
+        if keep:
+            xml = close_pat.sub("", open_pat.sub("", xml))
+            continue
+        # False → remove the whole marker-paragraph → marker-paragraph span.
+        span_re = re.compile(
+            r"<w:p(?:\s[^>]*)?>(?:(?!</w:p>).)*?"
+            + open_pat.pattern
+            + r".*?"
+            + close_pat.pattern
+            + r"(?:(?!</w:p>).)*?</w:p>",
+            re.DOTALL,
+        )
+        new_xml, n = span_re.subn("", xml)
+        if n:
+            xml = new_xml
+        else:
+            # Markers not in the expected own-paragraph placement (§5.2).
+            # Deleting a partial table would produce invalid XML, so strip
+            # only the markers (no literal token survives; content stays).
+            xml = close_pat.sub("", open_pat.sub("", xml))
+    return xml
+
+
+def _apply_rows(xml: str, rows_by_region: dict[str, list[dict]]) -> str:
+    """Clone a marked ``<w:tr>`` once per row dict, substituting row fields (§4).
+
+    The ``{{#region}}`` marker (in the row's first cell) selects the row; it
+    is removed in every clone. Row-scoped fields (``{{h.date}}``, ``{{d.cout}}``)
+    resolve from the row dict, XML-escaped via a function replacement (never a
+    bare string — same rule as the scalar path). An empty row list removes the
+    marked row entirely. Scans ALL rows (a template may hold several regions).
+    """
+    for region, rows in rows_by_region.items():
+        region_pat = _region_pattern(region)
+
+        def _expand(match: re.Match, rows=rows, region_pat=region_pat) -> str:
+            row_xml = match.group(0)
+            if not region_pat.search(row_xml):
+                return row_xml
+            clones: list[str] = []
+            for row in rows:
+                clone = region_pat.sub("", row_xml)
+                for fname, fval in row.items():
+                    escaped = _escape_xml(
+                        _normalize_newlines("" if fval is None else str(fval)).replace(
+                            "\n", " "
+                        )
+                    )
+                    clone = _name_pattern(fname).sub(lambda m, e=escaped: e, clone)
+                clones.append(clone)
+            return "".join(clones)
+
+        xml = _TABLE_ROW_RE.sub(_expand, xml)
+    return xml
 
 
 # ── Public API ──────────────────────────────────────────────────────────
@@ -339,31 +473,53 @@ def validate_template(docx_bytes: bytes) -> TemplateValidation:
                 return result
             xml = _normalize_runs(xml_bytes.decode("utf-8", errors="replace"))
             stripped = _XML_TAG_RE.sub("", xml)
-            raw_counts = _name_counts(xml)
-            strip_counts = _name_counts(stripped)
+            # Inventory: fillable {{name}} placeholders only (markers are
+            # structural, not fields).
             for name in _names_in_text(stripped):
                 if name not in result.placeholders:
                     result.placeholders.append(name)
-                # Per-OCCURRENCE (not per-name): flag when some occurrences
-                # remain fragmented in the raw XML even though others are
-                # clean — a name-level check would let one clean copy mask
-                # the broken ones (they'd silently fail to fill).
-                if raw_counts.get(name, 0) < strip_counts.get(name, 0) and (
-                    name not in suspects
+            # Split-run suspects over ALL tokens — names AND {{#…}}/{{?…}}/
+            # {{/…}} markers (§3.4) — and per-OCCURRENCE (not per-name): flag
+            # when some occurrences remain fragmented in the raw XML even
+            # though others are clean, so one clean copy can't mask a broken
+            # sibling (which would silently fail to fill).
+            raw_counts = _all_token_counts(xml)
+            strip_counts = _all_token_counts(stripped)
+            for token in _all_tokens_in_text(stripped):
+                if raw_counts.get(token, 0) < strip_counts.get(token, 0) and (
+                    token not in suspects
                 ):
-                    suspects.append(name)
+                    suspects.append(token)
 
     result.split_run_suspects = suspects
     return result
 
 
-def _fill_target_xml(xml: str, values: dict[str, str]) -> str:
-    """Fill one target XML: normalize runs, then block + scalar substitution."""
+def _fill_target_xml(
+    xml: str,
+    values: dict[str, str],
+    *,
+    rows_by_region: dict[str, list[dict]] | None = None,
+    conditions: dict[str, bool] | None = None,
+) -> str:
+    """Fill one target XML.
+
+    Order (§4.3): normalize runs → conditional regions → repeating rows →
+    block paragraphs → scalars. Conditionals first so a removed table never
+    reaches row expansion; scalars last so globals in surviving structure
+    resolve. ``rows_by_region``/``conditions`` are passed only for
+    ``word/document.xml`` (tables live in the body); headers/footers get the
+    Phase H block + scalar passes only.
+    """
     # Heal Word's run-splitting first, so EVERY occurrence of a repeated
-    # placeholder matches — not just the clean ones (a fragmented copy
-    # would otherwise ship as a literal {{name}} while its clean sibling
-    # filled).
+    # placeholder (and every structural marker) matches — not just the clean
+    # ones (a fragmented copy would otherwise ship as a literal {{name}}
+    # while its clean sibling filled).
     xml = _normalize_runs(xml)
+    if conditions:
+        xml = _apply_conditions(xml, conditions)
+    if rows_by_region:
+        xml = _apply_rows(xml, rows_by_region)
     block_pairs: list[tuple[str, str]] = []
     scalar_pairs: list[tuple[str, str]] = []
     for name, raw_value in values.items():
@@ -413,7 +569,13 @@ def _fill_target_xml(xml: str, values: dict[str, str]) -> str:
     return xml
 
 
-def fill_docx(docx_bytes: bytes, values: dict[str, str]) -> bytes:
+def fill_docx(
+    docx_bytes: bytes,
+    values: dict[str, str],
+    *,
+    rows_by_region: dict[str, list[dict]] | None = None,
+    conditions: dict[str, bool] | None = None,
+) -> bytes:
     """Fill placeholders in a .docx template; return the new archive.
 
     Only ``word/document.xml`` and ``word/header*.xml``/``word/footer*.xml``
@@ -421,6 +583,11 @@ def fill_docx(docx_bytes: bytes, values: dict[str, str]) -> bytes:
     whole point of this engine — Word must reopen the output without
     repair). Raises :class:`DocxFillError` on a structurally invalid or
     oversized archive.
+
+    ``rows_by_region`` (repeating table rows, §4) and ``conditions``
+    (conditional sections, §5) are the Phase H.2 extensions; they apply to
+    ``word/document.xml`` only. When both are ``None`` the behavior is
+    identical to Phase H (existing callers are untouched).
     """
     errors, zf = _structural_errors(docx_bytes)
     if errors or zf is None:
@@ -435,8 +602,14 @@ def fill_docx(docx_bytes: bytes, values: dict[str, str]) -> bytes:
             data = _read_entry_bounded(zf, info.filename, cap)
             remaining -= len(data)
             if is_target:
+                is_document = info.filename == "word/document.xml"
                 xml = data.decode("utf-8", errors="replace")
-                data = _fill_target_xml(xml, values).encode("utf-8")
+                data = _fill_target_xml(
+                    xml,
+                    values,
+                    rows_by_region=rows_by_region if is_document else None,
+                    conditions=conditions if is_document else None,
+                ).encode("utf-8")
             # Reuse the original ZipInfo: preserves entry order, per-entry
             # compress_type, timestamps and attributes.
             zout.writestr(info, data)

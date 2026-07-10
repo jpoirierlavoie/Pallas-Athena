@@ -1,5 +1,6 @@
 """Invoice management routes — list, create, detail, status updates."""
 
+import io
 import math
 from datetime import datetime, timezone
 
@@ -9,9 +10,11 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 from markupsafe import escape
+from werkzeug.utils import secure_filename
 
 from auth import login_required
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
@@ -33,6 +36,16 @@ from models.dossier import get_dossier, list_dossiers
 from models.partie import display_name, get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
+from models.doc_template import get_note_honoraires_template, get_template_bytes
+from models.document import upload_document
+from models.folder import get_or_create_folder
+from tz import MTL
+from utils.docx_fill import DocxFillError, fill_docx
+from utils.invoice_docx import build_invoice_context
+from utils.logging_setup import log_template_event, log_unexpected
+from utils.template_fields import MANUAL_FIELDS, classify_placeholders, fallback_value
+from utils.tracing_setup import add_attributes, span
+from utils.validators import format_phone_display
 
 invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
 
@@ -387,6 +400,164 @@ def invoice_detail(invoice_id: str) -> str:
         return_to=request.args.get("return_to", ""),
     )
     return render_template("invoices/detail.html", **ctx)
+
+
+# ── Note d'honoraires (Word) — Phase H.2 ────────────────────────────────
+
+
+def _cabinet_dict() -> dict:
+    """Firm info in the Phase H catalog shape (``cabinet.*`` resolvers)."""
+    street = Config.FIRM_STREET
+    if Config.FIRM_UNIT:
+        street = f"{street}, {Config.FIRM_UNIT}" if street else Config.FIRM_UNIT
+    try:
+        telephone = format_phone_display(Config.FIRM_PHONE) if Config.FIRM_PHONE else ""
+    except Exception:
+        telephone = Config.FIRM_PHONE or ""
+    return {
+        "nom": Config.FIRM_NAME,
+        "adresse_civique": street,
+        "ville": Config.FIRM_CITY,
+        "province": Config.FIRM_PROVINCE,
+        "code_postal": Config.FIRM_POSTAL_CODE,
+        "telephone": telephone,
+        "courriel": Config.FIRM_EMAIL,
+    }
+
+
+def _note_error(message: str) -> str:
+    """HTMX error fragment (status 200 so htmx 2.0.4 swaps it, like Phase H)."""
+    return (
+        '<div class="p-3 text-sm text-red-600 bg-red-50 border border-red-200 '
+        f'rounded-xl">{escape(message)}</div>'
+    )
+
+
+def _assemble_note_values(template: dict, ctx) -> dict[str, str]:
+    """One value per template placeholder: ctx (facture.* + resolved header
+    fields) → auto fallback → manual default. Row-scoped (h./d.) and
+    passthrough names are omitted (rows fill the former; the latter stay
+    literal)."""
+    placeholders = template.get("placeholders", [])
+    classification = classify_placeholders(placeholders)
+    values: dict[str, str] = {}
+    for name in placeholders:
+        if name in ctx.values:
+            values[name] = ctx.values[name]
+        elif name in classification.auto:
+            values[name] = fallback_value(name, is_auto=True)
+        elif name in classification.manual:
+            spec = MANUAL_FIELDS[name]
+            values[name] = spec["default"] or fallback_value(name, is_auto=False)
+        # else: passthrough / row-scoped → omit
+    return values
+
+
+@invoices_bp.route("/<invoice_id>/note-docx", methods=["POST"])
+@login_required
+def invoice_note_docx(invoice_id: str) -> Response | str:
+    """Fill the note-d'honoraires template from this invoice and save the
+    .docx into the dossier's « Notes d'honoraires » folder (§9.2)."""
+    invoice, items = get_invoice_with_items(invoice_id)
+    if not invoice:
+        return _note_error("Facture introuvable.")
+    if invoice.get("status") == "annulée":
+        log_template_event("generation_failed", reason="invoice_voided")
+        return _note_error(
+            "Impossible de générer une note d'honoraires pour une facture annulée."
+        )
+
+    template = get_note_honoraires_template()
+    if not template:
+        log_template_event("generation_failed", reason="no_note_template")
+        return _note_error(
+            "Aucun gabarit de note d'honoraires n'est configuré. Téléversez-en un "
+            "dans « Gabarits » et cochez « Gabarit de note d'honoraires »."
+        )
+    template_id = template["id"]
+
+    dossier_id = invoice.get("dossier_id", "")
+    dossier = get_dossier(dossier_id) if dossier_id else None
+    client = get_partie(invoice.get("client_id", "")) if invoice.get("client_id") else None
+    today = datetime.now(MTL).date()
+
+    ctx = build_invoice_context(
+        invoice, items,
+        firm=_cabinet_dict(), destinataire=client, dossier=dossier, today=today,
+    )
+    values = _assemble_note_values(template, ctx)
+    counts = {
+        "rows_honoraire": len(ctx.rows["ligne_honoraire"]),
+        "rows_debours_tx": len(ctx.rows["ligne_debours_tx"]),
+        "rows_debours_ntx": len(ctx.rows["ligne_debours_ntx"]),
+    }
+    add_attributes(template_id=template_id, invoice_id=invoice_id, **counts)
+
+    docx_bytes = get_template_bytes(template_id)
+    if docx_bytes is None:
+        log_template_event("generation_failed", template_id=template_id,
+                           reason="template_file_unavailable")
+        return _note_error(
+            "Le fichier du gabarit est introuvable. Téléversez-le à nouveau."
+        )
+
+    try:
+        with span("template.fill", template_id=template_id, invoice_id=invoice_id):
+            filled = fill_docx(
+                docx_bytes, values,
+                rows_by_region=ctx.rows, conditions=ctx.conditions,
+            )
+    except DocxFillError as exc:
+        reason = "unbalanced_condition" if "conditionnelle" in str(exc) else "fill_error"
+        log_template_event("generation_failed", template_id=template_id, reason=reason)
+        return _note_error("Le gabarit est invalide et n'a pas pu être rempli.")
+    except Exception:
+        log_unexpected("note-honoraires fill failed", template_id=template_id)
+        log_template_event("generation_failed", template_id=template_id, reason="fill_error")
+        return _note_error("Erreur lors de la génération. Veuillez réessayer.")
+
+    folder = get_or_create_folder(dossier_id, "Notes d'honoraires") if dossier_id else None
+    invoice_number = invoice.get("invoice_number", "")
+    out_name = secure_filename(f"Note_honoraires_{invoice_number}.docx")
+    if not out_name.lower().endswith(".docx"):
+        out_name = f"note_honoraires_{today.isoformat()}.docx"
+
+    metadata = {
+        "category": "correspondance",
+        "folder_id": folder["id"] if folder else None,
+        "display_name": f"Note d'honoraires {invoice_number}".strip(),
+        "description": f"Générée depuis la facture {invoice_number}".strip(),
+        "tags": ["note_honoraires"],
+    }
+    doc, errors = upload_document(
+        dossier_id=dossier_id,
+        dossier_file_number=invoice.get("dossier_file_number", ""),
+        file_stream=io.BytesIO(filled),
+        filename=out_name,
+        file_size=len(filled),
+        metadata=metadata,
+        user_id=session.get("user_id", "unknown"),
+    )
+    if errors or not doc:
+        log_template_event("generation_failed", template_id=template_id,
+                           dossier_id=dossier_id, invoice_id=invoice_id,
+                           reason="save_failed")
+        return _note_error(errors[0] if errors else "Erreur lors de l'enregistrement.")
+
+    log_template_event("document_generated", template_id=template_id,
+                       dossier_id=dossier_id, saved_document_id=doc["id"],
+                       invoice_id=invoice_id, source="facture", **counts)
+
+    if not _is_htmx():
+        return redirect(url_for("documents.document_detail", document_id=doc["id"]))
+    return render_template(
+        "invoices/_note_generated.html",
+        generated={
+            "display_name": doc.get("display_name", out_name),
+            "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
+            "download_url": url_for("documents.document_download", document_id=doc["id"]),
+        },
+    )
 
 
 # ── Status transitions ──────────────────────────────────────────────────

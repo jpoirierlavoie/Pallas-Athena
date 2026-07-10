@@ -131,8 +131,8 @@ INFO, except `generation_failed` (WARNING). **Never pass field values** (client 
 | `template_uploaded` | New gabarit; `template_id`, `placeholder_count`, `warning_count` (split-run suspects) |
 | `template_updated` | Metadata edit or file replacement; `file_replaced: bool`, `version` |
 | `template_deleted` | Gabarit + Storage object removed |
-| `document_generated` | `template_id`, `dossier_id` (when saved), `saved_document_id` (when saved), `field_count`, `missing_count` (blanks replaced by the visible French fallback) |
-| `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`) — never a filename or field value |
+| `document_generated` | `template_id`, `dossier_id` (when saved), `saved_document_id` (when saved), `field_count`, `missing_count` (blanks replaced by the visible French fallback). **Note d'honoraires (Phase H.2):** adds `invoice_id`, `source="facture"`, and the three row counts `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` (instead of `field_count`/`missing_count`) |
+| `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`; Phase H.2 adds `no_note_template`, `invoice_voided`, `unbalanced_condition`) — never a filename or field value |
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
@@ -179,7 +179,7 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `auth.*` | Reserved — wrap auth verification helpers as needed | (not yet instrumented) |
 | `mcp.request` | MCP JSON-RPC dispatch (one per POST /mcp) | `mcp.request` with `method` attribute |
 | `mcp.tool.*` | One span per tool execution | `mcp.tool.get_agenda`, `mcp.tool.list_dossiers` |
-| `template.fill` | docx fill inside the generation POST (Phase H) | `template.fill` with `template_id`, `field_count` — never values or content, counts and IDs only |
+| `template.fill` | docx fill inside the generation POST (Phase H / H.2) | `template.fill` with `template_id`, `field_count` (gabarits) or `invoice_id` + `rows_honoraire`/`rows_debours_tx`/`rows_debours_ntx` (note d'honoraires) — never values or content, counts and IDs only |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |
 
 ### Standard attributes
@@ -206,6 +206,8 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `method` | string | manual (`mcp.request`) | JSON-RPC method (`initialize`, `tools/call`, …) |
 | `template_id` | string | manual (`template.fill` + request span) | Gabarit UUID |
 | `field_count` | int | manual (`template.fill` + request span) | Placeholders filled in a generation |
+| `invoice_id` | string | manual (`template.fill` + request span, Phase H.2) | Invoice UUID for a note d'honoraires — ID only |
+| `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` | int | manual (Phase H.2) | Note-d'honoraires table row counts — counts only, never figures or descriptions |
 | `dossier_id` | string | manual (`mcp.tool.*`) | Set when the tool call carries a `dossier_id` argument — UUIDs only, never names/emails/token material |
 | `db.system` | string | `firestore_span` | Always `firestore` |
 | `db.collection` | string | `firestore_span` | Firestore collection name |

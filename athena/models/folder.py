@@ -135,6 +135,26 @@ def create_folder(
     return folder, []
 
 
+def get_or_create_folder(
+    dossier_id: str,
+    name: str,
+    parent_folder_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Return the folder of *name* in *parent* (case-insensitive), or create it.
+
+    Idempotent convenience wrapper over :func:`create_folder` (Phase H.2 §8):
+    repeated note-d'honoraires generations reuse one « Notes d'honoraires »
+    folder instead of tripping the duplicate-name check. Returns the folder
+    dict, or ``None`` if creation failed.
+    """
+    name_lower = name.strip().lower()
+    for existing in list_folders(dossier_id, parent_folder_id=parent_folder_id):
+        if (existing.get("name") or "").strip().lower() == name_lower:
+            return existing
+    folder, _errors = create_folder(dossier_id, name, parent_folder_id)
+    return folder
+
+
 def get_folder(dossier_id: str, folder_id: str) -> Optional[dict]:
     """Fetch a single folder by ID, verifying it belongs to the dossier."""
     try:

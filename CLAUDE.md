@@ -224,8 +224,11 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── utils/                      # Utility modules
 │   │   ├── __init__.py
 │   │   ├── deadlines.py            # Quebec art. 83 C.p.c. judicial deadline calc
-│   │   ├── docx_fill.py            # Phase H: stdlib-only .docx placeholder fill engine (zip XML substitution)
+│   │   ├── docx_fill.py            # Phase H/H.2: stdlib-only .docx fill engine (zip XML substitution;
+│   │   │                           # scalars, blocks, + H.2 repeating rows & conditional regions)
 │   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
+│   │   ├── invoice_docx.py         # Phase H.2: invoice → note-d'honoraires context (facture.* + rows + conditions)
+│   │   ├── format_fr.py            # Phase H.2: fr-CA currency/date/hours/rate formatting (centralized)
 │   │   ├── validators.py           # Phone (E.164), email, postal code normalization, address defaults
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
 │   │   ├── export_pdf.py           # reportlab-based PDF export
@@ -237,7 +240,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── normalize_existing.py   # Backfill E.164 phones + normalized postal codes (Phase B)
 │   │   ├── seed_reference_data.py  # Populate ref_greffes + ref_juridictions (Phase G)
 │   │   ├── mint_dev_token.py       # Local-dev MCP bearer minting (refuses ENV=production)
-│   │   └── revoke_mcp_tokens.py    # Break-glass: revoke all MCP tokens (+ optional client purge)
+│   │   ├── revoke_mcp_tokens.py    # Break-glass: revoke all MCP tokens (+ optional client purge)
+│   │   └── diagnose_gabarit.py     # Local: list a gabarit's placeholders/classification + fragmentation cause
 │   │
 │   ├── tests/                      # pytest unit tests (run by Cloud Build as a deploy gate)
 │   │   ├── __init__.py
@@ -253,7 +257,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_mcp_oauth.py
 │   │   ├── test_mcp_tools.py
 │   │   ├── test_docx_fill.py
-│   │   └── test_template_fields.py
+│   │   ├── test_template_fields.py
+│   │   ├── test_format_fr.py       # Phase H.2
+│   │   ├── test_invoice_docx.py    # Phase H.2 (incl. end-to-end note fill)
+│   │   └── test_folders.py         # Phase H.2 get_or_create_folder (CI-only: imports models)
 │   │
 │   ├── templates/
 │   │   ├── base.html
@@ -739,6 +746,11 @@ Top-level collection; standard common fields (`id`, `created_at`, `updated_at`, 
     "name": str,                       # ≤120 chars, required
     "description": str,
     "category": "procédure" | "correspondance" | "autre",
+    "kind": "gabarit" | "note_honoraires",  # Phase H.2 discriminator (default
+                                       # "gabarit"); "note_honoraires" flags the
+                                       # invoice template /factures fills. Kept
+                                       # separate from category. Legacy docs
+                                       # (no kind) read as "gabarit".
     "filename": str,                   # secure_filename()d, .docx
     "original_filename": str,
     "file_size": int,                  # bytes (≤ 10 MB)
@@ -878,6 +890,7 @@ Time entries live at the prefix root; expenses live under `/depenses`. No `/heur
 | `/factures/<id>/status` | POST | Transition status (envoyée/payée/annulée…) |
 | `/factures/<id>/void` | POST | Annul and release linked time entries/expenses |
 | `/factures/<id>/delete` | POST | Hard-delete a cancelled invoice |
+| `/factures/<id>/note-docx` | POST | **Phase H.2** — generate the Word note d'honoraires from this invoice via the `kind="note_honoraires"` gabarit; save the `.docx` into the dossier's « Notes d'honoraires » folder; HTMX success partial (`_note_generated.html`). Refuses `annulée`; French message if no note template exists. The reportlab PDF path is unchanged (they coexist) |
 | `/factures/export/{csv,pdf}` | GET | Export |
 
 ### `hearings.py` — `/audiences/*`
@@ -1152,6 +1165,7 @@ Folder functions:
 - `rename_folder`, `move_folder` (circular-ref prevention via parent chain walk + subtree depth check), `delete_folder(recursive=False)`
 - `get_folder_breadcrumb(dossier_id, folder_id) -> list[{id, name}]`
 - `get_folder_tree(dossier_id) -> nested list` — for move modal
+- `get_or_create_folder(dossier_id, name, parent_folder_id=None) -> Optional[dict]` — **Phase H.2**: returns the existing root-level folder of that name (case-insensitive) or creates it; idempotent so repeated note-d'honoraires generations reuse one « Notes d'honoraires » folder instead of tripping the duplicate-name check
 
 ### `models/doc_template.py` (Phase H — gabarits)
 
@@ -1160,6 +1174,7 @@ Folder functions:
 - `update_template(template_id, data, file_stream=None, filename=None, file_size=None)` — with a file: re-validate, re-extract, upload NEW Storage object, `version += 1`, delete the old object only after the doc points at the new one
 - `delete_template(template_id)` — Storage object (NotFound tolerated) + Firestore doc
 - `get_template_bytes(template_id) -> Optional[bytes]` — for filling
+- `get_note_honoraires_template() -> Optional[dict]` — **Phase H.2**: most-recently-updated `kind == "note_honoraires"` template (Python filter over the small collection, no index); the `/factures/<id>/note-docx` route selects it. `VALID_KINDS = ("gabarit", "note_honoraires")` with `kind` set from a checkbox on the upload/edit form; legacy docs without `kind` read as `"gabarit"`
 - `get_signed_url(template_id, expires_in_minutes=15)` — IAM signBlob signing, attachment disposition
 - `VALID_CATEGORIES = ("procédure", "correspondance", "autre")`, `MAX_TEMPLATE_SIZE`, `DOCX_MIME`
 - Split-run suspects become French `validation_warnings` strings; the upload proceeds (the field simply won't fill until retyped in Word and re-uploaded)
@@ -1187,9 +1202,11 @@ No Firestore, no Flask — fully unit-testable. Operates by direct string substi
 PLACEHOLDER_RE                                  # {{name}} — accents, dots, optional inner spaces
 extract_placeholders(docx_bytes) -> list[str]    # distinct names, document order (tag-stripped scan)
 validate_template(docx_bytes) -> TemplateValidation  # .placeholders, .split_run_suspects, .errors (French)
-fill_docx(docx_bytes, values) -> bytes           # raises DocxFillError on structural problems
+fill_docx(docx_bytes, values, *, rows_by_region=None, conditions=None) -> bytes
+                                                 # raises DocxFillError on structural problems
 ```
 
+- **Phase H.2 extensions** (`rows_by_region`/`conditions`, `word/document.xml` only; both `None` → identical to Phase H). Order inside a target (§4.3): normalize runs → **conditional regions** → **repeating rows** → block paragraphs → scalars. **Conditional regions** `{{?cond}}` … `{{/cond}}` (markers in their own paragraphs bracketing a table): when the flag is false the whole marker-paragraph→marker-paragraph span is deleted (removing the table cleanly — never a partial table, which Word rejects), when true only the two markers are stripped; an unbalanced open/close raises `DocxFillError`. **Repeating rows** `{{#region}}` in a row's first cell: the innermost `<w:tr>` is cloned once per row dict (row-scoped `{{h.date}}`/`{{d.cout}}` fields resolved per item), preserving cell borders/shading; an empty list removes the row. Split-run detection now also flags fragmented `{{#…}}`/`{{?…}}`/`{{/…}}` markers (§3.4). Used by the note-d'honoraires generation (`utils/invoice_docx.py`); the four Phase H callers pass neither extra and are untouched.
 - **Block expansion first** (values containing blank-line separators): the host `<w:p>` is cloned once per chunk with the placeholder substituted — numbered-list `<w:pPr>` XML is preserved, so chunks continue the list numbering. The paragraph scan covers ALL paragraphs (regression: a previous implementation passed `count=1`). This is **value-driven**, not classification-driven: the engine expands any multi-paragraph value it is *given*. (Since July 2026 the gabarit UI no longer classifies anything as a "block" and leaves such content for Word — see `template_fields.py` passthrough — so this path is dormant for gabarit generation, but the capability is retained and still tested in `test_docx_fill.py`.)
 - **Scalars second**; single `\n` → one space; XML escaping (`& < >`) + C0 control stripping (except `\t`); **function replacement callbacks only** (a bare replacement string would interpret `\g<0>`/backslashes in user content).
 - Safety caps: compressed ≤ 10 MB, single XML target ≤ 25 MB, total decompressed ≤ 100 MB, ≤ 2000 entries, no absolute/`..` entry names, magic `PK\x03\x04` + `[Content_Types].xml` + `word/document.xml` required.
@@ -1206,6 +1223,14 @@ Pure functions (mirrors `display_name` locally — must stay importable without 
 - `FLAT_ALIASES` maps the existing gabarits' flat French names (`{{district}}`, `{{numero_dossier}}`, …) onto the catalog — one template set serves this module and the user's Claude.ai skills. The `civilité`/`civilité_récipient` aliases were **removed** (civilité is now passthrough — it must appear in letters but never in court procedures, so the user places and fills it).
 - `MANUAL_FIELDS` (deliberately data-less letter metadata: `objet_lettre`, `privilège`/`transmission_lettre` selects, `pièces_jointes` default `"Aucune"`, `référence_externe`, …). **`salutations` was removed** — it is passthrough.
 - Missing-value strings (exact): auto field left blank → **`[CHAMP MANQUANT : {name}]`**; manual/unknown-but-prompted left blank → **`[À COMPLÉTER : {name}]`** (`fallback_value`). Passthrough fields get neither — the raw `{{name}}` survives. Generation never fails on a missing value.
+
+### `utils/format_fr.py` (Phase H.2 — French formatting)
+
+Pure functions, thoroughly tested; centralized so the note d'honoraires (and, optionally later, the on-screen invoice + reportlab PDF) format money identically. `format_cents_fr(cents) -> "1 150,00 $"` (NBSP thousands, comma decimal, trailing ` $`; `0` → `"0,00 $"`), `format_cents_fr_parens(cents) -> "(1 150,00) $"` (retainer deduction), `format_rate_fr(rate, scale) -> "5 %"`/`"9,975 %"` (**GST stored ×100, QST ×1000** — caller passes the scale; `models.invoice` stores `gst_rate=500`, `qst_rate=9975`, and `compute_totals` uses hardcoded `Decimal("0.05")`/`Decimal("0.09975")`, so stored rates are display-only), `format_hours_fr(h) -> "0,50"`, `format_date_fr(d) -> "11 décembre 2025"` (`1er` for the first; a datetime uses its UTC calendar date — no Montréal shift).
+
+### `utils/invoice_docx.py` (Phase H.2 — note-d'honoraires context builder)
+
+Pure function `build_invoice_context(invoice, line_items, *, firm, destinataire, dossier, today) -> InvoiceContext` (`.values` scalars, `.rows` region→row-dicts, `.conditions` si_* bools). Maps a stored invoice to the `facture.*` scalar fields (§6.2) **read, never recomputed** — every figure formatted via `format_fr`, the only arithmetic being integer-cent addition of the two derived disbursement subtotals (**invariant: `sous_total_debours_tx + sous_total_debours_ntx == subtotal_expenses`**). Header namespaces (`destinataire.*`/`dossier.*`/`cabinet.*`/`date.*`) resolve through the Phase H catalog by canonical name; `destinataire` falls back to a synthetic partie from the invoice's `billing_address` snapshot when the client partie was deleted, so generation never fails. Row-scoped fields are prefixed `h.`/`d.` so they never collide with global scalars.
 
 ### `utils/deadlines.py`
 
@@ -1718,6 +1743,10 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
   - **Refinement (July 2026 — placeholder handling):** catalog/alias matching is now **case-insensitive** and an ALL-CAPS placeholder upper-cases its resolved value (`{{TRIBUNAL}}` → `COUR SUPÉRIEURE`), fixing headings that read as "blocks" before. The ALL-CAPS→**block** concept was **removed**: the app fills only auto (case data) + a few manual letter-metadata fields, and leaves everything else — the former blocks (`{{FAITS}}` …), **civilité, and salutations** — verbatim as `{{name}}` for the user to complete in Word (per the user's instruction: civilité belongs in letters, never in court procedures). Added `{{dossier.role_label}}` (capitalized client role). Engine and its tests unchanged; `template_fields.py` classification + route/popup only.
   - **Refinement (July 2026 — split-run healing):** `docx_fill._normalize_runs` now **bridges** a placeholder Word fragmented across runs with *different* formatting/language (the frequent split at the dot in `{{dossier.defendeur}}`), and tolerates run-level `rsid` attributes — retyping no longer needed. Only genuinely structural splits (a `<w:br/>`/field/bookmark/image inside the braces) stay flagged. `scripts/diagnose_gabarit.py` reports a template's placeholders, classification, and any residual fragmentation with its cause.
   - **Refinement (July 2026 — bare names + civility twin):** person names render **bare by default** (`{{dossier.demandeur}}` → `Jean Tremblay`, `{{<slot>.nom_complet}}` without the `Me`/`M.`/`Mme` prefix), so a procedure cites the party without a honorific; each name field has an **`…_avec_civilite` twin** (`{{dossier.demandeur_avec_civilite}}`, `{{<slot>.nom_complet_avec_civilite}}`) that keeps it, for letter address blocks. Accented `…_avec_civilité` spellings auto-registered.
+
+### Phase H.2 — Invoice document generation "note d'honoraires" (July 2026, ✅ code complete)
+
+- **H.2** — Word note-d'honoraires generation from a stored invoice, reusing the Phase H fill engine, Storage, field catalog, and generation-into-documents flow. Two additive engine capabilities in `utils/docx_fill.py` (Phase H callers untouched — `fill_docx` gains `*, rows_by_region=None, conditions=None`, both `None` = Phase H behavior): **repeating table rows** (`{{#region}}` clones the innermost `<w:tr>` per row dict, preserving cell formatting) and **conditional regions** (`{{?cond}}`…`{{/cond}}` bracketing a table — false removes the whole marker-paragraph→marker-paragraph span, so an empty table disappears entirely; unbalanced → `DocxFillError`). Ordering per target: conditionals → rows → blocks → scalars (`word/document.xml` only). New pure modules: `utils/format_fr.py` (fr-CA currency/date/hours/rate — NBSP thousands, comma decimal; GST ×100 / QST ×1000 scales) and `utils/invoice_docx.py` (`build_invoice_context` → `facture.*` scalars + three region row-lists + `si_*` conditions; **figures read from the invoice, never recomputed**; `sous_total_debours_tx + sous_total_debours_ntx == subtotal_expenses` invariant; billing_address fallback when the client partie is deleted). `models/folder.get_or_create_folder` (idempotent « Notes d'honoraires » folder); `doc_templates.kind` discriminator (`"note_honoraires"` via a checkbox; `get_note_honoraires_template`). Route `POST /factures/<id>/note-docx` (refuses `annulée`; French message when no note template) + a « Note d'honoraires (Word) » button on the invoice detail. `document_generated` gains `source="facture"` + row counts; `template.fill` span gains `invoice_id`. **The reportlab PDF is unchanged — the two coexist.** Trust accounting stays out of scope (the note only displays the stored `retainer_applied` as a parenthesized deduction and `amount_due` as the balance). Zero new dependencies. Spec: `SPEC_PHASE_H2_NOTE_HONORAIRES.md`.
 
 ### Proposed / not yet implemented
 

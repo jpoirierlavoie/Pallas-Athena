@@ -35,6 +35,15 @@
               class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Imprimer
       </button>
+      {% if invoice.status != 'annulée' %}
+      <button type="button"
+              hx-post="{{ url_for('invoices.invoice_note_docx', invoice_id=invoice.id) }}"
+              hx-target="#note-docx-result"
+              hx-swap="innerHTML"
+              class="px-3 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Note d'honoraires (Word)
+      </button>
+      {% endif %}
       {% for status in transitions %}
         {% if status == 'annulée' %}
         {# Cancel uses the /void route to release linked entries/expenses #}
@@ -83,6 +92,9 @@
       {% endif %}
     </div>
   </div>
+
+  {# ── Note-d'honoraires generation result (HTMX target) ─────── #}
+  <div id="note-docx-result" class="no-print"></div>
 
   {# ── Status badge (hidden on print) ───────────────────────── #}
   <div class="mb-4 no-print">

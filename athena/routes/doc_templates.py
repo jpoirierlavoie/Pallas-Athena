@@ -148,6 +148,7 @@ def template_create() -> Response | str:
         "name": request.form.get("name", "").strip(),
         "description": request.form.get("description", "").strip(),
         "category": request.form.get("category", "autre").strip(),
+        "kind": "note_honoraires" if request.form.get("is_note_honoraires") else "gabarit",
     }
     file = request.files.get("file")
     if not file or not file.filename:
@@ -231,6 +232,7 @@ def template_update(template_id: str) -> Response | str:
         "name": request.form.get("name", "").strip(),
         "description": request.form.get("description", "").strip(),
         "category": request.form.get("category", "autre").strip(),
+        "kind": "note_honoraires" if request.form.get("is_note_honoraires") else "gabarit",
     }
     file = request.files.get("file")
     file_stream = None
