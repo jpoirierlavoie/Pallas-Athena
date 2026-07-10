@@ -54,37 +54,71 @@ _BLANK_LINE_RE = re.compile(r"\n\s*\n")
 # ── Run normalization (heal Word's run-splitting so placeholders match) ──
 # Word fragments a typed placeholder across multiple <w:r> runs — proofing
 # (spell/grammar) brackets it in <w:proofErr> markers that force run
-# boundaries, tracked changes wrap edits in <w:ins>, and mid-word format
-# changes split runs. A fragmented {{champ}} then can't be matched. We
-# heal it BEFORE matching with a conservative, byte-level pass (no
-# python-docx round-trip): strip the empty proofing markers, then merge
-# ADJACENT runs that carry identical formatting and whose only content is
-# one <w:t>. Runs holding anything else (<w:br/>, <w:tab/>, <w:drawing>,
-# field codes…) never match the pattern, so they are left untouched; a
-# bookmark or comment marker between two runs also blocks the merge (they
-# are no longer adjacent). Merging identical-format adjacent text runs is
-# exactly what Word itself does on save, so the output still opens without
-# repair.
+# boundaries, tracked changes wrap edits in <w:ins>, and mid-word format or
+# language changes split runs (notably at the dot in a namespaced name like
+# {{dossier.defendeur}}, where the two halves get a different proofing/lang
+# rPr). A fragmented {{champ}} then can't be matched. We heal it BEFORE
+# matching with a byte-level pass (no python-docx round-trip): strip the
+# empty proofing markers, then merge ADJACENT text runs (each holding one
+# <w:t>) when either they carry identical formatting — Word's own save-time
+# optimization — OR joining them bridges a placeholder (see
+# _bridges_placeholder), in which case formatting differences are ignored
+# and the first run's rPr wins, because the whole {{name}} is replaced by a
+# single value anyway. Runs holding anything else (<w:br/>, <w:tab/>,
+# <w:drawing>, field codes…) never match the pattern, so they are left
+# untouched; a bookmark or comment marker between two runs also blocks the
+# merge (they are no longer adjacent) — a genuinely STRUCTURAL split thus
+# stays unmerged and is still reported as a suspect. The output still opens
+# without repair (merging adjacent text runs is a valid OOXML operation).
 _PROOF_ERR_RE = re.compile(r"<w:proofErr\b[^>]*/>|<w:proofErr\b[^>]*>.*?</w:proofErr>",
                            re.DOTALL)
 # t1/t2 are `[^<]*` — a <w:t> text node never contains a raw '<' (it is
 # escaped as &lt;). This is load-bearing: `.*?` with DOTALL could swallow
 # markup and match ACROSS run/paragraph boundaries, wrongly coalescing
 # unrelated runs. The rPr body stays `.*?` (bounded by the first
-# </w:rPr>; rPr never nests another rPr).
+# </w:rPr>; rPr never nests another rPr). The run open tag is `<w:r(?:\s…)?>`
+# so runs carrying revision attributes (`<w:r w:rsidR="…">`, common in real
+# Word output) are matched too; those attributes are pure save-tracking
+# metadata and are dropped on merge (Word reopens fine without them). The
+# alternation `<w:r`-then-`\s`-or-`>` never matches <w:rPr>/<w:rFonts>/… (a
+# letter, not whitespace or '>', follows `<w:r`).
 _ADJACENT_TEXT_RUNS_RE = re.compile(
-    r"<w:r>(?P<rpr1>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t1>[^<]*)</w:t></w:r>"
-    r"<w:r>(?P<rpr2>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t2>[^<]*)</w:t></w:r>",
+    r"<w:r(?:\s[^>]*)?>(?P<rpr1>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t1>[^<]*)</w:t></w:r>"
+    r"<w:r(?:\s[^>]*)?>(?P<rpr2>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t2>[^<]*)</w:t></w:r>",
     re.DOTALL,
 )
 
 
+def _bridges_placeholder(t1: str, t2: str) -> bool:
+    """True when joining these two runs' text continues a ``{{…}}`` Word split.
+
+    Either ``t1`` holds an unclosed ``{{`` (so the rest of the placeholder
+    lives in following runs), or the split fell between the two opening
+    braces (``…{`` | ``{…}}``). This is the frequent case where Word
+    fragments a namespaced name at the dot (``{{dossier.`` | ``defendeur}}``)
+    with a different language/proofing ``rPr`` on each half — which a
+    formatting-only merge would refuse forever, so retyping never fixes it.
+    """
+    last_open = t1.rfind("{{")
+    if last_open != -1 and last_open > t1.rfind("}}"):
+        return True
+    return t1.endswith("{") and t2.startswith("{")
+
+
 def _merge_adjacent_runs(match: re.Match) -> str:
-    # Only merge when the two runs share identical run-properties; else
-    # leave them exactly as they were (formatting must be preserved).
-    if match.group("rpr1") != match.group("rpr2"):
+    # Merge when the two runs share identical run-properties (Word's own
+    # save-time optimization — output still opens without repair) OR when
+    # joining them bridges a placeholder Word fragmented across differently
+    # formatted runs. In the bridge case we keep the FIRST run's rPr: the
+    # whole {{name}} is replaced by one value, so collapsing its fragments to
+    # a single format is correct — and far better than shipping an
+    # unfillable literal {{…}}. Runs holding a <w:br/>, <w:drawing>, field
+    # code, or a bookmark/comment between them still never match this
+    # pattern, so a genuinely structural split stays unmerged (and flagged).
+    t1, t2 = match.group("t1"), match.group("t2")
+    if match.group("rpr1") != match.group("rpr2") and not _bridges_placeholder(t1, t2):
         return match.group(0)
-    text = match.group("t1") + match.group("t2")
+    text = t1 + t2
     # xml:space="preserve" so no boundary whitespace is lost on merge.
     return (
         f'<w:r>{match.group("rpr1")}'

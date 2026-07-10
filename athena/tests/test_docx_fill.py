@@ -251,13 +251,84 @@ def test_proof_err_split_is_healed_and_filled():
     assert "proofErr" not in out
 
 
-def test_normalization_only_merges_identical_formatting():
-    # Different rPr between the braces and the name → cannot merge safely →
-    # stays fragmented and is correctly reported (not silently mis-filled).
+def test_format_split_placeholder_heals_and_fills():
+    # Different rPr between the braces and the name (Word's proofing/format
+    # split). Now BRIDGED — the placeholder heals and fills, instead of
+    # shipping a literal {{...}} that retyping never fixes.
     body = ('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>{{</w:t></w:r>'
             '<w:r><w:t>tribunal}}</w:t></w:r></w:p>')
     docx = _make_docx(_doc(body))
-    assert validate_template(docx).split_run_suspects == ["tribunal"]
+    assert validate_template(docx).split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"tribunal": "CS"}))
+    assert "CS" in out and "{{" not in out
+
+
+def test_dotted_name_language_split_heals_and_fills():
+    # The reported bug: {{dossier.defendeur}} split AT THE DOT with different
+    # <w:lang> runs (fr-CA vs en-US) — Word re-splits at the dot every save,
+    # so retyping never cleared the "fragmenté" warning.
+    body = (
+        "<w:p>"
+        '<w:r><w:rPr><w:lang w:val="fr-CA"/></w:rPr><w:t>{{dossier.</w:t></w:r>'
+        '<w:r><w:rPr><w:lang w:val="en-US"/></w:rPr><w:t>defendeur}}</w:t></w:r>'
+        "</w:p>"
+    )
+    docx = _make_docx(_doc(body))
+    assert validate_template(docx).split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"dossier.defendeur": "Marc Lavoie"}))
+    assert "Marc Lavoie" in out
+    assert "{{dossier." not in out and "defendeur}}" not in out
+
+
+def test_three_way_format_split_heals():
+    # {{ | dossier. | defendeur}} — three runs, each a different rPr.
+    body = (
+        "<w:p>"
+        "<w:r><w:rPr><w:b/></w:rPr><w:t>{{</w:t></w:r>"
+        "<w:r><w:rPr><w:i/></w:rPr><w:t>dossier.</w:t></w:r>"
+        "<w:r><w:t>defendeur}}</w:t></w:r>"
+        "</w:p>"
+    )
+    docx = _make_docx(_doc(body))
+    assert validate_template(docx).split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"dossier.defendeur": "X"}))
+    assert "X" in out and "{{" not in out
+
+
+def test_split_between_opening_braces_heals():
+    # Word split BETWEEN the two opening braces: "{" | "{district}}".
+    body = ('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>{</w:t></w:r>'
+            '<w:r><w:t>{district}}</w:t></w:r></w:p>')
+    docx = _make_docx(_doc(body))
+    assert validate_template(docx).split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"district": "Montréal"}))
+    assert "Montréal" in out
+
+
+def test_run_attribute_split_heals():
+    # Runs carrying revision attributes (<w:r w:rsidR="…">) with different
+    # rPr must still bridge (the attributes are dropped on merge).
+    body = (
+        "<w:p>"
+        '<w:r w:rsidR="00AB12"><w:rPr><w:lang w:val="fr-CA"/></w:rPr><w:t>{{dossier.</w:t></w:r>'
+        '<w:r w:rsidR="00CD34"><w:rPr><w:lang w:val="en-US"/></w:rPr><w:t>defendeur}}</w:t></w:r>'
+        "</w:p>"
+    )
+    docx = _make_docx(_doc(body))
+    assert validate_template(docx).split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"dossier.defendeur": "Marc Lavoie"}))
+    assert "Marc Lavoie" in out
+
+
+def test_bridge_does_not_merge_unrelated_formatted_runs():
+    # Two differently-formatted runs with NO placeholder between them must
+    # stay distinct — the bridge only fires to complete a {{...}}.
+    body = ('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Gras</w:t></w:r>'
+            '<w:r><w:t> et normal</w:t></w:r></w:p>')
+    docx = _make_docx(_doc(body))
+    out = _document_xml(fill_docx(docx, {}))
+    # The bold run keeps its own formatting (not flattened into the next).
+    assert "<w:rPr><w:b/></w:rPr><w:t>Gras</w:t>" in out
 
 
 def test_normalization_preserves_non_text_runs():
@@ -271,8 +342,9 @@ def test_normalization_preserves_non_text_runs():
 
 def test_per_occurrence_split_detection_not_masked_by_clean_copy():
     clean = _para("{{tribunal}} en clair")
-    # A split copy whose halves carry DIFFERENT formatting can't be healed.
-    split = ('<w:p><w:r><w:rPr><w:i/></w:rPr><w:t>{{</w:t></w:r>'
+    # A STRUCTURAL split (a <w:br/> between the halves) can't be bridged —
+    # only formatting splits heal. The clean copy must not mask it.
+    split = ('<w:p><w:r><w:t>{{</w:t></w:r><w:r><w:br/></w:r>'
              '<w:r><w:t>tribunal}}</w:t></w:r></w:p>')
     docx = _make_docx(_doc(clean, split))
     # Name-level detection would clear it (one clean copy exists); the
@@ -309,9 +381,10 @@ def test_extract_placeholders_document_order_distinct():
 
 
 def test_split_run_detection_flags_fragmented_and_passes_clean():
+    # Structural split — a <w:br/> inside the braces can't be bridged.
     fragmented = (
-        "<w:p><w:r><w:t>{{dis</w:t></w:r>"
-        '<w:r w:rsidR="0"><w:t>trict}}</w:t></w:r></w:p>'
+        "<w:p><w:r><w:t>{{dis</w:t></w:r><w:r><w:br/></w:r>"
+        "<w:r><w:t>trict}}</w:t></w:r></w:p>"
     )
     clean = _para("{{tribunal}}")
     docx = _make_docx(_doc(fragmented, clean))
@@ -323,10 +396,10 @@ def test_split_run_detection_flags_fragmented_and_passes_clean():
 
 def test_split_run_detected_per_target_not_globally():
     # A name typed cleanly in the body must not mask an UNHEALABLE
-    # fragmented copy in a header (halves with different formatting can't
-    # be merged — so they stay a genuine suspect).
+    # fragmented copy in a header (a <w:br/> between the halves can't be
+    # bridged — so it stays a genuine suspect).
     fragmented_header = _hdr(
-        '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>{{dis</w:t></w:r>'
+        '<w:p><w:r><w:t>{{dis</w:t></w:r><w:r><w:br/></w:r>'
         '<w:r><w:t>trict}}</w:t></w:r></w:p>'
     )
     docx = _make_docx(_doc(_para("{{district}}")), headers=[fragmented_header])
