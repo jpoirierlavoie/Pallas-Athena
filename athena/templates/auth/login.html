@@ -86,6 +86,7 @@
                    :id="'mfa-digit-' + i"
                    x-on:input="handleDigitInput($event, i); updateMfaCode()"
                    x-on:keydown.backspace="handleDigitBackspace($event, i)"
+                   x-on:keydown.enter="verifyMfaCode()"
                    x-on:paste.prevent="handlePaste($event); updateMfaCode()"
                    class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
                           focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
@@ -105,7 +106,7 @@
         </button>
 
         <div class="flex items-center justify-between text-sm">
-          <button @click="resendCode()" :disabled="resendCooldown > 0"
+          <button @click="resendCode()" :disabled="resendCooldown > 0 || loading"
                   class="text-indigo-600 hover:text-indigo-800 disabled:text-gray-400 disabled:cursor-not-allowed">
             <span x-text="resendCooldown > 0 ? 'Renvoyer dans ' + resendCooldown + 's' : 'Renvoyer le code'"></span>
           </button>
@@ -228,6 +229,19 @@
           });
         },
 
+        resetRecaptcha() {
+          // reCAPTCHA tokens are single-use, so every verifyPhoneNumber call
+          // needs a fresh verifier. clear() can throw depending on the widget
+          // state — guard it and ALWAYS drop the reference so initRecaptcha()
+          // rebuilds a clean one (a consumed verifier silently fails the SMS
+          // send, which otherwise sticks until a full page reload).
+          if (this.recaptchaVerifier) {
+            try { this.recaptchaVerifier.clear(); } catch (e) { /* already torn down */ }
+            this.recaptchaVerifier = null;
+          }
+          this.initRecaptcha();
+        },
+
         startResendCooldown() {
           this.resendCooldown = 30;
           if (this.resendTimer) clearInterval(this.resendTimer);
@@ -237,7 +251,15 @@
           }, 1000);
         },
 
+        enableResendNow() {
+          // Drop the cooldown so the resend button is immediately available
+          // (used when the current code is no longer usable, e.g. expired).
+          if (this.resendTimer) clearInterval(this.resendTimer);
+          this.resendCooldown = 0;
+        },
+
         async submit() {
+          if (this.loading) return;
           this.error = '';
           this.loading = true;
           try {
@@ -252,7 +274,7 @@
               const lastDigits = hint.phoneNumber ? hint.phoneNumber.slice(-2) : '??';
               this.mfaMessage = 'Un code de vérification a été envoyé au numéro se terminant par ••••' + lastDigits + '.';
 
-              this.initRecaptcha();
+              this.resetRecaptcha();
               try {
                 const phoneInfoOptions = {
                   multiFactorHint: hint,
@@ -269,6 +291,11 @@
                   document.getElementById('mfa-digit-0')?.focus();
                 });
               } catch (smsErr) {
+                if (smsErr.code === 'auth/too-many-requests' || smsErr.code === 'auth/quota-exceeded') {
+                  this.error = 'Trop de demandes de code. Patientez quelques minutes avant de réessayer.';
+                  console.error('SMS send error:', smsErr);
+                  return;
+                }
                 this.error = 'Impossible d\u2019envoyer le code SMS. Réessayez.';
                 console.error('SMS send error:', smsErr);
               }
@@ -290,6 +317,7 @@
         },
 
         async verifyMfaCode() {
+          if (this.loading) return;
           const code = this.mfaCode;
           if (code.length < 6) return;
 
@@ -304,9 +332,16 @@
             await this.postIdToken(userCredential.user);
           } catch (err) {
             if (err.code === 'auth/invalid-verification-code') {
-              this.error = 'Code invalide. Réessayez.';
-            } else if (err.code === 'auth/code-expired') {
-              this.error = 'Code expiré. Renvoyez un nouveau code.';
+              // Wrong code — the SMS is still valid, so the user can simply
+              // retype it (no new code needed).
+              this.error = 'Code invalide. Vérifiez le code et réessayez.';
+            } else if (err.code === 'auth/code-expired' || err.code === 'auth/session-expired') {
+              // The code/session timed out — a fresh SMS is required, so lift
+              // the resend cooldown immediately.
+              this.error = 'Code expiré. Demandez un nouveau code.';
+              this.enableResendNow();
+            } else if (err.code === 'auth/too-many-requests') {
+              this.error = 'Trop de tentatives. Patientez quelques minutes avant de réessayer.';
             } else {
               this.error = 'Erreur de vérification. Réessayez.';
               console.error('MFA verify error:', err);
@@ -318,16 +353,13 @@
         },
 
         async resendCode() {
-          if (this.resendCooldown > 0 || !this.mfaResolver) return;
+          if (this.loading || this.resendCooldown > 0 || !this.mfaResolver) return;
           this.error = '';
           this.loading = true;
           try {
-            // Reset reCAPTCHA for a new verification
-            if (this.recaptchaVerifier) {
-              this.recaptchaVerifier.clear();
-              this.recaptchaVerifier = null;
-            }
-            this.initRecaptcha();
+            // Always rebuild the reCAPTCHA before a new send — its token is
+            // single-use and a consumed verifier fails silently.
+            this.resetRecaptcha();
 
             const hint = this.mfaResolver.hints[0];
             const phoneInfoOptions = {
@@ -342,7 +374,15 @@
             this.startResendCooldown();
             this.clearDigits();
           } catch (err) {
-            this.error = 'Impossible de renvoyer le code. Réessayez.';
+            if (err.code === 'auth/too-many-requests' || err.code === 'auth/quota-exceeded') {
+              // Server-side throttle keyed on IP/number — reloading the page
+              // won't clear it. Re-arm the cooldown so the button doesn't
+              // invite hammering that only deepens the block.
+              this.error = 'Trop de demandes de code. Patientez quelques minutes avant d’en redemander un.';
+              this.startResendCooldown();
+            } else {
+              this.error = 'Impossible de renvoyer le code. Réessayez.';
+            }
             console.error('Resend error:', err);
           } finally {
             this.loading = false;
@@ -357,6 +397,11 @@
           this.clearDigits();
           if (this.resendTimer) clearInterval(this.resendTimer);
           this.resendCooldown = 0;
+          // Drop the consumed reCAPTCHA so a fresh sign-in builds a clean one.
+          if (this.recaptchaVerifier) {
+            try { this.recaptchaVerifier.clear(); } catch (e) { /* already torn down */ }
+            this.recaptchaVerifier = null;
+          }
         },
 
         async postIdToken(user) {
