@@ -221,17 +221,22 @@ def _enforce_origin_secret() -> Optional[Response]:
 # ---------------------------------------------------------------------------
 # Input sanitization utility
 # ---------------------------------------------------------------------------
-_TAG_RE = re.compile(r"<[^>]+>")
+# Tag stripper.  The body class excludes ``<`` as well as ``>`` so a run of
+# unclosed ``<`` fails to match in O(1) at each position instead of re-scanning
+# to end-of-string — keeping the substitution linear rather than quadratic
+# (CWE-1333 / CodeQL ``py/polynomial-redos``).  On well-formed input this is
+# identical to ``<[^>]+>``: a real tag body never contains a literal ``<``.
+_TAG_RE = re.compile(r"<[^<>]*>")
 
 
 def sanitize(value: str, max_length: int = 1000) -> str:
     """Strip HTML tags and truncate.  Output escaping is handled by Jinja2.
 
     The value is truncated to ``max_length`` *before* the tag-stripping regex
-    runs.  The output is capped at ``max_length`` either way, so no legitimate
-    content is lost, and bounding the regex input first prevents polynomial-time
-    backtracking on adversarial input such as a long run of unclosed ``<``
-    (CWE-1333 / CodeQL ``py/polynomial-redos``).
+    runs, capping output length so no legitimate content is lost.  The regex
+    itself is linear — the ``[^<>]`` body fails fast on adversarial input such
+    as a long run of unclosed ``<`` — so it is not vulnerable to polynomial-time
+    blow-up (CWE-1333 / CodeQL ``py/polynomial-redos``).
     """
     cleaned = _TAG_RE.sub("", value[:max_length])
     return cleaned[:max_length]

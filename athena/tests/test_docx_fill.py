@@ -708,3 +708,31 @@ def test_clean_markers_not_flagged():
     result = validate_template(docx)
     assert result.split_run_suspects == []
     assert result.errors == []
+
+
+def test_xml_tag_re_is_redos_safe_and_equivalent():
+    """The tag-stripping regex excludes ``<`` (not just ``>``) from the body so
+    a run of unclosed ``<`` cannot cause quadratic blow-up (CWE-1333 /
+    py/polynomial-redos).  The identical pattern backs ``security.sanitize``."""
+    import time
+
+    from utils.docx_fill import _XML_TAG_RE
+
+    # Well-formed XML: identical to the historical ``<[^>]+>`` behavior.
+    assert _XML_TAG_RE.sub("", "<w:p><w:t>Bonjour</w:t></w:p>") == "Bonjour"
+    assert _XML_TAG_RE.sub("", "plain text") == "plain text"
+
+    # Pins the ReDoS-safe body class: the old ``<[^>]+>`` would swallow the
+    # nested ``<`` and return ""; the ``[^<>]`` body stops at it, leaving "<a".
+    # If this assertion fails, the vulnerable pattern was reintroduced.
+    assert _XML_TAG_RE.sub("", "<a<b>") == "<a"
+
+    # Linearity guard: a long run of unclosed ``<`` must be handled fast. The
+    # old quadratic pattern took tens of seconds at this size; the linear one
+    # is sub-millisecond.  Threshold is deliberately loose to avoid flakiness.
+    pathological = "<" * 100_000
+    start = time.perf_counter()
+    result = _XML_TAG_RE.sub("", pathological)
+    elapsed = time.perf_counter() - start
+    assert result == pathological  # no ``>`` present → nothing is stripped
+    assert elapsed < 2.0, f"tag strip took {elapsed:.2f}s — regex may be quadratic again"

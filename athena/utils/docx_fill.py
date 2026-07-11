@@ -39,7 +39,12 @@ _PARAGRAPH_RE = re.compile(
     r"<w:p(?:\s[^>]*[^/])?>(?:(?!<w:p[\s/>]).)*?</w:p>", re.DOTALL
 )
 
-_XML_TAG_RE = re.compile(r"<[^>]+>")
+# Strips XML tags to expose visible text.  The body class excludes ``<`` (not
+# just ``>``) so a run of unclosed ``<`` fails fast per position instead of
+# re-scanning to end-of-string, keeping the substitution linear on adversarial
+# .docx XML (CWE-1333).  Identical to ``<[^>]+>`` on well-formed XML, where a
+# tag body never contains a literal ``<``.
+_XML_TAG_RE = re.compile(r"<[^<>]*>")
 
 # Fill targets inside the archive: main document + all headers/footers.
 _TARGET_RE = re.compile(r"^word/(document|header\d*|footer\d*)\.xml$")
