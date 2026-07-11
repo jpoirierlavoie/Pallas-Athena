@@ -260,7 +260,17 @@ class RedactionFilter(logging.Filter):
 
     def _redact_value(self, value: Any) -> Any:
         if isinstance(value, dict):
-            return {k: self._redact_field(k, v) for k, v in value.items()}
+            # Neutralize control chars in string KEYS too (values are scrubbed
+            # via _redact_field → _redact_string). The redaction decision still
+            # uses the ORIGINAL key, so SENSITIVE_KEYS matching is unaffected —
+            # only the emitted key is escaped, closing a CWE-117 gap where a
+            # newline in an attacker-influenced nested key could reach a
+            # plain-text handler unescaped.
+            return {
+                (self._neutralize_controls(k) if isinstance(k, str) else k):
+                self._redact_field(k, v)
+                for k, v in value.items()
+            }
         if isinstance(value, list):
             return [self._redact_value(v) for v in value]
         if isinstance(value, tuple):

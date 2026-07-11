@@ -55,9 +55,9 @@ _BLANK_LINE_RE = re.compile(r"\n\s*\n")
 # Region open marker for a repeating row: {{#region}}. Conditional section:
 # {{?cond}} … {{/cond}}. Distinct from a {{name}} placeholder by the leading
 # #/?// sigil. Optional inner whitespace tolerated, like PLACEHOLDER_RE.
-_ROW_REGION_RE = re.compile(r"\{\{#\s*([A-Za-z0-9_]+)\s*\}\}")
-_COND_OPEN_RE = re.compile(r"\{\{\?\s*([A-Za-z0-9_]+)\s*\}\}")
-_COND_CLOSE_RE = re.compile(r"\{\{/\s*([A-Za-z0-9_]+)\s*\}\}")
+# Concrete matching uses the per-name pattern builders (_region_pattern /
+# _cond_open_pattern / _cond_close_pattern), re.escape-bound to a specific
+# region/condition name — not standalone regex constants.
 # Any token — a {{name}} OR a {{#…}}/{{?…}}/{{/…}} marker — used ONLY by the
 # split-run suspect scan so a fragmented marker is reported too (§3.4). The
 # placeholder INVENTORY stays on PLACEHOLDER_RE (markers are structural, not
