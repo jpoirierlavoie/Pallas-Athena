@@ -47,20 +47,38 @@ limiter = Limiter(
 # remain only for the reCAPTCHA Enterprise scripts that the Firebase App Check
 # SDK loads at runtime.  ajax.cloudflare.com is Cloudflare Rocket Loader
 # (enabled at the edge) — remove it if Rocket Loader is ever turned off.
+# ENFORCED (not report-only) since 2026-07-11.  The two script-src 'unsafe-*'
+# tokens are RETAINED as functionally required, verified against 90 days of
+# report-only /csp-report data (script-src was the ONLY directive that ever
+# reported a violation):
+#   * 'unsafe-inline' (script-src): Cloudflare Rocket Loader re-injects an
+#     un-nonced inline loader, so while RL is enabled this token is mandatory
+#     and nonces are useless (a nonce makes the browser ignore 'unsafe-inline').
+#     It also covers the app's own inline <script> blocks and on* handlers.
+#     To drop it, disable Rocket Loader at the Cloudflare edge.
+#   * 'unsafe-eval' (script-src): Alpine.js's standard build evaluates directive
+#     expressions with new Function().  To drop it, migrate to @alpinejs/csp and
+#     rewrite every inline expression.
+#   * 'unsafe-inline' (style-src): reCAPTCHA Enterprise injects dynamic inline
+#     styles that cannot be hashed or nonced (low risk).
+# The Cloudflare Web Analytics beacon (static.cloudflareinsights.com) is
+# deliberately NOT allowlisted; disable Web Analytics at the edge so it is not
+# injected.
 CSP = (
     "default-src 'self'; "
-    "script-src 'self' https://ajax.cloudflare.com https://www.gstatic.com "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+    "https://ajax.cloudflare.com https://www.gstatic.com "
     "https://apis.google.com https://www.google.com; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob: https://*.googleapis.com https://storage.googleapis.com; "
-    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com "
+    "connect-src 'self' https://*.googleapis.com "
     "https://identitytoolkit.googleapis.com https://storage.googleapis.com "
     "https://content-firebaseappcheck.googleapis.com "
     "https://www.google.com https://recaptchaenterprise.googleapis.com; "
     "font-src 'self'; "
     "frame-src https://*.firebaseapp.com https://storage.googleapis.com blob: "
     "https://www.google.com https://recaptcha.google.com; "
-    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; "
     "report-uri /csp-report"
 )
 
@@ -68,7 +86,7 @@ CSP = (
 def _add_security_headers(response: Response) -> Response:
     """Attach hardened security headers to every response."""
     h = response.headers
-    h["Content-Security-Policy-Report-Only"] = CSP
+    h["Content-Security-Policy"] = CSP
     h["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains; preload"
     )

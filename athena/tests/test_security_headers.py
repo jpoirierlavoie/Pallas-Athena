@@ -37,22 +37,33 @@ def _make_app(**config) -> Flask:
 
 # ── CSP ────────────────────────────────────────────────────────────────────
 
-def test_csp_allows_rocket_loader_origin():
-    # Cloudflare Rocket Loader injects its loader from ajax.cloudflare.com;
-    # without this origin the (future, enforcing) CSP would break it and the
-    # report-only policy floods /csp-report on every page view. Assert the whole
-    # script-src directive (a bare-substring check trips py/incomplete-url-
-    # substring-sanitization and is weaker than pinning the directive anyway).
-    assert "script-src 'self' https://ajax.cloudflare.com" in CSP
+def test_csp_script_src_tokens_and_rocket_loader():
+    # Enforcing CSP: script-src retains 'unsafe-inline' (Rocket Loader's
+    # un-nonced inline loader + the app's inline scripts/handlers) and
+    # 'unsafe-eval' (Alpine), and keeps the Rocket Loader origin allowlisted.
+    # Pin the directive prefix (a bare-origin substring trips
+    # py/incomplete-url-substring-sanitization and is weaker anyway).
+    assert (
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+        "https://ajax.cloudflare.com" in CSP
+    )
 
 
-def test_csp_header_present_and_report_only():
+def test_csp_header_present_and_enforced():
     app = _make_app()
     resp = app.test_client().get("/")
-    assert resp.headers["Content-Security-Policy-Report-Only"] == CSP
-    assert "Content-Security-Policy" not in (
-        set(resp.headers.keys()) - {"Content-Security-Policy-Report-Only"}
-    )
+    assert resp.headers["Content-Security-Policy"] == CSP
+    # The report-only header must not also be emitted (no stale duplicate).
+    assert "Content-Security-Policy-Report-Only" not in resp.headers
+
+
+def test_csp_enforced_hardening():
+    # Enforcement-time hardening + the functionally-required unsafe tokens.
+    assert "object-src 'none'" in CSP
+    assert "'unsafe-eval'" in CSP                      # Alpine
+    assert "style-src 'self' 'unsafe-inline'" in CSP   # reCAPTCHA dynamic styles
+    assert "firebaseio.com" not in CSP                 # vestigial RTDB origin dropped
+    assert "cloudflareinsights" not in CSP             # Web Analytics beacon not allowlisted
 
 
 # ── Early Hints (Link headers) ─────────────────────────────────────────────
