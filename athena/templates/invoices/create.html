@@ -259,7 +259,7 @@
   {% set _ = _maps.taxable.update({e.id: e.taxable|default(false, true)}) %}
   {% set _ = _maps.type.update({e.id: 'expense'}) %}
 {% endfor %}
-<script>
+<script nonce="{{ csp_nonce }}">
 function invoiceForm() {
   // Build lookup maps from checkbox data attributes
   const entryIds = {{ _entry_ids | tojson }};

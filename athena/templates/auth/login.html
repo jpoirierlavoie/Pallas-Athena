@@ -135,14 +135,14 @@
   <script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
 
   {% if config.ENV == 'development' %}
-  <script>
+  <script nonce="{{ csp_nonce }}">
     // ── Debug token for local development ──────────────────────────
     // Empty config value → true (SDK auto-generates a debug token).
     self.FIREBASE_APPCHECK_DEBUG_TOKEN = {{ (config.APPCHECK_DEBUG_TOKEN or true)|tojson }};
   </script>
   {% endif %}
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     // ── Firebase init ──────────────────────────────────────────────
     const firebaseApp = firebase.initializeApp({
       apiKey: {{ firebase_api_key|tojson }},

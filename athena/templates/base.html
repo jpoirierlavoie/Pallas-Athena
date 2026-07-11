@@ -227,10 +227,25 @@
   <script src="{{ url_for('static', filename='vendor/appcheck-boot.fee929af.js') }}"></script>
   {% endif %}
 
-  <script>
+  <script nonce="{{ csp_nonce }}">
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
+  </script>
+
+  {# CSP-safe replacements for inline on* handlers (removed so script-src can
+     drop 'unsafe-inline'). Delegated listeners drive data-* attributes:
+     [data-print] -> print, [data-reload] -> reload, <form data-confirm="..">
+     -> confirm() gate before submit (covers Enter as well as the button). #}
+  <script nonce="{{ csp_nonce }}">
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('[data-print]')) window.print();
+      else if (e.target.closest('[data-reload]')) location.reload();
+    });
+    document.addEventListener('submit', function (e) {
+      var f = e.target.closest('form[data-confirm]');
+      if (f && !window.confirm(f.getAttribute('data-confirm'))) e.preventDefault();
+    });
   </script>
 
   {% block page_scripts %}{% endblock %}

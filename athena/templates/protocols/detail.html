@@ -286,7 +286,7 @@
                 {% if not step.mandatory %}
                 <form method="post"
                       action="{{ url_for('protocols.step_delete', protocol_id=protocol.id, step_id=step.id) }}"
-                      onsubmit="return confirm('Supprimer cette étape ?')">
+                      data-confirm="Supprimer cette étape ?">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit"
                           title="Supprimer"

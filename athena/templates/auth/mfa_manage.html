@@ -120,7 +120,7 @@
 {# Firebase Auth SDK (App + App Check already loaded by base.html) #}
 <script src="{{ url_for('static', filename='vendor/firebase-auth-compat-10.12.2.js') }}"></script>
 
-<script>
+<script nonce="{{ csp_nonce }}">
   const auth = firebase.auth();
 
   function mfaManage() {

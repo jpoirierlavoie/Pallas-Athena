@@ -49,7 +49,10 @@
   <div class="container">
     <h1>Connexion requise</h1>
     <p>Pallas Athena nécessite une connexion réseau pour accéder à vos dossiers.</p>
-    <button onclick="location.reload()">Réessayer</button>
+    <button id="offline-retry">Réessayer</button>
   </div>
+  <script nonce="{{ csp_nonce }}">
+    document.getElementById('offline-retry').addEventListener('click', function () { location.reload(); });
+  </script>
 </body>
 </html>

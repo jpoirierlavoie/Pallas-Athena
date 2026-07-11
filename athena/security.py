@@ -2,10 +2,11 @@
 
 import hmac
 import re
+import secrets
 from typing import Optional
 from urllib.parse import urlparse
 
-from flask import Flask, Response, abort, current_app, request
+from flask import Flask, Response, abort, current_app, g, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFProtect
@@ -43,32 +44,29 @@ limiter = Limiter(
 # Security headers
 # ---------------------------------------------------------------------------
 # Frontend dependencies are vendored in static/vendor/ and served same-origin,
-# so no CDN origins (jsdelivr/unpkg) appear in script-src.  gstatic + google
-# remain only for the reCAPTCHA Enterprise scripts that the Firebase App Check
-# SDK loads at runtime.  ajax.cloudflare.com is Cloudflare Rocket Loader
-# (enabled at the edge) — remove it if Rocket Loader is ever turned off.
-# ENFORCED (not report-only) since 2026-07-11.  The two script-src 'unsafe-*'
-# tokens are RETAINED as functionally required, verified against 90 days of
-# report-only /csp-report data (script-src was the ONLY directive that ever
-# reported a violation):
-#   * 'unsafe-inline' (script-src): Cloudflare Rocket Loader re-injects an
-#     un-nonced inline loader, so while RL is enabled this token is mandatory
-#     and nonces are useless (a nonce makes the browser ignore 'unsafe-inline').
-#     It also covers the app's own inline <script> blocks and on* handlers.
-#     To drop it, disable Rocket Loader at the Cloudflare edge.
-#   * 'unsafe-eval' (script-src): Alpine.js's standard build evaluates directive
-#     expressions with new Function().  To drop it, migrate to @alpinejs/csp and
-#     rewrite every inline expression.
-#   * 'unsafe-inline' (style-src): reCAPTCHA Enterprise injects dynamic inline
-#     styles that cannot be hashed or nonced (low risk).
+# so no script CDN origins (jsdelivr/unpkg) appear in script-src.  gstatic +
+# google remain only for the reCAPTCHA Enterprise scripts that the Firebase App
+# Check SDK loads at runtime.
+#
+# ENFORCED (not report-only) since 2026-07-11; hardened the same day after
+# Rocket Loader was disabled at the edge:
+#   * script-src NO LONGER carries 'unsafe-inline'.  A per-request nonce
+#     (csp_nonce / build_csp) authorizes the app's own inline <script> blocks
+#     instead, so an INJECTED inline script is blocked.  ajax.cloudflare.com is
+#     also gone (Rocket Loader off).  Inline on* handlers were refactored to
+#     data-attributes wired via addEventListener (see base.html) because a
+#     nonce cannot authorize a handler attribute.
+#   * script-src KEEPS 'unsafe-eval' -- Alpine.js's standard build evaluates
+#     directive expressions with new Function(); dropping it needs a migration
+#     to @alpinejs/csp plus a full expression rewrite.
+#   * style-src KEEPS 'unsafe-inline' -- reCAPTCHA Enterprise injects dynamic
+#     inline styles that cannot be hashed or nonced (low risk).
 # The Cloudflare Web Analytics beacon (static.cloudflareinsights.com) is
-# deliberately NOT allowlisted; disable Web Analytics at the edge so it is not
-# injected.
-CSP = (
-    "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
-    "https://ajax.cloudflare.com https://www.gstatic.com "
-    "https://apis.google.com https://www.google.com; "
+# deliberately NOT allowlisted; Web Analytics is disabled at the edge.
+#
+# The policy is assembled per request so a fresh nonce can be spliced into
+# script-src; everything from style-src onward is static.
+_CSP_TAIL = (
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob: https://*.googleapis.com https://storage.googleapis.com; "
     "connect-src 'self' https://*.googleapis.com "
@@ -83,10 +81,34 @@ CSP = (
 )
 
 
+def csp_nonce() -> str:
+    """Return this request's script nonce, generated once and cached on ``g``.
+
+    Read by both the ``csp_nonce`` Jinja global (stamped onto every inline
+    ``<script nonce=...>``) and by :func:`build_csp` (spliced into script-src),
+    so the header and the rendered markup always carry the same value.
+    """
+    nonce = getattr(g, "_csp_nonce", None)
+    if nonce is None:
+        nonce = secrets.token_urlsafe(16)
+        g._csp_nonce = nonce
+    return nonce
+
+
+def build_csp(nonce: str) -> str:
+    """Assemble the enforced CSP with a per-request script ``nonce``."""
+    return (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}' 'unsafe-eval' "
+        "https://www.gstatic.com https://apis.google.com https://www.google.com; "
+        + _CSP_TAIL
+    )
+
+
 def _add_security_headers(response: Response) -> Response:
     """Attach hardened security headers to every response."""
     h = response.headers
-    h["Content-Security-Policy"] = CSP
+    h["Content-Security-Policy"] = build_csp(csp_nonce())
     h["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains; preload"
     )
@@ -370,3 +392,10 @@ def init_security(app: Flask) -> None:
     app.before_request(_enforce_request_size)
     app.before_request(_verify_app_check)
     app.after_request(_add_security_headers)
+
+    # Expose the per-request CSP nonce to templates so every inline <script>
+    # can carry nonce="{{ csp_nonce }}" (script-src no longer has
+    # 'unsafe-inline'). Same value the response header uses (both read g).
+    @app.context_processor
+    def _inject_csp_nonce() -> dict:
+        return {"csp_nonce": csp_nonce()}

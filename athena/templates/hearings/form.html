@@ -2,7 +2,7 @@
 {% block title %}{{ 'Modifier l\'audience' if hearing and hearing.id else 'Nouvelle audience' }} — Pallas Athena{% endblock %}
 
 {% block content %}
-<script>const TITLE_SUGGESTIONS = {{ hearing_title_suggestions | tojson }};</script>
+<script nonce="{{ csp_nonce }}">const TITLE_SUGGESTIONS = {{ hearing_title_suggestions | tojson }};</script>
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        dossierId: '{{ (hearing.dossier_id or '') if hearing else '' }}',

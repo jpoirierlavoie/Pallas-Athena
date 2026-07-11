@@ -1,13 +1,14 @@
 """Unit tests for security.py response headers — CSP and Early Hints."""
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask
+from flask import Flask, render_template_string
 
-from security import CSP, init_security
+from security import build_csp, init_security
 
 
 def _make_app(**config) -> Flask:
@@ -37,33 +38,50 @@ def _make_app(**config) -> Flask:
 
 # ── CSP ────────────────────────────────────────────────────────────────────
 
-def test_csp_script_src_tokens_and_rocket_loader():
-    # Enforcing CSP: script-src retains 'unsafe-inline' (Rocket Loader's
-    # un-nonced inline loader + the app's inline scripts/handlers) and
-    # 'unsafe-eval' (Alpine), and keeps the Rocket Loader origin allowlisted.
-    # Pin the directive prefix (a bare-origin substring trips
-    # py/incomplete-url-substring-sanitization and is weaker anyway).
-    assert (
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
-        "https://ajax.cloudflare.com" in CSP
-    )
+def test_build_csp_shape():
+    # Nonce-based enforcing CSP (Rocket Loader disabled). script-src carries a
+    # nonce + 'unsafe-eval' (Alpine) but NO 'unsafe-inline' and NO
+    # ajax.cloudflare.com; style-src keeps 'unsafe-inline' (reCAPTCHA).
+    csp = build_csp("TESTNONCE")
+    script_src = csp.split("style-src", 1)[0]
+    assert "script-src 'self' 'nonce-TESTNONCE' 'unsafe-eval'" in script_src
+    assert "'unsafe-inline'" not in script_src          # gone from script-src
+    assert "ajax.cloudflare.com" not in csp             # Rocket Loader disabled
+    assert "cloudflareinsights" not in csp              # Web Analytics beacon not allowlisted
+    assert "style-src 'self' 'unsafe-inline'" in csp    # reCAPTCHA dynamic styles
+    assert "object-src 'none'" in csp                   # hardening
+    assert "firebaseio.com" not in csp                  # vestigial RTDB origin dropped
+    assert csp.rstrip().endswith("report-uri /csp-report")
 
 
-def test_csp_header_present_and_enforced():
+def test_csp_header_enforced_with_matching_nonce():
     app = _make_app()
-    resp = app.test_client().get("/")
-    assert resp.headers["Content-Security-Policy"] == CSP
-    # The report-only header must not also be emitted (no stale duplicate).
+
+    @app.route("/nonce-probe")
+    def _probe():
+        return render_template_string('<script nonce="{{ csp_nonce }}">1;</script>')
+
+    resp = app.test_client().get("/nonce-probe")
+    header = resp.headers["Content-Security-Policy"]
+    # Enforced header only — no stale report-only duplicate.
     assert "Content-Security-Policy-Report-Only" not in resp.headers
+    # The nonce in the header must equal the nonce rendered into the inline
+    # <script> — otherwise every inline script is blocked in production.
+    m = re.search(r"'nonce-([A-Za-z0-9_-]+)'", header)
+    assert m, header
+    nonce = m.group(1)
+    assert f'nonce="{nonce}"'.encode() in resp.data
+    assert header == build_csp(nonce)
 
 
-def test_csp_enforced_hardening():
-    # Enforcement-time hardening + the functionally-required unsafe tokens.
-    assert "object-src 'none'" in CSP
-    assert "'unsafe-eval'" in CSP                      # Alpine
-    assert "style-src 'self' 'unsafe-inline'" in CSP   # reCAPTCHA dynamic styles
-    assert "firebaseio.com" not in CSP                 # vestigial RTDB origin dropped
-    assert "cloudflareinsights" not in CSP             # Web Analytics beacon not allowlisted
+def test_csp_nonce_is_per_request():
+    app = _make_app()
+
+    def _nonce():
+        h = app.test_client().get("/").headers["Content-Security-Policy"]
+        return re.search(r"'nonce-([A-Za-z0-9_-]+)'", h).group(1)
+
+    assert _nonce() != _nonce()  # a fresh nonce every request
 
 
 # ── Early Hints (Link headers) ─────────────────────────────────────────────
