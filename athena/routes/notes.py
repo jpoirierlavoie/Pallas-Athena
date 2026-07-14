@@ -18,6 +18,7 @@ from dav.sync import bump_ctag
 from security import safe_internal_redirect
 from models.note import (
     CATEGORY_LABELS,
+    CONTENT_MAX_LENGTH,
     VALID_CATEGORIES,
     create_note,
     delete_note,
@@ -41,6 +42,7 @@ def _template_context() -> dict:
     return {
         "category_labels": CATEGORY_LABELS,
         "valid_categories": VALID_CATEGORIES,
+        "content_max_length": CONTENT_MAX_LENGTH,
     }
 
 
@@ -198,7 +200,14 @@ def note_create() -> str:
     if note.get("dossier_id"):
         bump_ctag(f"dossier:{note['dossier_id']}")
 
-    target = safe_internal_redirect(return_to, url_for("notes.note_list"))
+    # Land on the freshly created note itself; thread a validated return_to so
+    # the detail view's « Retour » link still points back to the caller
+    # (e.g. the dossier Documents tab). Only validate when present, so the
+    # common no-return_to case doesn't emit a spurious redirect_rejected event.
+    clean_return = safe_internal_redirect(return_to, "") if return_to else ""
+    target = url_for(
+        "notes.note_detail", note_id=note["id"], return_to=clean_return or None
+    )
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -273,8 +282,12 @@ def note_update(note_id: str) -> str:
     if note.get("dossier_id"):
         bump_ctag(f"dossier:{note['dossier_id']}")
 
-    fallback = url_for("notes.note_detail", note_id=note_id)
-    target = safe_internal_redirect(return_to, fallback)
+    # Return to the note itself after saving; thread a validated return_to for
+    # the detail view's « Retour » link (see note_create for the guard rationale).
+    clean_return = safe_internal_redirect(return_to, "") if return_to else ""
+    target = url_for(
+        "notes.note_detail", note_id=note_id, return_to=clean_return or None
+    )
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target

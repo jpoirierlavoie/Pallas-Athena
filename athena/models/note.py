@@ -69,12 +69,28 @@ def _default_doc() -> dict:
     }
 
 
+# Note content (Markdown) is long-form — meeting minutes, research, strategy —
+# so it gets a far more generous cap than the short scalar fields. The ceiling
+# sits well under Firestore's 1 MiB document limit and the 1 MB request-size
+# guard in security.py, and the content textarea carries a matching ``maxlength``
+# so the cap is enforced (and visible) in the browser instead of silently
+# truncating on save. Every other string field (title, denormalized dossier
+# labels) keeps the app-wide 2000-char bound.
+CONTENT_MAX_LENGTH = 100_000
+_FIELD_MAX_LENGTH = 2000
+
+
 def _sanitize_data(data: dict) -> dict:
-    """Sanitize all string values in *data*."""
+    """Sanitize all string values in *data*.
+
+    ``content`` is bounded to :data:`CONTENT_MAX_LENGTH`; every other string
+    field to :data:`_FIELD_MAX_LENGTH`.
+    """
     out: dict = {}
     for key, val in data.items():
         if isinstance(val, str):
-            out[key] = sanitize(val, max_length=5000)
+            limit = CONTENT_MAX_LENGTH if key == "content" else _FIELD_MAX_LENGTH
+            out[key] = sanitize(val, max_length=limit)
         else:
             out[key] = val
     return out
