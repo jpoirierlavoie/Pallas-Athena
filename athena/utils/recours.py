@@ -28,11 +28,11 @@ from utils.deadlines import next_juridical_day
 # key -> (French label shown in the dropdown, duration in years | None).
 # ``None`` = no automatic deadline (imprescriptible, or "autre" to set by hand).
 PRESCRIPTION_PERIODS: dict[str, tuple[str, "int | None"]] = {
-    "1_an": ("1 an — art. 2929 C.c.Q. (diffamation)", 1),
-    "3_ans": ("3 ans — art. 2925 C.c.Q. (prescription générale)", 3),
-    "10_ans": ("10 ans — art. 2922 C.c.Q. (droit réel immobilier)", 10),
-    "30_ans": ("30 ans — art. 2926.1 C.c.Q. (préjudice corporel / infraction)", 30),
-    "imprescriptible": ("Imprescriptible — art. 2926.1 al. 2 C.c.Q.", None),
+    "1_an": ("1 an, art. 2929 C.c.Q.", 1),
+    "3_ans": ("3 ans, art. 2925 C.c.Q.", 3),
+    "10_ans": ("10 ans, art. 2922 C.c.Q.", 10),
+    "30_ans": ("30 ans, art. 2926.1 C.c.Q.", 30),
+    "imprescriptible": ("Imprescriptible, art. 2926.1(2) C.c.Q.", None),
     "autre": ("Autre / à déterminer", None),
 }
 
