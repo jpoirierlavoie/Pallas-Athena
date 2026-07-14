@@ -224,6 +224,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── utils/                      # Utility modules
 │   │   ├── __init__.py
 │   │   ├── deadlines.py            # Quebec art. 83 C.p.c. judicial deadline calc
+│   │   ├── recours.py              # Recours & prescription (pure): C.c.Q. period table,
+│   │   │                           # value-class table, compute_class + compute_date_pour_agir
 │   │   ├── docx_fill.py            # Phase H/H.2: stdlib-only .docx fill engine (zip XML substitution;
 │   │   │                           # scalars, blocks, + H.2 repeating rows & conditional regions)
 │   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
@@ -445,7 +447,14 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "status": "actif" | "en_attente" | "fermé" | "archivé",
     "opened_date": datetime, "closed_date": datetime | None,
 
-    # Prescription
+    # Recours & prescription (see utils/recours.py)
+    "objet": str,                         # subject/object of the recourse
+    "valeur": int | None,                 # amount in dispute, integer cents
+    "prescription_type": str,             # dropdown key → period (recours.PRESCRIPTION_PERIODS)
+    "droit_action_date": datetime | None, # "droit d'action" — start of the prescription
+    # "date pour agir": DERIVED on save (models/dossier._apply_prescription_deadline)
+    # from droit_action_date + prescription_type; remains the field the
+    # dashboard/index/alerts read.
     "prescription_date": datetime | None, "prescription_notes": str,
 
     "notes": str,
@@ -1251,6 +1260,23 @@ Quebec statutory holidays handled: Jour de l'An (+ Jan 2 if Jan 1 is Sunday), Ve
 Integration points:
 - `models/protocol.py`: `_compute_deadline` (CQ/CS template offsets and `recompute_deadlines`)
 - `routes/dashboard.py`: `_get_prescription_alerts` computes `last_action_date = prev_juridical_day(prescription_date)` for display
+
+### `utils/recours.py` (recours & prescription — pure)
+
+No Firestore, no Flask — mirrors `deadlines.py` in style so the dossier's recourse fields compute identically wherever needed and stay unit-testable (`tests/test_recours.py`).
+
+```python
+PRESCRIPTION_PERIODS: dict[str, (label, years|None)]   # C.c.Q. options for the dropdown
+PRESCRIPTION_LABELS / VALID_PRESCRIPTION_TYPES         # derived (incl. "" = non définie)
+prescription_years(prescription_type) -> int | None
+VALUE_CLASSES / TOP_CLASS                              # montant en litige → classe I–IV (inclusive cent bounds)
+compute_class(valeur_cents) -> str | None              # Roman numeral "I"–"IV", else None
+compute_date_pour_agir(droit_action_date, prescription_type) -> datetime | None
+```
+
+- The dossier form drives everything through `prescription_type` (dropdown) + `droit_action_date` (« droit d'action »). `models/dossier._apply_prescription_deadline` computes the « date pour agir » into **`prescription_date`** on save (imprescriptible → `None`; unset/`autre` → any existing value preserved), so the dashboard/index/alerts keep reading the same field. The detail page shows `objet`, `valeur` + `compute_class` (« Valeur (Classe) »), the prescription label, `droit_action_date`, and `prescription_date` in a **« Recours et prescription »** card (which replaced the old Honoraires card).
+- `compute_date_pour_agir` extends a deadline that lands on a weekend / Québec statutory holiday **forward to the next juridical day** (`utils.deadlines.next_juridical_day`); it stays indicative — every limitation deadline must still be verified.
+- `VALUE_CLASSES` holds the confirmed value table — Classe **I** (≤ 15 000 $), **II** (≤ 85 000 $), **III** (≤ 300 000 $), **IV** (> 300 000 $), each bound inclusive at the cent. `PRESCRIPTION_PERIODS` (C.c.Q. periods) remains adjustable to the practice.
 
 ### `utils/validators.py`
 

@@ -13,6 +13,11 @@ from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
+from utils.recours import (
+    VALID_PRESCRIPTION_TYPES,
+    compute_date_pour_agir,
+    prescription_years,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +131,11 @@ def _default_doc() -> dict:
         "status": "actif",
         "opened_date": None,
         "closed_date": None,
-        # Prescription
+        # Recours & prescription
+        "objet": "",
+        "valeur": None,
+        "prescription_type": "",
+        "droit_action_date": None,
         "prescription_date": None,
         "prescription_notes": "",
         # Notes
@@ -172,11 +181,32 @@ def _validate(data: dict) -> list[str]:
     if data.get("status", "") not in VALID_STATUSES:
         errors.append("Statut invalide.")
 
+    if data.get("prescription_type", "") not in VALID_PRESCRIPTION_TYPES:
+        errors.append("Type de prescription invalide.")
+
     fee_type = data.get("fee_type", "")
     if fee_type and fee_type not in VALID_FEE_TYPES:
         errors.append("Type d'honoraires invalide.")
 
     return errors
+
+
+def _apply_prescription_deadline(doc: dict) -> None:
+    """Recompute ``prescription_date`` (the "date pour agir") in place.
+
+    The limitation deadline is derived from the recourse fields:
+    ``droit_action_date`` + the ``prescription_type`` period. An imprescriptible
+    recourse clears it. When the type/start date don't drive a computation
+    (unset, or "autre"), any existing/legacy ``prescription_date`` is left
+    untouched — so older dossiers carrying a manually-set date are never wiped.
+    """
+    p_type = doc.get("prescription_type", "")
+    if p_type == "imprescriptible":
+        doc["prescription_date"] = None
+    elif doc.get("droit_action_date") and prescription_years(p_type):
+        doc["prescription_date"] = compute_date_pour_agir(
+            doc.get("droit_action_date"), p_type
+        )
 
 
 def _suggest_next_file_number() -> str:
@@ -266,6 +296,9 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
         merged["closed_date"] = merged.get("closed_date") or now
     else:
         merged["closed_date"] = None
+
+    # Derive the prescription deadline ("date pour agir") from the recourse fields.
+    _apply_prescription_deadline(merged)
 
     try:
         db.collection(COLLECTION).document(dossier_id).set(merged)
@@ -472,6 +505,9 @@ def update_dossier(
             merged["closed_date"] = existing.get("closed_date") or now
     else:
         merged["closed_date"] = None
+
+    # Derive the prescription deadline ("date pour agir") from the recourse fields.
+    _apply_prescription_deadline(merged)
 
     try:
         db.collection(COLLECTION).document(dossier_id).set(merged)

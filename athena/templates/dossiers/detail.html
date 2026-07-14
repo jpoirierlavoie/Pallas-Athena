@@ -155,26 +155,36 @@
       </dl>
     </div>
 
-    {# Financial summary #}
+    {# Recourse & prescription #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-2">Honoraires</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Recours et prescription</h2>
       <dl class="space-y-1.5 text-sm">
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Type</dt>
-          <dd class="text-gray-900">{{ fee_type_labels.get(dossier.fee_type, dossier.fee_type) }}</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Objet</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.objet or '—' }}</dd>
         </div>
-        {% if dossier.fee_type in ('hourly', 'mixed') and dossier.hourly_rate %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Taux horaire</dt>
-          <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.hourly_rate / 100) }} $</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Valeur (Classe)</dt>
+          <dd class="text-gray-900 text-right">
+            {% if dossier.valeur %}
+              {{ '%.2f'|format(dossier.valeur / 100) }} ${% if value_class %} <span class="text-gray-500">(Classe {{ value_class }})</span>{% endif %}
+            {% else %}Indéterminable{% endif %}
+          </dd>
         </div>
-        {% endif %}
-        {% if dossier.fee_type in ('flat', 'mixed') and dossier.flat_fee %}
-        <div class="flex justify-between">
-          <dt class="text-gray-500">Forfait</dt>
-          <dd class="text-gray-900 font-medium">{{ '%.2f'|format(dossier.flat_fee / 100) }} $</dd>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Prescription</dt>
+          <dd class="text-gray-900 text-right">{{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}</dd>
         </div>
-        {% endif %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Droit d'action</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.droit_action_date.strftime('%d %B %Y') if dossier.droit_action_date and dossier.droit_action_date.strftime is defined else '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Date pour agir</dt>
+          <dd class="text-right font-medium {{ 'text-red-600' if dossier._prescription_warning == 'red' else ('text-amber-600' if dossier._prescription_warning == 'orange' else 'text-gray-900') }}">
+            {{ dossier.prescription_date.strftime('%d %B %Y') if dossier.prescription_date and dossier.prescription_date.strftime is defined else '—' }}
+          </dd>
+        </div>
       </dl>
     </div>
   </div>

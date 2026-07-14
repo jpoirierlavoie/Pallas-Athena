@@ -81,6 +81,7 @@ from models.dossier import (
     suggest_file_number,
     update_dossier,
 )
+from utils.recours import PRESCRIPTION_LABELS, compute_class
 
 dossiers_bp = Blueprint(
     "dossiers", __name__, url_prefix="/dossiers"
@@ -162,8 +163,12 @@ def _form_data() -> dict:
         "status": f.get("status", "actif"),
         "opened_date": _parse_date(f.get("opened_date", "")),
         "closed_date": _parse_date(f.get("closed_date", "")),
-        # Prescription
-        "prescription_date": _parse_date(f.get("prescription_date", "")),
+        # Recours & prescription (prescription_date is derived on save from
+        # droit_action_date + prescription_type — see the model layer).
+        "objet": f.get("objet", "").strip(),
+        "valeur": _parse_cents(f.get("valeur", "")) or None,
+        "prescription_type": f.get("prescription_type", "").strip(),
+        "droit_action_date": _parse_date(f.get("droit_action_date", "")),
         "prescription_notes": f.get("prescription_notes", "").strip(),
         # Notes
         "notes": f.get("notes", "").strip(),
@@ -178,6 +183,7 @@ def _template_context() -> dict:
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
         "fee_type_labels": FEE_TYPE_LABELS,
+        "prescription_labels": PRESCRIPTION_LABELS,
     }
 
 
@@ -295,6 +301,7 @@ def dossier_detail(dossier_id: str) -> str:
     ctx = _template_context()
     ctx["dossier"] = dossier
     ctx["initial_tab"] = initial_tab
+    ctx["value_class"] = compute_class(dossier.get("valeur"))
     return render_template("dossiers/detail.html", **ctx)
 
 
