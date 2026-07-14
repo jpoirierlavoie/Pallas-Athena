@@ -60,7 +60,7 @@ If you spot any secret in this repository (current files or git history), please
 - **App Check:** Firebase App Check with reCAPTCHA Enterprise on HTMX requests.
 - **DAV auth:** Separate HTTP Basic Auth (bcrypt-hashed password) plus Cloudflare Access Zero Trust on `/dav/*`.
 - **Edge:** Cloudflare in front of App Engine with Full Strict TLS. Direct App Engine access (`*.appspot.com`) is rejected by a `before_request` hook.
-- **Headers:** HSTS (2-year), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, restrictive `Permissions-Policy`. CSP is currently report-only.
+- **Headers:** HSTS (2-year), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, restrictive `Permissions-Policy`. CSP is **enforced** (since 2026-07-11) with a per-request nonce on `script-src` (no `'unsafe-inline'`); violations are still collected via `report-uri` → `/csp-report`.
 - **Rate limiting:** `flask-limiter` on `/auth/login`.
 - **Input handling:** All user input is sanitized via `security.sanitize()` and length-capped per field.
 - **Storage:** Firebase Storage URLs are signed with 15-minute expiry; raw bucket URLs are never exposed.
@@ -86,7 +86,20 @@ This is a single-deployment app — only the currently deployed `main` branch is
 
 ## Data handling
 
-- Client data lives in Firestore (native mode) and Firebase Storage, both in `northamerica-northeast1` (Montréal).
+Client data — the confidential material subject to professional secrecy — is kept in the **`northamerica-northeast1` (Montréal)** region. The Google-managed telemetry sinks (Cloud Logging, Cloud Trace) default to a **`global`** location, but they hold no client records: application logging is PII-redacted at source.
+
+| Data | Service | Region | Notes |
+|---|---|---|---|
+| Structured records (parties, dossiers, time, invoices, notes, protocols, …) | Firestore (native mode) | `northamerica-northeast1` (Montréal) | Region fixed at database creation — immutable |
+| Document & template files | Firebase Storage | `northamerica-northeast1` (Montréal) | Bucket location fixed at creation — immutable |
+| Application compute | App Engine Standard | `northamerica-northeast1` (Montréal) | App region is permanent |
+| Application logs (`pallas-athena`) | Cloud Logging — `_Default` bucket | `global` by default (redirectable to Montréal) | PII-redacted at source by `RedactionFilter`; see below |
+| Audit logs (Admin Activity / System Event) | Cloud Logging — `_Required` bucket | `global` — **permanent** | Google-imposed; project-admin metadata, not client data |
+| Distributed traces | Cloud Trace | Google-managed (global) | IDs/counts only, PII-sanitized (`tracing_setup.py`); no regional-storage control |
+| Application secrets | Secret Manager | per each secret's replication policy | Keys/hashes only — no client data |
+
+**Logging residency.** Cloud Logging keeps logs in *log buckets* whose location is immutable once created; the two auto-created buckets (`_Default`, `_Required`) start in `global`. Application logs can be routed to a Montréal bucket by creating a regional log bucket and repointing the `_Default` sink at it (procedure in [DEPLOYMENT.md](DEPLOYMENT.md) → §6.8). The `_Required` audit-log bucket cannot be relocated and stays `global` by Google's design. Because application logs are PII-redacted before they leave the process ([utils/logging_setup.py](athena/utils/logging_setup.py) `RedactionFilter`), the residency stakes on logging are low relative to Firestore and Storage.
+
 - All access is logged via Cloud Logging; PII is **not** logged at the application level.
 - **Firestore:** native scheduled backups, daily (7-day retention) and weekly (14-week retention), stored in `northamerica-northeast1`.
 - **Firebase Storage:** object versioning enabled, with a 180-day non-current version retention policy. GCS bucket-level soft delete provides an additional 7-day window to undelete objects.

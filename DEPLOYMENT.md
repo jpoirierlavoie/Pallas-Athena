@@ -49,7 +49,7 @@ Architecture at a glance:
 ```
 Browser / DavX5 / Claude
         │
-   Cloudflare  (TLS, WAF, Access on /dav/*, Rocket Loader, Early Hints, origin secret)
+   Cloudflare  (TLS, WAF, Access on /dav/*, Early Hints, origin secret)
         │
   App Engine Standard (Flask + gunicorn, Python 3.13)
         │
@@ -65,7 +65,7 @@ Firestore        Firebase Storage     Firebase Auth    Secret Manager
 **Accounts**
 - A **Google Cloud** account with billing enabled.
 - A **Cloudflare** account on the **Pro plan** (≈ US$25/mo) — required for
-  Access (Zero Trust on `/dav/*`), Rocket Loader, and Early Hints.
+  Access (Zero Trust on `/dav/*`) and Early Hints.
 - A **domain name** you control (this guide uses `yourdomain.example`).
 - *Optional:* a **Google Play Console** account (only for the Android TWA, §12).
 - *Optional:* a **claude.ai** account (only for the MCP connector, §11).
@@ -323,6 +323,47 @@ Enterprise provider, and put the site key in `RECAPTCHA_ENTERPRISE_SITE_KEY`
 a loud warning in production and does not verify HTMX requests. For local dev,
 register an App Check **debug token** and set `APPCHECK_DEBUG_TOKEN`.
 
+### 6.8 Data residency — keep application logs in your region (optional)
+
+After §6.2/§6.3, your **primary data stores are already regional**: App Engine,
+Firestore, and (from §6.6) the Storage bucket all live in
+`northamerica-northeast1` (Montréal), and those regions are **permanent**. Two
+Google-managed telemetry sinks, however, default to **`global`**:
+
+| Sink | Default location | Movable? |
+|---|---|---|
+| Cloud Logging `_Default` bucket (your `pallas-athena` logs) | `global` | ✅ redirect to a regional bucket (below) |
+| Cloud Logging `_Required` bucket (Admin Activity / System Event audit logs) | `global` | ❌ **permanent** — Google-imposed |
+| Cloud Trace | Google-managed (global) | ❌ no regional-storage control |
+
+A log bucket's location is fixed at creation, so the existing `global` buckets
+can't be *moved* — you create a **new regional bucket** and route future logs to
+it. Application logs are PII-redacted at source (`RedactionFilter`), so this is a
+residency-hygiene step, not a leak fix.
+
+```bash
+# 1. Create a Montréal log bucket:
+gcloud logging buckets create athena-mtl \
+  --location=northamerica-northeast1 --retention-days=30 --project=$PROJECT
+
+# 2. Repoint the _Default sink at it (new logs land in Montréal):
+gcloud logging sinks update _Default \
+  logging.googleapis.com/projects/$PROJECT/locations/northamerica-northeast1/buckets/athena-mtl \
+  --project=$PROJECT
+
+# 3. Verify:
+gcloud logging sinks describe _Default --project=$PROJECT
+gcloud logging buckets list --project=$PROJECT
+```
+
+- Only logs written **after** the change go to Montréal; the old `global`
+  `_Default` contents age out on their retention window.
+- The `_Required` audit bucket stays `global` — it holds project-admin metadata
+  (who called which API), never client data. There is no supported way to
+  regionalize it on an existing project.
+- Cloud Trace has no equivalent regional-bucket control; traces are
+  PII-sanitized (`tracing_setup.py`) and carry IDs/counts only.
+
 ---
 
 ## 7. Cloudflare edge
@@ -341,8 +382,10 @@ rejects direct access. Set up, in order:
    header `X-Origin-Auth: <cf-origin-secret value>` on every request, zone-wide.
    The app checks it (`security.py`) when `CF_ORIGIN_SECRET` is set. This is the
    second layer that defeats a spoofed-Host direct hit.
-5. **Rocket Loader:** enable it. ⚠️ The end-of-`<body>` script order in
-   `base.html` is load-bearing under Rocket Loader — don't reorder those scripts.
+5. **Rocket Loader:** leave it **off** — the original enabled it, then disabled
+   it at the edge on 2026-07-11, and it is not returning. ⚠️ The end-of-`<body>`
+   script order in `base.html` is still load-bearing: the App Check boot runs synchronously and htmx/Alpine
+   are `defer`, but all resolve in document order — don't reorder them.
 6. **Early Hints:** enable it (the app emits the `Link` preload headers).
 7. Point `MCP_CANONICAL_ORIGIN` and `AUTHORIZED_USER_EMAIL`'s domain at
    `yourdomain.example`, and update the legal pages / README / SECURITY.
@@ -483,9 +526,12 @@ Notes:
   Firestore scheduled backups (or Point-in-Time Recovery) and Firebase Storage
   object versioning for *your* project — they are per-project settings, not code.
 - **Monitoring:** Cloud Logging (log name `pallas-athena`) and Cloud Trace. The
-  event/span vocabulary is in [OBSERVABILITY.md](athena/OBSERVABILITY.md).
-- **CSP:** ships in **Report-Only** mode. Switch to enforcing `Content-Security-
-  Policy` only after a clean reporting window (`security.py`).
+  event/span vocabulary is in [OBSERVABILITY.md](athena/OBSERVABILITY.md). Logs
+  default to the `global` region — see §6.8 to keep them in Montréal.
+- **CSP:** **enforced** (since 2026-07-11, after a report-only window showed
+  only `script-src` violations). `script-src` uses a per-request nonce
+  (`build_csp` in `security.py`, no `'unsafe-inline'`); violations still post to
+  `/csp-report` (`report-uri`) and log as `csp_violation`.
 - **Rollback:** Cloud Build keeps the 3 most-recent non-serving versions.
   `gcloud app versions list`, then migrate traffic:
   `gcloud app services set-traffic default --splits=<VERSION>=1`.

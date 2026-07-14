@@ -32,9 +32,11 @@
   {% endif %}
 
   {# JS lives at the END of <body>, ordered: Firebase/App Check boot →
-     page scripts → htmx → Alpine. Document order IS execution order both
-     natively (sync + defer phases) and under Cloudflare Rocket Loader
-     (which defers everything but preserves order) — keep it that way. #}
+     page scripts → htmx → Alpine. Document order IS execution order:
+     the boot/setup scripts are synchronous (parse-time) and htmx/Alpine
+     are `defer` (DOMContentLoaded), and both phases preserve order — keep
+     it that way. (Rocket Loader, which also preserved order, was disabled
+     at the edge 2026-07-11.) #}
   {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen bg-[#FAFAFA] text-gray-900"
@@ -253,8 +255,9 @@
   {# htmx and Alpine come LAST: the App Check gate above must register its
      htmx listeners before htmx fires hx-trigger="load" requests, and pages
      define their Alpine components (inline, in content/page_scripts blocks)
-     before Alpine evaluates x-data. Under Rocket Loader only document
-     order is guaranteed — position, not sync/defer phases, enforces this. #}
+     before Alpine evaluates x-data. These two are `defer` (run at
+     DOMContentLoaded, after the synchronous boot/setup above); document
+     order is what keeps htmx initializing before Alpine. #}
   <!-- HTMX (deferred — initializes on DOMContentLoaded) -->
   <script defer src="{{ url_for('static', filename='vendor/htmx-2.0.4.min.js') }}"></script>
   <!-- Alpine.js -->

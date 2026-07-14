@@ -17,8 +17,9 @@
   <link rel="preconnect" href="https://www.gstatic.com">
   <link rel="preconnect" href="https://www.google.com">
   {# Alpine is loaded at the END of <body>, after the inline script that
-     defines loginForm() — document order keeps that safe under Cloudflare
-     Rocket Loader, which defers all scripts but preserves their order. #}
+     defines loginForm() — the inline script runs synchronously at parse
+     time and Alpine is `defer` (DOMContentLoaded), so document order keeps
+     loginForm() defined before Alpine evaluates x-data. #}
 </head>
 <body class="min-h-screen bg-[#FAFAFA] flex items-center justify-center px-4">
 
@@ -438,8 +439,8 @@
     }
   </script>
 
-  {# Alpine LAST — loginForm() above must exist before Alpine evaluates
-     x-data, and only document order guarantees that under Rocket Loader. #}
+  {# Alpine LAST — loginForm() above (inline, synchronous) must exist before
+     Alpine (defer) evaluates x-data; document order guarantees that. #}
   <script defer src="{{ url_for('static', filename='vendor/alpinejs-3.15.12.min.js') }}"></script>
 </body>
 </html>
