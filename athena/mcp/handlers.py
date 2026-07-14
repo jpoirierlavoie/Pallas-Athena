@@ -34,6 +34,7 @@ from models import task as task_model
 from models import time_entry as time_entry_model
 from tz import MTL
 from utils import deadlines
+from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
 
 from mcp.tools import ToolArgumentError, date_str, format_cents, iso_mtl
@@ -334,6 +335,14 @@ def get_dossier(args: dict) -> dict:
             "is_administrative_tribunal": bool(d.get("is_administrative_tribunal")),
             "fee_type": d.get("fee_type", ""),
             "closed_date": date_str(_as_utc(d.get("closed_date"))),
+            # Recours & prescription. prescription_date (= "date pour agir") is
+            # already in the base row; these are its source fields.
+            "objet": d.get("objet", ""),
+            "prescription_type": d.get("prescription_type", ""),
+            "prescription_label": PRESCRIPTION_LABELS.get(
+                d.get("prescription_type", ""), ""
+            ),
+            "droit_action_date": date_str(_as_utc(d.get("droit_action_date"))),
             "prescription_notes": d.get("prescription_notes", ""),
             "notes": d.get("notes", ""),
             "internal_notes": d.get("internal_notes", ""),
@@ -348,6 +357,16 @@ def get_dossier(args: dict) -> dict:
         record["flat_fee_display"] = None
     else:
         _money(record, "flat_fee", flat_fee)
+
+    # Amount in dispute (+ derived class). None when unset — never coerced to 0.
+    valeur = d.get("valeur")
+    if valeur is None:
+        record["valeur_cents"] = None
+        record["valeur_display"] = None
+        record["valeur_classe"] = None
+    else:
+        _money(record, "valeur", valeur)
+        record["valeur_classe"] = compute_class(valeur)
 
     time_summary = time_entry_model.get_time_summary(did)
     time_out = {

@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
+from utils.format_fr import format_cents_fr
+from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
 
 # ── Vocabulary ──────────────────────────────────────────────────────────
@@ -228,6 +230,48 @@ def _dossier_field(key: str) -> Callable[[_Context], Optional[str]]:
     return resolver
 
 
+def _dossier_money(key: str) -> Callable[[_Context], Optional[str]]:
+    """Resolver for a dossier money field (integer cents) → fr-CA string."""
+    def resolver(ctx: _Context) -> Optional[str]:
+        if not ctx.dossier:
+            return None
+        cents = ctx.dossier.get(key)
+        if cents is None:
+            return None
+        return format_cents_fr(int(cents))
+
+    return resolver
+
+
+def _dossier_date(key: str) -> Callable[[_Context], Optional[str]]:
+    """Resolver for a dossier date field (midnight-UTC datetime) → French long
+    date, using the stored UTC calendar date (no Montréal shift)."""
+    def resolver(ctx: _Context) -> Optional[str]:
+        if not ctx.dossier:
+            return None
+        value = ctx.dossier.get(key)
+        if value is None or not hasattr(value, "year"):
+            return None
+        return french_long_date(value)
+
+    return resolver
+
+
+def _dossier_classe(ctx: _Context) -> Optional[str]:
+    """Value class (Roman numeral I–IV) computed from dossier.valeur."""
+    if not ctx.dossier:
+        return None
+    return compute_class(ctx.dossier.get("valeur"))
+
+
+def _dossier_prescription(ctx: _Context) -> Optional[str]:
+    """French label of the dossier's prescription type (unset → unresolved)."""
+    if not ctx.dossier:
+        return None
+    ptype = ctx.dossier.get("prescription_type") or ""
+    return PRESCRIPTION_LABELS.get(ptype) if ptype else None
+
+
 def _role_feminin(ctx: _Context) -> Optional[str]:
     if not ctx.dossier:
         return None
@@ -388,6 +432,13 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.defendeur_avec_civilite": ("dossier", _side_names(1, with_civility=True)),
     "dossier.adresse_demandeur": ("dossier", _side_address(0)),
     "dossier.adresse_defendeur": ("dossier", _side_address(1)),
+    # dossier.* recours & prescription (see utils/recours.py)
+    "dossier.objet": ("dossier", _dossier_field("objet")),
+    "dossier.valeur": ("dossier", _dossier_money("valeur")),
+    "dossier.classe": ("dossier", _dossier_classe),
+    "dossier.prescription": ("dossier", _dossier_prescription),
+    "dossier.droit_action": ("dossier", _dossier_date("droit_action_date")),
+    "dossier.date_pour_agir": ("dossier", _dossier_date("prescription_date")),
     # cabinet.* (§6.5)
     "cabinet.nom": (None, _firm_field("nom")),
     "cabinet.adresse_civique": (None, _firm_field("adresse_civique")),
@@ -437,6 +488,11 @@ FLAT_ALIASES: dict[str, str] = {
     "défendeur_avec_civilite": "dossier.defendeur_avec_civilite",
     "adresse_demandeur": "dossier.adresse_demandeur",
     "adresse_défendeur": "dossier.adresse_defendeur",
+    "valeur": "dossier.valeur",
+    "classe": "dossier.classe",
+    "prescription": "dossier.prescription",
+    "droit_action": "dossier.droit_action",
+    "date_pour_agir": "dossier.date_pour_agir",
     "ville_procédure": "cabinet.ville",
     "ville_lettre": "cabinet.ville",
     "date_procédure": "date.aujourdhui",
