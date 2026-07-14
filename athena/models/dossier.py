@@ -260,6 +260,13 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
         }
     )
 
+    # Closure date mirrors update_dossier: auto-stamp when a dossier is created
+    # already closed/archived (unless the form supplied one); empty otherwise.
+    if merged.get("status") in ("fermé", "archivé"):
+        merged["closed_date"] = merged.get("closed_date") or now
+    else:
+        merged["closed_date"] = None
+
     try:
         db.collection(COLLECTION).document(dossier_id).set(merged)
     except Exception:
@@ -456,15 +463,14 @@ def update_dossier(
     merged["client_ids"] = [c["id"] for c in merged.get("clients", [])]
     merged["opposing_party_ids"] = [p["id"] for p in merged.get("opposing_parties", [])]
 
-    # Auto-set closed_date when status changes to fermé or archivé
-    if (
-        merged.get("status") in ("fermé", "archivé")
-        and existing.get("status") not in ("fermé", "archivé")
-    ):
-        merged["closed_date"] = now
-    elif merged.get("status") in ("actif", "en_attente") and existing.get(
-        "status"
-    ) in ("fermé", "archivé"):
+    # Closure date: auto-determined when the dossier is closed/archived, but
+    # user-editable. Respect a date supplied on the form; otherwise keep the
+    # existing one, falling back to `now` on the closing transition. An
+    # active/pending dossier is never closed, so it carries no closure date.
+    if merged.get("status") in ("fermé", "archivé"):
+        if not merged.get("closed_date"):
+            merged["closed_date"] = existing.get("closed_date") or now
+    else:
         merged["closed_date"] = None
 
     try:

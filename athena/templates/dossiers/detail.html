@@ -43,22 +43,24 @@
         </svg>
       </div>
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2 mb-1">
-          <span class="text-sm font-medium text-indigo-600">{{ dossier.file_number }}</span>
-          {% set status_colors = {
-            'actif': 'bg-green-100 text-green-700',
-            'en_attente': 'bg-amber-100 text-amber-700',
-            'fermé': 'bg-gray-200 text-gray-600',
-            'archivé': 'bg-gray-200 text-gray-500'
-          } %}
+        <h1 class="text-xl font-semibold text-gray-900 mb-2">{{ dossier.title }}</h1>
+        {% set status_colors = {
+          'actif': 'bg-green-100 text-green-700',
+          'en_attente': 'bg-amber-100 text-amber-700',
+          'fermé': 'bg-gray-200 text-gray-600',
+          'archivé': 'bg-gray-200 text-gray-500'
+        } %}
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+            {{ matter_type_labels.get(dossier.matter_type, dossier.matter_type) }}
+          </span>
+          <span class="text-xs text-gray-500">Notre référence :
+            <span class="font-medium text-indigo-600">{{ dossier.file_number }}</span>
+          </span>
           <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ status_colors.get(dossier.status, 'bg-gray-100 text-gray-600') }}">
-            {{ status_labels.get(dossier.status, dossier.status) }}
+            Statut : {{ status_labels.get(dossier.status, dossier.status) }}
           </span>
         </div>
-        <h1 class="text-xl font-semibold text-gray-900 mb-1">{{ dossier.title }}</h1>
-        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
-          {{ matter_type_labels.get(dossier.matter_type, dossier.matter_type) }}
-        </span>
       </div>
     </div>
   </div>
