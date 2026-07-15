@@ -110,7 +110,7 @@ DOMAINES: dict[str, Domaine] = {
     ),
     "CON": Domaine(
         "CON",
-        "Contrats : exécution, anéantissement, garanties",
+        "Responsabilité contractuelle",
         "Personnelle (mixte pour CON-06) · contractuelle · condamnation ou constitutif",
         (
             Action("CON-01", "Exécution en nature",
@@ -434,7 +434,7 @@ DOMAINES: dict[str, Domaine] = {
     ),
     "FAI": Domaine(
         "FAI",
-        "Faillite et insolvabilité (fédéral)",
+        "Faillite et insolvabilité",
         "Appels en matière de faillite : 10 jours — voir APP-05.",
         (
             Action("FAI-01", "Requête en ordonnance de faillite",
@@ -590,7 +590,7 @@ DOMAINES: dict[str, Domaine] = {
     ),
     "CJP": Domaine(
         "CJP",
-        "Contrôle judiciaire et pourvois (anciens recours extraordinaires)",
+        "Contrôle judiciaire et pourvois",
         "Légal-statutaire · annulation / ordonnance — « délai raisonnable » (≈ 30 jours en jurisprudence)",
         (
             Action("CJP-01", "Annulation de décision (évocation, certiorari)",
