@@ -107,6 +107,11 @@ def _parse_cents(value: str) -> int:
         return 0
 
 
+def _parse_percent(value: str) -> int:
+    """Parse a percentage string (e.g., '25' or '33.33') into basis points."""
+    return _parse_cents(value)  # same ×100 transform: 25 → 2500
+
+
 def _parse_date(value: str) -> datetime | None:
     """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
     if not value or not value.strip():
@@ -162,6 +167,8 @@ def _form_data() -> dict:
         "fee_type": f.get("fee_type", "hourly"),
         "hourly_rate": _parse_cents(f.get("hourly_rate", "")),
         "flat_fee": _parse_cents(f.get("flat_fee", "")) or None,
+        "contingency_percent": _parse_percent(f.get("contingency_percent", "")) or None,
+        "fee_notes": f.get("fee_notes", "").strip(),
         # Status
         "status": f.get("status", "actif"),
         "opened_date": _parse_date(f.get("opened_date", "")),

@@ -84,9 +84,11 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire (litige) », …) |
 | `{{dossier.type_dossier}}` | Type de dossier label (« Action en dommages », …) |
 | `{{dossier.type_honoraires}}` | Fee-type label (« Horaire », « Forfaitaire », « Mixte », « Contingence ») |
-| `{{dossier.honoraires}}` | Fee type + rate jointly (« Horaire — 250,00 $/h », « Mixte — 250,00 $/h + 5 000,00 $ ») |
+| `{{dossier.honoraires}}` | Fee type + rate jointly (« Horaire — 250,00 $/h », « Contingence — 25 % », « Mixte — 250,00 $/h + 5 000,00 $ + 25 % ») |
 | `{{dossier.taux_horaire}}` | Hourly rate, fr-CA currency (« 250,00 $ ») |
 | `{{dossier.forfait}}` | Flat fee, fr-CA currency |
+| `{{dossier.pourcentage}}` | Contingency percentage, fr-CA (« 25 % ») — set for `contingency` and `mixed` |
+| `{{dossier.notes_honoraires}}` | Free-text notes on the fee arrangement |
 | `{{dossier.ouverture}}` | Opening date (French long date) |
 | `{{dossier.fermeture}}` | Closing date (French long date; unresolved while open) |
 | `{{dossier.retention}}` | Document-retention date = closing date + 7 years (French long date) |

@@ -451,6 +451,10 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "fee_type": "hourly" | "flat" | "contingency" | "mixed",
     "hourly_rate": int,                   # cents (default 25000 = $250/h)
     "flat_fee": int | None,
+    "contingency_percent": int | None,    # BASIS POINTS (2500 = 25,00 %), not
+                                          # cents — mirrors invoice gst_rate.
+                                          # Applies to "contingency" AND "mixed".
+    "fee_notes": str,                     # free text on the fee arrangement
 
     # Status
     "status": "actif" | "en_attente" | "fermé" | "archivé",

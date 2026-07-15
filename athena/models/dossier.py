@@ -157,7 +157,9 @@ def _default_doc() -> dict:
         # Financial
         "hourly_rate": 25000,
         "flat_fee": None,
+        "contingency_percent": None,          # basis points: 2500 = 25,00 %
         "fee_type": "hourly",
+        "fee_notes": "",
         # Status
         "status": "actif",
         "opened_date": None,
@@ -220,6 +222,11 @@ def _validate(data: dict) -> list[str]:
     fee_type = data.get("fee_type", "")
     if fee_type and fee_type not in VALID_FEE_TYPES:
         errors.append("Type d'honoraires invalide.")
+
+    # contingency_percent is stored in basis points (2500 = 25,00 %).
+    percent = data.get("contingency_percent")
+    if percent is not None and not 0 <= percent <= 10000:
+        errors.append("Le pourcentage de contingence doit être entre 0 et 100 %.")
 
     return errors
 

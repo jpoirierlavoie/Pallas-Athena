@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
-from utils.format_fr import format_cents_fr
+from utils.format_fr import format_cents_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
 
@@ -268,6 +268,19 @@ def _dossier_money(key: str) -> Callable[[_Context], Optional[str]]:
     return resolver
 
 
+def _dossier_percent(key: str) -> Callable[[_Context], Optional[str]]:
+    """Resolver for a dossier rate field (basis points) → fr-CA percent."""
+    def resolver(ctx: _Context) -> Optional[str]:
+        if not ctx.dossier:
+            return None
+        bps = ctx.dossier.get(key)
+        if bps is None:
+            return None
+        return format_rate_fr(int(bps), 100)
+
+    return resolver
+
+
 def _dossier_date(key: str) -> Callable[[_Context], Optional[str]]:
     """Resolver for a dossier date field (midnight-UTC datetime) → French long
     date, using the stored UTC calendar date (no Montréal shift)."""
@@ -326,7 +339,8 @@ def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
     """« Type d'honoraires et taux » as one string, or None.
 
     « Horaire — 250,00 $/h », « Forfaitaire — 5 000,00 $ »,
-    « Mixte — 250,00 $/h + 5 000,00 $ »; contingency (no stored rate) → the
+    « Contingence — 25 % », « Mixte — 250,00 $/h + 5 000,00 $ + 25 % ». A
+    component with no stored value is omitted; a type with none of them → the
     label alone. Shared with the dossier detail « Mandat » card
     (routes.dossiers) so both render identically.
     """
@@ -339,10 +353,13 @@ def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
     parts: list[str] = []
     hourly = dossier.get("hourly_rate")
     flat = dossier.get("flat_fee")
+    percent = dossier.get("contingency_percent")
     if fee_type in ("hourly", "mixed") and hourly:
         parts.append(f"{format_cents_fr(int(hourly))}/h")
     if fee_type in ("flat", "mixed") and flat:
         parts.append(format_cents_fr(int(flat)))
+    if fee_type in ("contingency", "mixed") and percent:
+        parts.append(format_rate_fr(int(percent), 100))
     return f"{label} — {' + '.join(parts)}" if parts else label
 
 
@@ -533,6 +550,8 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.honoraires": ("dossier", _dossier_honoraires),
     "dossier.taux_horaire": ("dossier", _dossier_money("hourly_rate")),
     "dossier.forfait": ("dossier", _dossier_money("flat_fee")),
+    "dossier.pourcentage": ("dossier", _dossier_percent("contingency_percent")),
+    "dossier.notes_honoraires": ("dossier", _dossier_field("fee_notes")),
     "dossier.ouverture": ("dossier", _dossier_date("opened_date")),
     "dossier.fermeture": ("dossier", _dossier_date("closed_date")),
     "dossier.retention": ("dossier", _dossier_retention),

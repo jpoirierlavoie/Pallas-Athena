@@ -34,6 +34,7 @@ from models import task as task_model
 from models import time_entry as time_entry_model
 from tz import MTL
 from utils import deadlines
+from utils.format_fr import format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
 
@@ -335,6 +336,7 @@ def get_dossier(args: dict) -> dict:
             "is_administrative_tribunal": bool(d.get("is_administrative_tribunal")),
             "mandate_type": d.get("mandate_type", ""),
             "fee_type": d.get("fee_type", ""),
+            "fee_notes": d.get("fee_notes", ""),
             "closed_date": date_str(_as_utc(d.get("closed_date"))),
             # Recours & prescription. prescription_date (= "date pour agir") is
             # already in the base row; these are its source fields.
@@ -356,6 +358,16 @@ def get_dossier(args: dict) -> dict:
         record["flat_fee_display"] = None
     else:
         _money(record, "flat_fee", flat_fee)
+
+    # Contingency rate: stored in basis points → numeric percent + fr-CA
+    # display. None when unset — never coerced to 0.
+    percent = d.get("contingency_percent")
+    if percent is None:
+        record["contingency_percent"] = None
+        record["contingency_percent_display"] = None
+    else:
+        record["contingency_percent"] = int(percent) / 100
+        record["contingency_percent_display"] = format_rate_fr(int(percent), 100)
 
     # Amount in dispute (+ derived class). None when unset — never coerced to 0.
     valeur = d.get("valeur")
