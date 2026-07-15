@@ -138,9 +138,6 @@ def _default_doc() -> dict:
         "droit_action_date": None,
         "prescription_date": None,
         "prescription_notes": "",
-        # Notes
-        "notes": "",
-        "internal_notes": "",
         # Metadata
         "created_at": None,
         "updated_at": None,
@@ -327,12 +324,25 @@ def _migrate_parties(doc: dict) -> dict:
     return doc
 
 
+# Free-text fields removed July 2026 — superseded by the standalone `notes`
+# collection. Popped on read so the next set() purges them from the stored
+# document (the purge-on-save pattern partie._migrate_mandataires uses).
+_REMOVED_FIELDS = ("notes", "internal_notes")
+
+
+def _strip_removed_fields(doc: dict) -> dict:
+    """Drop removed legacy fields in place so the next save purges them."""
+    for key in _REMOVED_FIELDS:
+        doc.pop(key, None)
+    return doc
+
+
 def get_dossier(dossier_id: str) -> Optional[dict]:
     """Fetch a single dossier by ID."""
     try:
         doc = db.collection(COLLECTION).document(dossier_id).get()
         if doc.exists:
-            return _migrate_parties(doc.to_dict())
+            return _strip_removed_fields(_migrate_parties(doc.to_dict()))
     except Exception as exc:
         logger.warning("get_dossier failed for %s: %s", sanitize_log_value(dossier_id), exc)
     return None
@@ -725,15 +735,6 @@ def dossier_to_vjournal(dossier: dict) -> str:
     opened = dossier.get("opened_date")
     if opened and hasattr(opened, "date"):
         journal.add("dtstart", opened.date())
-
-    # DESCRIPTION — combine notes
-    desc_parts = []
-    if dossier.get("notes"):
-        desc_parts.append(dossier["notes"])
-    if dossier.get("internal_notes"):
-        desc_parts.append(f"[Notes internes] {dossier['internal_notes']}")
-    if desc_parts:
-        journal.add("description", "\n\n".join(desc_parts))
 
     # STATUS mapping
     status_map = {

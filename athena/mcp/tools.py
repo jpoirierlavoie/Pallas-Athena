@@ -270,13 +270,12 @@ TOOLS: dict[str, dict] = {
         "title": "Détail d'un dossier",
         "description": (
             "Fetch one dossier by dossier_id or by file_number (provide exactly "
-            "one), with the full record — including parsed court metadata, the "
-            "recourse & prescription fields (objet, valeur + valeur_classe, "
+            "one), with the full record — including parsed court metadata and "
+            "the recourse & prescription fields (objet, valeur + valeur_classe, "
             "prescription_type/prescription_label, droit_action_date, and "
-            "prescription_date = the computed « date pour agir »), and "
-            "internal_notes, which are the lawyer's private notes (treat as "
-            "sensitive) — plus per-module summaries (tasks, hearings, notes, "
-            "documents, time, expenses, invoices, protocol)."
+            "prescription_date = the computed « date pour agir ») — plus "
+            "per-module summaries (tasks, hearings, notes, documents, time, "
+            "expenses, invoices, protocol)."
         ),
         "input_schema": {
             "type": "object",

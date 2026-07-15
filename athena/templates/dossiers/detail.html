@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-6"
-     x-data="{ activeTab: '{{ initial_tab|default('apercu') }}', deleteOpen: false }">
+     x-data="{ activeTab: '{{ initial_tab|default('temps') }}', deleteOpen: false }">
 
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
@@ -193,6 +193,25 @@
         </div>
       </dl>
     </div>
+
+    {# Key dates #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Dates clés</h2>
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Ouverture</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.opened_date.strftime('%d %B %Y') if dossier.opened_date and dossier.opened_date.strftime is defined else '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Fermeture</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.closed_date.strftime('%d %B %Y') if dossier.closed_date and dossier.closed_date.strftime is defined else '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Créé le</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.created_at.strftime('%d %B %Y') if dossier.created_at and dossier.created_at.strftime is defined else '—' }}</dd>
+        </div>
+      </dl>
+    </div>
   </div>
 
   {# ── Tabbed sub-sections ─────────────────────────────────────── #}
@@ -200,7 +219,6 @@
     {# Tab bar #}
     <div class="flex overflow-x-auto border-b border-gray-200">
       {% set tabs = [
-        ('apercu', 'Aperçu'),
         ('temps', 'Temps & Dépenses'),
         ('facturation', 'Facturation'),
         ('audiences', 'Audiences'),
@@ -223,7 +241,7 @@
 
     {# Tab content area — initial tab honours ?tab= query param. #}
     <div id="tab-content" class="p-5"
-         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=initial_tab|default('apercu')) }}"
+         hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=initial_tab|default('temps')) }}"
          hx-trigger="load"
          hx-swap="innerHTML">
       <div class="flex items-center justify-center py-8">

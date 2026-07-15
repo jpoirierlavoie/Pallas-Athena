@@ -275,7 +275,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── errors/                 # 404, 500
 │   │   ├── parties/                # list, detail, form + _partie_rows, _search_results,
 │   │   │                           # _mandataire_search_results, _address_letter
-│   │   ├── dossiers/               # list, detail, form + _dossier_rows + _tab_overview, _tab_temps,
+│   │   ├── dossiers/               # list, detail, form + _dossier_rows + _tab_temps,
 │   │   │                           # _tab_facturation, _tab_audiences, _tab_taches, _tab_protocole,
 │   │   │                           # _tab_documents, _tab_placeholder
 │   │   ├── time_expenses/          # list, time_form, expense_form + _time_rows, _expense_rows
@@ -310,7 +310,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 
 > The Firestore/Storage rules + index files live at the **repo root** (next to `firebase.json`, which references them by bare filename) — they are Firebase-CLI deploy config, **not** part of the App Engine app, so they deliberately sit outside `athena/` and never ship in the deployed bundle.
 
-> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `apercu`, `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents` — there is no separate `notes` tab in the dossier hub today. Notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
+> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`; **`temps` is the default tab**. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card, its dates became the « Dates clés » card, and its free-text notes were deleted with the fields (below). There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
 
 ---
 
@@ -457,8 +457,10 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     # dashboard/index/alerts read.
     "prescription_date": datetime | None, "prescription_notes": str,
 
-    "notes": str,
-    "internal_notes": str,                # Never shown externally
+    # NOTE: the free-text `notes` / `internal_notes` fields were REMOVED in
+    # July 2026 (superseded by the standalone `notes` collection). They are
+    # purged on save: models/dossier._strip_removed_fields pops them in
+    # get_dossier, so the next set() writes the doc without them.
 
     # DAV (retained for potential export; not used by the DAV layer post-D1)
     "vjournal_uid": UUIDv4, "dav_href": "/dav/journals/{id}.ics",
@@ -857,7 +859,7 @@ All UI routes require `@login_required` (in `auth.py`). DAV routes use `@dav_aut
 |-------|--------|---------|
 | `/dossiers/` | GET | List with status tabs (actif / en_attente / fermé / archivé / tous) |
 | `/dossiers/<id>` | GET | Detail (hub page) |
-| `/dossiers/<id>/tab/<tab_name>` | GET | HTMX tab loader (`apercu`, `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`) |
+| `/dossiers/<id>/tab/<tab_name>` | GET | HTMX tab loader (`temps` — default, `facturation`, `audiences`, `taches`, `protocole`, `documents`) |
 | `/dossiers/new` | GET | Create form |
 | `/dossiers/` | POST | Create submit |
 | `/dossiers/<id>/edit` | GET | Edit form |

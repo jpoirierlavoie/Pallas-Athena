@@ -269,7 +269,10 @@ def test_get_dossier_composes_summaries(monkeypatch):
     payload = handlers.get_dossier({"dossier_id": "d1"})
     assert payload["found"] is True
     assert payload["dossier"]["hourly_rate_display"] == f"250,00{NBSP}$"
-    assert payload["dossier"]["internal_notes"] == ""
+    # The free-text notes/internal_notes fields were removed from the dossier
+    # schema (superseded by the standalone `notes` collection).
+    assert "notes" not in payload["dossier"]
+    assert "internal_notes" not in payload["dossier"]
     summaries = payload["summaries"]
     assert summaries["time"]["unbilled_display"] == f"1{NBSP}000,00{NBSP}$"
     assert summaries["invoices"]["total_outstanding_cents"] == 150000

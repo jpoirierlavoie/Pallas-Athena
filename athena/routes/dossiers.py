@@ -170,9 +170,6 @@ def _form_data() -> dict:
         "prescription_type": f.get("prescription_type", "").strip(),
         "droit_action_date": _parse_date(f.get("droit_action_date", "")),
         "prescription_notes": f.get("prescription_notes", "").strip(),
-        # Notes
-        "notes": f.get("notes", "").strip(),
-        "internal_notes": f.get("internal_notes", "").strip(),
     }
 
 
@@ -275,7 +272,6 @@ def dossier_list() -> str:
 
 
 _VALID_TABS = (
-    "apercu",
     "temps",
     "facturation",
     "audiences",
@@ -296,7 +292,7 @@ def dossier_detail(dossier_id: str) -> str:
     _attach_prescription_warnings([dossier])
 
     requested_tab = request.args.get("tab", "").strip()
-    initial_tab = requested_tab if requested_tab in _VALID_TABS else "apercu"
+    initial_tab = requested_tab if requested_tab in _VALID_TABS else "temps"
 
     ctx = _template_context()
     ctx["dossier"] = dossier
@@ -322,7 +318,6 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     ctx["dossier"] = dossier
 
     templates = {
-        "apercu": "dossiers/_tab_overview.html",
         "temps": "dossiers/_tab_temps.html",
         "facturation": "dossiers/_tab_facturation.html",
         "audiences": "dossiers/_tab_audiences.html",

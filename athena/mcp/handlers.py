@@ -344,8 +344,6 @@ def get_dossier(args: dict) -> dict:
             ),
             "droit_action_date": date_str(_as_utc(d.get("droit_action_date"))),
             "prescription_notes": d.get("prescription_notes", ""),
-            "notes": d.get("notes", ""),
-            "internal_notes": d.get("internal_notes", ""),
             "created_at": iso_mtl(_as_utc(d.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(d.get("updated_at"))),
         }
