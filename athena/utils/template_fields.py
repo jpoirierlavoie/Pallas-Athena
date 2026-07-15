@@ -68,10 +68,9 @@ _MATTER_TYPE_LABEL = {
     "autre": "Autre",
 }
 _MANDATE_TYPE_LABEL = {
-    "judiciaire": "Judiciaire (litige)",
-    "consultation": "Consultation / Avis juridique",
-    "transactionnel": "Transactionnel / Négociation",
-    "mediation_arbitrage": "Médiation / Arbitrage",
+    "judiciaire": "Judiciaire",
+    "transactionnel": "Transactionnel",
+    "consultation": "Consultatif",
     "autre": "Autre",
 }
 _FEE_TYPE_LABEL = {
@@ -79,6 +78,9 @@ _FEE_TYPE_LABEL = {
     "flat": "Forfaitaire",
     "contingency": "Contingence",
     "mixed": "Mixte",
+    # Rate-less arrangements → format_honoraires renders the label alone.
+    "pro_bono": "Pro bono",
+    "aide_juridique": "Aide juridique",
 }
 
 # Professional roles whose work address is preferred when present (§6.4).

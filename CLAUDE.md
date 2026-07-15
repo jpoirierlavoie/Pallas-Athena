@@ -433,8 +433,9 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
                  | "vice_cache" | "recours_extraordinaire" | "autre",
     # mandate_type ("type de mandat") — nature of the engagement (new July
     # 2026). Absent on legacy dossiers → the UI shows "—" until set on edit.
-    "mandate_type": "judiciaire" | "consultation" | "transactionnel"
-                  | "mediation_arbitrage" | "autre",
+    # "mediation_arbitrage" was RETIRED July 2026 → migrated to "autre" on read
+    # (models.dossier._migrate_mandate_type), mirroring _migrate_matter_type.
+    "mandate_type": "judiciaire" | "transactionnel" | "consultation" | "autre",
     "role": "demandeur" | "défendeur" | "intervenant" | "mis en cause" | "autre",
 
     # Phase G — Court file number + parsed judicial metadata
@@ -448,7 +449,10 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "is_administrative_tribunal": bool,   # True if letters prefix (TAL, TAQ…)
 
     # Financial (cents)
-    "fee_type": "hourly" | "flat" | "contingency" | "mixed",
+    # "pro_bono"/"aide_juridique" are RATE-LESS: no taux/forfait/pourcentage
+    # applies, so format_honoraires renders the label alone.
+    "fee_type": "hourly" | "flat" | "contingency" | "mixed"
+              | "pro_bono" | "aide_juridique",
     "hourly_rate": int,                   # cents (default 25000 = $250/h)
     "flat_fee": int | None,
     "contingency_percent": int | None,    # BASIS POINTS (2500 = 25,00 %), not

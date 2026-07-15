@@ -41,9 +41,8 @@ VALID_MATTER_TYPES = (
 # Type de mandat — nature of the engagement (new July 2026).
 VALID_MANDATE_TYPES = (
     "judiciaire",
-    "consultation",
     "transactionnel",
-    "mediation_arbitrage",
+    "consultation",
     "autre",
 )
 VALID_COURTS = (
@@ -79,7 +78,9 @@ VALID_ROLES = (
     "mis en cause",
     "autre",
 )
-VALID_FEE_TYPES = ("hourly", "flat", "contingency", "mixed")
+VALID_FEE_TYPES = (
+    "hourly", "flat", "contingency", "mixed", "pro_bono", "aide_juridique",
+)
 VALID_STATUSES = ("actif", "en_attente", "fermé", "archivé")
 
 # Display labels (French)
@@ -92,11 +93,18 @@ MATTER_TYPE_LABELS = {
     "autre": "Autre",
 }
 MANDATE_TYPE_LABELS = {
-    "judiciaire": "Judiciaire (litige)",
-    "consultation": "Consultation / Avis juridique",
-    "transactionnel": "Transactionnel / Négociation",
-    "mediation_arbitrage": "Médiation / Arbitrage",
+    "judiciaire": "Judiciaire",
+    "transactionnel": "Transactionnel",
+    "consultation": "Consultatif",
     "autre": "Autre",
+}
+# Retired type-de-mandat keys → current vocabulary, applied on read
+# (_migrate_mandate_type). "mediation_arbitrage" was dropped July 2026 and has
+# no clean equivalent, so it falls back to "autre"; the user re-classifies it
+# via the edit form. Without this, editing such a dossier would trip
+# _validate's mandate_type check.
+_MANDATE_TYPE_MIGRATION = {
+    "mediation_arbitrage": "autre",
 }
 # Legacy type-de-dossier keys → current vocabulary, applied on read
 # (_migrate_matter_type). The subject-matter categories don't map cleanly onto
@@ -127,6 +135,10 @@ FEE_TYPE_LABELS = {
     "flat": "Forfaitaire",
     "contingency": "Contingence",
     "mixed": "Mixte",
+    # Rate-less arrangements: no taux/forfait/pourcentage input applies, so
+    # format_honoraires renders the label alone.
+    "pro_bono": "Pro bono",
+    "aide_juridique": "Aide juridique",
 }
 
 
@@ -365,6 +377,21 @@ def _migrate_parties(doc: dict) -> dict:
     if not doc.get("opposing_party_ids"):
         doc["opposing_party_ids"] = [p["id"] for p in doc.get("opposing_parties", [])]
     _migrate_matter_type(doc)
+    _migrate_mandate_type(doc)
+    return doc
+
+
+def _migrate_mandate_type(doc: dict) -> dict:
+    """Normalize a retired type-de-mandat key to the current vocabulary in place.
+
+    Same contract as :func:`_migrate_matter_type`: called from
+    :func:`_migrate_parties`, so every read path (detail, lists, MCP) sees a
+    current key and editing a dossier that still carries a retired one no
+    longer trips ``_validate``. The write-back happens on the next ``set()``.
+    """
+    mt = doc.get("mandate_type")
+    if mt in _MANDATE_TYPE_MIGRATION:
+        doc["mandate_type"] = _MANDATE_TYPE_MIGRATION[mt]
     return doc
 
 

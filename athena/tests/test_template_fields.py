@@ -501,7 +501,7 @@ def test_mandat_card_placeholders_resolve():
          "type_mandat", "type_dossier", "date_fermeture", "retention"],
         dossier=d,
     )
-    assert r["dossier.type_mandat"] == "Judiciaire (litige)"
+    assert r["dossier.type_mandat"] == "Judiciaire"
     assert r["dossier.type_dossier"] == "Action en dommages"
     assert r["dossier.type_honoraires"] == "Mixte"
     assert r["dossier.honoraires"] == "Mixte — 250,00 $/h + 5 000,00 $"
@@ -512,10 +512,42 @@ def test_mandat_card_placeholders_resolve():
     # Rétention = fermeture + 7 ans (derived).
     assert r["dossier.retention"] == "14 juillet 2033"
     # Flat aliases resolve to the same values.
-    assert r["type_mandat"] == "Judiciaire (litige)"
+    assert r["type_mandat"] == "Judiciaire"
     assert r["type_dossier"] == "Action en dommages"
     assert r["date_fermeture"] == "14 juillet 2026"
     assert r["retention"] == "14 juillet 2033"
+
+
+def test_contingency_percent_renders_in_honoraires():
+    nbsp = " "
+    d = _dossier(fee_type="contingency", contingency_percent=2500)
+    r = _resolve(["dossier.honoraires", "dossier.pourcentage"], dossier=d)
+    assert r["dossier.honoraires"] == f"Contingence — 25{nbsp}%"
+    assert r["dossier.pourcentage"] == f"25{nbsp}%"
+    # Mixte carries all three components.
+    d = _dossier(fee_type="mixed", hourly_rate=25000, flat_fee=500000,
+                 contingency_percent=3333)
+    r = _resolve(["dossier.honoraires"], dossier=d)
+    assert r["dossier.honoraires"] == (
+        f"Mixte — 250,00{nbsp}$/h + 5{nbsp}000,00{nbsp}$ + 33,33{nbsp}%"
+    )
+    # Contingency with no stored rate still renders the label alone.
+    r = _resolve(["dossier.honoraires"], dossier=_dossier(fee_type="contingency"))
+    assert r["dossier.honoraires"] == "Contingence"
+
+
+def test_rate_less_fee_types_render_label_alone():
+    for fee_type, label in [("pro_bono", "Pro bono"),
+                            ("aide_juridique", "Aide juridique")]:
+        r = _resolve(["dossier.honoraires", "dossier.type_honoraires"],
+                     dossier=_dossier(fee_type=fee_type))
+        assert r["dossier.honoraires"] == label
+        assert r["dossier.type_honoraires"] == label
+    # A stale rate left on the doc from a previous fee type must NOT leak in.
+    d = _dossier(fee_type="pro_bono", hourly_rate=25000, flat_fee=500000,
+                 contingency_percent=2500)
+    r = _resolve(["dossier.honoraires"], dossier=d)
+    assert r["dossier.honoraires"] == "Pro bono"
 
 
 def test_mandat_fields_unresolved_when_data_absent():
