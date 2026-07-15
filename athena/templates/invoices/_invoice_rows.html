@@ -33,7 +33,7 @@
     </div>
 
     {# Total #}
-    <span class="text-sm font-semibold text-gray-900 flex-shrink-0">{{ '%.2f'|format(inv.total / 100) }} $</span>
+    <span class="text-sm font-semibold text-gray-900 flex-shrink-0">{{ inv.total | cents_fr }}</span>
   </a>
   {% endfor %}
 </div>

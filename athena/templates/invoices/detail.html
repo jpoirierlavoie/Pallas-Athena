@@ -32,8 +32,10 @@
     </a>
     <div class="flex items-center gap-2">
       <button type="button" data-print
-              class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        Imprimer
+              title="Imprimer"
+              aria-label="Imprimer"
+              class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 2.523a1.125 1.125 0 0 1-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0 0 21 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 0 0-1.913-.247M6.34 18H5.25A2.25 2.25 0 0 1 3 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 0 1 1.913-.247m10.5 0a48.536 48.536 0 0 0-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5Zm-3 0h.008v.008H15V10.5Z"/></svg>
       </button>
       {% if invoice.status != 'annulée' %}
       <button type="button"
@@ -182,8 +184,8 @@
             <td class="py-2 text-gray-600">{{ item.date.strftime('%d/%m/%Y') if item.date and item.date.strftime is defined else '' }}</td>
             <td class="py-2 text-gray-900">{{ item.description }}</td>
             <td class="py-2 text-right text-gray-600">{{ item.hours }}</td>
-            <td class="py-2 text-right text-gray-600">{{ '%.2f'|format(item.rate / 100) }} $</td>
-            <td class="py-2 text-right text-gray-900 font-medium">{{ '%.2f'|format(item.amount / 100) }} $</td>
+            <td class="py-2 text-right text-gray-600">{{ item.rate | cents_fr }}</td>
+            <td class="py-2 text-right text-gray-900 font-medium">{{ item.amount | cents_fr }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -213,7 +215,7 @@
               <span class="text-[10px] ml-1 text-gray-400">(non taxable)</span>
               {% endif %}
             </td>
-            <td class="py-2 text-right text-gray-900 font-medium">{{ '%.2f'|format(item.amount / 100) }} $</td>
+            <td class="py-2 text-right text-gray-900 font-medium">{{ item.amount | cents_fr }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -228,39 +230,39 @@
           {% if fee_items %}
           <div class="flex justify-between">
             <dt class="text-gray-500">Honoraires</dt>
-            <dd class="text-gray-900">{{ '%.2f'|format(invoice.subtotal_fees / 100) }} $</dd>
+            <dd class="text-gray-900">{{ invoice.subtotal_fees | cents_fr }}</dd>
           </div>
           {% endif %}
           {% if expense_items %}
           <div class="flex justify-between">
             <dt class="text-gray-500">Débours</dt>
-            <dd class="text-gray-900">{{ '%.2f'|format(invoice.subtotal_expenses / 100) }} $</dd>
+            <dd class="text-gray-900">{{ invoice.subtotal_expenses | cents_fr }}</dd>
           </div>
           {% endif %}
           <div class="flex justify-between border-t border-gray-100 pt-2">
             <dt class="text-gray-700 font-medium">Sous-total</dt>
-            <dd class="text-gray-900 font-medium">{{ '%.2f'|format(invoice.subtotal / 100) }} $</dd>
+            <dd class="text-gray-900 font-medium">{{ invoice.subtotal | cents_fr }}</dd>
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500">TPS (5 %)</dt>
-            <dd class="text-gray-900">{{ '%.2f'|format(invoice.gst_amount / 100) }} $</dd>
+            <dd class="text-gray-900">{{ invoice.gst_amount | cents_fr }}</dd>
           </div>
           <div class="flex justify-between">
             <dt class="text-gray-500">TVQ (9,975 %)</dt>
-            <dd class="text-gray-900">{{ '%.2f'|format(invoice.qst_amount / 100) }} $</dd>
+            <dd class="text-gray-900">{{ invoice.qst_amount | cents_fr }}</dd>
           </div>
           <div class="flex justify-between border-t border-gray-200 pt-2">
             <dt class="text-gray-900 font-bold">Total</dt>
-            <dd class="text-gray-900 font-bold text-base">{{ '%.2f'|format(invoice.total / 100) }} $</dd>
+            <dd class="text-gray-900 font-bold text-base">{{ invoice.total | cents_fr }}</dd>
           </div>
           {% if invoice.retainer_applied %}
           <div class="flex justify-between">
             <dt class="text-gray-500">Provision appliquée</dt>
-            <dd class="text-green-700 font-medium">-{{ '%.2f'|format(invoice.retainer_applied / 100) }} $</dd>
+            <dd class="text-green-700 font-medium">-{{ invoice.retainer_applied | cents_fr }}</dd>
           </div>
           <div class="flex justify-between border-t border-gray-200 pt-2">
             <dt class="text-gray-900 font-bold">Montant dû</dt>
-            <dd class="text-gray-900 font-bold text-lg">{{ '%.2f'|format(invoice.amount_due / 100) }} $</dd>
+            <dd class="text-gray-900 font-bold text-lg">{{ invoice.amount_due | cents_fr }}</dd>
           </div>
           {% endif %}
         </dl>

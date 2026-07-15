@@ -21,14 +21,14 @@
        class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
       <p class="text-xs text-gray-500 uppercase tracking-wide">Heures non facturées</p>
       <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.unbilled_hours }}h</p>
-      <p class="text-xs text-gray-400 mt-0.5">{{ "%.2f"|format(stats.unbilled_amount / 100) }}&nbsp;$</p>
+      <p class="text-xs text-gray-400 mt-0.5">{{ stats.unbilled_amount | cents_fr }}</p>
     </a>
 
     {# Outstanding invoices #}
     <a href="/factures?status=envoyée"
        class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
       <p class="text-xs text-gray-500 uppercase tracking-wide">Factures impayées</p>
-      <p class="text-2xl font-semibold text-gray-900 mt-1">{{ "%.2f"|format(stats.outstanding_invoices / 100) }}&nbsp;$</p>
+      <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.outstanding_invoices | cents_fr }}</p>
     </a>
 
     {# Quick actions #}

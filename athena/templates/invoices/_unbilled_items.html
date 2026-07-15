@@ -11,7 +11,7 @@
         <span class="text-gray-500 w-20">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
         <span class="flex-1 truncate text-gray-900">{{ e.description }}</span>
         <span class="text-gray-500">{{ e.hours }}h</span>
-        <span class="font-medium text-gray-900 w-24 text-right">{{ '%.2f'|format(e.amount / 100) }} $</span>
+        <span class="font-medium text-gray-900 w-24 text-right">{{ e.amount | cents_fr }}</span>
       </label>
       {% endfor %}
     </div>
@@ -28,7 +28,7 @@
                class="w-4 h-4 text-indigo-600 border-gray-300 rounded">
         <span class="text-gray-500 w-20">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
         <span class="flex-1 truncate text-gray-900">{{ e.description }}</span>
-        <span class="font-medium text-gray-900 w-24 text-right">{{ '%.2f'|format(e.amount / 100) }} $</span>
+        <span class="font-medium text-gray-900 w-24 text-right">{{ e.amount | cents_fr }}</span>
       </label>
       {% endfor %}
     </div>

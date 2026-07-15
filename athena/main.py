@@ -67,6 +67,14 @@ def create_app() -> Flask:
     from utils.validators import format_phone_display
     app.jinja_env.filters["phone"] = format_phone_display
 
+    from utils.format_fr import format_cents_fr
+
+    def _cents_fr(cents) -> str:
+        """Integer cents → fr-CA amount ("85 000,00 $"); "" when unset."""
+        return format_cents_fr(cents) if cents is not None else ""
+
+    app.jinja_env.filters["cents_fr"] = _cents_fr
+
     import json as _json
     from markupsafe import Markup
 

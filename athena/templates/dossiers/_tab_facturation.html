@@ -9,15 +9,15 @@
     </div>
     <div class="p-3 bg-gray-50 rounded-lg text-center">
       <p class="text-xs text-gray-500 mb-1">Total facturé</p>
-      <p class="text-lg font-semibold text-gray-900">{{ '%.2f'|format(invoice_summary.total_invoiced / 100) }} $</p>
+      <p class="text-lg font-semibold text-gray-900">{{ invoice_summary.total_invoiced | cents_fr }}</p>
     </div>
     <div class="p-3 bg-green-50 rounded-lg text-center">
       <p class="text-xs text-green-600 mb-1">Payé</p>
-      <p class="text-lg font-semibold text-green-700">{{ '%.2f'|format(invoice_summary.total_paid / 100) }} $</p>
+      <p class="text-lg font-semibold text-green-700">{{ invoice_summary.total_paid | cents_fr }}</p>
     </div>
     <div class="p-3 bg-amber-50 rounded-lg text-center">
       <p class="text-xs text-amber-600 mb-1">Impayé</p>
-      <p class="text-lg font-semibold text-amber-700">{{ '%.2f'|format(invoice_summary.total_outstanding / 100) }} $</p>
+      <p class="text-lg font-semibold text-amber-700">{{ invoice_summary.total_outstanding | cents_fr }}</p>
     </div>
   </div>
 
@@ -54,7 +54,7 @@
             </span>
           </div>
         </div>
-        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(inv.total / 100) }} $</span>
+        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ inv.total | cents_fr }}</span>
       </a>
       {% endfor %}
     </div>

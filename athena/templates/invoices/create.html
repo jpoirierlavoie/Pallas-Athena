@@ -92,7 +92,7 @@
         <div>
           <label class="block text-xs font-medium text-gray-700 mb-1">Provision à appliquer ($)</label>
           <input type="text" name="retainer_applied" value=""
-                 placeholder="Solde : {{ '%.2f'|format(dossier.retainer_balance / 100) }} $"
+                 placeholder="Solde : {{ dossier.retainer_balance | cents_fr }}"
                  class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
         </div>
         {% endif %}
@@ -130,7 +130,7 @@
             <span class="text-xs text-gray-500">{{ e.date.strftime('%d/%m/%Y') if e.date and e.date.strftime is defined else '' }}</span>
             <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
           </div>
-          <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(e.amount / 100) }} $</span>
+          <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ e.amount | cents_fr }}</span>
         </label>
         {% endfor %}
       </div>
@@ -170,7 +170,7 @@
             <span class="text-[10px] px-1 py-0.5 bg-gray-200 text-gray-500 rounded-full">Non taxable</span>
             {% endif %}
           </div>
-          <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(e.amount / 100) }} $</span>
+          <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ e.amount | cents_fr }}</span>
         </label>
         {% endfor %}
       </div>
@@ -323,7 +323,9 @@ function invoiceForm() {
     },
 
     formatCents(cents) {
-      return (cents / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0') + ' $';
+      var parts = (cents / 100).toFixed(2).split('.');
+      parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
+      return parts[0] + ',' + parts[1] + '\u00a0$';
     }
   };
 }

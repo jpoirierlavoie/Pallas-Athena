@@ -8,15 +8,15 @@
     </div>
     <div class="p-3 bg-gray-50 rounded-lg text-center">
       <p class="text-xs text-gray-500 mb-1">Honoraires</p>
-      <p class="text-lg font-semibold text-gray-900">{{ '%.2f'|format(time_summary.total_billable_amount / 100) }} $</p>
+      <p class="text-lg font-semibold text-gray-900">{{ time_summary.total_billable_amount | cents_fr }}</p>
     </div>
     <div class="p-3 bg-gray-50 rounded-lg text-center">
       <p class="text-xs text-gray-500 mb-1">Dépenses</p>
-      <p class="text-lg font-semibold text-gray-900">{{ '%.2f'|format(expense_summary.total_expenses / 100) }} $</p>
+      <p class="text-lg font-semibold text-gray-900">{{ expense_summary.total_expenses | cents_fr }}</p>
     </div>
     <div class="p-3 bg-indigo-50 rounded-lg text-center">
       <p class="text-xs text-indigo-600 mb-1">Grand total</p>
-      <p class="text-lg font-semibold text-indigo-700">{{ '%.2f'|format((time_summary.total_billable_amount + expense_summary.total_expenses) / 100) }} $</p>
+      <p class="text-lg font-semibold text-indigo-700">{{ (time_summary.total_billable_amount + expense_summary.total_expenses) | cents_fr }}</p>
     </div>
   </div>
 
@@ -49,7 +49,7 @@
           </div>
           <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
         </div>
-        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(e.amount / 100) }} $</span>
+        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ e.amount | cents_fr }}</span>
       </a>
       {% endfor %}
     </div>
@@ -85,7 +85,7 @@
           </div>
           <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
         </div>
-        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ '%.2f'|format(e.amount / 100) }} $</span>
+        <span class="text-sm font-medium text-gray-900 flex-shrink-0">{{ e.amount | cents_fr }}</span>
       </a>
       {% endfor %}
     </div>
