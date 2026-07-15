@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Optional
 
+from utils import taxonomie
 from utils.format_fr import format_cents_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.validators import format_phone_display
@@ -58,15 +59,14 @@ _ROLE_LABEL = {
 
 # Mirrors of the models.dossier label maps — kept local for the same reason as
 # _ROLE_LABEL (Firestore-free import). KEEP IN SYNC with models/dossier.py
-# (MATTER_TYPE_LABELS / MANDATE_TYPE_LABELS / FEE_TYPE_LABELS).
-_MATTER_TYPE_LABEL = {
-    "action_dommages": "Action en dommages",
-    "injonction": "Injonction",
-    "recouvrement": "Recouvrement de créance",
-    "vice_cache": "Vice caché / responsabilité",
-    "recours_extraordinaire": "Recours extraordinaire",
-    "autre": "Autre",
-}
+# (MANDATE_TYPE_LABELS / FEE_TYPE_LABELS).
+#
+# There is NO domaine mirror: utils.taxonomie is Firestore-free, so both this
+# module and models/dossier.py import DOMAINE_LABELS from it directly. That is
+# the shape to prefer — a mirror drifts silently and asymmetrically (the detail
+# card would show the new label while every generated .docx showed
+# « [CHAMP MANQUANT : …] », because _dossier_labelled returns None on a key it
+# does not know).
 _MANDATE_TYPE_LABEL = {
     "judiciaire": "Judiciaire",
     "transactionnel": "Transactionnel",
@@ -312,6 +312,33 @@ def _dossier_prescription(ctx: _Context) -> Optional[str]:
     return PRESCRIPTION_LABELS.get(ptype) if ptype else None
 
 
+def _dossier_domaine(ctx: _Context) -> Optional[str]:
+    """French label of the dossier's domaine (unset → unresolved)."""
+    if not ctx.dossier:
+        return None
+    code = ctx.dossier.get("domaine") or ""
+    return taxonomie.DOMAINE_LABELS.get(code) if code else None
+
+
+def _dossier_action(ctx: _Context) -> Optional[str]:
+    """The action as « Libellé [CODE] » — what a procedure cites."""
+    if not ctx.dossier:
+        return None
+    return taxonomie.action_label(ctx.dossier.get("action") or "") or None
+
+
+def _action_attr(attr: str) -> Callable[[_Context], Optional[str]]:
+    """Resolver for one field of the dossier's taxonomy action."""
+
+    def resolver(ctx: _Context) -> Optional[str]:
+        if not ctx.dossier:
+            return None
+        action = taxonomie.get_action(ctx.dossier.get("action") or "")
+        return getattr(action, attr) or None if action else None
+
+    return resolver
+
+
 def _role_feminin(ctx: _Context) -> Optional[str]:
     if not ctx.dossier:
         return None
@@ -538,16 +565,29 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.defendeur_avec_civilite": ("dossier", _side_names(1, with_civility=True)),
     "dossier.adresse_demandeur": ("dossier", _side_address(0)),
     "dossier.adresse_defendeur": ("dossier", _side_address(1)),
-    # dossier.* recours & prescription (see utils/recours.py)
-    "dossier.objet": ("dossier", _dossier_field("objet")),
+    # dossier.* recours & prescription (see utils/recours.py, utils/taxonomie.py)
+    "dossier.domaine": ("dossier", _dossier_domaine),
+    "dossier.action": ("dossier", _dossier_action),
+    "dossier.action_code": ("dossier", _dossier_field("action")),
+    "dossier.action_libelle": ("dossier", _action_attr("libelle")),
+    "dossier.precision": ("dossier", _dossier_field("action_precision")),
+    "dossier.delai": ("dossier", _action_attr("delai")),
+    "dossier.reference": ("dossier", _action_attr("references")),
+    "dossier.point_depart": ("dossier", _action_attr("point_depart")),
+    # « Objet » was renamed « Action » (July 2026). The old placeholder is kept
+    # pointing at the action label so existing gabarits keep filling — it now
+    # renders « Libellé [CODE] » instead of the old free text.
+    "dossier.objet": ("dossier", _dossier_action),
     "dossier.valeur": ("dossier", _dossier_money("valeur")),
     "dossier.classe": ("dossier", _dossier_classe),
     "dossier.prescription": ("dossier", _dossier_prescription),
     "dossier.droit_action": ("dossier", _dossier_date("droit_action_date")),
     "dossier.date_pour_agir": ("dossier", _dossier_date("prescription_date")),
-    # dossier.* mandate / classification / fees / lifecycle (« Mandat » card)
+    # dossier.* mandate / fees / lifecycle (« Mandat » card)
     "dossier.type_mandat": ("dossier", _dossier_labelled("mandate_type", _MANDATE_TYPE_LABEL)),
-    "dossier.type_dossier": ("dossier", _dossier_labelled("matter_type", _MATTER_TYPE_LABEL)),
+    # « Type de dossier » became « Domaine » (July 2026); the old placeholder
+    # keeps resolving, now to the domaine label.
+    "dossier.type_dossier": ("dossier", _dossier_domaine),
     "dossier.type_honoraires": ("dossier", _dossier_labelled("fee_type", _FEE_TYPE_LABEL)),
     "dossier.honoraires": ("dossier", _dossier_honoraires),
     "dossier.taux_horaire": ("dossier", _dossier_money("hourly_rate")),
@@ -613,6 +653,20 @@ FLAT_ALIASES: dict[str, str] = {
     "date_pour_agir": "dossier.date_pour_agir",
     "type_mandat": "dossier.type_mandat",
     "type_dossier": "dossier.type_dossier",
+    # Taxonomy (July 2026). `objet` had no flat alias before — a skill emitting
+    # {{objet}} fell silently into passthrough — so it gains one here, aliased
+    # to the action like its namespaced twin.
+    "domaine": "dossier.domaine",
+    "action": "dossier.action",
+    "objet": "dossier.objet",
+    "précision": "dossier.precision",
+    "precision": "dossier.precision",
+    "délai": "dossier.delai",
+    "delai": "dossier.delai",
+    "référence_action": "dossier.reference",
+    "reference_action": "dossier.reference",
+    "point_départ": "dossier.point_depart",
+    "point_depart": "dossier.point_depart",
     "date_ouverture": "dossier.ouverture",
     "date_fermeture": "dossier.fermeture",
     "rétention": "dossier.retention",

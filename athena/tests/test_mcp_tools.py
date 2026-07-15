@@ -212,7 +212,9 @@ def test_get_agenda_marks_overdue_tasks(monkeypatch):
 
 def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):
     return {"id": did, "file_number": fn, "title": title, "status": "actif",
-            "matter_type": "action_dommages", "mandate_type": "judiciaire",
+            "domaine": "REC", "action": "REC-01",
+            "action_precision": "factures 2024-03",
+            "mandate_type": "judiciaire",
             "role": "demandeur",
             "tribunal": "Cour supérieure", "court_file_number": "500-05-123456-241",
             "opened_date": datetime(2026, 1, 5, tzinfo=UTC),
@@ -275,6 +277,25 @@ def test_get_dossier_composes_summaries(monkeypatch):
     # schema (superseded by the standalone `notes` collection).
     assert "notes" not in payload["dossier"]
     assert "internal_notes" not in payload["dossier"]
+    # Taxonomy: raw key + French label, mirroring the prescription_type /
+    # prescription_label pair.
+    d = payload["dossier"]
+    assert d["domaine"] == "REC"
+    assert d["domaine_label"] == "Recouvrement de créances"
+    assert d["action"] == "REC-01"
+    assert d["action_label"] == (
+        "Action sur compte (biens vendus, services rendus) [REC-01]"
+    )
+    assert d["action_precision"] == "factures 2024-03"
+    # The taxonomy's guidance travels with the action: the delay VERBATIM,
+    # never a computed one, plus what kind of delay it is.
+    assert d["delai"] == "3 ans (P)"
+    assert d["delai_type"] == "P"
+    assert d["delai_point_depart"] == "Exigibilité de chaque facture"
+    assert d["action_references"] == "2925, 2931"
+    # matter_type/objet were superseded by the taxonomy.
+    assert "matter_type" not in d
+    assert "objet" not in d
     summaries = payload["summaries"]
     assert summaries["time"]["unbilled_display"] == f"1{NBSP}000,00{NBSP}$"
     assert summaries["invoices"]["total_outstanding_cents"] == 150000

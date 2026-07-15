@@ -12,11 +12,12 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils import taxonomie
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.recours import (
     VALID_PRESCRIPTION_TYPES,
     compute_date_pour_agir,
-    prescription_years,
+    prescription_period,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,18 +27,15 @@ COLLECTION = "dossiers"
 
 # Valid enum values
 #
-# Type de dossier — reclassified by *nature of recourse* (July 2026). The
-# former subject-matter vocabulary (litige_civil/litige_commercial/familial)
-# is migrated to the closest current key on read (see _MATTER_TYPE_MIGRATION);
-# "recouvrement", "injonction" and "autre" are carried over unchanged.
-VALID_MATTER_TYPES = (
-    "action_dommages",
-    "injonction",
-    "recouvrement",
-    "vice_cache",
-    "recours_extraordinaire",
-    "autre",
-)
+# Domaine + action — the two-level taxonomy (July 2026), replacing the old
+# free-form « Type de dossier » (matter_type) and « Objet » (free text).
+# Vocabulary and labels live in utils/taxonomie.py, NOT here: a 162-row legal
+# table has no business in the Firestore layer, and template_fields.py needs
+# it without the Firestore client. "" is valid for both — a dossier need not
+# be classified.
+VALID_DOMAINES = taxonomie.VALID_DOMAINES
+VALID_ACTIONS = taxonomie.VALID_ACTIONS
+
 # Type de mandat — nature of the engagement (new July 2026).
 VALID_MANDATE_TYPES = (
     "judiciaire",
@@ -84,14 +82,11 @@ VALID_FEE_TYPES = (
 VALID_STATUSES = ("actif", "en_attente", "fermé", "archivé")
 
 # Display labels (French)
-MATTER_TYPE_LABELS = {
-    "action_dommages": "Action en dommages",
-    "injonction": "Injonction",
-    "recouvrement": "Recouvrement de créance",
-    "vice_cache": "Vice caché / responsabilité",
-    "recours_extraordinaire": "Recours extraordinaire",
-    "autre": "Autre",
-}
+#
+# Domaine labels are NOT redefined here — they derive from the taxonomy table,
+# so there is exactly one place to edit. (Contrast MANDATE_TYPE_LABELS /
+# FEE_TYPE_LABELS below, which utils/template_fields.py must mirror by hand.)
+DOMAINE_LABELS = taxonomie.DOMAINE_LABELS
 MANDATE_TYPE_LABELS = {
     "judiciaire": "Judiciaire",
     "transactionnel": "Transactionnel",
@@ -106,15 +101,29 @@ MANDATE_TYPE_LABELS = {
 _MANDATE_TYPE_MIGRATION = {
     "mediation_arbitrage": "autre",
 }
-# Legacy type-de-dossier keys → current vocabulary, applied on read
-# (_migrate_matter_type). The subject-matter categories don't map cleanly onto
-# the nature-of-recourse set, so they fall back to "autre"; the user
-# re-classifies them via the edit form. Keys absent here are already valid and
-# left untouched (recouvrement, injonction, autre — and every current key).
-_MATTER_TYPE_MIGRATION = {
-    "litige_civil": "autre",
-    "litige_commercial": "autre",
-    "familial": "autre",
+# Legacy « Type de dossier » (matter_type) → « Domaine », applied on read
+# (_migrate_domaine). Only the UNAMBIGUOUS keys are mapped:
+#
+#   action_dommages → ""  because it is genuinely ambiguous: damages can be
+#                         contractual (CON-02) or extracontractual (RCV-*).
+#                         Guessing would silently mislabel the file's whole
+#                         liability regime (art. 1458 al. 2 C.c.Q. non-cumul).
+#   autre           → ""  it said nothing to begin with.
+#
+# "" renders « — » until the user classifies the dossier on the next edit.
+# The old subject-matter keys (litige_civil/litige_commercial/familial) were
+# already folded into "autre" by the July 2026 reclassification, so they
+# arrive here as "autre" and land on "" too.
+_MATTER_TYPE_TO_DOMAINE = {
+    "recouvrement": "REC",
+    "injonction": "INJ",
+    "recours_extraordinaire": "CJP",
+    "vice_cache": "CON",
+    "action_dommages": "",
+    "autre": "",
+    "litige_civil": "",
+    "litige_commercial": "",
+    "familial": "",
 }
 COURT_LABELS = {c: c for c in VALID_COURTS}
 STATUS_LABELS = {
@@ -153,8 +162,10 @@ def _default_doc() -> dict:
         "client_ids": [],
         "opposing_parties": [],
         "opposing_party_ids": [],
-        # Case classification
-        "matter_type": "action_dommages",
+        # Case classification. Domaine/action default to UNSET rather than to
+        # a guess: the old matter_type defaulted to "action_dommages", which
+        # silently classified every new dossier as an unrelated recourse.
+        "domaine": "",
         "mandate_type": "judiciaire",
         "court_file_number": "",
         "district_judiciaire": "",
@@ -177,7 +188,8 @@ def _default_doc() -> dict:
         "opened_date": None,
         "closed_date": None,
         # Recours & prescription
-        "objet": "",
+        "action": "",
+        "action_precision": "",
         "valeur": None,
         "prescription_type": "",
         "droit_action_date": None,
@@ -217,8 +229,21 @@ def _validate(data: dict) -> list[str]:
     if not data.get("file_number", "").strip():
         errors.append("Le numéro de dossier est requis.")
 
-    if data.get("matter_type", "") not in VALID_MATTER_TYPES:
-        errors.append("Type de dossier invalide.")
+    # domaine/action are presence-gated like mandate_type: a legacy dossier
+    # read straight from Firestore has neither, and an unconditional check
+    # would lock it out of editing entirely. "" is a valid value for both.
+    domaine = data.get("domaine", "")
+    if "domaine" in data and domaine not in VALID_DOMAINES:
+        errors.append("Domaine invalide.")
+
+    action = data.get("action", "")
+    if "action" in data and action not in VALID_ACTIONS:
+        errors.append("Action invalide.")
+    elif action and domaine and taxonomie.domaine_of(action) != domaine:
+        # The cascading picker cannot produce this pair, but a hand-crafted
+        # POST can. Left unchecked it would show an action under a domaine it
+        # does not belong to, and the two would disagree in every gabarit.
+        errors.append("L'action choisie n'appartient pas au domaine choisi.")
 
     # mandate_type is absent on legacy dossiers read directly (no form pass);
     # only validate it when the caller actually supplied a value.
@@ -255,7 +280,7 @@ def _apply_prescription_deadline(doc: dict) -> None:
     p_type = doc.get("prescription_type", "")
     if p_type == "imprescriptible":
         doc["prescription_date"] = None
-    elif doc.get("droit_action_date") and prescription_years(p_type):
+    elif doc.get("droit_action_date") and prescription_period(p_type):
         doc["prescription_date"] = compute_date_pour_agir(
             doc.get("droit_action_date"), p_type
         )
@@ -376,7 +401,7 @@ def _migrate_parties(doc: dict) -> dict:
         doc.setdefault("opposing_parties", [])
     if not doc.get("opposing_party_ids"):
         doc["opposing_party_ids"] = [p["id"] for p in doc.get("opposing_parties", [])]
-    _migrate_matter_type(doc)
+    _migrate_domaine(doc)
     _migrate_mandate_type(doc)
     return doc
 
@@ -395,24 +420,43 @@ def _migrate_mandate_type(doc: dict) -> dict:
     return doc
 
 
-def _migrate_matter_type(doc: dict) -> dict:
-    """Normalize a legacy type-de-dossier key to the current vocabulary in place.
+def _migrate_domaine(doc: dict) -> dict:
+    """Fold legacy ``matter_type`` / ``objet`` into ``domaine`` / ``action_precision``.
 
     Called from :func:`_migrate_parties`, so every dossier read path (detail,
-    lists, MCP) sees a current key — and, critically, editing a legacy dossier
-    no longer trips ``_validate``'s ``matter_type`` check. The write-back
-    happens on the next ``set()`` (purge-on-save, like the party migrations).
+    lists, MCP) sees the taxonomy fields, and editing a legacy dossier does not
+    trip ``_validate``. The write-back happens on the next ``set()``
+    (purge-on-save, like the party migrations).
+
+    ORDERING IS LOAD-BEARING: ``get_dossier`` runs this *inside*
+    ``_strip_removed_fields(_migrate_parties(...))``, so the legacy keys are
+    still present when this reads them, and are popped straight after. Reverse
+    the nesting and the legacy data is destroyed unread.
+
+    Both migrations are ``setdefault``-shaped — they never overwrite a value
+    the taxonomy era already wrote.
     """
-    mt = doc.get("matter_type")
-    if mt in _MATTER_TYPE_MIGRATION:
-        doc["matter_type"] = _MATTER_TYPE_MIGRATION[mt]
+    if not doc.get("domaine"):
+        matter_type = doc.get("matter_type")
+        if matter_type in _MATTER_TYPE_TO_DOMAINE:
+            doc["domaine"] = _MATTER_TYPE_TO_DOMAINE[matter_type]
+
+    # The old « Objet » was free text and cannot be mapped onto an action code,
+    # so it is preserved verbatim as the précision rather than discarded — the
+    # same field the taxonomy's « Autre (préciser) » rows need.
+    if not doc.get("action_precision") and doc.get("objet"):
+        doc["action_precision"] = doc["objet"]
     return doc
 
 
-# Free-text fields removed July 2026 — superseded by the standalone `notes`
-# collection. Popped on read so the next set() purges them from the stored
-# document (the purge-on-save pattern partie._migrate_mandataires uses).
-_REMOVED_FIELDS = ("notes", "internal_notes")
+# Fields removed and popped on read so the next set() purges them from the
+# stored document (the purge-on-save pattern partie._migrate_mandataires uses).
+#
+#   notes / internal_notes — removed July 2026, superseded by the standalone
+#     `notes` collection.
+#   matter_type / objet — superseded July 2026 by the domaine/action taxonomy.
+#     _migrate_domaine reads them first (see the ordering note above).
+_REMOVED_FIELDS = ("notes", "internal_notes", "matter_type", "objet")
 
 
 def _strip_removed_fields(doc: dict) -> dict:
@@ -830,11 +874,16 @@ def dossier_to_vjournal(dossier: dict) -> str:
     }
     journal.add("status", status_map.get(dossier.get("status", ""), "DRAFT"))
 
-    # CATEGORIES
+    # CATEGORIES — the domaine label, then the action if the dossier has one.
+    # Unlike the old matter_type line, an unknown key resolves to nothing
+    # rather than leaking a raw key like `litige_civil` as a French category.
     categories = []
-    if dossier.get("matter_type"):
-        label = MATTER_TYPE_LABELS.get(dossier["matter_type"], dossier["matter_type"])
-        categories.append(label)
+    domaine_label = DOMAINE_LABELS.get(dossier.get("domaine", ""), "")
+    if dossier.get("domaine") and domaine_label:
+        categories.append(domaine_label)
+    action_label = taxonomie.action_label(dossier.get("action", ""))
+    if action_label:
+        categories.append(action_label)
     if categories:
         journal.add("categories", categories)
 

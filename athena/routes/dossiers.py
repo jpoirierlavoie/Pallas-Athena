@@ -69,9 +69,9 @@ from models.document import (
 )
 from models.folder import list_folders
 from models.dossier import (
+    DOMAINE_LABELS,
     FEE_TYPE_LABELS,
     MANDATE_TYPE_LABELS,
-    MATTER_TYPE_LABELS,
     ROLE_LABELS,
     STATUS_LABELS,
     create_dossier,
@@ -82,6 +82,7 @@ from models.dossier import (
     suggest_file_number,
     update_dossier,
 )
+from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires, retention_date
 
@@ -151,7 +152,6 @@ def _form_data() -> dict:
         "clients": _parse_parties_json(f.get("clients_json", "")),
         "opposing_parties": _parse_parties_json(f.get("opposing_parties_json", "")),
         # Classification
-        "matter_type": f.get("matter_type", "action_dommages"),
         "mandate_type": f.get("mandate_type", "judiciaire"),
         "court_file_number": f.get("court_file_number", "").strip(),
         "district_judiciaire": f.get("district_judiciaire", "").strip(),
@@ -175,7 +175,11 @@ def _form_data() -> dict:
         "closed_date": _parse_date(f.get("closed_date", "")),
         # Recours & prescription (prescription_date is derived on save from
         # droit_action_date + prescription_type — see the model layer).
-        "objet": f.get("objet", "").strip(),
+        # domaine/action are the taxonomy pair; the model rejects an action
+        # that does not belong to the submitted domaine.
+        "domaine": f.get("domaine", "").strip(),
+        "action": f.get("action", "").strip(),
+        "action_precision": f.get("action_precision", "").strip(),
         "valeur": _parse_cents(f.get("valeur", "")) or None,
         "prescription_type": f.get("prescription_type", "").strip(),
         "droit_action_date": _parse_date(f.get("droit_action_date", "")),
@@ -186,7 +190,12 @@ def _form_data() -> dict:
 def _template_context() -> dict:
     """Return shared template context for dossier views."""
     return {
-        "matter_type_labels": MATTER_TYPE_LABELS,
+        "domaine_labels": DOMAINE_LABELS,
+        "delai_type_labels": taxonomie.DELAI_TYPE_LABELS,
+        # The whole taxonomy, for the form's cascading picker. Cached in
+        # utils.taxonomie, so handing it to every dossier view (list, tabs)
+        # costs a dict reference; only form.html actually serializes it.
+        "taxonomie_payload": taxonomie.form_payload(),
         "mandate_type_labels": MANDATE_TYPE_LABELS,
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
@@ -316,6 +325,9 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["value_class"] = compute_class(dossier.get("valeur"))
     ctx["fee_display"] = format_honoraires(dossier) or "—"
     ctx["retention_date"] = retention_date(dossier.get("closed_date"))
+    # Taxonomy display values, resolved route-side like value_class/fee_display.
+    ctx["action_obj"] = taxonomie.get_action(dossier.get("action", ""))
+    ctx["action_display"] = taxonomie.action_label(dossier.get("action", ""))
     return render_template("dossiers/detail.html", **ctx)
 
 
@@ -614,7 +626,8 @@ _EXPORT_COLUMNS_CSV = [
     ("file_number", "N° dossier"),
     ("title", "Titre"),
     ("_client_names", "Client(s)"),
-    ("matter_type", "Type"),
+    ("_domaine", "Domaine"),
+    ("_action", "Action"),
     ("tribunal", "Tribunal"),
     ("status", "Statut"),
     ("opened_date", "Ouverture"),
@@ -624,7 +637,7 @@ _EXPORT_COLUMNS_PDF = [
     ("file_number", "N° dossier", 1.0),
     ("title", "Titre", 2.0),
     ("_client_names", "Client(s)", 1.5),
-    ("matter_type", "Type", 1.0),
+    ("_domaine", "Domaine", 1.2),
     ("tribunal", "Tribunal", 1.0),
     ("status", "Statut", 0.8),
     ("opened_date", "Ouverture", 1.0),
@@ -646,7 +659,11 @@ def _get_export_dossiers() -> list[dict]:
     )
     for d in dossiers:
         d["_client_names"] = ", ".join(c.get("name", "") for c in d.get("clients", []))
-        d["matter_type"] = MATTER_TYPE_LABELS.get(d.get("matter_type", ""), d.get("matter_type", ""))
+        # Derived into _-prefixed keys rather than overwriting the stored
+        # fields in place (the old matter_type line did), so the export can
+        # carry both domaine and action without either clobbering the other.
+        d["_domaine"] = DOMAINE_LABELS.get(d.get("domaine", ""), "")
+        d["_action"] = taxonomie.action_label(d.get("action", ""))
         d["status"] = STATUS_LABELS.get(d.get("status", ""), d.get("status", ""))
     return dossiers
 

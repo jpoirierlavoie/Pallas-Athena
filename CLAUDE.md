@@ -79,7 +79,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 ## Architecture Rules
 
 1. **SINGLE USER.** Exactly one authorized email (`AUTHORIZED_USER_EMAIL` env var). No multi-tenancy, no registration, no roles. Every endpoint that mutates state verifies the session via `@login_required` (Firebase Auth + server-side session). DAV endpoints use a separate HTTP Basic auth.
-2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, plus the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
+2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, `ref_palais`, plus the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
 3. **Bilingual code/UI split.** All user-facing text (labels, buttons, placeholders, errors, toasts, empty states) is in **French**. All code (variable names, function names, comments, docstrings) is in **English**.
 4. **Currency in integer cents.** `15000` means $150.00. Never use floats for money. Use `Decimal` only for tax computation intermediates, convert to int cents (with `ROUND_HALF_UP`) before storage.
 5. **Timestamps UTC.** Stored as UTC `datetime` with timezone info. Displayed in `America/Montreal` via the `to_mtl` Jinja filter (registered from `tz.py`).
@@ -262,6 +262,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_template_fields.py
 │   │   ├── test_format_fr.py       # Phase H.2
 │   │   ├── test_invoice_docx.py    # Phase H.2 (incl. end-to-end note fill)
+│   │   ├── test_reference_addresses.py  # Court-location table + greffe→address wiring
+│   │   ├── test_taxonomie.py       # Action taxonomy invariants (incl. the §4 déchéance cross-check)
+│   │   ├── test_dossier_taxonomy.py # matter_type/objet → domaine/action migration + validation
 │   │   ├── test_folders.py         # Phase H.2 get_or_create_folder (CI-only: imports models)
 │   │   └── test_document_naming.py # Phase H.2 projet_document_name (CI-only: imports models)
 │   │
@@ -310,7 +313,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 
 > The Firestore/Storage rules + index files live at the **repo root** (next to `firebase.json`, which references them by bare filename) — they are Firebase-CLI deploy config, **not** part of the App Engine app, so they deliberately sit outside `athena/` and never ship in the deployed bundle.
 
-> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`; **`temps` is the default tab**. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card, its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, type de dossier, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`), and its free-text notes were deleted with the fields (below). There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
+> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`; **`temps` is the default tab**. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card, its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`; « Type de dossier » left it in July 2026 when it became « Domaine » on the Recours card), and its free-text notes were deleted with the fields (below). There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
 
 ---
 
@@ -423,18 +426,22 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "opposing_parties": [{"id": UUIDv4, "name": str}, ...],
     "opposing_party_ids": [UUIDv4, ...],
 
-    # Classification
-    # matter_type ("type de dossier") — reclassified by NATURE OF RECOURSE
-    # (July 2026). Legacy subject-matter keys (litige_civil/litige_commercial/
-    # familial) are migrated to "autre" on read (models.dossier
-    # ._migrate_matter_type, folded into _migrate_parties); "recouvrement",
-    # "injonction" and "autre" carry over unchanged.
-    "matter_type": "action_dommages" | "injonction" | "recouvrement"
-                 | "vice_cache" | "recours_extraordinaire" | "autre",
+    # Classification — the two-level ACTION TAXONOMY (July 2026), replacing
+    # the old free-form matter_type ("type de dossier") + objet (free text).
+    # Vocabulary lives in utils/taxonomie.py, NOT in models/dossier.py.
+    # Both default to "" — a dossier need not be classified — and both are
+    # presence-gated in _validate, so a legacy doc stays editable.
+    "domaine": "" | "REC" | "CON" | "RCV" | ...,   # 20 families
+    "action": "" | "REC-01" | ...,                 # 162 named recourses;
+                                                   # the code prefix MUST equal
+                                                   # `domaine` (_validate checks)
+    "action_precision": str,   # free text; required by the « Autre (préciser) »
+                               # (-99) rows, and where the pre-taxonomy `objet`
+                               # text lands on migration
     # mandate_type ("type de mandat") — nature of the engagement (new July
     # 2026). Absent on legacy dossiers → the UI shows "—" until set on edit.
     # "mediation_arbitrage" was RETIRED July 2026 → migrated to "autre" on read
-    # (models.dossier._migrate_mandate_type), mirroring _migrate_matter_type.
+    # (models.dossier._migrate_mandate_type), mirroring _migrate_domaine.
     "mandate_type": "judiciaire" | "transactionnel" | "consultation" | "autre",
     "role": "demandeur" | "défendeur" | "intervenant" | "mis en cause" | "autre",
 
@@ -464,20 +471,28 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "status": "actif" | "en_attente" | "fermé" | "archivé",
     "opened_date": datetime, "closed_date": datetime | None,
 
-    # Recours & prescription (see utils/recours.py)
-    "objet": str,                         # subject/object of the recourse
+    # Recours & prescription (see utils/recours.py + utils/taxonomie.py)
+    # `domaine`/`action`/`action_precision` are up in Classification above.
     "valeur": int | None,                 # amount in dispute, integer cents
-    "prescription_type": str,             # dropdown key → period (recours.PRESCRIPTION_PERIODS)
+    "prescription_type": str,             # dropdown key → period (recours.PRESCRIPTION_PERIODS).
+                                          # The delay the LAWYER CONFIRMED — the
+                                          # taxonomy only suggests it on an
+                                          # action change, and may differ.
     "droit_action_date": datetime | None, # "droit d'action" — start of the prescription
     # "date pour agir": DERIVED on save (models/dossier._apply_prescription_deadline)
     # from droit_action_date + prescription_type; remains the field the
     # dashboard/index/alerts read.
     "prescription_date": datetime | None, "prescription_notes": str,
 
-    # NOTE: the free-text `notes` / `internal_notes` fields were REMOVED in
-    # July 2026 (superseded by the standalone `notes` collection). They are
-    # purged on save: models/dossier._strip_removed_fields pops them in
-    # get_dossier, so the next set() writes the doc without them.
+    # REMOVED FIELDS — popped on read by models/dossier._strip_removed_fields
+    # (get_dossier only), so the next full-document set() purges them:
+    #   notes / internal_notes — July 2026, superseded by the standalone
+    #     `notes` collection.
+    #   matter_type / objet — July 2026, superseded by the domaine/action
+    #     taxonomy. _migrate_domaine folds them into domaine/action_precision
+    #     FIRST — get_dossier nests the calls as
+    #     _strip_removed_fields(_migrate_parties(doc)), and reversing that
+    #     nesting destroys the legacy data unread.
 
     # DAV (retained for potential export; not used by the DAV layer post-D1)
     "vjournal_uid": UUIDv4, "dav_href": "/dav/journals/{id}.ics",
@@ -801,6 +816,8 @@ Top-level collection; standard common fields (`id`, `created_at`, `updated_at`, 
 }
 ```
 
+> **The reference tables are read from memory, not Firestore.** `models/reference.py` embeds `_PALAIS` / `_GREFFES` / `_JURIDICTIONS` as module-level dicts and every lookup hits those; the three `ref_*` collections below are a **mirror seeded for a future admin UI that nothing reads today**. `scripts/seed_reference_data.py` imports the in-memory tables rather than re-listing them (they were duplicated literals and had already drifted — `other_locations` existed only in the script, so `get_greffe()` never returned it). **Edit `models/reference.py`; re-seed only to refresh the mirror.**
+
 ### `ref_greffes/{greffeNumber}` — Quebec courthouse reference (top-level, read-only)
 
 Document ID is the 3-digit greffe number (string). Seeded from `scripts/seed_reference_data.py`.
@@ -810,8 +827,36 @@ Document ID is the 3-digit greffe number (string). Seeded from `scripts/seed_ref
     "greffe_number": "500",
     "palais_de_justice": "Montréal",
     "district_judiciaire": "Montréal",
-    "point_de_service": bool,             # True = itinerant
-    "other_locations": list[str],         # For shared greffes (614, 635, 640, 652)
+    "point_de_service": bool,             # True = itinerant circuit greffe.
+                                          # NOT the MJQ "point de service de
+                                          # justice" notion — see ref_palais.
+    "palais_key": "montreal" | None,      # → ref_palais / _PALAIS; None = no
+                                          # published civic address (the 4
+                                          # itinerant greffes + 525 + 715)
+    "other_locations": list[str],         # For shared greffes (614, 635, 640, 652);
+                                          # seed-script-only, absent in-memory
+    "updated_at": datetime,
+}
+```
+
+### `ref_palais/{palaisKey}` — Court locations & addresses (top-level, read-only)
+
+Document ID is a stable ASCII slug (`montreal`, `saint-jerome`, `val-dor`). **51 entries: 43 palais de justice + 8 points de service de justice** (MJQ, « Trouver un palais de justice », extracted 2026-07-15). Addresses mirror the `parties` address convention (street = civic number + name, unit separate, full province/country names) so a resolved address drops into the existing address shape.
+
+A location is a **building**; a greffe is a **registry** sitting in one. The relationship is neither 1:1 nor total, which is why addresses are keyed separately rather than stored on the greffe: **6 greffes have no published address** (the 4 itinerant circuit greffes 614/635/640/652, plus 525 « Montréal - Chambre de la jeunesse » and 715 Sainte-Agathe-des-Monts, absent from the extraction), and **Kuujjuaq is a published courthouse no greffe number names** — it is kept unreferenced rather than guessed onto a Nunavik circuit greffe.
+
+```python
+{
+    "palais_key": "chicoutimi",
+    "name": "Chicoutimi",                 # MJQ courthouse name…
+    "city": "Saguenay",                   # …which may differ from the city
+    "location_type": "palais" | "point_de_service",
+    "street": "227, rue Racine Est",
+    "unit": "1er étage",                  # "" when none
+    "province": "Québec", "country": "Canada",
+    "postal_code": "G7H 7B4",             # "A1A 1A1" normalized form
+    "mailing_address": str,               # "" unless the MJQ publishes a
+                                          # distinct one (Percé, Forestville)
     "updated_at": datetime,
 }
 ```
@@ -1210,9 +1255,14 @@ Folder functions:
 
 ### `models/reference.py` (read-only)
 
+All lookups are **in-memory** (`_PALAIS` / `_GREFFES` / `_JURIDICTIONS` module dicts) — the `ref_*` Firestore collections are an unread mirror. The module imports only `typing`: keep it Firestore-free so it stays a pure, unit-testable table.
+
 - `get_greffe(greffe_number) -> dict | None`
 - `get_juridiction(juridiction_number) -> dict | None`
-- `list_greffes()`, `list_juridictions()`
+- `get_palais(palais_key) -> dict | None` — court location by slug, with `palais_key` attached; returns a **copy** (callers can't corrupt the shared table — note `get_greffe`/`get_juridiction` still hand back the live dict)
+- `get_greffe_address(greffe_number) -> dict | None` — resolves a greffe to its location via `palais_key`. `None` means **"no published address"** (itinerant greffe, or unknown greffe number), never "no address exists" — resolve before relying on it for a filing
+- `format_palais_address(palais, multiline=False) -> str` — MJQ-style rendering: `"227, rue Racine Est, 1er étage, Saguenay (Québec) G7H 7B4"`; `multiline=True` breaks before the city for a letter address block; tolerates `None`
+- `list_greffes()`, `list_juridictions()`, `list_palais(location_type=None)` — `location_type` filters to `"palais"` or `"point_de_service"`
 - `parse_court_file_number(court_file_number) -> dict` — returns `{greffe_number, juridiction_number, greffe, juridiction, is_administrative, parse_error}`. Letters prefix → `is_administrative=True`, no parsing. Format `NNN-NN-...` required, else `parse_error`.
 
 ### MCP (Phase I)
@@ -1287,17 +1337,42 @@ Integration points:
 No Firestore, no Flask — mirrors `deadlines.py` in style so the dossier's recourse fields compute identically wherever needed and stay unit-testable (`tests/test_recours.py`).
 
 ```python
-PRESCRIPTION_PERIODS: dict[str, (label, years|None)]   # C.c.Q. options for the dropdown
+Period = tuple[int, str]                               # (amount, "jours"|"mois"|"ans")
+PRESCRIPTION_PERIODS: dict[str, (label, Period|None)]  # delay options, ascending
 PRESCRIPTION_LABELS / VALID_PRESCRIPTION_TYPES         # derived (incl. "" = non définie)
-prescription_years(prescription_type) -> int | None
+prescription_period(prescription_type) -> Period | None
 VALUE_CLASSES / TOP_CLASS                              # montant en litige → classe I–IV (inclusive cent bounds)
 compute_class(valeur_cents) -> str | None              # Roman numeral "I"–"IV", else None
 compute_date_pour_agir(droit_action_date, prescription_type) -> datetime | None
+_add_years / _add_months / _add_period                 # calendar arithmetic per unit
 ```
 
-- The dossier form drives everything through `prescription_type` (dropdown) + `droit_action_date` (« droit d'action »). `models/dossier._apply_prescription_deadline` computes the « date pour agir » into **`prescription_date`** on save (imprescriptible → `None`; unset/`autre` → any existing value preserved), so the dashboard/index/alerts keep reading the same field. The detail page shows `objet`, `valeur` + `compute_class` (« Valeur (Classe) »), the prescription label, `droit_action_date`, and `prescription_date` in a **« Recours et prescription »** card (which replaced the old Honoraires card). These fields are also **gabarit placeholders** (`dossier.objet` / `valeur` / `classe` / `prescription` / `droit_action` / `date_pour_agir` in `utils/template_fields.py` — see [`GABARITS_PLACEHOLDERS.md`](GABARITS_PLACEHOLDERS.md)) and are exposed on the **MCP `get_dossier`** tool (`objet`, `valeur_cents`/`valeur_display`/`valeur_classe`, `prescription_type`/`prescription_label`, `droit_action_date`, `prescription_date`).
+- **Periods carry a UNIT (July 2026).** They used to be bare years (`_add_years` via `datetime.replace(year=…)`), which cannot express the taxonomy's *90 jours*, *45 jours*, *6 mois*, *3 mois*. `_add_period` dispatches: days → `timedelta`, months → `_add_months` (clamps the day to the target month's last — 31 janvier + 1 mois = 28/29 février, the month analogue of the 29 Feb → 28 Feb year clamp), years → `_add_years`. **`prescription_years` was renamed `prescription_period`** and returns `(amount, unit)`.
+- **Labels are generic** (« 3 ans », not « 3 ans, art. 2925 C.c.Q. »). One period serves many articles — 1 an alone covers art. 1635 (paulienne), 929 (possesseur troublé), 2929 (diffamation) and 115 LNT — so an article in the label mislabels every other use. The article now travels with the taxonomy action (`utils.taxonomie` `references`).
+- **The list is not only prescription.** It also carries *déchéance* and *avis* delays the taxonomy needs; `taxonomie.Action.delai_type` records which (`P`/`D`/`A`). The field keeps the name `prescription_type` for continuity.
+- The dossier form drives everything through `prescription_type` (dropdown) + `droit_action_date` (« droit d'action »). `models/dossier._apply_prescription_deadline` computes the « date pour agir » into **`prescription_date`** on save (imprescriptible → `None`; unset/`autre` → any existing value preserved), so the dashboard/index/alerts keep reading the same field. The detail page shows domaine, action, `valeur` + `compute_class` (« Valeur (Classe) »), the prescription label, the délai nature, `droit_action_date`, and `prescription_date` in the **« Recours et prescription »** card.
 - `compute_date_pour_agir` extends a deadline that lands on a weekend / Québec statutory holiday **forward to the next juridical day** (`utils.deadlines.next_juridical_day`); it stays indicative — every limitation deadline must still be verified.
-- `VALUE_CLASSES` holds the confirmed value table — Classe **I** (≤ 15 000 $), **II** (≤ 85 000 $), **III** (≤ 300 000 $), **IV** (> 300 000 $), each bound inclusive at the cent. `PRESCRIPTION_PERIODS` (C.c.Q. periods) remains adjustable to the practice.
+- `VALUE_CLASSES` holds the confirmed value table — Classe **I** (≤ 15 000 $), **II** (≤ 85 000 $), **III** (≤ 300 000 $), **IV** (> 300 000 $), each bound inclusive at the cent.
+
+### `utils/taxonomie.py` (taxonomie des actions en justice — pure)
+
+The two-level classification of Québec civil/commercial recourses: **20 domaines → 162 actions**, generated from « Taxonomie des actions en justice — Droit québécois » v1.1 (15 juillet 2026, itself aligned on the FARBQ table « Prescriptions extinctives et autres délais », avril 2026) and verified row-by-row against it. Pure (typing + functools only) — **keep it Firestore-free**: both `models/dossier.py` and `utils/template_fields.py` import it, and the latter must not pull in the Firestore client.
+
+```python
+Action  = NamedTuple(code, libelle, delai, delai_type, point_depart, references, prescription_type)
+Domaine = NamedTuple(code, libelle, note, actions)
+DOMAINES / ACTIONS / VALID_DOMAINES / VALID_ACTIONS / DOMAINE_LABELS / DELAI_TYPE_LABELS
+get_domaine(code) / get_action(code) / actions_for(domaine) / domaine_of(action)
+action_label(code) -> "Libellé [CODE]"   # what the UI shows and a procedure cites
+action_choices(domaine) / requires_precision(code) / is_decheance(code)
+form_payload() -> dict                   # lru_cached; the form's embedded JSON
+```
+
+- **`delai` is a suggestion, never a firm value.** The starting point is a question of fact; interruption/suspension escape any computation. `prescription_type` on an action is only a **suggested** key into `recours.PRESCRIPTION_PERIODS`, applied **only on a user action-change** (never on load, so it cannot clobber a confirmed value), and deliberately `""` where the delay is regime-dependent (RCV-05, COR-06), merely « raisonnable » (CJP-*), retrospective rather than running (**FAI-01** — the 6 months is an eligibility window *preceding* the application), or an « Autre (préciser) » row.
+- **`delai_type` vocabulary is closed:** `""` `P` `D` `A` `P+A` `P+D` `D/A`. `+` means both apply; `/` means the **source itself leaves the qualification open**. Ordering is canonical (P, D, A) — the source writes markers in cell order, so `A+P` and `P+A` were the same claim.
+- **`is_decheance` must cover § 4 of the source.** A déchéance is a délai de rigueur (neither suspends nor interrupts) and § 4 asks it be shown visually. Its list is a **cross-section claim** the per-row `(D)` markers miss: **APP-01** states « déchéance expresse » in prose and carries no marker. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the union — extend it if the source changes.
+- **The cascade ships the whole table to the browser**, embedded in `form.html` as a **non-executable `<script type="application/json">`** block (~43 KB; the pattern `base.html` uses for the App Check config). It needs no CSP nonce (a data block is never executed, so `script-src` does not apply) and no round trip — a raw `fetch()` would carry no `X-Firebase-AppCheck` header, since App Check only gates `HX-Request` traffic.
+- Legacy `matter_type` → `domaine` mapping lives in `models/dossier._MATTER_TYPE_TO_DOMAINE`. Only the unambiguous keys map (recouvrement→REC, injonction→INJ, recours_extraordinaire→CJP, vice_cache→CON); **`action_dommages` deliberately maps to `""`** — damages can be contractual (CON) or extracontractual (RCV), and guessing would silently mislabel the file's liability regime (art. 1458 al. 2 C.c.Q. non-cumul).
 
 ### `utils/validators.py`
 
@@ -1436,7 +1511,7 @@ Run with `python -m scripts.<name>` from the `athena/` directory.
 
 ### `scripts/seed_reference_data.py` (Phase G)
 
-Populates `ref_greffes` (56 entries) and `ref_juridictions` (27 entries) from hardcoded Python lists. Idempotent — overwrites documents. Run once after initial deploy, or when reference data changes.
+Mirrors `ref_greffes` (56), `ref_juridictions` (27) and `ref_palais` (51) into Firestore **from the in-memory tables in `models/reference.py`** (imported, not re-listed — the old duplicated literals had already drifted). Idempotent — overwrites documents. **Nothing reads these collections**; the app reads the in-memory tables, so a data fix means editing `models/reference.py`, and re-seeding is optional housekeeping for the eventual admin UI.
 
 ### `scripts/normalize_existing.py` (Phase B)
 
@@ -1488,6 +1563,14 @@ Letters prefix (e.g., `TAL-...`, `TAQ-...`) → administrative tribunal, no pars
 Shared greffe numbers (multiple locations): `614`, `635`, `640`, `652` — stored with `other_locations` array. The `point_de_service=True` flag marks itinerant points of service.
 
 Auto-populated fields on dossier (`tribunal`, `competence`, `palais_de_justice`, `district_judiciaire`) remain user-editable after parsing.
+
+### Court locations & addresses (July 2026)
+
+`models/reference._PALAIS` holds the MJQ civic address of each of the **43 palais de justice + 8 points de service de justice**, keyed by slug; each greffe carries a `palais_key` into it, so a parsed court file number resolves to a street address via `get_greffe_address(greffe_number)`. Data only for now — the two consumers are **planned, not built**: (i) auto-filling a hearing's address when it sits at a courthouse, (ii) filling the clerk's address on a notice of presentation. **No gabarit placeholder and no MCP field exposes this yet.**
+
+Two traps in this data:
+- **`point_de_service` means two different things.** The greffe-level flag marks the four **itinerant circuit greffes** (614/635/640/652); `ref_palais.location_type == "point_de_service"` marks the eight **MJQ points de service de justice** (Amqui, Carleton-sur-Mer, Dolbeau-Mistassini, Forestville, Gaspé, La Sarre, Matane, Sainte-Anne-des-Monts) — all of which the greffe table flags `False`. The two disagree **by design**; don't conflate or "fix" one to match the other.
+- **A courthouse name is not its city.** Chicoutimi is in Saguenay; Havre-Aubert is in Les Îles-de-la-Madeleine. Address the `city` field, title the `name` field.
 
 ### Contact roles and the "everyone is a partie" model
 

@@ -21,10 +21,12 @@
         {% endif %}
       </div>
       <div class="flex items-center gap-2 flex-wrap">
-        {# Matter type badge #}
+        {# Domaine badge #}
+        {% if d.domaine %}
         <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
-          {{ matter_type_labels.get(d.matter_type, d.matter_type) }}
+          {{ domaine_labels.get(d.domaine, '—') }}
         </span>
+        {% endif %}
         {# Status badge #}
         {% set status_colors = {
           'actif': 'bg-green-100 text-green-700',

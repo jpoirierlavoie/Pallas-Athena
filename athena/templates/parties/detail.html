@@ -355,7 +355,7 @@
           <span class="text-sm font-medium text-gray-900 truncate block">{{ d.title }}</span>
           <div class="flex items-center gap-2 mt-0.5">
             <span class="inline-flex px-1.5 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500">
-              {{ dossier_matter_type_labels.get(d.matter_type, d.matter_type) }}
+              {{ dossier_domaine_labels.get(d.domaine, '—') if d.domaine else '—' }}
             </span>
             {% set status_colors = {
               'actif': 'bg-green-100 text-green-700',

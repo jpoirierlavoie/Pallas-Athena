@@ -163,9 +163,19 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-2">Recours et prescription</h2>
       <dl class="space-y-1.5 text-sm">
         <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Objet</dt>
-          <dd class="text-gray-900 text-right">{{ dossier.objet or '—' }}</dd>
+          <dt class="text-gray-500 flex-shrink-0">Domaine</dt>
+          <dd class="text-gray-900 text-right">{{ domaine_labels.get(dossier.domaine, '—') if dossier.domaine else '—' }}</dd>
         </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Action</dt>
+          <dd class="text-gray-900 text-right">{{ action_display or '—' }}</dd>
+        </div>
+        {% if dossier.action_precision %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Précision</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.action_precision }}</dd>
+        </div>
+        {% endif %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Valeur (Classe)</dt>
           <dd class="text-gray-900 text-right">
@@ -178,6 +188,17 @@
           <dt class="text-gray-500 flex-shrink-0">Prescription</dt>
           <dd class="text-gray-900 text-right">{{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}</dd>
         </div>
+        {# A déchéance neither suspends nor interrupts — § 4 of the taxonomy
+           asks that it be made to stand out. Several remain relevables under
+           their own statute, hence « à valider », never « fatal ». #}
+        {% if action_obj and action_obj.delai_type %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Nature du délai</dt>
+          <dd class="text-right {{ 'text-amber-600 font-medium' if 'D' in action_obj.delai_type else 'text-gray-900' }}">
+            {{ delai_type_labels.get(action_obj.delai_type, action_obj.delai_type) }}
+          </dd>
+        </div>
+        {% endif %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Droit d'action</dt>
           <dd class="text-gray-900 text-right">{{ dossier.droit_action_date.strftime('%d %B %Y') if dossier.droit_action_date and dossier.droit_action_date.strftime is defined else '—' }}</dd>
@@ -202,10 +223,6 @@
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Honoraires et taux</dt>
           <dd class="text-gray-900 text-right">{{ fee_display }}</dd>
-        </div>
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Type de dossier</dt>
-          <dd class="text-gray-900 text-right">{{ matter_type_labels.get(dossier.matter_type, dossier.matter_type) }}</dd>
         </div>
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Ouverture</dt>

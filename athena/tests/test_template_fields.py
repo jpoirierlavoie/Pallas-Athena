@@ -487,7 +487,7 @@ def test_mandat_card_placeholders_resolve():
 
     d = _dossier(
         mandate_type="judiciaire",
-        matter_type="action_dommages",
+        domaine="RCV",
         fee_type="mixed",
         hourly_rate=25000,
         flat_fee=500000,
@@ -502,7 +502,9 @@ def test_mandat_card_placeholders_resolve():
         dossier=d,
     )
     assert r["dossier.type_mandat"] == "Judiciaire"
-    assert r["dossier.type_dossier"] == "Action en dommages"
+    # « Type de dossier » became « Domaine »; the legacy placeholder now
+    # resolves to the domaine label so existing gabarits keep filling.
+    assert r["dossier.type_dossier"] == "Responsabilité civile extracontractuelle"
     assert r["dossier.type_honoraires"] == "Mixte"
     assert r["dossier.honoraires"] == "Mixte — 250,00 $/h + 5 000,00 $"
     assert r["dossier.taux_horaire"] == "250,00 $"
@@ -513,7 +515,7 @@ def test_mandat_card_placeholders_resolve():
     assert r["dossier.retention"] == "14 juillet 2033"
     # Flat aliases resolve to the same values.
     assert r["type_mandat"] == "Judiciaire"
-    assert r["type_dossier"] == "Action en dommages"
+    assert r["type_dossier"] == "Responsabilité civile extracontractuelle"
     assert r["date_fermeture"] == "14 juillet 2026"
     assert r["retention"] == "14 juillet 2033"
 

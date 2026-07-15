@@ -33,9 +33,10 @@ from models import reference
 from models import task as task_model
 from models import time_entry as time_entry_model
 from tz import MTL
-from utils import deadlines
+from utils import deadlines, taxonomie
 from utils.format_fr import format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
+from utils.taxonomie import DOMAINE_LABELS
 from utils.validators import format_phone_display
 
 from mcp.tools import ToolArgumentError, date_str, format_cents, iso_mtl
@@ -158,7 +159,8 @@ def _dossier_row(d: dict) -> dict:
         "file_number": d.get("file_number", ""),
         "title": d.get("title", ""),
         "status": d.get("status", ""),
-        "matter_type": d.get("matter_type", ""),
+        "domaine": d.get("domaine", ""),
+        "domaine_label": DOMAINE_LABELS.get(d.get("domaine", ""), ""),
         "role": d.get("role", ""),
         "tribunal": d.get("tribunal", ""),
         "court_file_number": d.get("court_file_number", ""),
@@ -323,6 +325,7 @@ def get_dossier(args: dict) -> dict:
         }
 
     did = d.get("id", "")
+    action_obj = taxonomie.get_action(d.get("action", ""))
     record = _dossier_row(d)
     record.update(
         {
@@ -339,8 +342,18 @@ def get_dossier(args: dict) -> dict:
             "fee_notes": d.get("fee_notes", ""),
             "closed_date": date_str(_as_utc(d.get("closed_date"))),
             # Recours & prescription. prescription_date (= "date pour agir") is
-            # already in the base row; these are its source fields.
-            "objet": d.get("objet", ""),
+            # already in the base row; these are its source fields. domaine /
+            # domaine_label are on the base row too.
+            "action": d.get("action", ""),
+            "action_label": taxonomie.action_label(d.get("action", "")),
+            "action_precision": d.get("action_precision", ""),
+            # The taxonomy's own guidance for this action. delai is the
+            # SUGGESTED delay verbatim, never a computed one; delai_type says
+            # whether it is prescription (P), déchéance (D) or an avis (A).
+            "delai": action_obj.delai if action_obj else "",
+            "delai_type": action_obj.delai_type if action_obj else "",
+            "delai_point_depart": action_obj.point_depart if action_obj else "",
+            "action_references": action_obj.references if action_obj else "",
             "prescription_type": d.get("prescription_type", ""),
             "prescription_label": PRESCRIPTION_LABELS.get(
                 d.get("prescription_type", ""), ""

@@ -271,11 +271,21 @@ TOOLS: dict[str, dict] = {
         "description": (
             "Fetch one dossier by dossier_id or by file_number (provide exactly "
             "one), with the full record — including parsed court metadata and "
-            "the recourse & prescription fields (objet, valeur + valeur_classe, "
-            "prescription_type/prescription_label, droit_action_date, and "
-            "prescription_date = the computed « date pour agir ») — plus "
-            "per-module summaries (tasks, hearings, notes, documents, time, "
-            "expenses, invoices, protocol)."
+            "the recourse & prescription fields — plus per-module summaries "
+            "(tasks, hearings, notes, documents, time, expenses, invoices, "
+            "protocol). The recourse is classified by the Québec action "
+            "taxonomy: domaine/domaine_label (the family) and action/"
+            "action_label/action_precision (the named recourse, e.g. REC-01). "
+            "delai is the taxonomy's INDICATIVE delay for that action and "
+            "delai_type says what kind it is — P prescription, D déchéance "
+            "(neither suspends nor interrupts), A avis préalable; "
+            "delai_point_depart and action_references carry its starting point "
+            "and statutory references. Also valeur + valeur_classe, "
+            "prescription_type/prescription_label (the delay the lawyer "
+            "confirmed, which may differ from the taxonomy suggestion), "
+            "droit_action_date, and prescription_date = the computed « date "
+            "pour agir ». Every delay is indicative — the starting point is a "
+            "question of fact and interruption/suspension are not computed."
         ),
         "input_schema": {
             "type": "object",

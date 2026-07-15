@@ -2,10 +2,46 @@
 {% block title %}{{ 'Modifier le dossier' if dossier and dossier.id else 'Nouveau dossier' }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{# The action taxonomy (20 domaines / 162 actions) as a NON-EXECUTABLE data
+   block — the same pattern base.html uses for the App Check config, and safe
+   under the enforced CSP because a type="application/json" block is never
+   executed, so script-src does not apply and it needs no nonce.
+   Embedded rather than fetched: a raw fetch() carries no X-Firebase-AppCheck
+   header (App Check only gates HX-Request traffic), and the cascade must work
+   on the first paint. Alpine is deferred, so this block is in the DOM before
+   any x-data is evaluated. #}
+<script type="application/json" id="taxonomie-data">{{ taxonomie_payload | tojson }}</script>
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        feeType: '{{ (dossier.fee_type if dossier else 'hourly') }}',
        dossierStatus: '{{ (dossier.status if dossier else 'actif') }}',
+       taxonomie: JSON.parse(document.getElementById('taxonomie-data').textContent),
+       domaine: '{{ dossier.domaine if dossier and dossier.domaine else '' }}',
+       action: '{{ dossier.action if dossier and dossier.action else '' }}',
+       prescriptionType: '{{ dossier.prescription_type if dossier and dossier.prescription_type else '' }}',
+       get domaineActions() {
+         return this.taxonomie[this.domaine] ? this.taxonomie[this.domaine].actions : [];
+       },
+       get domaineNote() {
+         return this.taxonomie[this.domaine] ? this.taxonomie[this.domaine].note : '';
+       },
+       get currentAction() {
+         return this.domaineActions.find(a => a.code === this.action) || null;
+       },
+       onDomaineChange() {
+         /* The action must never outlive its domaine — _validate rejects a
+            pair whose prefixes disagree, and a stale code would be invisible
+            once its option is gone. */
+         this.action = '';
+       },
+       onActionChange() {
+         /* The taxonomy SUGGESTS the délai; the lawyer confirms it. Only ever
+            fired by a real change event, so it cannot clobber a saved value on
+            load, and only when the action names an unambiguous period (it is
+            '' for regime-dependent, «raisonnable» and «Autre» rows). */
+         const a = this.currentAction;
+         if (a && a.prescription_type) { this.prescriptionType = a.prescription_type; }
+       },
        clients: {{ (dossier.clients | tojson | forceescape) if dossier and dossier.clients else '[]' }},
        opposingParties: {{ (dossier.opposing_parties | tojson | forceescape) if dossier and dossier.opposing_parties else '[]' }},
        clientQuery: '',
@@ -381,21 +417,77 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-4">Recours et prescription</h2>
 
       <div class="space-y-4">
+        {# Domaine → Action cascade. The domaine narrows the list; the action
+           is the recourse itself, cited as « Libellé [CODE] ». #}
         <div>
-          <label class="block text-sm text-gray-700 mb-1">Type de dossier</label>
-          <select name="matter_type"
+          <label class="block text-sm text-gray-700 mb-1">Domaine</label>
+          <select name="domaine" x-model="domaine" x-on:change="onDomaineChange()"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            {% for key, label in matter_type_labels.items() %}
-            <option value="{{ key }}" {{ 'selected' if dossier and dossier.matter_type == key }}>{{ label }}</option>
+            {% for key, label in domaine_labels.items() %}
+            <option value="{{ key }}">{{ label }}</option>
             {% endfor %}
           </select>
+          <p class="text-xs text-gray-400 mt-1" x-show="domaineNote" x-cloak x-text="domaineNote"></p>
         </div>
+
+        <div x-show="domaine" x-cloak>
+          <label class="block text-sm text-gray-700 mb-1">Action</label>
+          {# Options come from x-for, so the Jinja `selected` idiom cannot be
+             used. x-model alone can apply its value before x-for has rendered
+             the options, which would silently blank a saved action on the edit
+             form — the $nextTick re-application closes that window. #}
+          <select name="action" x-model="action" x-on:change="onActionChange()"
+                  x-init="$nextTick(() => { $el.value = action })"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">— Choisir une action —</option>
+            <template x-for="a in domaineActions" :key="a.code">
+              <option :value="a.code" x-text="a.label"></option>
+            </template>
+          </select>
+        </div>
+
+        {# Guidance: the source's own delay, its nature, the factual starting
+           point and the traps. Shown so it is on screen WHILE the droit
+           d'action date below is chosen — that date is the whole ball game. #}
+        <div x-show="currentAction" x-cloak
+             class="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700">
+          <dl class="space-y-1.5">
+            <template x-if="currentAction && currentAction.delai">
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Délai indicatif</dt>
+                <dd x-text="currentAction.delai"></dd>
+              </div>
+            </template>
+            <template x-if="currentAction && currentAction.point_depart">
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Point de départ / pièges</dt>
+                <dd x-text="currentAction.point_depart"></dd>
+              </div>
+            </template>
+            <template x-if="currentAction && currentAction.references">
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Références</dt>
+                <dd x-text="currentAction.references"></dd>
+              </div>
+            </template>
+          </dl>
+          <p class="text-xs text-amber-700 font-medium mt-2"
+             x-show="currentAction && currentAction.delai_type.includes('D')" x-cloak>
+            Délai de déchéance : ni interruption ni suspension en principe — qualification à valider.
+          </p>
+          <p class="text-xs text-gray-400 mt-2">
+            Délai indicatif seulement. Le point de départ est une question de fait, et
+            l'interruption ou la suspension échappent au calcul — à confirmer.
+          </p>
+        </div>
+
         <div>
-          <label class="block text-sm text-gray-700 mb-1">Objet</label>
-          <input type="text" name="objet"
-                 value="{{ dossier.objet if dossier else '' }}"
-                 placeholder="Objet du recours…"
+          <label class="block text-sm text-gray-700 mb-1">Précision</label>
+          <input type="text" name="action_precision"
+                 value="{{ dossier.action_precision if dossier and dossier.action_precision else '' }}"
+                 placeholder="Précision sur l'action…"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="text-xs text-gray-400 mt-1">Requis pour «&nbsp;Autre (préciser)&nbsp;».</p>
         </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -409,12 +501,17 @@
           </div>
           <div>
             <label class="block text-sm text-gray-700 mb-1">Prescription</label>
-            <select name="prescription_type"
+            {# x-model so choosing an action can SUGGEST a délai. Options are
+               server-rendered, so the Jinja `selected` idiom is dropped —
+               Alpine drives the value from the seeded prescriptionType (the
+               fee_type select is the precedent). #}
+            <select name="prescription_type" x-model="prescriptionType"
                     class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
               {% for key, label in prescription_labels.items() %}
-              <option value="{{ key }}" {{ 'selected' if dossier and dossier.prescription_type == key }}>{{ label }}</option>
+              <option value="{{ key }}">{{ label }}</option>
               {% endfor %}
             </select>
+            <p class="text-xs text-gray-400 mt-1">Suggérée par l'action; à confirmer.</p>
           </div>
         </div>
 

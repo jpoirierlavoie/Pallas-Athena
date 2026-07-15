@@ -2,14 +2,19 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
 from utils.deadlines import is_juridical_day
 from utils.recours import (
     PRESCRIPTION_LABELS,
+    PRESCRIPTION_PERIODS,
     VALID_PRESCRIPTION_TYPES,
+    _add_months,
+    _add_period,
     _add_years,
     compute_class,
     compute_date_pour_agir,
-    prescription_years,
+    prescription_period,
 )
 
 
@@ -56,19 +61,44 @@ def test_class_IV_above_top():
     assert compute_class(_cents(1_000_000)) == "IV"
 
 
-# ── prescription_years ───────────────────────────────────────────────────
-def test_years_known_types():
-    assert prescription_years("1_an") == 1
-    assert prescription_years("3_ans") == 3
-    assert prescription_years("10_ans") == 10
-    assert prescription_years("30_ans") == 30
+# ── prescription_period ──────────────────────────────────────────────────
+def test_period_known_types():
+    assert prescription_period("1_an") == (1, "ans")
+    assert prescription_period("3_ans") == (3, "ans")
+    assert prescription_period("10_ans") == (10, "ans")
+    assert prescription_period("30_ans") == (30, "ans")
 
 
-def test_years_none_for_open_ended_or_unknown():
-    assert prescription_years("imprescriptible") is None
-    assert prescription_years("autre") is None
-    assert prescription_years("") is None
-    assert prescription_years("bogus") is None
+def test_period_carries_sub_year_units():
+    """The taxonomy's délais are mostly NOT whole years."""
+    assert prescription_period("90_jours") == (90, "jours")
+    assert prescription_period("45_jours") == (45, "jours")
+    assert prescription_period("6_mois") == (6, "mois")
+    assert prescription_period("3_mois") == (3, "mois")
+
+
+def test_period_none_for_open_ended_or_unknown():
+    assert prescription_period("imprescriptible") is None
+    assert prescription_period("autre") is None
+    assert prescription_period("") is None
+    assert prescription_period("bogus") is None
+
+
+def test_every_period_unit_is_dispatchable():
+    """A unit typo would silently raise only for the affected key."""
+    for key, (_label, period) in PRESCRIPTION_PERIODS.items():
+        if period is None:
+            continue
+        amount, unit = period
+        assert amount > 0, key
+        assert unit in ("jours", "mois", "ans"), key
+        # Must not raise — proves _add_period dispatches every declared unit.
+        assert _add_period(_d(2026, 1, 15), amount, unit) is not None
+
+
+def test_add_period_rejects_an_unknown_unit():
+    with pytest.raises(ValueError):
+        _add_period(_d(2026, 1, 15), 3, "semaines")
 
 
 # ── compute_date_pour_agir ───────────────────────────────────────────────
@@ -122,6 +152,55 @@ def test_deadline_preserves_utc_tzinfo():
 # ── _add_years (both leap-year branches) ─────────────────────────────────
 def test_add_years_clamps_to_feb_28_in_common_year():
     assert _add_years(_d(2020, 2, 29), 3) == _d(2023, 2, 28)
+
+
+def test_add_months_clamps_to_the_target_months_last_day():
+    # 31 Jan + 1 mois is 28 Feb, NOT 3 March (the month analogue of the
+    # 29 Feb → 28 Feb year clamp).
+    assert _add_months(_d(2026, 1, 31), 1) == _d(2026, 2, 28)
+    assert _add_months(_d(2026, 3, 31), 1) == _d(2026, 4, 30)
+
+
+def test_add_months_clamps_onto_a_leap_february():
+    assert _add_months(_d(2024, 1, 31), 1) == _d(2024, 2, 29)
+
+
+def test_add_months_rolls_over_the_year():
+    assert _add_months(_d(2026, 11, 15), 3) == _d(2027, 2, 15)
+    assert _add_months(_d(2026, 12, 1), 12) == _d(2027, 12, 1)
+    # 9 mois (FAI-07, libération d'office) across a year boundary.
+    assert _add_months(_d(2026, 6, 30), 9) == _d(2027, 3, 30)
+
+
+def test_add_period_days_crosses_month_and_year_ends():
+    # 90 jours is a real count of days, never "3 mois".
+    assert _add_period(_d(2026, 1, 1), 90, "jours") == _d(2026, 4, 1)
+    assert _add_period(_d(2026, 12, 15), 30, "jours") == _d(2027, 1, 14)
+
+
+def test_days_and_months_are_not_interchangeable():
+    """90 jours from 1 Jan lands on 1 Apr; 3 mois lands on 1 Apr too — but
+    from 1 Dec they diverge, which is why the unit is stored, not inferred."""
+    assert _add_period(_d(2026, 12, 1), 90, "jours") == _d(2027, 3, 1)
+    assert _add_period(_d(2026, 12, 1), 3, "mois") == _d(2027, 3, 1)
+    assert _add_period(_d(2026, 1, 1), 90, "jours") == _d(2026, 4, 1)
+    assert _add_period(_d(2026, 1, 1), 3, "mois") == _d(2026, 4, 1)
+    # A 31-day month run is where they part.
+    assert _add_period(_d(2026, 7, 1), 90, "jours") == _d(2026, 9, 29)
+    assert _add_period(_d(2026, 7, 1), 3, "mois") == _d(2026, 10, 1)
+
+
+def test_deadline_for_a_days_period_is_juridical():
+    # 45 jours (TRV-01, congédiement) from a Monday → raw 15 Mar 2026 is a
+    # Sunday → extended forward to Monday 16 March.
+    assert compute_date_pour_agir(_d(2026, 1, 29), "45_jours") == _d(2026, 3, 16)
+
+
+def test_deadline_for_a_months_period_is_juridical():
+    # 6 mois from 25 Jun 2026 → 25 Dec 2026 (Noël) → next juridical day.
+    result = compute_date_pour_agir(_d(2026, 6, 25), "6_mois")
+    assert result is not None and is_juridical_day(result.date())
+    assert result > _d(2026, 12, 25)
 
 
 def test_add_years_keeps_feb_29_when_target_is_leap():

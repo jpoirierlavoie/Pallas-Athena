@@ -75,15 +75,23 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.defendeur_avec_civilite}}` | Défendeur name(s) **with** honorific |
 | `{{dossier.adresse_demandeur}}` | One-line address of the demandeur side |
 | `{{dossier.adresse_defendeur}}` | One-line address of the défendeur side |
-| `{{dossier.objet}}` | Objet du recours |
+| `{{dossier.domaine}}` | Domaine label — the taxonomy family (« Recouvrement de créances », …) |
+| `{{dossier.action}}` | The action as cited: « Libellé [CODE] » (« Action sur compte (biens vendus, services rendus) [REC-01] ») |
+| `{{dossier.action_libelle}}` | The action's name alone, without the bracketed code |
+| `{{dossier.action_code}}` | The bare code (« REC-01 ») |
+| `{{dossier.precision}}` | Free-text précision on the action — required by the « Autre (préciser) » (`-99`) rows; also holds the pre-taxonomy « Objet » text |
+| `{{dossier.delai}}` | The taxonomy's **indicative** delay for the action, verbatim (« 3 ans (P) ») |
+| `{{dossier.point_depart}}` | The action's starting point / traps (« Exigibilité de chaque facture ») |
+| `{{dossier.reference}}` | The action's statutory references (« 2925, 2931 ») |
+| `{{dossier.objet}}` | **Renamed « Action » (July 2026)** — kept as an alias, now resolves to the action label, not the old free text |
 | `{{dossier.valeur}}` | Amount in dispute, fr-CA currency (« 85 000,00 $ ») |
 | `{{dossier.classe}}` | Value class (Roman numeral I–IV), derived from the value |
-| `{{dossier.prescription}}` | Prescription rule label (« 3 ans — art. 2925 C.c.Q. … ») |
+| `{{dossier.prescription}}` | The confirmed delay label (« 3 ans », « 90 jours », « Imprescriptible »). Generic since July 2026 — the article now travels with `{{dossier.reference}}`, because one period serves many articles |
 | `{{dossier.droit_action}}` | Droit d'action — start of prescription (French long date) |
 | `{{dossier.date_pour_agir}}` | Date pour agir — computed limitation deadline (French long date) |
-| `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire (litige) », …) |
-| `{{dossier.type_dossier}}` | Type de dossier label (« Action en dommages », …) |
-| `{{dossier.type_honoraires}}` | Fee-type label (« Horaire », « Forfaitaire », « Mixte », « Contingence ») |
+| `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire », « Transactionnel », « Consultatif », « Autre ») |
+| `{{dossier.type_dossier}}` | **Renamed « Domaine » (July 2026)** — kept as an alias of `{{dossier.domaine}}` |
+| `{{dossier.type_honoraires}}` | Fee-type label (« Horaire », « Forfaitaire », « Mixte », « Contingence », « Pro bono », « Aide juridique ») |
 | `{{dossier.honoraires}}` | Fee type + rate jointly (« Horaire — 250,00 $/h », « Contingence — 25 % », « Mixte — 250,00 $/h + 5 000,00 $ + 25 % ») |
 | `{{dossier.taux_horaire}}` | Hourly rate, fr-CA currency (« 250,00 $ ») |
 | `{{dossier.forfait}}` | Flat fee, fr-CA currency |
@@ -162,8 +170,15 @@ same-spelled namespaced field.
 | `{{prescription}}` | `dossier.prescription` |
 | `{{droit_action}}` | `dossier.droit_action` |
 | `{{date_pour_agir}}` | `dossier.date_pour_agir` |
+| `{{domaine}}` | `dossier.domaine` |
+| `{{action}}` | `dossier.action` |
+| `{{objet}}` | `dossier.objet` (→ the action label; **new alias** — `{{objet}}` used to fall silently into passthrough) |
+| `{{précision}}` / `{{precision}}` | `dossier.precision` |
+| `{{délai}}` / `{{delai}}` | `dossier.delai` |
+| `{{point_départ}}` / `{{point_depart}}` | `dossier.point_depart` |
+| `{{référence_action}}` / `{{reference_action}}` | `dossier.reference` |
 | `{{type_mandat}}` | `dossier.type_mandat` |
-| `{{type_dossier}}` | `dossier.type_dossier` |
+| `{{type_dossier}}` | `dossier.type_dossier` (→ the domaine label) |
 | `{{date_ouverture}}` / `{{date_fermeture}}` | `dossier.ouverture` / `dossier.fermeture` |
 | `{{rétention}}` / `{{retention}}` | `dossier.retention` |
 | `{{ville_procédure}}` / `{{ville_lettre}}` | `cabinet.ville` |

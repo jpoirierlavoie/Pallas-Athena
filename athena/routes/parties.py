@@ -31,7 +31,7 @@ from models.partie import (
 )
 from models.dossier import (
     STATUS_LABELS as DOSSIER_STATUS_LABELS,
-    MATTER_TYPE_LABELS as DOSSIER_MATTER_TYPE_LABELS,
+    DOMAINE_LABELS as DOSSIER_DOMAINE_LABELS,
     list_dossiers_for_partie,
 )
 
@@ -292,7 +292,7 @@ def partie_detail(partie_id: str) -> str:
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         dossiers=dossiers,
         dossier_status_labels=DOSSIER_STATUS_LABELS,
-        dossier_matter_type_labels=DOSSIER_MATTER_TYPE_LABELS,
+        dossier_domaine_labels=DOSSIER_DOMAINE_LABELS,
     )
 
 
