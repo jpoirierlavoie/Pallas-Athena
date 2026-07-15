@@ -333,6 +333,7 @@ def get_dossier(args: dict) -> dict:
             "palais_de_justice": d.get("palais_de_justice", ""),
             "district_judiciaire": d.get("district_judiciaire", ""),
             "is_administrative_tribunal": bool(d.get("is_administrative_tribunal")),
+            "mandate_type": d.get("mandate_type", ""),
             "fee_type": d.get("fee_type", ""),
             "closed_date": date_str(_as_utc(d.get("closed_date"))),
             # Recours & prescription. prescription_date (= "date pour agir") is

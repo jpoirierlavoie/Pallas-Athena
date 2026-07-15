@@ -81,6 +81,15 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.prescription}}` | Prescription rule label (« 3 ans — art. 2925 C.c.Q. … ») |
 | `{{dossier.droit_action}}` | Droit d'action — start of prescription (French long date) |
 | `{{dossier.date_pour_agir}}` | Date pour agir — computed limitation deadline (French long date) |
+| `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire (litige) », …) |
+| `{{dossier.type_dossier}}` | Type de dossier label (« Action en dommages », …) |
+| `{{dossier.type_honoraires}}` | Fee-type label (« Horaire », « Forfaitaire », « Mixte », « Contingence ») |
+| `{{dossier.honoraires}}` | Fee type + rate jointly (« Horaire — 250,00 $/h », « Mixte — 250,00 $/h + 5 000,00 $ ») |
+| `{{dossier.taux_horaire}}` | Hourly rate, fr-CA currency (« 250,00 $ ») |
+| `{{dossier.forfait}}` | Flat fee, fr-CA currency |
+| `{{dossier.ouverture}}` | Opening date (French long date) |
+| `{{dossier.fermeture}}` | Closing date (French long date; unresolved while open) |
+| `{{dossier.retention}}` | Document-retention date = closing date + 7 years (French long date) |
 
 Accented spellings `{{dossier.demandeur_avec_civilité}}` /
 `{{dossier.defendeur_avec_civilité}}` also resolve (auto-registered).
@@ -151,6 +160,10 @@ same-spelled namespaced field.
 | `{{prescription}}` | `dossier.prescription` |
 | `{{droit_action}}` | `dossier.droit_action` |
 | `{{date_pour_agir}}` | `dossier.date_pour_agir` |
+| `{{type_mandat}}` | `dossier.type_mandat` |
+| `{{type_dossier}}` | `dossier.type_dossier` |
+| `{{date_ouverture}}` / `{{date_fermeture}}` | `dossier.ouverture` / `dossier.fermeture` |
+| `{{rétention}}` / `{{retention}}` | `dossier.retention` |
 | `{{ville_procédure}}` / `{{ville_lettre}}` | `cabinet.ville` |
 | `{{date_procédure}}` / `{{date_lettre}}` | `date.aujourdhui` |
 | `{{prénom_récipient}}` | `destinataire.prenom` |

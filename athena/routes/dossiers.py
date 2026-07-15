@@ -70,6 +70,7 @@ from models.document import (
 from models.folder import list_folders
 from models.dossier import (
     FEE_TYPE_LABELS,
+    MANDATE_TYPE_LABELS,
     MATTER_TYPE_LABELS,
     ROLE_LABELS,
     STATUS_LABELS,
@@ -82,6 +83,7 @@ from models.dossier import (
     update_dossier,
 )
 from utils.recours import PRESCRIPTION_LABELS, compute_class
+from utils.template_fields import format_honoraires, retention_date
 
 dossiers_bp = Blueprint(
     "dossiers", __name__, url_prefix="/dossiers"
@@ -144,7 +146,8 @@ def _form_data() -> dict:
         "clients": _parse_parties_json(f.get("clients_json", "")),
         "opposing_parties": _parse_parties_json(f.get("opposing_parties_json", "")),
         # Classification
-        "matter_type": f.get("matter_type", "litige_civil"),
+        "matter_type": f.get("matter_type", "action_dommages"),
+        "mandate_type": f.get("mandate_type", "judiciaire"),
         "court_file_number": f.get("court_file_number", "").strip(),
         "district_judiciaire": f.get("district_judiciaire", "").strip(),
         "tribunal": f.get("tribunal", "").strip(),
@@ -177,11 +180,17 @@ def _template_context() -> dict:
     """Return shared template context for dossier views."""
     return {
         "matter_type_labels": MATTER_TYPE_LABELS,
+        "mandate_type_labels": MANDATE_TYPE_LABELS,
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
         "fee_type_labels": FEE_TYPE_LABELS,
         "prescription_labels": PRESCRIPTION_LABELS,
     }
+
+
+# « Rétention » (fermeture + 7 ans) and the joint « honoraires + taux »
+# display are shared with the gabarit field catalog so the Mandat card and a
+# generated document render identically — see utils.template_fields.
 
 
 def _attach_prescription_warnings(dossiers: list[dict]) -> None:
@@ -298,6 +307,8 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["dossier"] = dossier
     ctx["initial_tab"] = initial_tab
     ctx["value_class"] = compute_class(dossier.get("valeur"))
+    ctx["fee_display"] = format_honoraires(dossier) or "—"
+    ctx["retention_date"] = retention_date(dossier.get("closed_date"))
     return render_template("dossiers/detail.html", **ctx)
 
 

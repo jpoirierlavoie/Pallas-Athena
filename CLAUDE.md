@@ -310,7 +310,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 
 > The Firestore/Storage rules + index files live at the **repo root** (next to `firebase.json`, which references them by bare filename) — they are Firebase-CLI deploy config, **not** part of the App Engine app, so they deliberately sit outside `athena/` and never ship in the deployed bundle.
 
-> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`; **`temps` is the default tab**. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card, its dates became the « Dates clés » card, and its free-text notes were deleted with the fields (below). There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
+> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`; **`temps` is the default tab**. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card, its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, type de dossier, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`), and its free-text notes were deleted with the fields (below). There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
 
 ---
 
@@ -424,8 +424,17 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "opposing_party_ids": [UUIDv4, ...],
 
     # Classification
-    "matter_type": "litige_civil" | "litige_commercial" | "recouvrement"
-                 | "injonction" | "familial" | "autre",
+    # matter_type ("type de dossier") — reclassified by NATURE OF RECOURSE
+    # (July 2026). Legacy subject-matter keys (litige_civil/litige_commercial/
+    # familial) are migrated to "autre" on read (models.dossier
+    # ._migrate_matter_type, folded into _migrate_parties); "recouvrement",
+    # "injonction" and "autre" carry over unchanged.
+    "matter_type": "action_dommages" | "injonction" | "recouvrement"
+                 | "vice_cache" | "recours_extraordinaire" | "autre",
+    # mandate_type ("type de mandat") — nature of the engagement (new July
+    # 2026). Absent on legacy dossiers → the UI shows "—" until set on edit.
+    "mandate_type": "judiciaire" | "consultation" | "transactionnel"
+                  | "mediation_arbitrage" | "autre",
     "role": "demandeur" | "défendeur" | "intervenant" | "mis en cause" | "autre",
 
     # Phase G — Court file number + parsed judicial metadata
@@ -1232,7 +1241,7 @@ Pure functions (mirrors `display_name` locally — must stay importable without 
 
 **Three kinds** (the ALL-CAPS→"block" concept was removed July 2026): **auto** — matches the catalog/aliases **case-insensitively** (`{{TRIBUNAL}}` resolves like `{{tribunal}}`; an ALL-CAPS placeholder gets its value upper-cased — `{{TRIBUNAL}}` → `COUR SUPÉRIEURE` — via `is_uppercase_name`); **manual** — the short `MANUAL_FIELDS` letter-metadata, prompted in the popup; **passthrough** — everything else (former ALL-CAPS blocks like `{{FAITS}}`, the `{{civilité}}`/`{{salutations}}` fields, unknown names): **not resolved and not prompted**, left verbatim as `{{name}}` in the output for the user to complete in Word. The route omits passthrough names from the fill `values`, and `fill_docx` leaves any unlisted placeholder untouched.
 
-- Catalog namespaces: `dossier.*` (incl. derived `role_feminin`, capitalized `role_label`, demandeur/défendeur **positions** swapped by `dossier.role` with `autre` → unresolved, and the **recours fields** `objet` / `valeur` (fr-CA currency) / `classe` (`compute_class`) / `prescription` (label) / `droit_action` / `date_pour_agir`), `client.*`/`adverse.*`/`destinataire.*` (identical field set; **no `civilite` — civilité is passthrough**; work-address preference for `avocat_adverse`/`expert`/`huissier`/`notaire`; phone work → cell → home via `format_phone_display`), `cabinet.*` (FIRM_*), `date.aujourdhui` (French long date, `1er` for the 1st) / `date.aujourdhui_iso`.
+- Catalog namespaces: `dossier.*` (incl. derived `role_feminin`, capitalized `role_label`, demandeur/défendeur **positions** swapped by `dossier.role` with `autre` → unresolved, the **recours fields** `objet` / `valeur` (fr-CA currency) / `classe` (`compute_class`) / `prescription` (label) / `droit_action` / `date_pour_agir`, and the **« Mandat » card fields** `type_mandat` / `type_dossier` / `type_honoraires` (all label-mapped — the three label dicts are mirrored locally to keep the module Firestore-free, **kept in sync with `models/dossier.py`**) / `honoraires` (fee + rate jointly, via the shared `format_honoraires`) / `taux_horaire` / `forfait` (fr-CA currency) / `ouverture` / `fermeture` / `retention` (= `fermeture` + 7 ans, via the shared `retention_date`; `routes/dossiers.py` imports both helpers so the card and generated docs match)), `client.*`/`adverse.*`/`destinataire.*` (identical field set; **no `civilite` — civilité is passthrough**; work-address preference for `avocat_adverse`/`expert`/`huissier`/`notaire`; phone work → cell → home via `format_phone_display`), `cabinet.*` (FIRM_*), `date.aujourdhui` (French long date, `1er` for the 1st) / `date.aujourdhui_iso`.
 - **Person names render BARE (no honorific) by default (July 2026).** The stored snapshot name carries the `Me`/`M.`/`Mme` prefix (`display_name` prepends it), so `{{dossier.demandeur}}`/`{{…defendeur}}` strip it (`_strip_civility_prefix`) and `{{<slot>.nom_complet}}` builds from first+last (`_nom_bare`) — a procedure intitulé cites the party bare. Each has an **`…_avec_civilite` twin** (`{{dossier.demandeur_avec_civilite}}`, `{{<slot>.nom_complet_avec_civilite}}`) that keeps the honorific, for a letter address block. Accented `…_avec_civilité` spellings are auto-registered (`_register_civility_variants`); the positions also get flat aliases. Organizations have no honorific, so both forms equal the legal name.
 - `FLAT_ALIASES` maps the existing gabarits' flat French names (`{{district}}`, `{{numero_dossier}}`, …) onto the catalog — one template set serves this module and the user's Claude.ai skills. The `civilité`/`civilité_récipient` aliases were **removed** (civilité is now passthrough — it must appear in letters but never in court procedures, so the user places and fills it).
 - `MANUAL_FIELDS` (deliberately data-less letter metadata: `objet_lettre`, `privilège`/`transmission_lettre` selects, `pièces_jointes` default `"Aucune"`, `référence_externe`, …). **`salutations` was removed** — it is passthrough.

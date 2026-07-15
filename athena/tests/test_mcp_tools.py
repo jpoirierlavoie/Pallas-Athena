@@ -212,7 +212,8 @@ def test_get_agenda_marks_overdue_tasks(monkeypatch):
 
 def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):
     return {"id": did, "file_number": fn, "title": title, "status": "actif",
-            "matter_type": "litige_civil", "role": "demandeur",
+            "matter_type": "action_dommages", "mandate_type": "judiciaire",
+            "role": "demandeur",
             "tribunal": "Cour supérieure", "court_file_number": "500-05-123456-241",
             "opened_date": datetime(2026, 1, 5, tzinfo=UTC),
             "prescription_date": None, "hourly_rate": 25000, "flat_fee": None,
@@ -269,6 +270,7 @@ def test_get_dossier_composes_summaries(monkeypatch):
     payload = handlers.get_dossier({"dossier_id": "d1"})
     assert payload["found"] is True
     assert payload["dossier"]["hourly_rate_display"] == f"250,00{NBSP}$"
+    assert payload["dossier"]["mandate_type"] == "judiciaire"
     # The free-text notes/internal_notes fields were removed from the dossier
     # schema (superseded by the standalone `notes` collection).
     assert "notes" not in payload["dossier"]

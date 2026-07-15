@@ -25,12 +25,25 @@ logger = logging.getLogger(__name__)
 COLLECTION = "dossiers"
 
 # Valid enum values
+#
+# Type de dossier — reclassified by *nature of recourse* (July 2026). The
+# former subject-matter vocabulary (litige_civil/litige_commercial/familial)
+# is migrated to the closest current key on read (see _MATTER_TYPE_MIGRATION);
+# "recouvrement", "injonction" and "autre" are carried over unchanged.
 VALID_MATTER_TYPES = (
-    "litige_civil",
-    "litige_commercial",
-    "recouvrement",
+    "action_dommages",
     "injonction",
-    "familial",
+    "recouvrement",
+    "vice_cache",
+    "recours_extraordinaire",
+    "autre",
+)
+# Type de mandat — nature of the engagement (new July 2026).
+VALID_MANDATE_TYPES = (
+    "judiciaire",
+    "consultation",
+    "transactionnel",
+    "mediation_arbitrage",
     "autre",
 )
 VALID_COURTS = (
@@ -71,12 +84,29 @@ VALID_STATUSES = ("actif", "en_attente", "fermé", "archivé")
 
 # Display labels (French)
 MATTER_TYPE_LABELS = {
-    "litige_civil": "Litige civil",
-    "litige_commercial": "Litige commercial",
-    "recouvrement": "Recouvrement",
+    "action_dommages": "Action en dommages",
     "injonction": "Injonction",
-    "familial": "Familial",
+    "recouvrement": "Recouvrement de créance",
+    "vice_cache": "Vice caché / responsabilité",
+    "recours_extraordinaire": "Recours extraordinaire",
     "autre": "Autre",
+}
+MANDATE_TYPE_LABELS = {
+    "judiciaire": "Judiciaire (litige)",
+    "consultation": "Consultation / Avis juridique",
+    "transactionnel": "Transactionnel / Négociation",
+    "mediation_arbitrage": "Médiation / Arbitrage",
+    "autre": "Autre",
+}
+# Legacy type-de-dossier keys → current vocabulary, applied on read
+# (_migrate_matter_type). The subject-matter categories don't map cleanly onto
+# the nature-of-recourse set, so they fall back to "autre"; the user
+# re-classifies them via the edit form. Keys absent here are already valid and
+# left untouched (recouvrement, injonction, autre — and every current key).
+_MATTER_TYPE_MIGRATION = {
+    "litige_civil": "autre",
+    "litige_commercial": "autre",
+    "familial": "autre",
 }
 COURT_LABELS = {c: c for c in VALID_COURTS}
 STATUS_LABELS = {
@@ -112,7 +142,8 @@ def _default_doc() -> dict:
         "opposing_parties": [],
         "opposing_party_ids": [],
         # Case classification
-        "matter_type": "litige_civil",
+        "matter_type": "action_dommages",
+        "mandate_type": "judiciaire",
         "court_file_number": "",
         "district_judiciaire": "",
         "tribunal": "",
@@ -174,6 +205,11 @@ def _validate(data: dict) -> list[str]:
 
     if data.get("matter_type", "") not in VALID_MATTER_TYPES:
         errors.append("Type de dossier invalide.")
+
+    # mandate_type is absent on legacy dossiers read directly (no form pass);
+    # only validate it when the caller actually supplied a value.
+    if "mandate_type" in data and data.get("mandate_type", "") not in VALID_MANDATE_TYPES:
+        errors.append("Type de mandat invalide.")
 
     if data.get("status", "") not in VALID_STATUSES:
         errors.append("Statut invalide.")
@@ -321,6 +357,21 @@ def _migrate_parties(doc: dict) -> dict:
         doc.setdefault("opposing_parties", [])
     if not doc.get("opposing_party_ids"):
         doc["opposing_party_ids"] = [p["id"] for p in doc.get("opposing_parties", [])]
+    _migrate_matter_type(doc)
+    return doc
+
+
+def _migrate_matter_type(doc: dict) -> dict:
+    """Normalize a legacy type-de-dossier key to the current vocabulary in place.
+
+    Called from :func:`_migrate_parties`, so every dossier read path (detail,
+    lists, MCP) sees a current key — and, critically, editing a legacy dossier
+    no longer trips ``_validate``'s ``matter_type`` check. The write-back
+    happens on the next ``set()`` (purge-on-save, like the party migrations).
+    """
+    mt = doc.get("matter_type")
+    if mt in _MATTER_TYPE_MIGRATION:
+        doc["matter_type"] = _MATTER_TYPE_MIGRATION[mt]
     return doc
 
 

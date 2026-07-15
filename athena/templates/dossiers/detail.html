@@ -57,9 +57,6 @@
           'archivé': 'bg-gray-200 text-gray-500'
         } %}
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
-            {{ matter_type_labels.get(dossier.matter_type, dossier.matter_type) }}
-          </span>
           <span class="text-xs text-gray-500">Notre référence :
             <span class="font-medium text-indigo-600">{{ dossier.file_number }}</span>
           </span>
@@ -194,10 +191,22 @@
       </dl>
     </div>
 
-    {# Key dates #}
+    {# Mandat #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-2">Dates clés</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Mandat</h2>
       <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Type de mandat</dt>
+          <dd class="text-gray-900 text-right">{{ mandate_type_labels.get(dossier.mandate_type, '—') if dossier.mandate_type else '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Honoraires et taux</dt>
+          <dd class="text-gray-900 text-right">{{ fee_display }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Type de dossier</dt>
+          <dd class="text-gray-900 text-right">{{ matter_type_labels.get(dossier.matter_type, dossier.matter_type) }}</dd>
+        </div>
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Ouverture</dt>
           <dd class="text-gray-900 text-right">{{ dossier.opened_date.strftime('%d %B %Y') if dossier.opened_date and dossier.opened_date.strftime is defined else '—' }}</dd>
@@ -207,8 +216,8 @@
           <dd class="text-gray-900 text-right">{{ dossier.closed_date.strftime('%d %B %Y') if dossier.closed_date and dossier.closed_date.strftime is defined else '—' }}</dd>
         </div>
         <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Créé le</dt>
-          <dd class="text-gray-900 text-right">{{ dossier.created_at.strftime('%d %B %Y') if dossier.created_at and dossier.created_at.strftime is defined else '—' }}</dd>
+          <dt class="text-gray-500 flex-shrink-0">Rétention</dt>
+          <dd class="text-gray-900 text-right">{{ retention_date.strftime('%d %B %Y') if retention_date else '—' }}</dd>
         </div>
       </dl>
     </div>

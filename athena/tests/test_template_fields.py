@@ -478,3 +478,56 @@ def test_manual_fields_defaults():
     assert MANUAL_FIELDS["pièces_jointes"]["default"] == "Aucune"
     assert "SOUS TOUTES RÉSERVES" in MANUAL_FIELDS["privilège"]["options"]
     assert "courriel" in MANUAL_FIELDS["transmission_lettre"]["options"]
+
+
+# ── « Mandat » card fields (mandate/classification/fees/lifecycle) ───────
+
+def test_mandat_card_placeholders_resolve():
+    from datetime import datetime, timezone
+
+    d = _dossier(
+        mandate_type="judiciaire",
+        matter_type="action_dommages",
+        fee_type="mixed",
+        hourly_rate=25000,
+        flat_fee=500000,
+        opened_date=datetime(2026, 1, 5, tzinfo=timezone.utc),
+        closed_date=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    r = _resolve(
+        ["dossier.type_mandat", "dossier.type_dossier", "dossier.type_honoraires",
+         "dossier.honoraires", "dossier.taux_horaire", "dossier.forfait",
+         "dossier.ouverture", "dossier.fermeture", "dossier.retention",
+         "type_mandat", "type_dossier", "date_fermeture", "retention"],
+        dossier=d,
+    )
+    assert r["dossier.type_mandat"] == "Judiciaire (litige)"
+    assert r["dossier.type_dossier"] == "Action en dommages"
+    assert r["dossier.type_honoraires"] == "Mixte"
+    assert r["dossier.honoraires"] == "Mixte — 250,00 $/h + 5 000,00 $"
+    assert r["dossier.taux_horaire"] == "250,00 $"
+    assert r["dossier.forfait"] == "5 000,00 $"
+    assert r["dossier.ouverture"] == "5 janvier 2026"
+    assert r["dossier.fermeture"] == "14 juillet 2026"
+    # Rétention = fermeture + 7 ans (derived).
+    assert r["dossier.retention"] == "14 juillet 2033"
+    # Flat aliases resolve to the same values.
+    assert r["type_mandat"] == "Judiciaire (litige)"
+    assert r["type_dossier"] == "Action en dommages"
+    assert r["date_fermeture"] == "14 juillet 2026"
+    assert r["retention"] == "14 juillet 2033"
+
+
+def test_mandat_fields_unresolved_when_data_absent():
+    # An open dossier (no closure) leaves fermeture/rétention unresolved; an
+    # hourly dossier leaves forfait unresolved.
+    d = _dossier(fee_type="hourly", hourly_rate=25000)
+    r = _resolve(
+        ["dossier.fermeture", "dossier.retention", "dossier.forfait",
+         "dossier.honoraires"],
+        dossier=d,
+    )
+    assert "dossier.fermeture" not in r
+    assert "dossier.retention" not in r
+    assert "dossier.forfait" not in r
+    assert r["dossier.honoraires"] == "Horaire — 250,00 $/h"

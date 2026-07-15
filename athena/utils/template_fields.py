@@ -56,6 +56,31 @@ _ROLE_LABEL = {
     "autre": "Autre",
 }
 
+# Mirrors of the models.dossier label maps — kept local for the same reason as
+# _ROLE_LABEL (Firestore-free import). KEEP IN SYNC with models/dossier.py
+# (MATTER_TYPE_LABELS / MANDATE_TYPE_LABELS / FEE_TYPE_LABELS).
+_MATTER_TYPE_LABEL = {
+    "action_dommages": "Action en dommages",
+    "injonction": "Injonction",
+    "recouvrement": "Recouvrement de créance",
+    "vice_cache": "Vice caché / responsabilité",
+    "recours_extraordinaire": "Recours extraordinaire",
+    "autre": "Autre",
+}
+_MANDATE_TYPE_LABEL = {
+    "judiciaire": "Judiciaire (litige)",
+    "consultation": "Consultation / Avis juridique",
+    "transactionnel": "Transactionnel / Négociation",
+    "mediation_arbitrage": "Médiation / Arbitrage",
+    "autre": "Autre",
+}
+_FEE_TYPE_LABEL = {
+    "hourly": "Horaire",
+    "flat": "Forfaitaire",
+    "contingency": "Contingence",
+    "mixed": "Mixte",
+}
+
 # Professional roles whose work address is preferred when present (§6.4).
 _WORK_PREFERRED_ROLES = {"avocat_adverse", "expert", "huissier", "notaire"}
 
@@ -285,6 +310,68 @@ def _role_label(ctx: _Context) -> Optional[str]:
     return _ROLE_LABEL.get(ctx.dossier.get("role") or "")
 
 
+def _dossier_labelled(
+    key: str, labels: dict[str, str]
+) -> Callable[[_Context], Optional[str]]:
+    """Resolver mapping a dossier enum field to its French label (unset → None)."""
+    def resolver(ctx: _Context) -> Optional[str]:
+        if not ctx.dossier:
+            return None
+        return labels.get(ctx.dossier.get(key) or "") or None
+
+    return resolver
+
+
+def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
+    """« Type d'honoraires et taux » as one string, or None.
+
+    « Horaire — 250,00 $/h », « Forfaitaire — 5 000,00 $ »,
+    « Mixte — 250,00 $/h + 5 000,00 $ »; contingency (no stored rate) → the
+    label alone. Shared with the dossier detail « Mandat » card
+    (routes.dossiers) so both render identically.
+    """
+    if not dossier:
+        return None
+    fee_type = dossier.get("fee_type") or ""
+    label = _FEE_TYPE_LABEL.get(fee_type)
+    if not label:
+        return None
+    parts: list[str] = []
+    hourly = dossier.get("hourly_rate")
+    flat = dossier.get("flat_fee")
+    if fee_type in ("hourly", "mixed") and hourly:
+        parts.append(f"{format_cents_fr(int(hourly))}/h")
+    if fee_type in ("flat", "mixed") and flat:
+        parts.append(format_cents_fr(int(flat)))
+    return f"{label} — {' + '.join(parts)}" if parts else label
+
+
+def retention_date(closed_date):
+    """Dossier document-retention date = closure date + 7 years, or None.
+
+    Feb-29 closures fall back to Feb-28 of the target year. Shared with the
+    dossier detail « Mandat » card (routes.dossiers). Indicative only — never a
+    legal deadline. Preserves the input's UTC calendar date (no Montréal shift).
+    """
+    if not closed_date or not hasattr(closed_date, "year"):
+        return None
+    try:
+        return closed_date.replace(year=closed_date.year + 7)
+    except ValueError:
+        return closed_date.replace(year=closed_date.year + 7, day=28)
+
+
+def _dossier_honoraires(ctx: _Context) -> Optional[str]:
+    return format_honoraires(ctx.dossier)
+
+
+def _dossier_retention(ctx: _Context) -> Optional[str]:
+    if not ctx.dossier:
+        return None
+    rd = retention_date(ctx.dossier.get("closed_date"))
+    return french_long_date(rd) if rd else None
+
+
 def _sides(ctx: _Context) -> tuple[Optional[list], Optional[list], Optional[dict], Optional[dict]]:
     """(demandeur names[], défendeur names[], demandeur partie, défendeur partie).
 
@@ -439,6 +526,16 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.prescription": ("dossier", _dossier_prescription),
     "dossier.droit_action": ("dossier", _dossier_date("droit_action_date")),
     "dossier.date_pour_agir": ("dossier", _dossier_date("prescription_date")),
+    # dossier.* mandate / classification / fees / lifecycle (« Mandat » card)
+    "dossier.type_mandat": ("dossier", _dossier_labelled("mandate_type", _MANDATE_TYPE_LABEL)),
+    "dossier.type_dossier": ("dossier", _dossier_labelled("matter_type", _MATTER_TYPE_LABEL)),
+    "dossier.type_honoraires": ("dossier", _dossier_labelled("fee_type", _FEE_TYPE_LABEL)),
+    "dossier.honoraires": ("dossier", _dossier_honoraires),
+    "dossier.taux_horaire": ("dossier", _dossier_money("hourly_rate")),
+    "dossier.forfait": ("dossier", _dossier_money("flat_fee")),
+    "dossier.ouverture": ("dossier", _dossier_date("opened_date")),
+    "dossier.fermeture": ("dossier", _dossier_date("closed_date")),
+    "dossier.retention": ("dossier", _dossier_retention),
     # cabinet.* (§6.5)
     "cabinet.nom": (None, _firm_field("nom")),
     "cabinet.adresse_civique": (None, _firm_field("adresse_civique")),
@@ -493,6 +590,12 @@ FLAT_ALIASES: dict[str, str] = {
     "prescription": "dossier.prescription",
     "droit_action": "dossier.droit_action",
     "date_pour_agir": "dossier.date_pour_agir",
+    "type_mandat": "dossier.type_mandat",
+    "type_dossier": "dossier.type_dossier",
+    "date_ouverture": "dossier.ouverture",
+    "date_fermeture": "dossier.fermeture",
+    "rétention": "dossier.retention",
+    "retention": "dossier.retention",
     "ville_procédure": "cabinet.ville",
     "ville_lettre": "cabinet.ville",
     "date_procédure": "date.aujourdhui",
