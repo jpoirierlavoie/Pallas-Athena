@@ -224,8 +224,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── utils/                      # Utility modules
 │   │   ├── __init__.py
 │   │   ├── deadlines.py            # Quebec art. 83 C.p.c. judicial deadline calc
-│   │   ├── recours.py              # Recours & prescription (pure): C.c.Q. period table,
-│   │   │                           # value-class table, compute_class + compute_date_pour_agir
+│   │   ├── recours.py              # Recours & prescription (pure): delay-period table
+│   │   │                           # (amount, unit — jours/mois/ans), value-class table,
+│   │   │                           # compute_class + compute_date_pour_agir
+│   │   ├── taxonomie.py            # Taxonomie des actions (pure, GENERATED): 20 domaines →
+│   │   │                           # 162 actions with délai / délai_type / point de départ /
+│   │   │                           # références; suggests a period, never sets one
 │   │   ├── docx_fill.py            # Phase H/H.2: stdlib-only .docx fill engine (zip XML substitution;
 │   │   │                           # scalars, blocks, + H.2 repeating rows & conditional regions)
 │   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
@@ -1158,7 +1162,8 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `list_prescription_alerts(cutoff, limit=50) -> list[dict]` — server-side `status==actif AND prescription_date<=cutoff`, ordered + bounded; logs a warning when the window fills (needs the `dossiers` composite index)
 - `count_dossiers_for_partie(partie_id) -> int` (returns 0 on query failure — display only), `count_dossiers_for_partie_strict(partie_id) -> int` (propagates errors — used by FK safety checks), `list_dossiers_for_partie(partie_id) -> list[dict]` — query both `client_ids` and `opposing_party_ids`
 - `delete_dossier` REFUSES deletion while child records exist (documents, time entries, expenses, invoices, hearings, tasks, notes, protocols, folders) and fails CLOSED when the child check errors — archive instead of deleting
-- `dossier_to_vjournal(dossier) -> str`, `vjournal_to_dossier(ical_str) -> dict` — legacy, retained for potential export (not used by DAV post-D1)
+- `dossier_to_vjournal(dossier) -> str`, `vjournal_to_dossier(ical_str) -> dict` — legacy, retained for potential export (not used by DAV post-D1). CATEGORIES now emits the domaine label + the action label; an unknown key resolves to nothing rather than leaking a raw snake_case key as a French category (the old `matter_type` line did).
+- **Taxonomy (July 2026):** `VALID_DOMAINES` / `VALID_ACTIONS` / `DOMAINE_LABELS` are re-exported from `utils/taxonomie.py` — the vocabulary is **not** redefined here (contrast `MANDATE_TYPE_LABELS` / `FEE_TYPE_LABELS`, which `utils/template_fields.py` must mirror by hand; there is deliberately **no domaine mirror**, since `taxonomie` is Firestore-free and both sides import it). `_migrate_domaine` (called from `_migrate_parties`, the chokepoint covering all six read paths) folds legacy `matter_type` → `domaine` and `objet` → `action_precision`, then `_REMOVED_FIELDS` purges both on the next save. `_validate` presence-gates `domaine`/`action` (like `mandate_type`) and rejects a pair whose code prefix disagrees with the domaine — the cascading picker cannot produce that, but a hand-crafted POST can.
 
 ### `models/time_entry.py` (note: file is `time_entry.py`, **not** `timeentry.py`)
 - `get_time_summary(dossier_id) -> dict`
@@ -1617,6 +1622,10 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Documents blueprint isn't nested under dossiers.** Routes live at `/documents/...` and the dossier scope is passed as `?dossier_id=…` (GET) or as a form field (POST). When linking from a dossier tab, always include `dossier_id` in the URL.
 - **Hearings prefix is `/audiences`**, not `/agenda`. Internal `url_for()` calls must use the `hearings.*` blueprint.
 - **Dossier `clients` and `opposing_parties` are arrays**, not single FKs. Code reading legacy `client_id` must go through `_migrate_parties` (already applied in `get_dossier`/`list_dossiers`).
+- **The taxonomy SUGGESTS a délai; it never sets one.** `taxonomie.Action.prescription_type` prefills the Prescription dropdown **only on a user action-change** — never on load, or opening an existing dossier would silently overwrite the delay the lawyer confirmed. It is `""` wherever the source's delay is not a single clean period, and those `""`s are load-bearing, not gaps: **FAI-01**'s « 6 mois » is a *retrospective eligibility window* (the acte de faillite must fall in the 6 months **preceding** the application), so suggesting it would compute a deadline that means nothing; RCV-05/COR-06 differ by regime; CJP-* are « délai raisonnable ». Never "fill in" a blank `prescription_type` without re-reading the source row.
+- **A `-99` « Autre (préciser) » row must never carry a délai.** Every domaine ends with one so no file is unclassifiable; they have no delay of their own, and the domaine's default (e.g. RES's « 3 ans (art. 2925) ») is **not** theirs to inherit — `action_precision` is where the real object goes.
+- **`delai_type` `/` ≠ `+`.** `P+A` means both a prescription and an avis apply; `D/A` means **the source itself leaves the qualification open** (it writes « D/A* », with § 4 reserving it). Collapsing `/` into `+` asserts a legal claim the source declines to make.
+- **§ 4's déchéance list is a cross-section claim.** `is_decheance` derives from the per-row `(D)` markers, but **APP-01** states « déchéance expresse » only in prose and carries no marker — a per-section reader cannot catch that. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the union of § 4 and the markers; extend it when the source changes.
 - **Direct App Engine access is blocked at three layers** (App Engine firewall → Cloudflare IPs only, `X-Origin-Auth` origin secret, appspot Host check). When debugging, hit the Cloudflare hostname — `gcloud app browse` will 403. New App Engine internal endpoints (cron, queues) must be under `/_ah/` or they'll be rejected by the origin checks.
 - **`requirements.txt` is generated — never hand-edit it.** Change `requirements.in`, then re-lock with `uv pip compile` (recipe in the Tech Stack section). Production pip runs with `--require-hashes --no-deps`, so an unhashed edit simply won't deploy.
 - **Keep `setuptools<81`** until the OTel instrumentation packages are bumped to ≥0.50b0 — 0.48b0 imports `pkg_resources` at runtime and tracing silently disables without it (and the CI test for the trace log field fails).
