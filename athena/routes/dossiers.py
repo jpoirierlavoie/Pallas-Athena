@@ -85,7 +85,7 @@ from models import reference
 from models.reference import list_forums
 from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
-from utils.template_fields import format_honoraires, retention_date
+from utils.template_fields import format_honoraires_parts, retention_date
 
 dossiers_bp = Blueprint(
     "dossiers", __name__, url_prefix="/dossiers"
@@ -216,9 +216,11 @@ def _template_context() -> dict:
     }
 
 
-# « Rétention » (fermeture + 7 ans) and the joint « honoraires + taux »
-# display are shared with the gabarit field catalog so the Mandat card and a
-# generated document render identically — see utils.template_fields.
+# « Rétention » (fermeture + 7 ans) and the honoraires display are shared
+# with the gabarit field catalog so the Mandat card and a generated document
+# render the same values — see utils.template_fields (the card composes
+# format_honoraires_parts as « label (taux) »; gabarits keep the joined
+# « label — taux » of format_honoraires).
 
 
 def _attach_prescription_warnings(dossiers: list[dict]) -> None:
@@ -339,11 +341,13 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["dossier"] = dossier
     ctx["initial_tab"] = initial_tab
     ctx["value_class"] = compute_class(dossier.get("valeur"))
-    ctx["fee_display"] = format_honoraires(dossier) or "—"
+    # (type label, rate) — the card greys the rate in parentheses; gabarits
+    # keep the joined format_honoraires form.
+    ctx["fee_parts"] = format_honoraires_parts(dossier)
     ctx["retention_date"] = retention_date(dossier.get("closed_date"))
-    # Taxonomy display values, resolved route-side like value_class/fee_display.
+    # Taxonomy object, resolved route-side like value_class/fee_parts — the
+    # card renders libellé + greyed (CODE) itself.
     ctx["action_obj"] = taxonomie.get_action(dossier.get("action", ""))
-    ctx["action_display"] = taxonomie.action_label(dossier.get("action", ""))
     return render_template("dossiers/detail.html", **ctx)
 
 

@@ -187,6 +187,19 @@ def test_role_feminin_map_and_autre_unresolved():
     assert "rôle" not in _resolve(["rôle"], dossier=_dossier(role="autre"))
 
 
+def test_format_honoraires_parts_splits_label_and_rate():
+    from utils.template_fields import format_honoraires, format_honoraires_parts
+
+    nbsp = " "
+    d = _dossier(fee_type="hourly", hourly_rate=25000)
+    assert format_honoraires_parts(d) == ("Horaire", f"250,00{nbsp}$/h")
+    # Rate-less type → empty rate part (the card shows the label alone).
+    assert format_honoraires_parts(_dossier(fee_type="pro_bono")) == ("Pro bono", "")
+    assert format_honoraires_parts(_dossier(fee_type="")) is None
+    # The joined gabarit form is exactly label — rate (or the bare label).
+    assert format_honoraires(d) == f"Horaire — 250,00{nbsp}$/h"
+
+
 def test_sommaire_resolves_namespaced_and_flat():
     d = _dossier(sommaire="Réclamation pour vices cachés.")
     r = _resolve(["dossier.sommaire", "sommaire"], dossier=d)

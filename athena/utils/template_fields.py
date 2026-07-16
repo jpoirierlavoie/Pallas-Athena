@@ -364,14 +364,14 @@ def _dossier_labelled(
     return resolver
 
 
-def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
-    """« Type d'honoraires et taux » as one string, or None.
+def format_honoraires_parts(dossier: Optional[dict]) -> Optional[tuple[str, str]]:
+    """(type label, rate part) for the fee arrangement, or None.
 
-    « Horaire — 250,00 $/h », « Forfaitaire — 5 000,00 $ »,
-    « Contingence — 25 % », « Mixte — 250,00 $/h + 5 000,00 $ + 25 % ». A
-    component with no stored value is omitted; a type with none of them → the
-    label alone. Shared with the dossier detail « Mandat » card
-    (routes.dossiers) so both render identically.
+    ("Horaire", "250,00 $/h"), ("Mixte", "250,00 $/h + 5 000,00 $ + 25 %"),
+    ("Pro bono", "") — the rate part is "" for the rate-less types or when no
+    component has a stored value. The dossier detail « Mandat » card renders
+    the two parts itself (rate greyed in parentheses); gabarits get them
+    joined by :func:`format_honoraires`.
     """
     if not dossier:
         return None
@@ -389,7 +389,23 @@ def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
         parts.append(format_cents_fr(int(flat)))
     if fee_type in ("contingency", "mixed") and percent:
         parts.append(format_rate_fr(int(percent), 100))
-    return f"{label} — {' + '.join(parts)}" if parts else label
+    return label, " + ".join(parts)
+
+
+def format_honoraires(dossier: Optional[dict]) -> Optional[str]:
+    """« Type d'honoraires et taux » as one string, or None.
+
+    « Horaire — 250,00 $/h », « Forfaitaire — 5 000,00 $ »,
+    « Contingence — 25 % », « Mixte — 250,00 $/h + 5 000,00 $ + 25 % ». A
+    component with no stored value is omitted; a type with none of them → the
+    label alone. This joined form is the gabarit {{dossier.honoraires}} —
+    keep its format stable; the detail card composes the parts itself.
+    """
+    parts = format_honoraires_parts(dossier)
+    if parts is None:
+        return None
+    label, rate = parts
+    return f"{label} — {rate}" if rate else label
 
 
 def retention_date(closed_date):

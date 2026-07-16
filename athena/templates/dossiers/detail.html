@@ -184,7 +184,9 @@
         </div>
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Action</dt>
-          <dd class="text-gray-900 text-right">{{ action_display or '—' }}</dd>
+          <dd class="text-gray-900 text-right">
+            {% if action_obj %}{{ action_obj.libelle }} <span class="text-gray-500">({{ action_obj.code }})</span>{% elif dossier.action %}{{ dossier.action }}{% else %}—{% endif %}
+          </dd>
         </div>
         {% if dossier.action_precision %}
         <div class="flex justify-between gap-4">
@@ -239,8 +241,10 @@
           <dd class="text-gray-900 text-right">{{ mandate_type_labels.get(dossier.mandate_type, '—') if dossier.mandate_type else '—' }}</dd>
         </div>
         <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Honoraires et taux</dt>
-          <dd class="text-gray-900 text-right">{{ fee_display }}</dd>
+          <dt class="text-gray-500 flex-shrink-0">Honoraires (taux)</dt>
+          <dd class="text-gray-900 text-right">
+            {% if fee_parts %}{{ fee_parts[0] }}{% if fee_parts[1] %} <span class="text-gray-500">({{ fee_parts[1] }})</span>{% endif %}{% else %}—{% endif %}
+          </dd>
         </div>
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Ouverture</dt>
