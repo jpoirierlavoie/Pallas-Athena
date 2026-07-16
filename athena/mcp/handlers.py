@@ -338,9 +338,11 @@ def get_dossier(args: dict) -> dict:
             "palais_de_justice": d.get("palais_de_justice", ""),
             "district_judiciaire": d.get("district_judiciaire", ""),
             "is_administrative_tribunal": bool(d.get("is_administrative_tribunal")),
-            # Forum: "judiciaire" (a Québec judicial court, file number parsed)
-            # or "autre" (an administrative tribunal / federal court whose name
-            # is in `tribunal` and whose file number is unparsed).
+            # Forum: "judiciaire" (a Québec judicial court, file number
+            # parsed), "administratif"/"federal" (body named in `tribunal`,
+            # file number unparsed), or "prejudiciaire" (nothing filed —
+            # court_file_number reads « Préjudiciaire »). Legacy "autre" is
+            # migrated on read by the model.
             "forum_type": d.get("forum_type", "judiciaire"),
             "mandate_type": d.get("mandate_type", ""),
             "fee_type": d.get("fee_type", ""),

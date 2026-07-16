@@ -19,8 +19,19 @@
        domaine: '{{ dossier.domaine if dossier and dossier.domaine else '' }}',
        action: '{{ dossier.action if dossier and dossier.action else '' }}',
        prescriptionType: '{{ dossier.prescription_type if dossier and dossier.prescription_type else '' }}',
-       isOtherForum: {{ 'true' if dossier and dossier.forum_type == 'autre' else 'false' }},
+       forumType: '{{ dossier.forum_type if dossier and dossier.forum_type else 'judiciaire' }}',
        forum: '{{ dossier.forum if dossier and dossier.forum else '' }}',
+       onForumTypeChange() {
+         /* The slug must never outlive its category (the two pickers share
+            the `forum` state), and a « Préjudiciaire » placeholder number
+            must not pre-fill the parser input when returning to a judicial
+            court. Only fired by a real change event — seeding is untouched. */
+         this.forum = '';
+         if (this.forumType === 'judiciaire') {
+           const el = document.getElementById('court_file_number');
+           if (el && el.value.trim() === 'Préjudiciaire') { el.value = ''; }
+         }
+       },
        get domaineActions() {
          return this.taxonomie[this.domaine] ? this.taxonomie[this.domaine].actions : [];
        },
@@ -287,90 +298,128 @@
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-4">Dossier judiciaire</h2>
 
-      {# Forum toggle. Unchecked = a Québec judicial court, whose file number
-         the parser resolves. Checked = an administrative tribunal or federal
-         court, picked from the list; its file number is stored as-is. #}
-      <label class="flex items-start gap-2 mb-4 cursor-pointer">
-        <input type="checkbox" x-model="isOtherForum"
-               class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-        <span class="text-sm text-gray-700">
-          Tribunal administratif ou cour fédérale
-          <span class="block text-xs text-gray-400">
-            Hors des cours judiciaires du Québec — le numéro ne sera pas analysé.
-          </span>
-        </span>
-      </label>
-      <input type="hidden" name="forum_type"
-             :value="isOtherForum ? 'autre' : 'judiciaire'">
+      {# Forum droplist (July 2026, replaces the admin/federal checkbox).
+         « Tribunal de droit commun » = parser active; « Tribunal
+         administratif » / « Cour ou tribunal fédéral » = pick the body, the
+         number is stored verbatim; « Préjudiciaire » = nothing filed yet —
+         only the district is entered, and the server forces the file number
+         to « Préjudiciaire » (normalize_forum) until a real number,
+         analysed by the parser, crushes it. #}
+      <div class="mb-4">
+        <label for="forum_type" class="block text-sm text-gray-700 mb-1">Forum</label>
+        <select id="forum_type" name="forum_type" x-model="forumType"
+                x-on:change="onForumTypeChange()"
+                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          {% for key, label in forum_type_labels.items() %}
+          <option value="{{ key }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
 
       <div class="space-y-4">
-        {# « Autre » — pick the tribunal / federal court from the grouped list #}
-        <div x-show="isOtherForum" x-cloak>
-          <label for="forum" class="block text-sm text-gray-700 mb-1">Tribunal ou cour</label>
-          <select id="forum" name="forum" x-model="forum"
+        {# Administrative tribunal picker #}
+        <div x-show="forumType === 'administratif'" x-cloak>
+          <label for="forum_admin" class="block text-sm text-gray-700 mb-1">Tribunal administratif</label>
+          <select id="forum_admin" name="forum" x-model="forum"
+                  :disabled="forumType !== 'administratif'"
                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
             <option value="">— Choisir —</option>
-            {% for cat_key, cat_label, forums in forum_groups %}
-            <optgroup label="{{ cat_label }}">
-              {% for forum in forums %}
-              <option value="{{ forum.forum_key }}">{{ forum.name }} ({{ forum.abbr }})</option>
-              {% endfor %}
-            </optgroup>
+            {% for forum in forums_admin %}
+            <option value="{{ forum.forum_key }}">{{ forum.name }} ({{ forum.abbr }})</option>
             {% endfor %}
           </select>
         </div>
 
-        <div>
+        {# Federal court / tribunal picker #}
+        <div x-show="forumType === 'federal'" x-cloak>
+          <label for="forum_federal" class="block text-sm text-gray-700 mb-1">Cour ou tribunal fédéral</label>
+          <select id="forum_federal" name="forum" x-model="forum"
+                  :disabled="forumType !== 'federal'"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="">— Choisir —</option>
+            {% for forum in forums_federal %}
+            <option value="{{ forum.forum_key }}">{{ forum.name }} ({{ forum.abbr }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        {# Court file number — hidden for « Préjudiciaire » (the server forces
+           « Préjudiciaire » into the field so gabarits can cite it). #}
+        <div x-show="forumType !== 'prejudiciaire'">
           <label for="court_file_number" class="block text-sm text-gray-700 mb-1">
             Numéro de dossier judiciaire
           </label>
-          {# One input for both branches; the parser fires only for a judicial
-             court (the « autre » branch stores the number verbatim). #}
+          {# One input for all filed branches; the parser fires only for a
+             judicial court (the other branches store the number verbatim). #}
           <input type="text"
                  id="court_file_number"
                  name="court_file_number"
                  value="{{ dossier.court_file_number if dossier else '' }}"
-                 x-bind:placeholder="isOtherForum ? 'Numéro attribué par le tribunal' : '500-05-123456-241'"
+                 :disabled="forumType === 'prejudiciaire'"
+                 x-bind:placeholder="forumType === 'judiciaire' ? '500-05-123456-241' : 'Numéro attribué par le tribunal'"
                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                 x-on:blur="if (!isOtherForum) parseCourtFile()"
+                 x-on:blur="if (forumType === 'judiciaire') parseCourtFile()"
                  autocomplete="off">
           <p id="court-file-error" class="text-xs text-red-500 mt-1 hidden"></p>
         </div>
 
-        {# Auto-populated fields — judicial court only, visible after parsing #}
+        {# Préjudiciaire — the anticipated district, entered by hand #}
+        <div x-show="forumType === 'prejudiciaire'" x-cloak>
+          <label for="district_prejudiciaire" class="block text-sm text-gray-700 mb-1">District judiciaire</label>
+          <input type="text"
+                 id="district_prejudiciaire"
+                 name="district_judiciaire"
+                 x-model="judicialMetadata.district_judiciaire"
+                 :disabled="forumType !== 'prejudiciaire'"
+                 placeholder="Montréal"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                 autocomplete="off">
+          <p class="text-xs text-gray-400 mt-1">
+            District pressenti — sera écrasé par l'analyse du numéro de dossier
+            une fois le recours déposé.
+          </p>
+        </div>
+
+        {# Auto-populated fields — judicial court only, visible after parsing.
+           Disabled outside that branch so the duplicate district input above
+           is the only one submitted in préjudiciaire mode. #}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"
-             x-show="!isOtherForum && (judicialMetadata.district_judiciaire || judicialMetadata.tribunal)"
+             x-show="forumType === 'judiciaire' && (judicialMetadata.district_judiciaire || judicialMetadata.tribunal)"
              x-cloak>
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-0.5">District judiciaire</label>
             <input type="text" name="district_judiciaire"
                    x-model="judicialMetadata.district_judiciaire"
+                   :disabled="forumType !== 'judiciaire'"
                    class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-0.5">Palais de justice</label>
             <input type="text" name="palais_de_justice"
                    x-model="judicialMetadata.palais_de_justice"
+                   :disabled="forumType !== 'judiciaire'"
                    class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-0.5">Tribunal</label>
             <input type="text" name="tribunal"
                    x-model="judicialMetadata.tribunal"
+                   :disabled="forumType !== 'judiciaire'"
                    class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
           </div>
           <div>
             <label class="block text-xs font-medium text-gray-500 mb-0.5">Compétence</label>
             <input type="text" name="competence"
                    x-model="judicialMetadata.competence"
+                   :disabled="forumType !== 'judiciaire'"
                    class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50">
           </div>
         </div>
 
         {# Administrative tribunal indicator (from parsing a letter-prefixed number) #}
-        <div x-show="!isOtherForum && judicialMetadata.is_administrative" x-cloak
+        <div x-show="forumType === 'judiciaire' && judicialMetadata.is_administrative" x-cloak
              class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
-          Numéro devant un tribunal administratif — cochez la case ci-dessus pour le sélectionner dans la liste.
+          Numéro devant un tribunal administratif — choisissez « Tribunal administratif » ci-dessus pour le sélectionner dans la liste.
         </div>
       </div>
 

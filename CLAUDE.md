@@ -319,7 +319,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 
 > The Firestore/Storage rules + index files live at the **repo root** (next to `firebase.json`, which references them by bare filename) — they are Firebase-CLI deploy config, **not** part of the App Engine app, so they deliberately sit outside `athena/` and never ship in the deployed bundle.
 
-> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `agenda`, `protocole`, `documents`; **`temps` is the default tab** (labelled « Temps & Déboursés » since July 2026). The `audiences` and `taches` tabs were **merged into `agenda` in July 2026** (`_tab_agenda.html`: two sections, Audiences then Tâches, mirroring the temps tab) — the per-tab summary counters were dropped, and the tab is **forward-looking**: items dated strictly before today (Montréal calendar day; today's items stay) are filtered out route-side in Python (no new Firestore index), and a dateless task shows only while active (`à_faire`/`en_cours`). `_LEGACY_TABS` in `routes/dossiers.py` maps the old `audiences`/`taches` names onto `agenda` for pre-merge bookmarks and `return_to` links. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card (itself **split in July 2026** into « Recours » — domaine, action, précision, valeur/classe — and « Prescription » — prescription, nature du délai, droit d'action, date pour agir), its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`; « Type de dossier » left it in July 2026 when it became « Domaine » on the Recours card), and its free-text notes were deleted with the fields (below). A « Sommaire » card (free-text `sommaire` field, entered on the create/edit form) sits between the header card and the info-card grid. There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
+> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `agenda`, `protocole`, `documents`; **`temps` is the default tab**. Tab keys ≠ labels since July 2026: `temps` is labelled « Temps & Déboursés » and `facturation` « Honoraires » (the keys were kept so bookmarks survive). The `documents` tab lost its counters/indicators in July 2026 (summary stat grid and the per-folder « X éléments » line — dropping the latter also removed a per-folder `_count_items` N+1 and the unused `get_document_summary`/`get_notes_summary` calls from the tab loader). The `audiences` and `taches` tabs were **merged into `agenda` in July 2026** (`_tab_agenda.html`: two sections, Audiences then Tâches, mirroring the temps tab) — the per-tab summary counters were dropped, and the tab is **forward-looking**: items dated strictly before today (Montréal calendar day; today's items stay) are filtered out route-side in Python (no new Firestore index), and a dateless task shows only while active (`à_faire`/`en_cours`). `_LEGACY_TABS` in `routes/dossiers.py` maps the old `audiences`/`taches` names onto `agenda` for pre-merge bookmarks and `return_to` links. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card (itself **split in July 2026** into « Recours » — domaine, action, précision, valeur/classe — and « Prescription » — « Délai (Type) » (the confirmed délai with the taxonomy's nature du délai bracketed after it, amber when a déchéance), droit d'action, date pour agir), its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`; the fermeture/rétention rows are hidden until a closing date is set; « Type de dossier » left it in July 2026 when it became « Domaine » on the Recours card), and its free-text notes were deleted with the fields (below). A « Sommaire » card (free-text `sommaire` field, entered on the create/edit form) sits between the header card and the info-card grid. There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
 
 ---
 
@@ -429,7 +429,9 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
                                           # _SOMMAIRE_MAX_LENGTH; other string
                                           # fields keep the 2000 cap). Shown in
                                           # its own card on the detail page;
-                                          # exposed by the MCP get_dossier tool.
+                                          # exposed by the MCP get_dossier tool
+                                          # and as the {{dossier.sommaire}} /
+                                          # {{sommaire}} gabarit placeholder.
 
     # Parties on the dossier (replaces the legacy single client_id)
     "clients":          [{"id": UUIDv4, "name": str}, ...],
@@ -470,16 +472,26 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
                                           # (letters-prefix parse OR an "autre"
                                           # forum of category "administratif")
 
-    # Forum (July 2026) — is the matter before a Québec judicial court, or an
-    # administrative tribunal / federal court the parser can't handle?
-    "forum_type": "judiciaire" | "autre",  # default "judiciaire"
-    "forum": str,                         # reference._FORUMS slug when "autre"
-                                          # (e.g. "taq", "cour_federale"); ""
-                                          # for a judicial court. Its name is
-                                          # written into `tribunal`, and the
-                                          # court file number is stored UNPARSED.
-                                          # models/dossier.normalize_forum
-                                          # reconciles this server-side.
+    # Forum (July 2026; four-way since late July — the binary "autre" was
+    # split and a pre-litigation state added; legacy "autre" docs migrate on
+    # read via _migrate_forum_type, slug category → administratif/federal).
+    "forum_type": "judiciaire" | "administratif" | "federal" | "prejudiciaire",
+                                          # default "judiciaire" (parser active).
+                                          # "prejudiciaire" = nothing filed yet:
+                                          # only district_judiciaire is entered,
+                                          # and court_file_number is FORCED to
+                                          # "Préjudiciaire" (PREJUDICIAIRE_FILE_NUMBER)
+                                          # so {{dossier.numero_cour}} cites it —
+                                          # crushed by the parser once a real
+                                          # number is entered under "judiciaire".
+    "forum": str,                         # reference._FORUMS slug when
+                                          # administratif/federal (e.g. "taq",
+                                          # "cour_federale"); "" otherwise. Its
+                                          # name is written into `tribunal`, and
+                                          # the court file number is stored
+                                          # UNPARSED. models/dossier.normalize_forum
+                                          # reconciles this server-side and
+                                          # rejects a cross-category slug.
 
     # Financial (cents)
     # "pro_bono"/"aide_juridique" are RATE-LESS: no taux/forfait/pourcentage
@@ -1185,7 +1197,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `count_dossiers_for_partie(partie_id) -> int` (returns 0 on query failure — display only), `count_dossiers_for_partie_strict(partie_id) -> int` (propagates errors — used by FK safety checks), `list_dossiers_for_partie(partie_id) -> list[dict]` — query both `client_ids` and `opposing_party_ids`
 - `delete_dossier` REFUSES deletion while child records exist (documents, time entries, expenses, invoices, hearings, tasks, notes, protocols, folders) and fails CLOSED when the child check errors — archive instead of deleting
 - `dossier_to_vjournal(dossier) -> str`, `vjournal_to_dossier(ical_str) -> dict` — legacy, retained for potential export (not used by DAV post-D1). CATEGORIES now emits the domaine label + the action label; an unknown key resolves to nothing rather than leaking a raw snake_case key as a French category (the old `matter_type` line did).
-- **Forum (July 2026):** `normalize_forum(data)` reconciles the forum fields server-side (authoritative over the JS state), called by the route in `_form_data` before validation. `forum_type=="autre"` → the picked `forum` slug's name becomes `tribunal`, the Québec judicial-court fields (greffe/juridiction/district/palais/competence) are cleared, and `is_administrative_tribunal` is set True only for a `"administratif"` forum (not a federal court). `forum_type=="judiciaire"` → `forum` cleared, parsed metadata stands. `_validate` presence-gates `forum_type` (legacy dossiers default `"judiciaire"` on read) and requires a real `forum` slug when `"autre"`. It lives in the model, not the route, so it is testable without Flask config.
+- **Forum (July 2026, four-way since late July):** `VALID_FORUM_TYPES = ("judiciaire", "administratif", "federal", "prejudiciaire")` + `FORUM_TYPE_LABELS` (« Tribunal de droit commun » / « Tribunal administratif » / « Cour ou tribunal fédéral » / « Préjudiciaire »). `normalize_forum(data)` reconciles the forum fields server-side (authoritative over the JS state), called by the route in `_form_data` before validation. `administratif`/`federal` → the picked `forum` slug's name becomes `tribunal`, the Québec judicial-court fields (greffe/juridiction/district/palais/competence) are cleared, and `is_administrative_tribunal` is True only for `administratif`; a blank/unknown/**cross-category** slug leaves the data untouched (`_validate` rejects it). `prejudiciaire` → everything judicial is cleared EXCEPT the user-entered `district_judiciaire`, and `court_file_number` is forced to `PREJUDICIAIRE_FILE_NUMBER` (« Préjudiciaire ») so gabarits can cite it until the parser crushes it. `judiciaire` → `forum` cleared, parsed metadata stands. `_validate` presence-gates `forum_type` (legacy dossiers default `"judiciaire"` on read); the retired `"autre"` is no longer writable — `_migrate_forum_type` (in the `_migrate_parties` chokepoint) splits stored `"autre"` docs by their slug's category on read (dangling slug → `judiciaire`, forum cleared, tribunal text kept). It lives in the model, not the route, so it is testable without Flask config.
 - **Taxonomy (July 2026):** `VALID_DOMAINES` / `VALID_ACTIONS` / `DOMAINE_LABELS` are re-exported from `utils/taxonomie.py` — the vocabulary is **not** redefined here (contrast `MANDATE_TYPE_LABELS` / `FEE_TYPE_LABELS`, which `utils/template_fields.py` must mirror by hand; there is deliberately **no domaine mirror**, since `taxonomie` is Firestore-free and both sides import it). `_migrate_domaine` (called from `_migrate_parties`, the chokepoint covering all six read paths) folds legacy `matter_type` → `domaine` and `objet` → `action_precision`, then `_REMOVED_FIELDS` purges both on the next save. `_validate` presence-gates `domaine`/`action` (like `mandate_type`) and rejects a pair whose code prefix disagrees with the domaine — the cascading picker cannot produce that, but a hand-crafted POST can.
 
 ### `models/time_entry.py` (note: file is `time_entry.py`, **not** `timeentry.py`)
@@ -1598,7 +1610,7 @@ Shared greffe numbers (multiple locations): `614`, `635`, `640`, `652` — store
 
 Auto-populated fields on dossier (`tribunal`, `competence`, `palais_de_justice`, `district_judiciaire`) remain user-editable after parsing.
 
-**Forum toggle (July 2026).** The parser only resolves Québec judicial-court numbers (`NNN-NN-…`). For a matter before an administrative tribunal or a federal court, the dossier form has a checkbox (`forum_type="autre"`) that reveals a grouped picker of the `reference._FORUMS` bodies; picking one writes its name into `tribunal`, clears the judicial-only fields, and the court file number is stored **verbatim, unparsed**. The checkbox disables the on-blur parse. Server-side reconciliation is `models/dossier.normalize_forum` (authoritative over the JS state). See the reference `_FORUMS` table above.
+**Forum droplist (July 2026; replaced the checkbox late July).** The parser only resolves Québec judicial-court numbers (`NNN-NN-…`). The dossier form's « Dossier judiciaire » section has a four-way « Forum » select (`forum_type`): **Tribunal de droit commun** — parser active on blur, parsed-fields grid shown; **Tribunal administratif** / **Cour ou tribunal fédéral** — a per-category picker of the `reference._FORUMS` bodies appears (two `<select name="forum">`, only the active one enabled so exactly one submits); picking one writes its name into `tribunal`, clears the judicial-only fields, and the court file number is stored **verbatim, unparsed**; **Préjudiciaire** — nothing filed yet: the file-number input is hidden/disabled, a manual « District judiciaire » input is the only entry, and the server forces `court_file_number = "Préjudiciaire"` so `{{dossier.numero_cour}}` fills — switching back to droit commun auto-clears the placeholder string so the real number can be parsed (which crushes the préjudiciaire values). Server-side reconciliation is `models/dossier.normalize_forum` (authoritative over the JS state). The detail page's « Juridiction » card shows a « Forum » row (the `FORUM_TYPE_LABELS` label) whenever `forum_type != "judiciaire"`. See the reference `_FORUMS` table above.
 
 ### Court locations & addresses (July 2026)
 

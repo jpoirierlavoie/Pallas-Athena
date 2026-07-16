@@ -549,6 +549,9 @@ def _partie_fields(slot: str) -> dict[str, tuple[Optional[str], Callable]]:
 CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = {
     # dossier.* (§6.1)
     "dossier.titre": ("dossier", _dossier_field("title")),
+    # Free-text case summary. May hold several paragraphs — fill_docx expands
+    # blank-line-separated chunks into cloned paragraphs (value-driven).
+    "dossier.sommaire": ("dossier", _dossier_field("sommaire")),
     "dossier.numero_cour": ("dossier", _dossier_field("court_file_number")),
     "dossier.reference_interne": ("dossier", _dossier_field("file_number")),
     "dossier.tribunal": ("dossier", _dossier_field("tribunal")),
@@ -637,6 +640,7 @@ FLAT_ALIASES: dict[str, str] = {
     "chambre": "dossier.chambre",
     "référence_interne": "dossier.reference_interne",
     "intitulé_dossier": "dossier.titre",
+    "sommaire": "dossier.sommaire",
     "rôle": "dossier.role_feminin",
     "demandeur": "dossier.demandeur",
     "défendeur": "dossier.defendeur",

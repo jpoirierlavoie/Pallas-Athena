@@ -187,6 +187,15 @@ def test_role_feminin_map_and_autre_unresolved():
     assert "rôle" not in _resolve(["rôle"], dossier=_dossier(role="autre"))
 
 
+def test_sommaire_resolves_namespaced_and_flat():
+    d = _dossier(sommaire="Réclamation pour vices cachés.")
+    r = _resolve(["dossier.sommaire", "sommaire"], dossier=d)
+    assert r["dossier.sommaire"] == "Réclamation pour vices cachés."
+    assert r["sommaire"] == "Réclamation pour vices cachés."
+    # Absent/empty on legacy dossiers → unresolved (empty popup input).
+    assert "sommaire" not in _resolve(["sommaire"], dossier=_dossier())
+
+
 def test_positions_unresolved_for_role_autre():
     resolved = _resolve(
         ["demandeur", "défendeur"],

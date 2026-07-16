@@ -61,22 +61,6 @@
 
   <hr class="border-gray-200 mb-6">
 
-  {# ── Summary stats ──────────────────────────────────────────── #}
-  <div class="grid grid-cols-3 gap-3">
-    <div class="p-3 bg-gray-50 rounded-lg text-center">
-      <p class="text-xs text-gray-500 mb-1">Documents</p>
-      <p class="text-lg font-semibold text-gray-900">{{ document_summary.total }}</p>
-    </div>
-    <div class="p-3 bg-gray-50 rounded-lg text-center">
-      <p class="text-xs text-gray-500 mb-1">Dossiers</p>
-      <p class="text-lg font-semibold text-gray-900">{{ root_folders | length }}</p>
-    </div>
-    <div class="p-3 bg-gray-50 rounded-lg text-center">
-      <p class="text-xs text-gray-500 mb-1">Taille totale</p>
-      <p class="text-lg font-semibold text-gray-900">{{ document_summary.total_size_formatted }}</p>
-    </div>
-  </div>
-
   {# ── Content list ──────────────────────────────────────────── #}
   <div>
     <div class="flex items-center justify-between mb-3">
@@ -114,7 +98,6 @@
         </div>
         <div class="flex-1 min-w-0">
           <span class="text-sm font-medium text-gray-900 truncate block">{{ f.name }}</span>
-          <span class="text-xs text-gray-400">{{ f._item_count }} élément{{ 's' if f._item_count != 1 }}</span>
         </div>
         <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/>

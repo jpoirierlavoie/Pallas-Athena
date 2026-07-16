@@ -125,17 +125,17 @@
 
     {# Court info #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-2">Tribunal et juridiction</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Juridiction</h2>
       <dl class="space-y-1.5 text-sm">
-        {% if forum_obj %}
+        {% if dossier.forum_type and dossier.forum_type != 'judiciaire' %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Forum</dt>
-          <dd class="text-gray-900 text-right">{{ forum_category_labels.get(forum_obj.category, '') }}</dd>
+          <dd class="text-gray-900 text-right">{{ forum_type_labels.get(dossier.forum_type, dossier.forum_type) }}</dd>
         </div>
         {% endif %}
         {% if dossier.court_file_number %}
         <div class="flex justify-between">
-          <dt class="text-gray-500">N° judiciaire</dt>
+          <dt class="text-gray-500">N° de dossier</dt>
           <dd class="text-gray-900 font-mono text-xs">{{ dossier.court_file_number }}</dd>
         </div>
         {% endif %}
@@ -207,21 +207,16 @@
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-2">Prescription</h2>
       <dl class="space-y-1.5 text-sm">
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Prescription</dt>
-          <dd class="text-gray-900 text-right">{{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}</dd>
-        </div>
-        {# A déchéance neither suspends nor interrupts — § 4 of the taxonomy
-           asks that it be made to stand out. Several remain relevables under
+        {# The bracketed type is the taxonomy's nature du délai. A déchéance
+           neither suspends nor interrupts — § 4 of the taxonomy asks that it
+           be made to stand out (amber). Several remain relevables under
            their own statute, hence « à valider », never « fatal ». #}
-        {% if action_obj and action_obj.delai_type %}
         <div class="flex justify-between gap-4">
-          <dt class="text-gray-500 flex-shrink-0">Nature du délai</dt>
-          <dd class="text-right {{ 'text-amber-600 font-medium' if 'D' in action_obj.delai_type else 'text-gray-900' }}">
-            {{ delai_type_labels.get(action_obj.delai_type, action_obj.delai_type) }}
+          <dt class="text-gray-500 flex-shrink-0">Délai (Type)</dt>
+          <dd class="text-gray-900 text-right">
+            {{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}{% if action_obj and action_obj.delai_type %} <span class="{{ 'text-amber-600 font-medium' if 'D' in action_obj.delai_type else 'text-gray-500' }}">({{ delai_type_labels.get(action_obj.delai_type, action_obj.delai_type) }})</span>{% endif %}
           </dd>
         </div>
-        {% endif %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Droit d'action</dt>
           <dd class="text-gray-900 text-right">{{ dossier.droit_action_date.strftime('%d %B %Y') if dossier.droit_action_date and dossier.droit_action_date.strftime is defined else '—' }}</dd>
@@ -251,14 +246,18 @@
           <dt class="text-gray-500 flex-shrink-0">Ouverture</dt>
           <dd class="text-gray-900 text-right">{{ dossier.opened_date.strftime('%d %B %Y') if dossier.opened_date and dossier.opened_date.strftime is defined else '—' }}</dd>
         </div>
+        {% if dossier.closed_date and dossier.closed_date.strftime is defined %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Fermeture</dt>
-          <dd class="text-gray-900 text-right">{{ dossier.closed_date.strftime('%d %B %Y') if dossier.closed_date and dossier.closed_date.strftime is defined else '—' }}</dd>
+          <dd class="text-gray-900 text-right">{{ dossier.closed_date.strftime('%d %B %Y') }}</dd>
         </div>
+        {% endif %}
+        {% if retention_date %}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Rétention</dt>
-          <dd class="text-gray-900 text-right">{{ retention_date.strftime('%d %B %Y') if retention_date else '—' }}</dd>
+          <dd class="text-gray-900 text-right">{{ retention_date.strftime('%d %B %Y') }}</dd>
         </div>
+        {% endif %}
       </dl>
     </div>
   </div>
@@ -269,7 +268,7 @@
     <div class="flex overflow-x-auto border-b border-gray-200">
       {% set tabs = [
         ('temps', 'Temps & Déboursés'),
-        ('facturation', 'Facturation'),
+        ('facturation', 'Honoraires'),
         ('agenda', 'Agenda'),
         ('protocole', 'Protocole'),
         ('documents', 'Documents')

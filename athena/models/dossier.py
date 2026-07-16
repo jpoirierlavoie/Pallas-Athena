@@ -80,7 +80,18 @@ VALID_FEE_TYPES = (
     "hourly", "flat", "contingency", "mixed", "pro_bono", "aide_juridique",
 )
 VALID_STATUSES = ("actif", "en_attente", "fermé", "archivé")
-VALID_FORUM_TYPES = ("judiciaire", "autre")
+# Forum (July 2026, four-way — replaced the binary judiciaire/"autre" toggle):
+# "judiciaire" = Québec judicial court (file number parsed); "administratif" /
+# "federal" = a body picked from reference._FORUMS (file number stored
+# verbatim); "prejudiciaire" = no proceedings filed yet — only the district
+# is entered, and the file number is forced to PREJUDICIAIRE_FILE_NUMBER so
+# gabarits can cite it until a real number crushes it via the parser.
+VALID_FORUM_TYPES = ("judiciaire", "administratif", "federal", "prejudiciaire")
+_FORUM_TYPE_CATEGORY = {
+    "administratif": reference.ADMINISTRATIF,
+    "federal": reference.FEDERAL,
+}
+PREJUDICIAIRE_FILE_NUMBER = "Préjudiciaire"
 
 # Display labels (French)
 #
@@ -93,6 +104,12 @@ MANDATE_TYPE_LABELS = {
     "transactionnel": "Transactionnel",
     "consultation": "Consultatif",
     "autre": "Autre",
+}
+FORUM_TYPE_LABELS = {
+    "judiciaire": "Tribunal de droit commun",
+    "administratif": "Tribunal administratif",
+    "federal": "Cour ou tribunal fédéral",
+    "prejudiciaire": "Préjudiciaire",
 }
 # Retired type-de-mandat keys → current vocabulary, applied on read
 # (_migrate_mandate_type). "mediation_arbitrage" was dropped July 2026 and has
@@ -178,10 +195,11 @@ def _default_doc() -> dict:
         "greffe_number": "",
         "juridiction_number": "",
         "is_administrative_tribunal": False,
-        # Forum. "judiciaire" = a Québec judicial court (Cour du Québec /
-        # supérieure / d'appel), whose file number the parser resolves.
-        # "autre" = an administrative tribunal or federal court chosen from the
-        # reference list (`forum` slug), whose file number is stored unparsed.
+        # Forum — see VALID_FORUM_TYPES. "judiciaire" = a Québec judicial
+        # court whose file number the parser resolves; "administratif"/
+        # "federal" = a body from the reference list (`forum` slug), file
+        # number stored unparsed; "prejudiciaire" = nothing filed yet
+        # (district only, file number forced to « Préjudiciaire »).
         "forum_type": "judiciaire",
         "forum": "",
         # Role of the lawyer's client
@@ -237,20 +255,42 @@ def normalize_forum(data: dict) -> None:
     """Reconcile the forum fields in place, authoritatively over client input.
 
     Called by the route before validation, so validation and the write see a
-    consistent forum. "autre" → the selected forum's name IS the ``tribunal``,
-    and the Québec judicial-court fields (greffe/juridiction/district/palais/
-    competence) do not apply, so they are cleared; ``is_administrative_tribunal``
-    is True only for a real administrative tribunal, not a federal court.
-    "judiciaire" → no forum; the parsed judicial metadata already in ``data``
-    stands.
+    consistent forum.
+
+    - "judiciaire" (or legacy/absent) → no forum; the parsed judicial metadata
+      already in ``data`` stands. Whatever a préjudiciaire dossier held is
+      CRUSHED here by the parser's output once a real number is entered.
+    - "administratif"/"federal" → the selected forum's name IS the
+      ``tribunal``, and the Québec judicial-court fields (greffe/juridiction/
+      district/palais/competence) do not apply, so they are cleared;
+      ``is_administrative_tribunal`` is True only for an administrative
+      tribunal, never a federal court.
+    - "prejudiciaire" → nothing is filed yet: only the user-entered
+      ``district_judiciaire`` is kept, every other judicial field is cleared,
+      and ``court_file_number`` is FORCED to ``PREJUDICIAIRE_FILE_NUMBER`` so
+      a gabarit's ``{{dossier.numero_cour}}`` cites « Préjudiciaire ».
     """
-    if data.get("forum_type") != "autre":
+    forum_type = data.get("forum_type", "")
+
+    if forum_type == "prejudiciaire":
+        data["forum"] = ""
+        data["court_file_number"] = PREJUDICIAIRE_FILE_NUMBER
+        data["tribunal"] = ""
+        data["competence"] = ""
+        data["palais_de_justice"] = ""
+        data["greffe_number"] = ""
+        data["juridiction_number"] = ""
+        data["is_administrative_tribunal"] = False
+        return
+
+    if forum_type not in _FORUM_TYPE_CATEGORY:
         data["forum"] = ""
         return
+
     forum = reference.get_forum(data.get("forum", ""))
-    if not forum:
-        # Invalid/blank slug — _validate will reject it; don't wipe the
-        # judicial fields on an about-to-fail submission.
+    if not forum or forum["category"] != _FORUM_TYPE_CATEGORY[forum_type]:
+        # Invalid/blank/cross-category slug — _validate will reject it; don't
+        # wipe the judicial fields on an about-to-fail submission.
         return
     data["tribunal"] = forum["name"]
     data["competence"] = ""
@@ -258,7 +298,7 @@ def normalize_forum(data: dict) -> None:
     data["palais_de_justice"] = ""
     data["greffe_number"] = ""
     data["juridiction_number"] = ""
-    data["is_administrative_tribunal"] = forum["category"] == reference.ADMINISTRATIF
+    data["is_administrative_tribunal"] = forum_type == "administratif"
 
 
 def _validate(data: dict) -> list[str]:
@@ -296,14 +336,17 @@ def _validate(data: dict) -> list[str]:
         errors.append("Type de mandat invalide.")
 
     # forum_type is presence-gated (legacy dossiers predate it → default
-    # "judiciaire" on read). When the forum is "autre", a real forum slug must
-    # be picked; when "judiciaire", no forum applies.
+    # "judiciaire" on read). "administratif"/"federal" require a forum slug of
+    # the MATCHING category — the form's two pickers cannot cross categories,
+    # but a hand-crafted POST can. "judiciaire"/"prejudiciaire" need no forum.
     if "forum_type" in data:
         forum_type = data.get("forum_type", "")
-        forum = data.get("forum", "")
+        forum = reference.get_forum(data.get("forum", ""))
         if forum_type not in VALID_FORUM_TYPES:
             errors.append("Type de forum invalide.")
-        elif forum_type == "autre" and not reference.get_forum(forum):
+        elif forum_type in _FORUM_TYPE_CATEGORY and (
+            not forum or forum["category"] != _FORUM_TYPE_CATEGORY[forum_type]
+        ):
             errors.append("Veuillez sélectionner le tribunal ou la cour.")
 
     if data.get("status", "") not in VALID_STATUSES:
@@ -459,6 +502,31 @@ def _migrate_parties(doc: dict) -> dict:
         doc["opposing_party_ids"] = [p["id"] for p in doc.get("opposing_parties", [])]
     _migrate_domaine(doc)
     _migrate_mandate_type(doc)
+    _migrate_forum_type(doc)
+    return doc
+
+
+def _migrate_forum_type(doc: dict) -> dict:
+    """Split the retired "autre" forum_type into administratif/federal in place.
+
+    The binary judiciaire/"autre" toggle became a four-way vocabulary in July
+    2026; the stored forum slug's category says which branch an "autre" doc
+    belongs to. Same contract as :func:`_migrate_mandate_type`: called from
+    :func:`_migrate_parties`, so every read path sees a current value and the
+    write-back happens on the next ``set()``. A dangling slug (removed from
+    the reference table) falls back to "judiciaire" with the forum cleared —
+    the tribunal name it wrote at save time survives as plain text.
+    """
+    if doc.get("forum_type") != "autre":
+        return doc
+    forum = reference.get_forum(doc.get("forum", ""))
+    if forum and forum["category"] == reference.FEDERAL:
+        doc["forum_type"] = "federal"
+    elif forum:
+        doc["forum_type"] = "administratif"
+    else:
+        doc["forum_type"] = "judiciaire"
+        doc["forum"] = ""
     return doc
 
 

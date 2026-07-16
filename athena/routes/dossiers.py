@@ -61,7 +61,6 @@ from models.protocol import (
 from models.document import (
     CATEGORY_LABELS as DOCUMENT_CATEGORY_LABELS,
     format_file_size,
-    get_document_summary,
     get_file_icon,
     list_documents,
 )
@@ -69,6 +68,7 @@ from models.folder import list_folders
 from models.dossier import (
     DOMAINE_LABELS,
     FEE_TYPE_LABELS,
+    FORUM_TYPE_LABELS,
     MANDATE_TYPE_LABELS,
     ROLE_LABELS,
     STATUS_LABELS,
@@ -82,7 +82,7 @@ from models.dossier import (
     update_dossier,
 )
 from models import reference
-from models.reference import forums_by_category, get_forum
+from models.reference import list_forums
 from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires, retention_date
@@ -203,9 +203,11 @@ def _template_context() -> dict:
         # utils.taxonomie, so handing it to every dossier view (list, tabs)
         # costs a dict reference; only form.html actually serializes it.
         "taxonomie_payload": taxonomie.form_payload(),
-        # Grouped non-judicial forums for the « autre » picker:
-        # [(category_key, label, [forum, ...]), ...].
-        "forum_groups": forums_by_category(),
+        # Non-judicial forums, one list per picker (the form shows the
+        # administratif or federal select according to forum_type).
+        "forums_admin": list_forums(reference.ADMINISTRATIF),
+        "forums_federal": list_forums(reference.FEDERAL),
+        "forum_type_labels": FORUM_TYPE_LABELS,
         "mandate_type_labels": MANDATE_TYPE_LABELS,
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
@@ -342,9 +344,6 @@ def dossier_detail(dossier_id: str) -> str:
     # Taxonomy display values, resolved route-side like value_class/fee_display.
     ctx["action_obj"] = taxonomie.get_action(dossier.get("action", ""))
     ctx["action_display"] = taxonomie.action_label(dossier.get("action", ""))
-    # Forum (non-judicial) object, for the category badge on the court card.
-    ctx["forum_obj"] = get_forum(dossier.get("forum", ""))
-    ctx["forum_category_labels"] = reference.FORUM_CATEGORY_LABELS
     return render_template("dossiers/detail.html", **ctx)
 
 
@@ -430,21 +429,15 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS
         ctx["now"] = datetime.now(timezone.utc)
 
-    # Load document data for the documents tab
+    # Load document data for the documents tab (counters removed July 2026 —
+    # no summary aggregation, no per-folder _count_items N+1)
     if tab_name == "documents":
         # Notes
-        from models.note import list_notes, get_notes_summary, CATEGORY_LABELS as NOTE_CATEGORY_LABELS
+        from models.note import list_notes, CATEGORY_LABELS as NOTE_CATEGORY_LABELS
         ctx["notes"] = list_notes(dossier_id=dossier_id)
-        ctx["notes_summary"] = get_notes_summary(dossier_id)
         ctx["note_category_labels"] = NOTE_CATEGORY_LABELS
 
-        # Root-level folders with item counts
-        root_folders = list_folders(dossier_id, parent_folder_id=None)
-        from models.folder import _count_items
-        for f in root_folders:
-            counts = _count_items(dossier_id, f["id"])
-            f["_item_count"] = counts["folders"] + counts["documents"]
-        ctx["root_folders"] = root_folders
+        ctx["root_folders"] = list_folders(dossier_id, parent_folder_id=None)
 
         # Root-level documents only (no folder_id)
         docs = list_documents(dossier_id=dossier_id, folder_id=None)
@@ -452,7 +445,6 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
             d["_file_size_fmt"] = format_file_size(d.get("file_size", 0))
             d["_file_icon"] = get_file_icon(d.get("file_type", ""))
         ctx["documents"] = docs
-        ctx["document_summary"] = get_document_summary(dossier_id)
         ctx["category_labels"] = DOCUMENT_CATEGORY_LABELS
 
     # Load invoice data for the facturation tab

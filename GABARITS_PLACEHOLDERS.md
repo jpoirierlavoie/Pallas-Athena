@@ -60,7 +60,8 @@ Filled automatically from the dossier and the selected parties.
 | Placeholder | Value |
 |---|---|
 | `{{dossier.titre}}` | Dossier title |
-| `{{dossier.numero_cour}}` | Court file number |
+| `{{dossier.sommaire}}` | Free-text case summary (the detail page's « Sommaire » card). Multi-paragraph: blank-line-separated chunks expand into cloned paragraphs; single line breaks become spaces |
+| `{{dossier.numero_cour}}` | Court file number (« Préjudiciaire » while the dossier's forum is préjudiciaire — no proceedings filed yet) |
 | `{{dossier.reference_interne}}` | Internal reference (`file_number`) |
 | `{{dossier.tribunal}}` | Tribunal |
 | `{{dossier.chambre}}` | Chamber / competence |
@@ -160,6 +161,7 @@ same-spelled namespaced field.
 | `{{chambre}}` | `dossier.chambre` |
 | `{{référence_interne}}` | `dossier.reference_interne` |
 | `{{intitulé_dossier}}` | `dossier.titre` |
+| `{{sommaire}}` | `dossier.sommaire` |
 | `{{rôle}}` | `dossier.role_feminin` (**feminine** role, not the raw role) |
 | `{{demandeur}}` / `{{défendeur}}` | `dossier.demandeur` / `dossier.defendeur` (bare) |
 | `{{demandeur_avec_civilité}}` / `{{demandeur_avec_civilite}}` | `dossier.demandeur_avec_civilite` |
