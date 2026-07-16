@@ -329,6 +329,7 @@ def get_dossier(args: dict) -> dict:
     record = _dossier_row(d)
     record.update(
         {
+            "sommaire": d.get("sommaire", ""),
             "clients": d.get("clients", []),
             "opposing_parties": d.get("opposing_parties", []),
             "greffe_number": d.get("greffe_number", ""),

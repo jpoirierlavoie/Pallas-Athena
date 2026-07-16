@@ -158,6 +158,8 @@ def _default_doc() -> dict:
         "id": "",
         "file_number": "",
         "title": "",
+        # Free-text case summary, shown in its own card on the detail page.
+        "sommaire": "",
         # Parties on the dossier (arrays of {id, name} dicts)
         "clients": [],
         "client_ids": [],
@@ -212,12 +214,20 @@ def _default_doc() -> dict:
     }
 
 
+_SOMMAIRE_MAX_LENGTH = 5000
+
+
 def _sanitize_data(data: dict) -> dict:
-    """Sanitize all string values in *data*."""
+    """Sanitize all string values in *data*.
+
+    ``sommaire`` is a long-form summary and gets a wider bound than the
+    single-line fields (mirrors ``models.note``'s content/field split).
+    """
     out: dict = {}
     for key, val in data.items():
         if isinstance(val, str):
-            out[key] = sanitize(val, max_length=2000)
+            limit = _SOMMAIRE_MAX_LENGTH if key == "sommaire" else 2000
+            out[key] = sanitize(val, max_length=limit)
         else:
             out[key] = val
     return out

@@ -68,6 +68,16 @@
     </div>
   </div>
 
+  {# ── Sommaire ────────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Sommaire</h2>
+    {% if dossier.sommaire %}
+    <p class="text-sm text-gray-900 whitespace-pre-line">{{ dossier.sommaire }}</p>
+    {% else %}
+    <p class="text-gray-400 text-xs">Aucun sommaire</p>
+    {% endif %}
+  </div>
+
   {# ── Info cards grid ─────────────────────────────────────────── #}
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
     {# Clients card #}
@@ -164,9 +174,9 @@
       </dl>
     </div>
 
-    {# Recourse & prescription #}
+    {# Recourse #}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-2">Recours et prescription</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Recours</h2>
       <dl class="space-y-1.5 text-sm">
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Domaine</dt>
@@ -190,6 +200,13 @@
             {% else %}Indéterminable{% endif %}
           </dd>
         </div>
+      </dl>
+    </div>
+
+    {# Prescription #}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Prescription</h2>
+      <dl class="space-y-1.5 text-sm">
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Prescription</dt>
           <dd class="text-gray-900 text-right">{{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}</dd>
@@ -251,10 +268,9 @@
     {# Tab bar #}
     <div class="flex overflow-x-auto border-b border-gray-200">
       {% set tabs = [
-        ('temps', 'Temps & Dépenses'),
+        ('temps', 'Temps & Déboursés'),
         ('facturation', 'Facturation'),
-        ('audiences', 'Audiences'),
-        ('taches', 'Tâches'),
+        ('agenda', 'Agenda'),
         ('protocole', 'Protocole'),
         ('documents', 'Documents')
       ] %}

@@ -270,7 +270,8 @@ TOOLS: dict[str, dict] = {
         "title": "Détail d'un dossier",
         "description": (
             "Fetch one dossier by dossier_id or by file_number (provide exactly "
-            "one), with the full record — including court metadata and "
+            "one), with the full record — including the free-text `sommaire` "
+            "(case summary), court metadata and "
             "the recourse & prescription fields — plus per-module summaries "
             "(tasks, hearings, notes, documents, time, expenses, invoices, "
             "protocol). forum_type is 'judiciaire' (a Québec judicial court, "

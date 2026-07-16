@@ -24,6 +24,7 @@ from dav.sync import (
     remove_tombstone,
 )
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
+from tz import to_mtl
 from models.time_entry import (
     get_time_summary,
     list_time_entries,
@@ -41,14 +42,11 @@ from models.invoice import (
 from models.hearing import (
     HEARING_TYPE_LABELS,
     STATUS_LABELS as HEARING_STATUS_LABELS,
-    get_hearing_summary,
     list_hearings,
 )
 from models.task import (
     CATEGORY_LABELS as TASK_CATEGORY_LABELS,
-    PRIORITY_LABELS as TASK_PRIORITY_LABELS,
     STATUS_LABELS as TASK_STATUS_LABELS,
-    get_task_summary,
     list_tasks,
 )
 from models.protocol import (
@@ -151,6 +149,7 @@ def _form_data() -> dict:
     data = {
         "file_number": f.get("file_number", "").strip(),
         "title": f.get("title", "").strip(),
+        "sommaire": f.get("sommaire", "").strip(),
         # Parties (JSON arrays)
         "clients": _parse_parties_json(f.get("clients_json", "")),
         "opposing_parties": _parse_parties_json(f.get("opposing_parties_json", "")),
@@ -310,11 +309,14 @@ def dossier_list() -> str:
 _VALID_TABS = (
     "temps",
     "facturation",
-    "audiences",
-    "taches",
+    "agenda",
     "protocole",
     "documents",
 )
+
+# Pre-merge tab names (bookmarks, return_to links minted before the Agenda
+# tab existed) land on the merged tab instead of falling back to temps.
+_LEGACY_TABS = {"audiences": "agenda", "taches": "agenda"}
 
 
 @dossiers_bp.route("/<dossier_id>")
@@ -328,6 +330,7 @@ def dossier_detail(dossier_id: str) -> str:
     _attach_prescription_warnings([dossier])
 
     requested_tab = request.args.get("tab", "").strip()
+    requested_tab = _LEGACY_TABS.get(requested_tab, requested_tab)
     initial_tab = requested_tab if requested_tab in _VALID_TABS else "temps"
 
     ctx = _template_context()
@@ -361,11 +364,12 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     ctx = _template_context()
     ctx["dossier"] = dossier
 
+    tab_name = _LEGACY_TABS.get(tab_name, tab_name)
+
     templates = {
         "temps": "dossiers/_tab_temps.html",
         "facturation": "dossiers/_tab_facturation.html",
-        "audiences": "dossiers/_tab_audiences.html",
-        "taches": "dossiers/_tab_taches.html",
+        "agenda": "dossiers/_tab_agenda.html",
         "protocole": "dossiers/_tab_protocole.html",
         "documents": "dossiers/_tab_documents.html",
     }
@@ -378,21 +382,32 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["expense_summary"] = get_expense_summary(dossier_id)
         ctx["category_labels"] = EXPENSE_CATEGORY_LABELS
 
-    # Load hearing data for the audiences tab
-    if tab_name == "audiences":
-        ctx["hearings"] = list_hearings(dossier_id=dossier_id)
-        ctx["hearing_summary"] = get_hearing_summary(dossier_id)
+    # Load hearing + task data for the merged agenda tab. The tab is
+    # forward-looking: anything dated strictly before today (Montréal
+    # calendar day — today's items stay) is hidden. Filtered in Python over
+    # the dossier-bounded fetch — no new Firestore index. A dateless task is
+    # kept while active, hidden once finished (it has no future date left).
+    if tab_name == "agenda":
+        today_mtl = to_mtl(datetime.now(timezone.utc)).date()
+        ctx["hearings"] = [
+            h for h in list_hearings(dossier_id=dossier_id)
+            if h.get("start_datetime") is None
+            or to_mtl(h["start_datetime"]).date() >= today_mtl
+        ]
+        # Task due dates are date-only (stored midnight UTC) — compare the
+        # UTC calendar date, never a Montréal-shifted one.
+        ctx["tasks"] = [
+            t for t in list_tasks(dossier_id=dossier_id)
+            if (
+                t["due_date"].date() >= today_mtl
+                if t.get("due_date")
+                else t.get("status") in ("à_faire", "en_cours")
+            )
+        ]
         ctx["hearing_type_labels"] = HEARING_TYPE_LABELS
-        ctx["status_labels"] = HEARING_STATUS_LABELS
-
-    # Load task data for the taches tab
-    if tab_name == "taches":
-        ctx["tasks"] = list_tasks(dossier_id=dossier_id)
-        ctx["task_summary"] = get_task_summary(dossier_id)
-        ctx["category_labels"] = TASK_CATEGORY_LABELS
-        ctx["priority_labels"] = TASK_PRIORITY_LABELS
-        ctx["status_labels"] = TASK_STATUS_LABELS
-        ctx["now"] = datetime.now(timezone.utc)
+        ctx["hearing_status_labels"] = HEARING_STATUS_LABELS
+        ctx["task_category_labels"] = TASK_CATEGORY_LABELS
+        ctx["task_status_labels"] = TASK_STATUS_LABELS
 
     # Load protocol data for the protocole tab
     if tab_name == "protocole":
