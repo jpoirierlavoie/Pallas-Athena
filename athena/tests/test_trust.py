@@ -495,6 +495,34 @@ class _FakeDB:
         return _FakeTransaction(self._store)
 
 
+class _TestFieldFilter:
+    """Stand-in for google FieldFilter so _FakeQuery can read its parts —
+    independent of the real lib's internal attribute names."""
+
+    def __init__(self, field_path=None, op_string=None, value=None, **_kw):
+        self.field_path = field_path
+        self.op_string = op_string
+        self.value = value
+
+
+class _FakeFirestore:
+    """Stand-in for the ``firestore`` module used inside models/trust.py.
+
+    Critically, ``@firestore.transactional`` becomes an IDENTITY decorator so
+    the transactional body runs directly against ``_FakeTransaction``. With the
+    REAL decorator (CI, where google-cloud-firestore is installed) it would try
+    to drive the fake through the real begin/commit protocol and AttributeError
+    — the false-positive the local stub hid.
+    """
+
+    transactional = staticmethod(lambda fn: fn)
+    Transaction = object
+
+    class Query:
+        ASCENDING = "ASCENDING"
+        DESCENDING = "DESCENDING"
+
+
 def _base_store():
     return {
         "trust_accounts": {
@@ -522,6 +550,11 @@ def _base_store():
 def store(monkeypatch):
     s = _base_store()
     monkeypatch.setattr(trust, "db", _FakeDB(s))
+    # Decouple the transaction tests from whether google-cloud-firestore is
+    # real (CI) or stubbed (bare local): identity transactional + a Query with
+    # directions + a plain FieldFilter the fake query can introspect.
+    monkeypatch.setattr(trust, "firestore", _FakeFirestore)
+    monkeypatch.setattr(trust, "FieldFilter", _TestFieldFilter)
     return s
 
 
