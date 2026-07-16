@@ -153,6 +153,8 @@ def _get_quick_stats() -> dict:
         "unbilled_hours": 0.0,
         "unbilled_amount": 0,
         "outstanding_invoices": 0,
+        "trust_total": 0,
+        "trust_reconciliation_overdue": False,
     }
     try:
         from models.dossier import count_open
@@ -173,5 +175,13 @@ def _get_quick_stats() -> dict:
         stats["outstanding_invoices"] = get_outstanding_total()
     except Exception as exc:
         logger.warning("dashboard: outstanding invoices stat failed: %s", exc)
+
+    try:
+        from models import trust
+        snapshot = trust.get_firm_trust_snapshot()
+        stats["trust_total"] = snapshot.get("total_held_cents", 0)
+        stats["trust_reconciliation_overdue"] = snapshot.get("reconciliation_overdue", False)
+    except Exception as exc:
+        logger.warning("dashboard: trust stat failed: %s", exc)
 
     return stats

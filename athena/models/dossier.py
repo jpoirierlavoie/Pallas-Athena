@@ -214,6 +214,13 @@ def _default_doc() -> dict:
         "status": "actif",
         "opened_date": None,
         "closed_date": None,
+        # Trust accounting (fidéicommis, Phase K). Book + cleared balances,
+        # maintained transactionally by models/trust.py — never edited through
+        # the dossier form. Default 0 / {} so callers never see None (mirrored
+        # on read by _migrate_trust).
+        "trust_balance": 0,
+        "trust_balance_by_client": {},
+        "trust_cleared_by_client": {},
         # Recours & prescription
         "action": "",
         "action_precision": "",
@@ -503,6 +510,7 @@ def _migrate_parties(doc: dict) -> dict:
     _migrate_domaine(doc)
     _migrate_mandate_type(doc)
     _migrate_forum_type(doc)
+    _migrate_trust(doc)
     return doc
 
 
@@ -541,6 +549,23 @@ def _migrate_mandate_type(doc: dict) -> dict:
     mt = doc.get("mandate_type")
     if mt in _MANDATE_TYPE_MIGRATION:
         doc["mandate_type"] = _MANDATE_TYPE_MIGRATION[mt]
+    return doc
+
+
+def _migrate_trust(doc: dict) -> dict:
+    """Default the trust-accounting fields on legacy dossiers in place (Phase K).
+
+    Same contract as the other read-time migrations (called from
+    :func:`_migrate_parties`): a dossier that predates Phase K carries none of
+    the three fields, and every caller — detail, lists, MCP, and
+    ``models/trust.py`` itself — must see ``0`` / ``{}`` rather than ``None``.
+    ``setdefault`` never clobbers a real stored value; the write-back happens on
+    the next ``set()``. No backfill — a dossier with no trust entries has a zero
+    balance by construction.
+    """
+    doc.setdefault("trust_balance", 0)
+    doc.setdefault("trust_balance_by_client", {})
+    doc.setdefault("trust_cleared_by_client", {})
     return doc
 
 
@@ -772,6 +797,33 @@ def update_dossier(
     # Derive the prescription deadline ("date pour agir") from the recourse fields.
     _apply_prescription_deadline(merged)
 
+    # Trust balances live on this document but are owned EXCLUSIVELY by
+    # models/trust.py, which updates them transactionally (Phase K). This
+    # full-document set() would otherwise persist whatever `existing` held when
+    # this function started — clobbering a trust write that committed in the
+    # meantime. A stale-HIGH cleared balance could later permit an overdraft,
+    # so re-read the three fields at the last moment and let the trust layer's
+    # values win. Best-effort: on a read blip, keep `existing`'s already-fresh
+    # values rather than block an unrelated dossier edit — the register in
+    # trust_transactions is the source of truth and
+    # scripts/verify_trust_integrity.py catches any residual drift.
+    try:
+        snap = db.collection(COLLECTION).document(dossier_id).get()
+        if snap.exists:
+            current = snap.to_dict() or {}
+            for _tf in (
+                "trust_balance",
+                "trust_balance_by_client",
+                "trust_cleared_by_client",
+            ):
+                if _tf in current:
+                    merged[_tf] = current[_tf]
+    except Exception as exc:
+        logger.warning(
+            "update_dossier: trust-field refresh failed for %s: %s",
+            sanitize_log_value(dossier_id), type(exc).__name__,
+        )
+
     try:
         db.collection(COLLECTION).document(dossier_id).set(merged)
     except Exception:
@@ -793,6 +845,11 @@ _CHILD_COLLECTIONS = (
     ("notes", "note", "notes"),
     ("protocols", "protocole", "protocoles"),
     ("folders", "répertoire de documents", "répertoires de documents"),
+    # Trust (Phase K): a dossier that has EVER had a fidéicommis entry can never
+    # be deleted — the register is permanent, even at a zero balance. Because
+    # trust_transactions rows are never hard-deleted, the same count>0 refusal
+    # enforces "ever existed" (spec §6.3). Archive the dossier instead.
+    ("trust_transactions", "opération fiduciaire", "opérations fiduciaires"),
 )
 
 

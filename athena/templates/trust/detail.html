@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Écriture #{{ entry.sequence }} — Fidéicommis — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6">
+  <div class="flex items-center gap-2 mb-6">
+    <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <h1 class="text-xl font-semibold text-gray-900">Écriture n<sup>o</sup> {{ entry.sequence }}</h1>
+    {% if entry.status == 'compensée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Compensée</span>
+    {% elif entry.status == 'en_circulation' %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En circulation</span>
+    {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
+  </div>
+
+  <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-3 text-sm">
+    <div class="grid grid-cols-2 gap-3">
+      <div><p class="text-xs text-gray-500">Date</p><p class="text-gray-900">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '—' }}</p></div>
+      <div><p class="text-xs text-gray-500">Sens</p><p class="text-gray-900">{{ direction_labels.get(entry.direction, entry.direction) }}</p></div>
+      <div><p class="text-xs text-gray-500">Montant</p><p class="text-gray-900 font-medium">{{ entry.amount | cents_fr }}</p></div>
+      <div><p class="text-xs text-gray-500">Mode</p><p class="text-gray-900">{{ method_labels.get(entry.method, entry.method) }}</p></div>
+      <div><p class="text-xs text-gray-500">Objet</p><p class="text-gray-900">{{ purpose_labels.get(entry.purpose, entry.purpose) }}</p></div>
+      <div><p class="text-xs text-gray-500">Compte</p><p class="text-gray-900">{{ account.name if account else '' }}</p></div>
+      <div class="col-span-2"><p class="text-xs text-gray-500">Somme reçue de / Bénéficiaire</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
+      <div><p class="text-xs text-gray-500">Client</p><p class="text-gray-900">{{ entry.client_name or '—' }}</p></div>
+      <div><p class="text-xs text-gray-500">N/Réf</p>
+        <p class="text-gray-900">{% if entry.dossier_id %}<a href="{{ url_for('dossiers.dossier_detail', dossier_id=entry.dossier_id) }}" class="text-indigo-600 hover:underline">{{ entry.dossier_file_number }}</a>{% else %}—{% endif %}</p></div>
+      {% if entry.reference %}<div><p class="text-xs text-gray-500">Référence</p><p class="text-gray-900">{{ entry.reference }}</p></div>{% endif %}
+      {% if entry.cleared_date %}<div><p class="text-xs text-gray-500">Compensée le</p><p class="text-gray-900">{{ entry.cleared_date.strftime('%Y-%m-%d') }}</p></div>{% endif %}
+    </div>
+
+    <div class="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+      <div><p class="text-xs text-gray-500">Solde (journal)</p><p class="text-gray-900 font-medium">{{ entry.balance_after_account | cents_fr }}</p></div>
+      <div><p class="text-xs text-gray-500">Solde (carte-client)</p><p class="text-gray-900 font-medium">{{ entry.balance_after_client | cents_fr }}</p></div>
+    </div>
+
+    {% if entry.description %}<div class="pt-3 border-t border-gray-100"><p class="text-xs text-gray-500">Description</p><p class="text-gray-900 whitespace-pre-line">{{ entry.description }}</p></div>{% endif %}
+
+    {# Links to related entries #}
+    {% if reversal or reverses or other_leg %}
+    <div class="pt-3 border-t border-gray-100 space-y-1">
+      {% if reverses %}<p class="text-xs">Contre-passe l'écriture <a href="{{ url_for('trust.entry_detail', tx_id=reverses.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reverses.sequence }}</a></p>{% endif %}
+      {% if reversal %}<p class="text-xs">Contre-passée par l'écriture <a href="{{ url_for('trust.entry_detail', tx_id=reversal.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reversal.sequence }}</a></p>{% endif %}
+      {% if other_leg %}<p class="text-xs">Autre volet du virement : <a href="{{ url_for('trust.entry_detail', tx_id=other_leg.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ other_leg.sequence }}</a></p>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# Actions #}
+  <div class="mt-4 flex flex-wrap items-center gap-3">
+    {% if entry.status == 'en_circulation' %}
+    <form method="post" action="{{ url_for('trust.entry_clear', tx_id=entry.id) }}" class="flex items-end gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_to" value="{{ url_for('trust.entry_detail', tx_id=entry.id) }}">
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Compenser (date au relevé)</label>
+        <input type="date" name="cleared_date" required value="{{ today }}" class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+      </div>
+      <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Compenser</button>
+    </form>
+    {% endif %}
+    {% if not entry.reversed_by_id and entry.status != 'annulée' %}
+    <a href="{{ url_for('trust.entry_reverse_confirm', tx_id=entry.id) }}" class="text-sm text-red-600 hover:text-red-700 font-medium">Contre-passer</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

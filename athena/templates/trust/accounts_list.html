@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Comptes en fidéicommis — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+      <h1 class="text-xl font-semibold text-gray-900">Comptes en fidéicommis</h1>
+    </div>
+    <a href="{{ url_for('trust.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+  </div>
+
+  {% if not accounts %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucun compte configuré.</div>
+  {% else %}
+  <div class="space-y-3">
+    {% for a in accounts %}
+    <a href="{{ url_for('trust.account_detail', account_id=a.id) }}" class="block bg-white rounded-xl border border-gray-200 p-4 hover:bg-gray-50">
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="font-medium text-gray-900">{{ a.name }}
+            {% if a.status == 'fermé' %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 ml-1">Fermé</span>{% endif %}
+          </p>
+          <p class="text-sm text-gray-500">{{ a.institution }}{% if a.account_number_last4 %} · …{{ a.account_number_last4 }}{% endif %}</p>
+        </div>
+        <div class="text-right">
+          <p class="text-xs text-gray-500">Solde aux livres</p>
+          <p class="font-semibold text-gray-900">{{ a.book_balance | cents_fr }}</p>
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

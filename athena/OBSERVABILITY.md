@@ -134,6 +134,21 @@ INFO, except `generation_failed` (WARNING). **Never pass field values** (client 
 | `document_generated` | `template_id`, `dossier_id` (when saved), `saved_document_id` (when saved), `field_count`, `missing_count` (blanks replaced by the visible French fallback). **Note d'honoraires (Phase H.2):** adds `invoice_id`, `source="facture"`, and the three row counts `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` (instead of `field_count`/`missing_count`) |
 | `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`; Phase H.2 adds `no_note_template`, `invoice_voided`, `unbalanced_condition`) — never a filename or field value |
 
+### `log_trust_event(event, outcome='success', *, transaction_id=None, dossier_id=None, account_id=None, reconciliation_id=None, reason=None, **extra)` — logger `pallas.trust`
+
+Trust accounting (« comptabilité en fidéicommis », Phase K). `outcome` ∈ `{"success", "refused"}` — `success` emits at INFO, `refused` at WARNING. Optional fields are omitted when `None`. `reason` is a short machine-stable string (`"insufficient_cleared_balance"`, or a §5 abort string such as `antidatage_refusé` / `facture_non_émise`) — **never** an account-holder name, client string, or dollar amount. The `RedactionFilter` does NOT auto-scrub names or amounts (only emails/phones/postal/court-file), so keep them out of the fields entirely. `variance_cents` (on `trust_reconciliation_variance`) is the single number ever logged — a control failure with no client attached, useless without it.
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `trust_transaction_created` | success | An écriture (or an inter-dossier transfer leg) was appended; `transaction_id`, `account_id`, `dossier_id`, `direction`, `purpose`, `sequence` |
+| `trust_transaction_cleared` | success | An entry moved `en_circulation` → `compensée`; `transaction_id` |
+| `trust_transaction_reversed` | success | A contre-passation was recorded; `transaction_id` (the reversal), `reverses_id`, `annulled: bool` (true when both entries became `annulée`) |
+| `trust_overdraft_refused` | refused | The cleared-funds control blocked a déboursé; `dossier_id`, `account_id`, `reason` = `insufficient_cleared_balance`. **The module's most important WARNING.** |
+| `trust_transaction_refused` | refused | Any other create abort; `reason` = a §5 abort string (`compte_fermé`, `client_hors_dossier`, `antidatage_refusé`, `facture_non_émise`, …) |
+| `trust_reconciliation_completed` | success | A reconciliation was balanced and completed; `reconciliation_id`, `account_id`, `cleared_count` |
+| `trust_reconciliation_variance` | refused | Completion refused because the variance was non-zero; `reconciliation_id`, `account_id`, `variance_cents` |
+| `trust_export` | success | Journal / carte-client CSV or PDF export; `format`, `view`, `row_count` |
+
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
 Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log. The traceback text is PII-scrubbed by `RedactionFilter` before emission (see "PII redaction policy" above for the Error Reporting grouping trade-off).
@@ -180,6 +195,8 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `mcp.request` | MCP JSON-RPC dispatch (one per POST /mcp) | `mcp.request` with `method` attribute |
 | `mcp.tool.*` | One span per tool execution | `mcp.tool.get_agenda`, `mcp.tool.list_dossiers` |
 | `template.fill` | docx fill inside the generation POST (Phase H / H.2) | `template.fill` with `template_id`, `field_count` (gabarits) or `invoice_id` + `rows_honoraire`/`rows_debours_tx`/`rows_debours_ntx` (note d'honoraires) — never values or content, counts and IDs only |
+| `trust.transaction` | One trust write — create / reversal / inter-dossier transfer (Phase K) | `trust.transaction` with `direction`, `purpose`, `dossier_id` — **never amounts** |
+| `trust.reconcile` | Reconciliation completion (Phase K) | `trust.reconcile` with `account_id`, `cleared_count` |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |
 
 ### Standard attributes
@@ -208,7 +225,11 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `field_count` | int | manual (`template.fill` + request span) | Placeholders filled in a generation |
 | `invoice_id` | string | manual (`template.fill` + request span, Phase H.2) | Invoice UUID for a note d'honoraires — ID only |
 | `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` | int | manual (Phase H.2) | Note-d'honoraires table row counts — counts only, never figures or descriptions |
-| `dossier_id` | string | manual (`mcp.tool.*`) | Set when the tool call carries a `dossier_id` argument — UUIDs only, never names/emails/token material |
+| `dossier_id` | string | manual (`mcp.tool.*`, `trust.*`) | Set when the call carries a dossier — UUIDs only, never names/emails/token material |
+| `account_id` | string | manual (`trust.*`) | Trust account UUID — ID only, never the account-holder name |
+| `transaction_id` | string | manual (`trust.*`) | Trust transaction UUID |
+| `reconciliation_id` | string | manual (`trust.*`) | Reconciliation run UUID |
+| `cleared_count` | int | manual (`trust.reconcile`) | Entries cleared in a reconciliation |
 | `db.system` | string | `firestore_span` | Always `firestore` |
 | `db.collection` | string | `firestore_span` | Firestore collection name |
 | `db.document_id` | string | `firestore_span` | Firestore doc ID (omitted for queries) |

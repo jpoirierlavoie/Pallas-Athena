@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Vue de gestion — Fidéicommis — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Fonds en fidéicommis — vue de gestion</h1>
+  <p class="text-sm text-gray-500 mb-4">Vue consolidée par dossier. Ce n'est <strong>pas</strong> un registre : aucun contrôle ne s'y applique et aucun export n'est offert.</p>
+
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <p class="text-sm"><span class="text-gray-500">Total détenu :</span> <span class="font-semibold text-gray-900">{{ total_cents | cents_fr }}</span></p>
+  </div>
+
+  {% if not rows %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucun fonds en fidéicommis pour ce client.</div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Dossier</th>
+          <th class="px-3 py-2 font-medium text-right">Solde aux livres</th>
+          <th class="px-3 py-2 font-medium text-right">Compensé</th>
+          <th class="px-3 py-2 font-medium text-right">En transit</th>
+          <th class="px-3 py-2 font-medium"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in rows %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2"><span class="font-medium text-gray-900">{{ r.file_number }}</span> <span class="text-gray-500">{{ r.title }}</span></td>
+          <td class="px-3 py-2 text-right whitespace-nowrap font-medium text-gray-900">{{ r.book_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ r.cleared_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ r.in_transit_cents | cents_fr }}</td>
+          <td class="px-3 py-2 whitespace-nowrap"><a href="{{ url_for('trust.card', dossier_id=r.dossier_id, client_id=client_id) }}" class="text-indigo-600 hover:underline text-xs">Carte-client</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

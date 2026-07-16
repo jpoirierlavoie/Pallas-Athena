@@ -1,4 +1,4 @@
-"""The 14 read-only MCP tool handlers.
+"""The 17 read-only MCP tool handlers.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
@@ -32,6 +32,7 @@ from models import protocol as protocol_model
 from models import reference
 from models import task as task_model
 from models import time_entry as time_entry_model
+from models import trust as trust_model
 from tz import MTL
 from utils import deadlines, taxonomie
 from utils.format_fr import format_rate_fr
@@ -888,3 +889,113 @@ def parse_court_file_number(args: dict) -> dict:
         "is_administrative": bool(result.get("is_administrative")),
         "parse_error": result.get("parse_error"),
     }
+
+
+# ── 15. get_trust_balance ────────────────────────────────────────────────
+
+
+def get_trust_balance(args: dict) -> dict:
+    """Trust balances held for a dossier, per client (book / cleared / in
+    transit). Absence is data: a bad dossier_id returns found=False, never
+    all-zeros."""
+    dossier_id = args.get("dossier_id")
+    if dossier_model.get_dossier(dossier_id) is None:
+        return {"found": False, "dossier_id": dossier_id}
+    dossier = dossier_model.get_dossier(dossier_id)
+    summary = trust_model.get_trust_summary(dossier_id)
+    payload: dict[str, Any] = {
+        "found": True,
+        "dossier_id": dossier_id,
+        "file_number": dossier.get("file_number", ""),
+        "title": dossier.get("title", ""),
+        "has_trust": summary["has_trust"],
+    }
+    _money(payload, "total", summary["total_cents"])
+    by_client = []
+    for c in summary["by_client"]:
+        row = {"client_id": c["client_id"], "client_name": c["client_name"]}
+        _money(row, "book", c["book_cents"])
+        _money(row, "cleared", c["cleared_cents"])
+        _money(row, "in_transit", c["in_transit_cents"])
+        by_client.append(row)
+    payload["by_client"] = by_client
+    return payload
+
+
+# ── 16. list_trust_transactions ──────────────────────────────────────────
+
+
+def _parse_ymd(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def list_trust_transactions(args: dict) -> dict:
+    """The trust register — carte-client (dossier_id + client_id) or the full
+    journal. date / cleared_date are date-only via date_str; never emits the
+    bank transit or account number (spec §9.4)."""
+    limit = _limit_arg(args, 25)
+    rows = trust_model.list_transactions(
+        account_id=args.get("account_id"),
+        dossier_id=args.get("dossier_id"),
+        client_id=args.get("client_id"),
+        date_from=_parse_ymd(args.get("date_from")),
+        date_to=_parse_ymd(args.get("date_to")),
+        status=args.get("status"),
+        limit=limit + 1,
+    )
+    truncated = len(rows) > limit
+    out = []
+    for r in rows[:limit]:
+        item = {
+            "id": r.get("id", ""),
+            "sequence": r.get("sequence", 0),
+            "date": date_str(_as_utc(r.get("date"))),
+            "file_number": r.get("dossier_file_number", ""),
+            "counterparty": r.get("counterparty", ""),
+            "client_name": r.get("client_name", ""),
+            "purpose": r.get("purpose", ""),
+            "method": r.get("method", ""),
+            "direction": r.get("direction", ""),
+            "status": r.get("status", ""),
+            "cleared_date": date_str(_as_utc(r.get("cleared_date"))),
+            "reversed": bool(r.get("reversed_by_id")),
+            "balance_after_account_cents": int(r.get("balance_after_account", 0)),
+            "balance_after_client_cents": int(r.get("balance_after_client", 0)),
+        }
+        _money(item, "amount", r.get("amount", 0))
+        out.append(item)
+    return {"transactions": out, "count": len(out), "truncated": truncated}
+
+
+# ── 17. get_trust_snapshot ───────────────────────────────────────────────
+
+
+def get_trust_snapshot(args: dict) -> dict:
+    """Firm-wide trust picture (mirrors get_billing_snapshot). Emits account
+    name + institution but NEVER the transit or account number (spec §9.4)."""
+    snap = trust_model.get_firm_trust_snapshot()
+    accounts = []
+    for a in snap.get("accounts", []):
+        row = {
+            "id": a.get("id", ""),
+            "name": a.get("name", ""),
+            "institution": a.get("institution", ""),
+            "account_type": a.get("account_type", ""),
+        }
+        _money(row, "book_balance", a.get("book_balance", 0))
+        _money(row, "bank_balance", a.get("bank_balance", 0))
+        accounts.append(row)
+    payload: dict[str, Any] = {"accounts": accounts}
+    _money(payload, "total_held", snap.get("total_held_cents", 0))
+    payload["outstanding_count"] = snap.get("outstanding_count", 0)
+    payload["outstanding_total_cents"] = snap.get("outstanding_total_cents", 0)
+    payload["in_transit_count"] = snap.get("in_transit_count", 0)
+    payload["in_transit_total_cents"] = snap.get("in_transit_total_cents", 0)
+    payload["last_reconciliation_date"] = date_str(snap.get("last_reconciliation_date"))
+    payload["reconciliation_overdue"] = bool(snap.get("reconciliation_overdue"))
+    return payload

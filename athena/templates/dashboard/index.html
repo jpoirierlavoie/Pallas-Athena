@@ -8,7 +8,7 @@
   <h1 class="text-xl font-semibold text-gray-900">Tableau de bord</h1>
 
   {# ── Quick Stats ──────────────────────────────────────────────────── #}
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
     {# Open dossiers #}
     <a href="/dossiers?status=actif"
        class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
@@ -29,6 +29,16 @@
        class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
       <p class="text-xs text-gray-500 uppercase tracking-wide">Factures impayées</p>
       <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.outstanding_invoices | cents_fr }}</p>
+    </a>
+
+    {# Sums held in trust #}
+    <a href="{{ url_for('trust.journal') }}"
+       class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
+      <p class="text-xs text-gray-500 uppercase tracking-wide">Sommes en fidéicommis</p>
+      <p class="text-2xl font-semibold text-gray-900 mt-1">{{ stats.trust_total | cents_fr }}</p>
+      {% if stats.trust_reconciliation_overdue %}
+      <p class="text-xs text-amber-600 mt-0.5">Conciliation en retard</p>
+      {% endif %}
     </a>
 
     {# Quick actions #}

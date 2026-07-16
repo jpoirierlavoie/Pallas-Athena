@@ -502,6 +502,63 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "parse_court_file_number",
     },
+    "get_trust_balance": {
+        "title": "Solde en fidéicommis d'un dossier",
+        "description": (
+            "Trust (fidéicommis) balances held for a dossier, per client: book "
+            "(the register's balance), cleared (available for disbursement), and "
+            "deposits in transit. Amounts in cents plus fr-CA display. Read-only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dossier_id": _ID},
+            "required": ["dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "get_trust_balance",
+    },
+    "list_trust_transactions": {
+        "title": "Registre des opérations en fidéicommis",
+        "description": (
+            "The trust register (journal de caisse). Pass dossier_id AND "
+            "client_id together for a carte-client (one beneficiary); pass "
+            "neither for the full journal. Optional date range and status. "
+            "Amounts in cents; date and cleared_date are date-only (YYYY-MM-DD). "
+            "Read-only; never exposes the bank transit or account number."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_id": _ID,
+                "dossier_id": _ID,
+                "client_id": _ID,
+                "date_from": _DATE,
+                "date_to": _DATE,
+                "status": {
+                    "type": "string",
+                    "enum": ["en_circulation", "compensée", "annulée"],
+                },
+                "limit": _limit(25),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "list_trust_transactions",
+    },
+    "get_trust_snapshot": {
+        "title": "Aperçu des fonds en fidéicommis",
+        "description": (
+            "Firm-wide trust picture: each account's book and bank balance, "
+            "total held, outstanding cheques, deposits in transit, and whether a "
+            "bank reconciliation is overdue. Amounts in cents + fr-CA display. "
+            "Read-only; never exposes the transit or account number."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": "get_trust_snapshot",
+    },
 }
 
 

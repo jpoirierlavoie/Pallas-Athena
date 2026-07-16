@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle conciliation — Fidéicommis — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto px-4 py-6">
+  <h1 class="text-xl font-semibold text-gray-900 mb-6">Nouvelle conciliation bancaire</h1>
+
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <form method="post" class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Compte</label>
+      <select name="account_id" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        {% for a in accounts %}<option value="{{ a.id }}" {% if form.get('account_id') == a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Fin de période (date du relevé)</label>
+      <input type="date" name="period_end" required value="{{ form.get('period_end', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Solde selon le relevé bancaire</label>
+      <input type="text" name="statement_balance" inputmode="decimal" required placeholder="0,00" value="{{ form.get('statement_balance', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+    </div>
+    <div class="flex justify-end gap-2">
+      <a href="{{ url_for('trust.reconciliations_list') }}" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
+      <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Créer</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

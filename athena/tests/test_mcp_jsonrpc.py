@@ -191,10 +191,10 @@ def test_initialize_shape(client):
 
 # ── tools/list & tools/call ─────────────────────────────────────────────
 
-def test_tools_list_has_14_read_only_tools(client):
+def test_tools_list_has_17_read_only_tools(client):
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools_list = resp.get_json()["result"]["tools"]
-    assert len(tools_list) == 14
+    assert len(tools_list) == 17
     for tool in tools_list:
         assert tool["annotations"]["readOnlyHint"] is True
         assert tool["annotations"]["openWorldHint"] is False

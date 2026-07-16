@@ -316,6 +316,7 @@ _VALID_TABS = (
     "agenda",
     "protocole",
     "documents",
+    "fideicommis",
 )
 
 # Pre-merge tab names (bookmarks, return_to links minted before the Agenda
@@ -375,6 +376,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "agenda": "dossiers/_tab_agenda.html",
         "protocole": "dossiers/_tab_protocole.html",
         "documents": "dossiers/_tab_documents.html",
+        "fideicommis": "dossiers/_tab_fideicommis.html",
     }
 
     # Load time/expense data for the temps tab
@@ -456,6 +458,13 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["invoices"] = list_invoices(dossier_id=dossier_id)
         ctx["invoice_summary"] = get_invoice_summary(dossier_id)
         ctx["status_labels"] = INVOICE_STATUS_LABELS
+
+    # Load trust data for the fideicommis tab (Phase K)
+    if tab_name == "fideicommis":
+        from models import trust
+        ctx["trust_summary"] = trust.get_trust_summary(dossier_id)
+        ctx["trust_entries"] = trust.list_dossier_transactions(dossier_id, limit=10)
+        ctx["purpose_labels"] = trust.PURPOSE_LABELS
 
     template = templates.get(tab_name, "dossiers/_tab_placeholder.html")
     ctx["tab_name"] = tab_name

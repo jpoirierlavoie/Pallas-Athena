@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Conciliation — Fidéicommis — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+  <div class="flex items-center gap-2 mb-4">
+    <a href="{{ url_for('trust.reconciliations_list') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Conciliation — {{ account.name if account else '' }}</h1>
+      <p class="text-sm text-gray-500">Période au {{ rec.period_end.strftime('%Y-%m-%d') if rec.period_end else '' }}</p>
+    </div>
+  </div>
+
+  {% if errors %}
+  <div class="mb-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% if rec.status == 'complétée' %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 text-sm grid grid-cols-2 gap-3">
+    <div><p class="text-xs text-gray-500">Statut</p><p><span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Complétée</span></p></div>
+    <div><p class="text-xs text-gray-500">Complétée le</p><p class="text-gray-900">{{ rec.completed_date.strftime('%Y-%m-%d') if rec.completed_date else '' }}</p></div>
+    <div><p class="text-xs text-gray-500">Solde du relevé</p><p class="text-gray-900">{{ rec.statement_balance | cents_fr }}</p></div>
+    <div><p class="text-xs text-gray-500">Solde aux livres</p><p class="text-gray-900">{{ rec.book_balance | cents_fr }}</p></div>
+    <div><p class="text-xs text-gray-500">Chèques en circulation</p><p class="text-gray-900">{{ rec.outstanding_cheques_total | cents_fr }}</p></div>
+    <div><p class="text-xs text-gray-500">Dépôts en transit</p><p class="text-gray-900">{{ rec.deposits_in_transit_total | cents_fr }}</p></div>
+    <div><p class="text-xs text-gray-500">Écart</p><p class="text-gray-900 font-medium">{{ rec.variance | cents_fr }}</p></div>
+  </div>
+  {% else %}
+  <form method="post" action="{{ url_for('trust.reconciliation_complete', rec_id=rec.id) }}"
+        x-data="{
+          statementCents: {{ rec.statement_balance | int }},
+          bookCents: {{ (account.book_balance if account else 0) | int }},
+          varianceCents: 0,
+          recompute() {
+            let outstanding = 0, inTransit = 0;
+            this.$root.querySelectorAll('input[name=cleared_tx_ids]').forEach(el => {
+              if (!el.checked) {
+                if (el.dataset.kind === 'outstanding') outstanding += parseInt(el.dataset.amount);
+                else inTransit += parseInt(el.dataset.amount);
+              }
+            });
+            this.varianceCents = this.statementCents + inTransit - outstanding - this.bookCents;
+          }
+        }" x-init="recompute()">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4 text-sm">
+      <p>Solde du relevé : <span class="font-medium">{{ rec.statement_balance | cents_fr }}</span> · Solde aux livres : <span class="font-medium">{{ (account.book_balance if account else 0) | cents_fr }}</span></p>
+      <p class="mt-2">Cochez les écritures qui figurent au relevé bancaire (elles seront compensées).</p>
+      <p class="mt-2 text-base">Écart : <span class="font-semibold" :class="varianceCents === 0 ? 'text-green-700' : 'text-red-600'" x-text="(varianceCents/100).toFixed(2).replace('.', ',') + ' $'"></span></p>
+    </div>
+
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Chèques en circulation</h2>
+    {% if not outstanding %}<p class="text-sm text-gray-500 mb-4">Aucun.</p>{% else %}
+    <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 mb-4">
+      {% for e in outstanding %}
+      <label class="flex items-center gap-3 px-4 py-3 text-sm cursor-pointer hover:bg-gray-50">
+        <input type="checkbox" name="cleared_tx_ids" value="{{ e.id }}" data-kind="outstanding" data-amount="{{ e.amount }}" @change="recompute()" class="rounded border-gray-300">
+        <span class="flex-1 text-gray-700">{{ e.date.strftime('%Y-%m-%d') if e.date else '' }} · {{ e.counterparty }} {% if e.reference %}<span class="text-gray-400">({{ e.reference }})</span>{% endif %}</span>
+        <span class="text-gray-900 font-medium">{{ e.amount | cents_fr }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Dépôts en transit</h2>
+    {% if not in_transit %}<p class="text-sm text-gray-500 mb-4">Aucun.</p>{% else %}
+    <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 mb-4">
+      {% for e in in_transit %}
+      <label class="flex items-center gap-3 px-4 py-3 text-sm cursor-pointer hover:bg-gray-50">
+        <input type="checkbox" name="cleared_tx_ids" value="{{ e.id }}" data-kind="in_transit" data-amount="{{ e.amount }}" @change="recompute()" class="rounded border-gray-300">
+        <span class="flex-1 text-gray-700">{{ e.date.strftime('%Y-%m-%d') if e.date else '' }} · {{ e.counterparty }}</span>
+        <span class="text-gray-900 font-medium">{{ e.amount | cents_fr }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="flex justify-end">
+      <button type="submit" :disabled="varianceCents !== 0"
+              :class="varianceCents === 0 ? 'bg-gray-900 hover:bg-gray-800' : 'bg-gray-300 cursor-not-allowed'"
+              class="px-4 py-2.5 text-sm font-medium text-white rounded-xl">Compléter la conciliation</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

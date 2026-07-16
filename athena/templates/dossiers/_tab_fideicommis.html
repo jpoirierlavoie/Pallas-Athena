@@ -1,0 +1,66 @@
+{# Fidéicommis tab (Phase K). Rendered as an HTMX fragment by dossier_tab. #}
+<div class="space-y-4">
+  <div class="flex items-center justify-between">
+    <h2 class="text-sm font-semibold text-gray-900">Fidéicommis</h2>
+    <a href="{{ url_for('trust.entry_new', dossier_id=dossier.id, locked=1) }}"
+       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      Nouvelle écriture
+    </a>
+  </div>
+
+  {% if not trust_summary or not trust_summary.has_trust %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+    Aucun fonds en fidéicommis pour ce dossier. Utilisez « Nouvelle écriture » pour enregistrer un dépôt.
+  </div>
+  {% else %}
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    {% for c in trust_summary.by_client %}
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <div class="flex items-center justify-between mb-2">
+        <p class="font-medium text-gray-900">{{ c.client_name or 'Client' }}</p>
+        <a href="{{ url_for('trust.card', dossier_id=dossier.id, client_id=c.client_id) }}" class="text-xs text-indigo-600 hover:underline">Carte-client</a>
+      </div>
+      <p class="text-sm"><span class="text-gray-500">Solde aux livres :</span> <span class="font-semibold text-gray-900">{{ c.book_cents | cents_fr }}</span></p>
+      <p class="text-sm mt-1"><span class="text-gray-500">Disponible (compensé) :</span> <span class="font-semibold text-gray-900">{{ c.cleared_cents | cents_fr }}</span>
+        {% if c.in_transit_cents %}<span class="text-gray-500"> · {{ c.in_transit_cents | cents_fr }} en transit</span>{% endif %}
+      </p>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if trust_entries %}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Date</th>
+          <th class="px-3 py-2 font-medium">Objet</th>
+          <th class="px-3 py-2 font-medium">Client</th>
+          <th class="px-3 py-2 font-medium text-right">Recette</th>
+          <th class="px-3 py-2 font-medium text-right">Crédit</th>
+          <th class="px-3 py-2 font-medium">Statut</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in trust_entries %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap"><a href="{{ url_for('trust.entry_detail', tx_id=r.id) }}" class="text-indigo-600 hover:underline">{{ r.date.strftime('%Y-%m-%d') if r.date else '' }}</a></td>
+          <td class="px-3 py-2 text-gray-700">{{ purpose_labels.get(r.purpose, r.purpose) }}</td>
+          <td class="px-3 py-2 text-gray-700">{{ r.client_name }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{% if r.direction == 'recette' %}{{ r.amount | cents_fr }}{% endif %}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{% if r.direction == 'déboursé' %}{{ r.amount | cents_fr }}{% endif %}</td>
+          <td class="px-3 py-2 whitespace-nowrap">
+            {% if r.status == 'compensée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Compensée</span>
+            {% elif r.status == 'en_circulation' %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En circulation</span>
+            {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>

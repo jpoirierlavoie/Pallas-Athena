@@ -458,6 +458,7 @@ _PALLAS_SECURITY = logging.getLogger("pallas.security")
 _PALLAS_UNEXPECTED = logging.getLogger("pallas.unexpected")
 _PALLAS_MCP = logging.getLogger("pallas.mcp")
 _PALLAS_TEMPLATES = logging.getLogger("pallas.templates")
+_PALLAS_TRUST = logging.getLogger("pallas.trust")
 
 
 AuthEvent = Literal[
@@ -518,6 +519,17 @@ TemplateEvent = Literal[
     "document_generated",
     "generation_failed",
 ]
+TrustEvent = Literal[
+    "trust_transaction_created",
+    "trust_transaction_cleared",
+    "trust_transaction_reversed",
+    "trust_overdraft_refused",
+    "trust_transaction_refused",
+    "trust_reconciliation_completed",
+    "trust_reconciliation_variance",
+    "trust_export",
+]
+TrustOutcome = Literal["success", "refused"]
 
 
 def _emit(
@@ -671,6 +683,44 @@ def log_template_event(
     _emit(_PALLAS_TEMPLATES, level, event, fields)
 
 
+def log_trust_event(
+    event: TrustEvent,
+    outcome: TrustOutcome = "success",
+    *,
+    transaction_id: Optional[str] = None,
+    dossier_id: Optional[str] = None,
+    account_id: Optional[str] = None,
+    reconciliation_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit a trust-accounting (fidéicommis) event — logger ``pallas.trust``.
+
+    ``success`` emits at INFO, everything else at WARNING. ``reason`` is a short
+    machine-stable string ("insufficient_cleared_balance", "unbalanced",
+    "account_not_found") — **never** an account-holder name, client string, or
+    dollar amount. The ``RedactionFilter`` does NOT auto-scrub names or amounts
+    (only emails/phones/postal/court-file), so keep them out of the fields.
+    ``variance_cents`` passed in **extra is the single exception — a control
+    failure with no client attached, useless without the number. Only
+    non-``None`` optional fields are included so log-based metrics filtering on,
+    e.g., ``account_id`` don't pick up structurally-empty records.
+    """
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **extra}
+    if transaction_id is not None:
+        fields["transaction_id"] = transaction_id
+    if dossier_id is not None:
+        fields["dossier_id"] = dossier_id
+    if account_id is not None:
+        fields["account_id"] = account_id
+    if reconciliation_id is not None:
+        fields["reconciliation_id"] = reconciliation_id
+    if reason is not None:
+        fields["reason"] = reason
+    level = logging.INFO if outcome == "success" else logging.WARNING
+    _emit(_PALLAS_TRUST, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -711,6 +761,7 @@ __all__: Iterable[str] = (
     "log_mcp_event",
     "log_security_event",
     "log_template_event",
+    "log_trust_event",
     "log_unexpected",
     "sanitize_log_value",
 )

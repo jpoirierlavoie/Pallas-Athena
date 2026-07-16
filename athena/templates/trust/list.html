@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Fidéicommis — Journal de caisse — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Fidéicommis</h1>
+      <p class="text-sm text-gray-500">Journal de caisse — recettes et déboursés</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('trust.accounts_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
+      <a href="{{ url_for('trust.reconciliations_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
+      {% if account %}
+      <a href="{{ url_for('trust.entry_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        Nouvelle écriture
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not accounts %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
+    <p class="text-gray-600 mb-4">Aucun compte en fidéicommis n'est encore configuré.</p>
+    <a href="{{ url_for('trust.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Créer un premier compte</a>
+  </div>
+  {% else %}
+
+  {# Account header: book / bank / outstanding / in-transit / last reconciliation #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500">Solde aux livres</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.book_balance | cents_fr }}</p>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500">Solde bancaire</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.bank_balance | cents_fr }}</p>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500">Chèques en circulation</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.outstanding_total | cents_fr }}</p>
+      <p class="text-xs text-gray-500">{{ header.outstanding_count }} écriture(s)</p>
+    </div>
+    <div class="bg-white rounded-xl border border-gray-200 p-4">
+      <p class="text-xs text-gray-500">Dépôts en transit</p>
+      <p class="text-lg font-semibold text-gray-900">{{ header.in_transit_total | cents_fr }}</p>
+      <p class="text-xs text-gray-500">{{ header.in_transit_count }} écriture(s)</p>
+    </div>
+  </div>
+  {% if header.reconciliation_overdue %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Conciliation en retard — plus de 30 jours depuis la dernière fin de mois conciliée.
+  </div>
+  {% endif %}
+
+  {# Filters #}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <div id="filters" class="flex flex-wrap items-end gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Compte</label>
+        <select name="account_id" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          {% for a in accounts %}
+          <option value="{{ a.id }}" {% if a.id == account.id %}selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Statut</label>
+        <select name="status" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          <option value="">Tous</option>
+          {% for s in valid_tx_statuses %}
+          <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ tx_status_labels[s] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Sens</label>
+        <select name="direction" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          <option value="">Tous</option>
+          {% for d in valid_directions %}
+          <option value="{{ d }}" {% if filters.direction == d %}selected{% endif %}>{{ direction_labels[d] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Du</label>
+        <input type="date" name="date_from" value="{{ filters.date_from }}" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+               class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Au</label>
+        <input type="date" name="date_to" value="{{ filters.date_to }}" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+               class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+      </div>
+      <div class="ml-auto flex gap-2">
+        <a href="{{ url_for('trust.journal_export', fmt='csv', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+        <a href="{{ url_for('trust.journal_export', fmt='pdf', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="trust-rows">{% include "trust/_transaction_rows.html" %}</div>
+  {% endif %}
+
+  {% if account %}
+  <a href="{{ url_for('trust.entry_new') }}" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
+    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+  </a>
+  {% endif %}
+</div>
+{% endblock %}

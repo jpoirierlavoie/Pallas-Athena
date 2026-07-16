@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Conciliations — Fidéicommis — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('trust.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+      <h1 class="text-xl font-semibold text-gray-900">Conciliations bancaires</h1>
+    </div>
+    <a href="{{ url_for('trust.reconciliation_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouvelle</a>
+  </div>
+
+  {% if not reconciliations %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">Aucune conciliation.</div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+    {% for r in reconciliations %}
+    <a href="{{ url_for('trust.reconciliation_worksheet', rec_id=r.id) }}" class="flex items-center justify-between px-4 py-3 hover:bg-gray-50 text-sm">
+      <div>
+        <p class="font-medium text-gray-900">{{ accounts.get(r.account_id, {}).get('name', '') }}</p>
+        <p class="text-xs text-gray-500">Période au {{ r.period_end.strftime('%Y-%m-%d') if r.period_end else '' }}</p>
+      </div>
+      <span>{% if r.status == 'complétée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Complétée</span>{% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Brouillon</span>{% endif %}</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

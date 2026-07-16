@@ -133,6 +133,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.protocol as protocol_model
     import models.task as task_model
     import models.time_entry as time_entry_model
+    import models.trust as trust_model
     import routes.dashboard as dashboard
 
 
@@ -463,6 +464,10 @@ def test_quick_stats_shape_and_passthrough(monkeypatch):
         lambda: {"hours": 12.3, "amount": 45678},
     )
     monkeypatch.setattr(invoice_model, "get_outstanding_total", lambda: 250075)
+    monkeypatch.setattr(
+        trust_model, "get_firm_trust_snapshot",
+        lambda: {"total_held_cents": 333, "reconciliation_overdue": True},
+    )
 
     stats = dashboard._get_quick_stats()
     assert stats == {
@@ -470,6 +475,8 @@ def test_quick_stats_shape_and_passthrough(monkeypatch):
         "unbilled_hours": 12.3,
         "unbilled_amount": 45678,
         "outstanding_invoices": 250075,
+        "trust_total": 333,
+        "trust_reconciliation_overdue": True,
     }
 
 
