@@ -9,7 +9,7 @@ import icalendar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db
+from models import aggregation_values, db, reference
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import taxonomie
@@ -80,6 +80,7 @@ VALID_FEE_TYPES = (
     "hourly", "flat", "contingency", "mixed", "pro_bono", "aide_juridique",
 )
 VALID_STATUSES = ("actif", "en_attente", "fermé", "archivé")
+VALID_FORUM_TYPES = ("judiciaire", "autre")
 
 # Display labels (French)
 #
@@ -175,6 +176,12 @@ def _default_doc() -> dict:
         "greffe_number": "",
         "juridiction_number": "",
         "is_administrative_tribunal": False,
+        # Forum. "judiciaire" = a Québec judicial court (Cour du Québec /
+        # supérieure / d'appel), whose file number the parser resolves.
+        # "autre" = an administrative tribunal or federal court chosen from the
+        # reference list (`forum` slug), whose file number is stored unparsed.
+        "forum_type": "judiciaire",
+        "forum": "",
         # Role of the lawyer's client
         "role": "demandeur",
         # Financial
@@ -216,6 +223,34 @@ def _sanitize_data(data: dict) -> dict:
     return out
 
 
+def normalize_forum(data: dict) -> None:
+    """Reconcile the forum fields in place, authoritatively over client input.
+
+    Called by the route before validation, so validation and the write see a
+    consistent forum. "autre" → the selected forum's name IS the ``tribunal``,
+    and the Québec judicial-court fields (greffe/juridiction/district/palais/
+    competence) do not apply, so they are cleared; ``is_administrative_tribunal``
+    is True only for a real administrative tribunal, not a federal court.
+    "judiciaire" → no forum; the parsed judicial metadata already in ``data``
+    stands.
+    """
+    if data.get("forum_type") != "autre":
+        data["forum"] = ""
+        return
+    forum = reference.get_forum(data.get("forum", ""))
+    if not forum:
+        # Invalid/blank slug — _validate will reject it; don't wipe the
+        # judicial fields on an about-to-fail submission.
+        return
+    data["tribunal"] = forum["name"]
+    data["competence"] = ""
+    data["district_judiciaire"] = ""
+    data["palais_de_justice"] = ""
+    data["greffe_number"] = ""
+    data["juridiction_number"] = ""
+    data["is_administrative_tribunal"] = forum["category"] == reference.ADMINISTRATIF
+
+
 def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid)."""
     errors: list[str] = []
@@ -249,6 +284,17 @@ def _validate(data: dict) -> list[str]:
     # only validate it when the caller actually supplied a value.
     if "mandate_type" in data and data.get("mandate_type", "") not in VALID_MANDATE_TYPES:
         errors.append("Type de mandat invalide.")
+
+    # forum_type is presence-gated (legacy dossiers predate it → default
+    # "judiciaire" on read). When the forum is "autre", a real forum slug must
+    # be picked; when "judiciaire", no forum applies.
+    if "forum_type" in data:
+        forum_type = data.get("forum_type", "")
+        forum = data.get("forum", "")
+        if forum_type not in VALID_FORUM_TYPES:
+            errors.append("Type de forum invalide.")
+        elif forum_type == "autre" and not reference.get_forum(forum):
+            errors.append("Veuillez sélectionner le tribunal ou la cour.")
 
     if data.get("status", "") not in VALID_STATUSES:
         errors.append("Statut invalide.")

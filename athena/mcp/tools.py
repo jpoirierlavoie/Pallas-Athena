@@ -270,10 +270,14 @@ TOOLS: dict[str, dict] = {
         "title": "Détail d'un dossier",
         "description": (
             "Fetch one dossier by dossier_id or by file_number (provide exactly "
-            "one), with the full record — including parsed court metadata and "
+            "one), with the full record — including court metadata and "
             "the recourse & prescription fields — plus per-module summaries "
             "(tasks, hearings, notes, documents, time, expenses, invoices, "
-            "protocol). The recourse is classified by the Québec action "
+            "protocol). forum_type is 'judiciaire' (a Québec judicial court, "
+            "file number parsed into greffe/juridiction/tribunal) or 'autre' "
+            "(an administrative tribunal or federal court, whose name is in "
+            "`tribunal` and whose file number is stored unparsed). The recourse "
+            "is classified by the Québec action "
             "taxonomy: domaine/domaine_label (the family) and action/"
             "action_label/action_precision (the named recourse, e.g. REC-01). "
             "delai is the taxonomy's INDICATIVE delay for that action and "

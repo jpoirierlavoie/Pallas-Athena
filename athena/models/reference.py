@@ -197,6 +197,60 @@ _JURIDICTIONS: dict[str, dict] = {
 }
 
 
+# ── In-memory forum table (non-judicial forums) ───────────────────────
+# The forums a dossier can be before that the court-file-number parser does
+# NOT handle: Quebec administrative tribunals and the federal courts. The
+# parser resolves greffe/juridiction codes for the three Quebec judicial
+# courts (Cour du Quebec / superieure / d'appel) - everything here is chosen
+# from a list instead, and its file number is stored verbatim, unparsed.
+#
+# Key: stable ASCII slug -> {name, abbr, category}. `name` is what lands in the
+# dossier's `tribunal` field (so the detail card, gabarits and MCP need no
+# change). `category` groups the picker and drives `is_administrative_tribunal`
+# (True only for "administratif" - a federal court is not one).
+#
+# Sources: the 16 Quebec administrative tribunals listed by the Conseil de la
+# justice administrative du Quebec (cjaq.qc.ca), plus the four federal courts
+# (Loi sur les Cours federales; Cour canadienne de l'impot; Cour supreme du
+# Canada). Verified 2026-07-16. Tribunaux specialises attached to the Cour du
+# Quebec (Tribunal des droits de la personne, Tribunal des professions) are
+# deliberately absent - they run through the judicial stream and the parser
+# already covers them via juridiction codes 53 / 07.
+
+ADMINISTRATIF = "administratif"   # Quebec administrative tribunal
+FEDERAL = "federal"               # Federal court
+
+_FORUMS: dict[str, dict] = {
+    # Tribunaux administratifs du Quebec
+    "taq": {"name": "Tribunal administratif du Québec", "abbr": "TAQ", "category": ADMINISTRATIF},
+    "tat": {"name": "Tribunal administratif du travail", "abbr": "TAT", "category": ADMINISTRATIF},
+    "tal": {"name": "Tribunal administratif du logement", "abbr": "TAL", "category": ADMINISTRATIF},
+    "tamf": {"name": "Tribunal administratif des marchés financiers", "abbr": "TAMF", "category": ADMINISTRATIF},
+    "tadp": {"name": "Tribunal administratif de déontologie policière", "abbr": "TADP", "category": ADMINISTRATIF},
+    "cai": {"name": "Commission d'accès à l'information", "abbr": "CAI", "category": ADMINISTRATIF},
+    "cfp": {"name": "Commission de la fonction publique", "abbr": "CFP", "category": ADMINISTRATIF},
+    "cptaq": {"name": "Commission de protection du territoire agricole du Québec", "abbr": "CPTAQ", "category": ADMINISTRATIF},
+    "ctq": {"name": "Commission des transports du Québec", "abbr": "CTQ", "category": ADMINISTRATIF},
+    "cmq": {"name": "Commission municipale du Québec", "abbr": "CMQ", "category": ADMINISTRATIF},
+    "cqlc": {"name": "Commission québécoise des libérations conditionnelles", "abbr": "CQLC", "category": ADMINISTRATIF},
+    "bpcd": {"name": "Bureau des présidents des conseils de discipline", "abbr": "BPCD", "category": ADMINISTRATIF},
+    "re": {"name": "Régie de l'énergie", "abbr": "RE", "category": ADMINISTRATIF},
+    "racj": {"name": "Régie des alcools, des courses et des jeux", "abbr": "RACJ", "category": ADMINISTRATIF},
+    "rmaaq": {"name": "Régie des marchés agricoles et alimentaires du Québec", "abbr": "RMAAQ", "category": ADMINISTRATIF},
+    "rbq": {"name": "Régie du bâtiment du Québec", "abbr": "RBQ", "category": ADMINISTRATIF},
+    # Cours et tribunaux federaux
+    "cour_federale": {"name": "Cour fédérale", "abbr": "C.F.", "category": FEDERAL},
+    "cour_appel_federale": {"name": "Cour d'appel fédérale", "abbr": "C.A.F.", "category": FEDERAL},
+    "cour_canadienne_impot": {"name": "Cour canadienne de l'impôt", "abbr": "C.C.I.", "category": FEDERAL},
+    "cour_supreme_canada": {"name": "Cour suprême du Canada", "abbr": "C.S.C.", "category": FEDERAL},
+}
+
+FORUM_CATEGORY_LABELS: dict[str, str] = {
+    ADMINISTRATIF: "Tribunaux administratifs du Québec",
+    FEDERAL: "Cours et tribunaux fédéraux",
+}
+
+
 # ── Lookup helpers ────────────────────────────────────────────────────
 
 
@@ -277,6 +331,49 @@ def list_palais(location_type: Optional[str] = None) -> list[dict]:
     ]
     items.sort(key=lambda p: p["name"])
     return items
+
+
+def get_forum(forum_key: str) -> Optional[dict]:
+    """Look up a non-judicial forum by slug, with the slug attached.
+
+    Returns a copy (callers can't corrupt the shared table).
+    """
+    forum = _FORUMS.get(forum_key or "")
+    if not forum:
+        return None
+    return {"forum_key": forum_key, **forum}
+
+
+def forum_tribunal_name(forum_key: str) -> str:
+    """The display name a forum contributes to the dossier's `tribunal` field."""
+    forum = _FORUMS.get(forum_key or "")
+    return forum["name"] if forum else ""
+
+
+def list_forums(category: Optional[str] = None) -> list[dict]:
+    """Return non-judicial forums (slug + fields), category-filtered, name-sorted.
+
+    `category` is "administratif" or "federal"; None returns all.
+    """
+    items = [
+        {"forum_key": k, **v}
+        for k, v in _FORUMS.items()
+        if category is None or v["category"] == category
+    ]
+    items.sort(key=lambda f: f["name"])
+    return items
+
+
+def forums_by_category() -> list[tuple[str, str, list[dict]]]:
+    """Grouped forums for the form's optgroup picker.
+
+    Returns [(category_key, category_label, [forum, ...]), ...] in display
+    order (Québec administrative tribunals, then federal courts).
+    """
+    return [
+        (cat, FORUM_CATEGORY_LABELS[cat], list_forums(cat))
+        for cat in (ADMINISTRATIF, FEDERAL)
+    ]
 
 
 def list_juridictions() -> list[dict]:

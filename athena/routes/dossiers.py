@@ -79,9 +79,12 @@ from models.dossier import (
     get_dossier,
     list_dossiers,
     list_dossiers_page,
+    normalize_forum,
     suggest_file_number,
     update_dossier,
 )
+from models import reference
+from models.reference import forums_by_category, get_forum
 from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires, retention_date
@@ -145,7 +148,7 @@ def _parse_parties_json(raw: str) -> list[dict]:
 def _form_data() -> dict:
     """Extract dossier fields from the submitted form."""
     f = request.form
-    return {
+    data = {
         "file_number": f.get("file_number", "").strip(),
         "title": f.get("title", "").strip(),
         # Parties (JSON arrays)
@@ -161,6 +164,9 @@ def _form_data() -> dict:
         "greffe_number": f.get("greffe_number", "").strip(),
         "juridiction_number": f.get("juridiction_number", "").strip(),
         "is_administrative_tribunal": f.get("is_administrative_tribunal") == "true",
+        # Forum (judicial court vs. administrative tribunal / federal court)
+        "forum_type": f.get("forum_type", "judiciaire").strip(),
+        "forum": f.get("forum", "").strip(),
         # Role
         "role": f.get("role", "demandeur"),
         # Financial
@@ -185,6 +191,8 @@ def _form_data() -> dict:
         "droit_action_date": _parse_date(f.get("droit_action_date", "")),
         "prescription_notes": f.get("prescription_notes", "").strip(),
     }
+    normalize_forum(data)
+    return data
 
 
 def _template_context() -> dict:
@@ -196,6 +204,9 @@ def _template_context() -> dict:
         # utils.taxonomie, so handing it to every dossier view (list, tabs)
         # costs a dict reference; only form.html actually serializes it.
         "taxonomie_payload": taxonomie.form_payload(),
+        # Grouped non-judicial forums for the « autre » picker:
+        # [(category_key, label, [forum, ...]), ...].
+        "forum_groups": forums_by_category(),
         "mandate_type_labels": MANDATE_TYPE_LABELS,
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
@@ -328,6 +339,9 @@ def dossier_detail(dossier_id: str) -> str:
     # Taxonomy display values, resolved route-side like value_class/fee_display.
     ctx["action_obj"] = taxonomie.get_action(dossier.get("action", ""))
     ctx["action_display"] = taxonomie.action_label(dossier.get("action", ""))
+    # Forum (non-judicial) object, for the category badge on the court card.
+    ctx["forum_obj"] = get_forum(dossier.get("forum", ""))
+    ctx["forum_category_labels"] = reference.FORUM_CATEGORY_LABELS
     return render_template("dossiers/detail.html", **ctx)
 
 

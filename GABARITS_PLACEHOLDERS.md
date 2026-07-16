@@ -80,7 +80,7 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.action_libelle}}` | The action's name alone, without the bracketed code |
 | `{{dossier.action_code}}` | The bare code (« REC-01 ») |
 | `{{dossier.precision}}` | Free-text précision on the action — required by the « Autre (préciser) » (`-99`) rows; also holds the pre-taxonomy « Objet » text |
-| `{{dossier.delai}}` | The taxonomy's **indicative** delay for the action, verbatim (« 3 ans (P) ») |
+| `{{dossier.delai}}` | The taxonomy's **indicative** delay for the action, as the table states it (« 3 ans (Prescription) ») |
 | `{{dossier.point_depart}}` | The action's starting point / traps (« Exigibilité de chaque facture ») |
 | `{{dossier.reference}}` | The action's statutory references (« 2925, 2931 ») |
 | `{{dossier.objet}}` | **Renamed « Action » (July 2026)** — kept as an alias, now resolves to the action label, not the old free text |

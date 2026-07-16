@@ -337,6 +337,10 @@ def get_dossier(args: dict) -> dict:
             "palais_de_justice": d.get("palais_de_justice", ""),
             "district_judiciaire": d.get("district_judiciaire", ""),
             "is_administrative_tribunal": bool(d.get("is_administrative_tribunal")),
+            # Forum: "judiciaire" (a Québec judicial court, file number parsed)
+            # or "autre" (an administrative tribunal / federal court whose name
+            # is in `tribunal` and whose file number is unparsed).
+            "forum_type": d.get("forum_type", "judiciaire"),
             "mandate_type": d.get("mandate_type", ""),
             "fee_type": d.get("fee_type", ""),
             "fee_notes": d.get("fee_notes", ""),

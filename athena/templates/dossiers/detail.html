@@ -117,6 +117,12 @@
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-2">Tribunal et juridiction</h2>
       <dl class="space-y-1.5 text-sm">
+        {% if forum_obj %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Forum</dt>
+          <dd class="text-gray-900 text-right">{{ forum_category_labels.get(forum_obj.category, '') }}</dd>
+        </div>
+        {% endif %}
         {% if dossier.court_file_number %}
         <div class="flex justify-between">
           <dt class="text-gray-500">N° judiciaire</dt>

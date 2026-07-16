@@ -278,21 +278,23 @@ def test_get_dossier_composes_summaries(monkeypatch):
     assert "notes" not in payload["dossier"]
     assert "internal_notes" not in payload["dossier"]
     # Taxonomy: raw key + French label, mirroring the prescription_type /
-    # prescription_label pair.
+    # prescription_label pair. Labels/delai prose are asserted against the
+    # taxonomy module's live values (the handler's job is to pass them
+    # through faithfully), so an editorial rewording does not break this.
+    from utils import taxonomie
     d = payload["dossier"]
     assert d["domaine"] == "REC"
-    assert d["domaine_label"] == "Recouvrement de créances"
+    assert d["domaine_label"] == taxonomie.DOMAINE_LABELS["REC"]
     assert d["action"] == "REC-01"
-    assert d["action_label"] == (
-        "Action sur compte (biens vendus, services rendus) [REC-01]"
-    )
+    assert d["action_label"] == taxonomie.action_label("REC-01")
     assert d["action_precision"] == "factures 2024-03"
-    # The taxonomy's guidance travels with the action: the delay VERBATIM,
-    # never a computed one, plus what kind of delay it is.
-    assert d["delai"] == "3 ans (P)"
-    assert d["delai_type"] == "P"
-    assert d["delai_point_depart"] == "Exigibilité de chaque facture"
-    assert d["action_references"] == "2925, 2931"
+    # The taxonomy's guidance travels with the action: the delay verbatim from
+    # the table (never a computed one), plus what kind of delay it is.
+    src = taxonomie.ACTIONS["REC-01"]
+    assert d["delai"] == src.delai
+    assert d["delai_type"] == src.delai_type == "P"
+    assert d["delai_point_depart"] == src.point_depart
+    assert d["action_references"] == src.references
     # matter_type/objet were superseded by the taxonomy.
     assert "matter_type" not in d
     assert "objet" not in d

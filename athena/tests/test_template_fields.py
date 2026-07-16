@@ -501,10 +501,12 @@ def test_mandat_card_placeholders_resolve():
          "type_mandat", "type_dossier", "date_fermeture", "retention"],
         dossier=d,
     )
+    from utils import taxonomie
     assert r["dossier.type_mandat"] == "Judiciaire"
     # « Type de dossier » became « Domaine »; the legacy placeholder now
     # resolves to the domaine label so existing gabarits keep filling.
-    assert r["dossier.type_dossier"] == "Responsabilité civile extracontractuelle"
+    # Asserted against the live label so an editorial rename doesn't break it.
+    assert r["dossier.type_dossier"] == taxonomie.DOMAINE_LABELS["RCV"]
     assert r["dossier.type_honoraires"] == "Mixte"
     assert r["dossier.honoraires"] == "Mixte — 250,00 $/h + 5 000,00 $"
     assert r["dossier.taux_horaire"] == "250,00 $"
@@ -515,7 +517,7 @@ def test_mandat_card_placeholders_resolve():
     assert r["dossier.retention"] == "14 juillet 2033"
     # Flat aliases resolve to the same values.
     assert r["type_mandat"] == "Judiciaire"
-    assert r["type_dossier"] == "Responsabilité civile extracontractuelle"
+    assert r["type_dossier"] == taxonomie.DOMAINE_LABELS["RCV"]
     assert r["date_fermeture"] == "14 juillet 2026"
     assert r["retention"] == "14 juillet 2033"
 

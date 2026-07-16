@@ -197,14 +197,18 @@ def test_form_payload_covers_every_domaine_and_action():
 
 
 def test_form_payload_carries_the_guidance_the_form_shows():
+    # Verifies form_payload copies each field through faithfully — asserted
+    # against the Action's own values, not hardcoded prose, so an editorial
+    # rewording of a delai/point_depart cell does not break the plumbing test.
     payload = taxonomie.form_payload()
     rec01 = payload["REC"]["actions"][0]
+    src = taxonomie.ACTIONS["REC-01"]
     assert rec01["code"] == "REC-01"
-    assert rec01["label"].endswith("[REC-01]")
-    assert rec01["delai"] == "3 ans (P)"
-    assert rec01["point_depart"] == "Exigibilité de chaque facture"
-    assert rec01["references"] == "2925, 2931"
-    assert rec01["prescription_type"] == "3_ans"
+    assert rec01["label"] == taxonomie.action_label("REC-01")
+    assert rec01["delai"] == src.delai
+    assert rec01["point_depart"] == src.point_depart
+    assert rec01["references"] == src.references
+    assert rec01["prescription_type"] == src.prescription_type == "3_ans"
 
 
 def test_form_payload_is_cached():

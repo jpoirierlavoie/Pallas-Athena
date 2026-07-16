@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 import firebase_admin
 from firebase_admin import firestore
 
-from models.reference import _GREFFES, _JURIDICTIONS, _PALAIS
+from models.reference import _FORUMS, _GREFFES, _JURIDICTIONS, _PALAIS
 
 # Itinerant circuit greffes serve several communities from one file number.
 # Not part of the in-memory table (nothing in the app reads them yet), so
@@ -100,10 +100,20 @@ def seed_palais(db) -> None:
     print(f"Seeded {_commit_all(db, 'ref_palais', rows)} court locations.")
 
 
+def seed_forums(db) -> None:
+    """Write all non-judicial-forum documents to the ref_forums collection."""
+    rows = {
+        key: {"forum_key": key, **forum}
+        for key, forum in _FORUMS.items()
+    }
+    print(f"Seeded {_commit_all(db, 'ref_forums', rows)} forums.")
+
+
 if __name__ == "__main__":
     firebase_admin.initialize_app()
     db = firestore.client()
     seed_greffes(db)
     seed_juridictions(db)
     seed_palais(db)
+    seed_forums(db)
     print("Reference data seeding complete.")

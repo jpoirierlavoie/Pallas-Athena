@@ -267,8 +267,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_format_fr.py       # Phase H.2
 │   │   ├── test_invoice_docx.py    # Phase H.2 (incl. end-to-end note fill)
 │   │   ├── test_reference_addresses.py  # Court-location table + greffe→address wiring
+│   │   ├── test_reference_forums.py # Non-judicial forum table (admin tribunals + federal courts)
 │   │   ├── test_taxonomie.py       # Action taxonomy invariants (incl. the §4 déchéance cross-check)
 │   │   ├── test_dossier_taxonomy.py # matter_type/objet → domaine/action migration + validation
+│   │   ├── test_dossier_forum.py   # forum_type/forum validation + normalize_forum (CI-only)
 │   │   ├── test_folders.py         # Phase H.2 get_or_create_folder (CI-only: imports models)
 │   │   └── test_document_naming.py # Phase H.2 projet_document_name (CI-only: imports models)
 │   │
@@ -453,11 +455,26 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "court_file_number": str,             # Raw, e.g., "500-05-123456-241"
     "greffe_number": str,                 # 3-digit parsed code
     "juridiction_number": str,            # 2-digit parsed code
-    "tribunal": str,                      # Auto-populated from ref_juridictions
-    "competence": str,                    # Auto-populated
+    "tribunal": str,                      # Court/forum name (parsed from
+                                          # ref_juridictions, OR the forum name
+                                          # when forum_type=="autre")
+    "competence": str,                    # Auto-populated (judicial only)
     "palais_de_justice": str,             # Auto-populated from ref_greffes
-    "district_judiciaire": str,           # Auto-populated
-    "is_administrative_tribunal": bool,   # True if letters prefix (TAL, TAQ…)
+    "district_judiciaire": str,           # Auto-populated (judicial only)
+    "is_administrative_tribunal": bool,   # True for a Québec admin tribunal
+                                          # (letters-prefix parse OR an "autre"
+                                          # forum of category "administratif")
+
+    # Forum (July 2026) — is the matter before a Québec judicial court, or an
+    # administrative tribunal / federal court the parser can't handle?
+    "forum_type": "judiciaire" | "autre",  # default "judiciaire"
+    "forum": str,                         # reference._FORUMS slug when "autre"
+                                          # (e.g. "taq", "cour_federale"); ""
+                                          # for a judicial court. Its name is
+                                          # written into `tribunal`, and the
+                                          # court file number is stored UNPARSED.
+                                          # models/dossier.normalize_forum
+                                          # reconciles this server-side.
 
     # Financial (cents)
     # "pro_bono"/"aide_juridique" are RATE-LESS: no taux/forfait/pourcentage
@@ -1163,6 +1180,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `count_dossiers_for_partie(partie_id) -> int` (returns 0 on query failure — display only), `count_dossiers_for_partie_strict(partie_id) -> int` (propagates errors — used by FK safety checks), `list_dossiers_for_partie(partie_id) -> list[dict]` — query both `client_ids` and `opposing_party_ids`
 - `delete_dossier` REFUSES deletion while child records exist (documents, time entries, expenses, invoices, hearings, tasks, notes, protocols, folders) and fails CLOSED when the child check errors — archive instead of deleting
 - `dossier_to_vjournal(dossier) -> str`, `vjournal_to_dossier(ical_str) -> dict` — legacy, retained for potential export (not used by DAV post-D1). CATEGORIES now emits the domaine label + the action label; an unknown key resolves to nothing rather than leaking a raw snake_case key as a French category (the old `matter_type` line did).
+- **Forum (July 2026):** `normalize_forum(data)` reconciles the forum fields server-side (authoritative over the JS state), called by the route in `_form_data` before validation. `forum_type=="autre"` → the picked `forum` slug's name becomes `tribunal`, the Québec judicial-court fields (greffe/juridiction/district/palais/competence) are cleared, and `is_administrative_tribunal` is set True only for a `"administratif"` forum (not a federal court). `forum_type=="judiciaire"` → `forum` cleared, parsed metadata stands. `_validate` presence-gates `forum_type` (legacy dossiers default `"judiciaire"` on read) and requires a real `forum` slug when `"autre"`. It lives in the model, not the route, so it is testable without Flask config.
 - **Taxonomy (July 2026):** `VALID_DOMAINES` / `VALID_ACTIONS` / `DOMAINE_LABELS` are re-exported from `utils/taxonomie.py` — the vocabulary is **not** redefined here (contrast `MANDATE_TYPE_LABELS` / `FEE_TYPE_LABELS`, which `utils/template_fields.py` must mirror by hand; there is deliberately **no domaine mirror**, since `taxonomie` is Firestore-free and both sides import it). `_migrate_domaine` (called from `_migrate_parties`, the chokepoint covering all six read paths) folds legacy `matter_type` → `domaine` and `objet` → `action_precision`, then `_REMOVED_FIELDS` purges both on the next save. `_validate` presence-gates `domaine`/`action` (like `mandate_type`) and rejects a pair whose code prefix disagrees with the domaine — the cascading picker cannot produce that, but a hand-crafted POST can.
 
 ### `models/time_entry.py` (note: file is `time_entry.py`, **not** `timeentry.py`)
@@ -1260,7 +1278,7 @@ Folder functions:
 
 ### `models/reference.py` (read-only)
 
-All lookups are **in-memory** (`_PALAIS` / `_GREFFES` / `_JURIDICTIONS` module dicts) — the `ref_*` Firestore collections are an unread mirror. The module imports only `typing`: keep it Firestore-free so it stays a pure, unit-testable table.
+All lookups are **in-memory** (`_PALAIS` / `_GREFFES` / `_JURIDICTIONS` / `_FORUMS` module dicts) — the `ref_*` Firestore collections are an unread mirror. The module imports only `typing`: keep it Firestore-free so it stays a pure, unit-testable table.
 
 - `get_greffe(greffe_number) -> dict | None`
 - `get_juridiction(juridiction_number) -> dict | None`
@@ -1269,6 +1287,12 @@ All lookups are **in-memory** (`_PALAIS` / `_GREFFES` / `_JURIDICTIONS` module d
 - `format_palais_address(palais, multiline=False) -> str` — MJQ-style rendering: `"227, rue Racine Est, 1er étage, Saguenay (Québec) G7H 7B4"`; `multiline=True` breaks before the city for a letter address block; tolerates `None`
 - `list_greffes()`, `list_juridictions()`, `list_palais(location_type=None)` — `location_type` filters to `"palais"` or `"point_de_service"`
 - `parse_court_file_number(court_file_number) -> dict` — returns `{greffe_number, juridiction_number, greffe, juridiction, is_administrative, parse_error}`. Letters prefix → `is_administrative=True`, no parsing. Format `NNN-NN-...` required, else `parse_error`.
+
+**Non-judicial forums (`_FORUMS`, July 2026).** The forums the court-file parser can't handle — the **16 Québec administrative tribunals** (CJAQ list: TAQ, TAT, TAL, TAMF, TADP, CAI, CFP, CPTAQ, CTQ, CMQ, CQLC, BPCD, RE, RACJ, RMAAQ, RBQ) + the **4 federal courts** (Cour fédérale, Cour d'appel fédérale, Cour canadienne de l'impôt, Cour suprême du Canada). Slug → `{name, abbr, category}` where `category` ∈ {`"administratif"`, `"federal"`}. Tribunaux spécialisés of the Cour du Québec (droits de la personne, professions) are **deliberately absent** — they run through the judicial stream (juridiction codes 53/07). The dossier's `forum` field holds a slug; `forum` drives the `tribunal` name and `is_administrative_tribunal` (True only for `"administratif"`).
+- `get_forum(forum_key) -> dict | None` — with slug attached; returns a **copy**
+- `forum_tribunal_name(forum_key) -> str` — the display name written into the dossier's `tribunal`
+- `list_forums(category=None) -> list[dict]` — name-sorted; `category` filters `"administratif"`/`"federal"`
+- `forums_by_category() -> [(category_key, label, [forum…]), …]` — the form's optgroup picker, admin-then-federal order
 
 ### MCP (Phase I)
 
@@ -1516,7 +1540,7 @@ Run with `python -m scripts.<name>` from the `athena/` directory.
 
 ### `scripts/seed_reference_data.py` (Phase G)
 
-Mirrors `ref_greffes` (56), `ref_juridictions` (27) and `ref_palais` (51) into Firestore **from the in-memory tables in `models/reference.py`** (imported, not re-listed — the old duplicated literals had already drifted). Idempotent — overwrites documents. **Nothing reads these collections**; the app reads the in-memory tables, so a data fix means editing `models/reference.py`, and re-seeding is optional housekeeping for the eventual admin UI.
+Mirrors `ref_greffes` (56), `ref_juridictions` (27), `ref_palais` (51) and `ref_forums` (20) into Firestore **from the in-memory tables in `models/reference.py`** (imported, not re-listed — the old duplicated literals had already drifted). Idempotent — overwrites documents. **Nothing reads these collections**; the app reads the in-memory tables, so a data fix means editing `models/reference.py`, and re-seeding is optional housekeeping for the eventual admin UI.
 
 ### `scripts/normalize_existing.py` (Phase B)
 
@@ -1568,6 +1592,8 @@ Letters prefix (e.g., `TAL-...`, `TAQ-...`) → administrative tribunal, no pars
 Shared greffe numbers (multiple locations): `614`, `635`, `640`, `652` — stored with `other_locations` array. The `point_de_service=True` flag marks itinerant points of service.
 
 Auto-populated fields on dossier (`tribunal`, `competence`, `palais_de_justice`, `district_judiciaire`) remain user-editable after parsing.
+
+**Forum toggle (July 2026).** The parser only resolves Québec judicial-court numbers (`NNN-NN-…`). For a matter before an administrative tribunal or a federal court, the dossier form has a checkbox (`forum_type="autre"`) that reveals a grouped picker of the `reference._FORUMS` bodies; picking one writes its name into `tribunal`, clears the judicial-only fields, and the court file number is stored **verbatim, unparsed**. The checkbox disables the on-blur parse. Server-side reconciliation is `models/dossier.normalize_forum` (authoritative over the JS state). See the reference `_FORUMS` table above.
 
 ### Court locations & addresses (July 2026)
 
