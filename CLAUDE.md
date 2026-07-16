@@ -285,7 +285,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── parties/                # list, detail, form + _partie_rows, _search_results,
 │   │   │                           # _mandataire_search_results, _address_letter
 │   │   ├── dossiers/               # list, detail, form + _dossier_rows + _tab_temps,
-│   │   │                           # _tab_facturation, _tab_audiences, _tab_taches, _tab_protocole,
+│   │   │                           # _tab_facturation, _tab_agenda, _tab_protocole,
 │   │   │                           # _tab_documents, _tab_placeholder
 │   │   ├── time_expenses/          # list, time_form, expense_form + _time_rows, _expense_rows
 │   │   ├── invoices/               # list, detail, create + _invoice_rows + _unbilled_items
@@ -319,7 +319,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 
 > The Firestore/Storage rules + index files live at the **repo root** (next to `firebase.json`, which references them by bare filename) — they are Firebase-CLI deploy config, **not** part of the App Engine app, so they deliberately sit outside `athena/` and never ship in the deployed bundle.
 
-> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `audiences`, `taches`, `protocole`, `documents`; **`temps` is the default tab**. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card, its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`; « Type de dossier » left it in July 2026 when it became « Domaine » on the Recours card), and its free-text notes were deleted with the fields (below). There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
+> Note on tab names: the dossier detail uses an HTMX tab loader (`/dossiers/<id>/tab/<tab_name>`). Active tab names are `temps`, `facturation`, `agenda`, `protocole`, `documents`; **`temps` is the default tab** (labelled « Temps & Déboursés » since July 2026). The `audiences` and `taches` tabs were **merged into `agenda` in July 2026** (`_tab_agenda.html`: two sections, Audiences then Tâches, mirroring the temps tab) — the per-tab summary counters were dropped, and the tab is **forward-looking**: items dated strictly before today (Montréal calendar day; today's items stay) are filtered out route-side in Python (no new Firestore index), and a dateless task shows only while active (`à_faire`/`en_cours`). `_LEGACY_TABS` in `routes/dossiers.py` maps the old `audiences`/`taches` names onto `agenda` for pre-merge bookmarks and `return_to` links. The `apercu` (Aperçu) tab was **removed in July 2026** — its prescription block became the « Recours et prescription » card (itself **split in July 2026** into « Recours » — domaine, action, précision, valeur/classe — and « Prescription » — prescription, nature du délai, droit d'action, date pour agir), its dates became the « Mandat » card (renamed from « Dates clés » in July 2026 — it shows type de mandat, honoraires + taux jointly, ouverture, fermeture, and a derived « Rétention » = fermeture + 7 ans computed read-only in `dossiers.dossier_detail`; « Type de dossier » left it in July 2026 when it became « Domaine » on the Recours card), and its free-text notes were deleted with the fields (below). A « Sommaire » card (free-text `sommaire` field, entered on the create/edit form) sits between the header card and the info-card grid. There is no separate `notes` tab in the dossier hub; notes live at the standalone `/notes` view (filterable by `?dossier_id=`).
 
 ---
 
@@ -425,6 +425,11 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
 {
     "file_number": str,                   # User-assigned, e.g., "2025-001"
     "title": str,                         # "Tremblay c. Lavoie"
+    "sommaire": str,                      # Free-text case summary (≤ 5000 chars —
+                                          # _SOMMAIRE_MAX_LENGTH; other string
+                                          # fields keep the 2000 cap). Shown in
+                                          # its own card on the detail page;
+                                          # exposed by the MCP get_dossier tool.
 
     # Parties on the dossier (replaces the legacy single client_id)
     "clients":          [{"id": UUIDv4, "name": str}, ...],
@@ -942,7 +947,7 @@ All UI routes require `@login_required` (in `auth.py`). DAV routes use `@dav_aut
 |-------|--------|---------|
 | `/dossiers/` | GET | List with status tabs (actif / en_attente / fermé / archivé / tous) |
 | `/dossiers/<id>` | GET | Detail (hub page) |
-| `/dossiers/<id>/tab/<tab_name>` | GET | HTMX tab loader (`temps` — default, `facturation`, `audiences`, `taches`, `protocole`, `documents`) |
+| `/dossiers/<id>/tab/<tab_name>` | GET | HTMX tab loader (`temps` — default, `facturation`, `agenda`, `protocole`, `documents`; legacy `audiences`/`taches` map to `agenda`) |
 | `/dossiers/new` | GET | Create form |
 | `/dossiers/` | POST | Create submit |
 | `/dossiers/<id>/edit` | GET | Edit form |
