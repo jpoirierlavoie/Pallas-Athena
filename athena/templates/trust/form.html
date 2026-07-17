@@ -84,7 +84,7 @@
       <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
              @focus="cpOpen = true" @input="cpOpen = true"
              hx-get="{{ url_for('trust.counterparty_suggest') }}" hx-trigger="focus, input changed delay:300ms"
-             hx-target="#cp-results" :hx-vals="JSON.stringify({dossier_id: dossierId})"
+             hx-target="#cp-results" hx-include="[name='dossier_id']"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
       <div id="cp-results" x-show="cpOpen" @click.outside="cpOpen = false" x-cloak
            @click="let li = $event.target.closest('li'); if (li) { $root.querySelector('[name=counterparty]').value = li.dataset.counterparty; cpOpen = false; }"
@@ -98,7 +98,9 @@
       {% if locked and dossier %}
       <input type="text" disabled value="{{ dossier.file_number }} — {{ dossier.title }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
       {% else %}
-      <input type="text" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
+      {# name="q" is load-bearing: hx-include="this" serializes the element by
+         its name, so without it dossier_search never receives a query. #}
+      <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
              @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''"
              hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
@@ -115,7 +117,7 @@
       <input type="text" x-model="clientDisplay" autocomplete="off" placeholder="Choisir le client…"
              @focus="clientOpen = true"
              hx-get="{{ url_for('trust.client_search') }}" hx-trigger="focus" hx-target="#client-results"
-             :hx-vals="JSON.stringify({dossier_id: dossierId})"
+             hx-include="[name='dossier_id']"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
       <div id="client-results" x-show="clientOpen" @click.outside="clientOpen = false" x-cloak
            @click="let li = $event.target.closest('li'); if (li) { clientId = li.dataset.clientId; clientDisplay = li.dataset.clientName; clientOpen = false; }"

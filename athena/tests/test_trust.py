@@ -17,6 +17,7 @@ import copy
 import importlib
 import importlib.util
 import os
+import re
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -852,3 +853,53 @@ def test_get_trust_summary_in_transit(monkeypatch):
     assert summary["has_trust"] is True
     assert summary["total_cents"] == 30000
     assert summary["by_client"][0]["in_transit_cents"] == 20000
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Template wiring guards — an HTMX lookup input that does not actually SEND
+# its parameter fails SILENTLY: the route just sees an empty query and the
+# picker stays empty forever. These static guards exist because exactly that
+# shipped — the dossier picker had no name="q", so hx-include="this"
+# serialized nothing and no dossier ever appeared.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TRUST_TEMPLATES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "trust"
+)
+
+
+def _template(name: str) -> str:
+    with open(os.path.join(_TRUST_TEMPLATES, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _input_tags(html: str) -> list[str]:
+    return re.findall(r"<input\b[^>]*>", html, re.S)
+
+
+def test_dossier_search_inputs_send_a_query_param():
+    """hx-include="this" serializes an input BY ITS NAME — without name="q" the
+    dossier_search route receives no query and the picker stays empty."""
+    for tpl in ("form.html", "transfer_form.html"):
+        tags = [t for t in _input_tags(_template(tpl)) if "dossier_search" in t]
+        assert tags, f"{tpl}: expected at least one dossier_search input"
+        for tag in tags:
+            assert 'name="q"' in tag, (
+                f'{tpl}: a dossier-search input lacks name="q" — HTMX would send '
+                "no query and no dossier would ever appear"
+            )
+
+
+def test_client_and_counterparty_lookups_send_dossier_id():
+    """client_search / counterparty_suggest read dossier_id from the query
+    string; the input must carry a mechanism that sends it."""
+    tags = [
+        t for t in _input_tags(_template("form.html"))
+        if "client_search" in t or "counterparty_suggest" in t
+    ]
+    assert tags, "form.html: expected client/counterparty lookup inputs"
+    for tag in tags:
+        assert "dossier_id" in tag, (
+            "form.html: a lookup input does not send dossier_id "
+            "(needs hx-include=\"[name='dossier_id']\" or hx-vals)"
+        )
