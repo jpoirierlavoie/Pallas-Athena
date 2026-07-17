@@ -19,8 +19,8 @@
 
   <form method="post" class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4"
         x-data="{
-          fromDossierId:'', fromDossierDisplay:'', fromClientId:'', fromClientDisplay:'', fromDOpen:false, fromCOpen:false,
-          toDossierId:'', toDossierDisplay:'', toClientId:'', toClientDisplay:'', toDOpen:false, toCOpen:false
+          fromDossierId:'', fromDossierDisplay:'', fromClientId:'', fromClients:[], fromDOpen:false,
+          toDossierId:'', toDossierDisplay:'', toClientId:'', toClients:[], toDOpen:false
         }">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -33,49 +33,49 @@
 
     <fieldset class="border border-gray-200 rounded-xl p-3 space-y-3">
       <legend class="text-xs font-semibold text-gray-500 px-1">Source</legend>
-      <div class="relative">
+      <div class="relative" @click.outside="fromDOpen=false">
         <label class="block text-sm font-medium text-gray-700 mb-1">Dossier source</label>
         <input type="hidden" name="from_dossier_id" :value="fromDossierId">
         <input type="text" name="q" x-model="fromDossierDisplay" autocomplete="off" placeholder="Rechercher…" @focus="fromDOpen=true" @input="fromDOpen=true; fromDossierId=''"
                hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#from-d-res" hx-include="this"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <div id="from-d-res" x-show="fromDOpen" @click.outside="fromDOpen=false" x-cloak
-             @click="let li=$event.target.closest('li'); if(li){fromDossierId=li.dataset.dossierId; fromDossierDisplay=li.dataset.dossierFileNumber+' — '+li.dataset.dossierTitle; fromDOpen=false; fromClientId=''; fromClientDisplay='';}"
+        <div id="from-d-res" x-show="fromDOpen" x-cloak
+             @click="let li=$event.target.closest('li'); if(li){fromDossierId=li.dataset.dossierId; fromDossierDisplay=li.dataset.dossierFileNumber+' — '+li.dataset.dossierTitle; fromDOpen=false; fromClientId=''; fromClients=JSON.parse(li.dataset.clients || '[]');}"
              class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       </div>
-      <div class="relative" x-show="fromDossierId" x-cloak>
+      <div x-show="fromDossierId" x-cloak>
         <label class="block text-sm font-medium text-gray-700 mb-1">Client source</label>
-        <input type="hidden" name="from_client_id" :value="fromClientId">
-        <input type="text" x-model="fromClientDisplay" autocomplete="off" placeholder="Choisir…" @focus="fromCOpen=true"
-               hx-get="{{ url_for('trust.client_search') }}" hx-trigger="focus" hx-target="#from-c-res" :hx-vals="JSON.stringify({dossier_id: fromDossierId})"
-               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <div id="from-c-res" x-show="fromCOpen" @click.outside="fromCOpen=false" x-cloak
-             @click="let li=$event.target.closest('li'); if(li){fromClientId=li.dataset.clientId; fromClientDisplay=li.dataset.clientName; fromCOpen=false;}"
-             class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+        <select name="from_client_id" x-model="fromClientId"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          <option value="">Choisir…</option>
+          <template x-for="c in fromClients" :key="c.id">
+            <option :value="c.id" x-text="c.name"></option>
+          </template>
+        </select>
       </div>
     </fieldset>
 
     <fieldset class="border border-gray-200 rounded-xl p-3 space-y-3">
       <legend class="text-xs font-semibold text-gray-500 px-1">Destination</legend>
-      <div class="relative">
+      <div class="relative" @click.outside="toDOpen=false">
         <label class="block text-sm font-medium text-gray-700 mb-1">Dossier destinataire</label>
         <input type="hidden" name="to_dossier_id" :value="toDossierId">
         <input type="text" name="q" x-model="toDossierDisplay" autocomplete="off" placeholder="Rechercher…" @focus="toDOpen=true" @input="toDOpen=true; toDossierId=''"
                hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#to-d-res" hx-include="this"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <div id="to-d-res" x-show="toDOpen" @click.outside="toDOpen=false" x-cloak
-             @click="let li=$event.target.closest('li'); if(li){toDossierId=li.dataset.dossierId; toDossierDisplay=li.dataset.dossierFileNumber+' — '+li.dataset.dossierTitle; toDOpen=false; toClientId=''; toClientDisplay='';}"
+        <div id="to-d-res" x-show="toDOpen" x-cloak
+             @click="let li=$event.target.closest('li'); if(li){toDossierId=li.dataset.dossierId; toDossierDisplay=li.dataset.dossierFileNumber+' — '+li.dataset.dossierTitle; toDOpen=false; toClientId=''; toClients=JSON.parse(li.dataset.clients || '[]');}"
              class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       </div>
-      <div class="relative" x-show="toDossierId" x-cloak>
+      <div x-show="toDossierId" x-cloak>
         <label class="block text-sm font-medium text-gray-700 mb-1">Client destinataire</label>
-        <input type="hidden" name="to_client_id" :value="toClientId">
-        <input type="text" x-model="toClientDisplay" autocomplete="off" placeholder="Choisir…" @focus="toCOpen=true"
-               hx-get="{{ url_for('trust.client_search') }}" hx-trigger="focus" hx-target="#to-c-res" :hx-vals="JSON.stringify({dossier_id: toDossierId})"
-               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-        <div id="to-c-res" x-show="toCOpen" @click.outside="toCOpen=false" x-cloak
-             @click="let li=$event.target.closest('li'); if(li){toClientId=li.dataset.clientId; toClientDisplay=li.dataset.clientName; toCOpen=false;}"
-             class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+        <select name="to_client_id" x-model="toClientId"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          <option value="">Choisir…</option>
+          <template x-for="c in toClients" :key="c.id">
+            <option :value="c.id" x-text="c.name"></option>
+          </template>
+        </select>
       </div>
     </fieldset>
 

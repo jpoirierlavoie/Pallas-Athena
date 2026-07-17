@@ -7,6 +7,7 @@ autocompletes and the reconciliation live variance. No request-size or CSRF
 exemption is needed (ordinary form POSTs).
 """
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -136,11 +137,18 @@ def dossier_search() -> str:
         return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
     parts = ['<ul class="divide-y divide-gray-100">']
     for d in dossiers:
+        # The dossier's clients ride along on the row so the client <select> can
+        # be populated with no second request (a dossier has one or two clients).
+        clients = [
+            {"id": c.get("id", ""), "name": c.get("name", "")}
+            for c in d.get("clients", [])
+        ]
         parts.append(
             f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
             f' data-dossier-id="{escape(d["id"])}"'
             f' data-dossier-file-number="{escape(d.get("file_number", ""))}"'
-            f' data-dossier-title="{escape(d.get("title", ""))}">'
+            f' data-dossier-title="{escape(d.get("title", ""))}"'
+            f' data-clients="{escape(json.dumps(clients, ensure_ascii=False))}">'
             f'<span class="font-medium text-gray-900">{escape(d.get("file_number", ""))}</span>'
             f'<span class="text-gray-500 ml-1">{escape(d.get("title", ""))}</span></li>'
         )

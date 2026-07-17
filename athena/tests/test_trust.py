@@ -903,3 +903,43 @@ def test_client_and_counterparty_lookups_send_dossier_id():
             "form.html: a lookup input does not send dossier_id "
             "(needs hx-include=\"[name='dossier_id']\" or hx-vals)"
         )
+
+
+def test_no_results_div_closes_itself_on_the_click_that_opens_it():
+    """@click.outside must sit on the WRAPPER, never on the results div itself.
+
+    The click that focuses the input is OUTSIDE the results div, so Alpine would
+    close the dropdown in the very click that opened it — the bug that made the
+    client picker permanently invisible.
+    """
+    for tpl in ("form.html", "transfer_form.html"):
+        html = _template(tpl)
+        for m in re.finditer(r'<div[^>]*id="[^"]*(?:res|results)"[^>]*>', html, re.S):
+            assert "click.outside" not in m.group(0), (
+                f"{tpl}: a results div carries @click.outside — it would close on "
+                f"the opening click. Move it to the wrapper. Offender: {m.group(0)[:80]}"
+            )
+
+
+def test_client_is_a_native_select_not_an_autocomplete():
+    """§4.3 — funds are held for a client OF THE DOSSIER: a closed set. A native
+    select makes an unlisted client unsubmittable and has no dropdown to race."""
+    assert '<select name="client_id"' in _template("form.html")
+    transfer = _template("transfer_form.html")
+    assert '<select name="from_client_id"' in transfer
+    assert '<select name="to_client_id"' in transfer
+
+
+def test_dossier_rows_carry_their_clients_for_the_select():
+    """The client select is populated straight off the picked dossier row, so
+    dossier_search must emit data-clients (no second request to race)."""
+    with open(
+        os.path.join(os.path.dirname(_TRUST_TEMPLATES), "..", "routes", "trust.py"),
+        encoding="utf-8",
+    ) as fh:
+        route = fh.read()
+    assert "data-clients=" in route, "dossier_search must emit data-clients on each row"
+    for tpl in ("form.html", "transfer_form.html"):
+        assert "dataset.clients" in _template(tpl), (
+            f"{tpl}: the dossier picker must load the row's clients into the select"
+        )

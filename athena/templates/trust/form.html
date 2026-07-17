@@ -15,13 +15,19 @@
   </div>
   {% endif %}
 
+  {# The chosen dossier's clients, for the locked-dossier and error-re-render
+     paths (the picker supplies them via data-clients otherwise). Non-executable
+     JSON data block — never executed, so it needs no CSP nonce (same pattern as
+     the taxonomy cascade in dossiers/form.html). #}
+  <script type="application/json" id="trust-clients-data">{{ (dossier.clients if dossier else []) | tojson }}</script>
+
   <form method="post" action="{{ url_for('trust.entry_create') }}"
         x-data="{
           dossierId: '{{ (dossier.id if dossier else (entry.dossier_id if entry else '')) or '' }}',
           dossierDisplay: '{{ (dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '' }}',
           clientId: '{{ entry.client_id if entry else '' }}',
-          clientDisplay: '',
-          dossierOpen: false, clientOpen: false, cpOpen: false
+          clients: JSON.parse(document.getElementById('trust-clients-data').textContent || '[]'),
+          dossierOpen: false, cpOpen: false
         }"
         class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -78,21 +84,24 @@
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
     </div>
 
-    {# Contrepartie (texte libre, jamais un FK) #}
-    <div class="relative">
+    {# Contrepartie (texte libre, jamais un FK).
+       @click.outside lives on the WRAPPER, not on the results div: the click
+       that focuses the input is outside the results div, so it would close the
+       dropdown in the same click it opened it. #}
+    <div class="relative" @click.outside="cpOpen = false">
       <label class="block text-sm font-medium text-gray-700 mb-1">Somme reçue de / Bénéficiaire du débours</label>
       <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
              @focus="cpOpen = true" @input="cpOpen = true"
              hx-get="{{ url_for('trust.counterparty_suggest') }}" hx-trigger="focus, input changed delay:300ms"
              hx-target="#cp-results" hx-include="[name='dossier_id']"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      <div id="cp-results" x-show="cpOpen" @click.outside="cpOpen = false" x-cloak
+      <div id="cp-results" x-show="cpOpen" x-cloak
            @click="let li = $event.target.closest('li'); if (li) { $root.querySelector('[name=counterparty]').value = li.dataset.counterparty; cpOpen = false; }"
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
     </div>
 
-    {# Dossier #}
-    <div class="relative">
+    {# Dossier — @click.outside on the WRAPPER (see the contrepartie note). #}
+    <div class="relative" @click.outside="dossierOpen = false">
       <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(laisser vide pour intérêts / frais bancaires)</span></label>
       <input type="hidden" name="dossier_id" :value="dossierId">
       {% if locked and dossier %}
@@ -104,24 +113,30 @@
              @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''"
              hx-get="{{ url_for('trust.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      <div id="dossier-results" x-show="dossierOpen" @click.outside="dossierOpen = false" x-cloak
-           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; clientId=''; clientDisplay=''; }"
+      {# Picking a dossier also loads ITS clients into the select below, straight
+         off the row — no second request, nothing to race. #}
+      <div id="dossier-results" x-show="dossierOpen" x-cloak
+           @click="let li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; clientId = ''; clients = JSON.parse(li.dataset.clients || '[]'); }"
            class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
       {% endif %}
     </div>
 
-    {# Client (only clients of the chosen dossier — §4.3) #}
-    <div class="relative" x-show="dossierId" x-cloak>
+    {# Client (§4.3: funds are held for a client OF THIS DOSSIER — a closed set of
+       one or two people). A native select, deliberately NOT an autocomplete:
+       there is nothing to type and nothing to race, and an unlisted client
+       cannot be submitted. #}
+    <div x-show="dossierId" x-cloak>
       <label class="block text-sm font-medium text-gray-700 mb-1">Client pour qui la somme est reçue / le débours effectué</label>
-      <input type="hidden" name="client_id" :value="clientId">
-      <input type="text" x-model="clientDisplay" autocomplete="off" placeholder="Choisir le client…"
-             @focus="clientOpen = true"
-             hx-get="{{ url_for('trust.client_search') }}" hx-trigger="focus" hx-target="#client-results"
-             hx-include="[name='dossier_id']"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
-      <div id="client-results" x-show="clientOpen" @click.outside="clientOpen = false" x-cloak
-           @click="let li = $event.target.closest('li'); if (li) { clientId = li.dataset.clientId; clientDisplay = li.dataset.clientName; clientOpen = false; }"
-           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+      <select name="client_id" x-model="clientId"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <option value="">Choisir le client…</option>
+        <template x-for="c in clients" :key="c.id">
+          <option :value="c.id" x-text="c.name"></option>
+        </template>
+      </select>
+      <p x-show="dossierId && clients.length === 0" x-cloak class="text-xs text-amber-600 mt-1">
+        Aucun client n'est rattaché à ce dossier. Ajoutez-en un au dossier d'abord.
+      </p>
     </div>
 
     <div class="grid grid-cols-2 gap-4">
