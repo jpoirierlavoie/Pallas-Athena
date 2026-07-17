@@ -943,3 +943,96 @@ def test_dossier_rows_carry_their_clients_for_the_select():
         assert "dataset.clients" in _template(tpl), (
             f"{tpl}: the dossier picker must load the row's clients into the select"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fee transfer backed by an invoice — Athena OR external (user decision
+# 2026-07-17). A virement_honoraires must be backed by exactly one of them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_virement_with_external_ref_allowed(store):
+    _fund_cleared(store, amount=100000)  # cleared 100000 for c1
+    entry, errs = trust.create_transaction(_new(
+        direction="déboursé", purpose="virement_honoraires", amount=60000,
+        invoice_external_ref="INV-2019-042",
+        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
+    ))
+    assert errs == []
+    assert entry["invoice_external_ref"] == "INV-2019-042"
+    assert entry["invoice_id"] is None
+
+
+def test_virement_without_any_invoice_refused(store):
+    _fund_cleared(store, amount=100000)
+    _, errs = trust.create_transaction(_new(
+        direction="déboursé", purpose="virement_honoraires", amount=50000,
+        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
+    ))
+    assert errs and "facture" in errs[0].lower()
+
+
+def test_virement_with_both_invoice_and_external_refused(store):
+    store["invoices"]["inv1"] = {
+        "id": "inv1", "status": "envoyée", "dossier_id": "dos1", "amount_due": 100000,
+    }
+    _fund_cleared(store, amount=100000)
+    _, errs = trust.create_transaction(_new(
+        direction="déboursé", purpose="virement_honoraires", amount=50000,
+        invoice_id="inv1", invoice_external_ref="INV-2019-042",
+        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
+    ))
+    assert errs and "jamais les deux" in errs[0].lower()
+
+
+def test_valid_athena_invoice_still_verified_with_no_external(store):
+    store["invoices"]["inv1"] = {
+        "id": "inv1", "status": "envoyée", "dossier_id": "dos1", "amount_due": 100000,
+    }
+    _fund_cleared(store, amount=100000)
+    entry, errs = trust.create_transaction(_new(
+        direction="déboursé", purpose="virement_honoraires", amount=40000,
+        invoice_id="inv1",
+        date=datetime(2026, 7, 3, tzinfo=timezone.utc),
+    ))
+    assert errs == []
+    assert entry["invoice_id"] == "inv1"
+    assert entry["invoice_external_ref"] == ""
+
+
+def test_invoice_fields_ignored_on_non_virement(store):
+    # A stray external ref / invoice id on a deposit is dropped, not stored.
+    entry, errs = trust.create_transaction(_new(
+        direction="recette", purpose="dépôt_client", amount=50000,
+        invoice_external_ref="STRAY", invoice_id="inv1",
+    ))
+    assert errs == []
+    assert entry["invoice_external_ref"] == ""
+    assert entry["invoice_id"] is None
+
+
+# ── The route's Athena-invoice NUMBER -> id resolver (routes/trust.py) ──────
+
+
+def test_resolve_invoice_number_hard_errors_on_typo(monkeypatch):
+    """A typo'd Athena invoice number must be a HARD error, never a silent
+    downgrade to 'external' (which would skip the amount check)."""
+    import routes.trust as rt
+    import models.invoice as invoice_model
+
+    monkeypatch.setattr(
+        invoice_model, "list_invoices",
+        lambda dossier_id=None: [{"id": "i1", "invoice_number": "2026-F001"}],
+    )
+
+    ok = {"purpose": "virement_honoraires", "dossier_id": "d1", "invoice_number": "2026-F001"}
+    assert rt._resolve_invoice_number(ok) == []
+    assert ok["invoice_id"] == "i1"
+
+    typo = {"purpose": "virement_honoraires", "dossier_id": "d1", "invoice_number": "2026-F009"}
+    assert rt._resolve_invoice_number(typo)  # non-empty error
+    assert typo["invoice_id"] is None  # NOT downgraded to external
+
+    non_transfer = {"purpose": "dépôt_client", "dossier_id": "d1", "invoice_number": "2026-F001"}
+    assert rt._resolve_invoice_number(non_transfer) == []
+    assert non_transfer["invoice_id"] is None

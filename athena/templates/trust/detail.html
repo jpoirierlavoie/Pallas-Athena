@@ -23,6 +23,8 @@
       <div><p class="text-xs text-gray-500">N/Réf</p>
         <p class="text-gray-900">{% if entry.dossier_id %}<a href="{{ url_for('dossiers.dossier_detail', dossier_id=entry.dossier_id) }}" class="text-indigo-600 hover:underline">{{ entry.dossier_file_number }}</a>{% else %}—{% endif %}</p></div>
       {% if entry.reference %}<div><p class="text-xs text-gray-500">Référence</p><p class="text-gray-900">{{ entry.reference }}</p></div>{% endif %}
+      {% if entry.invoice_id %}<div><p class="text-xs text-gray-500">Facture</p><p class="text-gray-900"><a href="{{ url_for('invoices.invoice_detail', invoice_id=entry.invoice_id) }}" class="text-indigo-600 hover:underline">Facture de Pallas Athéna</a></p></div>{% endif %}
+      {% if entry.invoice_external_ref %}<div><p class="text-xs text-gray-500">Facture (externe)</p><p class="text-gray-900">{{ entry.invoice_external_ref }}</p></div>{% endif %}
       {% if entry.cleared_date %}<div><p class="text-xs text-gray-500">Compensée le</p><p class="text-gray-900">{{ entry.cleared_date.strftime('%Y-%m-%d') }}</p></div>{% endif %}
     </div>
 

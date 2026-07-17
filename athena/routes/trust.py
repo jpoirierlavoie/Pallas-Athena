@@ -273,11 +273,39 @@ def _entry_form_data() -> dict:
         "counterparty": f.get("counterparty", "").strip(),
         "dossier_id": f.get("dossier_id", "").strip() or None,
         "client_id": f.get("client_id", "").strip() or None,
-        "invoice_id": f.get("invoice_id", "").strip() or None,
+        # Two mutually-exclusive ways to back a fee transfer: a Pallas Athéna
+        # invoice NUMBER (resolved to an id below) or an external number.
+        "invoice_number": f.get("invoice_number", "").strip(),
+        "invoice_external_ref": f.get("invoice_external_ref", "").strip(),
         "reference": f.get("reference", "").strip(),
         "description": f.get("description", "").strip(),
         "date": _parse_date(f.get("date", "")),
     }
+
+
+def _resolve_invoice_number(data: dict) -> list[str]:
+    """Resolve the Pallas Athéna invoice NUMBER (e.g. « 2026-F001 ») to its id
+    within the dossier, setting ``data['invoice_id']``. A number that does not
+    resolve is a HARD error — never silently treated as external, which would
+    skip the amount check. Only meaningful for a fee transfer."""
+    data["invoice_id"] = None
+    number = (data.get("invoice_number") or "").strip()
+    if data.get("purpose") != "virement_honoraires" or not number:
+        return []
+    dossier_id = data.get("dossier_id")
+    if not dossier_id:
+        return ["Sélectionnez le dossier avant d'indiquer une facture."]
+    from models.invoice import list_invoices
+
+    matches = [
+        inv
+        for inv in list_invoices(dossier_id=dossier_id)
+        if inv.get("invoice_number") == number
+    ]
+    if not matches:
+        return [f"Aucune facture « {number} » dans ce dossier de Pallas Athéna."]
+    data["invoice_id"] = matches[0]["id"]
+    return []
 
 
 @trust_bp.route("/nouvelle")
@@ -300,7 +328,10 @@ def entry_create():
     # correction is reserved for reversals — refuse it at the route (spec §7).
     if data.get("purpose") == "correction":
         data["purpose"] = ""
-    entry, errors = trust.create_transaction(data)
+    errors = _resolve_invoice_number(data)
+    entry = None
+    if not errors:
+        entry, errors = trust.create_transaction(data)
     if errors:
         accounts = trust.list_accounts(status="actif")
         dossier = get_dossier(data["dossier_id"]) if data.get("dossier_id") else None

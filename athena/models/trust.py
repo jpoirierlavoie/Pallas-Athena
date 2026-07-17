@@ -327,6 +327,14 @@ _ABORT_MESSAGES = {
     "facture_non_émise": "La facture doit être émise (envoyée ou en retard).",
     "facture_autre_dossier": "La facture appartient à un autre dossier.",
     "virement_excède_facture": "Le montant dépasse le solde dû de la facture.",
+    "facture_requise": (
+        "Un virement d'honoraires doit être appuyé par une facture : indiquez une "
+        "facture de Pallas Athéna ou, pour une facture antérieure, son numéro externe."
+    ),
+    "facture_ambiguë": (
+        "Indiquez soit une facture de Pallas Athéna, soit un numéro de facture "
+        "externe — jamais les deux."
+    ),
     "solde_compensé_insuffisant": (
         "Solde compensé insuffisant : un déboursé ne peut puiser que dans les fonds "
         "déjà compensés. Attendez la compensation des dépôts en transit."
@@ -538,6 +546,7 @@ def _build_transaction_doc(
     balance_after_account: int,
     balance_after_client: int,
     now: datetime,
+    invoice_external_ref: str = "",
     status: str = "en_circulation",
     cleared_date=None,
     reconciliation_id: Optional[str] = None,
@@ -581,6 +590,9 @@ def _build_transaction_doc(
         "cleared_date": _midnight_utc(cleared_date) if cleared_date else None,
         "reconciliation_id": reconciliation_id,
         "invoice_id": invoice_id,
+        # Number of an invoice that predates Pallas Athéna (no invoice row to
+        # link). Recorded, NOT verifiable — see the create guard.
+        "invoice_external_ref": invoice_external_ref,
         "reverses_id": reverses_id,
         "reversed_by_id": reversed_by_id,
         "related_transaction_id": related_transaction_id,
@@ -648,6 +660,12 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     dossier_id = clean.get("dossier_id") or None
     client_id = clean.get("client_id") or None
     invoice_id = clean.get("invoice_id") or None
+    invoice_external_ref = (clean.get("invoice_external_ref") or "").strip()
+    # Invoice backing only applies to a fee transfer; drop stray values the
+    # form's hidden (x-show) fields may still submit on any other purpose.
+    if purpose != "virement_honoraires":
+        invoice_id = None
+        invoice_external_ref = ""
     amount = int(clean["amount"])
     tx_date = clean.get("date")
 
@@ -698,17 +716,27 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
             last_date = _as_utc(last_tx.get("date"))
             if last_date is not None and _as_utc(tx_date).date() < last_date.date():
                 raise _TxnAbort("antidatage_refusé")
+        # A fee transfer must be BACKED BY AN INVOICE. Two ways to satisfy that:
+        #   1. a linked Pallas Athéna invoice — fully verifiable (issued, same
+        #      dossier, amount <= solde dû); or
+        #   2. an external invoice number, for an invoice that predates Pallas
+        #      Athéna and has no row to link (user decision 2026-07-17). The
+        #      amount CANNOT be verified in that case — the register records what
+        #      the lawyer attests. Never both, never neither.
         if purpose == "virement_honoraires":
             if direction != "déboursé":
                 raise _TxnAbort("virement_direction")
-            if invoice is None:
-                raise _TxnAbort("facture_introuvable")
-            if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
-                raise _TxnAbort("facture_non_émise")
-            if invoice.get("dossier_id") != dossier_id:
-                raise _TxnAbort("facture_autre_dossier")
-            if amount > int(invoice.get("amount_due", 0)):
-                raise _TxnAbort("virement_excède_facture")
+            if invoice is not None:
+                if invoice_external_ref:
+                    raise _TxnAbort("facture_ambiguë")
+                if invoice.get("status") not in _ISSUED_INVOICE_STATUSES:
+                    raise _TxnAbort("facture_non_émise")
+                if invoice.get("dossier_id") != dossier_id:
+                    raise _TxnAbort("facture_autre_dossier")
+                if amount > int(invoice.get("amount_due", 0)):
+                    raise _TxnAbort("virement_excède_facture")
+            elif not invoice_external_ref:
+                raise _TxnAbort("facture_requise")
 
         book_map = dict((dossier or {}).get("trust_balance_by_client") or {})
         cleared_map = dict((dossier or {}).get("trust_cleared_by_client") or {})
@@ -733,6 +761,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
             counterparty=counterparty, dossier=dossier, dossier_id=dossier_id,
             client_id=client_id, reference=clean.get("reference", ""),
             description=clean.get("description", ""), invoice_id=invoice_id,
+            invoice_external_ref=invoice_external_ref,
             balance_after_account=book_after_account,
             balance_after_client=book_after_client, now=now,
         )
