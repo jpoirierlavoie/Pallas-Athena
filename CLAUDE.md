@@ -597,7 +597,10 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
 
 ```python
 {
-    "invoice_number": str,                # "YYYY-F###" sequential
+    "invoice_number": str,                # "{file_number}-NN" — per-file sequence
+                                          # (2-digit padded, rolls to 3+ past 99;
+                                          # e.g. "2025-001-03"). Legacy invoices
+                                          # keep their "YYYY-F###" numbers.
     "dossier_id": str, "dossier_file_number": str, "dossier_title": str,
     "client_id": str, "client_name": str,
 
@@ -1257,7 +1260,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `delete_invoice(invoice_id)` — only allowed on `annulée`; refuses if any time entry/expense still references the invoice
 - `get_invoice_summary(dossier_id) -> dict`
 - `get_outstanding_total() -> int` — SUM(`amount_due`) aggregation over `status in (envoyée, en_retard)` (dashboard stat; needs the `invoices` composite index)
-- Invoice numbers come from a transactional counter at `counters/invoices-{year}` (`seq` field, seeded from a max-scan on first use; monotonic, so numbers are never reused). Allocation failure aborts invoice creation — no fallback number.
+- Invoice numbers are **per-file**: `"{file_number}-NN"` (2-digit-padded sequence within the dossier; e.g. `2025-001-03`). Allocated by `_generate_invoice_number(dossier_id)` from a **per-dossier** transactional counter `counters/invoice-{dossier_id}` (`seq`), seeded on first use by `_seed_invoice_seq` = max(count of the file's existing invoices, highest existing per-file suffix) — so the sequence counts legacy `YYYY-F###` invoices too and a deleted new-scheme number can never be reused (monotonic; the counter never decrements). A dossier with **no file number** falls back to the legacy year-sequential `YYYY-F###` (`_generate_year_invoice_number` + `counters/invoices-{year}`). **Existing invoices keep whatever number they were issued** — never renumbered (immutable accounting artifact). Allocation failure aborts invoice creation — no guessed fallback number.
 
 ### `models/hearing.py`
 - `get_hearing_summary(dossier_id) -> dict`, `get_upcoming_hearings(days=30) -> list[dict]`
