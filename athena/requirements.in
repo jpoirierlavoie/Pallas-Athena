@@ -28,9 +28,14 @@ bcrypt==5.0.0
 python-dotenv==1.2.2
 reportlab==4.4.10
 # Pillow is a transitive dependency of reportlab (which only requires >=9.0.0).
-# Pinned explicitly here to clear CVE-2023-44271 (Pillow <10), CVE-2026-25990 (PSD OOB write,
-# fixed in 12.2.0), and CVE-2026-40192 (FITS GZIP decompression bomb, fixed in 12.2.0).
-Pillow==12.2.0
+# Pinned explicitly here for CVE hygiene. 12.3.0 clears a batch of 2026
+# image-decoder advisories (CVE-2026-54059 / 54060 / 55379 / 55380 / 55798 /
+# 59199 / 59203 / 59205) on top of the earlier CVE-2023-44271 (Pillow <10),
+# CVE-2026-25990 (PSD OOB write) and CVE-2026-40192 (FITS GZIP decompression
+# bomb). None are reachable here — reportlab emits tabular PDFs and no
+# untrusted image is ever decoded (no `import PIL` anywhere) — so this is a
+# hygiene bump.
+Pillow==12.3.0
 Markdown==3.10.2
 # bleach is archived upstream; 6.4.0 is a security release clearing the
 # URI-scheme sanitization advisories (GHSA-gj48-438w-jh9v, GHSA-8rfp-98v4-mmr6)

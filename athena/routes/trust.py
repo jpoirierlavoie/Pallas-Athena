@@ -13,7 +13,6 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from flask import (
     Blueprint,
-    Response,
     redirect,
     render_template,
     request,

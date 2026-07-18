@@ -14,11 +14,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import models.dossier as dossier
-from models.dossier import (
-    PREJUDICIAIRE_FILE_NUMBER,
-    _migrate_forum_type,
-    normalize_forum,
-)
+
+# Referenced bare below; bound as attributes of the single module import rather
+# than a second ``from models.dossier import`` so the module isn't imported two
+# ways (CodeQL py/import-and-import-from).
+PREJUDICIAIRE_FILE_NUMBER = dossier.PREJUDICIAIRE_FILE_NUMBER
+_migrate_forum_type = dossier._migrate_forum_type
+normalize_forum = dossier.normalize_forum
 
 
 # ── Model validation ──────────────────────────────────────────────────
