@@ -8,7 +8,7 @@
   <h1 class="text-xl font-semibold text-gray-900">Tableau de bord</h1>
 
   {# ── Quick Stats ──────────────────────────────────────────────────── #}
-  <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
     {# Open dossiers #}
     <a href="/dossiers?status=actif"
        class="bg-white rounded-xl border border-gray-200 p-4 hover:border-indigo-300 transition-colors">
@@ -40,25 +40,6 @@
       <p class="text-xs text-amber-600 mt-0.5">Conciliation en retard</p>
       {% endif %}
     </a>
-
-    {# Quick actions #}
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
-      <p class="text-xs text-gray-500 uppercase tracking-wide mb-2">Actions rapides</p>
-      <div class="flex flex-col gap-1.5">
-        <a href="/temps/time/form" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          Temps
-        </a>
-        <a href="/dossiers/create" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          Dossier
-        </a>
-        <a href="/taches/create" class="text-sm text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          Tâche
-        </a>
-      </div>
-    </div>
   </div>
 
   {# ── Short-term Schedule (7 days) ────────────────────────────────── #}

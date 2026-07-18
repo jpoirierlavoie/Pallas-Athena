@@ -512,8 +512,8 @@ Notes:
 - **Firestore emulator** (`gcloud emulators firestore start`) requires exporting
   `FIRESTORE_EMULATOR_HOST` before running Flask/scripts — otherwise the Admin
   SDK targets **live** Firestore via Application Default Credentials.
-- `scripts/seed_reference_data.py` and `scripts/normalize_existing.py` do **not**
-  read `.env`; they need `GOOGLE_APPLICATION_CREDENTIALS` / ADC.
+- `scripts/seed_reference_data.py` does **not** read `.env`; it needs
+  `GOOGLE_APPLICATION_CREDENTIALS` / ADC.
 - For local MCP testing, run on `:8080` (or set `MCP_CANONICAL_ORIGIN` to match
   your port) and mint a dev token: `python -m scripts.mint_dev_token`.
 - If you have not enrolled Phone MFA locally, set `REQUIRE_MFA=false` in `.env`.

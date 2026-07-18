@@ -245,7 +245,6 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │
 │   ├── scripts/                    # One-time / manual scripts (run with python -m scripts.X)
 │   │   ├── __init__.py
-│   │   ├── normalize_existing.py   # Backfill E.164 phones + normalized postal codes (Phase B)
 │   │   ├── seed_reference_data.py  # Populate ref_greffes + ref_juridictions (Phase G)
 │   │   ├── mint_dev_token.py       # Local-dev MCP bearer minting (refuses ENV=production)
 │   │   ├── revoke_mcp_tokens.py    # Break-glass: revoke all MCP tokens (+ optional client purge)
@@ -1608,10 +1607,6 @@ Run with `python -m scripts.<name>` from the `athena/` directory.
 ### `scripts/seed_reference_data.py` (Phase G)
 
 Mirrors `ref_greffes` (56), `ref_juridictions` (27), `ref_palais` (51) and `ref_forums` (20) into Firestore **from the in-memory tables in `models/reference.py`** (imported, not re-listed — the old duplicated literals had already drifted). Idempotent — overwrites documents. **Nothing reads these collections**; the app reads the in-memory tables, so a data fix means editing `models/reference.py`, and re-seeding is optional housekeeping for the eventual admin UI.
-
-### `scripts/normalize_existing.py` (Phase B)
-
-One-time backfill: reads all `parties` documents, runs `normalize_phone` / `normalize_email` / `normalize_postal_code` / `apply_address_defaults` on each, writes back only changed records (with new etag + `updated_at`), bumps the `parties` CTag. Prints a summary. Safe to re-run.
 
 ---
 
