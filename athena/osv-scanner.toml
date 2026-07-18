@@ -1,0 +1,35 @@
+# OSV-Scanner configuration — https://google.github.io/osv-scanner/configuration/
+#
+# Targeted allowlist of vulnerabilities triaged as NOT APPLICABLE to this
+# deployment, so a known non-issue does not fail the *blocking* OSV-Scanner CI
+# check (.github/workflows/osv-scanner.yml, which exits non-zero on any finding).
+# This is NOT a blanket "continue-on-error": every vulnerability not listed
+# here still fails the check. Each entry mirrors a GitHub code-scanning alert
+# dismissal — keep the two in sync.
+#
+# ── setuptools: PYSEC-2026-3447 / CVE-2026-59890 / GHSA-h35f-9h28-mq5c ────────
+# One advisory, three IDs (OSV keys it as PYSEC, the SARIF/GitHub alert shows
+# the CVE) — all three are listed so the ignore matches whichever ID
+# OSV-Scanner compares against.
+#
+# It is an sdist BUILD-TIME bug: setuptools' FileList applies MANIFEST.in
+# exclude / prune directives without Unicode normalization, so on APFS/HFS+ an
+# NFD file name can slip past an NFC exclude rule when building a *source
+# distribution*. This project never builds an sdist — it is an App Engine app
+# that Cloud Build only pip-installs and deploys (no setup.py / MANIFEST.in) —
+# so the vulnerable path is unreachable at build and at runtime. setuptools is
+# a transitive dependency only. The fix (83.0.0) is additionally blocked by the
+# deliberate `setuptools<81` pin required by opentelemetry-instrumentation
+# 0.48b0 (pkg_resources). Re-evaluate when the OTel stack moves to >=0.50b0.
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-3447"
+reason = "setuptools sdist build-only bug (MANIFEST.in exclude bypass); this app never builds a source distribution, so unreachable. Transitive dep; fix 83.0.0 blocked by the setuptools<81 pin (OTel pkg_resources)."
+
+[[IgnoredVulns]]
+id = "CVE-2026-59890"
+reason = "Alias of PYSEC-2026-3447 (setuptools sdist build-only bug) — see the entry above."
+
+[[IgnoredVulns]]
+id = "GHSA-h35f-9h28-mq5c"
+reason = "Alias of PYSEC-2026-3447 (setuptools sdist build-only bug) — see the entry above."

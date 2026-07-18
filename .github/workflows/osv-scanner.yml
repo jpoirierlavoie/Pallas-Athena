@@ -37,6 +37,7 @@ jobs:
         uses: google/osv-scanner-action/osv-scanner-action@eb5b619bb565d10623076caba5263750fde3c790  # v2.3.5
         with:
           scan-args: |-
+            --config=athena/osv-scanner.toml
             --format=sarif
             --output=results.sarif
             --lockfile=athena/requirements.txt
