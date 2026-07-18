@@ -77,7 +77,7 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.adresse_demandeur}}` | One-line address of the demandeur side |
 | `{{dossier.adresse_defendeur}}` | One-line address of the défendeur side |
 | `{{dossier.domaine}}` | Domaine label — the taxonomy family (« Recouvrement de créances », …) |
-| `{{dossier.action}}` | The action as cited: « Libellé [CODE] » (« Action sur compte (biens vendus, services rendus) [REC-01] ») |
+| `{{dossier.action}}` | The action as cited: « Libellé [CODE] » (« Action sur compte [REC-01] ») |
 | `{{dossier.action_libelle}}` | The action's name alone, without the bracketed code |
 | `{{dossier.action_code}}` | The bare code (« REC-01 ») |
 | `{{dossier.precision}}` | Free-text précision on the action — required by the « Autre (préciser) » (`-99`) rows; also holds the pre-taxonomy « Objet » text |

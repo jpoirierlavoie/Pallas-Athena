@@ -149,9 +149,7 @@ def test_is_decheance_matches_whole_markers_not_substrings():
 
 
 def test_action_label_is_libelle_plus_bracketed_code():
-    assert taxonomie.action_label("REC-01") == (
-        "Action sur compte (biens vendus, services rendus) [REC-01]"
-    )
+    assert taxonomie.action_label("REC-01") == "Action sur compte [REC-01]"
 
 
 def test_lookups_tolerate_unknown_and_empty_codes():
