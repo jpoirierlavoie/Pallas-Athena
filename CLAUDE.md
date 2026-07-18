@@ -571,7 +571,13 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
     "description": str,
     "hours": float,                       # 0.1 increments
     "rate": int,                          # cents
-    "amount": int,                        # cents, computed: hours * rate
+    "amount": int,                        # cents, computed: hours * rate,
+                                          # FORCED to 0 when billable is False
+                                          # (unbillable time has no calculated
+                                          # cost — models.time_entry
+                                          # ._compute_entry_amount); the
+                                          # dashboard's unbilled tracker already
+                                          # excludes it via the billable filter
     "billable": bool, "invoiced": bool,
     "invoice_id": UUIDv4 | None,
 }

@@ -74,6 +74,21 @@ def _compute_amount(hours: float, rate: int) -> int:
     return int(round(product))
 
 
+def _compute_entry_amount(hours: float, rate: int, billable: bool) -> int:
+    """Return the calculated cost in cents for a time entry.
+
+    Unbillable time carries no billable value: when *billable* is false the
+    calculated cost is always 0, regardless of hours × rate. Zeroing it at
+    write time keeps the stored amount, the /temps list totals, the CSV/PDF
+    exports and the on-screen display consistent — and, together with the
+    ``billable == True`` filter on :func:`get_unbilled_totals`, keeps
+    unbillable time out of the dashboard's unbilled tracker entirely.
+    """
+    if not billable:
+        return 0
+    return _compute_amount(hours, rate)
+
+
 def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid)."""
     errors: list[str] = []
@@ -109,7 +124,9 @@ def _validate(data: dict) -> list[str]:
 def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
-    merged["amount"] = _compute_amount(merged.get("hours", 0), merged.get("rate", 0))
+    merged["amount"] = _compute_entry_amount(
+        merged.get("hours", 0), merged.get("rate", 0), bool(merged.get("billable"))
+    )
 
     errors = _validate(merged)
     if errors:
@@ -294,7 +311,9 @@ def update_time_entry(
         return None, ["Impossible de modifier une entrée déjà facturée."]
 
     merged = {**existing, **_sanitize_data(data)}
-    merged["amount"] = _compute_amount(merged.get("hours", 0), merged.get("rate", 0))
+    merged["amount"] = _compute_entry_amount(
+        merged.get("hours", 0), merged.get("rate", 0), bool(merged.get("billable"))
+    )
 
     errors = _validate(merged)
     if errors:

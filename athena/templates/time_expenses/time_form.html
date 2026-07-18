@@ -10,7 +10,11 @@
        searchOpen: false,
        hours: '{{ entry.hours if entry and entry.hours else '' }}',
        rate: '{{ '%.2f'|format(entry.rate / 100) if entry and entry.rate else '' }}',
+       billable: {{ 'true' if (not entry or entry.billable is not defined or entry.billable) else 'false' }},
        get computedAmount() {
+         // Unbillable time has no calculated cost — mirrors the server, which
+         // stores amount = 0 when 'Facturable' is off.
+         if (!this.billable) return '0.00';
          let h = parseFloat(this.hours) || 0;
          let r = parseFloat(this.rate) || 0;
          return (h * r).toFixed(2);
@@ -136,10 +140,9 @@
       <span class="text-lg font-semibold text-gray-900" x-text="computedAmount + ' $'"></span>
     </div>
 
-    {# Billable toggle #}
+    {# Billable toggle — drives the live « Montant calculé » to 0 when off #}
     <div class="flex items-center gap-3">
-      <input type="checkbox" id="billable" name="billable"
-             {{ 'checked' if not entry or entry.billable is not defined or entry.billable }}
+      <input type="checkbox" id="billable" name="billable" x-model="billable"
              class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
       <label for="billable" class="text-sm font-medium text-gray-700">Facturable</label>
     </div>
