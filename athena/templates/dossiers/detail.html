@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "dossiers/_tooltip_recours.html" import tooltip_recours %}
 {% block title %}{{ dossier.file_number }} — {{ dossier.title }} — Pallas Athena{% endblock %}
 
 {% block content %}
@@ -203,13 +202,15 @@
             {% else %}Indéterminable{% endif %}
           </dd>
         </div>
+        {# The action's other guidance (délai, point de départ, avis…) lives
+           on the add/edit form only; the card cites just the seat of the
+           right of action. Article numbers stay to be verified before any
+           allegation in a procedure. #}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Fondement du recours</dt>
+          <dd class="text-gray-900 text-right">{{ action_obj.ref_fondement if action_obj and action_obj.ref_fondement else '—' }}</dd>
+        </div>
       </dl>
-      {# The § 7 standardized tooltip — same payload/order as the form's JS. #}
-      {% if action_tooltip %}
-      <div class="mt-3 pt-3 border-t border-gray-100">
-        {{ tooltip_recours(action_tooltip) }}
-      </div>
-      {% endif %}
     </div>
 
     {# Prescription #}
@@ -226,6 +227,13 @@
           <dd class="text-gray-900 text-right">
             {{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}{% if action_obj and action_obj.delai_types %} <span class="{{ 'text-red-600 font-medium' if action_niveau_decheance == 'stricte' else ('text-amber-600 font-medium' if action_niveau_decheance == 'relevable' else 'text-gray-500') }}">({{ action_delai_types_label }})</span>{% endif %}
           </dd>
+        </div>
+        {# The statutory source of the DELAY (taxonomy ref_delai — distinct
+           from the Recours card's fondement du recours). Six actions have no
+           statutory delay source and legitimately show « — ». #}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Fondement du délai</dt>
+          <dd class="text-gray-900 text-right">{{ action_obj.ref_delai if action_obj and action_obj.ref_delai else '—' }}</dd>
         </div>
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Droit d'action</dt>

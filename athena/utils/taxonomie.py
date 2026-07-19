@@ -1296,9 +1296,9 @@ def _avis_dict(v: Avis) -> dict:
 
 @functools.lru_cache(maxsize=None)
 def tooltip_payload(action_code: str) -> dict:
-    """The standardized tooltip for one action (spec § 7) — the SINGLE source
-    both the Jinja macro (templates/dossiers/_tooltip_recours.html) and the
-    form's JS component render, in the fixed § 7 order: Délai · Type(s) ·
+    """The standardized tooltip for one action (spec § 7), rendered by the
+    dossier form's Alpine block (its only rendering — the detail page shows
+    just the two fondement fields), in the fixed § 7 order: Délai · Type(s) ·
     Point de départ · Avis requis · Réf. délai · Fondement du recours ·
     avertissement. ``{}`` for an unknown/unset code. Cached: the domain is
     the 162 action codes and the table is static.

@@ -546,12 +546,13 @@
           </select>
         </div>
 
-        {# Guidance: the § 7 standardized tooltip, rendered from the SAME
-           per-action payload the detail card's Jinja macro consumes
-           (_tooltip_recours.html — keep the two in sync). Fixed order:
-           Délai · Type(s) · Point de départ · Avis requis · Réf. délai ·
-           Fondement · avertissement. Shown WHILE the droit d'action date
-           below is chosen — that date is the whole ball game. #}
+        {# Guidance: the § 7 standardized tooltip (taxonomie.tooltip_payload,
+           embedded per action in the form payload). This form block is its
+           ONLY rendering — the detail page deliberately shows just the two
+           fondement fields. Fixed order: Délai · Type(s) · Point de départ ·
+           Avis requis · Réf. délai · Fondement · avertissement. Shown WHILE
+           the droit d'action date below is chosen — that date is the whole
+           ball game. #}
         <div x-show="tt" x-cloak
              class="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700">
           <dl class="space-y-1.5">
