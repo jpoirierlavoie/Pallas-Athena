@@ -69,13 +69,26 @@ def test_every_action_has_a_libelle():
 # ── The delay contract ────────────────────────────────────────────────
 
 
-def test_delai_type_vocabulary_is_closed_and_labelled():
-    """'+' = both apply; '/' = the source leaves the qualification open."""
+def test_delai_types_are_tuples_from_the_closed_vocabulary():
+    """§ 8 (2) — every token of every action ∈ the 11-token § 4 vocabulary."""
     for action in taxonomie.ACTIONS.values():
-        assert action.delai_type in ("", "P", "D", "A", "P+A", "P+D", "D/A"), (
-            f"{action.code}: {action.delai_type!r}"
-        )
-        assert action.delai_type in taxonomie.DELAI_TYPE_LABELS, action.code
+        assert isinstance(action.delai_types, tuple), action.code
+        for token in action.delai_types:
+            assert token in taxonomie.VALID_DELAI_TYPES, (
+                f"{action.code}: {token!r}"
+            )
+            assert token in taxonomie.DELAI_TYPE_LABELS, action.code
+
+
+def test_autre_rows_carry_nothing():
+    """§ 8 (4) — the -99 rows have no types, no avis, no flags, no refs."""
+    for action in taxonomie.ACTIONS.values():
+        if action.code.endswith("-99"):
+            assert action.delai_types == (), action.code
+            assert action.avis == (), action.code
+            assert action.a_valider is False, action.code
+            assert action.ref_delai == "", action.code
+            assert action.ref_fondement == "", action.code
 
 
 def test_every_suggested_period_exists_in_the_recours_table():
@@ -111,10 +124,11 @@ def test_no_period_is_suggested_where_the_delay_is_not_a_single_period():
 
 
 def test_a_compound_delay_suggests_the_action_period_not_the_notice():
-    """CON-07 « 3 ans (P) + A »: the avis is a trap, the ACTION is 3 ans.
+    """CON-07 « 3 ans + avis »: the avis is a trap, the ACTION is 3 ans.
     TRN-01 leads with the avis; the action is still 3 ans."""
     assert taxonomie.ACTIONS["CON-07"].prescription_type == "3_ans"
-    assert taxonomie.ACTIONS["CON-07"].delai_type == "P+A"
+    assert "PE" in taxonomie.ACTIONS["CON-07"].delai_types
+    assert "A" in taxonomie.ACTIONS["CON-07"].delai_types
     assert taxonomie.ACTIONS["TRN-01"].prescription_type == "3_ans"
     # CST-01: « Garantie 5 ans (couverture) + action 3 ans (P) » — the
     # guarantee is coverage, not the limitation period.
@@ -126,23 +140,34 @@ def test_section_4_decheances_all_carry_D():
     « déchéance » in prose and never carries a (D) marker."""
     for code in DECHEANCE_S4:
         assert code in taxonomie.ACTIONS, code
-        assert taxonomie.is_decheance(code), (
-            f"§4 lists {code} as déchéance, delai_type is "
-            f"{taxonomie.ACTIONS[code].delai_type!r}"
+        assert taxonomie.niveau_decheance(code) == "stricte", (
+            f"§4 lists {code} as déchéance, delai_types is "
+            f"{taxonomie.ACTIONS[code].delai_types!r}"
         )
 
 
-def test_is_decheance_is_false_for_a_plain_prescription():
-    assert not taxonomie.is_decheance("REC-01")
-    assert not taxonomie.is_decheance("CON-07")  # P+A — an avis, not a déchéance
-    assert not taxonomie.is_decheance("")
-    assert not taxonomie.is_decheance("ZZZ-01")
+def test_niveau_decheance_levels():
+    assert taxonomie.niveau_decheance("GAG-02") == "stricte"     # (D,)
+    assert taxonomie.niveau_decheance("REC-01") is None          # (PE,)
+    assert taxonomie.niveau_decheance("CON-07") is None          # (PE, A)
+    assert taxonomie.niveau_decheance("") is None
+    assert taxonomie.niveau_decheance("ZZZ-01") is None
 
 
-def test_is_decheance_matches_whole_markers_not_substrings():
-    """"D" must not match inside a label or another marker."""
-    assert taxonomie.is_decheance("COR-11")  # D/A
-    assert taxonomie.is_decheance("COR-06")  # P+D
+def test_is_decheance_is_a_deprecated_alias():
+    for code in taxonomie.ACTIONS:
+        assert taxonomie.is_decheance(code) == (
+            taxonomie.niveau_decheance(code) is not None
+        ), code
+
+
+def test_is_decheance_matches_whole_tokens():
+    """"D" is a whole token, never a substring of another token."""
+    assert taxonomie.is_decheance("COR-11")  # (D, A)
+    assert taxonomie.is_decheance("COR-06")  # (PE, D)
+    assert not taxonomie.is_decheance("TRN-04") or (
+        taxonomie.niveau_decheance("TRN-04") == "relevable"
+    )  # DR must not read as D (stage 1: still (), stage 2: relevable)
 
 
 # ── Lookups ───────────────────────────────────────────────────────────
@@ -204,9 +229,43 @@ def test_form_payload_carries_the_guidance_the_form_shows():
     assert rec01["code"] == "REC-01"
     assert rec01["label"] == taxonomie.action_label("REC-01")
     assert rec01["delai"] == src.delai
+    assert rec01["delai_types"] == list(src.delai_types)
+    assert rec01["delai_types_label"] == taxonomie.delai_types_label("REC-01")
+    assert rec01["a_valider"] == src.a_valider
+    assert rec01["niveau_decheance"] == taxonomie.niveau_decheance("REC-01")
     assert rec01["point_depart"] == src.point_depart
-    assert rec01["references"] == src.references
+    assert rec01["ref_delai"] == src.ref_delai
+    assert rec01["ref_fondement"] == src.ref_fondement
+    assert rec01["avis"] == [
+        {
+            "libelle": v.libelle,
+            "delai": taxonomie.avis_delai_display(v.delai_key),
+            "delai_key": v.delai_key,
+            "point_depart": v.point_depart,
+            "reference": v.reference,
+            "sanction": v.sanction,
+            "conditionnel": v.conditionnel,
+        }
+        for v in src.avis
+    ]
     assert rec01["prescription_type"] == src.prescription_type == "3_ans"
+
+
+def test_form_payload_schema_snapshot():
+    """§ 8 (16) — the payload is JSON-serializable and its per-action key set
+    is pinned: it is the form JS's API contract."""
+    import json
+
+    payload = taxonomie.form_payload()
+    json.dumps(payload)  # must not raise
+    expected_keys = {
+        "code", "label", "delai", "delai_types", "delai_types_label",
+        "a_valider", "niveau_decheance", "point_depart", "ref_delai",
+        "ref_fondement", "avis", "prescription_type",
+    }
+    for domaine in payload.values():
+        for action in domaine["actions"]:
+            assert set(action) == expected_keys, action["code"]
 
 
 def test_form_payload_is_cached():

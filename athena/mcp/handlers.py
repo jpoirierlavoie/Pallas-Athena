@@ -356,12 +356,31 @@ def get_dossier(args: dict) -> dict:
             "action_label": taxonomie.action_label(d.get("action", "")),
             "action_precision": d.get("action_precision", ""),
             # The taxonomy's own guidance for this action. delai is the
-            # SUGGESTED delay verbatim, never a computed one; delai_type says
-            # whether it is prescription (P), déchéance (D) or an avis (A).
+            # SUGGESTED delay verbatim, never a computed one; delai_types
+            # lists its legal nature(s) as tokens of the closed § 4
+            # vocabulary (PE/PA/D/DR/A/R/N/I/S/V/F), delai_types_label the
+            # joined French rendering, a_valider a qualification still to be
+            # confirmed at the sources, and avis the structured prior-notice
+            # obligations. ref_delai cites the source of the DELAY,
+            # ref_fondement the seat of the right of action.
             "delai": action_obj.delai if action_obj else "",
-            "delai_type": action_obj.delai_type if action_obj else "",
+            "delai_types": list(action_obj.delai_types) if action_obj else [],
+            "delai_types_label": taxonomie.delai_types_label(
+                d.get("action", "")
+            ),
+            "a_valider": bool(action_obj.a_valider) if action_obj else False,
             "delai_point_depart": action_obj.point_depart if action_obj else "",
-            "action_references": action_obj.references if action_obj else "",
+            "ref_delai": action_obj.ref_delai if action_obj else "",
+            "ref_fondement": action_obj.ref_fondement if action_obj else "",
+            "avis": [
+                {
+                    "libelle": v.libelle,
+                    "delai": taxonomie.avis_delai_display(v.delai_key),
+                    "sanction": v.sanction,
+                    "conditionnel": v.conditionnel,
+                }
+                for v in (action_obj.avis if action_obj else ())
+            ],
             "prescription_type": d.get("prescription_type", ""),
             "prescription_label": PRESCRIPTION_LABELS.get(
                 d.get("prescription_type", ""), ""

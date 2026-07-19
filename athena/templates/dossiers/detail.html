@@ -210,13 +210,14 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-2">Prescription</h2>
       <dl class="space-y-1.5 text-sm">
         {# The bracketed type is the taxonomy's nature du délai. A déchéance
-           neither suspends nor interrupts — § 4 of the taxonomy asks that it
-           be made to stand out (amber). Several remain relevables under
-           their own statute, hence « à valider », never « fatal ». #}
+           stricte (red) neither suspends nor interrupts; a déchéance
+           relevable (amber) keeps a statutory relief mechanism. The label
+           renders every token of delai_types, joined, with « (qualification
+           à valider) » when the taxonomy flags it. #}
         <div class="flex justify-between gap-4">
           <dt class="text-gray-500 flex-shrink-0">Délai (Type)</dt>
           <dd class="text-gray-900 text-right">
-            {{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}{% if action_obj and action_obj.delai_type %} <span class="{{ 'text-amber-600 font-medium' if 'D' in action_obj.delai_type else 'text-gray-500' }}">({{ delai_type_labels.get(action_obj.delai_type, action_obj.delai_type) }})</span>{% endif %}
+            {{ prescription_labels.get(dossier.prescription_type, '—') if dossier.prescription_type else '—' }}{% if action_obj and action_obj.delai_types %} <span class="{{ 'text-red-600 font-medium' if action_niveau_decheance == 'stricte' else ('text-amber-600 font-medium' if action_niveau_decheance == 'relevable' else 'text-gray-500') }}">({{ action_delai_types_label }})</span>{% endif %}
           </dd>
         </div>
         <div class="flex justify-between gap-4">

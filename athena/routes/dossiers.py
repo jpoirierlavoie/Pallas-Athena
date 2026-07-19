@@ -198,7 +198,6 @@ def _template_context() -> dict:
     """Return shared template context for dossier views."""
     return {
         "domaine_labels": DOMAINE_LABELS,
-        "delai_type_labels": taxonomie.DELAI_TYPE_LABELS,
         # The whole taxonomy, for the form's cascading picker. Cached in
         # utils.taxonomie, so handing it to every dossier view (list, tabs)
         # costs a dict reference; only form.html actually serializes it.
@@ -347,8 +346,15 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["fee_parts"] = format_honoraires_parts(dossier)
     ctx["retention_date"] = retention_date(dossier.get("closed_date"))
     # Taxonomy object, resolved route-side like value_class/fee_parts — the
-    # card renders libellé + greyed (CODE) itself.
+    # card renders libellé + greyed (CODE) itself. The delai_types label and
+    # déchéance level are computed here so the template stays logic-free.
     ctx["action_obj"] = taxonomie.get_action(dossier.get("action", ""))
+    ctx["action_delai_types_label"] = taxonomie.delai_types_label(
+        dossier.get("action", "")
+    )
+    ctx["action_niveau_decheance"] = taxonomie.niveau_decheance(
+        dossier.get("action", "")
+    )
     return render_template("dossiers/detail.html", **ctx)
 
 

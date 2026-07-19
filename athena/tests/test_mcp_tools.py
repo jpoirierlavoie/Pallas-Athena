@@ -289,12 +289,19 @@ def test_get_dossier_composes_summaries(monkeypatch):
     assert d["action_label"] == taxonomie.action_label("REC-01")
     assert d["action_precision"] == "factures 2024-03"
     # The taxonomy's guidance travels with the action: the delay verbatim from
-    # the table (never a computed one), plus what kind of delay it is.
+    # the table (never a computed one), plus what kind(s) of delay it is.
     src = taxonomie.ACTIONS["REC-01"]
     assert d["delai"] == src.delai
-    assert d["delai_type"] == src.delai_type == "P"
+    assert d["delai_types"] == list(src.delai_types) == ["PE"]
+    assert d["delai_types_label"] == taxonomie.delai_types_label("REC-01")
+    assert d["a_valider"] == src.a_valider is False
     assert d["delai_point_depart"] == src.point_depart
-    assert d["action_references"] == src.references
+    assert d["ref_delai"] == src.ref_delai
+    assert d["ref_fondement"] == src.ref_fondement
+    assert d["avis"] == []
+    # The pre-split field names must be gone.
+    assert "delai_type" not in d
+    assert "action_references" not in d
     # matter_type/objet were superseded by the taxonomy.
     assert "matter_type" not in d
     assert "objet" not in d

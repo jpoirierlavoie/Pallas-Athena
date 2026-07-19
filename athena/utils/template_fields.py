@@ -591,7 +591,11 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.action_libelle": ("dossier", _action_attr("libelle")),
     "dossier.precision": ("dossier", _dossier_field("action_precision")),
     "dossier.delai": ("dossier", _action_attr("delai")),
-    "dossier.reference": ("dossier", _action_attr("references")),
+    # `references` split (July 2026): `dossier.reference` keeps its meaning —
+    # the statutory source of the DELAY (now `ref_delai`) — and the new
+    # `dossier.fondement` cites the seat of the right of action.
+    "dossier.reference": ("dossier", _action_attr("ref_delai")),
+    "dossier.fondement": ("dossier", _action_attr("ref_fondement")),
     "dossier.point_depart": ("dossier", _action_attr("point_depart")),
     # « Objet » was renamed « Action » (July 2026). The old placeholder is kept
     # pointing at the action label so existing gabarits keep filling — it now
@@ -685,6 +689,9 @@ FLAT_ALIASES: dict[str, str] = {
     "delai": "dossier.delai",
     "référence_action": "dossier.reference",
     "reference_action": "dossier.reference",
+    "fondement": "dossier.fondement",
+    "référence_fondement": "dossier.fondement",
+    "reference_fondement": "dossier.fondement",
     "point_départ": "dossier.point_depart",
     "point_depart": "dossier.point_depart",
     "date_ouverture": "dossier.ouverture",
