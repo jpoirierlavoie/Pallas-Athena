@@ -41,6 +41,12 @@
        get currentAction() {
          return this.domaineActions.find(a => a.code === this.action) || null;
        },
+       get tt() {
+         /* The § 7 standardized tooltip — embedded per action in the payload
+            so the guidance block renders the SAME data the detail card's
+            Jinja macro does (no legal logic in JS). */
+         return this.currentAction ? this.currentAction.tooltip : null;
+       },
        onDomaineChange() {
          /* The action must never outlive its domaine — _validate rejects a
             pair whose prefixes disagree, and a stale code would be invisible
@@ -540,49 +546,68 @@
           </select>
         </div>
 
-        {# Guidance: the source's own delay, its nature, the factual starting
-           point and the traps. Shown so it is on screen WHILE the droit
-           d'action date below is chosen — that date is the whole ball game. #}
-        <div x-show="currentAction" x-cloak
+        {# Guidance: the § 7 standardized tooltip, rendered from the SAME
+           per-action payload the detail card's Jinja macro consumes
+           (_tooltip_recours.html — keep the two in sync). Fixed order:
+           Délai · Type(s) · Point de départ · Avis requis · Réf. délai ·
+           Fondement · avertissement. Shown WHILE the droit d'action date
+           below is chosen — that date is the whole ball game. #}
+        <div x-show="tt" x-cloak
              class="p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-700">
           <dl class="space-y-1.5">
-            <template x-if="currentAction && currentAction.delai">
+            <template x-if="tt && tt.delai">
               <div>
                 <dt class="text-xs font-medium text-gray-500">Délai indicatif</dt>
-                <dd x-text="currentAction.delai"></dd>
+                <dd x-text="tt.delai"></dd>
               </div>
             </template>
-            <template x-if="currentAction && currentAction.point_depart">
+            <template x-if="tt && tt.types.length">
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Type(s)</dt>
+                <dd :class="tt.niveau_decheance === 'stricte' ? 'text-red-700 font-medium' : (tt.niveau_decheance === 'relevable' ? 'text-amber-700 font-medium' : '')"
+                    x-text="tt.types_label"></dd>
+              </div>
+            </template>
+            <template x-if="tt && tt.point_depart">
               <div>
                 <dt class="text-xs font-medium text-gray-500">Point de départ / pièges</dt>
-                <dd x-text="currentAction.point_depart"></dd>
+                <dd x-text="tt.point_depart"></dd>
               </div>
             </template>
-            <template x-if="currentAction && currentAction.ref_delai">
+            <template x-if="tt && tt.avis.length">
+              <div>
+                <dt class="text-xs font-medium text-gray-500">Avis requis</dt>
+                <template x-for="v in tt.avis" :key="v.libelle">
+                  <dd>
+                    <span x-text="v.libelle + (v.delai ? ' — ' + v.delai : '')"></span>
+                    <span class="text-gray-500" x-show="v.conditionnel">(si le scénario s'applique)</span>
+                    <span class="text-red-700" x-show="v.sanction" x-text="v.sanction"></span>
+                  </dd>
+                </template>
+              </div>
+            </template>
+            <template x-if="tt && tt.ref_delai">
               <div>
                 <dt class="text-xs font-medium text-gray-500">Réf. délai</dt>
-                <dd x-text="currentAction.ref_delai"></dd>
+                <dd x-text="tt.ref_delai"></dd>
               </div>
             </template>
-            <template x-if="currentAction && currentAction.ref_fondement">
+            <template x-if="tt && tt.ref_fondement">
               <div>
                 <dt class="text-xs font-medium text-gray-500">Fondement du recours</dt>
-                <dd x-text="currentAction.ref_fondement"></dd>
+                <dd x-text="tt.ref_fondement"></dd>
               </div>
             </template>
           </dl>
           <p class="text-xs text-red-700 font-medium mt-2"
-             x-show="currentAction && currentAction.niveau_decheance === 'stricte'" x-cloak>
+             x-show="tt && tt.niveau_decheance === 'stricte'" x-cloak>
             Délai de déchéance stricte : ni interruption ni suspension en principe — délai de rigueur.
           </p>
           <p class="text-xs text-amber-700 font-medium mt-2"
-             x-show="currentAction && currentAction.niveau_decheance === 'relevable'" x-cloak>
+             x-show="tt && tt.niveau_decheance === 'relevable'" x-cloak>
             Déchéance relevable : un mécanisme de relief est prévu par la loi — à vérifier.
           </p>
-          <p class="text-xs text-gray-400 mt-2">
-            Délai indicatif seulement. Le point de départ est une question de fait, et
-            l'interruption ou la suspension échappent au calcul — à confirmer.
-          </p>
+          <p class="text-xs text-gray-400 mt-2" x-text="tt ? tt.avertissement : ''"></p>
         </div>
 
         <div>
@@ -646,7 +671,7 @@
             {# The action's structured avis (délai, point de départ, sanction)
                are the suggestion the lawyer confirms by filling the field. #}
             <template x-if="currentAction && currentAction.avis && currentAction.avis.length">
-              <div class="text-xs text-gray-500 mt-1 space-y-0.5">
+              <div class="text-xs text-gray-500 mt-1">
                 <template x-for="v in currentAction.avis" :key="v.libelle">
                   <p>
                     <span x-text="v.libelle + (v.delai ? ' : ' + v.delai : '') + (v.point_depart ? ' — ' + v.point_depart : '')"></span>

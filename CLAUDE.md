@@ -228,10 +228,13 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── deadlines.py            # Quebec art. 83 C.p.c. judicial deadline calc
 │   │   ├── recours.py              # Recours & prescription (pure): delay-period table
 │   │   │                           # (amount, unit — jours/mois/ans), value-class table,
-│   │   │                           # compute_class + compute_date_pour_agir
+│   │   │                           # compute_class + compute_date_pour_agir + the
+│   │   │                           # type-aware compute_echeances orchestration
+│   │   │                           # (AVIS_PERIODS, PA_PERIODS, Echeance)
 │   │   ├── taxonomie.py            # Taxonomie des actions (pure, GENERATED): 20 domaines →
-│   │   │                           # 162 actions with délai / délai_type / point de départ /
-│   │   │                           # références; suggests a period, never sets one
+│   │   │                           # 162 actions with délai / delai_types (11 jetons) /
+│   │   │                           # a_valider / avis structurés / ref_delai + ref_fondement;
+│   │   │                           # tooltip_payload; suggests a period, never sets one
 │   │   ├── docx_fill.py            # Phase H/H.2: stdlib-only .docx fill engine (zip XML substitution;
 │   │   │                           # scalars, blocks, + H.2 repeating rows & conditional regions)
 │   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
@@ -524,9 +527,17 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
                                           # action change, and may differ.
     "droit_action_date": datetime | None, # "droit d'action" — start of the prescription
     # "date pour agir": DERIVED on save (models/dossier._apply_prescription_deadline)
-    # from droit_action_date + prescription_type; remains the field the
+    # from droit_action_date + prescription_type (via compute_echeances since
+    # July 2026 — behaviors unchanged); remains the field the
     # dashboard/index/alerts read.
-    "prescription_date": datetime | None, "prescription_notes": str,
+    "prescription_date": datetime | None,
+    # Confirmed avis préalable date (July 2026, additive — absent on legacy
+    # docs, no migration). MANUAL: entered on the form, never auto-derived
+    # (each avis has its own factual starting point — délivrance du bien,
+    # cause d'action… — not droit_action_date). The form shows the action's
+    # structured avis (délai/point de départ/sanction) as the suggestion.
+    "date_avis": datetime | None,
+    "prescription_notes": str,
 
     # REMOVED FIELDS — popped on read by models/dossier._strip_removed_fields
     # (get_dossier only), so the next full-document set() purges them:
@@ -1417,6 +1428,11 @@ compute_deadline(start_date: date, delay_days: int, direction: "after"|"before")
 is_juridical_day(d: date) -> bool
 next_juridical_day(d: date) -> date
 prev_juridical_day(d: date) -> date
+add_jours_ouvrables(start: date, n: int) -> date   # n business days (skips weekends +
+                                                   # Québec holidays); serves the
+                                                   # 3_jours_ouvrables avis delay (Loi sur
+                                                   # la presse) via recours.AVIS_PERIODS;
+                                                   # n=0 → start unchanged. July 2026, additive.
 get_quebec_holidays(year: int) -> list[date]
 _easter_sunday(year: int) -> date          # Meeus/Jones/Butcher algorithm
 ```
@@ -1440,33 +1456,54 @@ VALUE_CLASSES / TOP_CLASS                              # montant en litige → c
 compute_class(valeur_cents) -> str | None              # Roman numeral "I"–"IV", else None
 compute_date_pour_agir(droit_action_date, prescription_type) -> datetime | None
 _add_years / _add_months / _add_period                 # calendar arithmetic per unit
+# Échéancier par type de délai (July 2026 — spec « échéancier », § 5-6):
+AVIS_PERIODS                                           # notice delays (Annexe B); reuses the
+                                                       # PRESCRIPTION_PERIODS entries + the ONE new
+                                                       # key "3_jours_ouvrables" (unit JOURS_OUVRABLES,
+                                                       # via deadlines.add_jours_ouvrables) — NEVER in
+                                                       # the prescription dropdown
+PA_PERIODS = {"IMM-06": (10, YEARS)}                   # prescription acquisitive maturity per action
+Echeance = NamedTuple(role, date, niveau, libelle, note)  # role ∈ principale|avis|defensive;
+                                                       # niveau ∈ rouge|orange|normal|info|aucun
+compute_echeances(action_code, date_depart, prescription_type="", *,
+                  date_depart_avis=None, avis_confirmes=(),
+                  inclure_suggestion_raisonnable=False) -> tuple[Echeance, ...]
 ```
 
 - **Periods carry a UNIT (July 2026).** They used to be bare years (`_add_years` via `datetime.replace(year=…)`), which cannot express the taxonomy's *90 jours*, *45 jours*, *6 mois*, *3 mois*. `_add_period` dispatches: days → `timedelta`, months → `_add_months` (clamps the day to the target month's last — 31 janvier + 1 mois = 28/29 février, the month analogue of the 29 Feb → 28 Feb year clamp), years → `_add_years`. **`prescription_years` was renamed `prescription_period`** and returns `(amount, unit)`.
 - **Labels are generic** (« 3 ans », not « 3 ans, art. 2925 C.c.Q. »). One period serves many articles — 1 an alone covers art. 1635 (paulienne), 929 (possesseur troublé), 2929 (diffamation) and 115 LNT — so an article in the label mislabels every other use. The article now travels with the taxonomy action (`utils.taxonomie` `references`).
-- **The list is not only prescription.** It also carries *déchéance* and *avis* delays the taxonomy needs; `taxonomie.Action.delai_type` records which (`P`/`D`/`A`). The field keeps the name `prescription_type` for continuity.
-- The dossier form drives everything through `prescription_type` (dropdown) + `droit_action_date` (« droit d'action »). `models/dossier._apply_prescription_deadline` computes the « date pour agir » into **`prescription_date`** on save (imprescriptible → `None`; unset/`autre` → any existing value preserved), so the dashboard/index/alerts keep reading the same field. The detail page shows domaine, action, `valeur` + `compute_class` (« Valeur (Classe) »), the prescription label, the délai nature, `droit_action_date`, and `prescription_date` in the **« Recours et prescription »** card.
+- **The list is not only prescription.** It also carries *déchéance* and *avis* delays the taxonomy needs; `taxonomie.Action.delai_types` records which (the 11-token vocabulary). The field keeps the name `prescription_type` for continuity.
+- The dossier form drives everything through `prescription_type` (dropdown) + `droit_action_date` (« droit d'action »). `models/dossier._apply_prescription_deadline` computes the « date pour agir » into **`prescription_date`** on save (imprescriptible → `None`; unset/`autre` → any existing value preserved) — since July 2026 it consumes `compute_echeances`' principale (with a `compute_date_pour_agir` fallback for actions with no dated principale, e.g. PA), behaviors byte-identical and pinned by test — so the dashboard/index/alerts keep reading the same field. The detail page shows domaine, action, `valeur` + `compute_class` (« Valeur (Classe) »), the prescription label, the délai nature, `droit_action_date`, `prescription_date` and the optional `date_avis` in the **« Recours »/« Prescription »** cards.
+- **`compute_echeances` is orchestration, never new arithmetic** (spec § 0.3 — `_add_years`/`_add_months`/`_add_period`/`compute_date_pour_agir`/`next_juridical_day` are **intangible**): every dated échéance goes through `compute_date_pour_agir`/`_add_period` + `next_juridical_day` (art. 52 L.i. forward report), the sole additive unit being `jours_ouvrables` via `deadlines.add_jours_ouvrables`. Dispatch: PA → one *defensive* échéance (« interrompre avant » la maturité, `PA_PERIODS`); a lawyer-confirmed period is **authoritative** → principale identical to `compute_date_pour_agir` (niveau rouge `D` / orange `DR` — relief text from `taxonomie.DR_RELIEF_NOTES`); R → no firm date (indicative 30-jours suggestion on request); N/I/S/V/F → dateless message; unclassified/`-99`/unknown → PE-like default (pre-rework behavior verbatim). **Avis échéances are driven by `action.avis`, never the `A` token** (COR-11 has the token, no avis; RCV-03 the inverse — both binding annex content): a `conditionnel` avis needs its index in `avis_confirmes`, dates from its **own** `date_depart_avis` (never `droit_action_date`), and degrades to a dateless checklist item otherwise; an avis échéance never replaces the principale.
 - `compute_date_pour_agir` extends a deadline that lands on a weekend / Québec statutory holiday **forward to the next juridical day** (`utils.deadlines.next_juridical_day`); it stays indicative — every limitation deadline must still be verified.
 - `VALUE_CLASSES` holds the confirmed value table — Classe **I** (≤ 15 000 $), **II** (≤ 85 000 $), **III** (≤ 300 000 $), **IV** (> 300 000 $), each bound inclusive at the cent.
 
 ### `utils/taxonomie.py` (taxonomie des actions en justice — pure)
 
-The two-level classification of Québec civil/commercial recourses: **20 domaines → 162 actions**, generated from « Taxonomie des actions en justice — Droit québécois » v1.1 (15 juillet 2026, itself aligned on the FARBQ table « Prescriptions extinctives et autres délais », avril 2026) and verified row-by-row against it. Pure (typing + functools only) — **keep it Firestore-free**: both `models/dossier.py` and `utils/template_fields.py` import it, and the latter must not pull in the Firestore client.
+The two-level classification of Québec civil/commercial recourses: **20 domaines → 162 actions**, generated from « Taxonomie des actions en justice — Droit québécois » **v1.2** (16 juillet 2026 — a copy sits in `docs/` at the repo root; itself aligned on the FARBQ table « Prescriptions extinctives et autres délais », avril 2026), with `delai_types`/`avis`/`ref_fondement` transcribed from the **binding annexes** of « SPEC — échéancier par type de délai et avis » (18 juillet 2026, rév. 2). **The legal content of `taxonomie.py` changes only on an approved spec — never edit a row by hand**, and every displayed échéance is indicative. Pure (typing + functools only) — **keep it Firestore-free**: both `models/dossier.py` and `utils/template_fields.py` import it, and the latter must not pull in the Firestore client; `utils/recours.py` imports it too (no cycle — taxonomie imports nothing).
 
 ```python
-Action  = NamedTuple(code, libelle, delai, delai_type, point_depart, references, prescription_type)
+Avis    = NamedTuple(libelle, delai_key, point_depart, reference, sanction="", conditionnel=False)
+Action  = NamedTuple(code, libelle, delai="", delai_types=(), a_valider=False, point_depart="",
+                     ref_delai="", ref_fondement="", avis=(), prescription_type="")
 Domaine = NamedTuple(code, libelle, note, actions)
-DOMAINES / ACTIONS / VALID_DOMAINES / VALID_ACTIONS / DOMAINE_LABELS / DELAI_TYPE_LABELS
+DOMAINES / ACTIONS / VALID_DOMAINES / VALID_ACTIONS / DOMAINE_LABELS
+DELAI_TYPE_LABELS / VALID_DELAI_TYPES     # the closed 11-token § 4 vocabulary (one label per token)
+DR_RELIEF_NOTES                           # relief text per déchéance relevable (Annexe A notes DR)
 get_domaine(code) / get_action(code) / actions_for(domaine) / domaine_of(action)
-action_label(code) -> "Libellé [CODE]"   # what the UI shows and a procedure cites
-action_choices(domaine) / requires_precision(code) / is_decheance(code)
-form_payload() -> dict                   # lru_cached; the form's embedded JSON
+action_label(code) -> "Libellé [CODE]"    # what the UI shows and a procedure cites
+delai_types_label(code) -> str            # joined labels + « (qualification à valider) » suffix
+niveau_decheance(code) -> "stricte"|"relevable"|None   # D outranks DR; is_decheance = deprecated alias
+action_choices(domaine) / requires_precision(code) / avis_delai_display(key)
+tooltip_payload(code) -> dict             # the § 7 standardized tooltip (lru_cached)
+form_payload() -> dict                    # lru_cached; the form's embedded JSON (embeds tooltip per action)
 ```
 
-- **`delai` is a suggestion, never a firm value.** The starting point is a question of fact; interruption/suspension escape any computation. `prescription_type` on an action is only a **suggested** key into `recours.PRESCRIPTION_PERIODS`, applied **only on a user action-change** (never on load, so it cannot clobber a confirmed value), and deliberately `""` where the delay is regime-dependent (RCV-05, COR-06), merely « raisonnable » (CJP-*), retrospective rather than running (**FAI-01** — the 6 months is an eligibility window *preceding* the application), or an « Autre (préciser) » row.
-- **`delai_type` vocabulary is closed:** `""` `P` `D` `A` `P+A` `P+D` `D/A`. `+` means both apply; `/` means the **source itself leaves the qualification open**. Ordering is canonical (P, D, A) — the source writes markers in cell order, so `A+P` and `P+A` were the same claim.
-- **`is_decheance` must cover § 4 of the source.** A déchéance is a délai de rigueur (neither suspends nor interrupts) and § 4 asks it be shown visually. Its list is a **cross-section claim** the per-row `(D)` markers miss: **APP-01** states « déchéance expresse » in prose and carries no marker. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the union — extend it if the source changes.
-- **The cascade ships the whole table to the browser**, embedded in `form.html` as a **non-executable `<script type="application/json">`** block (~43 KB; the pattern `base.html` uses for the App Check config). It needs no CSP nonce (a data block is never executed, so `script-src` does not apply) and no round trip — a raw `fetch()` would carry no `X-Firebase-AppCheck` header, since App Check only gates `HX-Request` traffic.
+- **`delai` is a suggestion, never a firm value.** The starting point is a question of fact; interruption/suspension escape any computation. `prescription_type` on an action is only a **suggested** key into `recours.PRESCRIPTION_PERIODS`, applied **only on a user action-change** (never on load, so it cannot clobber a confirmed value), and deliberately `""` where the delay is regime-dependent (RCV-05, COR-06), merely « raisonnable » (CJP-*), retrospective rather than running (**FAI-01** — the 6 months is an eligibility window *preceding* the application), a PA action (IMM-06 — the extinctive dropdown must not prefill a defensive maturity), or an « Autre (préciser) » row.
+- **`delai_types` vocabulary is closed (11 tokens, § 4):** `PE` prescription extinctive · `PA` prescription acquisitive (defensive — point de départ = début de la possession adverse, « interrompre avant ») · `D` déchéance stricte (rouge) · `DR` déchéance relevable (orange, relief in `DR_RELIEF_NOTES`) · `A` avis préalable · `R` délai raisonnable · `N` aucun délai · `I` imprescriptible · `S` suit le droit sous-jacent · `V` variable · `F` fenêtre rétrospective. A tuple may combine tokens (`("PE","A")`); the `-99` rows carry `()`. `a_valider` replaced the source's embedded asterisks (24 pinned codes: Annexe A `a_val` ∪ Annexe C asterisk rows — union rule, user decision 2026-07-18); `references` split into `ref_delai` (source of the delay) + `ref_fondement` (seat of the right of action, Annexe C; C.c.Q. implicit). Six pinned rows keep `ref_delai=""` (CST-05, COR-04, COR-09, FAM-01, FAM-02, FAM-06 — no statutory delay source exists; user decision 2026-07-19).
+- **The A token and the `avis` tuple are deliberately asymmetric** (binding annex content — do not "fix"): **COR-11** carries `A` for display but `avis == ()` (the 30-day delay IS the recourse), and **RCV-03** carries two `conditionnel` municipal avis (LCV 15 jours / CM 60 jours) while typed `(PE,)`. `test_a_token_and_avis_sets_are_pinned` pins both sets.
+- **`niveau_decheance` must cover § 4 of the source.** A déchéance stricte is a délai de rigueur (neither suspends nor interrupts) and § 4 asks it be shown visually (red; relevable amber). **APP-01** states « déchéance expresse » in prose only. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the § 4 cross-section as `stricte` — extend it if the source changes.
+- **The cascade ships the whole table to the browser**, embedded in `form.html` as a **non-executable `<script type="application/json">`** block (the pattern `base.html` uses for the App Check config; now larger with the per-action `tooltip`). It needs no CSP nonce (a data block is never executed, so `script-src` does not apply) and no round trip — a raw `fetch()` would carry no `X-Firebase-AppCheck` header, since App Check only gates `HX-Request` traffic. The § 7 tooltip renders through exactly TWO twins over the same payload: the Jinja macro `templates/dossiers/_tooltip_recours.html` (detail card) and the form's Alpine block — keep them in sync (fixed order: Délai · Type(s) · Point de départ · Avis requis · Réf. délai · Fondement · avertissement).
 - Legacy `matter_type` → `domaine` mapping lives in `models/dossier._MATTER_TYPE_TO_DOMAINE`. Only the unambiguous keys map (recouvrement→REC, injonction→INJ, recours_extraordinaire→CJP, vice_cache→CON); **`action_dommages` deliberately maps to `""`** — damages can be contractual (CON) or extracontractual (RCV), and guessing would silently mislabel the file's liability regime (art. 1458 al. 2 C.c.Q. non-cumul).
 
 ### `utils/validators.py`
@@ -1712,8 +1749,9 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Dossier `clients` and `opposing_parties` are arrays**, not single FKs. Code reading legacy `client_id` must go through `_migrate_parties` (already applied in `get_dossier`/`list_dossiers`).
 - **The taxonomy SUGGESTS a délai; it never sets one.** `taxonomie.Action.prescription_type` prefills the Prescription dropdown **only on a user action-change** — never on load, or opening an existing dossier would silently overwrite the delay the lawyer confirmed. It is `""` wherever the source's delay is not a single clean period, and those `""`s are load-bearing, not gaps: **FAI-01**'s « 6 mois » is a *retrospective eligibility window* (the acte de faillite must fall in the 6 months **preceding** the application), so suggesting it would compute a deadline that means nothing; RCV-05/COR-06 differ by regime; CJP-* are « délai raisonnable ». Never "fill in" a blank `prescription_type` without re-reading the source row.
 - **A `-99` « Autre (préciser) » row must never carry a délai.** Every domaine ends with one so no file is unclassifiable; they have no delay of their own, and the domaine's default (e.g. RES's « 3 ans (art. 2925) ») is **not** theirs to inherit — `action_precision` is where the real object goes.
-- **`delai_type` `/` ≠ `+`.** `P+A` means both a prescription and an avis apply; `D/A` means **the source itself leaves the qualification open** (it writes « D/A* », with § 4 reserving it). Collapsing `/` into `+` asserts a legal claim the source declines to make.
-- **§ 4's déchéance list is a cross-section claim.** `is_decheance` derives from the per-row `(D)` markers, but **APP-01** states « déchéance expresse » only in prose and carries no marker — a per-section reader cannot catch that. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the union of § 4 and the markers; extend it when the source changes.
+- **`delai_types` is a tuple over a closed 11-token vocabulary; annex asymmetries are deliberate.** Tokens combine (`("PE","A")`), `D` (stricte, rouge) outranks `DR` (relevable, orange) in `niveau_decheance`, and the legal content of `taxonomie.py` changes **only on an approved spec**. Do not "fix" COR-11 (token `A`, `avis == ()`) or RCV-03 (two conditional avis, typed `(PE,)`) — both are binding annex content, pinned by `test_a_token_and_avis_sets_are_pinned`. The six pinned `ref_delai == ""` rows (CST-05, COR-04, COR-09, FAM-01, FAM-02, FAM-06) are equally deliberate — no statutory delay source exists, and inventing one would derive legal content.
+- **§ 4's déchéance list is a cross-section claim.** `niveau_decheance` derives from the `delai_types` tokens, but **APP-01** states « déchéance expresse » only in prose — a per-section reader cannot catch that. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the § 4 cross-section as `stricte`; extend it when the source changes.
+- **`date_avis` is manual, never derived.** Each avis has its own factual starting point (délivrance du bien, cause d'action…), which is NOT `droit_action_date` — deriving the date would silently compute from the wrong start. The form shows the action's structured avis as the suggestion; the lawyer confirms by filling the field. `compute_echeances` dates an avis only from an explicit `date_depart_avis` + a confirmed scenario (`avis_confirmes`).
 - **Direct App Engine access is blocked at three layers** (App Engine firewall → Cloudflare IPs only, `X-Origin-Auth` origin secret, appspot Host check). When debugging, hit the Cloudflare hostname — `gcloud app browse` will 403. New App Engine internal endpoints (cron, queues) must be under `/_ah/` or they'll be rejected by the origin checks.
 - **`requirements.txt` is generated — never hand-edit it.** Change `requirements.in`, then re-lock with `uv pip compile` (recipe in the Tech Stack section). Production pip runs with `--require-hashes --no-deps`, so an unhashed edit simply won't deploy.
 - **Keep `setuptools<81`** until the OTel instrumentation packages are bumped to ≥0.50b0 — 0.48b0 imports `pkg_resources` at runtime and tracing silently disables without it (and the CI test for the trace log field fails).
@@ -1722,7 +1760,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **An index that serves a paginated list does NOT serve its SUM aggregation.** Firestore matches SUM/AVG queries only against an index whose *trailing* fields are the aggregated fields in **alphabetical order** (`amount` before `hours`), with directions **matching the query's last sort** (ASC for equality-only queries; DESC after `date DESC, id DESC`). A same-fields index in the wrong tail order is ignored — the query 400s ("requires an index") even though the index is READY, and totals silently degrade to zero (June 2026 dashboard "heures non facturées" incident).
 - **Never edit a `static/vendor/` file in place** — they're cached `immutable` for a year. A changed asset gets a new version/hash filename, plus updates to the templates that reference it, the precache list in `static/sw.js`, and the Early Hints lists in `security.py`.
 - **Script order at the end of `<body>` is load-bearing** (App Check boot → page scripts → htmx → Alpine). Execution follows document order — the Firebase/App Check boot scripts run synchronously at parse time, and the vendored htmx/Alpine `defer` scripts run in document order at `DOMContentLoaded`; position, not a sync/defer phase, is the guarantee. (Rocket Loader, which used to defer all scripts while preserving that order, was disabled at the edge on 2026-07-11.) Moving htmx above the boot reopens a race where `hx-trigger="load"` requests fire without the `X-Firebase-AppCheck` header and 401; moving Alpine above inline component definitions breaks `x-data` evaluation.
-- **MCP output: date-only fields must never pass through `to_mtl`.** Fields stored as midnight UTC (`timeentries.date`, `expenses.date`, invoice `date`/`due_date`, task `due_date`, protocol `start_date`/`end_date`/step `deadline_date`, dossier `opened_date`/`closed_date`/`prescription_date`) are emitted as the **UTC calendar date** via `mcp.tools.date_str` — a Montréal conversion shifts them to the previous day. True timestamps go through `mcp.tools.iso_mtl`.
+- **MCP output: date-only fields must never pass through `to_mtl`.** Fields stored as midnight UTC (`timeentries.date`, `expenses.date`, invoice `date`/`due_date`, task `due_date`, protocol `start_date`/`end_date`/step `deadline_date`, dossier `opened_date`/`closed_date`/`prescription_date`/`droit_action_date`/`date_avis`) are emitted as the **UTC calendar date** via `mcp.tools.date_str` — a Montréal conversion shifts them to the previous day. True timestamps go through `mcp.tools.iso_mtl`.
 - **The MCP endpoint is stateless JSON mode — never add SSE** (`GET /mcp` streams) without revisiting the gunicorn `--timeout 60` sizing; long-lived connections would exhaust the 2×4 worker/thread budget.
 - **Firestore TTL is lagging garbage collection, not enforcement.** `oauth_codes`/`oauth_tokens` expiry checks stay in code (`expire_at` comparison on every read); deleted-late docs must still be treated as dead.
 - **Cloudflare bot mitigations can challenge Anthropic's egress** on `/mcp`/`/oauth/*` (non-browser client). A Configuration Rule disables Browser Integrity Check on those paths; if Super Bot Fight Mode challenges Claude's requests, relax its "Definitely automated" action and verify in Security → Events (same class of fight as the Play-Store/Bubblewrap episode).

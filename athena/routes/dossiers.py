@@ -358,6 +358,8 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["action_niveau_decheance"] = taxonomie.niveau_decheance(
         dossier.get("action", "")
     )
+    # The § 7 standardized tooltip payload for the Recours card.
+    ctx["action_tooltip"] = taxonomie.tooltip_payload(dossier.get("action", ""))
     return render_template("dossiers/detail.html", **ctx)
 
 

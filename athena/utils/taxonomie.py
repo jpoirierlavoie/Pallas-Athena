@@ -1276,6 +1276,51 @@ def avis_delai_display(delai_key: Optional[str]) -> str:
     return (delai_key or "").replace("_", " ")
 
 
+# Every displayed deadline is a suggestion — the fixed warning every tooltip
+# rendering carries (spec § 7).
+AVERTISSEMENT = "Indicatif — délai à confirmer par l'avocat."
+
+
+def _avis_dict(v: Avis) -> dict:
+    """One avis as a JSON-ready dict (shared by form_payload and tooltips)."""
+    return {
+        "libelle": v.libelle,
+        "delai": avis_delai_display(v.delai_key),
+        "delai_key": v.delai_key,
+        "point_depart": v.point_depart,
+        "reference": v.reference,
+        "sanction": v.sanction,
+        "conditionnel": v.conditionnel,
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def tooltip_payload(action_code: str) -> dict:
+    """The standardized tooltip for one action (spec § 7) — the SINGLE source
+    both the Jinja macro (templates/dossiers/_tooltip_recours.html) and the
+    form's JS component render, in the fixed § 7 order: Délai · Type(s) ·
+    Point de départ · Avis requis · Réf. délai · Fondement du recours ·
+    avertissement. ``{}`` for an unknown/unset code. Cached: the domain is
+    the 162 action codes and the table is static.
+    """
+    a = ACTIONS.get(action_code or "")
+    if not a:
+        return {}
+    return {
+        "titre": action_label(a.code),
+        "delai": a.delai,
+        "types": [DELAI_TYPE_LABELS[t] for t in a.delai_types],
+        "types_label": delai_types_label(a.code),
+        "a_valider": a.a_valider,
+        "niveau_decheance": niveau_decheance(a.code),
+        "point_depart": a.point_depart,
+        "avis": [_avis_dict(v) for v in a.avis],
+        "ref_delai": a.ref_delai,
+        "ref_fondement": a.ref_fondement,
+        "avertissement": AVERTISSEMENT,
+    }
+
+
 def get_domaine(code: str) -> Optional[Domaine]:
     """Look up a domaine by code."""
     return DOMAINES.get(code or "")
@@ -1358,19 +1403,11 @@ def form_payload() -> dict:
                     "point_depart": a.point_depart,
                     "ref_delai": a.ref_delai,
                     "ref_fondement": a.ref_fondement,
-                    "avis": [
-                        {
-                            "libelle": v.libelle,
-                            "delai": avis_delai_display(v.delai_key),
-                            "delai_key": v.delai_key,
-                            "point_depart": v.point_depart,
-                            "reference": v.reference,
-                            "sanction": v.sanction,
-                            "conditionnel": v.conditionnel,
-                        }
-                        for v in a.avis
-                    ],
+                    "avis": [_avis_dict(v) for v in a.avis],
                     "prescription_type": a.prescription_type,
+                    # The standardized § 7 tooltip, embedded per action so the
+                    # form's JS renders the same payload the Jinja macro does.
+                    "tooltip": tooltip_payload(a.code),
                 }
                 for a in d.actions
             ],

@@ -1,0 +1,55 @@
+{# The standardized recours tooltip (spec § 7) — the ONE Jinja rendering of
+   taxonomie.tooltip_payload(action_code). Fixed display order: Délai ·
+   Type(s) · Point de départ · Avis requis (avec sanction) · Réf. délai ·
+   Fondement du recours · avertissement. The form's JS component
+   (dossiers/form.html) is this macro's twin over the same payload — keep
+   them in sync. #}
+{% macro tooltip_recours(tt) %}
+{% if tt %}
+<dl class="space-y-1.5 text-sm text-gray-700">
+  {% if tt.delai %}
+  <div>
+    <dt class="text-xs font-medium text-gray-500">Délai indicatif</dt>
+    <dd>{{ tt.delai }}</dd>
+  </div>
+  {% endif %}
+  {% if tt.types %}
+  <div>
+    <dt class="text-xs font-medium text-gray-500">Type(s)</dt>
+    <dd class="{{ 'text-red-700 font-medium' if tt.niveau_decheance == 'stricte' else ('text-amber-700 font-medium' if tt.niveau_decheance == 'relevable' else '') }}">{{ tt.types_label }}</dd>
+  </div>
+  {% endif %}
+  {% if tt.point_depart %}
+  <div>
+    <dt class="text-xs font-medium text-gray-500">Point de départ / pièges</dt>
+    <dd>{{ tt.point_depart }}</dd>
+  </div>
+  {% endif %}
+  {% if tt.avis %}
+  <div>
+    <dt class="text-xs font-medium text-gray-500">Avis requis</dt>
+    {% for v in tt.avis %}
+    <dd>
+      {{ v.libelle }}{% if v.delai %} — {{ v.delai }}{% endif %}
+      {% if v.conditionnel %}<span class="text-gray-500">(si le scénario s'applique)</span>{% endif %}
+      {% if v.sanction %}<span class="text-red-700">{{ v.sanction }}</span>{% endif %}
+    </dd>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if tt.ref_delai %}
+  <div>
+    <dt class="text-xs font-medium text-gray-500">Réf. délai</dt>
+    <dd>{{ tt.ref_delai }}</dd>
+  </div>
+  {% endif %}
+  {% if tt.ref_fondement %}
+  <div>
+    <dt class="text-xs font-medium text-gray-500">Fondement du recours</dt>
+    <dd>{{ tt.ref_fondement }}</dd>
+  </div>
+  {% endif %}
+</dl>
+<p class="text-xs text-gray-400 mt-2">{{ tt.avertissement }}</p>
+{% endif %}
+{% endmacro %}

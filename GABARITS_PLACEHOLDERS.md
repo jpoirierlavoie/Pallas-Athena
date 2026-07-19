@@ -81,13 +81,14 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.action_libelle}}` | The action's name alone, without the bracketed code |
 | `{{dossier.action_code}}` | The bare code (« REC-01 ») |
 | `{{dossier.precision}}` | Free-text précision on the action — required by the « Autre (préciser) » (`-99`) rows; also holds the pre-taxonomy « Objet » text |
-| `{{dossier.delai}}` | The taxonomy's **indicative** delay for the action, as the table states it (« 3 ans (Prescription) ») |
+| `{{dossier.delai}}` | The taxonomy's **indicative** delay for the action, short style since July 2026 (« 3 ans ») |
 | `{{dossier.point_depart}}` | The action's starting point / traps (« Exigibilité de chaque facture ») |
-| `{{dossier.reference}}` | The action's statutory references (« 2925, 2931 ») |
+| `{{dossier.reference}}` | The statutory source of the **delay** (`ref_delai`, « Arts. 2925 et 2931, C.c.Q. »). Split July 2026: six actions with no statutory delay source resolve empty (CST-05, COR-04, COR-09, FAM-01, FAM-02, FAM-06) |
+| `{{dossier.fondement}}` | **New (July 2026)** — the seat of the right of action (`ref_fondement`, Annexe C of the taxonomy v1.2; « C.c.Q. » implicit: « 1590; 1708, 1734; 2098, 2106-2108 »). Verify article numbers before alleging them in a procedure |
 | `{{dossier.objet}}` | **Renamed « Action » (July 2026)** — kept as an alias, now resolves to the action label, not the old free text |
 | `{{dossier.valeur}}` | Amount in dispute, fr-CA currency (« 85 000,00 $ ») |
 | `{{dossier.classe}}` | Value class (Roman numeral I–IV), derived from the value |
-| `{{dossier.prescription}}` | The confirmed delay label (« 3 ans », « 90 jours », « Imprescriptible »). Generic since July 2026 — the article now travels with `{{dossier.reference}}`, because one period serves many articles |
+| `{{dossier.prescription}}` | The confirmed delay label (« 3 ans », « 90 jours », « Imprescriptible »). Generic since July 2026 — the delay's article now travels with `{{dossier.reference}}` (and the right of action's with `{{dossier.fondement}}`), because one period serves many articles |
 | `{{dossier.droit_action}}` | Droit d'action — start of prescription (French long date) |
 | `{{dossier.date_pour_agir}}` | Date pour agir — computed limitation deadline (French long date) |
 | `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire », « Transactionnel », « Consultatif », « Autre ») |
@@ -179,6 +180,7 @@ same-spelled namespaced field.
 | `{{délai}}` / `{{delai}}` | `dossier.delai` |
 | `{{point_départ}}` / `{{point_depart}}` | `dossier.point_depart` |
 | `{{référence_action}}` / `{{reference_action}}` | `dossier.reference` |
+| `{{fondement}}` / `{{référence_fondement}}` / `{{reference_fondement}}` | `dossier.fondement` |
 | `{{type_mandat}}` | `dossier.type_mandat` |
 | `{{type_dossier}}` | `dossier.type_dossier` (→ the domaine label) |
 | `{{date_ouverture}}` / `{{date_fermeture}}` | `dossier.ouverture` / `dossier.fermeture` |

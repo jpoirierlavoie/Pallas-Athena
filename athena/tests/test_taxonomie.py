@@ -370,11 +370,39 @@ def test_form_payload_schema_snapshot():
     expected_keys = {
         "code", "label", "delai", "delai_types", "delai_types_label",
         "a_valider", "niveau_decheance", "point_depart", "ref_delai",
-        "ref_fondement", "avis", "prescription_type",
+        "ref_fondement", "avis", "prescription_type", "tooltip",
     }
     for domaine in payload.values():
         for action in domaine["actions"]:
             assert set(action) == expected_keys, action["code"]
+
+
+_TOOLTIP_KEYS = {
+    "titre", "delai", "types", "types_label", "a_valider",
+    "niveau_decheance", "point_depart", "avis", "ref_delai",
+    "ref_fondement", "avertissement",
+}
+
+
+def test_tooltip_payload_complete_for_every_action():
+    """§ 8 (17) — every non--99 action has a complete § 7 tooltip; unknown
+    and unset codes yield {}."""
+    for code, action in taxonomie.ACTIONS.items():
+        tt = taxonomie.tooltip_payload(code)
+        assert set(tt) == _TOOLTIP_KEYS, code
+        assert tt["titre"] == taxonomie.action_label(code)
+        assert tt["avertissement"] == taxonomie.AVERTISSEMENT
+        if not code.endswith("-99"):
+            assert tt["types"], code
+            assert tt["types_label"] == taxonomie.delai_types_label(code)
+    assert taxonomie.tooltip_payload("") == {}
+    assert taxonomie.tooltip_payload("ZZZ-01") == {}
+
+
+def test_form_payload_embeds_the_tooltip():
+    payload = taxonomie.form_payload()
+    rec01 = payload["REC"]["actions"][0]
+    assert rec01["tooltip"] == taxonomie.tooltip_payload("REC-01")
 
 
 def test_form_payload_is_cached():
