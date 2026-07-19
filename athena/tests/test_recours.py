@@ -214,3 +214,31 @@ def test_labels_and_valid_types_include_empty_state():
     for key in ("1_an", "3_ans", "10_ans", "30_ans", "imprescriptible", "autre"):
         assert key in VALID_PRESCRIPTION_TYPES
         assert key in PRESCRIPTION_LABELS
+
+
+# ── § 8 (15) — compute_date_pour_agir is intangible ──────────────────────
+def test_compute_date_pour_agir_signature_unchanged():
+    """The orchestration layer (compute_echeances) composes this function; its
+    signature is part of the intangibility contract (spec § 0.3)."""
+    import inspect
+
+    sig = inspect.signature(compute_date_pour_agir)
+    assert list(sig.parameters) == ["droit_action_date", "prescription_type"]
+
+
+def test_compute_date_pour_agir_sample_grid_unchanged():
+    """Literal expected dates over month-ends and leap days — a change in any
+    of these is a change to the date arithmetic itself."""
+    grid = [
+        # (start, type) -> expected (incl. the art. 52 forward report)
+        ((2026, 7, 18), "3_ans", (2029, 7, 18)),
+        ((2025, 1, 31), "3_mois", (2025, 4, 30)),   # month-length clamp
+        ((2025, 1, 31), "1_an", (2026, 2, 2)),      # 2026-01-31 Sat → Mon
+        ((2024, 2, 29), "1_an", (2025, 2, 28)),     # leap clamp
+        ((2024, 2, 29), "3_ans", (2027, 3, 1)),     # 2027-02-28 Sun → Mon
+        ((2026, 5, 14), "90_jours", (2026, 8, 12)),
+    ]
+    for (sy, sm, sd), p_type, (ey, em, ed) in grid:
+        assert compute_date_pour_agir(_d(sy, sm, sd), p_type) == _d(ey, em, ed), (
+            (sy, sm, sd), p_type
+        )

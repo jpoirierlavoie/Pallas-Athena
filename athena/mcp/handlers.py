@@ -386,6 +386,9 @@ def get_dossier(args: dict) -> dict:
                 d.get("prescription_type", ""), ""
             ),
             "droit_action_date": date_str(_as_utc(d.get("droit_action_date"))),
+            # Confirmed avis préalable date — manual, optional; date-only
+            # (midnight UTC), so date_str, never iso_mtl.
+            "date_avis": date_str(_as_utc(d.get("date_avis"))),
             "prescription_notes": d.get("prescription_notes", ""),
             "created_at": iso_mtl(_as_utc(d.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(d.get("updated_at"))),

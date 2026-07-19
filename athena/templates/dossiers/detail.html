@@ -230,6 +230,14 @@
             {{ dossier.prescription_date.strftime('%d %B %Y') if dossier.prescription_date and dossier.prescription_date.strftime is defined else '—' }}
           </dd>
         </div>
+        {# Confirmed avis préalable — manual field; the guard tolerates legacy
+           docs without the key (additive, no migration). #}
+        {% if dossier.date_avis and dossier.date_avis.strftime is defined %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Date d'avis</dt>
+          <dd class="text-gray-900 text-right">{{ dossier.date_avis.strftime('%d %B %Y') }}</dd>
+        </div>
+        {% endif %}
       </dl>
     </div>
 

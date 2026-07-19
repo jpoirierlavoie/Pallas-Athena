@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import date
 from utils.deadlines import (
+    add_jours_ouvrables,
     compute_deadline,
     is_juridical_day,
     next_juridical_day,
@@ -275,3 +276,31 @@ def test_holiday_cluster():
     # Deadline landing anywhere in the cluster moves to April 22
     assert compute_deadline(date(2025, 4, 14), 4, "after") == date(2025, 4, 22)
     assert compute_deadline(date(2025, 4, 17), 4, "after") == date(2025, 4, 22)
+
+
+# ── add_jours_ouvrables (business days — avis de la Loi sur la presse) ────
+
+
+def test_add_jours_ouvrables_plain_week():
+    # Mon 2026-07-13 + 2 business days = Wed 2026-07-15 (no weekend, no holiday)
+    assert add_jours_ouvrables(date(2026, 7, 13), 2) == date(2026, 7, 15)
+
+
+def test_add_jours_ouvrables_skips_weekend():
+    # Thu 2026-07-16 + 3 → Fri 17, [Sat/Sun], Mon 20, Tue 21
+    assert add_jours_ouvrables(date(2026, 7, 16), 3) == date(2026, 7, 21)
+
+
+def test_add_jours_ouvrables_golden_thursday_with_holiday_monday():
+    """§ 8 (12) cas d'or: a statutory-holiday Monday inside the window.
+    Journée nationale des patriotes 2026 = Mon May 18 (the Monday preceding
+    May 25; 2026-05-24 is a Sunday). Thu 2026-05-14 + 3 jours ouvrables →
+    Fri 15, [Sat 16 / Sun 17 / Mon 18 férié], Tue 19, Wed 20."""
+    assert not is_juridical_day(date(2026, 5, 18))   # guard: the holiday holds
+    assert add_jours_ouvrables(date(2026, 5, 14), 3) == date(2026, 5, 20)
+
+
+def test_add_jours_ouvrables_zero_is_identity():
+    assert add_jours_ouvrables(date(2026, 7, 13), 0) == date(2026, 7, 13)
+    # Even from a non-juridical start (a Saturday): 0 adds nothing.
+    assert add_jours_ouvrables(date(2026, 7, 18), 0) == date(2026, 7, 18)

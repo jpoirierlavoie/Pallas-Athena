@@ -164,3 +164,75 @@ def test_new_dossiers_are_born_unclassified():
     assert defaults["action_precision"] == ""
     assert "matter_type" not in defaults
     assert "objet" not in defaults
+
+
+# ── _apply_prescription_deadline: behaviors preserved (spec § 6.4) ────
+# The July 2026 échéancier rework routed the computation through
+# compute_echeances; these pin that every pre-existing behavior survived.
+
+from datetime import datetime, timezone
+
+from utils.recours import compute_date_pour_agir
+
+
+def _dt(y, m, d):
+    return datetime(y, m, d, tzinfo=timezone.utc)
+
+
+def test_deadline_imprescriptible_clears_the_date():
+    doc = {"prescription_type": "imprescriptible",
+           "prescription_date": _dt(2027, 1, 1)}
+    dossier._apply_prescription_deadline(doc)
+    assert doc["prescription_date"] is None
+
+
+def test_deadline_unset_or_autre_never_overwrites_a_manual_date():
+    for p_type in ("", "autre"):
+        doc = {"prescription_type": p_type,
+               "droit_action_date": _dt(2026, 7, 18),
+               "prescription_date": _dt(2027, 1, 1)}
+        dossier._apply_prescription_deadline(doc)
+        assert doc["prescription_date"] == _dt(2027, 1, 1), p_type
+
+
+def test_deadline_computes_for_a_classified_action():
+    doc = {"action": "REC-01", "prescription_type": "3_ans",
+           "droit_action_date": _dt(2026, 7, 18)}
+    dossier._apply_prescription_deadline(doc)
+    assert doc["prescription_date"] == compute_date_pour_agir(
+        _dt(2026, 7, 18), "3_ans"
+    )
+
+
+def test_deadline_computes_for_an_unclassified_dossier():
+    """No action code — the pre-rework behavior verbatim."""
+    doc = {"prescription_type": "3_ans", "droit_action_date": _dt(2026, 7, 18)}
+    dossier._apply_prescription_deadline(doc)
+    assert doc["prescription_date"] == compute_date_pour_agir(
+        _dt(2026, 7, 18), "3_ans"
+    )
+
+
+def test_deadline_manual_period_still_computes_on_special_regimes():
+    """FAM-07 (I,PE) and IMM-06 (PA) produce no dated principale on their
+    own, but a lawyer-confirmed period must keep computing exactly as before
+    (the compute_date_pour_agir fallback)."""
+    for action in ("FAM-07", "IMM-06"):
+        doc = {"action": action, "prescription_type": "10_ans",
+               "droit_action_date": _dt(2026, 7, 18)}
+        dossier._apply_prescription_deadline(doc)
+        assert doc["prescription_date"] == compute_date_pour_agir(
+            _dt(2026, 7, 18), "10_ans"
+        ), action
+
+
+def test_deadline_never_touches_date_avis():
+    doc = {"action": "TRN-01", "prescription_type": "3_ans",
+           "droit_action_date": _dt(2026, 7, 18),
+           "date_avis": _dt(2026, 8, 1)}
+    dossier._apply_prescription_deadline(doc)
+    assert doc["date_avis"] == _dt(2026, 8, 1)
+
+
+def test_date_avis_defaults_to_none():
+    assert dossier._default_doc()["date_avis"] is None

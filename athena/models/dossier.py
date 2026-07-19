@@ -17,6 +17,7 @@ from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.recours import (
     VALID_PRESCRIPTION_TYPES,
     compute_date_pour_agir,
+    compute_echeances,
     prescription_period,
 )
 
@@ -228,6 +229,11 @@ def _default_doc() -> dict:
         "prescription_type": "",
         "droit_action_date": None,
         "prescription_date": None,
+        # Confirmed prior-notice date (avis préalable) — manual, optional,
+        # NEVER auto-derived (each avis has its own starting point: délivrance
+        # du bien, cause d'action… — not droit_action_date). Additive July
+        # 2026; absent on legacy docs means "no confirmed avis".
+        "date_avis": None,
         "prescription_notes": "",
         # Metadata
         "created_at": None,
@@ -382,14 +388,32 @@ def _apply_prescription_deadline(doc: dict) -> None:
     recourse clears it. When the type/start date don't drive a computation
     (unset, or "autre"), any existing/legacy ``prescription_date`` is left
     untouched — so older dossiers carrying a manually-set date are never wiped.
+
+    Since July 2026 the date is read from ``compute_echeances``' principale
+    (the type-aware orchestration layer), whose PE/D/DR path calls
+    ``compute_date_pour_agir`` verbatim — identical arithmetic, pinned by
+    test. The direct-call fallback covers the actions with no dated
+    principale (a PA action returns only a defensive échéance) so a manually
+    confirmed period still computes exactly as before. ``date_avis`` is never
+    touched here — it is manual, confirmed by the lawyer on the form.
     """
     p_type = doc.get("prescription_type", "")
     if p_type == "imprescriptible":
         doc["prescription_date"] = None
-    elif doc.get("droit_action_date") and prescription_period(p_type):
-        doc["prescription_date"] = compute_date_pour_agir(
-            doc.get("droit_action_date"), p_type
-        )
+        return
+    if not (doc.get("droit_action_date") and prescription_period(p_type)):
+        return
+    echeances = compute_echeances(
+        doc.get("action", ""), doc.get("droit_action_date"), p_type
+    )
+    principale = next(
+        (e for e in echeances if e.role == "principale" and e.date), None
+    )
+    doc["prescription_date"] = (
+        principale.date
+        if principale
+        else compute_date_pour_agir(doc.get("droit_action_date"), p_type)
+    )
 
 
 def _suggest_next_file_number() -> str:

@@ -70,6 +70,25 @@ def prev_juridical_day(d: date) -> date:
     return current
 
 
+def add_jours_ouvrables(start: date, n: int) -> date:
+    """Add *n* business days: each counted day skips Saturdays, Sundays and
+    Québec statutory holidays (the same table ``next_juridical_day`` uses via
+    ``is_juridical_day``).
+
+    Serves the notice delays expressed in jours ouvrables (art. 3, Loi sur la
+    presse — the ``3_jours_ouvrables`` key of ``utils.recours.AVIS_PERIODS``).
+    ``n == 0`` returns *start* unchanged, even when *start* itself is not a
+    juridical day.
+    """
+    current = start
+    remaining = n
+    while remaining > 0:
+        current += timedelta(days=1)
+        if is_juridical_day(current):
+            remaining -= 1
+    return current
+
+
 def get_quebec_holidays(year: int) -> list[date]:
     """Return all Quebec statutory holidays for a given year.
 

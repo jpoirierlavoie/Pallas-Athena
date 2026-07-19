@@ -188,6 +188,9 @@ def _form_data() -> dict:
         "valeur": _parse_cents(f.get("valeur", "")) or None,
         "prescription_type": f.get("prescription_type", "").strip(),
         "droit_action_date": _parse_date(f.get("droit_action_date", "")),
+        # Confirmed avis préalable date — manual, optional, never derived
+        # (each avis has its own factual starting point).
+        "date_avis": _parse_date(f.get("date_avis", "")),
         "prescription_notes": f.get("prescription_notes", "").strip(),
     }
     normalize_forum(data)

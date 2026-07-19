@@ -219,6 +219,8 @@ def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):
             "tribunal": "Cour supérieure", "court_file_number": "500-05-123456-241",
             "opened_date": datetime(2026, 1, 5, tzinfo=UTC),
             "prescription_date": None, "hourly_rate": 25000, "flat_fee": None,
+            # date-only (midnight UTC) — must emit as the UTC calendar date
+            "date_avis": datetime(2026, 8, 3, tzinfo=UTC),
             "clients": [{"id": "p1", "name": "Jean Tremblay"}],
             "opposing_parties": [{"id": "p2", "name": "Marc Lavoie"}]}
 
@@ -302,6 +304,9 @@ def test_get_dossier_composes_summaries(monkeypatch):
     # The pre-split field names must be gone.
     assert "delai_type" not in d
     assert "action_references" not in d
+    # date_avis is date-only (midnight UTC): the UTC calendar date, never a
+    # Montréal-shifted timestamp.
+    assert d["date_avis"] == "2026-08-03"
     # matter_type/objet were superseded by the taxonomy.
     assert "matter_type" not in d
     assert "objet" not in d
