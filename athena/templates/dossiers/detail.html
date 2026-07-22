@@ -3,7 +3,17 @@
 
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-6"
-     x-data="{ activeTab: '{{ initial_tab|default('temps') }}', deleteOpen: false }">
+     x-data="{
+       activeGroup: '{{ initial_group|default('finances') }}',
+       activeLeaf: '{{ initial_tab|default('temps') }}',
+       deleteOpen: false,
+       scrollLeaf(slug) {
+         this.$nextTick(() => {
+           const el = this.$refs['leaf_' + slug];
+           if (el) el.scrollIntoView({ inline: 'center', block: 'nearest' });
+         });
+       }
+     }">
 
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
@@ -291,32 +301,13 @@
   </div>
 
   {# ── Tabbed sub-sections ─────────────────────────────────────── #}
-  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
-    {# Tab bar #}
-    <div class="flex overflow-x-auto border-b border-gray-200">
-      {% set tabs = [
-        ('temps', 'Temps & Déboursés'),
-        ('facturation', 'Honoraires'),
-        ('agenda', 'Agenda'),
-        ('protocole', 'Protocole'),
-        ('documents', 'Documents'),
-        ('fideicommis', 'Fidéicommis')
-      ] %}
-      {% for key, label in tabs %}
-      <button @click="activeTab = '{{ key }}'"
-              :class="activeTab === '{{ key }}' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
-              class="px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors"
-              hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=key) }}"
-              hx-target="#tab-content"
-              hx-trigger="click"
-              hx-swap="innerHTML">
-        {{ label }}
-      </button>
-      {% endfor %}
-    </div>
+  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden"
+       x-init="scrollLeaf(activeLeaf)">
+    {# Two-level tab navigation (top group row + scrollable leaf sub-rows). #}
+    {% include 'dossiers/_tab_nav.html' %}
 
-    {# Tab content area — initial tab honours ?tab= query param. #}
-    <div id="tab-content" class="p-5"
+    {# Tab content area — initial leaf honours the ?tab= query param. #}
+    <div id="tab-content" class="p-5" role="tabpanel"
          hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=initial_tab|default('temps')) }}"
          hx-trigger="load"
          hx-swap="innerHTML">

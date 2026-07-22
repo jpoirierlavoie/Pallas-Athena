@@ -1,0 +1,76 @@
+{# Two-level dossier tab navigation.
+   Top row: group tabs (always visible). Sub-rows: the leaf tabs of the active
+   multi-leaf group, horizontally scrollable (.dossier-subnav — hidden
+   scrollbar + snap; the wrapper adds a right-edge fade). Single-leaf groups
+   (Aperçu, Documents) have no sub-row and load their leaf directly.
+
+   Selection is client-side Alpine state (activeGroup / activeLeaf, seeded from
+   the server's initial_group / initial_tab); the leaf content itself loads via
+   HTMX into #tab-content, and each trigger pushes the hub ?tab= URL so a
+   refresh is deep-link stable. Mirrors routes/dossiers.py _LEAF_GROUP. #}
+{% set nav_groups = [
+  {'key': 'apercu',    'label': 'Aperçu',    'leaves': [
+      {'slug': 'apercu',      'label': 'Aperçu'}]},
+  {'key': 'finances',  'label': 'Finances',  'leaves': [
+      {'slug': 'temps',       'label': 'Temps & Déboursés'},
+      {'slug': 'facturation', 'label': 'Honoraires'},
+      {'slug': 'fideicommis', 'label': 'Fidéicommis'}]},
+  {'key': 'agenda',    'label': 'Agenda',    'leaves': [
+      {'slug': 'audiences',   'label': 'Calendrier'},
+      {'slug': 'taches',      'label': 'Tâches'},
+      {'slug': 'protocole',   'label': 'Protocole'}]},
+  {'key': 'documents', 'label': 'Documents', 'leaves': [
+      {'slug': 'documents',   'label': 'Documents'}]}
+] %}
+{% set tab_base = 'flex-shrink-0 px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors' %}
+{% set tab_active = 'border-indigo-600 text-indigo-600' %}
+{% set tab_inactive = 'border-transparent text-gray-500 hover:text-gray-700' %}
+
+{# ── Top row: group tabs (white card bg; scrolls but no edge fade) ── #}
+<div class="border-b border-gray-200">
+  <div class="dossier-subnav" role="tablist" aria-label="Sections du dossier"
+       @keydown.arrow-right.prevent="$event.target.nextElementSibling && $event.target.nextElementSibling.focus()"
+       @keydown.arrow-left.prevent="$event.target.previousElementSibling && $event.target.previousElementSibling.focus()">
+    {% for group in nav_groups %}
+    {% set first = group.leaves[0] %}
+    <button type="button" role="tab"
+            :aria-selected="activeGroup === '{{ group.key }}'"
+            aria-controls="tab-content"
+            @click="activeGroup = '{{ group.key }}'; activeLeaf = '{{ first.slug }}'; scrollLeaf('{{ first.slug }}')"
+            :class="activeGroup === '{{ group.key }}' ? '{{ tab_active }}' : '{{ tab_inactive }}'"
+            class="{{ tab_base }}"
+            hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=first.slug) }}"
+            hx-target="#tab-content"
+            hx-swap="innerHTML"
+            hx-push-url="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id, tab=first.slug) }}">
+      {{ group.label }}
+    </button>
+    {% endfor %}
+  </div>
+</div>
+
+{# ── Sub-rows: leaves of each multi-leaf group ───────────────────── #}
+{% for group in nav_groups if group.leaves|length > 1 %}
+<div x-show="activeGroup === '{{ group.key }}'" x-cloak
+     class="dossier-subnav-wrap bg-gray-50 border-b border-gray-200">
+  <div class="dossier-subnav" role="tablist" aria-label="{{ group.label }}"
+       @keydown.arrow-right.prevent="$event.target.nextElementSibling && $event.target.nextElementSibling.focus()"
+       @keydown.arrow-left.prevent="$event.target.previousElementSibling && $event.target.previousElementSibling.focus()">
+    {% for leaf in group.leaves %}
+    <button type="button" role="tab"
+            x-ref="leaf_{{ leaf.slug }}"
+            :aria-selected="activeLeaf === '{{ leaf.slug }}'"
+            aria-controls="tab-content"
+            @click="activeLeaf = '{{ leaf.slug }}'; scrollLeaf('{{ leaf.slug }}')"
+            :class="activeLeaf === '{{ leaf.slug }}' ? '{{ tab_active }}' : '{{ tab_inactive }}'"
+            class="{{ tab_base }}"
+            hx-get="{{ url_for('dossiers.dossier_tab', dossier_id=dossier.id, tab_name=leaf.slug) }}"
+            hx-target="#tab-content"
+            hx-swap="innerHTML"
+            hx-push-url="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id, tab=leaf.slug) }}">
+      {{ leaf.label }}
+    </button>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}

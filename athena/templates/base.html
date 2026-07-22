@@ -22,7 +22,7 @@
      CSS is PRECOMPILED (static/src/app.input.css → vendor/app.<hash>.css);
      regenerate + re-hash when class names change — see CLAUDE.md. #}
   <!-- Application stylesheet (precompiled Tailwind + hand-written rules) -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.5f4afed2.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.af95b30d.css') }}">
 
   {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
   {# App Check loads reCAPTCHA Enterprise from these origins at runtime —
@@ -89,7 +89,7 @@
         </a>
         <a href="/audiences" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-700">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/></svg>
-          Agenda
+          Calendrier
         </a>
       </div>
 
@@ -171,7 +171,7 @@
     </a>
     <a href="/audiences" class="flex flex-col items-center gap-0.5 text-xs text-gray-600 py-2 min-w-[3rem]">
       <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/></svg>
-      Agenda
+      Calendrier
     </a>
     <button @click="moreOpen = !moreOpen"
             class="flex flex-col items-center gap-0.5 text-xs text-gray-600 py-2 min-w-[3rem]">

@@ -90,7 +90,7 @@ def test_link_header_on_full_page_html():
     app = _make_app()
     resp = app.test_client().get("/")
     link = resp.headers.get("Link", "")
-    assert "</static/vendor/app.5f4afed2.css>; rel=preload; as=style" in link
+    assert "</static/vendor/app.af95b30d.css>; rel=preload; as=style" in link
     assert "htmx-2.0.4.min.js>; rel=preload; as=script" in link
     assert "alpinejs-3.15.12.min.js>; rel=preload; as=script" in link
     # No App Check configured — its assets must not be hinted.

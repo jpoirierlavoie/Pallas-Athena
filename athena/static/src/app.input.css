@@ -59,6 +59,30 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner { animation: spin 0.7s linear infinite; }
 
+/* Dossier detail two-level tab sub-navigation (scrollable strip).
+   Hidden scrollbar + scroll-snap; the -wrap adds a right-edge fade over the
+   gray-50 sub-row so off-screen leaves are discoverable. Referenced in
+   templates/dossiers/_tab_nav.html. */
+.dossier-subnav {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* legacy Edge/IE */
+}
+.dossier-subnav::-webkit-scrollbar { display: none; }  /* WebKit */
+.dossier-subnav > * { scroll-snap-align: start; }
+.dossier-subnav-wrap { position: relative; }
+.dossier-subnav-wrap::after {
+  content: "";
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 1.5rem;
+  background: linear-gradient(to right, rgba(249, 250, 251, 0), #f9fafb);
+  pointer-events: none;
+}
+
 /* Markdown note content */
 .note-content h1 { font-size: 1.25rem; font-weight: 700; margin: 0.75rem 0 0.5rem; }
 .note-content h2 { font-size: 1.125rem; font-weight: 600; margin: 0.75rem 0 0.5rem; }

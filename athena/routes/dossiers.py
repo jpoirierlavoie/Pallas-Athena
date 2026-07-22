@@ -313,17 +313,35 @@ def dossier_list() -> str:
 
 
 _VALID_TABS = (
+    "apercu",
     "temps",
     "facturation",
-    "agenda",
+    "fideicommis",
+    "audiences",
+    "taches",
     "protocole",
     "documents",
-    "fideicommis",
 )
 
-# Pre-merge tab names (bookmarks, return_to links minted before the Agenda
-# tab existed) land on the merged tab instead of falling back to temps.
-_LEGACY_TABS = {"audiences": "agenda", "taches": "agenda"}
+# A merged-era ?tab=agenda bookmark (the single Agenda tab that existed
+# July 2026, before the two-level nav re-split it) now lands on the Calendrier
+# leaf. Pre-merge ?tab=audiences / ?tab=taches are valid slugs again, so they
+# need no remap.
+_LEGACY_TABS = {"agenda": "audiences"}
+
+# Two-level nav: each leaf tab belongs to one top-level group. Mirrors the
+# `groups` structure in dossiers/_tab_nav.html; used to highlight the right
+# group (and show its sub-row) on a ?tab= deep link.
+_LEAF_GROUP = {
+    "apercu": "apercu",
+    "temps": "finances",
+    "facturation": "finances",
+    "fideicommis": "finances",
+    "audiences": "agenda",
+    "taches": "agenda",
+    "protocole": "agenda",
+    "documents": "documents",
+}
 
 
 @dossiers_bp.route("/<dossier_id>")
@@ -339,10 +357,14 @@ def dossier_detail(dossier_id: str) -> str:
     requested_tab = request.args.get("tab", "").strip()
     requested_tab = _LEGACY_TABS.get(requested_tab, requested_tab)
     initial_tab = requested_tab if requested_tab in _VALID_TABS else "temps"
+    # Top-level group of the initial leaf — drives which group is highlighted
+    # and which sub-row is shown on first paint.
+    initial_group = _LEAF_GROUP.get(initial_tab, "finances")
 
     ctx = _template_context()
     ctx["dossier"] = dossier
     ctx["initial_tab"] = initial_tab
+    ctx["initial_group"] = initial_group
     ctx["value_class"] = compute_class(dossier.get("valeur"))
     # (type label, rate) — the card greys the rate in parentheses; gabarits
     # keep the joined format_honoraires form.
@@ -380,9 +402,11 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     tab_name = _LEGACY_TABS.get(tab_name, tab_name)
 
     templates = {
+        "apercu": "dossiers/_tab_apercu.html",
         "temps": "dossiers/_tab_temps.html",
         "facturation": "dossiers/_tab_facturation.html",
-        "agenda": "dossiers/_tab_agenda.html",
+        "audiences": "dossiers/_tab_audiences.html",
+        "taches": "dossiers/_tab_taches.html",
         "protocole": "dossiers/_tab_protocole.html",
         "documents": "dossiers/_tab_documents.html",
         "fideicommis": "dossiers/_tab_fideicommis.html",
@@ -396,18 +420,25 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["expense_summary"] = get_expense_summary(dossier_id)
         ctx["category_labels"] = EXPENSE_CATEGORY_LABELS
 
-    # Load hearing + task data for the merged agenda tab. The tab is
-    # forward-looking: anything dated strictly before today (Montréal
-    # calendar day — today's items stay) is hidden. Filtered in Python over
-    # the dossier-bounded fetch — no new Firestore index. A dateless task is
-    # kept while active, hidden once finished (it has no future date left).
-    if tab_name == "agenda":
+    # Load hearing data for the audiences (Calendrier) tab. Forward-looking:
+    # anything dated strictly before today (Montréal calendar day — today's
+    # items stay) is hidden. Filtered in Python over the dossier-bounded fetch
+    # — no new Firestore index.
+    if tab_name == "audiences":
         today_mtl = to_mtl(datetime.now(timezone.utc)).date()
         ctx["hearings"] = [
             h for h in list_hearings(dossier_id=dossier_id)
             if h.get("start_datetime") is None
             or to_mtl(h["start_datetime"]).date() >= today_mtl
         ]
+        ctx["hearing_type_labels"] = HEARING_TYPE_LABELS
+        ctx["hearing_status_labels"] = HEARING_STATUS_LABELS
+
+    # Load task data for the taches tab. Same forward-looking rule; a dateless
+    # task is kept while active, hidden once finished (it has no future date
+    # left).
+    if tab_name == "taches":
+        today_mtl = to_mtl(datetime.now(timezone.utc)).date()
         # Task due dates are date-only (stored midnight UTC) — compare the
         # UTC calendar date, never a Montréal-shifted one.
         ctx["tasks"] = [
@@ -418,8 +449,6 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
                 else t.get("status") in ("à_faire", "en_cours")
             )
         ]
-        ctx["hearing_type_labels"] = HEARING_TYPE_LABELS
-        ctx["hearing_status_labels"] = HEARING_STATUS_LABELS
         ctx["task_category_labels"] = TASK_CATEGORY_LABELS
         ctx["task_status_labels"] = TASK_STATUS_LABELS
 

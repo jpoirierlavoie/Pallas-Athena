@@ -5,12 +5,12 @@
 //  - NEVER cached: authenticated HTML, HTMX fragments, signed Storage URLs,
 //    or anything outside /static — legal client data must not persist in
 //    browser caches.
-const STATIC_CACHE = 'athena-static-v3';
+const STATIC_CACHE = 'athena-static-v4';
 const OFFLINE_CACHE = 'athena-offline-v2';
 const OFFLINE_URL = '/offline';
 
 const PRECACHE = [
-  '/static/vendor/app.5f4afed2.css',
+  '/static/vendor/app.af95b30d.css',
   '/static/vendor/htmx-2.0.4.min.js',
   '/static/vendor/alpinejs-3.15.12.min.js',
   '/static/vendor/firebase-app-compat-10.12.2.js',

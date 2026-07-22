@@ -10,7 +10,7 @@
     <a href="{{ return_to or url_for('hearings.hearing_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
-      {{ 'Retour' if return_to else 'Agenda' }}
+      {{ 'Retour' if return_to else 'Calendrier' }}
     </a>
     <div class="flex items-center gap-2">
       <a href="{{ url_for('hearings.hearing_edit', hearing_id=hearing.id, return_to=return_to or None) }}"

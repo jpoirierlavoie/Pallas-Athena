@@ -47,8 +47,8 @@
       "icons": [{ "src": "/static/icons/shortcut-dossiers.png", "sizes": "96x96", "type": "image/png" }]
     },
     {
-      "name": "Audiences",
-      "short_name": "Audiences",
+      "name": "Calendrier",
+      "short_name": "Calendrier",
       "url": "/audiences/",
       "icons": [{ "src": "/static/icons/shortcut-audiences.png", "sizes": "96x96", "type": "image/png" }]
     },
