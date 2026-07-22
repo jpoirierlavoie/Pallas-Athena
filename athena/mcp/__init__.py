@@ -9,9 +9,20 @@ Exposes Pallas Athena's data to Claude as a custom connector:
 * ``mcp_bp`` — ``POST /mcp``: a stateless, JSON-response-mode Streamable
   HTTP server (initialize / ping / tools list + call). No SSE, no sessions.
 
-Everything is read-only in v1 — no CTag bumping is ever needed here.
-The ``MCP_ENABLED`` config flag is a kill switch: when false, every route
-in both blueprints returns 404.
+**Almost everything is read-only.** The two exceptions are the note-write
+tools listed in :data:`mcp.tools.WRITE_TOOLS` (``create_note`` and
+``append_to_note``). Notes are DAV-exposed as VJOURNAL resources inside
+the per-dossier CalDAV collection, and ``models/note.py`` never bumps a
+CTag — bumping lives in the caller. **Every note write on a tool path
+MUST call ``bump_ctag(f"dossier:{dossier_id}")``**, or the note lands in
+Firestore, shows up in the web UI, and DavX5 silently never re-syncs it.
+No other collection is writable from a tool path.
+
+Two independent kill switches, both defaulting to on:
+
+* ``MCP_ENABLED`` — when false, every route in both blueprints 404s.
+* ``MCP_WRITE_ENABLED`` — when false, the write tools disappear from
+  ``tools/list`` and are refused at ``tools/call``; reads are unaffected.
 """
 
 from flask import Blueprint, abort, current_app
@@ -39,8 +50,12 @@ SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-06-18", "2025-03-26")
 # Per spec guidance, an absent MCP-Protocol-Version header means 2025-03-26.
 DEFAULT_PROTOCOL_VERSION: str = "2025-03-26"
 
-SCOPES_SUPPORTED: tuple[str, ...] = ("athena:read",)
 SCOPE_READ: str = "athena:read"
+# Granted ONLY when the user ticks « autoriser l'écriture » on the French
+# consent screen — never from the client's requested `scope` alone, so the
+# page the user read and the grant that is minted can never disagree.
+SCOPE_WRITE: str = "athena:write"
+SCOPES_SUPPORTED: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE)
 
 # Token / code lifetimes (seconds).
 ACCESS_TOKEN_TTL: int = 3600
@@ -73,6 +88,19 @@ def _kill_switch() -> None:
 
 mcp_bp.before_request(_kill_switch)
 oauth_bp.before_request(_kill_switch)
+
+
+def write_enabled() -> bool:
+    """True when the note-write tools are live (``MCP_WRITE_ENABLED``).
+
+    Read through ``current_app.config`` so the switch can be flipped by a
+    redeploy without touching code, and falls back to :class:`Config` when
+    called outside an application context (tests, scripts).
+    """
+    try:
+        return bool(current_app.config.get("MCP_WRITE_ENABLED", Config.MCP_WRITE_ENABLED))
+    except RuntimeError:  # outside an app context
+        return bool(Config.MCP_WRITE_ENABLED)
 
 
 def register_mcp(app) -> None:

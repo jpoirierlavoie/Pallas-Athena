@@ -7,8 +7,8 @@ Pallas Athéna centralizes everything a solo litigator needs: case files
 (*dossiers*), contacts (*parties*), billable time and expenses, invoices with
 GST/QST, hearings, tasks, case protocols, notes, procedural documents, and
 `.docx` template generation. It syncs contacts, calendars, and tasks to Android
-(DavX5) over CardDAV/CalDAV/RFC-5545, and exposes a read-only connector for
-Claude.
+(DavX5) over CardDAV/CalDAV/RFC-5545, and exposes an MCP connector for Claude
+— read-only, except for two opt-in tools that add notes to a dossier.
 
 > ⚠️ **Not open-source, and not a clone-and-run project.** See
 > [Using this software](#using-this-software) before doing anything.
@@ -26,7 +26,8 @@ Claude.
 - **Notes** (Markdown) and a **document store** with folders and signed URLs
 - **Gabarits** — user-managed Word templates filled from case data
 - **DavX5 sync** (CardDAV / CalDAV / VTODO / VJOURNAL) and an **MCP connector**
-  exposing read-only data to Claude
+  exposing data to Claude — read-only by default; note creation and appending
+  require an explicit `athena:write` grant ticked on the consent screen
 
 ## Tech stack
 

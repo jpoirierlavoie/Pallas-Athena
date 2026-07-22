@@ -90,6 +90,12 @@ class Config:
     # resource identifier; it must never be derived from request.host
     # (Host-header trust). Override locally for MCP Inspector testing.
     MCP_ENABLED: bool = os.environ.get("MCP_ENABLED", "true").lower() == "true"
+    # Second, narrower kill switch: turns the two note-write tools off
+    # (they vanish from tools/list and are refused at tools/call) without
+    # taking the read-only connector down with them.
+    MCP_WRITE_ENABLED: bool = (
+        os.environ.get("MCP_WRITE_ENABLED", "true").lower() == "true"
+    )
     MCP_CANONICAL_ORIGIN: str = os.environ.get(
         "MCP_CANONICAL_ORIGIN", "https://athena.poirierlavoie.ca"
     ).rstrip("/")

@@ -131,13 +131,98 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 17
+    assert len(tools.TOOLS) == 19  # 17 read-only + 2 note writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
         limit = schema.get("properties", {}).get("limit")
         if limit is not None:
             assert limit["maximum"] == 50  # hard cap
+
+
+# ── Write-tool registry invariants ──────────────────────────────────────
+
+def test_write_tools_set_is_pinned():
+    """A third write tool must not be able to ship unnoticed."""
+    assert tools.WRITE_TOOLS == frozenset({"create_note", "append_to_note"})
+    assert tools.WRITE_TOOLS <= set(tools.TOOLS)
+
+
+def test_annotations_split_both_directions():
+    descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
+    assert len(descriptors) == 19
+    for name, d in descriptors.items():
+        ann = d["annotations"]
+        assert ann["openWorldHint"] is False
+        if name in tools.WRITE_TOOLS:
+            assert ann["readOnlyHint"] is False
+            # Both must be explicit: the MCP spec defaults destructiveHint to
+            # True once readOnlyHint is false, which would over-warn on a
+            # purely additive call.
+            assert ann["destructiveHint"] is False
+            assert ann["idempotentHint"] is False
+        else:
+            assert ann["readOnlyHint"] is True
+            assert "destructiveHint" not in ann
+            assert "idempotentHint" not in ann
+
+
+def test_required_scope_defaults_to_read_never_write():
+    for name in tools.TOOLS:
+        expected = "athena:write" if name in tools.WRITE_TOOLS else "athena:read"
+        assert tools.required_scope(name) == expected
+
+
+def test_list_tool_descriptors_filters_by_scope():
+    read_only = tools.list_tool_descriptors(frozenset({"athena:read"}))
+    names = {d["name"] for d in read_only}
+    assert len(read_only) == 17
+    assert not (names & tools.WRITE_TOOLS)
+
+    both = tools.list_tool_descriptors(
+        frozenset({"athena:read", "athena:write"})
+    )
+    assert {d["name"] for d in both} >= tools.WRITE_TOOLS
+
+
+def test_write_schemas_are_bounded_and_track_the_model():
+    from models import note as note_model
+
+    # The tools.py enum is a hand-copied literal (house convention for the
+    # other enums too) — pin it against the model so it cannot drift.
+    assert (
+        tools.TOOLS["create_note"]["input_schema"]["properties"]["category"]["enum"]
+        == list(note_model.VALID_CATEGORIES)
+    )
+    for name in tools.WRITE_TOOLS:
+        content = tools.TOOLS[name]["input_schema"]["properties"]["content"]
+        # Strictly below the model ceiling: an oversized write must be
+        # refused loudly here, never silently truncated by security.sanitize,
+        # and appends need headroom under the ceiling.
+        assert content["maxLength"] < note_model.CONTENT_MAX_LENGTH
+        assert content["minLength"] == 1
+    # Fields that would let a caller overwrite an existing note must not be
+    # addressable at all.
+    create_props = tools.TOOLS["create_note"]["input_schema"]["properties"]
+    for forbidden in ("id", "vjournal_uid", "created_at", "etag"):
+        assert forbidden not in create_props
+
+
+def test_min_length_rejects_whitespace_only():
+    schema = tools.TOOLS["create_note"]["input_schema"]
+    errors = tools.validate_args(
+        schema, {"dossier_id": "d1", "title": "   ", "content": "x"}
+    )
+    assert errors and "title" in errors[0]
+
+
+def test_validate_args_blocks_id_injection():
+    schema = tools.TOOLS["create_note"]["input_schema"]
+    errors = tools.validate_args(
+        schema,
+        {"dossier_id": "d1", "title": "T", "content": "C", "id": "existing-note"},
+    )
+    assert any("`id` is not a supported argument" in e for e in errors)
 
 
 # ── Handler helpers ─────────────────────────────────────────────────────
@@ -688,3 +773,369 @@ def test_parse_court_file_number_administrative():
     payload = handlers.parse_court_file_number({"court_file_number": "TAL-12345"})
     assert payload["is_administrative"] is True
     assert payload["parse_error"] is None
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Write tools
+# ════════════════════════════════════════════════════════════════════════
+
+def _wdossier(status="actif"):
+    return {
+        "id": "d1", "file_number": "2026-001",
+        "title": "Tremblay c. Lavoie", "status": status,
+    }
+
+
+@pytest.fixture
+def bumps(monkeypatch):
+    """Record every CTag bump / tombstone removal the handlers perform."""
+    recorded = {"bump": [], "tombstone": []}
+    monkeypatch.setattr(handlers, "bump_ctag", lambda n: recorded["bump"].append(n))
+    monkeypatch.setattr(
+        handlers, "remove_tombstone",
+        lambda n, r: recorded["tombstone"].append((n, r)),
+    )
+    return recorded
+
+
+@pytest.fixture
+def created(monkeypatch):
+    """Capture the dict actually handed to models.note.create_note."""
+    seen = {}
+
+    def _create(data):
+        seen.update(data)
+        return {
+            **data, "id": "n-new",
+            "created_at": datetime(2026, 7, 22, 14, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 7, 22, 14, 0, tzinfo=UTC),
+        }, []
+
+    monkeypatch.setattr(handlers.note_model, "create_note", _create)
+    return seen
+
+
+# ── The DavX5 hinge ─────────────────────────────────────────────────────
+
+def test_create_note_bumps_the_dossier_ctag(monkeypatch, bumps, created):
+    """models/note.py never bumps — a tool path that forgets makes DavX5
+    silently stop syncing the dossier. This is the pin."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    payload = handlers.create_note(
+        {"dossier_id": "d1", "title": "Recherche", "content": "Corps"}
+    )
+    assert bumps["bump"] == ["dossier:d1"]
+    assert bumps["tombstone"] == [("dossier:d1", "n-new")]
+    assert payload["created"] is True
+    assert payload["dav_synced"] is True
+    assert payload["note"]["id"] == "n-new"
+
+
+def test_append_to_note_bumps_the_dossier_ctag(monkeypatch, bumps):
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Déjà là"},
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    monkeypatch.setattr(
+        handlers.note_model, "update_note",
+        lambda nid, data: ({"id": nid, "dossier_id": "d1", **data}, []),
+    )
+    payload = handlers.append_to_note({"note_id": "n1", "content": "Suite"})
+    assert bumps["bump"] == ["dossier:d1"]
+    # An append never removes a tombstone: the resource does not re-enter
+    # the collection.
+    assert bumps["tombstone"] == []
+    assert payload["appended"] is True
+
+
+def test_ctag_bump_failure_still_reports_the_write_as_a_success(
+    monkeypatch, created
+):
+    """A raise after the commit would reach endpoint's blanket except and be
+    reported as a failure — the model would retry and duplicate the note."""
+    def _boom(_name):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(handlers, "bump_ctag", _boom)
+    monkeypatch.setattr(handlers, "remove_tombstone", lambda n, r: None)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    payload = handlers.create_note(
+        {"dossier_id": "d1", "title": "T", "content": "C"}
+    )
+    assert payload["created"] is True
+    assert payload["note"]["id"] == "n-new"
+    assert payload["dav_synced"] is False
+    assert any("Ne pas réessayer" in w for w in payload["warnings"])
+
+
+# ── Dossier resolution ──────────────────────────────────────────────────
+
+def test_create_note_refuses_an_unknown_dossier(monkeypatch, bumps):
+    """Never blank the dossier_id like the web route does: that path writes
+    an orphan note reachable from nowhere."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+
+    def _must_not_run(_data):
+        raise AssertionError("create_note reached the model with a bad dossier")
+
+    monkeypatch.setattr(handlers.note_model, "create_note", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
+        handlers.create_note({"dossier_id": "nope", "title": "T", "content": "C"})
+    assert bumps["bump"] == []
+
+
+def test_create_note_denormalizes_dossier_labels(monkeypatch, bumps, created):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    handlers.create_note({"dossier_id": "d1", "title": "T", "content": "C"})
+    assert created["dossier_file_number"] == "2026-001"
+    assert created["dossier_title"] == "Tremblay c. Lavoie"
+
+
+def test_closed_dossier_write_is_flagged_not_silently_invisible(
+    monkeypatch, bumps, created
+):
+    """/dav/dossier-{id}/ only exposes actif/en_attente — say so."""
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier", lambda i: _wdossier("fermé")
+    )
+    payload = handlers.create_note(
+        {"dossier_id": "d1", "title": "T", "content": "C"}
+    )
+    assert payload["created"] is True
+    assert payload["dav_synced"] is False
+    assert any("fermé" in w for w in payload["warnings"])
+
+
+# ── Whitelist: no overwrite-by-id ───────────────────────────────────────
+
+def test_create_note_never_forwards_caller_supplied_identity(
+    monkeypatch, bumps, created
+):
+    """models.note.create_note honours a caller `id` and then set()s the whole
+    document — forwarding args would silently destroy an existing note."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    handlers.create_note({
+        "dossier_id": "d1", "title": "T", "content": "C",
+        "id": "victim", "vjournal_uid": "x", "created_at": "2020-01-01",
+        "etag": "e", "pinned": True,
+    })
+    assert "id" not in created
+    assert "vjournal_uid" not in created
+    assert "created_at" not in created
+    assert "etag" not in created
+    assert created["pinned"] is False
+    assert set(created) == {
+        "dossier_id", "dossier_file_number", "dossier_title",
+        "title", "content", "category", "pinned",
+    }
+
+
+def test_append_only_ever_updates_content(monkeypatch, bumps):
+    seen = {}
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "A"},
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+
+    def _update(nid, data):
+        seen.update(data)
+        return {"id": nid, "dossier_id": "d1", **data}, []
+
+    monkeypatch.setattr(handlers.note_model, "update_note", _update)
+    handlers.append_to_note(
+        {"note_id": "n1", "content": "B", "dossier_id": "autre"}
+    )
+    assert set(seen) == {"content"}
+    assert seen["content"].startswith("A")
+
+
+# ── Markdown survival ───────────────────────────────────────────────────
+
+def test_autolinks_are_converted_not_destroyed(monkeypatch, bumps, created):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    handlers.create_note({
+        "dossier_id": "d1", "title": "T",
+        "content": "Source: <https://canlii.ca/t/abc123> et <me@example.com>.",
+    })
+    assert "[https://canlii.ca/t/abc123](https://canlii.ca/t/abc123)" in created["content"]
+    assert "[me@example.com](mailto:me@example.com)" in created["content"]
+
+
+def test_content_the_sanitizer_would_eat_is_refused_loudly(monkeypatch, bumps):
+    """« si a < b et b > c » loses « < b et b > » inside security.sanitize,
+    with no error. Refuse instead of losing the research."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+
+    def _must_not_run(_data):
+        raise AssertionError("reached the model with content that would be cut")
+
+    monkeypatch.setattr(handlers.note_model, "create_note", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="chevrons"):
+        handlers.create_note({
+            "dossier_id": "d1", "title": "T",
+            "content": "Si la valeur < 15 000 $ et > 300 000 $, voir art. 2925.",
+        })
+
+
+def test_normalized_content_survives_the_real_sanitizer(monkeypatch, bumps, created):
+    """End-to-end against the ACTUAL security.sanitize, so this cannot drift."""
+    from security import sanitize
+
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    handlers.create_note({
+        "dossier_id": "d1", "title": "T",
+        "content": "Voir <https://canlii.ca/t/abc> — art. 2925 C.c.Q.",
+    })
+    stored = created["content"]
+    assert sanitize(stored, max_length=100_000) == stored
+
+
+# ── The truncation trap ─────────────────────────────────────────────────
+
+def test_append_refuses_rather_than_truncating(monkeypatch, bumps):
+    """security.sanitize truncates at CONTENT_MAX_LENGTH with no exception
+    and no flag; update_note then set()s the truncated document."""
+    from models import note as note_model
+
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {
+            "id": "n1", "dossier_id": "d1",
+            "content": "x" * (note_model.CONTENT_MAX_LENGTH - 10),
+        },
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+
+    def _must_not_run(_nid, _data):
+        raise AssertionError("update_note called with content that would truncate")
+
+    monkeypatch.setattr(handlers.note_model, "update_note", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="trop longue"):
+        handlers.append_to_note({"note_id": "n1", "content": "beaucoup de texte"})
+    assert bumps["bump"] == []
+
+
+def test_append_refuses_when_the_JOIN_would_eat_existing_content(
+    monkeypatch, bumps
+):
+    """The addition is clean and the existing note is clean, but TAG_RE
+    (`<[^<>]*>`) matches ACROSS NEWLINES — so an unpaired « < » already in
+    the note plus a Markdown blockquote « > » in the addition makes the
+    regex span the join and delete the note's tail, the separator, and the
+    provenance stamp. Silently, behind an "appended: true" envelope."""
+    from security import sanitize
+
+    existing = "Le montant en litige est < 15 000 $, donc classe I."
+    addition = "La Cour rappelle :\n\n> Le délai court dès la connaissance."
+    # Both halves are individually storable — that is what makes it a trap.
+    assert sanitize(existing, max_length=100_000) == existing
+    assert sanitize(addition, max_length=100_000) == addition
+
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": existing},
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+
+    def _must_not_run(_nid, _data):
+        raise AssertionError("update_note called with content that would be cut")
+
+    monkeypatch.setattr(handlers.note_model, "update_note", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="Ajout refusé"):
+        handlers.append_to_note({"note_id": "n1", "content": addition})
+    assert bumps["bump"] == []
+
+
+def test_refusal_messages_never_quote_the_note_content(monkeypatch, bumps):
+    """These messages are recorded on the mcp.tool.* span by span()'s
+    record_exception, and the exporter scrubs attributes, not exception
+    events — an excerpt would ship privileged research to Cloud Trace."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    monkeypatch.setattr(
+        handlers.note_model, "create_note",
+        lambda d: (_ for _ in ()).throw(AssertionError("must not write")),
+    )
+    secret = "Stratégie: invoquer <RLRQ c. B-1, r. 5> contre Tremblay"
+    with pytest.raises(tools.ToolArgumentError) as exc:
+        handlers.create_note(
+            {"dossier_id": "d1", "title": "T", "content": secret}
+        )
+    message = str(exc.value)
+    for leaked in ("RLRQ", "Tremblay", "Stratégie", "B-1"):
+        assert leaked not in message
+    assert "chevrons" in message
+
+
+def test_append_does_not_claim_a_closed_dossier_when_the_lookup_merely_failed(
+    monkeypatch, bumps
+):
+    """get_dossier swallows read errors and returns None. That is not the
+    same as « fermé » and must not be reported as it."""
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "A"},
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    monkeypatch.setattr(
+        handlers.note_model, "update_note",
+        lambda nid, data: ({"id": nid, "dossier_id": "d1", **data}, []),
+    )
+    payload = handlers.append_to_note({"note_id": "n1", "content": "B"})
+    assert payload["ctag_bumped"] is True
+    assert payload["dav_synced"] is True
+    assert payload["warnings"] == []
+
+
+def test_closed_dossier_still_reports_the_ctag_bump_as_having_happened(
+    monkeypatch, bumps, created
+):
+    """dav_synced and ctag_bumped are different facts: a closed dossier
+    bumps correctly but is never advertised to DavX5. Collapsing them makes
+    a healthy write look like a sync failure in the audit trail."""
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier", lambda i: _wdossier("archivé")
+    )
+    payload = handlers.create_note(
+        {"dossier_id": "d1", "title": "T", "content": "C"}
+    )
+    assert bumps["bump"] == ["dossier:d1"]
+    assert payload["ctag_bumped"] is True
+    assert payload["dav_synced"] is False
+
+
+def test_append_refuses_an_unknown_note(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
+    with pytest.raises(tools.ToolArgumentError, match="Note introuvable"):
+        handlers.append_to_note({"note_id": "nope", "content": "C"})
+    assert bumps["bump"] == []
+
+
+# ── Provenance ──────────────────────────────────────────────────────────
+
+def test_writes_carry_a_dated_provenance_stamp(monkeypatch, bumps, created):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    monkeypatch.setattr(handlers, "_today_mtl", lambda: date(2026, 7, 22))
+    handlers.create_note({"dossier_id": "d1", "title": "T", "content": "Corps"})
+    assert created["content"].startswith(
+        "*Note rédigée par Claude le 22 juillet 2026*"
+    )
+    assert created["content"].endswith("Corps")
+    assert created["category"] == "recherche"
+
+    seen = {}
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"},
+    )
+
+    def _update(nid, data):
+        seen.update(data)
+        return {"id": nid, "dossier_id": "d1", **data}, []
+
+    monkeypatch.setattr(handlers.note_model, "update_note", _update)
+    handlers.append_to_note({"note_id": "n1", "content": "Ajout"})
+    assert seen["content"].startswith("Original")
+    assert "*Ajouté par Claude le 22 juillet 2026*" in seen["content"]
+    assert "\n---\n" in seen["content"]

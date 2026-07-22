@@ -2,7 +2,8 @@
 
 The registry maps tool names to their metadata and handler name (resolved
 lazily against :mod:`mcp.handlers` to avoid a circular import). Every tool
-is read-only (``readOnlyHint``) and every schema sets
+is read-only (``readOnlyHint``) **except the members of** :data:`WRITE_TOOLS`,
+which require the ``athena:write`` scope. Every schema sets
 ``additionalProperties: false``.
 """
 
@@ -10,6 +11,7 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
+from mcp import SCOPE_READ, SCOPE_WRITE, write_enabled
 from tz import to_mtl
 
 # ── Money / date formatting (§10.1 conventions) ─────────────────────────
@@ -171,6 +173,16 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
                 f"`{name}` must be at most {schema['maxLength']} characters"
             )
 
+    if isinstance(value, str) and "minLength" in schema:
+        # Needed by the write tools: an empty title/content otherwise passes
+        # the schema and fails deep in the model with a French string that
+        # reads to the client model like a server fault.
+        if len(value.strip()) < schema["minLength"]:
+            errors.append(
+                f"`{name}` must be at least {schema['minLength']} "
+                "non-whitespace characters"
+            )
+
     if isinstance(value, list) and "items" in schema:
         for index, item in enumerate(value):
             errors.extend(
@@ -208,6 +220,35 @@ _DATE = {"type": "string", "maxLength": 10, "description": "Date as YYYY-MM-DD."
 _ID = {"type": "string", "maxLength": 64}
 
 _READ_ONLY_ANNOTATIONS = {"readOnlyHint": True, "openWorldHint": False}
+# Per the MCP spec, destructiveHint defaults to TRUE and idempotentHint to
+# FALSE once readOnlyHint is false — both must be stated explicitly or the
+# client over-warns on a purely additive call.
+_WRITE_ANNOTATIONS = {
+    "readOnlyHint": False,
+    "destructiveHint": False,   # additive only: never overwrites, never deletes
+    "idempotentHint": False,    # a second call creates/appends again
+    "openWorldHint": False,
+}
+
+# The single source of truth for which tools mutate. Enforcement
+# (mcp/endpoint.py) and advertisement (list_tool_descriptors) both derive
+# from it, so a new write tool cannot ship without declaring itself.
+WRITE_TOOLS: frozenset[str] = frozenset({"create_note", "append_to_note"})
+
+# Per-call content ceiling, deliberately far below models.note's
+# CONTENT_MAX_LENGTH (100_000). Two reasons: an oversized write is refused
+# LOUDLY here (-32602) instead of being silently truncated by
+# security.sanitize, and the gap leaves room for several appends before a
+# note is full. ~20 000 chars ≈ a 3 500-word memo.
+CONTENT_MAX_CHARS = 20_000
+NOTE_TITLE_MAX_CHARS = 200
+
+# Copied exactly from models.note.VALID_CATEGORIES (they are French).
+# tests/test_mcp_tools.py pins the two lists against each other.
+_NOTE_CATEGORIES = [
+    "appel", "rencontre", "recherche", "stratégie",
+    "correspondance", "audience", "autre",
+]
 
 # Enum values copied exactly from the data model (they are French).
 _DOSSIER_STATUSES = ["actif", "en_attente", "fermé", "archivé"]
@@ -568,21 +609,127 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "get_trust_snapshot",
     },
+    # ── Write tools (require athena:write) ──────────────────────────────
+    "create_note": {
+        "title": "Créer une note dans un dossier",
+        "description": (
+            "WRITE. Create a new note on a dossier — the intended home for "
+            "research results, summaries and analyses. Content is Markdown "
+            "in French. The note is permanent: this connector cannot edit or "
+            "delete it afterwards, and it syncs to the lawyer's phone. "
+            "Confirm with the user before calling, and never call it on a "
+            "dossier you have not read with get_dossier first. If the call "
+            "appears to fail, check list_notes before retrying — there is no "
+            "de-duplication and a retry creates a second note. Raw HTML tags "
+            "are rejected (Markdown autolinks like <https://…> are converted "
+            "automatically); write plain Markdown. Defaults to category "
+            "'recherche'. Every note is stamped with a « Ajouté par Claude » "
+            "provenance line."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _ID,
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": NOTE_TITLE_MAX_CHARS,
+                    "description": "Note title, in French.",
+                },
+                "content": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": CONTENT_MAX_CHARS,
+                    "description": (
+                        f"Markdown body, in French (max {CONTENT_MAX_CHARS} "
+                        "characters)."
+                    ),
+                },
+                "category": {
+                    "type": "string",
+                    "enum": _NOTE_CATEGORIES,
+                    "description": "Defaults to 'recherche'.",
+                },
+            },
+            "required": ["dossier_id", "title", "content"],
+            "additionalProperties": False,
+        },
+        "handler": "create_note",
+        "scope": SCOPE_WRITE,
+    },
+    "append_to_note": {
+        "title": "Ajouter du texte à une note existante",
+        "description": (
+            "WRITE. Append Markdown to the END of an existing note, under a "
+            "dated « Ajouté par Claude » separator. Purely additive: existing "
+            "content is never modified or removed, and the append cannot be "
+            "undone through this connector. Use get_note first to read what "
+            "is already there. If the call appears to fail, re-read the note "
+            "with get_note before retrying — a retry appends a second copy. "
+            "Fails explicitly (rather than truncating) when the note would "
+            "exceed its storage ceiling."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note_id": _ID,
+                "content": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": CONTENT_MAX_CHARS,
+                    "description": (
+                        f"Markdown to append, in French (max "
+                        f"{CONTENT_MAX_CHARS} characters)."
+                    ),
+                },
+            },
+            "required": ["note_id", "content"],
+            "additionalProperties": False,
+        },
+        "handler": "append_to_note",
+        "scope": SCOPE_WRITE,
+    },
 }
 
 
-def list_tool_descriptors() -> list[dict]:
-    """Registry entries in MCP tools/list wire format."""
-    return [
-        {
-            "name": name,
-            "title": spec["title"],
-            "description": spec["description"],
-            "inputSchema": spec["input_schema"],
-            "annotations": dict(_READ_ONLY_ANNOTATIONS),
-        }
-        for name, spec in TOOLS.items()
-    ]
+def required_scope(name: str) -> str:
+    """Scope a tool needs. Unlisted tools default to read — never to write."""
+    return TOOLS[name].get("scope", SCOPE_READ)
+
+
+def tool_available(name: str) -> bool:
+    """False when a write tool is off via the MCP_WRITE_ENABLED kill switch."""
+    return name not in WRITE_TOOLS or write_enabled()
+
+
+def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict]:
+    """Registry entries in MCP tools/list wire format, filtered by scope.
+
+    A read-only connection must not see the write tools: advertising them
+    would have the client model call one and take a 403 on every attempt,
+    and ``_forbidden`` does not feed the failure brake — an unthrottled
+    refusal loop. ``granted=None`` means "no filtering" (tests, docs).
+    """
+    scopes = granted if granted is not None else None
+    out = []
+    for name, spec in TOOLS.items():
+        if not tool_available(name):
+            continue
+        if scopes is not None and required_scope(name) not in scopes:
+            continue
+        annotations = (
+            _WRITE_ANNOTATIONS if name in WRITE_TOOLS else _READ_ONLY_ANNOTATIONS
+        )
+        out.append(
+            {
+                "name": name,
+                "title": spec["title"],
+                "description": spec["description"],
+                "inputSchema": spec["input_schema"],
+                "annotations": dict(annotations),
+            }
+        )
+    return out
 
 
 def get_handler(name: str) -> Callable[[dict], Any]:

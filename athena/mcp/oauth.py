@@ -34,8 +34,10 @@ from mcp import (
     ALLOWED_REDIRECT_URIS,
     MCP_RESOURCE,
     SCOPE_READ,
+    SCOPE_WRITE,
     SCOPES_SUPPORTED,
     oauth_bp,
+    write_enabled,
 )
 from mcp import store
 from security import csrf, limiter, sanitize
@@ -251,14 +253,21 @@ def _validate_authorize_request(source: dict) -> dict:
             "invalid_request", "code_challenge_method must be S256"
         )
 
+    # Scope handling has one invariant: `scope` here is the READ BASELINE
+    # and never contains SCOPE_WRITE, no matter what the client asked for.
+    # Write is added in authorize_decision() and only from the visible
+    # checkbox, so the page the user read and the grant that is minted can
+    # never disagree (the hidden `scope` input is attacker-modifiable).
+    # SCOPE_READ is always forced in: bearer.py demands it on EVERY /mcp
+    # call, so a write-only grant would be a permanently dead connector.
     scope = _param(source, "scope")
+    write_requested = False
     if scope:
-        granted = [s for s in scope.split() if s in SCOPES_SUPPORTED]
-        if not granted:
+        requested = [s for s in scope.split() if s in SCOPES_SUPPORTED]
+        if not requested:
             raise _RedirectError("invalid_scope")
-        granted_scope = " ".join(granted)
-    else:
-        granted_scope = SCOPE_READ
+        write_requested = SCOPE_WRITE in requested
+    granted_scope = SCOPE_READ
 
     resource = _param(source, "resource")
     if resource and resource != MCP_RESOURCE:
@@ -274,6 +283,10 @@ def _validate_authorize_request(source: dict) -> dict:
         "scope": granted_scope,
         "resource": resource,
         "state": state,
+        # Display-only: pre-ticks nothing, just tells the consent screen the
+        # client asked for write so the copy can say so.
+        "write_requested": write_requested,
+        "write_offered": write_enabled(),
     }
 
 
@@ -333,11 +346,19 @@ def authorize_decision() -> Any:
             params["redirect_uri"], _RedirectError("access_denied"), params["state"]
         )
 
+    # The ONLY path to a write grant: an explicit tick on the screen the
+    # user just read, re-checked against the server-side kill switch.
+    # Absent field → read only (fail closed), which is also what an early
+    # submit before Alpine boots produces.
+    granted_scope = params["scope"]
+    if request.form.get("grant_write") == "on" and write_enabled():
+        granted_scope = f"{granted_scope} {SCOPE_WRITE}"
+
     try:
         code = store.create_auth_code(
             client_id=params["client_id"],
             redirect_uri=params["redirect_uri"],
-            scope=params["scope"],
+            scope=granted_scope,
             code_challenge=params["code_challenge"],
             resource=params["resource"] or None,
         )
@@ -345,7 +366,13 @@ def authorize_decision() -> Any:
         log_unexpected("mcp authorization code write failed")
         return _render_error_page("Erreur interne. Veuillez réessayer.")
 
-    log_mcp_event("mcp_consent", "success", client_id=params["client_id"])
+    log_mcp_event(
+        "mcp_consent",
+        "success",
+        client_id=params["client_id"],
+        scope=granted_scope,
+        write_granted=SCOPE_WRITE in granted_scope.split(),
+    )
     query = {"code": code}
     if params["state"]:
         query["state"] = params["state"]
@@ -466,9 +493,10 @@ def _grant_authorization_code() -> tuple[Response, int] | Response:
             )
         return _refused("code_reused", client_id)
 
+    granted_scope = doc.get("scope", SCOPE_READ)
     pair = store.create_token_pair(
         client_id=client_id,
-        scope=doc.get("scope", SCOPE_READ),
+        scope=granted_scope,
         resource=doc.get("resource"),
         family_id=family_id,
     )
@@ -478,6 +506,7 @@ def _grant_authorization_code() -> tuple[Response, int] | Response:
         "success",
         client_id=client_id,
         grant="authorization_code",
+        scope=granted_scope,
     )
     return _token_response(pair)
 
@@ -533,8 +562,15 @@ def _grant_refresh_token() -> tuple[Response, int] | Response:
         )
 
     store.touch_client(client_id)
+    # Rotation copies the ORIGINAL scope verbatim (store.rotate_refresh_token),
+    # so a read-only family can never rotate itself into write — dropping or
+    # adding write always requires a fresh consent round trip.
     log_mcp_event(
-        "mcp_token_issued", "success", client_id=client_id, grant="refresh_token"
+        "mcp_token_issued",
+        "success",
+        client_id=client_id,
+        grant="refresh_token",
+        scope=pair.get("scope", ""),
     )
     return _token_response(pair)
 

@@ -275,6 +275,29 @@ def _consent_allow(client, fake, client_doc, challenge) -> str:
     return code_match.group(1)
 
 
+def _consent_form(client, client_doc, challenge, **extra):
+    """Return a ready-to-POST consent form (CSRF harvested from the page)."""
+    _login(client)
+    page = client.get(
+        "/oauth/authorize",
+        query_string=_authorize_params(client_doc, challenge, **extra),
+    )
+    assert page.status_code == 200
+    token_match = re.search(rb'name="csrf_token" value="([^"]+)"', page.data)
+    assert token_match
+    form = _authorize_params(client_doc, challenge, **extra)
+    form["csrf_token"] = token_match.group(1).decode()
+    form["decision"] = "allow"
+    return form, page
+
+
+def _code_from(resp):
+    assert resp.status_code == 302
+    match = re.search(r"[?&]code=([^&]+)", resp.headers["Location"])
+    assert match
+    return match.group(1)
+
+
 def _exchange(client, client_doc, code, verifier, **overrides):
     form = {
         "grant_type": "authorization_code",
@@ -297,7 +320,7 @@ def test_authorization_server_metadata(client):
     assert doc["registration_endpoint"] == f"{ORIGIN}/oauth/register"
     assert doc["code_challenge_methods_supported"] == ["S256"]
     assert doc["token_endpoint_auth_methods_supported"] == ["none"]
-    assert doc["scopes_supported"] == ["athena:read"]
+    assert doc["scopes_supported"] == ["athena:read", "athena:write"]
 
 
 def test_protected_resource_metadata_both_paths(client):
@@ -412,7 +435,10 @@ def test_authorize_mismatched_redirect_renders_error_page(client, fake):
         ({"response_type": "token"}, "unsupported_response_type"),
         ({"code_challenge": ""}, "invalid_request"),
         ({"code_challenge_method": "plain"}, "invalid_request"),
-        ({"scope": "athena:write"}, "invalid_scope"),
+        # athena:write is a SUPPORTED scope now, so it is no longer invalid to
+        # request — it is simply never granted without the consent checkbox
+        # (see the grant-rule tests below). A wholly unknown scope still is.
+        ({"scope": "athena:admin"}, "invalid_scope"),
         ({"resource": "https://evil.example/mcp"}, "invalid_target"),
     ],
 )
@@ -471,6 +497,139 @@ def test_consent_page_shows_client_name(client, fake):
     assert "Claude".encode() in page.data
     assert "Autoriser".encode() in page.data
     assert "Refuser".encode() in page.data
+
+
+# ── Write grant: the consent checkbox is the ONLY path ──────────────────
+
+def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fake):
+    """The screen is the only human-readable description of what the token
+    can do; nothing else couples it to the tool registry."""
+    client_doc = _register_client(fake)
+    _login(client)
+    _, challenge = _pkce_pair()
+    page = client.get(
+        "/oauth/authorize", query_string=_authorize_params(client_doc, challenge)
+    )
+    body = page.data.decode("utf-8")
+    # The old copy was a flat misrepresentation once write tools exist.
+    assert "Aucune modification de vos données n'est possible" not in body
+    assert "demande un accès <strong>en lecture seule</strong>" not in body
+    # The grant control and what it grants must both be named.
+    assert 'name="grant_write"' in body
+    assert "Autoriser l'écriture des notes" in body
+    assert "créer une nouvelle note dans un dossier" in body
+    assert "ajouter du texte à la fin d'une note existante" in body
+    # Default state is unchecked — least privilege.
+    checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
+    assert checkbox and "checked" not in checkbox.group(0)
+
+
+def test_unticked_checkbox_grants_read_only(client, fake):
+    """Even when the CLIENT requests write. The hidden scope field is
+    attacker-modifiable and must never be able to escalate on its own."""
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    form, _ = _consent_form(
+        client, client_doc, challenge, scope="athena:read athena:write"
+    )
+    assert "grant_write" not in form
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    stored = fake.codes[store.sha256_hex(code)]
+    assert stored["scope"] == "athena:read"
+
+
+def test_ticked_checkbox_grants_read_and_write(client, fake):
+    client_doc = _register_client(fake)
+    verifier, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge)
+    form["grant_write"] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:write"
+    # And the granted scope must reach the token response (RFC 6749 §3.3:
+    # the AS may grant a scope other than requested, but MUST echo it).
+    body = _exchange(client, client_doc, code, verifier).get_json()
+    assert body["scope"] == "athena:read athena:write"
+
+
+def test_write_only_request_still_yields_a_usable_read_scope(client, fake):
+    """bearer.py demands athena:read on EVERY /mcp call — a write-only grant
+    would be a permanently dead connector that 403s even on initialize."""
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge, scope="athena:write")
+    form["grant_write"] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert fake.codes[store.sha256_hex(code)]["scope"].split() == [
+        "athena:read", "athena:write"
+    ]
+
+
+def test_write_kill_switch_removes_the_checkbox_and_refuses_the_grant(fake):
+    """MCP_WRITE_ENABLED=false must not merely hide the control."""
+    app = _make_app(MCP_WRITE_ENABLED=False)
+    client = app.test_client()
+    client_doc = _register_client(fake)
+    _login(client)
+    _, challenge = _pkce_pair()
+    page = client.get(
+        "/oauth/authorize", query_string=_authorize_params(client_doc, challenge)
+    )
+    assert 'name="grant_write"' not in page.data.decode("utf-8")
+    token_match = re.search(rb'name="csrf_token" value="([^"]+)"', page.data)
+    form = _authorize_params(client_doc, challenge)
+    form["csrf_token"] = token_match.group(1).decode()
+    form["decision"] = "allow"
+    form["grant_write"] = "on"  # forged past the missing control
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read"
+
+
+def test_refresh_rotation_never_widens_the_scope(client, fake):
+    """A read-only family must never rotate itself into write."""
+    client_doc = _register_client(fake)
+    verifier, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge)
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    first = _exchange(client, client_doc, code, verifier).get_json()
+    assert first["scope"] == "athena:read"
+    rotated = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": first["refresh_token"],
+            "client_id": client_doc["client_id"],
+        },
+    ).get_json()
+    assert rotated["scope"] == "athena:read"
+    # Assert the STORED doc too: bearer.py reads that, not the echo.
+    assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
+        "athena:read"
+    )
+
+
+def test_refresh_rotation_preserves_the_write_grant(client, fake):
+    """The direction that silently breaks the feature: if rotation narrowed
+    the scope, note writing would work for 60 minutes and then the tools
+    would vanish from tools/list mid-conversation, with no error."""
+    client_doc = _register_client(fake)
+    verifier, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge)
+    form["grant_write"] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    first = _exchange(client, client_doc, code, verifier).get_json()
+    assert first["scope"] == "athena:read athena:write"
+    rotated = client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": first["refresh_token"],
+            "client_id": client_doc["client_id"],
+        },
+    ).get_json()
+    assert rotated["scope"] == "athena:read athena:write"
+    assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
+        "athena:read athena:write"
+    )
 
 
 # ── Token endpoint ──────────────────────────────────────────────────────

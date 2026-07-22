@@ -186,20 +186,161 @@ def test_initialize_shape(client):
     result = _initialize(client, "2025-06-18")
     assert result["serverInfo"]["name"] == "pallas-athena"
     assert result["capabilities"] == {"tools": {"listChanged": False}}
-    assert "read-only" in result["instructions"]
+    instructions = result["instructions"]
+    # A bare `"read-only" in instructions` would keep passing against
+    # "Every tool is read-only EXCEPT two…" while proving nothing. Assert the
+    # write disclosure the client model actually needs.
+    assert "create_note" in instructions
+    assert "append_to_note" in instructions
+    assert "athena:write" in instructions
+    assert "confirm with the user before writing" in instructions
+    assert "never retry a write that appeared to fail" in instructions
 
 
 # ── tools/list & tools/call ─────────────────────────────────────────────
 
-def test_tools_list_has_17_read_only_tools(client):
+def test_tools_list_hides_write_tools_from_a_read_only_token(client):
+    """Advertising a write tool to a read-only connection makes the model
+    call it and take a 403 every time — and _forbidden does NOT feed the
+    failure brake, so that is an unthrottled refusal loop."""
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools_list = resp.get_json()["result"]["tools"]
     assert len(tools_list) == 17
+    names = {t["name"] for t in tools_list}
+    assert not (names & {"create_note", "append_to_note"})
     for tool in tools_list:
         assert tool["annotations"]["readOnlyHint"] is True
         assert tool["annotations"]["openWorldHint"] is False
         assert tool["inputSchema"]["additionalProperties"] is False
     assert "nextCursor" not in resp.get_json()["result"]
+
+
+# ── Write-scope enforcement ─────────────────────────────────────────────
+
+@pytest.fixture()
+def write_client(monkeypatch):
+    """A client whose token carries athena:read + athena:write."""
+    bearer.reset_brake_state()
+    doc = {
+        "token_type": "access",
+        "client_id": "client-1",
+        "scope": "athena:read athena:write",
+        "resource": None,
+        "family_id": "fam-1",
+        "revoked": False,
+        "expire_at": datetime.now(UTC) + timedelta(hours=1),
+    }
+    monkeypatch.setattr(store, "get_token", lambda h: dict(doc))
+    monkeypatch.setattr(store, "stamp_token_last_used", lambda h: None)
+    app = _make_app()
+    yield app.test_client()
+    bearer.reset_brake_state()
+
+
+def _call_write(cl, rid=1):
+    return _rpc(cl, {
+        "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+        "params": {
+            "name": "create_note",
+            "arguments": {"dossier_id": "d1", "title": "T", "content": "C"},
+        },
+    })
+
+
+def test_tools_list_advertises_write_tools_to_a_write_token(write_client):
+    tools_list = _rpc(
+        write_client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).get_json()["result"]["tools"]
+    assert len(tools_list) == 19
+    by_name = {t["name"]: t for t in tools_list}
+    for name in ("create_note", "append_to_note"):
+        assert by_name[name]["annotations"]["readOnlyHint"] is False
+        assert by_name[name]["annotations"]["destructiveHint"] is False
+
+
+def test_write_refusal_is_403_with_a_challenge_not_a_200_internal_error(client):
+    """endpoint's blanket `except Exception` would turn the refusal into a
+    200 isError result, losing the status, the WWW-Authenticate step-up
+    signal, and the ability to tell a refusal from a Firestore outage."""
+    resp = _call_write(client)
+    assert resp.status_code == 403
+    assert resp.get_json()["error"] == "insufficient_scope"
+    challenge = resp.headers["WWW-Authenticate"]
+    assert 'error="insufficient_scope"' in challenge
+    assert 'scope="athena:write"' in challenge
+
+
+def test_write_still_refused_on_the_second_call_when_the_cache_is_warm(client):
+    """THE regression test for the bearer success cache. The first call
+    populates it; the hit path returns before the Firestore read, so a scope
+    gate that only reads the cold path would authorize every later write."""
+    assert _call_write(client, rid=1).status_code == 403
+    # Second call goes through _check_success_cache, not Firestore.
+    second = _call_write(client, rid=2)
+    assert second.status_code == 403
+    assert second.get_json()["error"] == "insufficient_scope"
+
+
+def test_write_tool_is_dispatched_when_the_scope_is_granted(
+    write_client, monkeypatch
+):
+    import mcp.handlers as handlers
+
+    seen = {}
+
+    def _stub(args):
+        seen.update(args)
+        return {"created": True, "note": {"id": "n1", "dossier_id": "d1",
+                                          "content_length": 1}, "dav_synced": True}
+
+    monkeypatch.setattr(handlers, "create_note", _stub)
+    body = _call_write(write_client).get_json()
+    assert seen["dossier_id"] == "d1"
+    assert body["result"]["isError"] is False
+
+
+def test_revoked_token_cannot_write_even_while_the_cache_is_warm(
+    write_client, monkeypatch
+):
+    """Break-glass revocation must stop a mutation immediately, not after the
+    5-minute success-cache window."""
+    import mcp.handlers as handlers
+
+    monkeypatch.setattr(
+        handlers, "create_note",
+        lambda args: {"created": True, "note": {"id": "n1"}, "dav_synced": True},
+    )
+    assert _call_write(write_client, rid=1).get_json()["result"]["isError"] is False
+
+    revoked = {
+        "token_type": "access", "client_id": "client-1",
+        "scope": "athena:read athena:write", "resource": None,
+        "family_id": "fam-1", "revoked": True,
+        "expire_at": datetime.now(UTC) + timedelta(hours=1),
+    }
+    monkeypatch.setattr(store, "get_token", lambda h: dict(revoked))
+    second = _call_write(write_client, rid=2)
+    assert second.status_code == 403
+    assert second.get_json()["error"] == "insufficient_scope"
+
+
+def test_write_kill_switch_refuses_the_call(monkeypatch):
+    bearer.reset_brake_state()
+    doc = {
+        "token_type": "access", "client_id": "client-1",
+        "scope": "athena:read athena:write", "resource": None,
+        "family_id": "fam-1", "revoked": False,
+        "expire_at": datetime.now(UTC) + timedelta(hours=1),
+    }
+    monkeypatch.setattr(store, "get_token", lambda h: dict(doc))
+    monkeypatch.setattr(store, "stamp_token_last_used", lambda h: None)
+    cl = _make_app(MCP_WRITE_ENABLED=False).test_client()
+    listed = _rpc(cl, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert len(listed.get_json()["result"]["tools"]) == 17
+    body = _call_write(cl, rid=2).get_json()
+    assert body["error"]["code"] == -32602
+    assert "MCP_WRITE_ENABLED" in body["error"]["message"]
+    bearer.reset_brake_state()
 
 
 def test_tools_call_unknown_tool(client):

@@ -121,6 +121,11 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 | `mcp_initialize` | success | MCP `initialize` handled; sanitized `client_name`/`client_version`, `protocol_version` |
 | `mcp_tool_call` | success / failure | Tool executed; fields: `tool`, `duration_ms`, `dossier_id` (when the call carries one) |
 | `mcp_disabled_hit` | refused | Kill switch (`MCP_ENABLED=false`) returned 404 on a Phase-I route |
+| `mcp_note_written` | success | A write tool committed a note (Phase L); fields: `tool` (`create_note`/`append_to_note`), `dossier_id`, `note_id`, `content_chars`, `ctag_bumped`. **IDs and counts only — never the note title or body** (privileged work product; the `RedactionFilter` does not auto-scrub titles or free text) |
+| `mcp_write_refused` | refused | A write tool was refused before execution; `reason` = `insufficient_scope` (token lacks `athena:write`) or `write_disabled` (`MCP_WRITE_ENABLED=false`); `tool` when known |
+
+> `mcp_consent` and `mcp_token_issued` also carry the granted `scope` string (and `write_granted` on consent). A scope is not a credential — it is the only way to answer « pourquoi le connecteur ne peut-il pas écrire ? » after the fact.
+> `mcp_auth_failure` gained one `reason`: `write_revalidation_failed` — a write tool re-read its token (bypassing the bearer success cache) and found it revoked, expired, or no longer write-scoped.
 
 ### `log_template_event(event, *, template_id=None, dossier_id=None, **extra)` — logger `pallas.templates`
 
@@ -193,7 +198,7 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `firestore.*` | Firestore reads/writes wrapped via `firestore_span` | `firestore.get`, `firestore.query`, `firestore.set` |
 | `auth.*` | Reserved — wrap auth verification helpers as needed | (not yet instrumented) |
 | `mcp.request` | MCP JSON-RPC dispatch (one per POST /mcp) | `mcp.request` with `method` attribute |
-| `mcp.tool.*` | One span per tool execution | `mcp.tool.get_agenda`, `mcp.tool.list_dossiers` |
+| `mcp.tool.*` | One span per tool execution | `mcp.tool.get_agenda`, `mcp.tool.list_dossiers`; the write spans `mcp.tool.create_note` / `mcp.tool.append_to_note` carry `dossier_id` only — never the note title or content |
 | `template.fill` | docx fill inside the generation POST (Phase H / H.2) | `template.fill` with `template_id`, `field_count` (gabarits) or `invoice_id` + `rows_honoraire`/`rows_debours_tx`/`rows_debours_ntx` (note d'honoraires) — never values or content, counts and IDs only |
 | `trust.transaction` | One trust write — create / reversal / inter-dossier transfer (Phase K) | `trust.transaction` with `direction`, `purpose`, `dossier_id` — **never amounts** |
 | `trust.reconcile` | Reconciliation completion (Phase K) | `trust.reconcile` with `account_id`, `cleared_count` |

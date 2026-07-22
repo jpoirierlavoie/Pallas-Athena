@@ -510,6 +510,11 @@ McpEvent = Literal[
     "mcp_initialize",
     "mcp_tool_call",
     "mcp_disabled_hit",
+    # Write tools (Phase L). IDs and counts only — a note's title and body
+    # are privileged legal work product and are NEVER logged (RedactionFilter
+    # does not auto-scrub titles or free text).
+    "mcp_note_written",
+    "mcp_write_refused",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 TemplateEvent = Literal[

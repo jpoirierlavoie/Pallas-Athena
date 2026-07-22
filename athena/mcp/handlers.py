@@ -1,9 +1,24 @@
-"""The 17 read-only MCP tool handlers.
+"""The 19 MCP tool handlers — 17 read-only, plus 2 note writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
-Handlers call EXISTING model/util functions only — no Firestore writes
-happen anywhere on a tool path (no CTag bumping is ever needed).
+Handlers call EXISTING model/util functions only.
+
+**Read handlers must never write to Firestore.** The invariant survives the
+Phase-L write tools in this narrowed form: only the handlers named in
+:data:`mcp.tools.WRITE_TOOLS` (``create_note``, ``append_to_note``) mutate
+anything, and they mutate the ``notes`` collection and nothing else. That is
+why, for example, ``list_protocol_steps`` derives overdue status by date
+comparison instead of calling ``check_overdue_steps``, which writes.
+(Note the request path itself does write outside the tool path:
+``bearer.stamp_token_last_used`` and ``oauth.touch_client``.)
+
+**Every note write MUST bump the dossier's CTag.** ``models/note.py`` never
+bumps — bumping lives in the caller (``routes/notes.py``,
+``dav/dossier_collections.py``). A tool path that writes a note and skips
+``bump_ctag(f"dossier:{dossier_id}")`` leaves the note visible in the web UI
+while DavX5 silently never re-syncs it: nothing errors, and only the phone
+is wrong.
 
 Serialization rules (§10.1):
 * money → ``<field>_cents`` (int) + ``<field>_display`` (fr-CA string);
@@ -17,9 +32,11 @@ Serialization rules (§10.1):
   :func:`mcp.tools.iso_mtl`.
 """
 
+import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
+from dav.sync import bump_ctag, remove_tombstone
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -33,9 +50,10 @@ from models import reference
 from models import task as task_model
 from models import time_entry as time_entry_model
 from models import trust as trust_model
+from security import sanitize
 from tz import MTL
 from utils import deadlines, taxonomie
-from utils.format_fr import format_rate_fr
+from utils.format_fr import format_date_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
 from utils.validators import format_phone_display
@@ -1021,3 +1039,277 @@ def get_trust_snapshot(args: dict) -> dict:
     payload["last_reconciliation_date"] = date_str(snap.get("last_reconciliation_date"))
     payload["reconciliation_overdue"] = bool(snap.get("reconciliation_overdue"))
     return payload
+
+
+# ════════════════════════════════════════════════════════════════════════
+# WRITE TOOLS — the only handlers below this line mutate Firestore.
+# Both write the `notes` collection and nothing else, and both MUST bump
+# the dossier's DAV CTag (see the module docstring).
+# ════════════════════════════════════════════════════════════════════════
+
+# Markdown autolinks Word-processor-free research text is full of. They are
+# converted to inline-link syntax BEFORE storage because security.sanitize
+# deletes every `<…>` run: `<https://canlii.ca/t/abc>` would otherwise be
+# silently erased, taking the citation with it.
+_AUTOLINK_URL_RE = re.compile(r"<((?:https?|ftp)://[^<>\s]+)>")
+_AUTOLINK_MAILTO_RE = re.compile(r"<mailto:([^<>\s]+)>")
+_AUTOLINK_EMAIL_RE = re.compile(r"<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>")
+
+_PROVENANCE_SEPARATOR = "\n\n---\n\n"
+
+
+def _today_mtl() -> date:
+    """Today's Montréal calendar date (a note is stamped in local time)."""
+    return datetime.now(MTL).date()
+
+
+def _normalize_markdown(text: str) -> str:
+    """Rewrite Markdown autolinks into inline-link syntax.
+
+    Purely additive to the text's meaning: `<https://x>` and `[https://x](https://x)`
+    render identically, but only the second survives the tag stripper.
+    """
+    text = _AUTOLINK_URL_RE.sub(lambda m: f"[{m.group(1)}]({m.group(1)})", text)
+    text = _AUTOLINK_MAILTO_RE.sub(
+        lambda m: f"[{m.group(1)}](mailto:{m.group(1)})", text
+    )
+    text = _AUTOLINK_EMAIL_RE.sub(
+        lambda m: f"[{m.group(1)}](mailto:{m.group(1)})", text
+    )
+    return text
+
+
+def _survives_storage(text: str, limit: int) -> bool:
+    """True when ``security.sanitize`` would store *text* byte-identically.
+
+    Checked with the REAL sanitizer rather than a re-implementation of its
+    regex: the whole point is that the handler's prediction cannot drift
+    from what actually happens on the way to Firestore.
+    """
+    return sanitize(text, max_length=limit) == text
+
+
+# Deliberately free of any excerpt of the note. The message is returned to
+# the client AND recorded on the `mcp.tool.*` span by `span()`'s
+# record_exception, so an excerpt here would ship privileged legal research
+# to Cloud Trace. Claude already holds the text it sent and can re-read the
+# stored note with get_note, so a description beats a sample.
+_CHEVRON_ADVICE = (
+    "Réécrivez sans chevrons : utilisez [texte](url) pour les liens et "
+    "« inférieur à » / « supérieur à » pour les comparaisons."
+)
+
+
+def _clean_note_text(raw: str, field: str) -> str:
+    """Normalize autolinks, then refuse anything the sanitizer would eat.
+
+    ``security.sanitize`` deletes every ``<…>`` run, so `a < b et b > c`
+    loses « < b et b > » with no error and no signal — the caller would
+    believe the research was saved intact. Normalization rescues autolinks;
+    whatever still would not survive is refused LOUDLY.
+    """
+    cleaned = _normalize_markdown(raw)
+    if not _survives_storage(cleaned, note_model.CONTENT_MAX_LENGTH):
+        raise ToolArgumentError(
+            f"« {field} » contient du texte entre chevrons qui serait "
+            f"supprimé à l'enregistrement. {_CHEVRON_ADVICE}"
+        )
+    return cleaned
+
+
+def _bump_note_ctag(dossier_id: str, note_id: str, *, created: bool) -> bool:
+    """Bump the dossier collection's CTag; return whether it succeeded.
+
+    Deliberately swallows its own failure. The note is ALREADY committed by
+    the time this runs, and letting the exception escape would hit
+    ``endpoint._tools_call``'s blanket ``except Exception``, reporting a
+    committed write as a failure — the model would retry and duplicate the
+    note in a client's file. The caller surfaces the outcome as
+    ``dav_synced`` instead.
+    """
+    if not dossier_id:
+        return False
+    try:
+        if created:
+            # A recycled id could still carry a tombstone from a previous
+            # delete; RFC 6578 requires one response per href, and the
+            # sync-collection builder skips a tombstoned id.
+            remove_tombstone(f"dossier:{dossier_id}", note_id)
+        bump_ctag(f"dossier:{dossier_id}")
+        return True
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp note write: ctag bump failed", dossier_id=dossier_id)
+        return False
+
+
+def _write_result(
+    note: dict, *, created: bool, dossier: Optional[dict]
+) -> dict:
+    """Shared success payload for both write tools.
+
+    *dossier* is ``None`` only when the lookup itself failed (append path —
+    ``get_dossier`` swallows read errors and returns ``None``). That is NOT
+    the same as a closed dossier and must not be reported as one: the note
+    exists and carries a dossier_id, so the collection almost certainly
+    exists too. Claim nothing about visibility in that case.
+    """
+    dossier_id = note.get("dossier_id", "")
+    bumped = _bump_note_ctag(dossier_id, note.get("id", ""), created=created)
+    status = dossier.get("status", "") if dossier is not None else None
+    # The per-dossier DAV collection only exposes live resources for
+    # actif/en_attente dossiers, so a note on a closed file is stored and
+    # visible in the web UI but never reaches the phone. Say so rather than
+    # letting the user discover it.
+    dav_visible = status is None or status in ("actif", "en_attente")
+    payload: dict[str, Any] = {
+        "created" if created else "appended": True,
+        "note": {
+            "id": note.get("id", ""),
+            "dossier_id": dossier_id,
+            "dossier_file_number": note.get("dossier_file_number", ""),
+            "dossier_title": note.get("dossier_title", ""),
+            "title": note.get("title", ""),
+            "category": note.get("category", ""),
+            "content_length": len(note.get("content", "") or ""),
+            "created_at": iso_mtl(_as_utc(note.get("created_at"))),
+            "updated_at": iso_mtl(_as_utc(note.get("updated_at"))),
+        },
+        # Two distinct facts, deliberately not collapsed into one: whether
+        # the sync trigger actually fired, and whether the phone will ever
+        # see the result. A closed dossier bumps fine but stays invisible.
+        "ctag_bumped": bumped,
+        "dav_synced": bumped and dav_visible,
+        "warnings": [],
+    }
+    if not bumped:
+        payload["warnings"].append(
+            "La note est enregistrée, mais la synchronisation DavX5 n'a pas pu "
+            "être déclenchée. Elle apparaîtra sur l'appareil au prochain "
+            "changement dans ce dossier. Ne pas réessayer l'écriture."
+        )
+    if not dav_visible:
+        payload["warnings"].append(
+            f"Le dossier est « {status} » : la note est enregistrée et visible "
+            "dans l'application, mais les dossiers fermés ou archivés ne sont "
+            "pas exposés à DavX5, donc elle n'apparaîtra pas sur le téléphone."
+        )
+    return payload
+
+
+# ── 18. create_note (WRITE) ─────────────────────────────────────────────
+
+def create_note(args: dict) -> dict:
+    dossier_id = (args.get("dossier_id") or "").strip()
+    # Resolve the dossier FIRST. models/note._validate only checks that
+    # dossier_id is a non-empty string, so a hallucinated UUID would produce
+    # an orphan note: invisible in the dossier's Notes tab, absent from
+    # /dav/dossier-{id}/, and unreachable via list_notes.
+    dossier = dossier_model.get_dossier(dossier_id)
+    if dossier is None:
+        raise ToolArgumentError(
+            f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers ou "
+            "get_dossier pour obtenir un dossier_id valide."
+        )
+
+    title = _clean_note_text((args.get("title") or "").strip(), "title")
+    body = _clean_note_text((args.get("content") or "").strip(), "content")
+    category = args.get("category") or "recherche"
+
+    stamp = f"*Note rédigée par Claude le {format_date_fr(_today_mtl())}*"
+    content = f"{stamp}\n\n{body}"
+    # Post-condition on the EXACT string that will be stored. Checking the
+    # parts is not enough: TAG_RE's `[^<>]` body matches across newlines, so
+    # a join can create a match that neither half contained.
+    if not _survives_storage(content, note_model.CONTENT_MAX_LENGTH):
+        raise ToolArgumentError(
+            "Le contenu assemblé ne peut pas être enregistré intact. "
+            + _CHEVRON_ADVICE
+        )
+
+    # EXPLICIT whitelist — never `**args`. models/note.create_note honours a
+    # caller-supplied `id` and then does an unconditional full-document
+    # set(), so a stray `id` would overwrite an existing note outright;
+    # `vjournal_uid` and `created_at` are equally passthrough and would
+    # corrupt the VJOURNAL (a non-datetime created_at drops CREATED, the
+    # documented jtx Board NOT-NULL crash).
+    data = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "title": title,
+        "content": content,
+        "category": category,
+        "pinned": False,
+    }
+    note, errors = note_model.create_note(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _write_result(note, created=True, dossier=dossier)
+
+
+# ── 19. append_to_note (WRITE) ──────────────────────────────────────────
+
+def append_to_note(args: dict) -> dict:
+    note_id = (args.get("note_id") or "").strip()
+    existing = note_model.get_note(note_id)
+    if existing is None:
+        raise ToolArgumentError(
+            f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
+            "un note_id valide."
+        )
+
+    addition = _clean_note_text((args.get("content") or "").strip(), "content")
+    stamp = f"*Ajouté par Claude le {format_date_fr(_today_mtl())}*"
+    block = f"{_PROVENANCE_SEPARATOR}{stamp}\n\n{addition}"
+
+    current = existing.get("content", "") or ""
+    combined = current + block
+
+    # Length FIRST: `_survives_storage` calls sanitize, which also truncates
+    # at the cap, so an over-long note would otherwise trip the chevron
+    # guard below and report the wrong reason.
+    projected = len(combined)
+    # Refuse BEFORE writing. security.sanitize truncates at
+    # CONTENT_MAX_LENGTH with no exception and no flag, and update_note
+    # then set()s the truncated document — the tail of the note would be
+    # permanently lost behind a success envelope.
+    if projected > note_model.CONTENT_MAX_LENGTH:
+        raise ToolArgumentError(
+            f"La note est trop longue : {len(current)} caractères déjà "
+            f"enregistrés, plafond {note_model.CONTENT_MAX_LENGTH}. L'ajout de "
+            f"{len(block)} caractères la dépasserait. Créez une nouvelle note "
+            "avec create_note plutôt que de tronquer celle-ci."
+        )
+
+    # THE join guard. `_clean_note_text` cleared the addition in isolation,
+    # but `update_note` sanitizes `current + block` as one string, and
+    # TAG_RE (`<[^<>]*>`) matches across newlines. An unpaired « < » already
+    # sitting in the note (legal for every other write path — the web form
+    # and DAV PUT both accept it) plus any « > » in the addition — a
+    # Markdown blockquote is the obvious one — makes the regex span the
+    # join and delete the tail of the lawyer's note, the separator, and the
+    # provenance stamp. Silently, behind an "appended: true" envelope.
+    if not _survives_storage(combined, note_model.CONTENT_MAX_LENGTH):
+        raise ToolArgumentError(
+            "Ajout refusé : combinés, la note existante et votre texte "
+            "contiennent une paire de chevrons qui ferait disparaître du "
+            "contenu déjà enregistré (un « < » non fermé dans la note, suivi "
+            "d'un « > » dans l'ajout — une citation Markdown « > » suffit). "
+            "Relisez la note avec get_note, signalez le chevron à "
+            "l'utilisateur, ou créez plutôt une nouvelle note avec "
+            "create_note. Rien n'a été modifié."
+        )
+
+    dossier_id = existing.get("dossier_id", "")
+    dossier = dossier_model.get_dossier(dossier_id)
+    # Whitelist of exactly one field: a stray dossier_id in the update would
+    # move the note between dossiers — and between DAV collections, leaving
+    # the origin collection un-bumped.
+    note, errors = note_model.update_note(note_id, {"content": combined})
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    result = _write_result(note, created=False, dossier=dossier)
+    result["appended_chars"] = len(block)
+    return result

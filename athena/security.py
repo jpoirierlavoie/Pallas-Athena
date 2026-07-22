@@ -268,6 +268,12 @@ def _enforce_origin_secret() -> Optional[Response]:
 # identical to ``<[^>]+>``: a real tag body never contains a literal ``<``.
 _TAG_RE = re.compile(r"<[^<>]*>")
 
+# Public alias. Callers that must predict EXACTLY what ``sanitize`` will
+# delete (the MCP note-write handlers, which refuse rather than let a
+# research citation vanish) import this instead of re-declaring the pattern,
+# so the two can never drift apart.
+TAG_RE = _TAG_RE
+
 
 def sanitize(value: str, max_length: int = 1000) -> str:
     """Strip HTML tags and truncate.  Output escaping is handled by Jinja2.

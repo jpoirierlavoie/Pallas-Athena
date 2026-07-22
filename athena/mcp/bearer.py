@@ -12,6 +12,18 @@ Brute-force / Firestore-read protection mirrors ``dav/dav_auth.py``:
    token's own ``expire_at``; revocation therefore takes effect within at
    most ``_SUCCESS_CACHE_TTL_SECONDS`` on a warm instance.
 
+   **The cache stores the granted scope, not just an expiry.** The hit path
+   returns before the Firestore read, so a downstream per-tool scope gate
+   would otherwise see nothing and be fail-open (every read-only token could
+   write) or intermittently fail-closed. Both paths publish
+   ``g.mcp_scopes``; a consumer that finds it missing must refuse, never
+   default.
+
+   Write tool calls additionally go through :func:`revalidate_for_write`,
+   which re-reads the token document and bypasses the cache entirely — so
+   ``scripts/revoke_mcp_tokens`` stops a mutation immediately instead of up
+   to five minutes later.
+
 Both stores are per-instance memory — a brake, not a guarantee (same
 caveat as the DAV brake).
 
@@ -28,12 +40,26 @@ import time
 from datetime import timezone
 from typing import Callable, Optional
 
-from flask import Response, current_app, jsonify, request
+from flask import Response, current_app, g, jsonify, request
 
 from config import Config
 from mcp import ALLOWED_BROWSER_ORIGINS, MCP_RESOURCE, SCOPE_READ
 from mcp import store
 from utils.logging_setup import log_mcp_event
+
+
+class ScopeRequired(Exception):
+    """A tool call needs a scope the presented token does not carry.
+
+    Raised from :mod:`mcp.endpoint` and caught there BEFORE the generic
+    ``except Exception``, which would otherwise turn an authorization
+    refusal into a 200 "internal error" with no WWW-Authenticate challenge.
+    """
+
+    def __init__(self, scope: str, tool: str = ""):
+        super().__init__(scope)
+        self.scope = scope
+        self.tool = tool
 
 # ── Throttling parameters ──────────────────────────────────────────────
 _MAX_TOKEN_LENGTH = 512
@@ -49,8 +75,11 @@ _CACHE_HMAC_KEY = secrets.token_bytes(32)
 _lock = threading.Lock()
 # Client IP -> list of failure timestamps within the window.
 _failed_attempts: dict[str, list[float]] = {}
-# HMAC-SHA-256 of the token -> cache-entry expiry timestamp.
-_success_cache: dict[bytes, float] = {}
+# HMAC-SHA-256 of the token -> (cache-entry expiry timestamp, granted scope).
+# The scope MUST travel with the entry: the hit path short-circuits before
+# the Firestore read, so it is the only place a warm request can learn what
+# the token is allowed to do.
+_success_cache: dict[bytes, tuple[float, str]] = {}
 
 
 def _client_ip() -> str:
@@ -93,29 +122,37 @@ def _record_failure(ip: str) -> None:
                 del _failed_attempts[key]
 
 
-def _check_success_cache(token: str) -> bool:
+def _check_success_cache(token: str) -> Optional[str]:
+    """Return the cached granted scope for *token*, or None on a miss.
+
+    ``None`` and ``""`` are deliberately different: a miss means "go ask
+    Firestore", an empty scope string would mean "cached, and authorized
+    for nothing". Callers must not conflate them.
+    """
     now = time.time()
     digest = _token_digest(token)
     with _lock:
-        for cached, expiry in list(_success_cache.items()):
+        for cached, (expiry, scope) in list(_success_cache.items()):
             if expiry <= now:
                 del _success_cache[cached]
                 continue
             if hmac.compare_digest(cached, digest):
-                return True
-    return False
+                return scope
+    return None
 
 
-def _record_success(ip: str, token: str, token_expire_ts: float) -> None:
+def _record_success(
+    ip: str, token: str, token_expire_ts: float, scope: str
+) -> None:
     """Reset the IP's failures and cache the verdict (capped at token expiry)."""
     now = time.time()
     cache_expiry = min(now + _SUCCESS_CACHE_TTL_SECONDS, token_expire_ts)
     with _lock:
         _failed_attempts.pop(ip, None)
-        for cached in [d for d, exp in _success_cache.items() if exp <= now]:
+        for cached in [d for d, (exp, _s) in _success_cache.items() if exp <= now]:
             del _success_cache[cached]
         if cache_expiry > now:
-            _success_cache[_token_digest(token)] = cache_expiry
+            _success_cache[_token_digest(token)] = (cache_expiry, scope)
 
 
 def reset_brake_state() -> None:
@@ -168,6 +205,69 @@ def _service_unavailable() -> Response:
     return resp
 
 
+def insufficient_scope_response(scope: str = "") -> Response:
+    """RFC 6750 §3.1 403 + challenge for a missing scope.
+
+    Reuses the exact ``WWW-Authenticate`` shape the global gate emits, so a
+    per-tool refusal is indistinguishable on the wire from a token-level one.
+    """
+    resp = _forbidden("insufficient_scope")
+    if scope:
+        resp.headers["WWW-Authenticate"] += f', scope="{scope}"'
+    return resp
+
+
+def granted_scopes() -> frozenset[str]:
+    """Scopes carried by the token authenticated for this request.
+
+    Raises :class:`RuntimeError` when unset rather than returning an empty
+    default — a missing value means the decorator did not run, and silently
+    treating that as "no scopes" (or worse, "all scopes") is exactly the
+    fail-open shape this module exists to prevent.
+    """
+    scopes = getattr(g, "mcp_scopes", None)
+    if scopes is None:
+        raise RuntimeError("mcp_scopes unset — mcp_auth_required did not run")
+    return scopes
+
+
+def revalidate_for_write(required_scope: str) -> None:
+    """Re-check the live token document before a mutation.
+
+    The success cache is a read-path optimization; a write must not run on a
+    token that was revoked minutes ago. This costs one keyed Firestore
+    ``get()`` and only ever runs on a write tool call.
+
+    Raises :class:`ScopeRequired` when the token no longer carries
+    *required_scope*, is revoked, expired, or has vanished.
+    """
+    token_hash = getattr(g, "mcp_token_hash", "")
+    if not token_hash:
+        raise RuntimeError("mcp_token_hash unset — mcp_auth_required did not run")
+    try:
+        doc = store.get_token(token_hash)
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp write revalidation lookup failed")
+        # Fail CLOSED: an unreachable store must not authorize a mutation.
+        raise ScopeRequired(required_scope)
+    if (
+        doc is None
+        or doc.get("token_type") != "access"
+        or doc.get("revoked")
+        or store.is_expired(doc)
+        or required_scope not in str(doc.get("scope") or "").split()
+    ):
+        log_mcp_event(
+            "mcp_auth_failure",
+            "refused",
+            reason="write_revalidation_failed",
+            client_id=(doc or {}).get("client_id"),
+        )
+        raise ScopeRequired(required_scope)
+
+
 # ── Decorator ───────────────────────────────────────────────────────────
 
 def mcp_auth_required(f: Callable) -> Callable:
@@ -199,10 +299,17 @@ def mcp_auth_required(f: Callable) -> Callable:
             log_mcp_event("mcp_brake_engaged", "refused", reason="invalid_token_flood")
             return _too_many_requests()
 
-        if _check_success_cache(token):
+        token_hash = store.sha256_hex(token)
+        g.mcp_token_hash = token_hash
+
+        cached_scope = _check_success_cache(token)
+        if cached_scope is not None:
+            # Publish the scope on the WARM path too — a per-tool gate that
+            # only reads it on the cold path would authorize every cached
+            # request regardless of what the token actually granted.
+            g.mcp_scopes = frozenset(cached_scope.split())
             return f(*args, **kwargs)
 
-        token_hash = store.sha256_hex(token)
         try:
             doc = store.get_token(token_hash)
         except Exception:
@@ -221,7 +328,8 @@ def mcp_auth_required(f: Callable) -> Callable:
             log_mcp_event("mcp_auth_failure", "refused", reason="invalid_token")
             return _unauthorized("invalid_token")
 
-        scopes = str(doc.get("scope") or "").split()
+        scope_value = str(doc.get("scope") or "")
+        scopes = scope_value.split()
         if SCOPE_READ not in scopes:
             log_mcp_event(
                 "mcp_auth_failure",
@@ -245,7 +353,8 @@ def mcp_auth_required(f: Callable) -> Callable:
         expire_at = doc.get("expire_at")
         if expire_at.tzinfo is None:
             expire_at = expire_at.replace(tzinfo=timezone.utc)
-        _record_success(ip, token, expire_at.timestamp())
+        g.mcp_scopes = frozenset(scopes)
+        _record_success(ip, token, expire_at.timestamp(), scope_value)
         # At most one write per success-cache window, not one per request.
         store.stamp_token_last_used(token_hash)
 

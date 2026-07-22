@@ -5,7 +5,11 @@ prints the raw access token ONCE. Hard-refuses to run in production.
 
 Run from the athena/ directory:
 
-    python -m scripts.mint_dev_token [--hours N]
+    python -m scripts.mint_dev_token [--hours N] [--write]
+
+``--write`` adds the ``athena:write`` scope so the note-write tools can be
+exercised locally; without it the token is read-only, exactly like a
+consent flow where the « autoriser l'écriture » box was left unticked.
 """
 
 import argparse
@@ -42,18 +46,25 @@ def main() -> int:
         default=1,
         help="Access-token lifetime in hours (default 1).",
     )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Also grant athena:write (the two note-write tools).",
+    )
     args = parser.parse_args()
 
     from datetime import datetime, timedelta, timezone
 
-    from mcp import SCOPE_READ
+    from mcp import SCOPE_READ, SCOPE_WRITE
     from mcp import store
+
+    scope = f"{SCOPE_READ} {SCOPE_WRITE}" if args.write else SCOPE_READ
 
     client = store.create_client(
         "Dev local (mint_dev_token)", ["http://localhost/dev-callback"]
     )
     pair = store.create_token_pair(
-        client_id=client["client_id"], scope=SCOPE_READ, resource=None
+        client_id=client["client_id"], scope=scope, resource=None
     )
     if args.hours != 1:
         expire_at = datetime.now(timezone.utc) + timedelta(hours=args.hours)
@@ -62,6 +73,7 @@ def main() -> int:
         ).update({"expire_at": expire_at})
 
     print(f"client_id:     {client['client_id']}")
+    print(f"scope:         {scope}")
     print(f"expires in:    {args.hours} hour(s)")
     print("access token (shown once, never logged):")
     print(pair["access_token"])
