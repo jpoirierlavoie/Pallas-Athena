@@ -10,7 +10,12 @@ in CLAUDE.md.
 import os
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+
+# Parse server output with defusedxml, the same guard dav/xml_utils.py
+# applies to inbound request bodies (Bandit B314). ET stays imported for
+# element construction, which is not a parsing surface.
+from defusedxml.ElementTree import fromstring as safe_fromstring
+from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
@@ -136,7 +141,7 @@ def test_detect_component_type_handles_all_three():
 
 def _query(*components):
     inner = "".join(f'<C:comp-filter name="{c}"/>' for c in components)
-    return ET.fromstring(
+    return safe_fromstring(
         f'<C:calendar-query xmlns:C="{CAL}" xmlns:D="{DAVNS}"><D:prop/>'
         f'<C:filter><C:comp-filter name="VCALENDAR">{inner}</C:comp-filter>'
         f"</C:filter></C:calendar-query>"
@@ -155,7 +160,7 @@ def test_requested_components_degrades_to_unfiltered_not_to_empty():
     nothing — an empty collection reads to the client as 'all deleted'."""
     assert dc.requested_components(None) is None
     assert dc.requested_components(_query()) is None
-    no_filter = ET.fromstring(f'<C:calendar-query xmlns:C="{CAL}"/>')
+    no_filter = safe_fromstring(f'<C:calendar-query xmlns:C="{CAL}"/>')
     assert dc.requested_components(no_filter) is None
 
 
@@ -209,7 +214,7 @@ def linked_and_standalone(monkeypatch):
 
 
 def _hrefs(payload: bytes) -> set[str]:
-    root = ET.fromstring(payload)
+    root = safe_fromstring(payload)
     return {
         el.text for el in root.iter(f"{{{DAVNS}}}href") if el.text
     }
@@ -243,9 +248,8 @@ def test_general_collection_404s_a_dossier_linked_hearing(
     client = app.test_client()
     assert client.get("/dav/general/h-solo.ics", headers=AUTH).status_code == 200
     assert client.get("/dav/general/h-linked.ics", headers=AUTH).status_code == 404
-    assert (
-        client.delete("/dav/general/h-linked.ics", headers=AUTH).status_code == 404
-    )
+    deleted = client.delete("/dav/general/h-linked.ics", headers=AUTH)
+    assert deleted.status_code == 404
 
 
 def test_dossier_collection_serves_the_hearing_as_vevent(
@@ -265,7 +269,7 @@ def test_collection_propfind_advertises_vevent(app, linked_and_standalone):
     )
     names = {
         el.get("name")
-        for el in ET.fromstring(resp.data).iter(f"{{{CAL}}}comp")
+        for el in safe_fromstring(resp.data).iter(f"{{{CAL}}}comp")
     }
     assert names == {"VEVENT", "VTODO", "VJOURNAL"}
 
@@ -470,7 +474,7 @@ def test_general_advertises_the_same_component_set_as_a_dossier(
     resp = app.test_client().open(
         "/dav/general/", method="PROPFIND", headers={**AUTH, "Depth": "0"}
     )
-    names = {el.get("name") for el in ET.fromstring(resp.data).iter(f"{{{CAL}}}comp")}
+    names = {el.get("name") for el in safe_fromstring(resp.data).iter(f"{{{CAL}}}comp")}
     assert names == set(dc.DOSSIER_COMPONENTS)
 
 
@@ -478,7 +482,7 @@ def test_general_displayname_is_general(app, general_members):
     resp = app.test_client().open(
         "/dav/general/", method="PROPFIND", headers={**AUTH, "Depth": "0"}
     )
-    names = [el.text for el in ET.fromstring(resp.data).iter(f"{{{DAVNS}}}displayname")]
+    names = [el.text for el in safe_fromstring(resp.data).iter(f"{{{DAVNS}}}displayname")]
     assert "Général" in names
 
 

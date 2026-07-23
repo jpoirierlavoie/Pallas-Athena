@@ -284,8 +284,6 @@ def test_write_still_refused_on_the_second_call_when_the_cache_is_warm(client):
 def test_write_tool_is_dispatched_when_the_scope_is_granted(
     write_client, monkeypatch
 ):
-    import mcp.handlers as handlers
-
     seen = {}
 
     def _stub(args):
@@ -304,8 +302,6 @@ def test_revoked_token_cannot_write_even_while_the_cache_is_warm(
 ):
     """Break-glass revocation must stop a mutation immediately, not after the
     5-minute success-cache window."""
-    import mcp.handlers as handlers
-
     monkeypatch.setattr(
         handlers, "create_note",
         lambda args: {"created": True, "note": {"id": "n1"}, "dav_synced": True},

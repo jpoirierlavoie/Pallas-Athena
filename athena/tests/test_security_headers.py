@@ -57,6 +57,20 @@ def test_build_csp_shape():
     assert "claude.ai" not in csp
 
 
+def _form_action(csp: str) -> list[str]:
+    """The form-action directive's source list, exactly as sent.
+
+    Parsed rather than substring-matched: a substring check on the whole
+    header cannot tell `https://claude.ai` from `https://claude.ai.evil`,
+    nor which directive the origin belongs to.
+    """
+    for directive in csp.split(";"):
+        parts = directive.split()
+        if parts and parts[0] == "form-action":
+            return parts[1:]
+    return []
+
+
 # ── form-action / the OAuth consent redirect ───────────────────────────────
 
 def test_consent_page_allows_the_oauth_callback_redirect():
@@ -85,11 +99,14 @@ def test_form_action_is_widened_only_on_the_consent_path():
         "Content-Security-Policy"
     ]
     other_csp = client.get("/").headers["Content-Security-Policy"]
-    assert "https://claude.ai" in consent_csp
-    assert "https://claude.ai" not in other_csp
-    assert "form-action 'self';" in other_csp
-    # Loopback callbacks are a dev-only affordance (MCP Inspector).
-    assert "localhost" not in consent_csp
+    # Compare the directive's SOURCE LIST, not a substring of the whole
+    # header: `"https://claude.ai" in csp` would also pass on
+    # `https://claude.ai.evil.example`, and matches any other directive that
+    # happens to name the origin.
+    assert _form_action(consent_csp) == [
+        "'self'", "https://claude.ai", "https://claude.com",
+    ]
+    assert _form_action(other_csp) == ["'self'"]
 
 
 def test_form_action_allows_loopback_outside_production():
@@ -102,8 +119,9 @@ def test_form_action_allows_loopback_outside_production():
     csp = app.test_client().get("/oauth/authorize").headers[
         "Content-Security-Policy"
     ]
-    assert "http://localhost:*" in csp
-    assert "http://127.0.0.1:*" in csp
+    sources = _form_action(csp)
+    assert "http://localhost:*" in sources
+    assert "http://127.0.0.1:*" in sources
 
 
 def test_form_action_covers_every_allowed_oauth_redirect_uri():

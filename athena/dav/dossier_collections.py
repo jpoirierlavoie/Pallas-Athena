@@ -31,7 +31,6 @@ from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
 from dav.sync import (
-    GENERAL_COLLECTION,
     bump_ctag,
     collection_for,
     get_ctag,
