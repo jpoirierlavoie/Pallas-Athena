@@ -152,7 +152,7 @@ def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
         "updated_at": now,
         "etag": str(uuid.uuid4()),
         "vtodo_uid": vtodo_uid,
-        "dav_href": f"/dav/tasks/{task_id}.ics",
+        "dav_href": f"/dav/general/{task_id}.ics",
     })
 
     # Auto-set completed_date if status is terminée

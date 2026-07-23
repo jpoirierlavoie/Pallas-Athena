@@ -1,16 +1,22 @@
-"""Per-dossier CalDAV collections -- VEVENT hearings, VTODO tasks, VJOURNAL notes.
+"""CalDAV collections -- VEVENT hearings, VTODO tasks, VJOURNAL notes.
 
-Each active dossier is exposed as a CalDAV collection at:
-    /dav/dossier-{dossierId}/
+Two collections, ONE implementation:
+    /dav/dossier-{dossierId}/   one active dossier
+    /dav/general/               everything belonging to no dossier
 
-Resources within the collection:
-    /dav/dossier-{dossierId}/{resourceId}.ics
+Resources: {collection}/{resourceId}.ics — VEVENT maps to a hearing, VTODO
+to a task, VJOURNAL to a note.
 
-VEVENT resources map to hearings, VTODO to tasks, VJOURNAL to notes. A
-dossier-linked hearing lives ONLY here; /dav/calendar/ keeps the standalone
-ones, exactly as /dav/tasks/ keeps only dossier-less tasks. Serving the same
-hearing from both would have DavX5 import it twice and let a write through
-one collection bump the other's CTag not at all.
+Every handler is written against a SCOPE, identified by a dossier id where
+``""`` means « Général » (see :func:`_href_prefix`). Sharing the code is the
+point: the component filter, the tombstone rules and the "the URL decides
+the dossier" invariant cannot drift between the two. « Général » replaced
+the split /dav/calendar/ + /dav/tasks/ pair in July 2026, and also carries
+dossier-less NOTES, which had no home before.
+
+An item belongs to exactly one collection. Serving it from two would have
+DavX5 import it twice and let a write through one bump a CTag the other
+never watches.
 
 :data:`DOSSIER_COMPONENTS` is the single source of truth for the advertised
 component set -- ``dav/__init__.py`` imports it for the root Depth:1 listing
@@ -25,7 +31,9 @@ from flask import Blueprint, Response, request
 
 from dav.dav_auth import dav_auth_required
 from dav.sync import (
+    GENERAL_COLLECTION,
     bump_ctag,
+    collection_for,
     get_ctag,
     get_sync_token,
     get_tombstones,
@@ -102,8 +110,56 @@ def _dossier_is_active(dossier: dict | None) -> bool:
     return bool(dossier) and dossier.get("status") in _ACTIVE_DOSSIER_STATUSES
 
 
+# ── Scope ────────────────────────────────────────────────────────────────
+# Every handler below is written against a SCOPE, identified by a dossier id
+# where the empty string means « Général » — the collection of items that
+# belong to no dossier. One implementation serves both, so the component
+# filter, the tombstone handling and the "the URL decides the dossier" rule
+# cannot drift between them. A real dossier id is a UUIDv4, never "".
+
+GENERAL_PATH = "/dav/general/"
+GENERAL_DISPLAY_NAME = "Général"
+
+
+def _href_prefix(dossier_id: str) -> str:
+    """Collection href for a scope (no trailing slash)."""
+    return f"/dav/dossier-{dossier_id}" if dossier_id else "/dav/general"
+
+
+def _is_general(dossier_id: str) -> bool:
+    return not dossier_id
+
+
+def _general_pseudo_dossier() -> dict:
+    """The « Général » scope rendered as a dossier-shaped dict.
+
+    Lets `_add_collection_props` and the write paths stay scope-agnostic.
+    Always active: it has no lifecycle to close or archive.
+    """
+    return {"id": "", "file_number": GENERAL_DISPLAY_NAME, "title": "",
+            "status": "actif"}
+
+
+def _resolve_scope(dossier_id: str) -> tuple[dict | None, bool]:
+    """Resolve a scope to (dossier-shaped dict, active).
+
+    ``(None, False)`` means 404 — a dossier that no longer exists. The
+    « Général » scope always resolves and is always active.
+    """
+    if _is_general(dossier_id):
+        return _general_pseudo_dossier(), True
+    with firestore_span("get", "dossiers", doc_id=dossier_id):
+        dossier = get_dossier(dossier_id)
+    if not dossier:
+        return None, False
+    return dossier, _dossier_is_active(dossier)
+
+
 # -- OPTIONS -----------------------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/", methods=["OPTIONS"], defaults={"dossier_id": ""})
+@dossier_dav_bp.route("/dav/general/<resource_id>.ics", methods=["OPTIONS"],
+                      defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/", methods=["OPTIONS"])
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["OPTIONS"])
 @dav_auth_required
@@ -116,6 +172,7 @@ def options(dossier_id: str, resource_id: str = None) -> Response:
 
 # -- PROPFIND (Collection) ---------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/", methods=["PROPFIND"], defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/", methods=["PROPFIND"])
 @dav_auth_required
 def propfind_collection(dossier_id: str) -> Response:
@@ -132,14 +189,13 @@ def propfind_collection(dossier_id: str) -> Response:
         }
     )
 
-    with firestore_span("get", "dossiers", doc_id=dossier_id):
-        dossier = get_dossier(dossier_id)
     # A deleted dossier is truly gone (404). A closed/archived one still
     # responds but as an empty, draining collection (no live resources) so an
     # enabled DavX5 client can sync it down cleanly instead of erroring.
-    if not dossier:
+    # « Général » always resolves and is always active.
+    dossier, active = _resolve_scope(dossier_id)
+    if dossier is None:
         return Response("Not Found", status=404)
-    active = _dossier_is_active(dossier)
 
     depth = request.headers.get("Depth", "0")
     add_attributes(**{"dav.depth": depth, "dav.dossier_active": active})
@@ -179,7 +235,7 @@ def _add_collection_props(
     multistatus: ET.Element, dossier: dict, body: ET.Element | None
 ) -> None:
     """Add the dossier collection's own <D:response>."""
-    href = f"/dav/dossier-{dossier['id']}/"
+    href = f"{_href_prefix(dossier['id'])}/"
     resp = add_response(multistatus, href)
     prop = add_propstat(resp)
 
@@ -189,16 +245,22 @@ def _add_collection_props(
         ET.SubElement(rt, caldav_tag("calendar"))
 
     if propfind_requests_prop(body, dav_tag("displayname")):
-        display = f"{dossier.get('file_number', '')} \u2014 {dossier.get('title', '')}"
+        if _is_general(dossier["id"]):
+            display = GENERAL_DISPLAY_NAME
+        else:
+            display = (
+                f"{dossier.get('file_number', '')} \u2014 "
+                f"{dossier.get('title', '')}"
+            )
         ET.SubElement(prop, dav_tag("displayname")).text = display
 
     if propfind_requests_prop(body, cs_tag("getctag")):
         ET.SubElement(prop, cs_tag("getctag")).text = get_ctag(
-            f"dossier:{dossier['id']}"
+            collection_for(dossier['id'])
         )
 
     if propfind_requests_prop(body, dav_tag("sync-token")):
-        sync_name = f"dossier:{dossier['id']}"
+        sync_name = collection_for(dossier['id'])
         ET.SubElement(prop, dav_tag("sync-token")).text = (
             f"data:,{get_sync_token(sync_name)}"
         )
@@ -225,12 +287,26 @@ def _add_collection_props(
 
 
 def _collection_members(dossier_id: str) -> tuple[list, list, list]:
-    """Return (hearings, tasks, notes) for a dossier, each traced.
+    """Return (hearings, tasks, notes) for a scope, each traced.
 
-    One helper so the four places that enumerate a collection (PROPFIND,
-    sync-collection, calendar-query, and the drain check) cannot disagree
-    about what the collection contains.
+    One helper so the three places that enumerate a collection (PROPFIND,
+    sync-collection, calendar-query) cannot disagree about what it contains.
+
+    « Général » has no server-side filter available: tasks store ``None`` for
+    "no dossier" while notes and hearings store ``""``, so the models cannot
+    express one query covering both. Each list is streamed and filtered in
+    Python — the same shape the retired standalone collections used, and
+    bounded by the same practical dataset size.
     """
+    if _is_general(dossier_id):
+        with firestore_span("query", "hearings", filter="general"):
+            hearings = [h for h in list_hearings() if not h.get("dossier_id")]
+        with firestore_span("query", "tasks", filter="general"):
+            tasks = [t for t in list_tasks() if not t.get("dossier_id")]
+        with firestore_span("query", "notes", filter="general"):
+            notes = [n for n in list_notes() if not n.get("dossier_id")]
+        return hearings, tasks, notes
+
     with firestore_span("query", "hearings", dossier_id=dossier_id):
         hearings = list_hearings(dossier_id=dossier_id)
     with firestore_span("query", "tasks", dossier_id=dossier_id):
@@ -248,7 +324,7 @@ def _add_calendar_resource(
     serialize,
 ) -> None:
     """Add one calendar resource <D:response>, whatever its component type."""
-    href = f"/dav/dossier-{dossier_id}/{obj['id']}.ics"
+    href = f"{_href_prefix(dossier_id)}/{obj['id']}.ics"
     resp = add_response(multistatus, href)
     prop = add_propstat(resp)
 
@@ -290,6 +366,8 @@ def _add_note_resource(
 
 # -- PROPFIND (Resource) -----------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/<resource_id>.ics", methods=["PROPFIND"],
+                      defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["PROPFIND"])
 @dav_auth_required
 def propfind_resource(dossier_id: str, resource_id: str) -> Response:
@@ -312,6 +390,7 @@ def propfind_resource(dossier_id: str, resource_id: str) -> Response:
 
 # -- REPORT ------------------------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/", methods=["REPORT"], defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/", methods=["REPORT"])
 @dav_auth_required
 def report_collection(dossier_id: str) -> Response:
@@ -319,12 +398,10 @@ def report_collection(dossier_id: str) -> Response:
 
     Supported reports: sync-collection, calendar-multiget, calendar-query.
     """
-    with firestore_span("get", "dossiers", doc_id=dossier_id):
-        dossier = get_dossier(dossier_id)
-    if not dossier:
+    dossier, active = _resolve_scope(dossier_id)
+    if dossier is None:
         return Response("Not Found", status=404)
     # Closed/archived dossiers report as empty (drained) — see the module note.
-    active = _dossier_is_active(dossier)
 
     try:
         body_root = parse_report_body(request.get_data())
@@ -362,7 +439,7 @@ def _handle_sync_collection(
     When the dossier is not active the live set is empty, so every recorded
     tombstone is reported as a 404 and DavX5 drains its local copies.
     """
-    sync_name = f"dossier:{dossier_id}"
+    sync_name = collection_for(dossier_id)
     add_attributes(
         **{
             "dav.collection_type": "dossier",
@@ -408,7 +485,7 @@ def _handle_sync_collection(
         ):
             for obj in members:
                 resp = add_response(
-                    multistatus, f"/dav/dossier-{dossier_id}/{obj['id']}.ics"
+                    multistatus, f"{_href_prefix(dossier_id)}/{obj['id']}.ics"
                 )
                 prop = add_propstat(resp)
                 ET.SubElement(prop, dav_tag("getetag")).text = (
@@ -433,7 +510,7 @@ def _handle_sync_collection(
                 for ts in tombstones:
                     add_status_response(
                         multistatus,
-                        f"/dav/dossier-{dossier_id}/{ts['id']}.ics",
+                        f"{_href_prefix(dossier_id)}/{ts['id']}.ics",
                         404,
                         "Not Found",
                     )
@@ -545,7 +622,7 @@ def _handle_calendar_query(
         if wanted is not None and component not in wanted:
             continue
         for obj in objects:
-            href = f"/dav/dossier-{dossier_id}/{obj['id']}.ics"
+            href = f"{_href_prefix(dossier_id)}/{obj['id']}.ics"
             resp = add_response(multistatus, href)
             prop = add_propstat(resp)
             ET.SubElement(prop, dav_tag("getetag")).text = f'"{obj.get("etag", "")}"'
@@ -559,6 +636,8 @@ def _handle_calendar_query(
 
 # -- GET ---------------------------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/<resource_id>.ics", methods=["GET"],
+                      defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["GET"])
 @dav_auth_required
 def get_resource(dossier_id: str, resource_id: str) -> Response:
@@ -576,6 +655,8 @@ def get_resource(dossier_id: str, resource_id: str) -> Response:
 
 # -- PUT ---------------------------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/<resource_id>.ics", methods=["PUT"],
+                      defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["PUT"])
 @dav_auth_required
 def put_resource(dossier_id: str, resource_id: str) -> Response:
@@ -583,9 +664,8 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
 
     Parses the iCalendar body to determine component type (VTODO or VJOURNAL).
     """
-    with firestore_span("get", "dossiers", doc_id=dossier_id):
-        dossier = get_dossier(dossier_id)
-    if not dossier:
+    dossier, _active = _resolve_scope(dossier_id)
+    if dossier is None:
         return Response("Not Found", status=404)
 
     if_match = request.headers.get("If-Match")
@@ -650,21 +730,22 @@ def _put_hearing(
     # a dossier_id disagreeing with the collection the PUT landed in — and
     # the CTag bump below would then target the wrong collection.
     data["dossier_id"] = dossier_id
-    data["dossier_file_number"] = dossier.get("file_number", "")
-    data["dossier_title"] = dossier.get("title", "")
+    data["dossier_file_number"] = (
+        "" if _is_general(dossier_id) else dossier.get("file_number", "")
+    )
+    data["dossier_title"] = (
+        "" if _is_general(dossier_id) else dossier.get("title", "")
+    )
 
-    sync_name = f"dossier:{dossier_id}"
+    sync_name = collection_for(dossier_id)
 
     if existing:
         # Moved in from another collection: tombstone it there. A hearing with
         # no dossier lived in the shared "hearings" collection.
-        old_dossier = existing.get("dossier_id")
-        if old_dossier and old_dossier != dossier_id:
-            record_tombstone(f"dossier:{old_dossier}", resource_id)
-            bump_ctag(f"dossier:{old_dossier}")
-        elif not old_dossier:
-            record_tombstone("hearings", resource_id)
-            bump_ctag("hearings")
+        old_scope = collection_for(existing.get("dossier_id"))
+        if old_scope != sync_name:
+            record_tombstone(old_scope, resource_id)
+            bump_ctag(old_scope)
 
         updated, errors = update_hearing(resource_id, data)
         if errors:
@@ -673,7 +754,7 @@ def _put_hearing(
                 sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
-        if old_dossier != dossier_id:
+        if old_scope != sync_name:
             # Resource (re)enters this collection — drop any stale tombstone
             remove_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
@@ -727,22 +808,23 @@ def _put_task(
 
     # Force dossier_id from URL (the collection implies the dossier)
     data["dossier_id"] = dossier_id
-    data["dossier_file_number"] = dossier.get("file_number", "")
-    data["dossier_title"] = dossier.get("title", "")
+    data["dossier_file_number"] = (
+        "" if _is_general(dossier_id) else dossier.get("file_number", "")
+    )
+    data["dossier_title"] = (
+        "" if _is_general(dossier_id) else dossier.get("title", "")
+    )
 
-    sync_name = f"dossier:{dossier_id}"
+    sync_name = collection_for(dossier_id)
 
     if existing:
         # If task was previously in a different collection, record a
         # tombstone there: another dossier's collection, or the standalone
-        # /dav/tasks/ collection when it had no dossier at all.
-        old_dossier = existing.get("dossier_id")
-        if old_dossier and old_dossier != dossier_id:
-            record_tombstone(f"dossier:{old_dossier}", resource_id)
-            bump_ctag(f"dossier:{old_dossier}")
-        elif not old_dossier:
-            record_tombstone("tasks", resource_id)
-            bump_ctag("tasks")
+        # « Général » when it had no dossier at all.
+        old_scope = collection_for(existing.get("dossier_id"))
+        if old_scope != sync_name:
+            record_tombstone(old_scope, resource_id)
+            bump_ctag(old_scope)
 
         updated, errors = update_task(resource_id, data)
         if errors:
@@ -751,7 +833,7 @@ def _put_task(
                 sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
-        if old_dossier != dossier_id:
+        if old_scope != sync_name:
             # Task (re)enters this collection — drop any stale tombstone
             remove_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
@@ -804,10 +886,14 @@ def _put_note(
         return Response("Bad Request — invalid iCalendar", status=400)
 
     data["dossier_id"] = dossier_id
-    data["dossier_file_number"] = dossier.get("file_number", "")
-    data["dossier_title"] = dossier.get("title", "")
+    data["dossier_file_number"] = (
+        "" if _is_general(dossier_id) else dossier.get("file_number", "")
+    )
+    data["dossier_title"] = (
+        "" if _is_general(dossier_id) else dossier.get("title", "")
+    )
 
-    sync_name = f"dossier:{dossier_id}"
+    sync_name = collection_for(dossier_id)
 
     if existing:
         updated, errors = update_note(resource_id, data)
@@ -843,6 +929,8 @@ def _put_note(
 
 # -- DELETE ------------------------------------------------------------------
 
+@dossier_dav_bp.route("/dav/general/<resource_id>.ics", methods=["DELETE"],
+                      defaults={"dossier_id": ""})
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["DELETE"])
 @dav_auth_required
 def delete_resource(dossier_id: str, resource_id: str) -> Response:
@@ -855,7 +943,7 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         }
     )
     existing = get_task(resource_id)
-    if existing and existing.get("dossier_id") == dossier_id:
+    if existing and (existing.get("dossier_id") or "") == dossier_id:
         if_match = request.headers.get("If-Match")
         if if_match and if_match != f'"{existing.get("etag", "")}"':
             return Response("Precondition Failed", status=412)
@@ -868,13 +956,13 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
             )
             return Response("Erreur serveur.", status=500)
 
-        sync_name = f"dossier:{dossier_id}"
+        sync_name = collection_for(dossier_id)
         record_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
         return Response("", status=204)
 
     existing_note = get_note(resource_id)
-    if existing_note and existing_note.get("dossier_id") == dossier_id:
+    if existing_note and (existing_note.get("dossier_id") or "") == dossier_id:
         if_match = request.headers.get("If-Match")
         if if_match and if_match != f'"{existing_note.get("etag", "")}"':
             return Response("Precondition Failed", status=412)
@@ -887,13 +975,13 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
             )
             return Response("Erreur serveur.", status=500)
 
-        sync_name = f"dossier:{dossier_id}"
+        sync_name = collection_for(dossier_id)
         record_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
         return Response("", status=204)
 
     existing_hearing = get_hearing(resource_id)
-    if existing_hearing and existing_hearing.get("dossier_id") == dossier_id:
+    if existing_hearing and (existing_hearing.get("dossier_id") or "") == dossier_id:
         if_match = request.headers.get("If-Match")
         if if_match and if_match != f'"{existing_hearing.get("etag", "")}"':
             return Response("Precondition Failed", status=412)
@@ -906,7 +994,7 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
             )
             return Response("Erreur serveur.", status=500)
 
-        sync_name = f"dossier:{dossier_id}"
+        sync_name = collection_for(dossier_id)
         record_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
         return Response("", status=204)
@@ -926,15 +1014,15 @@ def _resolve_resource(dossier_id: str, resource_id: str):
     type is fetched. Returns None when nothing in THIS dossier matches.
     """
     task = get_task(resource_id)
-    if task and task.get("dossier_id") == dossier_id:
+    if task and (task.get("dossier_id") or "") == dossier_id:
         return task, task_to_vtodo
 
     note = get_note(resource_id)
-    if note and note.get("dossier_id") == dossier_id:
+    if note and (note.get("dossier_id") or "") == dossier_id:
         return note, note_to_vjournal
 
     hearing = get_hearing(resource_id)
-    if hearing and hearing.get("dossier_id") == dossier_id:
+    if hearing and (hearing.get("dossier_id") or "") == dossier_id:
         return hearing, hearing_to_vevent
 
     return None

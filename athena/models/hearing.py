@@ -143,7 +143,7 @@ def _validate(data: dict) -> list[str]:
 
     A dossier link is optional: hearings may be standalone agenda events with
     no dossier (mirroring standalone tasks). Such events still sync to DavX5
-    via the shared /dav/calendar/ collection.
+    via the « Général » collection.
     """
     errors: list[str] = []
 
@@ -176,15 +176,15 @@ def _validate(data: dict) -> list[str]:
 def dav_href_for(dossier_id: str, hearing_id: str) -> str:
     """DAV path of a hearing: per-dossier when linked, shared otherwise.
 
-    A dossier-linked hearing is served only from its dossier's collection —
-    the shared /dav/calendar/ carries the standalone ones, mirroring how
-    /dav/tasks/ carries only dossier-less tasks. Stored for reference; the
+    A dossier-linked hearing is served from its dossier's collection; one
+    with no dossier lives in « Général » alongside dossier-less tasks and
+    notes. Stored for reference; the
     DAV layer always derives the href from the URL it was reached through,
     so a stale value here can never misroute a request.
     """
     if dossier_id:
         return f"/dav/dossier-{dossier_id}/{hearing_id}.ics"
-    return f"/dav/calendar/{hearing_id}.ics"
+    return f"/dav/general/{hearing_id}.ics"
 
 
 def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
@@ -524,7 +524,7 @@ def hearing_to_vevent(hearing: dict) -> str:
     # CREATED + DTSTAMP as UTC date-times. DTSTAMP is MANDATORY per RFC 5545
     # §3.6.1 and was missing entirely; the Android calendar provider tolerates
     # the omission, which is why it went unnoticed while hearings only ever
-    # lived in /dav/calendar/. CREATED matters as soon as a VEVENT reaches a
+    # lived in one shared calendar. CREATED matters as soon as a VEVENT reaches a
     # per-dossier collection that jtx Board also subscribes to: its
     # icalobject.created column is NOT NULL and ical4android writes null when
     # the component omits CREATED (the same trap documented for VJOURNAL in

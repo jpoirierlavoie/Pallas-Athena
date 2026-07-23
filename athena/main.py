@@ -150,22 +150,16 @@ def create_app() -> Flask:
     # ── DAV blueprints (CardDAV, CalDAV, RFC-5545, per-dossier) ─────────
     from dav import dav_bp
     from dav.carddav import carddav_bp
-    from dav.caldav import caldav_bp
-    from dav.rfc5545 import rfc5545_bp
     from dav.dossier_collections import dossier_dav_bp
 
     app.register_blueprint(dav_bp)
     app.register_blueprint(carddav_bp)
-    app.register_blueprint(caldav_bp)
-    app.register_blueprint(rfc5545_bp)
     app.register_blueprint(dossier_dav_bp)
 
     # Exempt all DAV endpoints from CSRF protection (they use HTTP Basic Auth)
     from security import csrf
     csrf.exempt(dav_bp)
     csrf.exempt(carddav_bp)
-    csrf.exempt(caldav_bp)
-    csrf.exempt(rfc5545_bp)
     csrf.exempt(dossier_dav_bp)
 
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──

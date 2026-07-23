@@ -205,9 +205,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── dav/                        # DAV protocol endpoints
 │   │   ├── __init__.py             # Principal + calendar/addressbook home-set; root PROPFIND lists collections dynamically
 │   │   ├── carddav.py              # /dav/addressbook/ — contacts
-│   │   ├── caldav.py               # /dav/calendar/ — STANDALONE hearings only (VEVENT)
-│   │   ├── rfc5545.py              # /dav/tasks/ — standalone tasks (VTODO) only
-│   │   ├── dossier_collections.py  # /dav/dossier-{id}/ — per-dossier VEVENT + VTODO + VJOURNAL
+│   │   ├── dossier_collections.py  # /dav/dossier-{id}/ AND /dav/general/ — one scoped
+│   │   │                           #   implementation: VEVENT + VTODO + VJOURNAL
 │   │   ├── dav_auth.py             # HTTP Basic Auth decorator
 │   │   ├── xml_utils.py            # Namespace tags, multistatus builders, propfind body parser
 │   │   └── sync.py                 # CTag / sync-token / tombstone management
@@ -267,7 +266,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_security_headers.py
 │   │   ├── test_mcp_jsonrpc.py
 │   │   ├── test_mcp_oauth.py
-│   │   ├── test_dav_hearings.py    # DAV: per-dossier hearings, comp-filter, VEVENT stamps
+│   │   ├── test_dav_hearings.py    # DAV: per-dossier + « Général », comp-filter, stamps
+│   │   ├── test_notes_general.py   # Notes without a dossier: CTag bump + unknown-id guard
 │   │   ├── test_mcp_tools.py
 │   │   ├── test_docx_fill.py
 │   │   ├── test_template_fields.py
@@ -1137,8 +1137,7 @@ The documents blueprint is **mounted at `/documents`** (not nested under `/dossi
 | `/dav/` | Root: `OPTIONS` + `PROPFIND`. Advertises `addressbook-home-set` and `calendar-home-set`. Depth:1 lists all collections dynamically (addressbook, calendar, tasks, and `/dav/dossier-{id}/` for each `actif`/`en_attente` dossier) |
 | `/dav/addressbook/` + `/{id}.vcf` | CardDAV — contacts |
 | `/dav/calendar/` + `/{id}.ics` | CalDAV VEVENT — hearings |
-| `/dav/calendar/` + `/{id}.ics` | CalDAV VEVENT — **standalone hearings only** (`dossier_id` empty), since July 2026 |
-| `/dav/tasks/` + `/{id}.ics` | CalDAV VTODO — **standalone tasks only** (`dossier_id is None`) |
+| `/dav/general/` + `/{id}.ics` | **« Général »** (July 2026): VEVENT + VTODO + VJOURNAL for every item with **no dossier** — hearings, tasks AND notes. Replaced `/dav/calendar/` and `/dav/tasks/`, which are **gone** |
 | `/dav/dossier-{did}/` + `/{id}.ics` | **Per-dossier CalDAV collection** (Phase D1+D2, extended July 2026): VEVENT hearings + VTODO tasks + VJOURNAL notes of this dossier |
 
 All DAV endpoints support: `OPTIONS`, `PROPFIND` (Depth 0/1), `REPORT` (sync-collection / addressbook-multiget / calendar-multiget), `GET`, `PUT` (with `If-Match` / `If-None-Match`), `DELETE` (with `If-Match`).
@@ -1571,8 +1570,8 @@ OpenTelemetry tracing. `init_app(app)` (called from `create_app` **before** `ini
 ```
 /dav/                                # Principal + addressbook/calendar home-set
 ├── addressbook/                     # CardDAV — contacts
-├── calendar/                        # CalDAV — hearings (VEVENT)
-├── tasks/                           # CalDAV — standalone tasks ONLY (dossier_id=None)
+├── general/                         # « Général » — VEVENT + VTODO + VJOURNAL
+│                                    #   for every item with NO dossier
 ├── dossier-{dossier1Id}/            # Per-dossier: VTODO + VJOURNAL
 │   ├── {taskId}.ics                # VTODO
 │   └── {noteId}.ics                # VJOURNAL
@@ -1641,7 +1640,7 @@ Sync hygiene rules:
 - Honor `Prefer: return=minimal` by omitting bodies on successful writes.
 - Harmless error: DavX5 SQLite foreign-key errors when a dossier collection disappears (closed/archived dossier) — client-side race, safe to ignore.
 - Post-D1 migration required: users must **remove and re-add** the DavX5 account after deploying D1.
-- **Same for the July 2026 hearings split** (dossier-linked hearings moved out of `/dav/calendar/` into `/dav/dossier-{id}/`): **remove and re-add the DavX5 account.** A relocation cannot be expressed implicitly in this sync model — sync tokens are non-monotonic UUIDs, and a client that never receives a tombstone keeps its local copy — so the account reset is the guaranteed convergence path (user decision 2026-07-23; deliberately no migration script). Each active dossier then appears in DavX5 **both** as a calendar (VEVENT) and as a jtx list (VTODO/VJOURNAL); tick each where you want it.
+- **Same for the July 2026 hearings split AND the « Général » collection** (ship together, ONE account reset) (dossier-linked hearings moved out of `/dav/calendar/` into `/dav/dossier-{id}/`): **remove and re-add the DavX5 account.** A relocation cannot be expressed implicitly in this sync model — sync tokens are non-monotonic UUIDs, and a client that never receives a tombstone keeps its local copy — so the account reset is the guaranteed convergence path (user decision 2026-07-23; deliberately no migration script). Each active dossier then appears in DavX5 **both** as a calendar (VEVENT) and as a jtx list (VTODO/VJOURNAL); tick each where you want it.
 
 ---
 
@@ -1769,6 +1768,9 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Never edit a `static/vendor/` file in place** — they're cached `immutable` for a year. A changed asset gets a new version/hash filename, plus updates to the templates that reference it, the precache list in `static/sw.js`, and the Early Hints lists in `security.py`.
 - **Script order at the end of `<body>` is load-bearing** (App Check boot → page scripts → htmx → Alpine). Execution follows document order — the Firebase/App Check boot scripts run synchronously at parse time, and the vendored htmx/Alpine `defer` scripts run in document order at `DOMContentLoaded`; position, not a sync/defer phase, is the guarantee. (Rocket Loader, which used to defer all scripts while preserving that order, was disabled at the edge on 2026-07-11.) Moving htmx above the boot reopens a race where `hx-trigger="load"` requests fire without the `X-Firebase-AppCheck` header and 401; moving Alpine above inline component definitions breaks `x-data` evaluation.
 - **MCP output: date-only fields must never pass through `to_mtl`.** Fields stored as midnight UTC (`timeentries.date`, `expenses.date`, invoice `date`/`due_date`, task `due_date`, protocol `start_date`/`end_date`/step `deadline_date`, dossier `opened_date`/`closed_date`/`prescription_date`/`droit_action_date`/`date_avis`) are emitted as the **UTC calendar date** via `mcp.tools.date_str` — a Montréal conversion shifts them to the previous day. True timestamps go through `mcp.tools.iso_mtl`.
+- **« Général » is a real DAV collection, not a UI label** (July 2026). `/dav/general/` carries every hearing, task **and note** with no dossier, and is served by the SAME code as a dossier collection — `dav/dossier_collections.py` is written against a *scope*, a dossier id where `""` means Général (`_href_prefix`, `_resolve_scope`). Sharing the implementation is the point: comp-filter, tombstones and the "the URL decides the dossier" rule cannot drift. It replaced `/dav/calendar/` + `/dav/tasks/`, both **removed**. It has no lifecycle, so it is never drained the way a closed dossier is.
+- **`dav.sync.collection_for(dossier_id)` is the ONE routing rule for a CTag bump.** Tasks store `None` for "no dossier", notes and hearings `""` — both falsy, so no migration was needed. Every write path goes through it (`routes/notes.py`, `routes/tasks.py`, `routes/hearings.py`, `models/protocol.py`, `dav/dossier_collections.py`, `mcp/handlers.py`). The old `routes/notes.py` bumped only `if note.get("dossier_id")`; a dossier-less note would have been written, shown in the app, and **never synced**.
+- **A note's `dossier_id` is optional since July 2026, which removed a guard.** `models/note._validate` no longer requires one, so blanking an *unresolvable* id — which `routes/notes._enrich_dossier_info` used to do — now silently files a dossier note under « Général » instead of erroring. That helper returns `(data, errors)` and **refuses** an id that does not resolve; `mcp/handlers.create_note` does the same, and its tool description tells the model never to omit `dossier_id` as a fallback for "I couldn't find the dossier".
 - **A dossier-linked hearing lives in ONE collection — `dossier:{id}`, never `hearings`** (July 2026). `/dav/calendar/` now serves only hearings with an empty `dossier_id`, exactly as `/dav/tasks/` serves only dossier-less tasks; `dav/caldav.py` funnels every listing through `_standalone_hearings()` and every per-resource lookup through `_standalone_or_404()`. Serving the same hearing from both would make DavX5 import the court date twice, and a PUT/DELETE through the wrong collection bumps a CTag the other never watches. `routes/hearings.py._sync_name()` picks the collection for every web-UI write, and the update path tombstones the OLD collection + `remove_tombstone`s the NEW one when the dossier changes (the shape `routes/tasks.py` uses). **Closing a dossier drains its hearings too** — `_sync_dossier_dav_visibility` tombstones tasks, notes *and* hearings, or stale court dates sit on the phone forever once the collection stops being advertised.
 - **The per-dossier collection is mixed-component, so `calendar-query` MUST honor `comp-filter`.** `DOSSIER_COMPONENTS` (in `dav/dossier_collections.py`) is the single source of truth, imported by `dav/__init__.py` for the root Depth:1 listing — two hard-coded literals that disagree mean discovery promises a capability the collection then denies. `requested_components()` parses the RFC 4791 §9.7.1 nesting and **degrades to "return everything" on an absent or malformed filter, never to empty** (an empty collection reads to the client as "all deleted"). `sync-collection` is structurally component-blind (RFC 6578 defines no filter), so it reports every member and the client routes by component after fetching bodies — that is expected, not a bug.
 - **`hearing_to_vevent` emitted neither `DTSTAMP` nor `CREATED` until July 2026.** DTSTAMP is mandatory (RFC 5545 §3.6.1); the omission slid because the Android calendar provider tolerates it. `CREATED` is the same jtx Board `icalobject.created` NOT-NULL trap documented for VJOURNAL, and it becomes reachable the moment a VEVENT enters a per-dossier collection jtx also subscribes to. Likewise `create_hearing` **ignored a caller-supplied `id`/`vevent_uid`** and minted fresh ones, so a CalDAV PUT stored the event under an id the client never learns — every later GET of that href 404s while a duplicate syncs down. Both fixed; `tests/test_dav_hearings.py` pins them.

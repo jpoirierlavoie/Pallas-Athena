@@ -16,7 +16,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, record_tombstone, remove_tombstone
+from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
 from security import safe_internal_redirect
 from models.task import (
     CATEGORY_LABELS,
@@ -42,6 +42,18 @@ from models.dossier import (
 )
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/taches")
+
+
+GENERAL_FILTER = "general"
+
+
+def _model_dossier(value: str):
+    """Map a filter value to the model's dossier_id argument.
+
+    « Général » is not a dossier id — the model has no "no dossier"
+    query, so the caller filters in Python afterwards.
+    """
+    return None if (not value or value == GENERAL_FILTER) else value
 
 
 def _is_htmx() -> bool:
@@ -169,6 +181,12 @@ def _grouped_tasks(
         priority_filter = ""
     if category_filter not in VALID_CATEGORIES:
         category_filter = ""
+
+    # « Général » is not a dossier id: the model has no "no dossier" query,
+    # so it falls through as "no filter" and is narrowed in Python below.
+    general_only = dossier_filter == GENERAL_FILTER
+    if general_only:
+        dossier_filter = ""
     if priority_filter or category_filter:
         # Legacy fallback: full scan + client-side filters (occasional path).
         tasks = list_tasks(
@@ -177,6 +195,8 @@ def _grouped_tasks(
             priority_filter=priority_filter or None,
             category_filter=category_filter or None,
         )
+        if general_only:
+            tasks = [t for t in tasks if not t.get("dossier_id")]
         active = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
         completed = [t for t in tasks if t.get("status") == "terminée"]
         cancelled = [t for t in tasks if t.get("status") == "annulée"]
@@ -199,6 +219,11 @@ def _grouped_tasks(
             completed = group
         else:
             cancelled = group
+
+    if general_only:
+        active = [t for t in active if not t.get("dossier_id")]
+        completed = [t for t in completed if not t.get("dossier_id")]
+        cancelled = [t for t in cancelled if not t.get("dossier_id")]
 
     return (
         sort_tasks_for_display(active),
@@ -293,10 +318,7 @@ def task_create() -> str:
         ctx.update(task=data, errors=errors, return_to=return_to)
         return render_template("tasks/form.html", **ctx)
 
-    if task.get("dossier_id"):
-        bump_ctag(f"dossier:{task['dossier_id']}")
-    else:
-        bump_ctag("tasks")
+    bump_ctag(collection_for(task.get("dossier_id")))
 
     target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
     if _is_htmx():
@@ -371,27 +393,17 @@ def task_update(task_id: str) -> str:
         ctx.update(task=data, errors=errors, return_to=return_to)
         return render_template("tasks/form.html", **ctx)
 
-    new_dossier_id = task.get("dossier_id")
-    if old_dossier_id != new_dossier_id:
-        # Task moved between dossiers (or to/from standalone)
-        if old_dossier_id:
-            record_tombstone(f"dossier:{old_dossier_id}", task_id)
-            bump_ctag(f"dossier:{old_dossier_id}")
-        else:
-            record_tombstone("tasks", task_id)
-            bump_ctag("tasks")
+    old_scope = collection_for(old_dossier_id)
+    new_scope = collection_for(task.get("dossier_id"))
+    if old_scope != new_scope:
+        # Task moved between collections (dossier <-> dossier, or
+        # to/from « Général »).
+        record_tombstone(old_scope, task_id)
+        bump_ctag(old_scope)
         # The task (re)enters its new collection — drop any stale tombstone
         # there so one sync REPORT never reports it as both live and deleted.
-        if new_dossier_id:
-            remove_tombstone(f"dossier:{new_dossier_id}", task_id)
-            bump_ctag(f"dossier:{new_dossier_id}")
-        else:
-            remove_tombstone("tasks", task_id)
-            bump_ctag("tasks")
-    elif new_dossier_id:
-        bump_ctag(f"dossier:{new_dossier_id}")
-    else:
-        bump_ctag("tasks")
+        remove_tombstone(new_scope, task_id)
+    bump_ctag(new_scope)
 
     fallback = url_for("tasks.task_detail", task_id=task_id)
     target = safe_internal_redirect(return_to, fallback)
@@ -417,12 +429,9 @@ def task_delete(task_id: str) -> str:
     success, error = delete_task(task_id)
 
     if success:
-        if dossier_id:
-            record_tombstone(f"dossier:{dossier_id}", task_id)
-            bump_ctag(f"dossier:{dossier_id}")
-        else:
-            record_tombstone("tasks", task_id)
-            bump_ctag("tasks")
+        scope = collection_for(dossier_id)
+        record_tombstone(scope, task_id)
+        bump_ctag(scope)
 
     target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
     if _is_htmx():
@@ -447,10 +456,7 @@ def task_toggle(task_id: str) -> str:
     if errors:
         return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
 
-    if task.get("dossier_id"):
-        bump_ctag(f"dossier:{task['dossier_id']}")
-    else:
-        bump_ctag("tasks")
+    bump_ctag(collection_for(task.get("dossier_id")))
 
     if _is_htmx():
         # Re-fetch with active filters (posted via hx-include on the toggle
@@ -507,7 +513,7 @@ _PRIORITY_RANK = {"haute": 0, "normale": 1, "basse": 2}
 def _filtered_tasks() -> list[dict]:
     """Fetch tasks honouring the current query-string filters."""
     return list_tasks(
-        dossier_id=request.args.get("dossier", "").strip() or None,
+        dossier_id=_model_dossier(request.args.get("dossier", "").strip()),
         status_filter=request.args.get("status", "").strip() or None,
         priority_filter=request.args.get("priority", "").strip() or None,
         category_filter=request.args.get("category", "").strip() or None,

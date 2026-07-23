@@ -101,20 +101,26 @@ def dav_root_propfind() -> Response:
     # Depth:1 — include child collections with proper resource types
     if depth == "1":
         from dav.xml_utils import carddav_tag
-        from dav.dossier_collections import DOSSIER_COMPONENTS
-        from dav.sync import get_ctags_bulk
+        from dav.dossier_collections import (
+            DOSSIER_COMPONENTS,
+            GENERAL_DISPLAY_NAME,
+            GENERAL_PATH,
+        )
+        from dav.sync import GENERAL_COLLECTION, get_ctags_bulk
         from models.dossier import list_dossiers
 
-        # -- Static collections (addressbook, calendar, standalone tasks) --
+        # -- Static collections (addressbook + \u00ab G\u00e9n\u00e9ral \u00bb) ----------------
+        # \u00ab G\u00e9n\u00e9ral \u00bb carries every item belonging to no dossier \u2014 hearings,
+        # tasks AND notes \u2014 with exactly the shape of a dossier collection.
+        # It replaced the split /dav/calendar/ + /dav/tasks/ pair in July
+        # 2026; both of those URLs are gone.
         static_collections = [
             ("/dav/addressbook/", "Clients", "addressbook", None),
-            ("/dav/calendar/", "Audiences", "calendar", "VEVENT"),
-            ("/dav/tasks/", "T\u00e2ches (sans dossier)", "calendar", "VTODO"),
+            (GENERAL_PATH, GENERAL_DISPLAY_NAME, "calendar", None),
         ]
         ctag_names = {
             "/dav/addressbook/": "parties",
-            "/dav/calendar/": "hearings",
-            "/dav/tasks/": "tasks",
+            GENERAL_PATH: GENERAL_COLLECTION,
         }
 
         # Resolve active dossiers first so every collection's CTag can be
@@ -156,13 +162,18 @@ def dav_root_propfind() -> Response:
                 f"Pallas Athena \u2014 {coll_name}"
             )
 
-            if component:
+            if coll_type == "calendar":
+                # « Général » is mixed-component like every dossier
+                # collection, and reads the SAME constant — discovery and the
+                # collection's own PROPFIND cannot promise different
+                # capabilities.
                 sccs = ET.SubElement(
                     child_prop,
                     caldav_tag("supported-calendar-component-set"),
                 )
-                comp_el = ET.SubElement(sccs, caldav_tag("comp"))
-                comp_el.set("name", component)
+                names = (component,) if component else DOSSIER_COMPONENTS
+                for name in names:
+                    ET.SubElement(sccs, caldav_tag("comp")).set("name", name)
 
             sync_name = ctag_names.get(coll_path)
             if sync_name:

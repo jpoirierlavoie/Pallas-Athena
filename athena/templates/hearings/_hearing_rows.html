@@ -63,6 +63,8 @@
         {% endif %}
         {% if h.dossier_file_number %}
         <span class="font-medium text-indigo-600">{{ h.dossier_file_number }}</span>
+        {% else %}
+        <span class="text-xs text-gray-700 bg-gray-100 rounded-full px-2 py-0.5">Général</span>
         {% endif %}
         {% if h.location %}
         <span class="truncate max-w-[200px]">{{ h.location }}</span>

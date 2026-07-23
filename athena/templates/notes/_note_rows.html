@@ -42,6 +42,8 @@
       <div class="flex flex-wrap items-center gap-1.5">
         {% if note.dossier_file_number %}
         <span class="text-xs text-indigo-600 font-medium">{{ note.dossier_file_number }}</span>
+        {% else %}
+        <span class="text-xs text-gray-700 bg-gray-100 rounded-full px-2 py-0.5">Général</span>
         {% endif %}
         {% if note.created_at and note.created_at.strftime is defined %}
         {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}

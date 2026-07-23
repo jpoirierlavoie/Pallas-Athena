@@ -1,4 +1,4 @@
-"""DAV tests for hearings living in per-dossier collections.
+"""DAV tests: per-dossier collections and « Général ».
 
 The first DAV tests in the suite. DavX5 fails SILENTLY — a wrong component
 set, a hearing served from two collections, or a missing CTag bump produces
@@ -25,10 +25,9 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from flask import Flask
 
 with mock.patch("google.cloud.firestore.Client"):
-    import dav.caldav as caldav
     import dav.dossier_collections as dc
+    import dav.sync as dav_sync
     import models.hearing as hearing_model
-    import routes.hearings as hearing_routes
 
 UTC = timezone.utc
 CAL = "urn:ietf:params:xml:ns:caldav"
@@ -86,13 +85,17 @@ def test_vevent_stamps_survive_a_hearing_with_no_timestamps():
 
 def test_dav_href_follows_the_dossier_link():
     assert hearing_model.dav_href_for("d1", "h1") == "/dav/dossier-d1/h1.ics"
-    assert hearing_model.dav_href_for("", "h1") == "/dav/calendar/h1.ics"
+    assert hearing_model.dav_href_for("", "h1") == "/dav/general/h1.ics"
 
 
-def test_route_sync_name_picks_the_right_collection():
-    assert hearing_routes._sync_name("d1") == "dossier:d1"
-    assert hearing_routes._sync_name(None) == "hearings"
-    assert hearing_routes._sync_name("") == "hearings"
+def test_collection_for_is_the_one_routing_rule():
+    """Every write path routes its CTag bump through this. Tasks store None
+    for "no dossier", notes and hearings "" — both must land in Général, or
+    the item is written and never syncs."""
+    assert dav_sync.collection_for("d1") == "dossier:d1"
+    assert dav_sync.collection_for(None) == dav_sync.GENERAL_COLLECTION
+    assert dav_sync.collection_for("") == dav_sync.GENERAL_COLLECTION
+    assert dav_sync.GENERAL_COLLECTION == "general"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -169,7 +172,6 @@ def app(monkeypatch):
     monkeypatch.setattr("dav.dav_auth._check_success_cache", lambda u, p: True)
     application = Flask(__name__)
     application.config["SECRET_KEY"] = "test-secret"
-    application.register_blueprint(caldav.caldav_bp)
     application.register_blueprint(dc.dossier_dav_bp)
     return application
 
@@ -186,11 +188,7 @@ def linked_and_standalone(monkeypatch):
             return [h for h in everything if h.get("dossier_id") == dossier_id]
         return list(everything)
 
-    monkeypatch.setattr(caldav, "list_hearings", _list)
     monkeypatch.setattr(dc, "list_hearings", _list)
-    monkeypatch.setattr(
-        caldav, "get_hearing", lambda i: next((h for h in everything if h["id"] == i), None)
-    )
     monkeypatch.setattr(
         dc, "get_hearing", lambda i: next((h for h in everything if h["id"] == i), None)
     )
@@ -203,7 +201,7 @@ def linked_and_standalone(monkeypatch):
         lambda i: {"id": "d1", "file_number": "2026-001",
                    "title": "Tremblay c. Lavoie", "status": "actif"} if i == "d1" else None,
     )
-    for module in (dc, caldav):
+    for module in (dc,):
         monkeypatch.setattr(module, "get_ctag", lambda n: "ctag-1")
         monkeypatch.setattr(module, "get_sync_token", lambda n: "token-1")
         monkeypatch.setattr(module, "get_tombstones", lambda n: [])
@@ -217,18 +215,18 @@ def _hrefs(payload: bytes) -> set[str]:
     }
 
 
-def test_shared_calendar_hides_dossier_linked_hearings(
+def test_general_collection_hides_dossier_linked_hearings(
     app, linked_and_standalone
 ):
     """Serving the same hearing from both collections makes DavX5 import the
     court date twice, and a write through one never bumps the other."""
     resp = app.test_client().open(
-        "/dav/calendar/", method="PROPFIND", headers={**AUTH, "Depth": "1"}
+        "/dav/general/", method="PROPFIND", headers={**AUTH, "Depth": "1"}
     )
     assert resp.status_code == 207
     hrefs = _hrefs(resp.data)
-    assert "/dav/calendar/h-solo.ics" in hrefs
-    assert "/dav/calendar/h-linked.ics" not in hrefs
+    assert "/dav/general/h-solo.ics" in hrefs
+    assert "/dav/general/h-linked.ics" not in hrefs
 
 
 def test_dossier_collection_lists_its_hearings(app, linked_and_standalone):
@@ -239,14 +237,14 @@ def test_dossier_collection_lists_its_hearings(app, linked_and_standalone):
     assert "/dav/dossier-d1/h-linked.ics" in _hrefs(resp.data)
 
 
-def test_shared_calendar_404s_a_dossier_linked_hearing(
+def test_general_collection_404s_a_dossier_linked_hearing(
     app, linked_and_standalone
 ):
     client = app.test_client()
-    assert client.get("/dav/calendar/h-solo.ics", headers=AUTH).status_code == 200
-    assert client.get("/dav/calendar/h-linked.ics", headers=AUTH).status_code == 404
+    assert client.get("/dav/general/h-solo.ics", headers=AUTH).status_code == 200
+    assert client.get("/dav/general/h-linked.ics", headers=AUTH).status_code == 404
     assert (
-        client.delete("/dav/calendar/h-linked.ics", headers=AUTH).status_code == 404
+        client.delete("/dav/general/h-linked.ics", headers=AUTH).status_code == 404
     )
 
 
@@ -397,7 +395,7 @@ def test_create_hearing_honours_a_supplied_id_and_uid(monkeypatch):
     assert created["id"] == "from-url"
     assert created["vevent_uid"] == "client-uid"
     assert written["_doc_id"] == "from-url"
-    assert created["dav_href"] == "/dav/calendar/from-url.ics"
+    assert created["dav_href"] == "/dav/general/from-url.ics"
 
 
 def test_create_hearing_still_mints_an_id_when_none_given(monkeypatch):
@@ -416,3 +414,127 @@ def test_create_hearing_still_mints_an_id_when_none_given(monkeypatch):
     assert created["id"]
     assert created["vevent_uid"]
     assert created["dav_href"] == f"/dav/dossier-d1/{created['id']}.ics"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# « Général » — the collection for everything without a dossier
+# ══════════════════════════════════════════════════════════════════════
+
+@pytest.fixture()
+def general_members(monkeypatch):
+    """One of each component, all dossier-less, plus one linked hearing."""
+    solo_hearing = _hearing("h-solo", "", title="Rendez-vous")
+    linked_hearing = _hearing("h-linked", "d1")
+    solo_task = {"id": "t-solo", "dossier_id": None, "title": "Rappel",
+                 "status": "à_faire", "priority": "normale", "etag": "e-t",
+                 "vtodo_uid": "u-t", "category": "autre"}
+    solo_note = {"id": "n-solo", "dossier_id": "", "title": "Veille",
+                 "content": "Texte", "category": "recherche", "etag": "e-n",
+                 "vjournal_uid": "u-n",
+                 "created_at": datetime(2026, 7, 1, tzinfo=UTC),
+                 "updated_at": datetime(2026, 7, 1, tzinfo=UTC)}
+
+    monkeypatch.setattr(dc, "list_hearings",
+                        lambda dossier_id=None, **k: (
+                            [linked_hearing] if dossier_id
+                            else [solo_hearing, linked_hearing]))
+    monkeypatch.setattr(dc, "list_tasks",
+                        lambda dossier_id=None, **k: [] if dossier_id else [solo_task])
+    monkeypatch.setattr(dc, "list_notes",
+                        lambda dossier_id=None, **k: [] if dossier_id else [solo_note])
+    monkeypatch.setattr(dc, "get_hearing", lambda i: solo_hearing if i == "h-solo" else None)
+    monkeypatch.setattr(dc, "get_task", lambda i: solo_task if i == "t-solo" else None)
+    monkeypatch.setattr(dc, "get_note", lambda i: solo_note if i == "n-solo" else None)
+    monkeypatch.setattr(dc, "get_ctag", lambda n: "ctag-g")
+    monkeypatch.setattr(dc, "get_sync_token", lambda n: "token-g")
+    monkeypatch.setattr(dc, "get_tombstones", lambda n: [])
+    return solo_hearing, solo_task, solo_note
+
+
+def test_general_lists_all_three_component_types(app, general_members):
+    resp = app.test_client().open(
+        "/dav/general/", method="PROPFIND", headers={**AUTH, "Depth": "1"}
+    )
+    assert resp.status_code == 207
+    hrefs = _hrefs(resp.data)
+    assert "/dav/general/h-solo.ics" in hrefs
+    assert "/dav/general/t-solo.ics" in hrefs
+    assert "/dav/general/n-solo.ics" in hrefs      # notes had NO home before
+    # A dossier-linked item must never appear here.
+    assert "/dav/general/h-linked.ics" not in hrefs
+
+
+def test_general_advertises_the_same_component_set_as_a_dossier(
+    app, general_members
+):
+    resp = app.test_client().open(
+        "/dav/general/", method="PROPFIND", headers={**AUTH, "Depth": "0"}
+    )
+    names = {el.get("name") for el in ET.fromstring(resp.data).iter(f"{{{CAL}}}comp")}
+    assert names == set(dc.DOSSIER_COMPONENTS)
+
+
+def test_general_displayname_is_general(app, general_members):
+    resp = app.test_client().open(
+        "/dav/general/", method="PROPFIND", headers={**AUTH, "Depth": "0"}
+    )
+    names = [el.text for el in ET.fromstring(resp.data).iter(f"{{{DAVNS}}}displayname")]
+    assert "Général" in names
+
+
+def test_general_comp_filter_still_applies(app, general_members):
+    body = (
+        f'<C:calendar-query xmlns:C="{CAL}" xmlns:D="{DAVNS}"><D:prop/>'
+        f'<C:filter><C:comp-filter name="VCALENDAR">'
+        f'<C:comp-filter name="VJOURNAL"/>'
+        f"</C:comp-filter></C:filter></C:calendar-query>"
+    )
+    resp = app.test_client().open(
+        "/dav/general/", method="REPORT", headers=AUTH, data=body
+    )
+    hrefs = _hrefs(resp.data)
+    assert "/dav/general/n-solo.ics" in hrefs
+    assert "/dav/general/h-solo.ics" not in hrefs
+    assert "/dav/general/t-solo.ics" not in hrefs
+
+
+def test_general_serves_a_dossier_less_note_as_vjournal(app, general_members):
+    resp = app.test_client().get("/dav/general/n-solo.ics", headers=AUTH)
+    assert resp.status_code == 200
+    assert "BEGIN:VJOURNAL" in resp.data.decode("utf-8")
+
+
+def test_put_into_general_forces_an_empty_dossier(app, monkeypatch):
+    """Symmetric to the dossier scope forcing its id: the URL decides, so a
+    payload claiming a dossier must not drag the item out of Général."""
+    seen = {}
+    for name in ("get_hearing", "get_task", "get_note"):
+        monkeypatch.setattr(dc, name, lambda i: None)
+    monkeypatch.setattr(
+        dc, "vevent_to_hearing",
+        lambda s: {"title": "A", "dossier_id": "UN-DOSSIER",
+                   "start_datetime": datetime(2026, 9, 1, tzinfo=UTC)},
+    )
+    monkeypatch.setattr(dc, "create_hearing",
+                        lambda d: (seen.update(d) or ({**d, "etag": "e"}, [])))
+    bumps = []
+    monkeypatch.setattr(dc, "bump_ctag", lambda n: bumps.append(n))
+    monkeypatch.setattr(dc, "remove_tombstone", lambda n, r: None)
+
+    resp = app.test_client().put(
+        "/dav/general/h-new.ics", headers=AUTH,
+        data="BEGIN:VCALENDAR\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR",
+    )
+    assert resp.status_code == 201
+    assert seen["dossier_id"] == ""
+    assert seen["dossier_file_number"] == ""   # never the pseudo-dossier label
+    assert seen["dossier_title"] == ""
+    assert bumps == ["general"]
+
+
+def test_general_scope_is_never_drained(app, general_members):
+    """A dossier collection empties when the file closes. Général has no
+    lifecycle — its items must always be listed."""
+    dossier, active = dc._resolve_scope("")
+    assert active is True
+    assert dc._is_general(dossier["id"])

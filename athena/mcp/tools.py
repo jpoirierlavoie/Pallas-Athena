@@ -396,9 +396,10 @@ TOOLS: dict[str, dict] = {
     "list_notes": {
         "title": "Notes d'un dossier",
         "description": (
-            "List the notes of a dossier (pinned first, then newest) with a "
-            "280-character plain-text preview. Use get_note for the full "
-            "Markdown content."
+            "List notes (pinned first, then newest) with a 280-character "
+            "plain-text preview. With dossier_id: that dossier's notes. "
+            "WITHOUT dossier_id: the « Général » notes — free journal entries "
+            "attached to no file. Use get_note for the full Markdown."
         ),
         "input_schema": {
             "type": "object",
@@ -406,7 +407,6 @@ TOOLS: dict[str, dict] = {
                 "dossier_id": _ID,
                 "limit": _limit(20),
             },
-            "required": ["dossier_id"],
             "additionalProperties": False,
         },
         "handler": "list_notes",
@@ -613,8 +613,14 @@ TOOLS: dict[str, dict] = {
     "create_note": {
         "title": "Créer une note dans un dossier",
         "description": (
-            "WRITE. Create a new note on a dossier — the intended home for "
-            "research results, summaries and analyses. Content is Markdown "
+            "WRITE. Create a new note — the intended home for research "
+            "results, summaries and analyses. With dossier_id it is filed on "
+            "that dossier; OMIT dossier_id only for work attached to no file "
+            "at all (legal watch, general research), which files it under "
+            "« Général ». Never omit it as a fallback because you could not "
+            "find the right dossier — an id you supply that does not exist is "
+            "refused outright, and that refusal is the signal to go look. "
+            "Content is Markdown "
             "in French. The note is permanent: this connector cannot edit or "
             "delete it afterwards, and it syncs to the lawyer's phone. "
             "Confirm with the user before calling, and never call it on a "
@@ -651,7 +657,7 @@ TOOLS: dict[str, dict] = {
                     "description": "Defaults to 'recherche'.",
                 },
             },
-            "required": ["dossier_id", "title", "content"],
+            "required": ["title", "content"],
             "additionalProperties": False,
         },
         "handler": "create_note",

@@ -28,6 +28,28 @@ SYNC_COLLECTION = "dav_sync"
 # Tombstones older than this are pruned opportunistically (see get_tombstones).
 TOMBSTONE_TTL_DAYS = 30
 
+# The "Général" collection: hearings, tasks and notes that belong to no
+# dossier. It replaced the split /dav/calendar/ + /dav/tasks/ pair in July
+# 2026 and has exactly the shape of a dossier collection.
+GENERAL_COLLECTION = "general"
+
+
+def collection_for(dossier_id: Optional[str]) -> str:
+    """DAV collection name an item belongs to, from its ``dossier_id``.
+
+    THE single source of truth for routing a write to the right CTag, used by
+    every write path (routes/notes, routes/tasks, routes/hearings, the DAV
+    handlers and the MCP note tools).
+
+    It exists as one function because the models never bump a CTag themselves
+    — bumping lives in the caller — so a path that picks the wrong name, or
+    picks none at all, leaves the item visible in the web UI while DavX5
+    silently never re-syncs it. Tasks store ``None`` for "no dossier" while
+    notes and hearings store ``""``; both are falsy, so this handles all
+    three without a data migration.
+    """
+    return f"dossier:{dossier_id}" if dossier_id else GENERAL_COLLECTION
+
 
 def _sync_ref(collection_name: str):
     """Return the Firestore document reference for a collection's sync data."""

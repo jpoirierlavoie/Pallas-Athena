@@ -14,7 +14,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag
+from dav.sync import bump_ctag, collection_for
 from security import safe_internal_redirect
 from models.note import (
     CATEGORY_LABELS,
@@ -29,6 +29,10 @@ from models.note import (
     update_note,
 )
 from models.dossier import get_dossier, list_dossiers
+
+# Reserved filter value: items belonging to no dossier. Not a dossier id
+# (those are UUIDv4), so it can never collide with a real one.
+GENERAL_FILTER = "general"
 
 notes_bp = Blueprint("notes", __name__, url_prefix="/notes")
 
@@ -46,23 +50,31 @@ def _template_context() -> dict:
     }
 
 
-def _enrich_dossier_info(data: dict) -> dict:
-    """Look up dossier and attach denormalized file_number + title."""
-    dossier_id = data.get("dossier_id", "")
-    if dossier_id:
-        dossier = get_dossier(dossier_id)
-        if dossier:
-            data["dossier_file_number"] = dossier.get("file_number", "")
-            data["dossier_title"] = dossier.get("title", "")
-        else:
-            data["dossier_id"] = ""
-            data["dossier_file_number"] = ""
-            data["dossier_title"] = ""
-    else:
-        data["dossier_id"] = ""
+def _enrich_dossier_info(data: dict) -> tuple[dict, list[str]]:
+    """Attach the denormalized dossier labels; return (data, errors).
+
+    Since a note may legitimately have NO dossier (it then belongs to
+    « Général »), an unresolvable dossier_id can no longer be blanked: the
+    model would accept the result and quietly file a dossier note under
+    Général instead. « Aucun dossier choisi » and « dossier introuvable »
+    must stay distinguishable, so the second returns an error.
+    """
+    dossier_id = (data.get("dossier_id") or "").strip()
+    data["dossier_id"] = dossier_id
+    if not dossier_id:
         data["dossier_file_number"] = ""
         data["dossier_title"] = ""
-    return data
+        return data, []
+
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        return data, [
+            "Dossier introuvable. Choisissez un dossier existant, ou laissez "
+            "le champ vide pour classer la note dans « Général »."
+        ]
+    data["dossier_file_number"] = dossier.get("file_number", "")
+    data["dossier_title"] = dossier.get("title", "")
+    return data, []
 
 
 def _form_data() -> dict:
@@ -127,12 +139,18 @@ def note_list() -> str:
     if category_filter not in VALID_CATEGORIES:
         category_filter = ""
 
-    if search_query or category_filter:
+    general_only = dossier_filter == GENERAL_FILTER
+    # « Général » has no server-side query: the models cannot express
+    # "no dossier" (tasks store None, notes ""), so it filters in Python
+    # over the materialized list.
+    model_dossier = None if general_only else (dossier_filter or None)
+
+    if search_query or category_filter or general_only:
         # Legacy fallback: search scans title + content and category is a
         # Python-side filter, so both need the fully materialized list.
         # These are occasional paths; the default view stays bounded below.
         notes = list_notes(
-            dossier_id=dossier_filter or None,
+            dossier_id=model_dossier,
             category=category_filter or None,
             search=search_query or None,
         )
@@ -140,7 +158,10 @@ def note_list() -> str:
         # Bounded default path: pinned notes + most recent unpinned notes,
         # ordered and limited server-side (~PINNED_LIMIT + RECENT_LIMIT
         # reads max) while keeping the pinned-first / newest-first order.
-        notes = list_notes_recent(dossier_id=dossier_filter or None)
+        notes = list_notes_recent(dossier_id=model_dossier)
+
+    if general_only:
+        notes = [n for n in notes if not n.get("dossier_id")]
 
     ctx = _template_context()
     ctx.update(
@@ -183,10 +204,10 @@ def note_new() -> str:
 def note_create() -> str:
     """Handle new note form submission."""
     data = _form_data()
-    data = _enrich_dossier_info(data)
+    data, link_errors = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
 
-    note, errors = create_note(data)
+    note, errors = (None, link_errors) if link_errors else create_note(data)
 
     if errors:
         ctx = _template_context()
@@ -197,8 +218,7 @@ def note_create() -> str:
         ctx.update(note=data, errors=errors, return_to=return_to)
         return render_template("notes/form.html", **ctx)
 
-    if note.get("dossier_id"):
-        bump_ctag(f"dossier:{note['dossier_id']}")
+    bump_ctag(collection_for(note.get("dossier_id")))
 
     # Land on the freshly created note itself; thread a validated return_to so
     # the detail view's « Retour » link still points back to the caller
@@ -263,11 +283,12 @@ def note_update(note_id: str) -> str:
     if not existing_note:
         return redirect(url_for("notes.note_list"))
 
-    data = _form_data()
-    data = _enrich_dossier_info(data)
+    data, link_errors = _enrich_dossier_info(_form_data())
     return_to = request.form.get("return_to", "")
 
-    note, errors = update_note(note_id, data)
+    note, errors = (
+        (None, link_errors) if link_errors else update_note(note_id, data)
+    )
 
     if errors:
         data["id"] = note_id
@@ -279,8 +300,7 @@ def note_update(note_id: str) -> str:
         ctx.update(note=data, errors=errors, return_to=return_to)
         return render_template("notes/form.html", **ctx)
 
-    if note.get("dossier_id"):
-        bump_ctag(f"dossier:{note['dossier_id']}")
+    bump_ctag(collection_for(note.get("dossier_id")))
 
     # Return to the note itself after saving; thread a validated return_to for
     # the detail view's « Retour » link (see note_create for the guard rationale).
@@ -309,8 +329,8 @@ def note_delete(note_id: str) -> str:
 
     success, error = delete_note(note_id)
 
-    if success and dossier_id:
-        bump_ctag(f"dossier:{dossier_id}")
+    if success:
+        bump_ctag(collection_for(dossier_id))
 
     target = safe_internal_redirect(return_to, url_for("notes.note_list"))
     if _is_htmx():
@@ -407,8 +427,7 @@ def note_pin(note_id: str) -> str:
             return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         return redirect(url_for("notes.note_list"))
 
-    if note.get("dossier_id"):
-        bump_ctag(f"dossier:{note['dossier_id']}")
+    bump_ctag(collection_for(note.get("dossier_id")))
 
     if _is_htmx():
         # Redirect back to where the user was

@@ -54,6 +54,8 @@
       <div class="flex flex-wrap items-center gap-1.5">
         {% if task.dossier_file_number %}
         <span class="text-xs text-indigo-600 font-medium">{{ task.dossier_file_number }}</span>
+        {% else %}
+        <span class="text-xs text-gray-700 bg-gray-100 rounded-full px-2 py-0.5">Général</span>
         {% endif %}
         <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ category_colors.get(task.category, 'bg-gray-100 text-gray-600') }}">
           {{ category_labels.get(task.category, task.category) }}

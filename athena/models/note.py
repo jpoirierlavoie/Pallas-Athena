@@ -1,7 +1,15 @@
-"""Dossier notes — timestamped journal entries linked to case files.
+"""Notes — timestamped journal entries, usually linked to a case file.
 
-Each note becomes a VJOURNAL resource in the dossier's CalDAV collection
-at /dav/dossier-{dossierId}/{noteId}.ics
+Each note becomes a VJOURNAL resource in a CalDAV collection:
+    /dav/dossier-{dossierId}/{noteId}.ics   when linked to a dossier
+    /dav/general/{noteId}.ics               when it has none
+
+``dossier_id`` is OPTIONAL (July 2026): a note with none is a free journal
+entry — legal watch, a research memo tied to no file — and lives in the
+« Général » collection alongside dossier-less tasks and hearings. Callers
+must still distinguish "no dossier chosen" from "dossier not found": the
+model can no longer tell them apart, so blanking an unknown id silently
+turns a dossier note into a general one.
 """
 
 import logging
@@ -100,8 +108,10 @@ def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid)."""
     errors: list[str] = []
 
-    if not data.get("dossier_id", "").strip():
-        errors.append("Un dossier doit être associé à cette note.")
+    # dossier_id is deliberately NOT required: an empty one means the note
+    # belongs to « Général ». The caller is responsible for refusing a
+    # dossier_id that was supplied but does not resolve — see
+    # routes/notes._enrich_dossier_info and mcp/handlers.create_note.
     if not data.get("title", "").strip():
         errors.append("Le titre de la note est requis.")
     if not data.get("content", "").strip():

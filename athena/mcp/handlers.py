@@ -36,7 +36,7 @@ import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
-from dav.sync import bump_ctag, remove_tombstone
+from dav.sync import bump_ctag, collection_for, remove_tombstone
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -552,7 +552,14 @@ def list_hearings(args: dict) -> dict:
 
 def list_notes(args: dict) -> dict:
     limit = _limit_arg(args, 20)
-    notes = note_model.list_notes(dossier_id=args["dossier_id"])
+    dossier_id = args.get("dossier_id")
+    if dossier_id:
+        notes = note_model.list_notes(dossier_id=dossier_id)
+    else:
+        # « Général »: notes attached to no dossier. Filtered in Python —
+        # the model has no "no dossier" query (see dav/dossier_collections
+        # ._collection_members for the same constraint).
+        notes = [n for n in note_model.list_notes() if not n.get("dossier_id")]
     truncated = len(notes) > limit
     items = [
         {
@@ -1058,6 +1065,15 @@ _AUTOLINK_EMAIL_RE = re.compile(r"<([^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)>")
 _PROVENANCE_SEPARATOR = "\n\n---\n\n"
 
 
+def _general_scope() -> dict:
+    """« Général » as a dossier-shaped dict: no labels, always DAV-visible.
+
+    Its collection has no lifecycle, so it is never drained the way a closed
+    dossier is — a general note always reaches the phone.
+    """
+    return {"id": "", "file_number": "", "title": "", "status": "actif"}
+
+
 def _today_mtl() -> date:
     """Today's Montréal calendar date (a note is stamped in local time)."""
     return datetime.now(MTL).date()
@@ -1127,15 +1143,14 @@ def _bump_note_ctag(dossier_id: str, note_id: str, *, created: bool) -> bool:
     note in a client's file. The caller surfaces the outcome as
     ``dav_synced`` instead.
     """
-    if not dossier_id:
-        return False
+    scope = collection_for(dossier_id)
     try:
         if created:
             # A recycled id could still carry a tombstone from a previous
             # delete; RFC 6578 requires one response per href, and the
             # sync-collection builder skips a tombstoned id.
-            remove_tombstone(f"dossier:{dossier_id}", note_id)
-        bump_ctag(f"dossier:{dossier_id}")
+            remove_tombstone(scope, note_id)
+        bump_ctag(scope)
         return True
     except Exception:
         from utils.logging_setup import log_unexpected
@@ -1202,16 +1217,21 @@ def _write_result(
 
 def create_note(args: dict) -> dict:
     dossier_id = (args.get("dossier_id") or "").strip()
-    # Resolve the dossier FIRST. models/note._validate only checks that
-    # dossier_id is a non-empty string, so a hallucinated UUID would produce
-    # an orphan note: invisible in the dossier's Notes tab, absent from
-    # /dav/dossier-{id}/, and unreachable via list_notes.
-    dossier = dossier_model.get_dossier(dossier_id)
-    if dossier is None:
-        raise ToolArgumentError(
-            f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers ou "
-            "get_dossier pour obtenir un dossier_id valide."
-        )
+    # An ABSENT dossier_id means « Général ». A SUPPLIED one must resolve:
+    # models/note._validate no longer requires a dossier, so a hallucinated
+    # UUID would otherwise be silently downgraded to a general note instead
+    # of erroring — research filed where nobody will look for it.
+    if dossier_id:
+        dossier = dossier_model.get_dossier(dossier_id)
+        if dossier is None:
+            raise ToolArgumentError(
+                f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
+                "ou get_dossier pour obtenir un dossier_id valide. N'omettez "
+                "pas dossier_id pour contourner cette erreur : une note sans "
+                "dossier va dans « Général »."
+            )
+    else:
+        dossier = _general_scope()
 
     title = _clean_note_text((args.get("title") or "").strip(), "title")
     body = _clean_note_text((args.get("content") or "").strip(), "content")
@@ -1303,7 +1323,9 @@ def append_to_note(args: dict) -> dict:
         )
 
     dossier_id = existing.get("dossier_id", "")
-    dossier = dossier_model.get_dossier(dossier_id)
+    dossier = (
+        dossier_model.get_dossier(dossier_id) if dossier_id else _general_scope()
+    )
     # Whitelist of exactly one field: a stray dossier_id in the update would
     # move the note between dossiers — and between DAV collections, leaving
     # the origin collection un-bumped.

@@ -1010,7 +1010,7 @@ def _auto_create_tasks_for_steps(
 ) -> None:
     """Create linked tasks for each protocol step."""
     try:
-        from dav.sync import bump_ctag
+        from dav.sync import bump_ctag, collection_for
         from models.task import create_task
 
         dossier_id = protocol.get("dossier_id")
@@ -1032,10 +1032,7 @@ def _auto_create_tasks_for_steps(
             task, errors = create_task(task_data)
             if task:
                 # Bump per-dossier CTag so DavX5 picks up the new task
-                if dossier_id:
-                    bump_ctag(f"dossier:{dossier_id}")
-                else:
-                    bump_ctag("tasks")
+                bump_ctag(collection_for(dossier_id))
                 # Link task to step
                 try:
                     db.collection(COLLECTION).document(

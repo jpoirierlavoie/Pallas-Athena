@@ -1139,3 +1139,61 @@ def test_writes_carry_a_dated_provenance_stamp(monkeypatch, bumps, created):
     assert seen["content"].startswith("Original")
     assert "*Ajouté par Claude le 22 juillet 2026*" in seen["content"]
     assert "\n---\n" in seen["content"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# « Général » — notes attached to no dossier
+# ══════════════════════════════════════════════════════════════════════
+
+def test_general_note_bumps_the_general_ctag(monkeypatch, bumps, created):
+    """THE risk: a note with no dossier must still bump a collection. Bump
+    nothing and it is written, visible in the app, and never on the phone."""
+    def _must_not_run(_i):
+        raise AssertionError("no dossier lookup when dossier_id is absent")
+
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", _must_not_run)
+    payload = handlers.create_note({"title": "Veille", "content": "Corps"})
+    assert bumps["bump"] == ["general"]
+    assert bumps["tombstone"] == [("general", "n-new")]
+    assert created["dossier_id"] == ""
+    assert created["dossier_file_number"] == ""
+    assert payload["dav_synced"] is True   # Général is never drained
+    assert payload["warnings"] == []
+
+
+def test_unknown_dossier_is_still_refused_never_downgraded(monkeypatch, bumps):
+    """models/note._validate no longer requires a dossier, so a bad id would
+    otherwise be filed silently under Général instead of erroring."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+
+    def _must_not_run(_data):
+        raise AssertionError("wrote a note despite an unknown dossier_id")
+
+    monkeypatch.setattr(handlers.note_model, "create_note", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
+        handlers.create_note(
+            {"dossier_id": "inexistant", "title": "T", "content": "C"}
+        )
+    assert bumps["bump"] == []
+
+
+def test_list_notes_without_dossier_returns_the_general_ones(monkeypatch):
+    monkeypatch.setattr(
+        handlers.note_model, "list_notes",
+        lambda **kw: [
+            {"id": "n1", "dossier_id": "", "title": "Veille", "content": "a"},
+            {"id": "n2", "dossier_id": "d1", "title": "Dossier", "content": "b"},
+        ],
+    )
+    payload = handlers.list_notes({})
+    assert [i["id"] for i in payload["items"]] == ["n1"]
+
+
+def test_create_note_schema_no_longer_requires_a_dossier():
+    schema = tools.TOOLS["create_note"]["input_schema"]
+    assert "dossier_id" not in schema["required"]
+    assert "dossier_id" in schema["properties"]      # still accepted
+    assert tools.validate_args(schema, {"title": "T", "content": "C"}) == []
+    assert "dossier_id" not in tools.TOOLS["list_notes"]["input_schema"].get(
+        "required", []
+    )
