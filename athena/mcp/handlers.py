@@ -710,9 +710,16 @@ def get_partie(args: dict) -> dict:
 
     dossier_refs = []
     for d in dossier_model.list_dossiers_for_partie(partie_id):
-        relation = (
-            "client" if partie_id in d.get("client_ids", []) else "partie_adverse"
-        )
+        # Three ways a contact can be referenced by a dossier since July
+        # 2026: as a client, as an opposing party, or as a PARTY'S LAWYER
+        # (avocat_ids mirror). Order matters: a lawyer who is also a party
+        # reports the party relation.
+        if partie_id in d.get("client_ids", []):
+            relation = "client"
+        elif partie_id in d.get("opposing_party_ids", []):
+            relation = "partie_adverse"
+        else:
+            relation = "avocat"
         dossier_refs.append(
             {
                 "id": d.get("id", ""),

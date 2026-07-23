@@ -39,21 +39,35 @@ from utils.validators import format_phone_display
 
 SLOTS = ("dossier", "client", "adverse", "destinataire")
 
+# Feminine forms of the litigation roles (PARTY_ROLES vocabulary, July
+# 2026). "autre"/"requérant"? — requérant DOES inflect; "autre" does not
+# and is deliberately absent (an unmapped role leaves the placeholder
+# unresolved, same as before).
 _ROLE_FEMININ = {
     "demandeur": "demanderesse",
     "défendeur": "défenderesse",
+    "demandeur reconventionnel": "demanderesse reconventionnelle",
+    "défendeur reconventionnel": "défenderesse reconventionnelle",
     "intervenant": "intervenante",
     "mis en cause": "mise en cause",
+    "appelant": "appelante",
+    "intimé": "intimée",
+    "requérant": "requérante",
 }
 
 # Capitalized display label for the client's litigation role (mirrors
-# models.dossier.ROLE_LABELS — kept local so this module stays importable
-# without the Firestore client).
+# models.dossier.PARTY_ROLE_LABELS — kept local so this module stays
+# importable without the Firestore client; pinned equal by test).
 _ROLE_LABEL = {
     "demandeur": "Demandeur",
     "défendeur": "Défendeur",
-    "intervenant": "Intervenant",
+    "demandeur reconventionnel": "Demandeur reconventionnel",
+    "défendeur reconventionnel": "Défendeur reconventionnel",
     "mis en cause": "Mis en cause",
+    "intervenant": "Intervenant",
+    "appelant": "Appelant",
+    "intimé": "Intimé",
+    "requérant": "Requérant",
     "autre": "Autre",
 }
 

@@ -357,7 +357,11 @@ def test_prescription_alerts_migrates_legacy_parties(monkeypatch):
     monkeypatch.setattr(dossier_model, "db", stub)
     alerts = dossier_model.list_prescription_alerts(NOW + timedelta(days=60))
     assert len(alerts) == 1
-    assert alerts[0]["clients"] == [{"id": "p1", "name": "Client X"}]
+    # Entries are normalized to the full July-2026 shape on read.
+    assert alerts[0]["clients"] == [{
+        "id": "p1", "name": "Client X",
+        "roles": [], "avocat_id": "", "avocat_name": "",
+    }]
     assert alerts[0]["client_ids"] == ["p1"]
 
 

@@ -246,8 +246,23 @@ def _invoice_row() -> dict:
 
 
 def _partie_ref() -> dict:
-    return _obj({"id": _str(), "name": _str()},
-                description="Party snapshot as stored on the dossier.")
+    # roles/avocat_* (July 2026) are typed but NOT required: read paths
+    # normalize them in, but the contract only promises what every stored
+    # generation of the document guarantees.
+    return _obj(
+        {
+            "id": _str(),
+            "name": _str(),
+            "roles": _arr(_str(), "Litigation roles of THIS party (French "
+                                  "vocabulary; may hold several, e.g. "
+                                  "défendeur + demandeur reconventionnel)."),
+            "avocat_id": _str("Contact id of this party's lawyer; empty "
+                              "when none is recorded."),
+            "avocat_name": _str("Snapshot of the lawyer's name."),
+        },
+        required=["id", "name"],
+        description="Party snapshot as stored on the dossier.",
+    )
 
 
 def _address() -> dict:
@@ -540,7 +555,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "file_number": _str(),
                 "title": _str(),
                 "status": _str(),
-                "relation": _str("client or partie_adverse."),
+                "relation": _str("client, partie_adverse, or avocat (the contact is a party's lawyer on that dossier)."),
             })),
         }),
         {"partie_id": _str()},

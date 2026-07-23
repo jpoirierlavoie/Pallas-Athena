@@ -70,13 +70,27 @@ VALID_DISTRICTS = (
     "Val-d'Or",
     "autre",
 )
-VALID_ROLES = (
+# Per-party litigation roles (July 2026 rework). Each entry of `clients`/
+# `opposing_parties` carries `roles: [...] ⊆ PARTY_ROLES` — a party may hold
+# several (e.g. défendeur + demandeur reconventionnel). The dossier-level
+# `role` field is DERIVED from the first client that has one (see
+# _derive_role); it survives only because the gabarit placeholders
+# ({{dossier.role}}, role_feminin, and the demandeur/défendeur positions in
+# utils/template_fields.py) read it.
+PARTY_ROLES = (
     "demandeur",
     "défendeur",
-    "intervenant",
+    "demandeur reconventionnel",
+    "défendeur reconventionnel",
     "mis en cause",
+    "intervenant",
+    "appelant",
+    "intimé",
+    "requérant",
     "autre",
 )
+# The derived dossier-level field shares the SAME vocabulary — one source.
+VALID_ROLES = PARTY_ROLES
 VALID_FEE_TYPES = (
     "hourly", "flat", "contingency", "mixed", "pro_bono", "aide_juridique",
 )
@@ -157,13 +171,19 @@ STATUS_LABELS = {
     "fermé": "Fermé",
     "archivé": "Archivé",
 }
-ROLE_LABELS = {
+PARTY_ROLE_LABELS = {
     "demandeur": "Demandeur",
     "défendeur": "Défendeur",
-    "intervenant": "Intervenant",
+    "demandeur reconventionnel": "Demandeur reconventionnel",
+    "défendeur reconventionnel": "Défendeur reconventionnel",
     "mis en cause": "Mis en cause",
+    "intervenant": "Intervenant",
+    "appelant": "Appelant",
+    "intimé": "Intimé",
+    "requérant": "Requérant",
     "autre": "Autre",
 }
+ROLE_LABELS = PARTY_ROLE_LABELS
 FEE_TYPE_LABELS = {
     "hourly": "Horaire",
     "flat": "Forfaitaire",
@@ -189,6 +209,9 @@ def _default_doc() -> dict:
         "client_ids": [],
         "opposing_parties": [],
         "opposing_party_ids": [],
+        # Flat mirror of every avocat_id carried by a party entry (July
+        # 2026) — serves the array_contains FK check on partie deletion.
+        "avocat_ids": [],
         # Case classification. Domaine/action default to UNSET rather than to
         # a guess: the old matter_type defaulted to "action_dommages", which
         # silently classified every new dossier as an unrelated recourse.
@@ -209,8 +232,9 @@ def _default_doc() -> dict:
         # (district only, file number forced to « Préjudiciaire »).
         "forum_type": "judiciaire",
         "forum": "",
-        # Role of the lawyer's client
-        "role": "demandeur",
+        # DERIVED (July 2026): first role of the first client that has one —
+        # never user-entered. Kept for the gabarits. See _derive_role.
+        "role": "",
         # Financial
         "hourly_rate": 30000,
         "flat_fee": None,
@@ -320,6 +344,41 @@ def normalize_forum(data: dict) -> None:
     data["is_administrative_tribunal"] = forum_type == "administratif"
 
 
+def _derive_role(data: dict) -> None:
+    """Derive the dossier-level ``role`` from the per-party roles, in place.
+
+    ``role`` stopped being user-entered in July 2026: the source of truth is
+    ``clients[].roles``, and this keeps the derived field equal to the first
+    role of the first client that has one (the clients' side, which is what
+    the old field described). It survives only for the gabarits —
+    ``{{dossier.role}}``, its feminine form, and the demandeur/défendeur
+    intitulé positions all read it. Editing ``role`` by hand is pointless:
+    the next save recomputes it.
+    """
+    data["role"] = next(
+        (c["roles"][0] for c in data.get("clients", []) if c.get("roles")),
+        "",
+    )
+
+
+def _rebuild_party_mirrors(data: dict) -> None:
+    """Rebuild the flat ID mirrors from the object arrays, in place.
+
+    ``client_ids``/``opposing_party_ids`` serve the ``array_contains``
+    queries; ``avocat_ids`` (July 2026) does the same for the per-party
+    avocat links, so the partie-deletion FK check can refuse to delete a
+    lawyer still referenced by a dossier. Single-field indexes only — no
+    composite needed.
+    """
+    clients = data.get("clients", [])
+    opposing = data.get("opposing_parties", [])
+    data["client_ids"] = [c["id"] for c in clients]
+    data["opposing_party_ids"] = [p["id"] for p in opposing]
+    data["avocat_ids"] = sorted(
+        {e["avocat_id"] for e in clients + opposing if e.get("avocat_id")}
+    )
+
+
 def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid)."""
     errors: list[str] = []
@@ -329,6 +388,19 @@ def _validate(data: dict) -> list[str]:
 
     if not data.get("clients"):
         errors.append("Au moins un client doit être associé au dossier.")
+
+    # Per-party roles/avocat (July 2026). The form's whitelist parser cannot
+    # produce an invalid role, but a hand-crafted POST can; and a party
+    # cannot be its own lawyer.
+    for entry in list(data.get("clients", [])) + list(
+        data.get("opposing_parties", [])
+    ):
+        for role in entry.get("roles", []) or []:
+            if role not in PARTY_ROLES:
+                errors.append("Rôle de partie invalide.")
+                break
+        if entry.get("avocat_id") and entry.get("avocat_id") == entry.get("id"):
+            errors.append("Une partie ne peut pas être son propre avocat.")
 
     if not data.get("file_number", "").strip():
         errors.append("Le numéro de dossier est requis.")
@@ -487,9 +559,9 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     etag = str(uuid.uuid4())
     vjournal_uid = str(uuid.uuid4())
 
-    # Ensure flat ID arrays are in sync with the object arrays
-    merged["client_ids"] = [c["id"] for c in merged.get("clients", [])]
-    merged["opposing_party_ids"] = [p["id"] for p in merged.get("opposing_parties", [])]
+    # Derived role + flat ID mirrors, from the per-party arrays
+    _derive_role(merged)
+    _rebuild_party_mirrors(merged)
 
     merged.update(
         {
@@ -522,6 +594,21 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def _normalize_party_entry(entry: dict) -> dict:
+    """Give a party entry the full July-2026 shape in place.
+
+    Legacy entries are bare ``{id, name}`` snapshots; the rework added
+    ``roles`` (⊆ PARTY_ROLES, possibly several per party), ``avocat_id``
+    (link into the parties collection) and ``avocat_name`` (snapshot).
+    Normalizing on read keeps every consumer — templates, MCP emission,
+    the avocat_ids mirror rebuild — free of per-key existence checks.
+    """
+    entry.setdefault("roles", [])
+    entry.setdefault("avocat_id", "")
+    entry.setdefault("avocat_name", "")
+    return entry
+
+
 def _migrate_parties(doc: dict) -> dict:
     """Migrate legacy single-client / text opposing fields to arrays."""
     # Legacy single client_id → clients array
@@ -537,6 +624,24 @@ def _migrate_parties(doc: dict) -> dict:
         doc.setdefault("opposing_parties", [])
     if not doc.get("opposing_party_ids"):
         doc["opposing_party_ids"] = [p["id"] for p in doc.get("opposing_parties", [])]
+
+    for entry in doc.get("clients", []):
+        _normalize_party_entry(entry)
+    for entry in doc.get("opposing_parties", []):
+        _normalize_party_entry(entry)
+    # One-time seeding: before the July-2026 rework the litigation role was a
+    # single dossier-level field describing the CLIENTS' side. If no client
+    # carries a per-party role yet, the stored role becomes the first
+    # client's — so every legacy dossier keeps its meaning with no manual
+    # re-entry, and _derive_role then reproduces the same value on save.
+    clients = doc.get("clients", [])
+    if (
+        clients
+        and not any(c.get("roles") for c in clients)
+        and doc.get("role") in PARTY_ROLES
+    ):
+        clients[0]["roles"] = [doc["role"]]
+
     _migrate_domaine(doc)
     _migrate_mandate_type(doc)
     _migrate_forum_type(doc)
@@ -811,8 +916,8 @@ def update_dossier(
     merged["etag"] = str(uuid.uuid4())
 
     # Sync flat ID arrays
-    merged["client_ids"] = [c["id"] for c in merged.get("clients", [])]
-    merged["opposing_party_ids"] = [p["id"] for p in merged.get("opposing_parties", [])]
+    _derive_role(merged)
+    _rebuild_party_mirrors(merged)
 
     # Closure date: auto-determined when the dossier is closed/archived, but
     # user-editable. Respect a date supplied on the form; otherwise keep the
@@ -1028,7 +1133,14 @@ def count_dossiers_for_partie_strict(partie_id: str) -> int:
     """
     q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
     q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
-    ids = {doc.id for doc in q1.stream()} | {doc.id for doc in q2.stream()}
+    # avocat_ids (July 2026): a partie linked as a party's LAWYER is
+    # referenced too — deleting it would leave a dead clickable link.
+    q3 = db.collection(COLLECTION).where(filter=FieldFilter("avocat_ids", "array_contains", partie_id))
+    ids = (
+        {doc.id for doc in q1.stream()}
+        | {doc.id for doc in q2.stream()}
+        | {doc.id for doc in q3.stream()}
+    )
     return len(ids)
 
 
@@ -1037,18 +1149,15 @@ def list_dossiers_for_partie(partie_id: str) -> list[dict]:
     try:
         q1 = db.collection(COLLECTION).where(filter=FieldFilter("client_ids", "array_contains", partie_id))
         q2 = db.collection(COLLECTION).where(filter=FieldFilter("opposing_party_ids", "array_contains", partie_id))
+        q3 = db.collection(COLLECTION).where(filter=FieldFilter("avocat_ids", "array_contains", partie_id))
         seen: set[str] = set()
         results: list[dict] = []
-        for doc in q1.stream():
-            d = _migrate_parties(doc.to_dict())
-            if d.get("id") not in seen:
-                seen.add(d["id"])
-                results.append(d)
-        for doc in q2.stream():
-            d = _migrate_parties(doc.to_dict())
-            if d.get("id") not in seen:
-                seen.add(d["id"])
-                results.append(d)
+        for query in (q1, q2, q3):
+            for doc in query.stream():
+                d = _migrate_parties(doc.to_dict())
+                if d.get("id") not in seen:
+                    seen.add(d["id"])
+                    results.append(d)
         results.sort(
             key=lambda d: d.get("opened_date") or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,

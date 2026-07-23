@@ -218,9 +218,19 @@ def partie_list() -> str:
 @parties_bp.route("/search")
 @login_required
 def partie_search() -> str:
-    """Return a small HTML fragment of matching parties (for autocomplete)."""
+    """Return a small HTML fragment of matching parties (for autocomplete).
+
+    ``?boost=<contact_role>`` reorders (never filters) the results so that
+    role comes first — the dossier form's avocat picker boosts
+    ``avocat_adverse`` while still letting any contact be chosen (a lawyer
+    filed under « notaire » or « autre » stays reachable).
+    """
     q = request.args.get("q", "").strip()
+    boost = request.args.get("boost", "").strip()
     results = list_parties(search=q) if q else []
+    if boost:
+        # sort() is stable: within each half the search order is preserved.
+        results.sort(key=lambda p: p.get("contact_role") != boost)
     for p in results:
         p["_display_name"] = display_name(p)
     return render_template("parties/_search_results.html", parties=results[:10])

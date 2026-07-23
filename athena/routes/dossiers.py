@@ -70,6 +70,8 @@ from models.dossier import (
     FEE_TYPE_LABELS,
     FORUM_TYPE_LABELS,
     MANDATE_TYPE_LABELS,
+    PARTY_ROLES,
+    PARTY_ROLE_LABELS,
     PREJUDICIAIRE_FILE_NUMBER,
     ROLE_LABELS,
     STATUS_LABELS,
@@ -128,18 +130,36 @@ def _parse_date(value: str) -> datetime | None:
 
 
 def _parse_parties_json(raw: str) -> list[dict]:
-    """Parse a JSON string of [{id, name}, ...] from a hidden form field."""
+    """Parse the hidden party-entries JSON into whitelisted dicts.
+
+    Explicit whitelist, never ``**entry``: the Alpine state round-trips
+    through the browser, so every field is attacker-modifiable. ``roles``
+    is filtered against the model vocabulary (junk silently dropped — the
+    pickers cannot produce it, only a crafted POST can), and the avocat
+    pair is coerced to strings like ``id``/``name``.
+    """
     if not raw or not raw.strip():
         return []
     try:
         items = json.loads(raw)
         if not isinstance(items, list):
             return []
-        return [
-            {"id": str(p["id"]), "name": str(p["name"])}
-            for p in items
-            if isinstance(p, dict) and p.get("id")
-        ]
+        out = []
+        for p in items:
+            if not (isinstance(p, dict) and p.get("id")):
+                continue
+            roles_raw = p.get("roles") or []
+            out.append({
+                "id": str(p["id"]),
+                "name": str(p["name"]),
+                "roles": [
+                    r for r in roles_raw
+                    if isinstance(r, str) and r in PARTY_ROLES
+                ] if isinstance(roles_raw, list) else [],
+                "avocat_id": str(p.get("avocat_id") or ""),
+                "avocat_name": str(p.get("avocat_name") or ""),
+            })
+        return out
     except (json.JSONDecodeError, KeyError, TypeError):
         return []
 
@@ -167,8 +187,8 @@ def _form_data() -> dict:
         # Forum (judicial court vs. administrative tribunal / federal court)
         "forum_type": f.get("forum_type", "judiciaire").strip(),
         "forum": f.get("forum", "").strip(),
-        # Role
-        "role": f.get("role", "demandeur"),
+        # Role: NOT read from the form — derived in the model from the
+        # per-party roles (first client that has one).
         # Financial
         "fee_type": f.get("fee_type", "hourly"),
         "hourly_rate": _parse_cents(f.get("hourly_rate", "")),
@@ -220,6 +240,10 @@ def _template_context() -> dict:
         "mandate_type_labels": MANDATE_TYPE_LABELS,
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
+        # Per-party roles (July 2026): the form's checkbox list and the
+        # detail cards' « Nom, rôle1, rôle2 » rendering.
+        "party_roles": PARTY_ROLES,
+        "party_role_labels": PARTY_ROLE_LABELS,
         "fee_type_labels": FEE_TYPE_LABELS,
         "prescription_labels": PRESCRIPTION_LABELS,
     }

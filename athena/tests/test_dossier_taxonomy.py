@@ -271,3 +271,100 @@ def test_template_fields_mandate_label_mirror_stays_in_sync():
     from utils.template_fields import _MANDATE_TYPE_LABEL
 
     assert _MANDATE_TYPE_LABEL == dossier.MANDATE_TYPE_LABELS
+
+
+# ── Per-party roles + avocat (July 2026 rework) ───────────────────────
+
+
+def test_party_entries_are_normalized_on_read():
+    doc = _read({"clients": [{"id": "p1", "name": "Jean"}],
+                 "opposing_parties": [{"id": "p2", "name": "Paul"}]})
+    for entry in doc["clients"] + doc["opposing_parties"]:
+        assert entry["roles"] == []
+        assert entry["avocat_id"] == ""
+        assert entry["avocat_name"] == ""
+
+
+def test_legacy_global_role_seeds_the_first_client():
+    """Pre-rework dossiers carried ONE dossier-level role describing the
+    clients' side. It must become the first client's per-party role, or
+    every existing dossier silently loses its role at the first edit."""
+    doc = _read({
+        "role": "défendeur",
+        "clients": [{"id": "p1", "name": "Jean"}, {"id": "p2", "name": "Anne"}],
+    })
+    assert doc["clients"][0]["roles"] == ["défendeur"]
+    assert doc["clients"][1]["roles"] == []
+
+
+def test_seeding_never_overwrites_an_existing_per_party_role():
+    doc = _read({
+        "role": "défendeur",
+        "clients": [{"id": "p1", "name": "Jean", "roles": ["appelant"]}],
+    })
+    assert doc["clients"][0]["roles"] == ["appelant"]
+
+
+def test_derive_role_takes_the_first_client_that_has_one():
+    data = {"clients": [
+        {"id": "p1", "name": "Jean", "roles": []},
+        {"id": "p2", "name": "Anne", "roles": ["intimé", "demandeur reconventionnel"]},
+    ]}
+    dossier._derive_role(data)
+    assert data["role"] == "intimé"
+
+    dossier._derive_role({"clients": []})  # must not raise
+    empty = {"clients": [{"id": "p1", "name": "J", "roles": []}]}
+    dossier._derive_role(empty)
+    assert empty["role"] == ""
+
+
+def test_seeded_dossier_derives_back_to_its_old_role():
+    """Round-trip stability: read (seeds) then save (derives) must keep the
+    legacy role byte-identical — otherwise every touch of an old dossier
+    would rewrite its gabarit-visible role."""
+    doc = _read({"role": "demandeur",
+                 "clients": [{"id": "p1", "name": "Jean"}]})
+    dossier._derive_role(doc)
+    assert doc["role"] == "demandeur"
+
+
+def test_rebuild_party_mirrors_includes_avocat_ids():
+    data = {
+        "clients": [{"id": "p1", "name": "J", "roles": [],
+                     "avocat_id": "av1", "avocat_name": "Roy"}],
+        "opposing_parties": [{"id": "p2", "name": "P", "roles": [],
+                              "avocat_id": "av2", "avocat_name": "Côté"},
+                             {"id": "p3", "name": "Q", "roles": [],
+                              "avocat_id": "av1", "avocat_name": "Roy"}],
+    }
+    dossier._rebuild_party_mirrors(data)
+    assert data["client_ids"] == ["p1"]
+    assert data["opposing_party_ids"] == ["p2", "p3"]
+    assert data["avocat_ids"] == ["av1", "av2"]     # deduped, sorted
+
+
+def test_validate_rejects_junk_party_role_and_self_lawyer():
+    base = {"title": "T", "file_number": "1", "status": "actif",
+            "prescription_type": ""}
+    bad_role = dict(base, clients=[
+        {"id": "p1", "name": "J", "roles": ["capitaine"]}])
+    assert any("Rôle" in e for e in dossier._validate(bad_role))
+
+    self_lawyer = dict(base, clients=[
+        {"id": "p1", "name": "J", "roles": [], "avocat_id": "p1"}])
+    assert any("propre avocat" in e for e in dossier._validate(self_lawyer))
+
+
+def test_party_role_labels_cover_exactly_the_vocabulary():
+    assert set(dossier.PARTY_ROLE_LABELS) == set(dossier.PARTY_ROLES)
+
+
+def test_template_fields_role_maps_track_the_vocabulary():
+    """Gabarit mirrors ({{dossier.role_label}} / role_feminin). A role
+    without a feminine form leaves the placeholder unresolved — only
+    « autre » is deliberately uninflected."""
+    from utils.template_fields import _ROLE_FEMININ, _ROLE_LABEL
+
+    assert _ROLE_LABEL == dossier.PARTY_ROLE_LABELS
+    assert set(_ROLE_FEMININ) == set(dossier.PARTY_ROLES) - {"autre"}

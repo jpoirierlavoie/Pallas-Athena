@@ -98,16 +98,21 @@
       {% if dossier.clients %}
       <div class="space-y-2">
         {% for c in dossier.clients %}
-        <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
-           class="flex items-center gap-2 text-sm text-indigo-600 font-medium hover:text-indigo-700">
-          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
-          {{ c.name }}
-        </a>
+        <div>
+          <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
+             class="flex items-center gap-2 text-sm text-indigo-600 font-medium hover:text-indigo-700">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
+            <span>{{ c.name }}{% if c.roles %}<span class="text-gray-500 font-normal">, {% for r in c.roles %}{{ party_role_labels.get(r, r) | lower }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}</span>
+          </a>
+          {% if c.avocat_name %}
+          <p class="flex items-center gap-2 text-xs text-gray-500"><span class="w-4 flex-shrink-0"></span>
+            {% if c.avocat_id %}<a href="{{ url_for('parties.partie_detail', partie_id=c.avocat_id) }}" class="hover:text-gray-700">Me {{ c.avocat_name }}</a>
+            {% else %}Me {{ c.avocat_name }}{% endif %}
+          </p>
+          {% endif %}
+        </div>
         {% endfor %}
       </div>
-      {% if dossier.role %}
-      <p class="text-xs text-gray-500 mt-2">{{ role_labels.get(dossier.role, dossier.role) }}</p>
-      {% endif %}
       {% else %}
       <p class="text-gray-400 text-xs">Aucun client associé</p>
       {% endif %}
@@ -121,11 +126,19 @@
       {% if dossier.opposing_parties %}
       <div class="space-y-2">
         {% for p in dossier.opposing_parties %}
-        <a href="{{ url_for('parties.partie_detail', partie_id=p.id) }}"
-           class="flex items-center gap-2 text-sm text-red-600 font-medium hover:text-red-700">
-          <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
-          {{ p.name }}
-        </a>
+        <div>
+          <a href="{{ url_for('parties.partie_detail', partie_id=p.id) }}"
+             class="flex items-center gap-2 text-sm text-red-600 font-medium hover:text-red-700">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
+            <span>{{ p.name }}{% if p.roles %}<span class="text-gray-500 font-normal">, {% for r in p.roles %}{{ party_role_labels.get(r, r) | lower }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}</span>
+          </a>
+          {% if p.avocat_name %}
+          <p class="flex items-center gap-2 text-xs text-gray-500"><span class="w-4 flex-shrink-0"></span>
+            {% if p.avocat_id %}<a href="{{ url_for('parties.partie_detail', partie_id=p.avocat_id) }}" class="hover:text-gray-700">Me {{ p.avocat_name }}</a>
+            {% else %}Me {{ p.avocat_name }}{% endif %}
+          </p>
+          {% endif %}
+        </div>
         {% endfor %}
       </div>
       {% else %}

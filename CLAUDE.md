@@ -436,7 +436,7 @@ etag:        UUIDv4, regenerated on every write
 
 ### `dossiers/{dossierId}` — Case files
 
-A dossier holds multiple clients and multiple opposing parties as **arrays of `{id, name}` objects**. Flat ID arrays (`client_ids`, `opposing_party_ids`) are kept in sync for `array_contains` queries (used by `count_dossiers_for_partie` / `list_dossiers_for_partie`). A migration helper (`_migrate_parties`) upgrades older single-client docs on read.
+A dossier holds multiple clients and multiple opposing parties as **arrays of `{id, name, roles, avocat_id, avocat_name}` objects** (July 2026 rework): `roles` ⊆ `PARTY_ROLES` (10-value procedural vocabulary — demandeur, défendeur, demandeur/défendeur reconventionnel, mis en cause, intervenant, appelant, intimé, requérant, autre; a party may hold several), and `avocat_id`/`avocat_name` link+snapshot the party's lawyer (any individual contact; the form's picker boosts `avocat_adverse` first). Flat ID arrays (`client_ids`, `opposing_party_ids`, **`avocat_ids`**) are kept in sync for `array_contains` queries (`count_dossiers_for_partie` / `list_dossiers_for_partie` / the partie-deletion FK check — all three arrays). **`role` is DERIVED on save** (`_derive_role`: first role of the first client that has one) and survives only for the gabarits; the standalone selector is gone from the form. A migration helper (`_migrate_parties`) upgrades older single-client docs on read, normalizes every entry to the full shape, and **seeds the legacy dossier-level `role` into `clients[0].roles`** (once, when no client carries a role) so existing dossiers keep their meaning untouched.
 
 ```python
 {
@@ -450,11 +450,14 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
                                           # and as the {{dossier.sommaire}} /
                                           # {{sommaire}} gabarit placeholder.
 
-    # Parties on the dossier (replaces the legacy single client_id)
-    "clients":          [{"id": UUIDv4, "name": str}, ...],
+    # Parties on the dossier (replaces the legacy single client_id).
+    # roles ⊆ PARTY_ROLES (multi); avocat_* = the party's lawyer (link + snapshot).
+    "clients":          [{"id": UUIDv4, "name": str, "roles": [str, ...],
+                          "avocat_id": UUIDv4 | "", "avocat_name": str}, ...],
     "client_ids":       [UUIDv4, ...],    # mirrors clients[].id (for array_contains)
-    "opposing_parties": [{"id": UUIDv4, "name": str}, ...],
+    "opposing_parties": [...],            # same shape as clients
     "opposing_party_ids": [UUIDv4, ...],
+    "avocat_ids":       [UUIDv4, ...],    # every avocat_id, deduped/sorted (FK check)
 
     # Classification — the two-level ACTION TAXONOMY (July 2026), replacing
     # the old free-form matter_type ("type de dossier") + objet (free text).
@@ -474,7 +477,9 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     # via models.dossier._migrate_mandate_type. Absent on legacy dossiers →
     # the UI shows "—" until set on edit.
     "mandate_type": "judiciaire" | "service_conseils" | "general" | "special",
-    "role": "demandeur" | "défendeur" | "intervenant" | "mis en cause" | "autre",
+    # DERIVED on save from clients[].roles (first client that has one) —
+    # never user-entered since July 2026; kept for the gabarits.
+    "role": str,                          # ∈ PARTY_ROLES | ""
 
     # Phase G — Court file number + parsed judicial metadata
     "court_file_number": str,             # Raw, e.g., "500-05-123456-241"
@@ -1259,7 +1264,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `suggest_file_number() -> str` — public wrapper around `_suggest_next_file_number`, "YYYY-NNN" sequential
 - `count_open() -> int` — COUNT aggregation over `status in (actif, en_attente)` (dashboard stat)
 - `list_prescription_alerts(cutoff, limit=50) -> list[dict]` — server-side `status==actif AND prescription_date<=cutoff`, ordered + bounded; logs a warning when the window fills (needs the `dossiers` composite index)
-- `count_dossiers_for_partie(partie_id) -> int` (returns 0 on query failure — display only), `count_dossiers_for_partie_strict(partie_id) -> int` (propagates errors — used by FK safety checks), `list_dossiers_for_partie(partie_id) -> list[dict]` — query both `client_ids` and `opposing_party_ids`
+- `count_dossiers_for_partie(partie_id) -> int` (returns 0 on query failure — display only), `count_dossiers_for_partie_strict(partie_id) -> int` (propagates errors — used by FK safety checks), `list_dossiers_for_partie(partie_id) -> list[dict]` — query `client_ids`, `opposing_party_ids` **and `avocat_ids`** (a contact linked as a party's lawyer counts as referenced: it blocks deletion, and `get_partie` reports the dossier with `relation: "avocat"`)
 - `delete_dossier` REFUSES deletion while child records exist (documents, time entries, expenses, invoices, hearings, tasks, notes, protocols, folders, **trust transactions**) and fails CLOSED when the child check errors — archive instead of deleting. **A dossier that has EVER had a trust entry can never be deleted** even at a zero balance (the register is permanent; `trust_transactions` rows are never hard-deleted, so the `count>0` check enforces "ever existed")
 - `dossier_to_vjournal(dossier) -> str`, `vjournal_to_dossier(ical_str) -> dict` — legacy, retained for potential export (not used by DAV post-D1). CATEGORIES now emits the domaine label + the action label; an unknown key resolves to nothing rather than leaking a raw snake_case key as a French category (the old `matter_type` line did).
 - **Forum (July 2026, four-way since late July):** `VALID_FORUM_TYPES = ("judiciaire", "administratif", "federal", "prejudiciaire")` + `FORUM_TYPE_LABELS` (« Tribunal de droit commun » / « Tribunal administratif » / « Cour ou tribunal fédéral » / « Préjudiciaire »). `normalize_forum(data)` reconciles the forum fields server-side (authoritative over the JS state), called by the route in `_form_data` before validation. `administratif`/`federal` → the picked `forum` slug's name becomes `tribunal`, the Québec judicial-court fields (greffe/juridiction/district/palais/competence) are cleared, and `is_administrative_tribunal` is True only for `administratif`; a blank/unknown/**cross-category** slug leaves the data untouched (`_validate` rejects it). `prejudiciaire` → everything judicial is cleared EXCEPT the user-entered `district_judiciaire`, and `court_file_number` is forced to `PREJUDICIAIRE_FILE_NUMBER` (« Préjudiciaire ») so gabarits can cite it until the parser crushes it. `judiciaire` → `forum` cleared, parsed metadata stands. `_validate` presence-gates `forum_type` (legacy dossiers default `"judiciaire"` on read); the retired `"autre"` is no longer writable — `_migrate_forum_type` (in the `_migrate_parties` chokepoint) splits stored `"autre"` docs by their slug's category on read (dangling slug → `judiciaire`, forum cleared, tribunal text kept). It lives in the model, not the route, so it is testable without Flask config.
@@ -1759,6 +1764,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Documents blueprint isn't nested under dossiers.** Routes live at `/documents/...` and the dossier scope is passed as `?dossier_id=…` (GET) or as a form field (POST). When linking from a dossier tab, always include `dossier_id` in the URL.
 - **Hearings prefix is `/audiences`**, not `/agenda`. Internal `url_for()` calls must use the `hearings.*` blueprint.
 - **Dossier `clients` and `opposing_parties` are arrays**, not single FKs. Code reading legacy `client_id` must go through `_migrate_parties` (already applied in `get_dossier`/`list_dossiers`).
+- **`dossier.role` is DERIVED — never edit it by hand** (July 2026). The source of truth is `clients[].roles`; `_derive_role` recomputes the dossier-level field on every save (first role of the first client that has one), so a hand edit is silently overwritten. It exists only for the gabarits: `{{dossier.role}}`, `role_feminin`, `role_label`, and the demandeur/défendeur intitulé positions. Those positions resolve ONLY for plain demandeur/défendeur — a « demandeur reconventionnel » leaves `{{dossier.demandeur}}`/`{{…defendeur}}` unresolved, which is the documented §6.2 semantics for non-binary roles, not a bug. The legacy dossier-level role is seeded into `clients[0].roles` on read (once); `utils/template_fields.py`'s `_ROLE_LABEL`/`_ROLE_FEMININ` mirror `PARTY_ROLE_LABELS` by hand and are pinned equal by test — « autre » deliberately has no feminine form.
 - **The taxonomy SUGGESTS a délai; it never sets one.** `taxonomie.Action.prescription_type` prefills the Prescription dropdown **only on a user action-change** — never on load, or opening an existing dossier would silently overwrite the delay the lawyer confirmed. It is `""` wherever the source's delay is not a single clean period, and those `""`s are load-bearing, not gaps: **FAI-01**'s « 6 mois » is a *retrospective eligibility window* (the acte de faillite must fall in the 6 months **preceding** the application), so suggesting it would compute a deadline that means nothing; RCV-05/COR-06 differ by regime; CJP-* are « délai raisonnable ». Never "fill in" a blank `prescription_type` without re-reading the source row.
 - **A `-99` « Autre (préciser) » row must never carry a délai.** Every domaine ends with one so no file is unclassifiable; they have no delay of their own, and the domaine's default (e.g. RES's « 3 ans (art. 2925) ») is **not** theirs to inherit — `action_precision` is where the real object goes.
 - **`delai_types` is a tuple over a closed 11-token vocabulary; annex asymmetries are deliberate.** Tokens combine (`("PE","A")`), `D` (stricte, rouge) outranks `DR` (relevable, orange) in `niveau_decheance`, and the legal content of `taxonomie.py` changes **only on an approved spec**. Do not "fix" COR-11 (token `A`, `avis == ()`) or RCV-03 (two conditional avis, typed `(PE,)`) — both are binding annex content, pinned by `test_a_token_and_avis_sets_are_pinned`. The six pinned `ref_delai == ""` rows (CST-05, COR-04, COR-09, FAM-01, FAM-02, FAM-06) are equally deliberate — no statutory delay source exists, and inventing one would derive legal content.

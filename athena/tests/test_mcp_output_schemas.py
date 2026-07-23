@@ -267,9 +267,16 @@ def test_get_dossier_both_branches_conform(monkeypatch):
     # Branch: found, every nullable field SET
     monkeypatch.setattr(
         handlers.dossier_model, "get_dossier",
-        lambda i: _dossier_doc(valeur=1500000, flat_fee=500000,
-                               contingency_percent=2500, date_avis=DT,
-                               closed_date=DT))
+        lambda i: _dossier_doc(
+            valeur=1500000, flat_fee=500000,
+            contingency_percent=2500, date_avis=DT, closed_date=DT,
+            # Full July-2026 party shape: roles + avocat per entry.
+            clients=[{"id": "p1", "name": "Jean Tremblay",
+                      "roles": ["défendeur", "demandeur reconventionnel"],
+                      "avocat_id": "", "avocat_name": ""}],
+            opposing_parties=[{"id": "p2", "name": "Paul Lavoie",
+                               "roles": ["demandeur"],
+                               "avocat_id": "av1", "avocat_name": "Roy"}]))
     _conforms("get_dossier", handlers.get_dossier({"dossier_id": "d1"}))
 
     # Branch: not found
