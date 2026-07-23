@@ -52,6 +52,80 @@ def test_build_csp_shape():
     assert "object-src 'none'" in csp                   # hardening
     assert "firebaseio.com" not in csp                  # vestigial RTDB origin dropped
     assert csp.rstrip().endswith("report-uri /csp-report")
+    # Default stays locked down: only the consent screen may post off-origin.
+    assert "form-action 'self';" in csp
+    assert "claude.ai" not in csp
+
+
+# ── form-action / the OAuth consent redirect ───────────────────────────────
+
+def test_consent_page_allows_the_oauth_callback_redirect():
+    """form-action covers the WHOLE redirect chain of a submission. The
+    consent POST answers 302 to Claude's callback, so 'self' alone blocks
+    the authorization code from ever reaching the client and the connector
+    can never be added."""
+    from security import _FORM_ACTION_OAUTH, build_csp
+
+    csp = build_csp("N", _FORM_ACTION_OAUTH)
+    assert "form-action 'self' https://claude.ai https://claude.com;" in csp
+    # Everything else in the policy is untouched by the widening.
+    assert "object-src 'none'" in csp
+    assert csp.replace(_FORM_ACTION_OAUTH, "'self'") == build_csp("N")
+
+
+def test_form_action_is_widened_only_on_the_consent_path():
+    app = _make_app(ENV="production")
+
+    @app.route("/oauth/authorize")
+    def consent():
+        return "consent"
+
+    client = app.test_client()
+    consent_csp = client.get("/oauth/authorize").headers[
+        "Content-Security-Policy"
+    ]
+    other_csp = client.get("/").headers["Content-Security-Policy"]
+    assert "https://claude.ai" in consent_csp
+    assert "https://claude.ai" not in other_csp
+    assert "form-action 'self';" in other_csp
+    # Loopback callbacks are a dev-only affordance (MCP Inspector).
+    assert "localhost" not in consent_csp
+
+
+def test_form_action_allows_loopback_outside_production():
+    app = _make_app(ENV="development")
+
+    @app.route("/oauth/authorize")
+    def consent():
+        return "consent"
+
+    csp = app.test_client().get("/oauth/authorize").headers[
+        "Content-Security-Policy"
+    ]
+    assert "http://localhost:*" in csp
+    assert "http://127.0.0.1:*" in csp
+
+
+def test_form_action_covers_every_allowed_oauth_redirect_uri():
+    """The CSP source list is hand-maintained; pin it against the actual
+    redirect-URI allowlist so the two cannot drift."""
+    import os
+    from unittest import mock
+    from urllib.parse import urlparse
+
+    os.environ.setdefault("SECRET_KEY", "test-secret")
+    os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+    os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+    os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
+    with mock.patch("google.cloud.firestore.Client"):
+        from mcp import ALLOWED_REDIRECT_URIS
+
+    from security import _FORM_ACTION_OAUTH
+
+    sources = set(_FORM_ACTION_OAUTH.split())
+    for uri in ALLOWED_REDIRECT_URIS:
+        parsed = urlparse(uri)
+        assert f"{parsed.scheme}://{parsed.netloc}" in sources, uri
 
 
 def test_csp_header_enforced_with_matching_nonce():

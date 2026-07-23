@@ -76,9 +76,32 @@ _CSP_TAIL = (
     "font-src 'self'; "
     "frame-src https://*.firebaseapp.com https://storage.googleapis.com blob: "
     "https://www.google.com https://recaptcha.google.com; "
-    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; "
-    "report-uri /csp-report"
+    "base-uri 'self'; form-action {form_action}; frame-ancestors 'none'; "
+    "object-src 'none'; report-uri /csp-report"
 )
+
+# form-action applies to the WHOLE redirect chain of a form submission, not
+# just the immediate action URL. The OAuth consent POST answers 302 to
+# Claude's callback, so 'self' alone blocks the authorization code from ever
+# reaching the client -- the browser refuses the redirect and the connector
+# can never be added. (Latent since the CSP went enforcing on 2026-07-11:
+# the consent screen is only ever exercised when a connector is added or
+# re-authorized, so it surfaced on the first re-consent.)
+#
+# Widened ONLY on the consent path, never app-wide: everywhere else a form
+# that tries to post off-origin is still a bug worth blocking.
+_FORM_ACTION_DEFAULT = "'self'"
+# MUST stay a superset of the origins in mcp.ALLOWED_REDIRECT_URIS --
+# tests/test_security_headers.py pins the two against each other.
+_FORM_ACTION_OAUTH = "'self' https://claude.ai https://claude.com"
+# Outside production, mcp.oauth.redirect_uri_allowed() also accepts a
+# loopback callback (MCP Inspector), so the CSP has to permit it too.
+_FORM_ACTION_OAUTH_DEV = (
+    f"{_FORM_ACTION_OAUTH} http://localhost:* http://127.0.0.1:*"
+)
+# The consent screen: the GET renders the form, and it is the GET response's
+# CSP that governs the submission.
+_OAUTH_CONSENT_PATH = "/oauth/authorize"
 
 
 def csp_nonce() -> str:
@@ -95,20 +118,35 @@ def csp_nonce() -> str:
     return nonce
 
 
-def build_csp(nonce: str) -> str:
-    """Assemble the enforced CSP with a per-request script ``nonce``."""
+def build_csp(nonce: str, form_action: str = _FORM_ACTION_DEFAULT) -> str:
+    """Assemble the enforced CSP with a per-request script ``nonce``.
+
+    *form_action* is widened only for the OAuth consent screen (see
+    :func:`_form_action_for`); every other response keeps ``'self'``.
+    """
     return (
         "default-src 'self'; "
         f"script-src 'self' 'nonce-{nonce}' 'unsafe-eval' "
         "https://www.gstatic.com https://apis.google.com https://www.google.com; "
-        + _CSP_TAIL
+        + _CSP_TAIL.format(form_action=form_action)
     )
+
+
+def _form_action_for(path: str) -> str:
+    """Return the ``form-action`` sources appropriate to *path*."""
+    if path != _OAUTH_CONSENT_PATH:
+        return _FORM_ACTION_DEFAULT
+    if current_app.config.get("ENV") == "production":
+        return _FORM_ACTION_OAUTH
+    return _FORM_ACTION_OAUTH_DEV
 
 
 def _add_security_headers(response: Response) -> Response:
     """Attach hardened security headers to every response."""
     h = response.headers
-    h["Content-Security-Policy"] = build_csp(csp_nonce())
+    h["Content-Security-Policy"] = build_csp(
+        csp_nonce(), _form_action_for(request.path)
+    )
     h["Strict-Transport-Security"] = (
         "max-age=63072000; includeSubDomains; preload"
     )
