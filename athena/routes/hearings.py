@@ -16,7 +16,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, record_tombstone
+from dav.sync import bump_ctag, record_tombstone, remove_tombstone
 from security import safe_internal_redirect
 from models.hearing import (
     HEARING_TYPE_COLORS,
@@ -157,6 +157,17 @@ def _form_data() -> dict:
         "reminder_minutes": _parse_int(f.get("reminder_minutes", ""), 1440),
         "status": f.get("status", "à_confirmer"),
     }
+
+
+def _sync_name(dossier_id: str | None) -> str:
+    """DAV collection a hearing belongs to.
+
+    Dossier-linked hearings live in the dossier's own collection; standalone
+    ones stay in the shared calendar. models/hearing.py never bumps a CTag —
+    bumping lives here and in the DAV layer, so a write path that forgets
+    leaves DavX5 silently never re-syncing.
+    """
+    return f"dossier:{dossier_id}" if dossier_id else "hearings"
 
 
 # ── Dossier search (for autocomplete in forms) ───────────────────────────
@@ -394,7 +405,7 @@ def hearing_create() -> str:
         ctx.update(hearing=data, errors=errors, return_to=return_to)
         return render_template("hearings/form.html", **ctx)
 
-    bump_ctag("hearings")
+    bump_ctag(_sync_name(hearing.get("dossier_id")))
 
     target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
     if _is_htmx():
@@ -442,6 +453,12 @@ def hearing_edit(hearing_id: str) -> str:
 @login_required
 def hearing_update(hearing_id: str) -> str:
     """Handle edit form submission."""
+    # Capture the old dossier BEFORE the write: reassigning a hearing moves it
+    # between DAV collections, and the old one needs a tombstone or DavX5
+    # keeps a duplicate copy of the court date forever.
+    existing_hearing = get_hearing(hearing_id)
+    old_dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
+
     data = _form_data()
     data = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
@@ -456,7 +473,14 @@ def hearing_update(hearing_id: str) -> str:
         ctx.update(hearing=data, errors=errors, return_to=return_to)
         return render_template("hearings/form.html", **ctx)
 
-    bump_ctag("hearings")
+    new_dossier_id = hearing.get("dossier_id")
+    if old_dossier_id != new_dossier_id:
+        record_tombstone(_sync_name(old_dossier_id), hearing_id)
+        bump_ctag(_sync_name(old_dossier_id))
+        # The hearing (re)enters its new collection — drop any stale tombstone
+        # so one sync REPORT never reports it as both live and deleted.
+        remove_tombstone(_sync_name(new_dossier_id), hearing_id)
+    bump_ctag(_sync_name(new_dossier_id))
 
     fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
     target = safe_internal_redirect(return_to, fallback)
@@ -476,11 +500,13 @@ def hearing_update(hearing_id: str) -> str:
 def hearing_delete(hearing_id: str) -> str:
     """Delete a hearing and redirect to the list (or back to the caller)."""
     return_to = request.form.get("return_to", "")
+    existing_hearing = get_hearing(hearing_id)
+    dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
     success, error = delete_hearing(hearing_id)
 
     if success:
-        record_tombstone("hearings", hearing_id)
-        bump_ctag("hearings")
+        record_tombstone(_sync_name(dossier_id), hearing_id)
+        bump_ctag(_sync_name(dossier_id))
 
     target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
     if _is_htmx():

@@ -101,6 +101,7 @@ def dav_root_propfind() -> Response:
     # Depth:1 — include child collections with proper resource types
     if depth == "1":
         from dav.xml_utils import carddav_tag
+        from dav.dossier_collections import DOSSIER_COMPONENTS
         from dav.sync import get_ctags_bulk
         from models.dossier import list_dossiers
 
@@ -188,14 +189,15 @@ def dav_root_propfind() -> Response:
 
             ET.SubElement(child_prop, dav_tag("displayname")).text = display_name
 
+            # Imported, never re-listed: discovery here and the collection's
+            # own PROPFIND must advertise the identical component set, or the
+            # client is promised a capability the collection then denies.
             sccs = ET.SubElement(
                 child_prop,
                 caldav_tag("supported-calendar-component-set"),
             )
-            comp_todo = ET.SubElement(sccs, caldav_tag("comp"))
-            comp_todo.set("name", "VTODO")
-            comp_journal = ET.SubElement(sccs, caldav_tag("comp"))
-            comp_journal.set("name", "VJOURNAL")
+            for component in DOSSIER_COMPONENTS:
+                ET.SubElement(sccs, caldav_tag("comp")).set("name", component)
 
             ET.SubElement(child_prop, cs_tag("getctag")).text = (
                 ctags.get(sync_name, "")

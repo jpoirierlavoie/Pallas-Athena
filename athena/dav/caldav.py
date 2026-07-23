@@ -60,6 +60,25 @@ _PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 @caldav_bp.route("/dav/calendar/", methods=["OPTIONS"])
 @caldav_bp.route("/dav/calendar/<hearing_id>.ics", methods=["OPTIONS"])
 @dav_auth_required
+def _standalone_hearings() -> list[dict]:
+    """Hearings served by THIS collection: the ones with no dossier.
+
+    A dossier-linked hearing lives in /dav/dossier-{id}/ instead — exactly as
+    /dav/tasks/ carries only dossier-less tasks. Serving it from both would
+    have DavX5 import the event twice, and a PUT or DELETE through the wrong
+    collection would bump a CTag the other collection never watches.
+    """
+    return [h for h in list_hearings() if not h.get("dossier_id")]
+
+
+def _standalone_or_404(hearing_id: str) -> dict | None:
+    """Fetch a hearing only if it belongs to the shared calendar."""
+    hearing = get_hearing(hearing_id)
+    if not hearing or hearing.get("dossier_id"):
+        return None
+    return hearing
+
+
 def options(hearing_id: str = None) -> Response:
     resp = Response("", status=200)
     resp.headers["Allow"] = "OPTIONS, GET, PUT, DELETE, PROPFIND, REPORT"
@@ -90,7 +109,7 @@ def propfind_collection() -> Response:
 
     if depth == "1":
         with firestore_span("query", COLLECTION_NAME):
-            hearings = list_hearings()
+            hearings = _standalone_hearings()
         for hearing in hearings:
             _add_resource_response(multistatus, hearing, body)
         add_attributes(**{"dav.object_count": len(hearings)})
@@ -102,7 +121,7 @@ def propfind_collection() -> Response:
 @caldav_bp.route("/dav/calendar/<hearing_id>.ics", methods=["PROPFIND"])
 @dav_auth_required
 def propfind_resource(hearing_id: str) -> Response:
-    hearing = get_hearing(hearing_id)
+    hearing = _standalone_or_404(hearing_id)
     if not hearing:
         return Response("Not Found", status=404)
 
@@ -227,7 +246,7 @@ def _handle_sync_collection(body_root: ET.Element) -> Response:
     current_token = get_sync_token(COLLECTION_NAME)
 
     if not client_token or client_token != current_token:
-        hearings = list_hearings()
+        hearings = _standalone_hearings()
         live_ids: set[str] = set()
         for hearing in hearings:
             live_ids.add(hearing["id"])
@@ -267,7 +286,7 @@ def _handle_multiget(body_root: ET.Element) -> Response:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
 
-        hearing = get_hearing(hearing_id)
+        hearing = _standalone_or_404(hearing_id)
         if not hearing:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
@@ -287,7 +306,7 @@ def _handle_multiget(body_root: ET.Element) -> Response:
 
 def _handle_calendar_query(body_root: ET.Element) -> Response:
     multistatus = make_multistatus()
-    hearings = list_hearings()
+    hearings = _standalone_hearings()
 
     for hearing in hearings:
         href = f"/dav/calendar/{hearing['id']}.ics"
@@ -309,7 +328,7 @@ def _handle_calendar_query(body_root: ET.Element) -> Response:
 @caldav_bp.route("/dav/calendar/<hearing_id>.ics", methods=["GET"])
 @dav_auth_required
 def get_resource(hearing_id: str) -> Response:
-    hearing = get_hearing(hearing_id)
+    hearing = _standalone_or_404(hearing_id)
     if not hearing:
         return Response("Not Found", status=404)
 
@@ -327,7 +346,11 @@ def put_resource(hearing_id: str) -> Response:
     if_match = request.headers.get("If-Match")
     if_none_match = request.headers.get("If-None-Match")
 
-    existing = get_hearing(hearing_id)
+    # A dossier-linked hearing is not a member of this collection: refuse to
+    # hijack it here rather than silently moving it out of its dossier.
+    if get_hearing(hearing_id) and _standalone_or_404(hearing_id) is None:
+        return Response("Not Found", status=404)
+    existing = _standalone_or_404(hearing_id)
 
     if if_none_match == "*" and existing:
         return Response("Precondition Failed", status=412)
@@ -346,6 +369,15 @@ def put_resource(hearing_id: str) -> Response:
         data = vevent_to_hearing(ical_str)
     except Exception:
         return Response("Bad Request — invalid iCalendar", status=400)
+
+    # The URL determines the collection, so this one always means "no
+    # dossier" — X-PALLAS-DOSSIER-ID in the payload is ignored, exactly as
+    # /dav/tasks/ ignores it for tasks. Otherwise a client round-tripping
+    # that property could move a hearing into a dossier through the shared
+    # calendar, bumping a CTag this collection never watches.
+    data["dossier_id"] = ""
+    data["dossier_file_number"] = ""
+    data["dossier_title"] = ""
 
     if existing:
         updated, errors = update_hearing(hearing_id, data)
@@ -384,7 +416,7 @@ def put_resource(hearing_id: str) -> Response:
 @caldav_bp.route("/dav/calendar/<hearing_id>.ics", methods=["DELETE"])
 @dav_auth_required
 def delete_resource(hearing_id: str) -> Response:
-    existing = get_hearing(hearing_id)
+    existing = _standalone_or_404(hearing_id)
     if not existing:
         return Response("Not Found", status=404)
 

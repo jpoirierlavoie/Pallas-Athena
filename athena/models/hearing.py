@@ -173,6 +173,20 @@ def _validate(data: dict) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
+def dav_href_for(dossier_id: str, hearing_id: str) -> str:
+    """DAV path of a hearing: per-dossier when linked, shared otherwise.
+
+    A dossier-linked hearing is served only from its dossier's collection —
+    the shared /dav/calendar/ carries the standalone ones, mirroring how
+    /dav/tasks/ carries only dossier-less tasks. Stored for reference; the
+    DAV layer always derives the href from the URL it was reached through,
+    so a stale value here can never misroute a request.
+    """
+    if dossier_id:
+        return f"/dav/dossier-{dossier_id}/{hearing_id}.ics"
+    return f"/dav/calendar/{hearing_id}.ics"
+
+
 def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
@@ -186,16 +200,22 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    hearing_id = str(uuid.uuid4())
-    vevent_uid = str(uuid.uuid4())
+    # Honour a caller-supplied id / UID, as create_task and create_note do.
+    # A CalDAV PUT names the resource in its URL, so minting a fresh uuid
+    # here stored the event under an id the client never learns: it PUTs
+    # /dav/.../abc.ics, gets 201, and every later GET of abc.ics 404s while
+    # a duplicate under another id syncs down. Same for vevent_uid — a
+    # regenerated UID reads as a different event to the client.
+    hearing_id = merged.get("id") or str(uuid.uuid4())
+    vevent_uid = merged.get("vevent_uid") or str(uuid.uuid4())
 
     merged.update({
         "id": hearing_id,
-        "created_at": now,
+        "created_at": merged.get("created_at") or now,
         "updated_at": now,
         "etag": str(uuid.uuid4()),
         "vevent_uid": vevent_uid,
-        "dav_href": f"/dav/calendar/{hearing_id}.ics",
+        "dav_href": dav_href_for(merged.get("dossier_id", ""), hearing_id),
     })
 
     try:
@@ -417,6 +437,13 @@ def get_upcoming_hearings(days: int = 30) -> list[dict]:
 # ── RFC-5545 VEVENT serialization ─────────────────────────────────────────
 
 
+def _to_utc(dt: datetime) -> datetime:
+    """Coerce a datetime to timezone-aware UTC (for iCalendar UTC stamps)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def hearing_to_vevent(hearing: dict) -> str:
     """Serialize a hearing dict to an RFC-5545 VEVENT string wrapped in VCALENDAR."""
     cal = icalendar.Calendar()
@@ -494,8 +521,23 @@ def hearing_to_vevent(hearing: dict) -> str:
         alarm.add("trigger", timedelta(minutes=-reminder_min))
         event.add_component(alarm)
 
-    # LAST-MODIFIED
+    # CREATED + DTSTAMP as UTC date-times. DTSTAMP is MANDATORY per RFC 5545
+    # §3.6.1 and was missing entirely; the Android calendar provider tolerates
+    # the omission, which is why it went unnoticed while hearings only ever
+    # lived in /dav/calendar/. CREATED matters as soon as a VEVENT reaches a
+    # per-dossier collection that jtx Board also subscribes to: its
+    # icalobject.created column is NOT NULL and ical4android writes null when
+    # the component omits CREATED (the same trap documented for VJOURNAL in
+    # models/note.py).
+    created = hearing.get("created_at")
+    if created and hasattr(created, "hour"):
+        event.add("created", _to_utc(created))
     updated = hearing.get("updated_at")
+    stamp = updated or created
+    if stamp and hasattr(stamp, "hour"):
+        event.add("dtstamp", _to_utc(stamp))
+
+    # LAST-MODIFIED
     if updated:
         event.add("last-modified", updated)
 

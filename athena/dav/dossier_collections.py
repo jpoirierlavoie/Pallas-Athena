@@ -1,4 +1,4 @@
-"""Per-dossier CalDAV collections -- VTODO tasks and VJOURNAL notes.
+"""Per-dossier CalDAV collections -- VEVENT hearings, VTODO tasks, VJOURNAL notes.
 
 Each active dossier is exposed as a CalDAV collection at:
     /dav/dossier-{dossierId}/
@@ -6,7 +6,16 @@ Each active dossier is exposed as a CalDAV collection at:
 Resources within the collection:
     /dav/dossier-{dossierId}/{resourceId}.ics
 
-VTODO resources map to tasks, VJOURNAL resources map to notes.
+VEVENT resources map to hearings, VTODO to tasks, VJOURNAL to notes. A
+dossier-linked hearing lives ONLY here; /dav/calendar/ keeps the standalone
+ones, exactly as /dav/tasks/ keeps only dossier-less tasks. Serving the same
+hearing from both would have DavX5 import it twice and let a write through
+one collection bump the other's CTag not at all.
+
+:data:`DOSSIER_COMPONENTS` is the single source of truth for the advertised
+component set -- ``dav/__init__.py`` imports it for the root Depth:1 listing
+so the two advertisements cannot drift. A collection that serves VEVENTs
+without advertising VEVENT is a silent no-op on the client.
 """
 
 import logging
@@ -37,6 +46,15 @@ from dav.xml_utils import (
     serialize_multistatus,
 )
 from models.dossier import get_dossier
+from models.hearing import (
+    create_hearing,
+    delete_hearing,
+    get_hearing,
+    hearing_to_vevent,
+    list_hearings,
+    update_hearing,
+    vevent_to_hearing,
+)
 from models.note import (
     create_note,
     delete_note,
@@ -71,6 +89,12 @@ _PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."
 # close transition, which tell DavX5 to delete its local copies. See
 # routes.dossiers._sync_dossier_dav_visibility.
 _ACTIVE_DOSSIER_STATUSES = ("actif", "en_attente")
+
+# The collection's advertised supported-calendar-component-set. Imported by
+# dav/__init__.py for the root Depth:1 listing: two hard-coded literals that
+# disagree are a classic silent desync (discovery promises one capability,
+# the collection PROPFIND contradicts it on the next refresh).
+DOSSIER_COMPONENTS: tuple[str, ...] = ("VEVENT", "VTODO", "VJOURNAL")
 
 
 def _dossier_is_active(dossier: dict | None) -> bool:
@@ -128,25 +152,24 @@ def propfind_collection(dossier_id: str) -> Response:
     _add_collection_props(multistatus, dossier, body)
 
     if depth == "1" and active:
-        with firestore_span("query", "tasks", dossier_id=dossier_id):
-            tasks = list_tasks(dossier_id=dossier_id)
-        with firestore_span("query", "notes", dossier_id=dossier_id):
-            notes = list_notes(dossier_id=dossier_id)
+        hearings, tasks, notes = _collection_members(dossier_id)
+        total = len(hearings) + len(tasks) + len(notes)
         with span(
             "dav.serialize_objects",
             **{
+                "dav.hearing_count": len(hearings),
                 "dav.task_count": len(tasks),
                 "dav.note_count": len(notes),
-                "dav.object_count": len(tasks) + len(notes),
+                "dav.object_count": total,
             },
         ):
+            for hearing in hearings:
+                _add_hearing_resource(multistatus, dossier_id, hearing, body)
             for task in tasks:
                 _add_task_resource(multistatus, dossier_id, task, body)
             for note in notes:
                 _add_note_resource(multistatus, dossier_id, note, body)
-        add_attributes(
-            **{"dav.object_count": len(tasks) + len(notes)}
-        )
+        add_attributes(**{"dav.object_count": total})
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
@@ -182,10 +205,8 @@ def _add_collection_props(
 
     if propfind_requests_prop(body, caldav_tag("supported-calendar-component-set")):
         sccs = ET.SubElement(prop, caldav_tag("supported-calendar-component-set"))
-        comp_todo = ET.SubElement(sccs, caldav_tag("comp"))
-        comp_todo.set("name", "VTODO")
-        comp_journal = ET.SubElement(sccs, caldav_tag("comp"))
-        comp_journal.set("name", "VJOURNAL")
+        for component in DOSSIER_COMPONENTS:
+            ET.SubElement(sccs, caldav_tag("comp")).set("name", component)
 
     if propfind_requests_prop(body, dav_tag("supported-report-set")):
         srs = ET.SubElement(prop, dav_tag("supported-report-set"))
@@ -203,19 +224,36 @@ def _add_collection_props(
         )
 
 
-def _add_task_resource(
+def _collection_members(dossier_id: str) -> tuple[list, list, list]:
+    """Return (hearings, tasks, notes) for a dossier, each traced.
+
+    One helper so the four places that enumerate a collection (PROPFIND,
+    sync-collection, calendar-query, and the drain check) cannot disagree
+    about what the collection contains.
+    """
+    with firestore_span("query", "hearings", dossier_id=dossier_id):
+        hearings = list_hearings(dossier_id=dossier_id)
+    with firestore_span("query", "tasks", dossier_id=dossier_id):
+        tasks = list_tasks(dossier_id=dossier_id)
+    with firestore_span("query", "notes", dossier_id=dossier_id):
+        notes = list_notes(dossier_id=dossier_id)
+    return hearings, tasks, notes
+
+
+def _add_calendar_resource(
     multistatus: ET.Element,
     dossier_id: str,
-    task: dict,
+    obj: dict,
     body: ET.Element | None,
+    serialize,
 ) -> None:
-    """Add a single VTODO resource <D:response>."""
-    href = f"/dav/dossier-{dossier_id}/{task['id']}.ics"
+    """Add one calendar resource <D:response>, whatever its component type."""
+    href = f"/dav/dossier-{dossier_id}/{obj['id']}.ics"
     resp = add_response(multistatus, href)
     prop = add_propstat(resp)
 
     if propfind_requests_prop(body, dav_tag("getetag")):
-        ET.SubElement(prop, dav_tag("getetag")).text = f'"{task.get("etag", "")}"'
+        ET.SubElement(prop, dav_tag("getetag")).text = f'"{obj.get("etag", "")}"'
 
     if propfind_requests_prop(body, dav_tag("getcontenttype")):
         ET.SubElement(prop, dav_tag("getcontenttype")).text = (
@@ -226,33 +264,28 @@ def _add_task_resource(
         ET.SubElement(prop, dav_tag("resourcetype"))  # Empty for non-collection
 
     if body is not None and propfind_requests_prop(body, caldav_tag("calendar-data")):
-        ET.SubElement(prop, caldav_tag("calendar-data")).text = task_to_vtodo(task)
+        ET.SubElement(prop, caldav_tag("calendar-data")).text = serialize(obj)
+
+
+def _add_hearing_resource(
+    multistatus: ET.Element, dossier_id: str, hearing: dict, body: ET.Element | None
+) -> None:
+    """Add a single VEVENT resource <D:response>."""
+    _add_calendar_resource(multistatus, dossier_id, hearing, body, hearing_to_vevent)
+
+
+def _add_task_resource(
+    multistatus: ET.Element, dossier_id: str, task: dict, body: ET.Element | None
+) -> None:
+    """Add a single VTODO resource <D:response>."""
+    _add_calendar_resource(multistatus, dossier_id, task, body, task_to_vtodo)
 
 
 def _add_note_resource(
-    multistatus: ET.Element,
-    dossier_id: str,
-    note: dict,
-    body: ET.Element | None,
+    multistatus: ET.Element, dossier_id: str, note: dict, body: ET.Element | None
 ) -> None:
     """Add a single VJOURNAL resource <D:response>."""
-    href = f"/dav/dossier-{dossier_id}/{note['id']}.ics"
-    resp = add_response(multistatus, href)
-    prop = add_propstat(resp)
-
-    if propfind_requests_prop(body, dav_tag("getetag")):
-        ET.SubElement(prop, dav_tag("getetag")).text = f'"{note.get("etag", "")}"'
-
-    if propfind_requests_prop(body, dav_tag("getcontenttype")):
-        ET.SubElement(prop, dav_tag("getcontenttype")).text = (
-            "text/calendar; charset=utf-8"
-        )
-
-    if propfind_requests_prop(body, dav_tag("resourcetype")):
-        ET.SubElement(prop, dav_tag("resourcetype"))  # Empty for non-collection
-
-    if body is not None and propfind_requests_prop(body, caldav_tag("calendar-data")):
-        ET.SubElement(prop, caldav_tag("calendar-data")).text = note_to_vjournal(note)
+    _add_calendar_resource(multistatus, dossier_id, note, body, note_to_vjournal)
 
 
 # -- PROPFIND (Resource) -----------------------------------------------------
@@ -266,21 +299,15 @@ def propfind_resource(dossier_id: str, resource_id: str) -> Response:
     except ValueError:
         return Response(_PAYLOAD_TOO_LARGE, status=413)
 
-    task = get_task(resource_id)
-    if task and task.get("dossier_id") == dossier_id:
-        multistatus = make_multistatus()
-        _add_task_resource(multistatus, dossier_id, task, body)
-        xml = serialize_multistatus(multistatus)
-        return Response(xml, status=207, content_type="application/xml; charset=utf-8")
+    resolved = _resolve_resource(dossier_id, resource_id)
+    if resolved is None:
+        return Response("Not Found", status=404)
 
-    note = get_note(resource_id)
-    if note and note.get("dossier_id") == dossier_id:
-        multistatus = make_multistatus()
-        _add_note_resource(multistatus, dossier_id, note, body)
-        xml = serialize_multistatus(multistatus)
-        return Response(xml, status=207, content_type="application/xml; charset=utf-8")
-
-    return Response("Not Found", status=404)
+    obj, serialize = resolved
+    multistatus = make_multistatus()
+    _add_calendar_resource(multistatus, dossier_id, obj, body, serialize)
+    xml = serialize_multistatus(multistatus)
+    return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
 
 # -- REPORT ------------------------------------------------------------------
@@ -360,39 +387,32 @@ def _handle_sync_collection(
     tombstone_count = 0
     if not client_token or client_token != current_token:
         if active:
-            with firestore_span("query", "tasks", dossier_id=dossier_id):
-                tasks = list_tasks(dossier_id=dossier_id)
-
-            with firestore_span("query", "notes", dossier_id=dossier_id):
-                notes = list_notes(dossier_id=dossier_id)
+            hearings, tasks, notes = _collection_members(dossier_id)
         else:
             # Draining collection: no live resources, so all tombstones report.
-            tasks, notes = [], []
+            hearings, tasks, notes = [], [], []
 
-        changed_count = len(tasks) + len(notes)
+        # RFC 6578 defines no filter element, so a sync-collection response is
+        # necessarily component-blind: every member of the collection is
+        # reported and the client routes by component after fetching bodies.
+        members = list(hearings) + list(tasks) + list(notes)
+        changed_count = len(members)
         with span(
             "dav.serialize_objects",
             **{
+                "dav.hearing_count": len(hearings),
                 "dav.task_count": len(tasks),
                 "dav.note_count": len(notes),
                 "dav.object_count": changed_count,
             },
         ):
-            for task in tasks:
+            for obj in members:
                 resp = add_response(
-                    multistatus, f"/dav/dossier-{dossier_id}/{task['id']}.ics"
+                    multistatus, f"/dav/dossier-{dossier_id}/{obj['id']}.ics"
                 )
                 prop = add_propstat(resp)
                 ET.SubElement(prop, dav_tag("getetag")).text = (
-                    f'"{task.get("etag", "")}"'
-                )
-            for note in notes:
-                resp = add_response(
-                    multistatus, f"/dav/dossier-{dossier_id}/{note['id']}.ics"
-                )
-                prop = add_propstat(resp)
-                ET.SubElement(prop, dav_tag("getetag")).text = (
-                    f'"{note.get("etag", "")}"'
+                    f'"{obj.get("etag", "")}"'
                 )
 
         with firestore_span(
@@ -404,7 +424,7 @@ def _handle_sync_collection(
 
         # Never report a tombstone for a live resource (RFC 6578) — a
         # resurrected id must not appear as both 200 propstat and 404.
-        live_ids = {t["id"] for t in tasks} | {n["id"] for n in notes}
+        live_ids = {obj["id"] for obj in members}
         tombstones = [ts for ts in tombstones if ts["id"] not in live_ids]
 
         tombstone_count = len(tombstones)
@@ -452,36 +472,53 @@ def _handle_multiget(
             add_status_response(multistatus, href, 404, "Not Found")
             continue
 
-        task = get_task(resource_id)
-        if task and task.get("dossier_id") == dossier_id:
-            resp = add_response(multistatus, href)
-            prop = add_propstat(resp)
-            ET.SubElement(prop, dav_tag("getetag")).text = (
-                f'"{task.get("etag", "")}"'
-            )
-            ET.SubElement(prop, caldav_tag("calendar-data")).text = task_to_vtodo(task)
+        resolved = _resolve_resource(dossier_id, resource_id)
+        if resolved is None:
+            add_status_response(multistatus, href, 404, "Not Found")
             continue
 
-        note = get_note(resource_id)
-        if note and note.get("dossier_id") == dossier_id:
-            resp = add_response(multistatus, href)
-            prop = add_propstat(resp)
-            ET.SubElement(prop, dav_tag("getetag")).text = (
-                f'"{note.get("etag", "")}"'
-            )
-            ET.SubElement(prop, caldav_tag("calendar-data")).text = note_to_vjournal(note)
-            continue
-
-        add_status_response(multistatus, href, 404, "Not Found")
+        obj, serialize = resolved
+        resp = add_response(multistatus, href)
+        prop = add_propstat(resp)
+        ET.SubElement(prop, dav_tag("getetag")).text = f'"{obj.get("etag", "")}"'
+        ET.SubElement(prop, caldav_tag("calendar-data")).text = serialize(obj)
 
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
 
+def requested_components(body_root: ET.Element | None) -> set[str] | None:
+    """Component names a calendar-query asks for, or None when unfiltered.
+
+    RFC 4791 §9.7.1 nests the filter as
+    ``<C:filter><C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"/>``.
+    A collection that carries all three component types MUST honor this:
+    answering a VEVENT-scoped query with VTODO and VJOURNAL bodies leaves the
+    client to sort out components it never asked for, which is precisely the
+    ambiguity a mixed collection has to avoid. Returns ``None`` (meaning "no
+    filter, return everything") when the body carries no usable comp-filter,
+    so an absent or malformed filter degrades to the previous behavior rather
+    than to an empty collection.
+    """
+    if body_root is None:
+        return None
+    filter_el = body_root.find(caldav_tag("filter"))
+    if filter_el is None:
+        return None
+    names: set[str] = set()
+    for outer in filter_el.findall(caldav_tag("comp-filter")):
+        # The outer comp-filter is VCALENDAR; the components are its children.
+        for inner in outer.findall(caldav_tag("comp-filter")):
+            name = (inner.get("name") or "").upper()
+            if name:
+                names.add(name)
+    return names or None
+
+
 def _handle_calendar_query(
     dossier_id: str, body_root: ET.Element, active: bool = True
 ) -> Response:
-    """calendar-query REPORT -- return all matching resources.
+    """calendar-query REPORT -- return the resources matching the filter.
 
     A drained (inactive) collection exposes no live resources.
     """
@@ -491,22 +528,31 @@ def _handle_calendar_query(
         xml = serialize_multistatus(multistatus)
         return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
-    tasks = list_tasks(dossier_id=dossier_id)
-    for task in tasks:
-        href = f"/dav/dossier-{dossier_id}/{task['id']}.ics"
-        resp = add_response(multistatus, href)
-        prop = add_propstat(resp)
-        ET.SubElement(prop, dav_tag("getetag")).text = f'"{task.get("etag", "")}"'
-        ET.SubElement(prop, caldav_tag("calendar-data")).text = task_to_vtodo(task)
+    wanted = requested_components(body_root)
+    add_attributes(
+        **{"dav.comp_filter": ",".join(sorted(wanted)) if wanted else "none"}
+    )
 
-    notes = list_notes(dossier_id=dossier_id)
-    for note in notes:
-        href = f"/dav/dossier-{dossier_id}/{note['id']}.ics"
-        resp = add_response(multistatus, href)
-        prop = add_propstat(resp)
-        ET.SubElement(prop, dav_tag("getetag")).text = f'"{note.get("etag", "")}"'
-        ET.SubElement(prop, caldav_tag("calendar-data")).text = note_to_vjournal(note)
+    hearings, tasks, notes = _collection_members(dossier_id)
+    groups = (
+        ("VEVENT", hearings, hearing_to_vevent),
+        ("VTODO", tasks, task_to_vtodo),
+        ("VJOURNAL", notes, note_to_vjournal),
+    )
 
+    emitted = 0
+    for component, objects, serialize in groups:
+        if wanted is not None and component not in wanted:
+            continue
+        for obj in objects:
+            href = f"/dav/dossier-{dossier_id}/{obj['id']}.ics"
+            resp = add_response(multistatus, href)
+            prop = add_propstat(resp)
+            ET.SubElement(prop, dav_tag("getetag")).text = f'"{obj.get("etag", "")}"'
+            ET.SubElement(prop, caldav_tag("calendar-data")).text = serialize(obj)
+            emitted += 1
+
+    add_attributes(**{"dav.object_count": emitted})
     xml = serialize_multistatus(multistatus)
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
@@ -516,21 +562,16 @@ def _handle_calendar_query(
 @dossier_dav_bp.route("/dav/dossier-<dossier_id>/<resource_id>.ics", methods=["GET"])
 @dav_auth_required
 def get_resource(dossier_id: str, resource_id: str) -> Response:
-    task = get_task(resource_id)
-    if task and task.get("dossier_id") == dossier_id:
-        ical = task_to_vtodo(task)
-        resp = Response(ical, status=200, content_type="text/calendar; charset=utf-8")
-        resp.headers["ETag"] = f'"{task.get("etag", "")}"'
-        return resp
+    resolved = _resolve_resource(dossier_id, resource_id)
+    if resolved is None:
+        return Response("Not Found", status=404)
 
-    note = get_note(resource_id)
-    if note and note.get("dossier_id") == dossier_id:
-        ical = note_to_vjournal(note)
-        resp = Response(ical, status=200, content_type="text/calendar; charset=utf-8")
-        resp.headers["ETag"] = f'"{note.get("etag", "")}"'
-        return resp
-
-    return Response("Not Found", status=404)
+    obj, serialize = resolved
+    resp = Response(
+        serialize(obj), status=200, content_type="text/calendar; charset=utf-8"
+    )
+    resp.headers["ETag"] = f'"{obj.get("etag", "")}"'
+    return resp
 
 
 # -- PUT ---------------------------------------------------------------------
@@ -566,12 +607,97 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
         }
     )
 
-    if component_type == "VTODO":
+    if component_type == "VEVENT":
+        return _put_hearing(
+            dossier_id, dossier, resource_id, ical_str, if_match, if_none_match
+        )
+    elif component_type == "VTODO":
         return _put_task(dossier_id, dossier, resource_id, ical_str, if_match, if_none_match)
     elif component_type == "VJOURNAL":
         return _put_note(dossier_id, dossier, resource_id, ical_str, if_match, if_none_match)
     else:
         return Response("Unsupported component type", status=400)
+
+
+def _put_hearing(
+    dossier_id: str,
+    dossier: dict,
+    resource_id: str,
+    ical_str: str,
+    if_match: str | None,
+    if_none_match: str | None,
+) -> Response:
+    """Handle PUT for a VEVENT resource (mirrors :func:`_put_task`)."""
+    existing = get_hearing(resource_id)
+
+    # Precondition checks
+    if if_none_match == "*" and existing:
+        return Response("Precondition Failed", status=412)
+    if if_match and existing:
+        if if_match != f'"{existing.get("etag", "")}"':
+            return Response("Precondition Failed", status=412)
+    if if_match and not existing:
+        return Response("Precondition Failed", status=412)
+
+    try:
+        data = vevent_to_hearing(ical_str)
+    except Exception:
+        return Response("Bad Request — invalid iCalendar", status=400)
+
+    # Force dossier_id from the URL: the collection determines the dossier.
+    # hearing_to_vevent emits X-PALLAS-DOSSIER-ID and vevent_to_hearing reads
+    # it back, so a client round-tripping that property could otherwise write
+    # a dossier_id disagreeing with the collection the PUT landed in — and
+    # the CTag bump below would then target the wrong collection.
+    data["dossier_id"] = dossier_id
+    data["dossier_file_number"] = dossier.get("file_number", "")
+    data["dossier_title"] = dossier.get("title", "")
+
+    sync_name = f"dossier:{dossier_id}"
+
+    if existing:
+        # Moved in from another collection: tombstone it there. A hearing with
+        # no dossier lived in the shared "hearings" collection.
+        old_dossier = existing.get("dossier_id")
+        if old_dossier and old_dossier != dossier_id:
+            record_tombstone(f"dossier:{old_dossier}", resource_id)
+            bump_ctag(f"dossier:{old_dossier}")
+        elif not old_dossier:
+            record_tombstone("hearings", resource_id)
+            bump_ctag("hearings")
+
+        updated, errors = update_hearing(resource_id, data)
+        if errors:
+            logger.warning(
+                "Dossier DAV PUT (VEVENT) validation failed for %s: %s",
+                sanitize_log_value(resource_id), sanitize_log_value(errors),
+            )
+            return Response("Données invalides.", status=422)
+        if old_dossier != dossier_id:
+            # Resource (re)enters this collection — drop any stale tombstone
+            remove_tombstone(sync_name, resource_id)
+        bump_ctag(sync_name)
+        resp = Response("", status=204)
+        resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
+    else:
+        data["id"] = resource_id
+        created, errors = create_hearing(data)
+        if errors:
+            logger.warning(
+                "Dossier DAV PUT (VEVENT) validation failed for %s: %s",
+                sanitize_log_value(resource_id), sanitize_log_value(errors),
+            )
+            return Response("Données invalides.", status=422)
+        # Resource (re)enters the collection — drop any stale tombstone
+        remove_tombstone(sync_name, resource_id)
+        bump_ctag(sync_name)
+        resp = Response("", status=201)
+        resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+
+    if "return=minimal" in request.headers.get("Prefer", ""):
+        resp.headers["Preference-Applied"] = "return=minimal"
+
+    return resp
 
 
 def _put_task(
@@ -766,14 +892,59 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         bump_ctag(sync_name)
         return Response("", status=204)
 
+    existing_hearing = get_hearing(resource_id)
+    if existing_hearing and existing_hearing.get("dossier_id") == dossier_id:
+        if_match = request.headers.get("If-Match")
+        if if_match and if_match != f'"{existing_hearing.get("etag", "")}"':
+            return Response("Precondition Failed", status=412)
+
+        success, error = delete_hearing(resource_id)
+        if not success:
+            logger.error(
+                "Dossier DAV DELETE (hearing) failed for %s: %s",
+                sanitize_log_value(resource_id), sanitize_log_value(error),
+            )
+            return Response("Erreur serveur.", status=500)
+
+        sync_name = f"dossier:{dossier_id}"
+        record_tombstone(sync_name, resource_id)
+        bump_ctag(sync_name)
+        return Response("", status=204)
+
     return Response("Not Found", status=404)
 
 
 # -- Helpers -----------------------------------------------------------------
 
+def _resolve_resource(dossier_id: str, resource_id: str):
+    """Resolve a resource id to (doc, serializer) within this collection.
+
+    Tasks, notes and hearings share one flat id space under
+    /dav/dossier-{id}/{resourceId}.ics. Ids are server-minted UUIDv4s, so a
+    collision across collections is not a practical concern; the cost is up
+    to three point reads on a miss, ordered cheapest-first by how often each
+    type is fetched. Returns None when nothing in THIS dossier matches.
+    """
+    task = get_task(resource_id)
+    if task and task.get("dossier_id") == dossier_id:
+        return task, task_to_vtodo
+
+    note = get_note(resource_id)
+    if note and note.get("dossier_id") == dossier_id:
+        return note, note_to_vjournal
+
+    hearing = get_hearing(resource_id)
+    if hearing and hearing.get("dossier_id") == dossier_id:
+        return hearing, hearing_to_vevent
+
+    return None
+
+
 def _detect_component_type(ical_str: str) -> str | None:
-    """Detect whether the iCalendar body contains VTODO or VJOURNAL."""
-    if "BEGIN:VTODO" in ical_str:
+    """Detect whether the body contains VEVENT, VTODO or VJOURNAL."""
+    if "BEGIN:VEVENT" in ical_str:
+        return "VEVENT"
+    elif "BEGIN:VTODO" in ical_str:
         return "VTODO"
     elif "BEGIN:VJOURNAL" in ical_str:
         return "VJOURNAL"

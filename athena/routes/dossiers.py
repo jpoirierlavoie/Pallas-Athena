@@ -595,26 +595,33 @@ def _sync_dossier_dav_visibility(
     per-collection worker hits a collection that is gone while local rows still
     reference it).
 
-    To make the teardown clean we record a tombstone for every task and note
-    and bump the collection CTag: DavX5's next sync then reports them all as
-    deleted and drops its local copies BEFORE the collection disappears.
-    Reopening a dossier removes those tombstones (and bumps the CTag) so the
-    items sync back.
+    To make the teardown clean we record a tombstone for every task, note and
+    hearing and bump the collection CTag: DavX5's next sync then reports them
+    all as deleted and drops its local copies BEFORE the collection
+    disappears. Reopening a dossier removes those tombstones (and bumps the
+    CTag) so the items sync back.
 
-    No task/note documents are touched — tombstones live in ``dav_sync`` and
-    are DAV markers only. The underlying records stay in Firestore and in the
-    web UI regardless of the dossier's status.
+    Hearings belong here since dossier-linked ones moved into the per-dossier
+    collection: omitting them would leave stale court dates on the phone with
+    no server-side way to remove them once the collection stops being
+    advertised.
+
+    No task/note/hearing documents are touched — tombstones live in
+    ``dav_sync`` and are DAV markers only. The underlying records stay in
+    Firestore and in the web UI regardless of the dossier's status.
     """
     was_active = old_status in _ACTIVE_DOSSIER_STATUSES
     is_active = new_status in _ACTIVE_DOSSIER_STATUSES
     if was_active == is_active:
         return  # Visibility unchanged — nothing to drain or restore.
 
+    from models.hearing import list_hearings
     from models.note import list_notes
 
     sync_name = f"dossier:{dossier_id}"
     resource_ids = [t["id"] for t in list_tasks(dossier_id=dossier_id)]
     resource_ids += [n["id"] for n in list_notes(dossier_id=dossier_id)]
+    resource_ids += [h["id"] for h in list_hearings(dossier_id=dossier_id)]
 
     if is_active:
         # Reopened: resources re-enter the collection — drop stale tombstones
