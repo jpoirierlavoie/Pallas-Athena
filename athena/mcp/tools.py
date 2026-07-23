@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
 from mcp import SCOPE_READ, SCOPE_WRITE, write_enabled
+from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
 
 # ── Money / date formatting (§10.1 conventions) ─────────────────────────
@@ -95,7 +96,11 @@ def tool_result(payload: Any, protocol_version: str) -> dict:
         ],
         "isError": False,
     }
-    if protocol_version == "2025-06-18":
+    # Lexicographic >= is exact for ISO-dated protocol revisions: when a
+    # NEWER revision joins SUPPORTED_PROTOCOL_VERSIONS, its clients must
+    # keep receiving structuredContent (an equality gate would silently
+    # drop it while outputSchema stays declared — the inverted contract).
+    if protocol_version >= "2025-06-18":
         result["structuredContent"] = clean
     return result
 
@@ -108,17 +113,30 @@ def error_result(message: str) -> dict:
 # ── Subset JSON-Schema validator (§10.2) ────────────────────────────────
 
 def validate_args(schema: dict, args: Any) -> list[str]:
-    """Validate *args* against a subset JSON Schema; return error strings.
+    """Validate a value against a subset JSON Schema; return error strings.
 
     Supported keywords: ``type`` (object, string, integer, number, boolean,
-    array), ``properties``, ``required``, ``enum``, ``minimum``,
-    ``maximum``, ``maxLength``, ``items`` (one level),
+    array, null — or a LIST of those for nullable fields), ``properties``,
+    ``required``, ``enum``, ``minimum``, ``maximum``, ``maxLength``,
+    ``minLength``, ``items`` (one level), ``anyOf``,
     ``additionalProperties: false``. Empty list = valid.
+
+    Despite the name, this validates OUTPUT payloads too: the conformance
+    tests run every handler and check its real payload against the declared
+    ``outputSchema`` with this same validator, so a schema the validator
+    cannot express cannot be declared — the contract and its enforcement
+    use one grammar.
     """
     return _validate_value(schema, args, "arguments")
 
 
-def _type_ok(expected: str, value: Any) -> bool:
+def _type_ok(expected: Any, value: Any) -> bool:
+    if isinstance(expected, (list, tuple)):
+        # JSON Schema union types — used by output schemas for nullable
+        # fields (e.g. ["string", "null"]); input schemas stay single-typed.
+        return any(_type_ok(e, value) for e in expected)
+    if expected == "null":
+        return value is None
     if expected == "object":
         return isinstance(value, dict)
     if expected == "string":
@@ -137,8 +155,30 @@ def _type_ok(expected: str, value: Any) -> bool:
 def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
     errors: list[str] = []
 
+    if "anyOf" in schema:
+        # Valid when ANY branch accepts the value. Used by output schemas
+        # whose payload has several shapes (found/not-found, global/dossier);
+        # branches discriminate on an `enum` so a wrong-shape payload cannot
+        # accidentally satisfy the other branch.
+        #
+        # OUTPUT schemas only. Sibling keywords are deliberately ignored on
+        # a match (standard JSON Schema applies them conjunctively), so an
+        # INPUT schema combining anyOf with `additionalProperties: false`
+        # would silently skip that security control — never write one.
+        for branch in schema["anyOf"]:
+            if not _validate_value(branch, value, name):
+                return errors
+        errors.append(f"`{name}` matches none of the allowed variants")
+        return errors
+
     expected_type = schema.get("type")
     if expected_type is not None and not _type_ok(expected_type, value):
+        if isinstance(expected_type, (list, tuple)):
+            errors.append(
+                f"`{name}` must be one of the types: "
+                + ", ".join(str(e) for e in expected_type)
+            )
+            return errors
         article = "an" if expected_type[0] in "aeiou" else "a"
         if (
             expected_type == "integer"
@@ -151,6 +191,11 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
             )
         else:
             errors.append(f"`{name}` must be {article} {expected_type}")
+        return errors
+
+    if value is None:
+        # A null that passed the type gate has nothing further to satisfy
+        # (never combined with enum/bounds in this codebase's schemas).
         return errors
 
     if "enum" in schema and value not in schema["enum"]:
@@ -216,8 +261,19 @@ def _limit(default: int) -> dict:
     }
 
 
-_DATE = {"type": "string", "maxLength": 10, "description": "Date as YYYY-MM-DD."}
-_ID = {"type": "string", "maxLength": 64}
+def _id(description: str) -> dict:
+    """A UUIDv4-id argument with a PER-USAGE description.
+
+    One fresh dict per call. The old shared `_ID` fragment carried one
+    description slot for sixteen different usages — which is how all
+    sixteen ended up with none at all.
+    """
+    return {"type": "string", "maxLength": 64, "description": description}
+
+
+def _date(description: str) -> dict:
+    """A YYYY-MM-DD date argument with a per-usage description."""
+    return {"type": "string", "maxLength": 10, "description": description}
 
 _READ_ONLY_ANNOTATIONS = {"readOnlyHint": True, "openWorldHint": False}
 # Per the MCP spec, destructiveHint defaults to TRUE and idempotentHint to
@@ -299,8 +355,17 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "enum": _DOSSIER_STATUSES},
-                "query": {"type": "string", "maxLength": 120},
+                "status": {
+                    "type": "string",
+                    "enum": _DOSSIER_STATUSES,
+                    "description": "Filter by dossier status. Omit for all.",
+                },
+                "query": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": ("Free-text match on title, file number "
+                                    "and court file number."),
+                },
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -347,8 +412,16 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _ID,
-                "file_number": {"type": "string", "maxLength": 20},
+                "dossier_id": _id(
+                    "The dossier's UUIDv4 id, e.g. from list_dossiers. Provide exactly one of dossier_id or file_number."
+                ),
+                "file_number": {
+                    "type": "string",
+                    "maxLength": 20,
+                    "description": ("The user-assigned file number, "
+                                    "e.g. « 2026-001 ». Alternative to "
+                                    "dossier_id — provide exactly one."),
+                },
             },
             "additionalProperties": False,
         },
@@ -364,9 +437,21 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _ID,
-                "status": {"type": "string", "enum": _TASK_STATUSES},
-                "include_completed": {"type": "boolean"},
+                "dossier_id": _id(
+                    "Only tasks of this dossier (UUIDv4). Omit for all tasks."
+                ),
+                "status": {
+                    "type": "string",
+                    "enum": _TASK_STATUSES,
+                    "description": ("Filter to one status (French "
+                                    "vocabulary); overrides the default "
+                                    "active-only view."),
+                },
+                "include_completed": {
+                    "type": "boolean",
+                    "description": ("true also returns terminée and annulée "
+                                    "tasks in the default (no-status) view."),
+                },
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -384,9 +469,15 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "date_from": _DATE,
-                "date_to": _DATE,
-                "dossier_id": _ID,
+                "date_from": _date(
+                    "Window start, YYYY-MM-DD (Montréal calendar date). Default: today."
+                ),
+                "date_to": _date(
+                    "Window end, YYYY-MM-DD inclusive. Default: date_from + 60 days."
+                ),
+                "dossier_id": _id(
+                    "Only hearings of this dossier (UUIDv4). Omit for all."
+                ),
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -404,7 +495,9 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _ID,
+                "dossier_id": _id(
+                    "The dossier whose notes to list (UUIDv4). OMIT to list the « Général » notes — journal entries attached to no dossier."
+                ),
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -416,7 +509,9 @@ TOOLS: dict[str, dict] = {
         "description": "Fetch one note with its full raw Markdown content.",
         "input_schema": {
             "type": "object",
-            "properties": {"note_id": _ID},
+            "properties": {
+                "note_id": _id("The note's UUIDv4 id, from list_notes."),
+            },
             "required": ["note_id"],
             "additionalProperties": False,
         },
@@ -433,10 +528,23 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _ID,
-                "folder_id": _ID,
-                "category": {"type": "string", "enum": _DOCUMENT_CATEGORIES},
-                "query": {"type": "string", "maxLength": 120},
+                "dossier_id": _id(
+                    "The dossier whose document metadata to list (UUIDv4)."
+                ),
+                "folder_id": _id(
+                    "Restrict to one folder (UUIDv4). Omit to span every folder."
+                ),
+                "category": {
+                    "type": "string",
+                    "enum": _DOCUMENT_CATEGORIES,
+                    "description": "Filter by document category.",
+                },
+                "query": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": ("Free-text match on names, description "
+                                    "and tags."),
+                },
                 "limit": _limit(25),
             },
             "required": ["dossier_id"],
@@ -454,9 +562,23 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "contact_role": {"type": "string", "enum": _CONTACT_ROLES},
-                "type": {"type": "string", "enum": _PARTIE_TYPES},
-                "query": {"type": "string", "maxLength": 120},
+                "contact_role": {
+                    "type": "string",
+                    "enum": _CONTACT_ROLES,
+                    "description": ("Filter by the contact's role in "
+                                    "the practice."),
+                },
+                "type": {
+                    "type": "string",
+                    "enum": _PARTIE_TYPES,
+                    "description": ("individual = personne physique; "
+                                    "organization = personne morale."),
+                },
+                "query": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": "Free-text match on name, email and phone.",
+                },
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -473,7 +595,11 @@ TOOLS: dict[str, dict] = {
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"partie_id": _ID},
+            "properties": {
+                "partie_id": _id(
+                    "The contact's UUIDv4 id, from list_parties."
+                ),
+            },
             "required": ["partie_id"],
             "additionalProperties": False,
         },
@@ -489,7 +615,12 @@ TOOLS: dict[str, dict] = {
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"dossier_id": _ID},
+            "properties": {
+                "dossier_id": _id(
+                    "Scope to one dossier (UUIDv4). Omit for the "
+                    "firm-wide picture."
+                ),
+            },
             "additionalProperties": False,
         },
         "handler": "get_billing_snapshot",
@@ -505,8 +636,14 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _ID,
-                "include_history": {"type": "boolean"},
+                "dossier_id": _id(
+                    "The dossier whose case protocol to read (UUIDv4)."
+                ),
+                "include_history": {
+                    "type": "boolean",
+                    "description": ("true also includes completed/suspended past "
+                                    "protocols (up to 10)."),
+                },
             },
             "required": ["dossier_id"],
             "additionalProperties": False,
@@ -525,9 +662,23 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "start_date": _DATE,
-                "delay_days": {"type": "integer", "minimum": 0, "maximum": 3650},
-                "direction": {"type": "string", "enum": ["after", "before"]},
+                "start_date": _date(
+                    "The starting date of the computation, YYYY-MM-DD."
+                ),
+                "delay_days": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3650,
+                    "description": ("Calendar days in the delay — art. 83 C.p.c. "
+                                    "counts every day."),
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["after", "before"],
+                    "description": ("'after' counts forward from start_date; "
+                                    "'before' counts backward. A non-juridical "
+                                    "landing extends in the SAME direction."),
+                },
             },
             "required": ["start_date", "delay_days", "direction"],
             "additionalProperties": False,
@@ -545,7 +696,13 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "court_file_number": {"type": "string", "maxLength": 30},
+                "court_file_number": {
+                    "type": "string",
+                    "maxLength": 30,
+                    "description": ("The raw number, e.g. « 500-05-123456-241 »; a "
+                                    "letters prefix (TAL, TAQ…) flags an "
+                                    "administrative tribunal."),
+                },
             },
             "required": ["court_file_number"],
             "additionalProperties": False,
@@ -561,7 +718,11 @@ TOOLS: dict[str, dict] = {
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"dossier_id": _ID},
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier whose trust balances to read (UUIDv4)."
+                ),
+            },
             "required": ["dossier_id"],
             "additionalProperties": False,
         },
@@ -579,14 +740,27 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "account_id": _ID,
-                "dossier_id": _ID,
-                "client_id": _ID,
-                "date_from": _DATE,
-                "date_to": _DATE,
+                "account_id": _id(
+                    "Restrict to one trust account (UUIDv4). Omit for all."
+                ),
+                "dossier_id": _id(
+                    "With client_id, selects a carte-client (UUIDv4)."
+                ),
+                "client_id": _id(
+                    "With dossier_id, selects a carte-client — one beneficiary (UUIDv4)."
+                ),
+                "date_from": _date(
+                    "Entries dated on/after this date, YYYY-MM-DD."
+                ),
+                "date_to": _date(
+                    "Entries dated on/before this date, YYYY-MM-DD."
+                ),
                 "status": {
                     "type": "string",
                     "enum": ["en_circulation", "compensée", "annulée"],
+                    "description": ("en_circulation = recorded, not yet cleared; "
+                                    "compensée = cleared at the bank; annulée = "
+                                    "reversed."),
                 },
                 "limit": _limit(25),
             },
@@ -635,7 +809,9 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _ID,
+                "dossier_id": _id(
+                    "The dossier to file the note on (UUIDv4). OMIT only when the research belongs to no dossier — it is then filed under « Général ». An id that does not resolve is refused, never downgraded."
+                ),
                 "title": {
                     "type": "string",
                     "minLength": 1,
@@ -678,7 +854,9 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "note_id": _ID,
+                "note_id": _id(
+                    "The note to append to (UUIDv4), from list_notes."
+                ),
                 "content": {
                     "type": "string",
                     "minLength": 1,
@@ -732,7 +910,17 @@ def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict
                 "title": spec["title"],
                 "description": spec["description"],
                 "inputSchema": spec["input_schema"],
-                "annotations": dict(annotations),
+                # A declared outputSchema is a CONTRACT: structuredContent
+                # MUST conform (MCP 2025-06-18). Direct indexing, no .get —
+                # a tool without one must fail the registry test, not ship
+                # schema-less. Conformance is pinned by
+                # tests/test_mcp_output_schemas.py against the REAL handlers.
+                "outputSchema": OUTPUT_SCHEMAS[name],
+                # `title` moved to the descriptor top level in 2025-06-18;
+                # 2025-03-26 clients read the display name from
+                # annotations.title. Mirror it so the French titles survive
+                # on both protocol revisions.
+                "annotations": {**annotations, "title": spec["title"]},
             }
         )
     return out

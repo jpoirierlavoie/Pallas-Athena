@@ -674,14 +674,31 @@ def list_parties(args: dict) -> dict:
 
 # ── 10. get_partie ──────────────────────────────────────────────────────
 
+def _addr_str(value: Any) -> str:
+    """Coerce a stored address component to the string the schema declares.
+
+    The CardDAV PUT path can store a LIST here: vobject parses an ADR
+    component with an unescaped comma (a well-known bug in non-DavX5
+    clients — RFC 6350 requires ``\\,``) as a Python list, and
+    ``models/partie`` sanitizes only str values, so the list is committed
+    silently. Without this coercion, every later ``get_partie`` for that
+    contact would emit an array where the declared outputSchema promises a
+    string — a strict client would reject the contact forever, with
+    nothing anywhere saying why.
+    """
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return value or ""
+
+
 def _address_block(p: dict, prefix: str) -> dict:
     return {
-        "street": p.get(f"{prefix}_street", ""),
-        "unit": p.get(f"{prefix}_unit", ""),
-        "city": p.get(f"{prefix}_city", ""),
-        "province": p.get(f"{prefix}_province", ""),
-        "postal_code": p.get(f"{prefix}_postal_code", ""),
-        "country": p.get(f"{prefix}_country", ""),
+        "street": _addr_str(p.get(f"{prefix}_street", "")),
+        "unit": _addr_str(p.get(f"{prefix}_unit", "")),
+        "city": _addr_str(p.get(f"{prefix}_city", "")),
+        "province": _addr_str(p.get(f"{prefix}_province", "")),
+        "postal_code": _addr_str(p.get(f"{prefix}_postal_code", "")),
+        "country": _addr_str(p.get(f"{prefix}_country", "")),
     }
 
 
