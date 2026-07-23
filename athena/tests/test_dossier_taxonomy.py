@@ -236,3 +236,38 @@ def test_deadline_never_touches_date_avis():
 
 def test_date_avis_defaults_to_none():
     assert dossier._default_doc()["date_avis"] is None
+
+
+# ── mandate_type vocabulary rework (July 2026) ────────────────────────
+
+
+def test_retired_mandate_types_migrate_on_read():
+    """The vocabulary became judiciaire/service_conseils/general/special.
+    A dossier carrying a retired key must read as a current one, or editing
+    it trips _validate's mandate_type check (the mediation_arbitrage lesson)."""
+    for old, expected in (
+        ("consultation", "service_conseils"),
+        ("transactionnel", "special"),
+        ("autre", "general"),
+        ("mediation_arbitrage", "general"),
+    ):
+        assert _read({"mandate_type": old})["mandate_type"] == expected
+
+
+def test_current_mandate_types_survive_the_read_unchanged():
+    for key in dossier.VALID_MANDATE_TYPES:
+        assert _read({"mandate_type": key})["mandate_type"] == key
+
+
+def test_mandate_labels_cover_exactly_the_valid_keys():
+    """The form dropdown is driven by MANDATE_TYPE_LABELS; a key without a
+    label would render blank, a label without a key is dead."""
+    assert set(dossier.MANDATE_TYPE_LABELS) == set(dossier.VALID_MANDATE_TYPES)
+
+
+def test_template_fields_mandate_label_mirror_stays_in_sync():
+    """utils/template_fields mirrors MANDATE_TYPE_LABELS by hand (it must
+    stay importable without the Firestore client)."""
+    from utils.template_fields import _MANDATE_TYPE_LABEL
+
+    assert _MANDATE_TYPE_LABEL == dossier.MANDATE_TYPE_LABELS

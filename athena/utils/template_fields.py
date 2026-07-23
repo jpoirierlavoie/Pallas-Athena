@@ -68,10 +68,10 @@ _ROLE_LABEL = {
 # « [CHAMP MANQUANT : …] », because _dossier_labelled returns None on a key it
 # does not know).
 _MANDATE_TYPE_LABEL = {
-    "judiciaire": "Judiciaire",
-    "transactionnel": "Transactionnel",
-    "consultation": "Consultatif",
-    "autre": "Autre",
+    "judiciaire": "Judiciaire (ad litem)",
+    "service_conseils": "Service-conseils",
+    "general": "Général",
+    "special": "Spécial",
 }
 _FEE_TYPE_LABEL = {
     "hourly": "Horaire",

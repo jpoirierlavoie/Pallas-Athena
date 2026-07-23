@@ -468,11 +468,12 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     "action_precision": str,   # free text; required by the « Autre (préciser) »
                                # (-99) rows, and where the pre-taxonomy `objet`
                                # text lands on migration
-    # mandate_type ("type de mandat") — nature of the engagement (new July
-    # 2026). Absent on legacy dossiers → the UI shows "—" until set on edit.
-    # "mediation_arbitrage" was RETIRED July 2026 → migrated to "autre" on read
-    # (models.dossier._migrate_mandate_type), mirroring _migrate_domaine.
-    "mandate_type": "judiciaire" | "transactionnel" | "consultation" | "autre",
+    # mandate_type ("type de mandat") — nature of the engagement. Vocabulary
+    # reworked July 2026 (user decision): consultation→service_conseils,
+    # transactionnel→special, autre/mediation_arbitrage→general, all on read
+    # via models.dossier._migrate_mandate_type. Absent on legacy dossiers →
+    # the UI shows "—" until set on edit.
+    "mandate_type": "judiciaire" | "service_conseils" | "general" | "special",
     "role": "demandeur" | "défendeur" | "intervenant" | "mis en cause" | "autre",
 
     # Phase G — Court file number + parsed judicial metadata
@@ -515,7 +516,7 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     # applies, so format_honoraires renders the label alone.
     "fee_type": "hourly" | "flat" | "contingency" | "mixed"
               | "pro_bono" | "aide_juridique",
-    "hourly_rate": int,                   # cents (default 25000 = $250/h)
+    "hourly_rate": int,                   # cents (default 30000 = $300/h)
     "flat_fee": int | None,
     "contingency_percent": int | None,    # BASIS POINTS (2500 = 25,00 %), not
                                           # cents — mirrors invoice gst_rate.

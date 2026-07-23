@@ -40,9 +40,9 @@ VALID_ACTIONS = taxonomie.VALID_ACTIONS
 # Type de mandat — nature of the engagement (new July 2026).
 VALID_MANDATE_TYPES = (
     "judiciaire",
-    "transactionnel",
-    "consultation",
-    "autre",
+    "service_conseils",
+    "general",
+    "special",
 )
 VALID_COURTS = (
     "Cour supérieure",
@@ -101,10 +101,10 @@ PREJUDICIAIRE_FILE_NUMBER = "Préjudiciaire"
 # FEE_TYPE_LABELS below, which utils/template_fields.py must mirror by hand.)
 DOMAINE_LABELS = taxonomie.DOMAINE_LABELS
 MANDATE_TYPE_LABELS = {
-    "judiciaire": "Judiciaire",
-    "transactionnel": "Transactionnel",
-    "consultation": "Consultatif",
-    "autre": "Autre",
+    "judiciaire": "Judiciaire (ad litem)",
+    "service_conseils": "Service-conseils",
+    "general": "Général",
+    "special": "Spécial",
 }
 FORUM_TYPE_LABELS = {
     "judiciaire": "Tribunal de droit commun",
@@ -113,12 +113,18 @@ FORUM_TYPE_LABELS = {
     "prejudiciaire": "Préjudiciaire",
 }
 # Retired type-de-mandat keys → current vocabulary, applied on read
-# (_migrate_mandate_type). "mediation_arbitrage" was dropped July 2026 and has
-# no clean equivalent, so it falls back to "autre"; the user re-classifies it
-# via the edit form. Without this, editing such a dossier would trip
+# (_migrate_mandate_type). The vocabulary was reworked July 2026 to
+# « Judiciaire (ad litem) / Service-conseils / Général / Spécial » (user
+# decision); "consultation" → "service_conseils" (same meaning),
+# "transactionnel" → "special", and everything else ("autre", and the older
+# "mediation_arbitrage" that used to fold into "autre") → "general". Without
+# this, editing a dossier that still carries a retired key would trip
 # _validate's mandate_type check.
 _MANDATE_TYPE_MIGRATION = {
-    "mediation_arbitrage": "autre",
+    "consultation": "service_conseils",
+    "transactionnel": "special",
+    "autre": "general",
+    "mediation_arbitrage": "general",
 }
 # Legacy « Type de dossier » (matter_type) → « Domaine », applied on read
 # (_migrate_domaine). Only the UNAMBIGUOUS keys are mapped:
@@ -206,7 +212,7 @@ def _default_doc() -> dict:
         # Role of the lawyer's client
         "role": "demandeur",
         # Financial
-        "hourly_rate": 25000,
+        "hourly_rate": 30000,
         "flat_fee": None,
         "contingency_percent": None,          # basis points: 2500 = 25,00 %
         "fee_type": "hourly",
