@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 carddav_bp = Blueprint("carddav", __name__)
 
 COLLECTION_NAME = "parties"
+
+# What DavX5 shows in its collection list. Short on purpose — the label
+# is truncated mid-word there and in the Android contacts account.
+ADDRESSBOOK_DISPLAY_NAME = "Clients et parties impliqués"
 COLLECTION_PATH = "/dav/addressbook/"
 
 _PAYLOAD_TOO_LARGE = "Corps de requête trop volumineux."

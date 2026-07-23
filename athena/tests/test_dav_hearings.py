@@ -541,3 +541,53 @@ def test_general_scope_is_never_drained(app, general_members):
     dossier, active = dc._resolve_scope("")
     assert active is True
     assert dc._is_general(dossier["id"])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Collection display names
+# ══════════════════════════════════════════════════════════════════════
+
+def test_display_name_is_the_short_reference():
+    """DavX5 truncates a long label mid-word in its collection list and in
+    the Android calendar name, so it stays « N/R : <numéro> »."""
+    assert dc.collection_display_name(
+        {"id": "d1", "file_number": "2026-001", "title": "Tremblay c. Lavoie"}
+    ) == "N/R : 2026-001"
+    assert dc.collection_display_name({"id": "", "file_number": "x"}) == "Général"
+
+
+def test_display_name_falls_back_when_there_is_no_file_number():
+    """A bare « N/R : » identifies nothing — show the title instead."""
+    assert dc.collection_display_name(
+        {"id": "d1", "file_number": "", "title": "Sans numéro"}
+    ) == "Sans numéro"
+    assert dc.collection_display_name(
+        {"id": "d1", "file_number": "", "title": ""}
+    ) == "Dossier"
+
+
+def test_root_and_collection_agree_on_the_display_name(app, linked_and_standalone):
+    """They used to build the string separately and had drifted — the root
+    prefixed « Pallas Athena — » and the collection did not, so the label a
+    client showed depended on which response it read last."""
+    import inspect
+
+    import dav as dav_pkg
+
+    assert "collection_display_name" in inspect.getsource(dav_pkg)
+
+    resp = app.test_client().open(
+        "/dav/dossier-d1/", method="PROPFIND", headers={**AUTH, "Depth": "0"}
+    )
+    shown = [
+        el.text for el in safe_fromstring(resp.data).iter(f"{{{DAVNS}}}displayname")
+    ]
+    assert shown == ["N/R : 2026-001"]
+    assert not any("Pallas Athena" in (s or "") for s in shown)
+
+
+def test_addressbook_display_name():
+    from dav.carddav import ADDRESSBOOK_DISPLAY_NAME
+
+    assert ADDRESSBOOK_DISPLAY_NAME == "Clients et parties impliqués"
+    assert "Pallas Athena" not in ADDRESSBOOK_DISPLAY_NAME

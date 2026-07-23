@@ -120,6 +120,30 @@ GENERAL_PATH = "/dav/general/"
 GENERAL_DISPLAY_NAME = "Général"
 
 
+def collection_display_name(dossier: dict) -> str:
+    """The name DavX5 shows for a collection.
+
+    Kept short on purpose: the label is what appears in the DavX5 collection
+    list and as the Android calendar / jtx list name, where a long string is
+    truncated mid-word. « N/R » is the usual Québec correspondence
+    abbreviation for *notre référence*.
+
+    Single source of truth — the root Depth:1 listing (``dav/__init__.py``)
+    and the collection's own PROPFIND both call this. They used to build the
+    string separately and had already drifted: the root prefixed
+    "Pallas Athena — " and the collection did not, so the name a client
+    showed depended on which response it had last read.
+    """
+    if _is_general(dossier.get("id", "")):
+        return GENERAL_DISPLAY_NAME
+    file_number = (dossier.get("file_number") or "").strip()
+    if file_number:
+        return f"N/R : {file_number}"
+    # No file number yet — fall back to the title rather than showing a
+    # bare "N/R : " that identifies nothing.
+    return (dossier.get("title") or "").strip() or "Dossier"
+
+
 def _href_prefix(dossier_id: str) -> str:
     """Collection href for a scope (no trailing slash)."""
     return f"/dav/dossier-{dossier_id}" if dossier_id else "/dav/general"
@@ -244,14 +268,9 @@ def _add_collection_props(
         ET.SubElement(rt, caldav_tag("calendar"))
 
     if propfind_requests_prop(body, dav_tag("displayname")):
-        if _is_general(dossier["id"]):
-            display = GENERAL_DISPLAY_NAME
-        else:
-            display = (
-                f"{dossier.get('file_number', '')} \u2014 "
-                f"{dossier.get('title', '')}"
-            )
-        ET.SubElement(prop, dav_tag("displayname")).text = display
+        ET.SubElement(prop, dav_tag("displayname")).text = (
+            collection_display_name(dossier)
+        )
 
     if propfind_requests_prop(body, cs_tag("getctag")):
         ET.SubElement(prop, cs_tag("getctag")).text = get_ctag(

@@ -101,10 +101,12 @@ def dav_root_propfind() -> Response:
     # Depth:1 — include child collections with proper resource types
     if depth == "1":
         from dav.xml_utils import carddav_tag
+        from dav.carddav import ADDRESSBOOK_DISPLAY_NAME
         from dav.dossier_collections import (
             DOSSIER_COMPONENTS,
             GENERAL_DISPLAY_NAME,
             GENERAL_PATH,
+            collection_display_name,
         )
         from dav.sync import GENERAL_COLLECTION, get_ctags_bulk
         from models.dossier import list_dossiers
@@ -115,7 +117,7 @@ def dav_root_propfind() -> Response:
         # It replaced the split /dav/calendar/ + /dav/tasks/ pair in July
         # 2026; both of those URLs are gone.
         static_collections = [
-            ("/dav/addressbook/", "Clients", "addressbook", None),
+            ("/dav/addressbook/", ADDRESSBOOK_DISPLAY_NAME, "addressbook", None),
             (GENERAL_PATH, GENERAL_DISPLAY_NAME, "calendar", None),
         ]
         ctag_names = {
@@ -158,9 +160,10 @@ def dav_root_propfind() -> Response:
             elif coll_type == "calendar":
                 ET.SubElement(rt, caldav_tag("calendar"))
 
-            ET.SubElement(child_prop, dav_tag("displayname")).text = (
-                f"Pallas Athena \u2014 {coll_name}"
-            )
+            # No product prefix: DavX5 already shows the account name above
+            # the collection list, so "Pallas Athena \u2014 " was repeated on
+            # every row and ate the width the actual label needs.
+            ET.SubElement(child_prop, dav_tag("displayname")).text = coll_name
 
             if coll_type == "calendar":
                 # « Général » is mixed-component like every dossier
@@ -185,10 +188,11 @@ def dav_root_propfind() -> Response:
         for dossier in unique_dossiers:
             did = dossier["id"]
             coll_path = f"/dav/dossier-{did}/"
-            display_name = (
-                f"Pallas Athena \u2014 {dossier.get('file_number', '')} "
-                f"\u2014 {dossier.get('title', '')}"
-            )
+            # Shared with the collection's own PROPFIND: the two used to
+            # build this string separately and had drifted (one prefixed the
+            # product name, the other did not), so the label a client showed
+            # depended on which response it had last read.
+            display_name = collection_display_name(dossier)
             sync_name = f"dossier:{did}"
 
             child = add_response(multistatus, coll_path)
