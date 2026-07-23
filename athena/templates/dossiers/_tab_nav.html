@@ -1,9 +1,8 @@
 {# Two-level dossier tab navigation.
    Top row: group tabs (always visible). Sub-rows: the leaf tabs of the active
    multi-leaf group, horizontally scrollable (.dossier-subnav — hidden
-   scrollbar + snap; the wrapper adds a right-edge fade). A single-leaf group
-   would have no sub-row and load its leaf directly (every group is
-   multi-leaf today).
+   scrollbar + snap; the wrapper adds a right-edge fade). Single-leaf groups
+   (Aperçu) have no sub-row and load their leaf directly.
 
    Selection is client-side Alpine state (activeGroup / activeLeaf, seeded from
    the server's initial_group / initial_tab); the leaf content itself loads via
@@ -11,8 +10,7 @@
    refresh is deep-link stable. Mirrors routes/dossiers.py _LEAF_GROUP. #}
 {% set nav_groups = [
   {'key': 'apercu',    'label': 'Aperçu',    'leaves': [
-      {'slug': 'apercu',      'label': 'Aperçu'},
-      {'slug': 'analyse',     'label': 'Analyse'}]},
+      {'slug': 'apercu',      'label': 'Aperçu'}]},
   {'key': 'finances',  'label': 'Finances',  'leaves': [
       {'slug': 'temps',       'label': 'Temps & Déboursés'},
       {'slug': 'facturation', 'label': 'Honoraires'},
@@ -23,7 +21,8 @@
       {'slug': 'protocole',   'label': 'Protocole'}]},
   {'key': 'documents', 'label': 'Documents', 'leaves': [
       {'slug': 'documents',   'label': 'Fichiers'},
-      {'slug': 'notes',       'label': 'Notes'}]}
+      {'slug': 'notes',       'label': 'Notes'},
+      {'slug': 'analyse',     'label': 'Analyse'}]}
 ] %}
 {% set tab_base = 'flex-shrink-0 px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors' %}
 {% set tab_active = 'border-indigo-600 text-indigo-600' %}

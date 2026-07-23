@@ -345,7 +345,6 @@ def dossier_list() -> str:
 
 _VALID_TABS = (
     "apercu",
-    "analyse",
     "temps",
     "facturation",
     "fideicommis",
@@ -354,6 +353,7 @@ _VALID_TABS = (
     "protocole",
     "documents",
     "notes",
+    "analyse",
 )
 
 # A merged-era ?tab=agenda bookmark (the single Agenda tab that existed
@@ -367,7 +367,6 @@ _LEGACY_TABS = {"agenda": "audiences"}
 # group (and show its sub-row) on a ?tab= deep link.
 _LEAF_GROUP = {
     "apercu": "apercu",
-    "analyse": "apercu",
     "temps": "finances",
     "facturation": "finances",
     "fideicommis": "finances",
@@ -376,6 +375,7 @@ _LEAF_GROUP = {
     "protocole": "agenda",
     "documents": "documents",
     "notes": "documents",
+    "analyse": "documents",
 }
 
 
