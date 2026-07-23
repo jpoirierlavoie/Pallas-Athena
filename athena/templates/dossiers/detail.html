@@ -106,8 +106,8 @@
           </a>
           {% if c.avocat_name %}
           <p class="flex items-center gap-2 text-xs text-gray-500"><span class="w-4 flex-shrink-0"></span>
-            {% if c.avocat_id %}<a href="{{ url_for('parties.partie_detail', partie_id=c.avocat_id) }}" class="hover:text-gray-700">Me {{ c.avocat_name }}</a>
-            {% else %}Me {{ c.avocat_name }}{% endif %}
+            {% if c.avocat_id %}<a href="{{ url_for('parties.partie_detail', partie_id=c.avocat_id) }}" class="hover:text-gray-700">{{ c.avocat_name }}</a>
+            {% else %}{{ c.avocat_name }}{% endif %}
           </p>
           {% endif %}
         </div>
@@ -134,8 +134,8 @@
           </a>
           {% if p.avocat_name %}
           <p class="flex items-center gap-2 text-xs text-gray-500"><span class="w-4 flex-shrink-0"></span>
-            {% if p.avocat_id %}<a href="{{ url_for('parties.partie_detail', partie_id=p.avocat_id) }}" class="hover:text-gray-700">Me {{ p.avocat_name }}</a>
-            {% else %}Me {{ p.avocat_name }}{% endif %}
+            {% if p.avocat_id %}<a href="{{ url_for('parties.partie_detail', partie_id=p.avocat_id) }}" class="hover:text-gray-700">{{ p.avocat_name }}</a>
+            {% else %}{{ p.avocat_name }}{% endif %}
           </p>
           {% endif %}
         </div>

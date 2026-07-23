@@ -239,7 +239,7 @@
               <span class="text-gray-500">Avocat :</span>
               <template x-if="c.avocat_name">
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-white text-gray-700 rounded-full border border-gray-300">
-                  <span x-text="'Me ' + c.avocat_name"></span>
+                  <span x-text="c.avocat_name"></span>
                   <button type="button" @click="c.avocat_id = ''; c.avocat_name = ''"
                           class="text-gray-400 hover:text-gray-600">×</button>
                 </span>
@@ -348,7 +348,7 @@
               <span class="text-gray-500">Avocat :</span>
               <template x-if="p.avocat_name">
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-white text-gray-700 rounded-full border border-gray-300">
-                  <span x-text="'Me ' + p.avocat_name"></span>
+                  <span x-text="p.avocat_name"></span>
                   <button type="button" @click="p.avocat_id = ''; p.avocat_name = ''"
                           class="text-gray-400 hover:text-gray-600">×</button>
                 </span>
