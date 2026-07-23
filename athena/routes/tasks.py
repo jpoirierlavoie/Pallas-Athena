@@ -203,9 +203,15 @@ def _grouped_tasks(
         return active, completed, cancelled
 
     dossier_id = dossier_filter or None
-    # An invalid/empty status filter means "all groups" (legacy behavior).
+    # An invalid/empty status filter means the DEFAULT view, which shows
+    # only active tasks since 2026-07-23 (the collapsed « Terminées » /
+    # « Annulées » disclosures were removed — those groups surface only
+    # through the status filter, expanded). Not fetching what the template
+    # won't render saves ~2×STATUS_GROUP_LIMIT reads per default list view.
     statuses = (
-        (status_filter,) if status_filter in VALID_STATUSES else VALID_STATUSES
+        (status_filter,)
+        if status_filter in VALID_STATUSES
+        else ("à_faire", "en_cours")
     )
 
     active: list[dict] = []

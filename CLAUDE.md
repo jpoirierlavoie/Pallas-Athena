@@ -1258,8 +1258,12 @@ Every model exports the standard CRUD set. Module-specific additions:
   for search paths (Python full-text filter), rare filter combos that would each need
   their own composite index, and dossier-scoped deep links (already server-narrowed).
 - **Bounded-group mode (no pagination UI):** views whose UX is not paginated cap reads
-  server-side instead — tasks (per-status groups, 100 each), notes (pinned + 100 recent),
-  hearings (two 100-doc windows around now + month-grid range). Cap hits log a warning.
+  server-side instead — tasks (per-status groups, 100 each; since 2026-07-23 the default
+  list view fetches only the active groups — terminée/annulée are fetched and shown,
+  expanded, solely under their status filter, the collapsed disclosures being gone),
+  notes (pinned + 100 recent), hearings (a 100-doc upcoming window + month-grid range;
+  the past window is fetched and shown only under an active type/status filter —
+  same 2026-07-23 decision, « Passées » disclosure removed). Cap hits log a warning.
 - Validate filter values against the model's `VALID_*` vocabulary in routes before
   choosing a path, so junk query strings cannot force an unbounded fallback scan.
 

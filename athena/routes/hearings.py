@@ -311,18 +311,20 @@ def hearing_list() -> str:
     else:
         # List view. Not paginated (matching the existing UX), but bounded
         # server-side instead of streaming the whole collection: the next
-        # 100 upcoming hearings (start_datetime >= now, chronological) and
-        # the 100 most recent past ones (start_datetime < now, reverse
-        # chronological). Type/status filters apply in Python over each
-        # bounded window.
+        # 100 upcoming hearings (start_datetime >= now, chronological) and,
+        # only when a filter is active, the 100 most recent past ones
+        # (start_datetime < now, reverse chronological). Type/status filters
+        # apply in Python over each bounded window.
+        #
+        # The default view is forward-looking: past hearings (and cancelled
+        # future ones) surface ONLY through the type/status filters — the
+        # collapsed « Passées » disclosure was removed 2026-07-23. Skipping
+        # the past-window query when nothing will display it saves the reads.
+        filters_active = bool(hearing_type_filter or status_filter)
+
         upcoming_window = [
             h
             for h in list_hearings_window(now, direction="upcoming")
-            if _matches_filters(h, hearing_type_filter, status_filter)
-        ]
-        past_window = [
-            h
-            for h in list_hearings_window(now, direction="past")
             if _matches_filters(h, hearing_type_filter, status_filter)
         ]
 
@@ -330,14 +332,22 @@ def hearing_list() -> str:
         upcoming = [
             h for h in upcoming_window if h.get("status") != "annulée"
         ]
-        past = [
-            h for h in upcoming_window if h.get("status") == "annulée"
-        ] + past_window
-        # Past: reverse chronological
-        past.sort(
-            key=lambda h: h.get("start_datetime") or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
-        )
+
+        past: list[dict] = []
+        if filters_active:
+            past = [
+                h for h in upcoming_window if h.get("status") == "annulée"
+            ] + [
+                h
+                for h in list_hearings_window(now, direction="past")
+                if _matches_filters(h, hearing_type_filter, status_filter)
+            ]
+            # Past: reverse chronological
+            past.sort(
+                key=lambda h: h.get("start_datetime")
+                or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
 
         ctx = _template_context()
         ctx.update(

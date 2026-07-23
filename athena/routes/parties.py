@@ -476,7 +476,7 @@ def export_csv_route() -> Response:
     return export_csv(
         rows=rows,
         columns=_EXPORT_COLUMNS_CSV,
-        filename=f"intervenants_{date_str}.csv",
+        filename=f"impliques_{date_str}.csv",
     )
 
 
@@ -491,6 +491,6 @@ def export_pdf_route() -> Response:
     return export_pdf(
         rows=rows,
         columns=_EXPORT_COLUMNS_PDF,
-        title="Intervenants",
-        filename=f"intervenants_{date_str}.pdf",
+        title="Impliqués",
+        filename=f"impliques_{date_str}.pdf",
     )

@@ -95,15 +95,14 @@
 </div>
 {% endif %}
 
-{# ── Past hearings ───────────────────────────────────────────── #}
+{# ── Past hearings — shown ONLY under an active type/status filter,
+     expanded (the collapsed « Passées » disclosure was removed
+     2026-07-23: the default view is forward-looking; the route sends
+     past=[] when no filter is active). ─────────────────────────── #}
 {% if past %}
-<div x-data="{ showPast: false }">
-  <button @click="showPast = !showPast"
-          class="flex items-center gap-2 text-sm font-medium text-gray-500 hover:text-gray-700 mb-3">
-    <svg :class="showPast ? 'rotate-90' : ''" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
-    Passées ({{ past|length }})
-  </button>
-  <div x-show="showPast" x-cloak class="flex flex-col gap-2">
+<div>
+  <h2 class="text-sm font-semibold text-gray-500 mb-3">Passées ({{ past|length }})</h2>
+  <div class="flex flex-col gap-2">
     {% for h in past %}
     {{ hearing_card(h, is_past=true) }}
     {% endfor %}
@@ -115,8 +114,13 @@
 {% if not upcoming and not past %}
 <div class="text-center py-12">
   <svg class="w-12 h-12 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5"/></svg>
-  <p class="text-gray-500 text-sm mb-1">Aucune audience pour le moment.</p>
-  <p class="text-gray-400 text-xs">Ajoutez votre première audience pour commencer.</p>
+  {% if hearing_type_filter or status_filter %}
+  <p class="text-gray-500 text-sm mb-1">Aucune audience ne correspond aux filtres.</p>
+  <p class="text-gray-400 text-xs">Les audiences passées apparaissent ici lorsqu'un filtre est actif.</p>
+  {% else %}
+  <p class="text-gray-500 text-sm mb-1">Aucune audience à venir.</p>
+  <p class="text-gray-400 text-xs">Utilisez les filtres pour retrouver les audiences passées.</p>
+  {% endif %}
 </div>
 {% endif %}
 

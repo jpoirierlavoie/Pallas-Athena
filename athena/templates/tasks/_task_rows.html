@@ -81,28 +81,29 @@
   <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
     <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
   </svg>
-  <p class="text-sm text-gray-500 mb-4">Aucune tâche pour le moment.</p>
+  {% if status_filter %}
+  <p class="text-sm text-gray-500 mb-4">Aucune tâche ne correspond aux filtres.</p>
+  {% else %}
+  <p class="text-sm text-gray-500 mb-1">Aucune tâche active.</p>
+  <p class="text-xs text-gray-400 mb-4">Les tâches terminées ou annulées se retrouvent via le filtre de statut.</p>
+  {% endif %}
   <a href="{{ url_for('tasks.task_new') }}"
      class="text-sm font-medium text-indigo-600 hover:text-indigo-700">
     + Créer une tâche
   </a>
 </div>
-{% elif not active_tasks and not status_filter %}
-<div class="text-center py-8 mb-4">
-  <p class="text-sm text-gray-400">Toutes les tâches actives sont terminées.</p>
-</div>
 {% endif %}
 
-{# ── Completed tasks (collapsed) ────────────────────────────── #}
-{% if completed_tasks %}
-<div x-data="{ open: false }" class="mb-4">
-  <button @click="open = !open"
-          class="flex items-center gap-2 text-sm font-semibold text-gray-500 mb-3 hover:text-gray-700">
-    <svg :class="open ? 'rotate-90' : ''" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+{# ── Completed tasks — shown ONLY under the « Terminée » status filter,
+     expanded (the collapsed disclosure was removed 2026-07-23; the
+     default view fetches active groups only). ─────────────────── #}
+{% if completed_tasks and status_filter == 'terminée' %}
+<div class="mb-4">
+  <h2 class="text-sm font-semibold text-gray-500 mb-3">
     Terminées
     <span class="text-xs font-normal text-gray-400">({{ completed_tasks | length }})</span>
-  </button>
-  <div x-show="open" x-cloak class="space-y-2">
+  </h2>
+  <div class="space-y-2">
     {% for task in completed_tasks %}
     <div id="task-{{ task.id }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 opacity-60">
@@ -127,16 +128,14 @@
 </div>
 {% endif %}
 
-{# ── Cancelled tasks (collapsed) ────────────────────────────── #}
-{% if cancelled_tasks %}
-<div x-data="{ open: false }">
-  <button @click="open = !open"
-          class="flex items-center gap-2 text-sm font-semibold text-gray-500 mb-3 hover:text-gray-700">
-    <svg :class="open ? 'rotate-90' : ''" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+{# ── Cancelled tasks — same contract as Terminées (status filter only) #}
+{% if cancelled_tasks and status_filter == 'annulée' %}
+<div>
+  <h2 class="text-sm font-semibold text-gray-500 mb-3">
     Annulées
     <span class="text-xs font-normal text-gray-400">({{ cancelled_tasks | length }})</span>
-  </button>
-  <div x-show="open" x-cloak class="space-y-2">
+  </h2>
+  <div class="space-y-2">
     {% for task in cancelled_tasks %}
     <div class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 opacity-40">
       <div class="w-5 h-5 rounded border-2 border-gray-300 flex-shrink-0 flex items-center justify-center">
