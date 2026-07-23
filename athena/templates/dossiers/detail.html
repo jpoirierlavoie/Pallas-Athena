@@ -143,7 +143,10 @@
           <dd class="text-gray-900 text-right">{{ forum_type_labels.get(dossier.forum_type, dossier.forum_type) }}</dd>
         </div>
         {% endif %}
-        {% if dossier.court_file_number %}
+        {# « Préjudiciaire » is a gabarit placeholder, not a real number —
+           hide it from the view (it still fills {{dossier.numero_cour}}). #}
+        {% set show_court_file = dossier.court_file_number and dossier.court_file_number != prejudiciaire_file_number %}
+        {% if show_court_file %}
         <div class="flex justify-between">
           <dt class="text-gray-500">N° de dossier</dt>
           <dd class="text-gray-900 font-mono text-xs">{{ dossier.court_file_number }}</dd>
@@ -178,7 +181,7 @@
           <dd class="text-amber-600 text-xs">Tribunal administratif</dd>
         </div>
         {% endif %}
-        {% if not dossier.court_file_number and not dossier.tribunal %}
+        {% if not show_court_file and not dossier.tribunal and not dossier.district_judiciaire %}
         <p class="text-gray-400 text-xs">Aucune information judiciaire</p>
         {% endif %}
       </dl>

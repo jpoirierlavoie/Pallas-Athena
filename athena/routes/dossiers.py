@@ -70,6 +70,7 @@ from models.dossier import (
     FEE_TYPE_LABELS,
     FORUM_TYPE_LABELS,
     MANDATE_TYPE_LABELS,
+    PREJUDICIAIRE_FILE_NUMBER,
     ROLE_LABELS,
     STATUS_LABELS,
     create_dossier,
@@ -210,6 +211,12 @@ def _template_context() -> dict:
         "forums_admin": list_forums(reference.ADMINISTRATIF),
         "forums_federal": list_forums(reference.FEDERAL),
         "forum_type_labels": FORUM_TYPE_LABELS,
+        # The placeholder « Préjudiciaire » is forced into court_file_number
+        # so gabarits can cite {{dossier.numero_cour}} before anything is
+        # filed; it is not a real court file number and is hidden from the
+        # detail view (compared against the model constant so the two can't
+        # drift).
+        "prejudiciaire_file_number": PREJUDICIAIRE_FILE_NUMBER,
         "mandate_type_labels": MANDATE_TYPE_LABELS,
         "status_labels": STATUS_LABELS,
         "role_labels": ROLE_LABELS,
