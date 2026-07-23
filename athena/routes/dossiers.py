@@ -400,22 +400,30 @@ def dossier_detail(dossier_id: str) -> str:
     ctx["dossier"] = dossier
     ctx["initial_tab"] = initial_tab
     ctx["initial_group"] = initial_group
-    ctx["value_class"] = compute_class(dossier.get("valeur"))
-    # (type label, rate) — the card greys the rate in parentheses; gabarits
-    # keep the joined format_honoraires form.
-    ctx["fee_parts"] = format_honoraires_parts(dossier)
-    ctx["retention_date"] = retention_date(dossier.get("closed_date"))
-    # Taxonomy object, resolved route-side like value_class/fee_parts — the
-    # card renders libellé + greyed (CODE) itself. The delai_types label and
-    # déchéance level are computed here so the template stays logic-free.
-    ctx["action_obj"] = taxonomie.get_action(dossier.get("action", ""))
-    ctx["action_delai_types_label"] = taxonomie.delai_types_label(
-        dossier.get("action", "")
-    )
-    ctx["action_niveau_decheance"] = taxonomie.niveau_decheance(
-        dossier.get("action", "")
-    )
     return render_template("dossiers/detail.html", **ctx)
+
+
+def _apercu_card_context(dossier: dict) -> dict:
+    """Derived values the Aperçu tab's four cards consume (Juridiction /
+    Recours / Prescription / Mandat) — computed route-side so the template
+    stays logic-free. The cards moved from detail.html into the apercu leaf
+    (user decision 2026-07-23), taking these with them.
+    """
+    return {
+        "value_class": compute_class(dossier.get("valeur")),
+        # (type label, rate) — the card greys the rate in parentheses;
+        # gabarits keep the joined format_honoraires form.
+        "fee_parts": format_honoraires_parts(dossier),
+        "retention_date": retention_date(dossier.get("closed_date")),
+        # Taxonomy object — the card renders libellé + greyed (CODE) itself.
+        "action_obj": taxonomie.get_action(dossier.get("action", "")),
+        "action_delai_types_label": taxonomie.delai_types_label(
+            dossier.get("action", "")
+        ),
+        "action_niveau_decheance": taxonomie.niveau_decheance(
+            dossier.get("action", "")
+        ),
+    }
 
 
 # ── Tab content (HTMX) ───────────────────────────────────────────────────
@@ -534,6 +542,10 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
     if tab_name == "analyse":
         from models.note import get_analyse_note
         ctx["analyse_note"] = get_analyse_note(dossier_id)
+
+    # Derived values for the apercu tab's four legal-info cards
+    if tab_name == "apercu":
+        ctx.update(_apercu_card_context(dossier))
 
     # Load invoice data for the facturation tab
     if tab_name == "facturation":
