@@ -9,11 +9,10 @@ in CLAUDE.md.
 
 import os
 import sys
-import xml.etree.ElementTree as ET
 
 # Parse server output with defusedxml, the same guard dav/xml_utils.py
-# applies to inbound request bodies (Bandit B314). ET stays imported for
-# element construction, which is not a parsing surface.
+# applies to inbound request bodies (Bandit B314). Nothing here builds XML,
+# so xml.etree is not imported at all.
 from defusedxml.ElementTree import fromstring as safe_fromstring
 from datetime import datetime, timezone
 from unittest import mock
