@@ -345,6 +345,7 @@ def dossier_list() -> str:
 
 _VALID_TABS = (
     "apercu",
+    "analyse",
     "temps",
     "facturation",
     "fideicommis",
@@ -366,6 +367,7 @@ _LEGACY_TABS = {"agenda": "audiences"}
 # group (and show its sub-row) on a ?tab= deep link.
 _LEAF_GROUP = {
     "apercu": "apercu",
+    "analyse": "apercu",
     "temps": "finances",
     "facturation": "finances",
     "fideicommis": "finances",
@@ -436,6 +438,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
     templates = {
         "apercu": "dossiers/_tab_apercu.html",
+        "analyse": "dossiers/_tab_analyse.html",
         "temps": "dossiers/_tab_temps.html",
         "facturation": "dossiers/_tab_facturation.html",
         "audiences": "dossiers/_tab_audiences.html",
@@ -520,11 +523,17 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["documents"] = docs
         ctx["category_labels"] = DOCUMENT_CATEGORY_LABELS
 
-    # Load note data for the notes tab
+    # Load note data for the notes tab (the analyse note stays excluded —
+    # list_notes' default — so the Théorie de la cause never shows here)
     if tab_name == "notes":
         from models.note import list_notes, CATEGORY_LABELS as NOTE_CATEGORY_LABELS
         ctx["notes"] = list_notes(dossier_id=dossier_id)
         ctx["note_category_labels"] = NOTE_CATEGORY_LABELS
+
+    # Load the théorie de la cause for the analyse tab (None ⇒ empty state)
+    if tab_name == "analyse":
+        from models.note import get_analyse_note
+        ctx["analyse_note"] = get_analyse_note(dossier_id)
 
     # Load invoice data for the facturation tab
     if tab_name == "facturation":
@@ -546,6 +555,40 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "dossiers.dossier_detail", dossier_id=dossier_id, tab=tab_name
     )
     return render_template(template, **ctx)
+
+
+@dossiers_bp.route("/<dossier_id>/analyse/init", methods=["POST"])
+@login_required
+def dossier_analyse_init(dossier_id: str) -> str:
+    """Create the dossier's « Théorie de la cause » note (idempotent).
+
+    The CTag bump lives HERE, not in the model (house rule), and fires only
+    on an actual creation — a double-clicked button neither duplicates the
+    note nor bumps for nothing. Responds with the re-rendered Analyse tab
+    fragment (HTMX target #tab-content).
+    """
+    from models.note import create_analyse_note, get_analyse_note
+
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        return '<p class="text-red-600 text-sm">Dossier introuvable.</p>', 404
+
+    note = get_analyse_note(dossier_id)
+    errors: list[str] = []
+    if note is None:
+        note, errors = create_analyse_note(dossier_id)
+        if note is not None and not errors:
+            bump_ctag(f"dossier:{dossier_id}")
+
+    ctx = _template_context()
+    ctx["dossier"] = dossier
+    ctx["analyse_note"] = note
+    ctx["errors"] = errors
+    ctx["tab_name"] = "analyse"
+    ctx["tab_return_to"] = url_for(
+        "dossiers.dossier_detail", dossier_id=dossier_id, tab="analyse"
+    )
+    return render_template("dossiers/_tab_analyse.html", **ctx)
 
 
 # ── Create ────────────────────────────────────────────────────────────────
@@ -651,7 +694,12 @@ def _sync_dossier_dav_visibility(
 
     sync_name = f"dossier:{dossier_id}"
     resource_ids = [t["id"] for t in list_tasks(dossier_id=dossier_id)]
-    resource_ids += [n["id"] for n in list_notes(dossier_id=dossier_id)]
+    # include_analyse=True: the analyse note must be drained/restored with
+    # the rest, or a closed dossier leaves it stranded on the phone.
+    resource_ids += [
+        n["id"]
+        for n in list_notes(dossier_id=dossier_id, include_analyse=True)
+    ]
     resource_ids += [h["id"] for h in list_hearings(dossier_id=dossier_id)]
 
     if is_active:

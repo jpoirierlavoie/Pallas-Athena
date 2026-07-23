@@ -1,0 +1,40 @@
+{# Tab: Analyse — the dossier's single « Théorie de la cause » note.
+   Empty state: an idempotent init button (POST, HTMX) seeds the 8-block
+   template. Populated: the note rendered as Markdown (.note-content — the
+   compiled-CSS class notes/detail.html uses; NEVER apply the markdown
+   filter twice). The note is hidden from the Notes views on purpose; it
+   syncs to DavX5 as a dateless VJOURNAL (a jtx Board *Note*). #}
+{% if errors %}
+<div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+  {% for error in errors %}
+  <p class="text-sm text-red-700">{{ error }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if analyse_note %}
+<div class="bg-white rounded-xl border border-gray-200 p-5">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-sm font-semibold text-gray-900">{{ analyse_note.title }}</h3>
+    <a href="{{ url_for('notes.note_edit', note_id=analyse_note.id, return_to=tab_return_to) }}"
+       class="text-xs text-indigo-600 font-medium hover:text-indigo-700">Modifier</a>
+  </div>
+  <div class="note-content text-sm text-gray-700">
+    {{ analyse_note.content | markdown | safe }}
+  </div>
+</div>
+{% else %}
+<div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
+  <p class="text-sm text-gray-500 mb-4">Aucune théorie de la cause pour ce dossier.</p>
+  <button type="button"
+          hx-post="{{ url_for('dossiers.dossier_analyse_init', dossier_id=dossier.id) }}"
+          hx-target="#tab-content"
+          hx-swap="innerHTML"
+          class="inline-block rounded-lg bg-gray-900 text-white text-sm font-medium px-6 py-2.5 hover:bg-gray-800 transition-colors">
+    Ajouter une théorie de la cause
+  </button>
+  <p class="text-xs text-gray-400 mt-3">
+    Crée une note unique (les 8 blocs A→H), synchronisée dans DavX5 comme une note sans date.
+  </p>
+</div>
+{% endif %}

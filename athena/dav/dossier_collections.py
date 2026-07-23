@@ -65,6 +65,7 @@ from models.hearing import (
 from models.note import (
     create_note,
     delete_note,
+    get_analyse_note,
     get_note,
     list_notes,
     note_to_vjournal,
@@ -322,7 +323,14 @@ def _collection_members(dossier_id: str) -> tuple[list, list, list]:
         with firestore_span("query", "tasks", filter="general"):
             tasks = [t for t in list_tasks() if not t.get("dossier_id")]
         with firestore_span("query", "notes", filter="general"):
-            notes = [n for n in list_notes() if not n.get("dossier_id")]
+            # include_analyse=True: DAV MUST list the analyse note — the
+            # default would silently drop it from DavX5 (an analyse note
+            # always has a dossier today, but the rule is per-path, not
+            # per-datum).
+            notes = [
+                n for n in list_notes(include_analyse=True)
+                if not n.get("dossier_id")
+            ]
         return hearings, tasks, notes
 
     with firestore_span("query", "hearings", dossier_id=dossier_id):
@@ -330,7 +338,10 @@ def _collection_members(dossier_id: str) -> tuple[list, list, list]:
     with firestore_span("query", "tasks", dossier_id=dossier_id):
         tasks = list_tasks(dossier_id=dossier_id)
     with firestore_span("query", "notes", dossier_id=dossier_id):
-        notes = list_notes(dossier_id=dossier_id)
+        # include_analyse=True is LOAD-BEARING: left on the default, the
+        # « Théorie de la cause » note silently vanishes from DavX5 (the
+        # collection just stops listing the resource — no error anywhere).
+        notes = list_notes(dossier_id=dossier_id, include_analyse=True)
     return hearings, tasks, notes
 
 
@@ -926,6 +937,17 @@ def _put_note(
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
         data["id"] = resource_id
+        # A created VJOURNAL may carry X-PALLAS-ANALYSE (a jtx move/copy of
+        # the théorie de la cause — jtx preserves unknown X-properties).
+        # is_analyse is the app's one-per-dossier singleton: drop the flag
+        # on the « Général » scope (an analyse note belongs to a dossier)
+        # and when the target dossier already has its analyse note — the
+        # resource is then stored as an ordinary dateless note instead of
+        # silently shadowing the existing analysis.
+        if data.get("is_analyse") and (
+            _is_general(dossier_id) or get_analyse_note(dossier_id)
+        ):
+            data.pop("is_analyse")
         created, errors = create_note(data)
         if errors:
             logger.warning(

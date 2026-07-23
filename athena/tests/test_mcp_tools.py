@@ -508,9 +508,9 @@ def test_list_hearings_all_day_uses_date_only(monkeypatch):
 def test_list_notes_preview_is_truncated_plain_text(monkeypatch):
     long_content = "x" * 500
     monkeypatch.setattr(handlers.note_model, "list_notes",
-                        lambda dossier_id=None: [{"id": "n1", "title": "T",
-                                                  "category": "appel", "pinned": True,
-                                                  "content": long_content}])
+                        lambda dossier_id=None, **kw: [{"id": "n1", "title": "T",
+                                                        "category": "appel", "pinned": True,
+                                                        "content": long_content}])
     payload = handlers.list_notes({"dossier_id": "d1"})
     assert len(payload["items"][0]["content_preview"]) == 280
     assert "content" not in payload["items"][0]
@@ -1110,6 +1110,46 @@ def test_append_refuses_an_unknown_note(monkeypatch, bumps):
     with pytest.raises(tools.ToolArgumentError, match="Note introuvable"):
         handlers.append_to_note({"note_id": "nope", "content": "C"})
     assert bumps["bump"] == []
+
+
+def test_append_refuses_the_analyse_note(monkeypatch, bumps):
+    """The « Théorie de la cause » note is read-only via the connector:
+    readable through list_notes/get_note, never writable."""
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "Analyse",
+                   "is_analyse": True},
+    )
+
+    def _must_not_run(nid, data):
+        raise AssertionError("wrote to the analyse note")
+
+    monkeypatch.setattr(handlers.note_model, "update_note", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="théorie de la cause"):
+        handlers.append_to_note({"note_id": "n1", "content": "Ajout"})
+    assert bumps["bump"] == []
+
+
+def test_mcp_list_notes_includes_the_analyse_note(monkeypatch):
+    """The model default EXCLUDES the analyse note; the MCP read path must
+    override it — left on the default, the note silently vanishes from
+    Claude's view."""
+    seen = {}
+
+    def _list(dossier_id=None, include_analyse=False, **kw):
+        seen["include_analyse"] = include_analyse
+        return [{"id": "n-a", "dossier_id": dossier_id or "",
+                 "title": "Théorie de la cause", "content": "Corps",
+                 "category": "stratégie", "pinned": False,
+                 "is_analyse": True, "created_at": None, "updated_at": None}]
+
+    monkeypatch.setattr(handlers.note_model, "list_notes", _list)
+    payload = handlers.list_notes({"dossier_id": "d1"})
+    assert seen["include_analyse"] is True
+    assert payload["items"][0]["is_analyse"] is True
+
+    payload = handlers.list_notes({})  # « Général » branch
+    assert seen["include_analyse"] is True
 
 
 # ── Provenance ──────────────────────────────────────────────────────────

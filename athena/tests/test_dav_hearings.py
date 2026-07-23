@@ -197,7 +197,7 @@ def linked_and_standalone(monkeypatch):
         dc, "get_hearing", lambda i: next((h for h in everything if h["id"] == i), None)
     )
     monkeypatch.setattr(dc, "list_tasks", lambda dossier_id=None: [])
-    monkeypatch.setattr(dc, "list_notes", lambda dossier_id=None: [])
+    monkeypatch.setattr(dc, "list_notes", lambda dossier_id=None, **kw: [])
     monkeypatch.setattr(dc, "get_task", lambda i: None)
     monkeypatch.setattr(dc, "get_note", lambda i: None)
     monkeypatch.setattr(
@@ -483,6 +483,84 @@ def test_general_displayname_is_general(app, general_members):
     )
     names = [el.text for el in safe_fromstring(resp.data).iter(f"{{{DAVNS}}}displayname")]
     assert "Général" in names
+
+
+# ══════════════════════════════════════════════════════════════════════
+# PUT — the one-analyse-per-dossier singleton
+# ══════════════════════════════════════════════════════════════════════
+
+_VJOURNAL_BODY = "BEGIN:VCALENDAR\nBEGIN:VJOURNAL\nEND:VJOURNAL\nEND:VCALENDAR"
+
+
+def _put_analyse_setup(monkeypatch, seen):
+    """Create-branch PUT of a VJOURNAL whose parsed data claims is_analyse."""
+    monkeypatch.setattr(dc, "get_hearing", lambda i: None)
+    monkeypatch.setattr(dc, "get_task", lambda i: None)
+    monkeypatch.setattr(dc, "get_note", lambda i: None)  # create branch
+    monkeypatch.setattr(
+        dc, "get_dossier",
+        lambda i: {"id": "d1", "file_number": "2026-001",
+                   "title": "Tremblay", "status": "actif"},
+    )
+    monkeypatch.setattr(
+        dc, "vjournal_to_note",
+        lambda s: {"title": "Théorie de la cause", "content": "Corps",
+                   "is_analyse": True, "dateless": True},
+    )
+
+    def _create(data):
+        seen.update(data)
+        return {**data, "etag": "new"}, []
+
+    monkeypatch.setattr(dc, "create_note", _create)
+    monkeypatch.setattr(dc, "bump_ctag", lambda n: None)
+    monkeypatch.setattr(dc, "remove_tombstone", lambda n, r: None)
+
+
+def test_put_created_analyse_flag_dropped_when_dossier_already_has_one(
+    app, monkeypatch
+):
+    """A jtx move/copy PUTs a VJOURNAL still carrying X-PALLAS-ANALYSE. If
+    the target dossier already has its théorie, accepting the flag would
+    mint a second is_analyse note that silently shadows the existing
+    analysis — the resource must land as an ordinary note instead."""
+    seen = {}
+    _put_analyse_setup(monkeypatch, seen)
+    monkeypatch.setattr(dc, "get_analyse_note", lambda d: {"id": "n-old"})
+    resp = app.test_client().put(
+        "/dav/dossier-d1/n-new.ics", headers=AUTH, data=_VJOURNAL_BODY
+    )
+    assert resp.status_code == 201
+    assert "is_analyse" not in seen
+
+
+def test_put_created_analyse_flag_kept_when_dossier_has_none(app, monkeypatch):
+    """The legitimate case — moving the théorie to a dossier without one —
+    keeps the flag (the paired DELETE then clears the source)."""
+    seen = {}
+    _put_analyse_setup(monkeypatch, seen)
+    monkeypatch.setattr(dc, "get_analyse_note", lambda d: None)
+    resp = app.test_client().put(
+        "/dav/dossier-d1/n-new.ics", headers=AUTH, data=_VJOURNAL_BODY
+    )
+    assert resp.status_code == 201
+    assert seen["is_analyse"] is True
+
+
+def test_put_created_analyse_flag_dropped_on_the_general_scope(
+    app, monkeypatch
+):
+    """An analyse note belongs to a dossier: flagged under « Général » it
+    would be invisible in every app view (get_analyse_note is per-dossier
+    and the Notes lists exclude is_analyse)."""
+    seen = {}
+    _put_analyse_setup(monkeypatch, seen)
+    monkeypatch.setattr(dc, "get_analyse_note", lambda d: None)
+    resp = app.test_client().put(
+        "/dav/general/n-new.ics", headers=AUTH, data=_VJOURNAL_BODY
+    )
+    assert resp.status_code == 201
+    assert "is_analyse" not in seen
 
 
 def test_general_comp_filter_still_applies(app, general_members):

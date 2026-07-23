@@ -36,6 +36,20 @@ def bumps(monkeypatch):
 
 
 @pytest.fixture()
+def tombstones(monkeypatch):
+    recorded = {"record": [], "remove": []}
+    monkeypatch.setattr(
+        notes_routes, "record_tombstone",
+        lambda n, r: recorded["record"].append((n, r)),
+    )
+    monkeypatch.setattr(
+        notes_routes, "remove_tombstone",
+        lambda n, r: recorded["remove"].append((n, r)),
+    )
+    return recorded
+
+
+@pytest.fixture()
 def client(monkeypatch):
     import json
 
@@ -120,3 +134,76 @@ def test_enrich_distinguishes_absent_from_unresolvable(monkeypatch):
     data, errors = notes_routes._enrich_dossier_info({"dossier_id": "nope"})
     assert errors and "introuvable" in errors[0].lower()  # never blanked
     assert data["dossier_id"] == "nope"
+
+
+def test_note_delete_records_a_tombstone(client, bumps, tombstones, monkeypatch):
+    """Deletions travel ONLY via tombstones (sync-collection reports live
+    members + tombstones; an unmentioned href reads as 'unchanged'). A bare
+    CTag bump left the deleted note on the phone forever."""
+    monkeypatch.setattr(
+        notes_routes, "get_note", lambda i: {"id": "n1", "dossier_id": "d1"}
+    )
+    monkeypatch.setattr(notes_routes, "delete_note", lambda i: (True, ""))
+    resp = client.post("/notes/n1/delete", data={})
+    assert resp.status_code in (302, 303)
+    assert tombstones["record"] == [("dossier:d1", "n1")]
+    assert bumps == ["dossier:d1"]
+
+
+def test_note_move_tombstones_the_old_collection(
+    client, bumps, tombstones, monkeypatch
+):
+    """Reassigning a note's dossier must tombstone + bump the OLD collection
+    (the shape routes/tasks.py uses) — bumping only the new one leaves the
+    stale copy under the old dossier in DavX5 indefinitely."""
+    monkeypatch.setattr(
+        notes_routes, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "title": "T",
+                   "content": "C", "category": "recherche"},
+    )
+    monkeypatch.setattr(
+        notes_routes, "get_dossier",
+        lambda i: {"id": i, "file_number": "2026-002", "title": "B"},
+    )
+    monkeypatch.setattr(
+        notes_routes, "update_note",
+        lambda nid, data: ({"id": nid, **data}, []),
+    )
+    resp = client.post("/notes/n1", data={
+        "title": "T", "content": "C", "category": "recherche",
+        "dossier_id": "d2",
+    })
+    assert resp.status_code in (302, 303)
+    assert tombstones["record"] == [("dossier:d1", "n1")]
+    assert tombstones["remove"] == [("dossier:d2", "n1")]
+    assert bumps == ["dossier:d1", "dossier:d2"]
+
+
+def test_analyse_note_dossier_change_is_refused(
+    client, bumps, tombstones, monkeypatch
+):
+    """The théorie de la cause is bound to its dossier: the form locks the
+    picker, and the route refuses a hand-crafted POST that would move it
+    (a moved analyse note is invisible in every app view)."""
+    monkeypatch.setattr(
+        notes_routes, "get_note",
+        lambda i: {"id": "n1", "dossier_id": "d1", "is_analyse": True,
+                   "title": "Théorie de la cause", "content": "C",
+                   "category": "stratégie"},
+    )
+    monkeypatch.setattr(
+        notes_routes, "get_dossier",
+        lambda i: {"id": i, "file_number": "2026-002", "title": "B"},
+    )
+
+    def _must_not_run(nid, data):
+        raise AssertionError("moved the analyse note")
+
+    monkeypatch.setattr(notes_routes, "update_note", _must_not_run)
+    resp = client.post("/notes/n1", data={
+        "title": "Théorie de la cause", "content": "C",
+        "category": "stratégie", "dossier_id": "d2",
+    })
+    assert resp.status_code == 200  # re-rendered form, no redirect
+    assert "liée à son dossier" in resp.data.decode("utf-8")
+    assert bumps == [] and tombstones["record"] == []

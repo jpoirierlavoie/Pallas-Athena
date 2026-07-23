@@ -447,6 +447,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "title": _str(),
         "category": _str(),
         "pinned": _bool(),
+        "is_analyse": _bool(
+            "True = the dossier's single « Théorie de la cause » note "
+            "(the Analyse sheet) — readable here but READ-ONLY: "
+            "append_to_note refuses it."
+        ),
         "created_at": _nstr(),
         "updated_at": _nstr(),
         "content_preview": _str("First 280 characters, plain text."),
@@ -464,6 +469,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "content": _str("Full raw Markdown."),
                 "category": _str(),
                 "pinned": _bool(),
+                "is_analyse": _bool(
+                    "True = the dossier's single « Théorie de la cause » "
+                    "note (the Analyse sheet) — readable but READ-ONLY: "
+                    "append_to_note refuses it."
+                ),
                 "created_at": _nstr(),
                 "updated_at": _nstr(),
             }),

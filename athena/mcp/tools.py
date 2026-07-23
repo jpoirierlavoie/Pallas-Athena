@@ -490,7 +490,10 @@ TOOLS: dict[str, dict] = {
             "List notes (pinned first, then newest) with a 280-character "
             "plain-text preview. With dossier_id: that dossier's notes. "
             "WITHOUT dossier_id: the « Général » notes — free journal entries "
-            "attached to no file. Use get_note for the full Markdown."
+            "attached to no file. Use get_note for the full Markdown. A note "
+            "flagged is_analyse is the dossier's « Théorie de la cause » "
+            "(the lawyer's structured case analysis) — readable but "
+            "READ-ONLY: never target it with append_to_note."
         ),
         "input_schema": {
             "type": "object",
@@ -506,7 +509,11 @@ TOOLS: dict[str, dict] = {
     },
     "get_note": {
         "title": "Détail d'une note",
-        "description": "Fetch one note with its full raw Markdown content.",
+        "description": (
+            "Fetch one note with its full raw Markdown content. A note "
+            "flagged is_analyse (the dossier's « Théorie de la cause ») is "
+            "read-only: append_to_note refuses it."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -849,7 +856,9 @@ TOOLS: dict[str, dict] = {
             "is already there. If the call appears to fail, re-read the note "
             "with get_note before retrying — a retry appends a second copy. "
             "Fails explicitly (rather than truncating) when the note would "
-            "exceed its storage ceiling."
+            "exceed its storage ceiling. Refuses the « Théorie de la cause » "
+            "note (is_analyse true in list_notes/get_note) — that analysis "
+            "is edited only in the app."
         ),
         "input_schema": {
             "type": "object",

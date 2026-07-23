@@ -299,12 +299,32 @@ def test_list_hearings_conforms(monkeypatch):
 
 
 def test_list_notes_conforms(monkeypatch):
-    monkeypatch.setattr(
-        handlers.note_model, "list_notes",
-        lambda **kw: [{"id": "n1", "dossier_id": "", "title": "Veille",
-                       "content": "Texte", "category": "recherche",
-                       "pinned": False, "created_at": DT, "updated_at": DT}])
-    _conforms("list_notes", handlers.list_notes({}))
+    # One legacy note (no is_analyse key stored) + the analyse note — the
+    # handler must emit a boolean is_analyse for both. The rows carry the
+    # dossier_id the handler was called with, so the analyse row survives
+    # BOTH branches (the Général branch filters on empty dossier_id — a
+    # fixture pinned to "d1" would be dropped before validation and the
+    # is_analyse=True case would never reach the schema).
+    def _rows(dossier_id=None, **kw):
+        did = dossier_id or ""
+        return [{"id": "n1", "dossier_id": did, "title": "Veille",
+                 "content": "Texte", "category": "recherche",
+                 "pinned": False, "created_at": DT, "updated_at": DT},
+                {"id": "n2", "dossier_id": did,
+                 "title": "Théorie de la cause", "content": "Corps",
+                 "category": "stratégie", "pinned": False,
+                 "is_analyse": True, "dateless": True,
+                 "created_at": DT, "updated_at": DT}]
+
+    monkeypatch.setattr(handlers.note_model, "list_notes", _rows)
+
+    payload = handlers.list_notes({})
+    _conforms("list_notes", payload)
+    assert payload["items"][1]["is_analyse"] is True
+
+    payload = handlers.list_notes({"dossier_id": "d1"})
+    _conforms("list_notes", payload)
+    assert payload["items"][1]["is_analyse"] is True
 
 
 def test_get_note_both_branches_conform(monkeypatch):
@@ -316,6 +336,17 @@ def test_get_note_both_branches_conform(monkeypatch):
                    "category": "recherche", "pinned": True,
                    "created_at": DT, "updated_at": DT})
     _conforms("get_note", handlers.get_note({"note_id": "n1"}))
+
+    # The analyse note (read-only flag emitted True)
+    monkeypatch.setattr(
+        handlers.note_model, "get_note",
+        lambda i: {"id": "n2", "dossier_id": "d1",
+                   "dossier_file_number": "2026-001", "dossier_title": "T",
+                   "title": "Théorie de la cause", "content": "Corps",
+                   "category": "stratégie", "pinned": False,
+                   "is_analyse": True, "dateless": True,
+                   "created_at": DT, "updated_at": DT})
+    _conforms("get_note", handlers.get_note({"note_id": "n2"}))
 
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
     _conforms("get_note", handlers.get_note({"note_id": "absent"}))

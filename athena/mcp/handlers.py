@@ -553,13 +553,21 @@ def list_hearings(args: dict) -> dict:
 def list_notes(args: dict) -> dict:
     limit = _limit_arg(args, 20)
     dossier_id = args.get("dossier_id")
+    # include_analyse=True: the MCP read paths EXPOSE the « Théorie de la
+    # cause » note (read-only — append_to_note refuses it). The model's
+    # default would silently hide it from Claude.
     if dossier_id:
-        notes = note_model.list_notes(dossier_id=dossier_id)
+        notes = note_model.list_notes(
+            dossier_id=dossier_id, include_analyse=True
+        )
     else:
         # « Général »: notes attached to no dossier. Filtered in Python —
         # the model has no "no dossier" query (see dav/dossier_collections
         # ._collection_members for the same constraint).
-        notes = [n for n in note_model.list_notes() if not n.get("dossier_id")]
+        notes = [
+            n for n in note_model.list_notes(include_analyse=True)
+            if not n.get("dossier_id")
+        ]
     truncated = len(notes) > limit
     items = [
         {
@@ -567,6 +575,7 @@ def list_notes(args: dict) -> dict:
             "title": n.get("title", ""),
             "category": n.get("category", ""),
             "pinned": bool(n.get("pinned")),
+            "is_analyse": bool(n.get("is_analyse")),
             "created_at": iso_mtl(_as_utc(n.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(n.get("updated_at"))),
             "content_preview": (n.get("content", "") or "")[:_NOTE_PREVIEW_CHARS],
@@ -593,6 +602,7 @@ def get_note(args: dict) -> dict:
             "content": note.get("content", ""),
             "category": note.get("category", ""),
             "pinned": bool(note.get("pinned")),
+            "is_analyse": bool(note.get("is_analyse")),
             "created_at": iso_mtl(_as_utc(note.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(note.get("updated_at"))),
         },
@@ -1302,6 +1312,16 @@ def append_to_note(args: dict) -> dict:
         raise ToolArgumentError(
             f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
             "un note_id valide."
+        )
+    # The « Théorie de la cause » note is read-only through the connector:
+    # it is the lawyer's structured working analysis, edited only in the
+    # app's Analyse sheet. Message describes, never quotes (Cloud Trace).
+    if existing.get("is_analyse"):
+        raise ToolArgumentError(
+            "Cette note est la théorie de la cause du dossier — en lecture "
+            "seule via le connecteur. Elle se modifie dans l'application "
+            "(feuille « Analyse » du dossier). Pour consigner des recherches, "
+            "créez ou complétez une autre note du dossier."
         )
 
     addition = _clean_note_text((args.get("content") or "").strip(), "content")

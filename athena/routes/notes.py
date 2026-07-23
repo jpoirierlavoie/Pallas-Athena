@@ -14,7 +14,12 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, collection_for
+from dav.sync import (
+    bump_ctag,
+    collection_for,
+    record_tombstone,
+    remove_tombstone,
+)
 from security import safe_internal_redirect
 from models.note import (
     CATEGORY_LABELS,
@@ -286,6 +291,20 @@ def note_update(note_id: str) -> str:
     data, link_errors = _enrich_dossier_info(_form_data())
     return_to = request.form.get("return_to", "")
 
+    # The « Théorie de la cause » note is bound to its dossier: the form
+    # locks the picker, so a differing dossier_id can only come from a
+    # hand-crafted POST. Moving (or clearing) it would break the
+    # one-analyse-per-dossier invariant and strand the lawyer's analysis
+    # where no app view lists it.
+    if not link_errors and existing_note.get("is_analyse") and (
+        (data.get("dossier_id") or "")
+        != (existing_note.get("dossier_id") or "")
+    ):
+        link_errors = [
+            "La note d'analyse est liée à son dossier — le dossier ne peut "
+            "pas être modifié."
+        ]
+
     note, errors = (
         (None, link_errors) if link_errors else update_note(note_id, data)
     )
@@ -300,7 +319,20 @@ def note_update(note_id: str) -> str:
         ctx.update(note=data, errors=errors, return_to=return_to)
         return render_template("notes/form.html", **ctx)
 
-    bump_ctag(collection_for(note.get("dossier_id")))
+    old_scope = collection_for(existing_note.get("dossier_id"))
+    new_scope = collection_for(note.get("dossier_id"))
+    if old_scope != new_scope:
+        # Note moved between collections (dossier <-> dossier, or to/from
+        # « Général »). Deletions travel ONLY via tombstones — without one
+        # the old collection's DavX5 copy survives forever (sync-collection
+        # reports live members + tombstones; an unmentioned href reads as
+        # "unchanged"). Mirrors routes/tasks.py task_update.
+        record_tombstone(old_scope, note_id)
+        bump_ctag(old_scope)
+        # The note (re)enters its new collection — drop any stale tombstone
+        # there so one sync REPORT never reports it as both live and deleted.
+        remove_tombstone(new_scope, note_id)
+    bump_ctag(new_scope)
 
     # Return to the note itself after saving; thread a validated return_to for
     # the detail view's « Retour » link (see note_create for the guard rationale).
@@ -330,7 +362,14 @@ def note_delete(note_id: str) -> str:
     success, error = delete_note(note_id)
 
     if success:
-        bump_ctag(collection_for(dossier_id))
+        # Tombstone BEFORE bumping: the bump makes DavX5 re-sync, and the
+        # sync report announces deletions only through tombstones — a bare
+        # bump leaves the deleted note on the phone forever (mirrors
+        # routes/tasks.py task_delete; was the note-delete gap the Analyse
+        # init→delete→re-init cycle made visible).
+        scope = collection_for(dossier_id)
+        record_tombstone(scope, note_id)
+        bump_ctag(scope)
 
     target = safe_internal_redirect(return_to, url_for("notes.note_list"))
     if _is_htmx():

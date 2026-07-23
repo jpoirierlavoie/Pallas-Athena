@@ -68,6 +68,13 @@ def _default_doc() -> dict:
         "content": "",
         "category": "autre",
         "pinned": False,
+        # A dateless note is a pure note (VJOURNAL without DTSTART) — jtx
+        # Board files it under « Notes » instead of the dated journal view.
+        "dateless": False,
+        # The single « Théorie de la cause » note of a dossier (the Analyse
+        # sheet). Hidden from the Notes views, INCLUDED on the DAV and MCP
+        # read paths — see list_notes(include_analyse=...).
+        "is_analyse": False,
         # DAV
         "vjournal_uid": "",
         # Metadata
@@ -172,10 +179,18 @@ def list_notes(
     category: Optional[str] = None,
     search: Optional[str] = None,
     pinned_first: bool = True,
+    include_analyse: bool = False,
 ) -> list[dict]:
     """Return notes, pinned first then newest first.
 
     Search scans title + content (client-side, same as other modules).
+
+    ``include_analyse`` — the « Théorie de la cause » note (``is_analyse``)
+    is EXCLUDED by default so the Notes views never show it. The DAV
+    collection paths and the MCP note tools MUST pass ``True``: a DAV
+    caller left on the default silently drops the note from DavX5 (the
+    client just stops seeing the resource — no error anywhere). Python
+    filter on purpose — no Firestore index.
     """
     try:
         query = db.collection(COLLECTION)
@@ -184,6 +199,9 @@ def list_notes(
             query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
 
         results = [doc.to_dict() for doc in query.stream()]
+
+        if not include_analyse:
+            results = [r for r in results if not r.get("is_analyse")]
 
         # Client-side filters
         if category and category in VALID_CATEGORIES:
@@ -221,6 +239,7 @@ def list_notes_recent(
     dossier_id: Optional[str] = None,
     pinned_limit: int = PINNED_LIMIT,
     recent_limit: int = RECENT_LIMIT,
+    include_analyse: bool = False,
 ) -> list[dict]:
     """Return pinned notes plus the most recent unpinned notes, bounded.
 
@@ -232,6 +251,8 @@ def list_notes_recent(
 
     Requires the composite index (pinned ASC, created_at DESC) and, when
     *dossier_id* is given, (dossier_id ASC, pinned ASC, created_at DESC).
+
+    ``include_analyse`` — same contract as :func:`list_notes`.
 
     Returns [] on failure (the list view degrades to an empty state).
     """
@@ -249,6 +270,8 @@ def list_notes_recent(
                 "created_at", direction=firestore.Query.DESCENDING
             ).limit(limit)
             results.extend(doc.to_dict() for doc in query.stream())
+        if not include_analyse:
+            results = [r for r in results if not r.get("is_analyse")]
         return results
     except Exception as exc:
         logger.warning("list_notes_recent: query failed: %s", exc)
@@ -304,6 +327,270 @@ def toggle_pin(note_id: str) -> tuple[Optional[dict], list[str]]:
     return update_note(note_id, {"pinned": not existing.get("pinned", False)})
 
 
+# ── Théorie de la cause (feuille « Analyse ») ────────────────────────────
+
+# The SUMMARY of the single analyse note (shown as-is in jtx Board). The
+# sheet's tab label is « Analyse »; the note keeps its full name.
+ANALYSE_TITLE = "Théorie de la cause"
+
+# Seed content: the 8-block « Gabarit B » working template (méthode
+# d'élaboration de la théorie d'une cause, École du Barreau). Verbatim from
+# SPEC_Analyse_theorie_de_la_cause.md — Annexe A; edit the spec first if the
+# template must change. Markdown tables + « ☐ » checkboxes render through the
+# `markdown` filter (tables extension already active).
+_ANALYSE_SEED = """\
+# Théorie de la cause
+
+*Dossier : … | Partie représentée : ☐ Demandeur ☐ Défendeur ☐ Mis en cause | Rédigé par : … | Date de l'analyse : …*
+
+Outil de travail interne (méthode d'élaboration de la théorie d'une cause, version complète et stratégique). Les blocs F et G — forces/faiblesses et théorie adverse — n'ont pas vocation à être versés au dossier de la Cour.
+
+---
+
+## Bloc A — Identification et cadre procédural
+
+### Parties et leur qualité
+
+| Partie | Rôle | Qualité / capacité / intérêt (art. 85 C.p.c.) |
+|---|---|---|
+| … | … | … |
+
+### Cadre procédural
+
+Tribunal et compétence d'attribution : …
+District (compétence territoriale) : …
+Montant ou valeur en jeu : …
+Voie procédurale envisagée : …
+
+### Verrous préliminaires
+
+- ☐ **Prescription** — délai applicable : … *(à défaut de délai particulier, 3 ans : art. 2925 C.c.Q.)* — point de départ : … — date pour agir : …
+- ☐ Intérêt et qualité pour agir (art. 85 C.p.c.)
+- ☐ Compétence (matière et territoire)
+- ☐ Mise en demeure / avis préalable requis ou envoyé
+- ☐ Autres conditions de recevabilité : …
+
+*Questions-repères : le client a-t-il l'intérêt et la qualité requis ? Le recours est-il encore dans les délais ? Le bon tribunal est-il saisi ? Une démarche préalable est-elle exigée ?*
+
+---
+
+## Bloc B — Les faits
+
+### Récit chronologique
+
+…
+
+### Cartographie des faits
+
+| Fait | Générateur du droit ? | Admis / non contesté | Contesté (à prouver) | Défavorable |
+|------|:---:|:---:|:---:|:---:|
+| … | ☐ | ☐ | ☐ | ☐ |
+
+### Faits défavorables à gérer
+
+(comment les neutraliser ou les expliquer) …
+
+### Faits manquants ou à investiguer
+
+(documents, témoins, expertises à obtenir) …
+
+*Questions-repères : quels faits font naître le droit invoqué ? Lesquels l'autre partie admettra-t-elle ? Quels faits me nuisent, et comment les aborder de front ? Que dois-je encore aller chercher ?*
+
+---
+
+## Bloc C — Le fondement juridique et ses éléments constitutifs
+
+### Fondement(s) invoqué(s)
+
+Cause d'action (ou, en défense, moyens opposés) : …
+Sources : ☐ législation … ☐ jurisprudence … ☐ doctrine …
+
+### Éléments constitutifs à réunir
+
+*Exemple — responsabilité civile : faute, préjudice, lien de causalité (art. 1457 C.c.Q. extracontractuel ; art. 1458 C.c.Q. contractuel).*
+
+| Élément constitutif | Fait(s) qui l'établit | Preuve disponible | Solide ? |
+|---|---|---|:--:|
+| … | … | … | ☐ |
+| … | … | … | ☐ |
+| … | … | … | ☐ |
+
+### Moyens de défense / d'exception envisageables
+
+(les miens et ceux de l'adversaire) …
+
+*Questions-repères : ai-je isolé chacune des conditions que la loi exige ? Chaque condition est-elle appuyée par un fait et par une preuve ? Une seule condition non établie fait-elle échouer le recours ?*
+
+---
+
+## Bloc D — Qualification et syllogisme
+
+**Majeure (la règle) :** …
+
+**Mineure (les faits qualifiés) :** …
+
+**Conclusion (l'application) :** …
+
+### Qualification juridique retenue
+
+(nature exacte du rapport ou de l'acte) …
+
+*Questions-repères : chaque condition de la règle trouve-t-elle appui dans un fait ? Un fait vient-il contredire l'application de la règle ?*
+
+---
+
+## Bloc E — La stratégie de preuve
+
+### Fardeau et norme
+
+Fardeau de preuve — qui doit prouver quoi (art. 2803 C.c.Q.) : …
+Norme applicable : prépondérance des probabilités (art. 2804 C.c.Q.), sauf exigence légale plus stricte : …
+
+### Moyens de preuve
+
+*Art. 2811 C.c.Q. : écrit, témoignage, présomption, aveu, présentation d'un élément matériel.*
+
+| Élément / fait à prouver | Sur qui repose le fardeau | Moyen de preuve prévu | Source / pièce / témoin | Lacune |
+|---|---|---|---|---|
+| … | … | … | … | … |
+
+*Questions-repères : pour chaque fait contesté, ai-je un moyen de preuve ? La preuve est-elle admissible et disponible ? Où sont mes trous de preuve, et comment les combler ? Quelle preuve l'adversaire opposera-t-il ?*
+
+---
+
+## Bloc F — Analyse critique
+
+### Forces de ma position
+
+- …
+
+### Faiblesses et risques
+
+- …
+
+### Théorie adverse anticipée
+
+(prétentions probables de la partie adverse — faits, fondement, preuve — et ma réponse à chacune)
+
+| Prétention adverse anticipée | Ma réponse / parade |
+|---|---|
+| … | … |
+
+*Questions-repères : si j'étais l'avocat de l'autre partie, quelle serait ma meilleure théorie ? Quel est le maillon le plus faible de ma cause ? Résiste-t-elle au contre-interrogatoire et au scénario adverse le plus favorable ?*
+
+---
+
+## Bloc G — La théorie de la cause (synthèse persuasive)
+
+### Théorie factuelle
+
+(le récit, cohérent et favorable, de ce qui s'est passé) …
+
+### Théorie juridique
+
+(le fondement de droit qui commande le résultat recherché) …
+
+### Le thème
+
+(l'idée-force, l'angle d'équité ou de bon sens qui donne au tribunal une raison de trancher en ma faveur) …
+
+### Énoncé de la théorie (une à deux phrases)
+
+> « … »
+
+*Test de solidité : la théorie est-elle cohérente (sans contradiction interne), crédible (conforme au bon sens et à l'expérience), complète (elle absorbe même les faits défavorables) et simple (mémorable, exprimable en une phrase) ?*
+
+---
+
+## Bloc H — Conclusions recherchées et suites
+
+### Conclusions recherchées
+
+(remèdes précis, tels qu'ils devront être formulés à l'acte de procédure — clarté, précision, concision, ordre logique et numérotation : art. 99 C.p.c.)
+
+1. …
+2. …
+
+### Objectifs réels du client
+
+(et scénarios de règlement acceptables) …
+
+### Prochaines étapes et échéancier
+
+…
+
+### Éléments encore à obtenir
+
+(preuve, expertise, mandat, provision) …
+"""
+
+
+def get_analyse_note(dossier_id: str) -> Optional[dict]:
+    """Return the dossier's single ``is_analyse`` note, or ``None``.
+
+    Python scan over the per-dossier list (deliberately no
+    ``.where("is_analyse", ...)`` — that would need a composite index
+    deployed before the code).
+    """
+    for note in list_notes(dossier_id=dossier_id, include_analyse=True):
+        if note.get("is_analyse"):
+            return note
+    return None
+
+
+def has_analyse(dossier_id: str) -> bool:
+    """True when the dossier already has its « Théorie de la cause » note."""
+    return get_analyse_note(dossier_id) is not None
+
+
+def create_analyse_note(dossier_id: str) -> tuple[Optional[dict], list[str]]:
+    """Create the dossier's single analyse note, pre-seeded. IDEMPOTENT.
+
+    Returns the existing note untouched when one is already there, so a
+    re-clicked init button never mints a second one. The CTag bump belongs
+    to the ROUTE (house rule) — never here.
+
+    The existence check runs on a DIRECT query that propagates read
+    failure (fail CLOSED): :func:`get_analyse_note` flows through
+    :func:`list_notes`, which swallows errors into ``[]`` — a transient
+    read failure would then look like « no analyse note yet » and this
+    function would seed a DUPLICATE over the lawyer's filled analysis.
+    """
+    try:
+        existing: Optional[dict] = None
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("dossier_id", "==", dossier_id)
+        )
+        for doc in query.stream():
+            candidate = doc.to_dict()
+            if candidate.get("is_analyse"):
+                existing = candidate
+                break
+    except Exception:
+        log_unexpected("analyse existence check failed")
+        return None, ["Erreur de lecture. Veuillez réessayer."]
+    if existing:
+        return existing, []
+
+    from models.dossier import get_dossier
+
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        return None, ["Dossier introuvable."]
+
+    return create_note({
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "title": ANALYSE_TITLE,
+        "content": _ANALYSE_SEED,
+        "category": "stratégie",
+        "pinned": False,
+        "dateless": True,
+        "is_analyse": True,
+    })
+
+
 # ── Summary ──────────────────────────────────────────────────────────────
 
 
@@ -324,8 +611,12 @@ def _find_note_by_vjournal_uid(vjournal_uid: str) -> Optional[dict]:
 
 
 def get_notes_summary(dossier_id: str) -> dict:
-    """Return {total} for tab display."""
-    notes = list_notes(dossier_id=dossier_id)
+    """Return {total} for the MCP get_dossier summary (its only caller).
+
+    Includes the analyse note: the MCP read paths expose it, so the count
+    must agree with what the MCP list_notes tool returns.
+    """
+    notes = list_notes(dossier_id=dossier_id, include_analyse=True)
     return {"total": len(notes)}
 
 
@@ -339,13 +630,17 @@ def note_to_vjournal(note: dict) -> str:
     - UID: note's vjournal_uid
     - SUMMARY: note title
     - DESCRIPTION: note content
-    - DTSTART: note created_at (date only)
+    - DTSTART: note created_at (date only) — OMITTED when ``dateless`` is
+      set: a VJOURNAL without DTSTART is a pure *Note* in jtx Board instead
+      of a dated *Journal* entry. CREATED/DTSTAMP stay unconditional (the
+      jtx icalobject.created NOT-NULL trap).
     - CATEGORIES: note category label (French)
     - STATUS: FINAL (notes are always finalized records)
     - LAST-MODIFIED: note updated_at
     - SEQUENCE: 0
     - X-PALLAS-NOTE-CATEGORY: category key (for round-trip fidelity)
     - X-PALLAS-DOSSIER-ID: dossier_id
+    - X-PALLAS-ANALYSE: "true" when the note is the théorie de la cause
     """
     cal = icalendar.Calendar()
     cal.add("prodid", "-//Pallas Athena//Note//FR")
@@ -359,7 +654,7 @@ def note_to_vjournal(note: dict) -> str:
         journal.add("description", note["content"])
 
     created = note.get("created_at")
-    if created and hasattr(created, "date"):
+    if created and hasattr(created, "date") and not note.get("dateless"):
         journal.add("dtstart", created.date())
 
     # CREATED + DTSTAMP as UTC date-times. Required for jtx Board: its
@@ -391,6 +686,8 @@ def note_to_vjournal(note: dict) -> str:
         journal.add("x-pallas-dossier-id", note["dossier_id"])
     if note.get("pinned"):
         journal.add("x-pallas-pinned", "true")
+    if note.get("is_analyse"):
+        journal.add("x-pallas-analyse", "true")
 
     cal.add_component(journal)
     return cal.to_ical().decode("utf-8")
@@ -421,6 +718,10 @@ def vjournal_to_note(ical_str: str) -> dict:
             data["content"] = str(desc)
 
         dtstart = component.get("dtstart")
+        # A VJOURNAL without DTSTART is a pure note — record that so a PUT
+        # round-trip through jtx never re-dates the analyse note. When
+        # DTSTART is present the note is (back to) a dated journal entry.
+        data["dateless"] = dtstart is None
         if dtstart:
             dt = dtstart.dt
             if hasattr(dt, "hour"):
@@ -444,6 +745,13 @@ def vjournal_to_note(ical_str: str) -> dict:
         pinned = component.get("x-pallas-pinned")
         if pinned and str(pinned).lower() == "true":
             data["pinned"] = True
+
+        # Never set is_analyse=False here: a client that strips unknown
+        # X- properties must not demote the stored flag — update_note's
+        # merge keeps the existing value when the key is absent.
+        analyse = component.get("x-pallas-analyse")
+        if analyse and str(analyse).lower() == "true":
+            data["is_analyse"] = True
 
         break  # Only process first VJOURNAL
 
