@@ -84,13 +84,24 @@
           {{ note.dossier_file_number }} — {{ note.dossier_title }}
         </a>
         {% endif %}
+        {# Creation/modification metadata (formerly the bottom « Dates »
+           card) — Montréal calendar dates; « Modifiée » only when it adds
+           information (a different day than the creation). #}
+        {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
+        {% set created = note.created_at|to_mtl if note.created_at and note.created_at.strftime is defined else None %}
+        {% set updated = note.updated_at|to_mtl if note.updated_at and note.updated_at.strftime is defined else None %}
+        {% if created or updated %}
+        <p class="text-xs text-gray-500 mt-1">
+          {%- if created %}Créée le {{ created.strftime('%d') }} {{ month_names[created.month] }} {{ created.strftime('%Y') }}{% endif %}
+          {%- if updated and (not created or updated.date() != created.date()) %}{{ ' · ' if created }}Modifiée le {{ updated.strftime('%d') }} {{ month_names[updated.month] }} {{ updated.strftime('%Y') }}{% endif %}
+        </p>
+        {% endif %}
       </div>
     </div>
   </div>
 
   {# ── Content ─────────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-2">Contenu</h2>
     <div class="note-content text-sm text-gray-700">
       {{ note.content | markdown | safe }}
     </div>
@@ -128,31 +139,6 @@
     </div>
   </div>
   {% endif %}
-
-  {# ── Dates ───────────────────────────────────────────────────── #}
-  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-3">Dates</h2>
-    <dl class="space-y-2 text-sm">
-      {% if note.created_at and note.created_at.strftime is defined %}
-      <div class="flex justify-between">
-        <dt class="text-gray-500">Créée le</dt>
-        <dd class="text-gray-900">
-          {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
-          {{ note.created_at.strftime('%d') }} {{ month_names[note.created_at.month] }} {{ note.created_at.strftime('%Y') }}
-        </dd>
-      </div>
-      {% endif %}
-      {% if note.updated_at and note.updated_at.strftime is defined %}
-      <div class="flex justify-between">
-        <dt class="text-gray-500">Modifiée le</dt>
-        <dd class="text-gray-900">
-          {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
-          {{ note.updated_at.strftime('%d') }} {{ month_names[note.updated_at.month] }} {{ note.updated_at.strftime('%Y') }}
-        </dd>
-      </div>
-      {% endif %}
-    </dl>
-  </div>
 
   {# ── Delete confirmation dialog ──────────────────────────────── #}
   <div x-show="deleteOpen"
