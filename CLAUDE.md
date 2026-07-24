@@ -255,7 +255,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── mint_dev_token.py       # Local-dev MCP bearer minting (refuses ENV=production)
 │   │   ├── revoke_mcp_tokens.py    # Break-glass: revoke all MCP tokens (+ optional client purge)
 │   │   ├── diagnose_gabarit.py     # Local: list a gabarit's placeholders/classification + fragmentation cause
-│   │   └── verify_trust_integrity.py  # Phase K: recompute + cross-check the trust register (read-only)
+│   │   ├── verify_trust_integrity.py  # Phase K: recompute + cross-check the trust register (read-only)
+│   │   └── migrate_vocabulaires.py  # One-shot: rewrite removed hearing/note/document keys (--dry-run default, --apply writes + bumps CTags)
 │   │
 │   ├── tests/                      # pytest unit tests (run by Cloud Build as a deploy gate)
 │   │   ├── __init__.py
@@ -286,7 +287,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_dossier_forum.py   # forum_type/forum validation + normalize_forum (CI-only)
 │   │   ├── test_folders.py         # Phase H.2 get_or_create_folder (CI-only: imports models)
 │   │   ├── test_document_naming.py # Phase H.2 projet_document_name (CI-only: imports models)
-│   │   └── test_trust.py           # Phase K: balance arithmetic, control, reversal, clearing, reconciliation, exports
+│   │   ├── test_trust.py           # Phase K: balance arithmetic, control, reversal, clearing, reconciliation, exports
+│   │   ├── test_hearing_vocab.py   # Two-tier hearing vocab, forum, modalité, CONFERENCE (roundtrip/non-effacement/non-escaping), URI whitelist
+│   │   ├── test_note_vocab.py      # Note category vocab + read-time migration
+│   │   └── test_document_vocab.py  # Document category vocab + migration + MCP enum parity
 │   │
 │   ├── templates/
 │   │   ├── base.html
@@ -681,12 +685,24 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
     # Optional — standalone agenda events have no dossier (all fields "" when unset)
     "dossier_id": str, "dossier_file_number": str, "dossier_title": str,
     "title": str,
-    "hearing_type": "audience" | "conférence_de_gestion"
-                  | "conférence_de_règlement" | "interrogatoire"
-                  | "médiation" | "procès" | "appel" | "autre",
+    # Two-tier vocabulary (2026-07-24). The forum (judiciaire /
+    # extrajudiciaire) is DERIVED from the type (models.hearing.forum_of),
+    # NEVER stored — the two lists are disjoint. Judiciaire:
+    # conférence_de_gestion/_de_règlement/_préparatoire, audience, instruction.
+    # Extrajudiciaire: consultation, rencontre, conférence, interrogatoire,
+    # autre. Removed keys migrated ON READ (_migrate_hearing): procès→
+    # instruction, appel→audience, médiation→autre. « conférence » is a
+    # strict PREFIX of the three « conférence_… » keys — strict equality /
+    # dict access ONLY, never startswith.
+    "hearing_type": "conférence_de_gestion" | ... | "autre",
     "start_datetime": datetime, "end_datetime": datetime,
     "all_day": bool,
     "location": str, "court": str, "judge": str,
+    # Modality (2026-07-24). conference_uri is KEPT even when modalite leaves
+    # visioconférence (round-trip); it is rendered as an <a href> so a
+    # http/https whitelist (is_safe_conference_uri) guards every write path.
+    "modalite": "présentiel" | "visioconférence" | "téléphonique",
+    "conference_uri": str,                # http/https only; "" unless video
     "notes": str,
     "reminder_minutes": int,              # 15|30|60|120|1440|2880|10080, default 1440 (24h)
     "status": "confirmée" | "à_confirmer" | "reportée" | "annulée" | "terminée",
@@ -1313,8 +1329,11 @@ Every model exports the standard CRUD set. Module-specific additions:
 ### `models/hearing.py`
 - `get_hearing_summary(dossier_id) -> dict`, `get_upcoming_hearings(days=30) -> list[dict]`
 - `list_hearings_in_range(date_from, date_to, limit=100) -> list[dict]` — server-side range + order on `start_datetime` (single-field index); the dashboard's bounded hearing windows
-- `hearing_to_vevent(hearing) -> str` — VEVENT with VALARM (TRIGGER -PT{reminder_minutes}M)
-- `vevent_to_hearing(ical_str) -> dict`
+- `forum_of(hearing_type) -> str` — « judiciaire »/« extrajudiciaire », derived from the type (default extrajudiciaire); the forum is never stored
+- `is_safe_conference_uri(uri) -> bool` — http/https scheme whitelist (empty allowed); called by `_validate` (form → error) AND `vevent_to_hearing` (DAV → drop the bad value). The only guard on the `<a href>` render (stored-XSS)
+- `_migrate_hearing(doc)` — read-time net on every raw-read path (get/list/window/range): folds removed hearing_type keys (procès→instruction, appel→audience, médiation→autre) and defaults `modalite`/`conference_uri` (get_hearing returns `to_dict()` with no `_default_doc` merge)
+- `hearing_to_vevent(hearing) -> str` — VEVENT with VALARM (TRIGGER -PT{reminder_minutes}M); emits `CONFERENCE;VALUE=URI;FEATURE=VIDEO` only for a video event with a link (icalendar 7.0.3 serializes it raw), `X-PALLAS-MODALITE`, and a « Modalité: … » DESCRIPTION line — never a second `CATEGORIES` value
+- `vevent_to_hearing(ical_str) -> dict` — **NON-EFFACEMENT (§4.3):** OMITS `conference_uri`/`modalite` keys when the property is absent from the incoming VEVENT (never `""`), so a client that drops them on a plain edit can't wipe the stored link (`update_hearing` merges `{**existing, **data}`); an incoming URI re-runs the scheme whitelist
 - `create_hearing`/`update_hearing`/`_validate` treat `dossier_id` as **optional** — a hearing may be a standalone agenda event with no dossier (like standalone tasks); `_validate` requires only a title + start datetime. All hearings, linked or standalone, live in the single shared `hearings` / `/dav/calendar/` collection, so standalone events sync to DavX5 with no extra DAV routing (contrast tasks, which split per-dossier). `hearing_to_vevent` omits the `Dossier:` DESCRIPTION line when there is no dossier.
 
 ### `models/task.py`
@@ -1807,6 +1826,10 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **A dossier-linked hearing lives in ONE collection — `dossier:{id}`, never `hearings`** (July 2026). `/dav/calendar/` now serves only hearings with an empty `dossier_id`, exactly as `/dav/tasks/` serves only dossier-less tasks; `dav/caldav.py` funnels every listing through `_standalone_hearings()` and every per-resource lookup through `_standalone_or_404()`. Serving the same hearing from both would make DavX5 import the court date twice, and a PUT/DELETE through the wrong collection bumps a CTag the other never watches. `routes/hearings.py._sync_name()` picks the collection for every web-UI write, and the update path tombstones the OLD collection + `remove_tombstone`s the NEW one when the dossier changes (the shape `routes/tasks.py` uses). **Closing a dossier drains its hearings too** — `_sync_dossier_dav_visibility` tombstones tasks, notes *and* hearings, or stale court dates sit on the phone forever once the collection stops being advertised.
 - **The per-dossier collection is mixed-component, so `calendar-query` MUST honor `comp-filter`.** `DOSSIER_COMPONENTS` (in `dav/dossier_collections.py`) is the single source of truth, imported by `dav/__init__.py` for the root Depth:1 listing — two hard-coded literals that disagree mean discovery promises a capability the collection then denies. `requested_components()` parses the RFC 4791 §9.7.1 nesting and **degrades to "return everything" on an absent or malformed filter, never to empty** (an empty collection reads to the client as "all deleted"). `sync-collection` is structurally component-blind (RFC 6578 defines no filter), so it reports every member and the client routes by component after fetching bodies — that is expected, not a bug.
 - **`hearing_to_vevent` emitted neither `DTSTAMP` nor `CREATED` until July 2026.** DTSTAMP is mandatory (RFC 5545 §3.6.1); the omission slid because the Android calendar provider tolerates it. `CREATED` is the same jtx Board `icalobject.created` NOT-NULL trap documented for VJOURNAL, and it becomes reachable the moment a VEVENT enters a per-dossier collection jtx also subscribes to. Likewise `create_hearing` **ignored a caller-supplied `id`/`vevent_uid`** and minted fresh ones, so a CalDAV PUT stored the event under an id the client never learns — every later GET of that href 404s while a duplicate syncs down. Both fixed; `tests/test_dav_hearings.py` pins them.
+- **The hearing `CONFERENCE` non-effacement rule (§4.3 of the vocabularies rework).** `vevent_to_hearing` must **OMIT** `conference_uri`/`modalite` from its returned dict when the incoming VEVENT lacks `CONFERENCE`/`X-PALLAS-MODALITE` — never return `""`. `update_hearing` merges `{**existing, **data}`, so a present-but-empty key overwrites while an absent key survives; a jtx/DavX5 client that drops these on a plain time edit would otherwise wipe the stored visioconférence link server-side. Pinned by `tests/test_hearing_vocab.py`. Verify on a real device after any change to that parser (edit the time in jtx, resync, `GET …/<id>.ics`, confirm `CONFERENCE` intact).
+- **`icalendar` 7.0.3 serializes `CONFERENCE` as a URI natively — do NOT "fix" it to a TEXT encoding.** `event.add("conference", uri, parameters={"VALUE":"URI","FEATURE":"VIDEO"})` emits the raw comma/semicolon a Teams/Meet link carries (`?a=1,2;b=3`), no `\,`/`\;` escaping. The `vUri`/`encode=0` workaround the vocabularies spec anticipated was for older 5.x/6.x where the property registry didn't know `CONFERENCE`; on the pinned 7.0.3 it is unnecessary and would double-handle. `tests/test_hearing_vocab.py::test_conference_serialized_as_uri_without_escaping` locks it. (A future `icalendar` bump is a Dependabot silent-trigger — re-run that test.)
+- **`hearing_type` uses strict equality / dict access only — `conférence` is a PREFIX of three keys.** The extrajudicial `conférence` key is a strict prefix of `conférence_de_gestion`/`_de_règlement`/`_préparatoire`; any `startswith("conférence")` or substring `in` test misclassifies. Every color dict and label lookup uses `.get(hearing_type, …)`; keep it that way.
+- **MCP category/type enums in `mcp/tools.py` are hand-kept LITERALS, not derived.** `_NOTE_CATEGORIES`/`_DOCUMENT_CATEGORIES` copy the model `VALID_CATEGORIES` by hand because `mcp/tools.py` is imported at startup and importing `models.*` runs `firestore.Client()` at module load (`models/__init__.py`). `tests/test_mcp_tools.py`/`test_document_vocab.py` pin the literals against the models — update the literal when the model changes, don't switch to an import.
 - **`form-action` covers a form's whole REDIRECT CHAIN, not just its action URL.** The OAuth consent POST is same-origin, but it answers `302` to `https://claude.ai/api/mcp/auth_callback`, and the browser refuses that hop under `form-action 'self'` — the authorization code never reaches Claude and the connector cannot be added. Chrome reports the *original* same-origin action URL in the console message, which reads like a nonsensical "self violates 'self'"; the redirect is the actual violation. `security._form_action_for` therefore widens `form-action` to `'self' https://claude.ai https://claude.com` **on `/oauth/authorize` only** (plus loopback outside production, mirroring `mcp.oauth.redirect_uri_allowed`), and `tests/test_security_headers.py` pins the source list against `mcp.ALLOWED_REDIRECT_URIS` so the two cannot drift. **This is exercised only when a connector is added or re-authorized**, so it stayed latent from the 2026-07-11 CSP enforcement flip until the first re-consent.
 - **An MCP note write MUST bump the dossier CTag — nothing else will.** `models/note.py` never bumps (it does not even import `dav/`); bumping lives in the caller (`routes/notes.py`, `dav/dossier_collections.py`). A tool path that calls `create_note`/`update_note` and stops leaves the note in Firestore and visible in the web UI while **DavX5 silently never re-syncs it** — `_handle_sync_collection` short-circuits when the client's token equals the current one. The bump is wrapped in its own `try/except` in `mcp/handlers._bump_note_ctag` and surfaced as `dav_synced` + a French warning: letting it raise would hit `endpoint._tools_call`'s blanket `except Exception`, reporting an already-committed write as a failure, and the model would retry into a **duplicate note** (notes carry no idempotency key and `create_note` mints a fresh UUID each call).
 - **A note written to a `fermé`/`archivé` dossier never reaches the phone.** The root Depth:1 PROPFIND only advertises `actif`/`en_attente` dossiers, and `_dossier_is_active` drains the collection for the rest. The write is allowed (the register is legitimate post-closure) but the payload returns `dav_synced: false` plus an explicit French warning — never silence.
@@ -2089,6 +2112,7 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
 - **Dedicated KYC / conflict-check routes** — model helpers exist (`update_kyc_status`, `link_kyc_document`) but are not yet exposed as discrete routes
 - **R2 migration** for Firebase Storage (cost optimization, low priority)
 - **Turnstile** migration from reCAPTCHA Enterprise (optional)
+- **`models/vocab.py` consolidation** — the controlled vocabularies (hearing type, note/document category, statuses…) are each mirrored across model + route + form + list + tab + MCP schema. The 2026-07-24 vocabularies rework, which touched three of them in ~15 files, is the strongest argument yet; a single source with derived label/color maps would remove the mirror-drift class of bug. Not yet done.
 
 ---
 
