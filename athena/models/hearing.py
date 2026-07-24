@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import icalendar
@@ -19,17 +20,42 @@ logger = logging.getLogger(__name__)
 # Firestore collection path
 COLLECTION = "hearings"
 
-# Valid enum values
-VALID_HEARING_TYPES = (
-    "audience",
+# Two-tier hearing-type vocabulary (2026-07-24). The forum (judiciaire /
+# extrajudiciaire) is DERIVED from the type, never stored (the two lists are
+# disjoint) — see forum_of(). Tuple ORDER is the <option> display order.
+VALID_HEARING_TYPES_JUDICIAIRE = (
     "conférence_de_gestion",
     "conférence_de_règlement",
+    "conférence_préparatoire",
+    "audience",
+    "instruction",
+)
+VALID_HEARING_TYPES_EXTRAJUDICIAIRE = (
+    "consultation",
+    "rencontre",
+    "conférence",
     "interrogatoire",
-    "médiation",
-    "procès",
-    "appel",
     "autre",
 )
+# Full domain — what _validate accepts.
+VALID_HEARING_TYPES = (
+    VALID_HEARING_TYPES_JUDICIAIRE + VALID_HEARING_TYPES_EXTRAJUDICIAIRE
+)
+
+VALID_FORUMS = ("judiciaire", "extrajudiciaire")
+FORUM_LABELS = {
+    "judiciaire": "Judiciaire",
+    "extrajudiciaire": "Extrajudiciaire",
+}
+
+# Event modality (2026-07-24).
+VALID_MODALITES = ("présentiel", "visioconférence", "téléphonique")
+MODALITE_LABELS = {
+    "présentiel": "Présentiel",
+    "visioconférence": "Visioconférence",
+    "téléphonique": "Téléphonique",
+}
+
 VALID_STATUSES = (
     "confirmée",
     "à_confirmer",
@@ -39,15 +65,19 @@ VALID_STATUSES = (
 )
 VALID_REMINDER_MINUTES = (15, 30, 60, 120, 1440, 2880, 10080)
 
-# Display labels (French)
+# Display labels (French). « conférence » (extrajudiciaire) is a strict PREFIX
+# of the three judicial « conférence_… » keys — only dict access / strict
+# equality anywhere, never startswith("conférence").
 HEARING_TYPE_LABELS = {
-    "audience": "Audience",
     "conférence_de_gestion": "Conférence de gestion",
-    "conférence_de_règlement": "Conférence de règlement",
+    "conférence_de_règlement": "Conférence de règlement à l'amiable",
+    "conférence_préparatoire": "Conférence préparatoire",
+    "audience": "Audience",
+    "instruction": "Instruction",
+    "consultation": "Consultation",
+    "rencontre": "Rencontre",
+    "conférence": "Conférence",
     "interrogatoire": "Interrogatoire",
-    "médiation": "Médiation",
-    "procès": "Procès",
-    "appel": "Appel",
     "autre": "Autre",
 }
 STATUS_LABELS = {
@@ -67,17 +97,51 @@ REMINDER_LABELS = {
     10080: "1 semaine",
 }
 
-# Hearing type → suggested color for calendar display
+# Hearing type → suggested color for calendar display. Bare tint names; the
+# templates' Tailwind class dicts must stay in sync. Every tint is already in
+# the compiled CSS artifact (no recompile). purple is a DELIBERATE duplicate
+# (conférence_préparatoire / conférence — distinct forums, nine tints for ten
+# types).
 HEARING_TYPE_COLORS = {
-    "audience": "indigo",
     "conférence_de_gestion": "blue",
     "conférence_de_règlement": "teal",
+    "conférence_préparatoire": "purple",
+    "audience": "indigo",
+    "instruction": "red",
+    "consultation": "green",
+    "rencontre": "orange",
+    "conférence": "purple",
     "interrogatoire": "amber",
-    "médiation": "green",
-    "procès": "red",
-    "appel": "purple",
     "autre": "gray",
 }
+
+
+# Type → forum (« extrajudiciaire » by default). The forum is fully derived
+# from the type; no Firestore field, no migration, no drift between two fields.
+_TYPE_FORUM = {
+    **{t: "judiciaire" for t in VALID_HEARING_TYPES_JUDICIAIRE},
+    **{t: "extrajudiciaire" for t in VALID_HEARING_TYPES_EXTRAJUDICIAIRE},
+}
+
+
+def forum_of(hearing_type: str) -> str:
+    """Forum of a hearing type, « extrajudiciaire » by default."""
+    return _TYPE_FORUM.get(hearing_type or "", "extrajudiciaire")
+
+
+def is_safe_conference_uri(uri: str) -> bool:
+    """True when *uri* is a syntactically valid http/https URL.
+
+    conference_uri is rendered as an ``<a href>`` in the hearing detail, so a
+    ``javascript:`` / ``data:`` / ``vbscript:`` scheme would be a stored-XSS
+    vector executed under the app origin. WHITELIST {http, https} only — never
+    a blacklist. Called by _validate (web form → error) and by
+    vevent_to_hearing (CalDAV PUT → the bad value is dropped, not propagated).
+    """
+    if not uri:
+        return True  # empty is valid (no conference link)
+    parsed = urlsplit(uri.strip())
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 # Quick-select courthouse locations
 QUICK_LOCATIONS = (
@@ -87,17 +151,48 @@ QUICK_LOCATIONS = (
     "Palais de justice de Longueuil, 1111 boulevard Jacques-Cartier Est",
 )
 
-# Suggested hearing titles per type
+# Suggested hearing titles per type (every live type MUST have a key — a
+# missing one breaks the form's Alpine suggestTitle block).
 HEARING_TITLE_SUGGESTIONS = {
-    "audience": "Audience sur requête",
     "conférence_de_gestion": "Conférence de gestion",
     "conférence_de_règlement": "Conférence de règlement à l'amiable",
+    "conférence_préparatoire": "Conférence préparatoire",
+    "audience": "Audience sur demande",
+    "instruction": "Instruction au fond",
+    "consultation": "Consultation",
+    "rencontre": "Rencontre",
+    "conférence": "Conférence",
     "interrogatoire": "Interrogatoire préalable",
-    "médiation": "Séance de médiation",
-    "procès": "Procès — instruction au mérite",
-    "appel": "Audience en appel",
     "autre": "",
 }
+
+# Removed hearing-type keys → live key, applied ON READ (_migrate_hearing),
+# BEFORE any validation. Mirrors models/dossier._MANDATE_TYPE_MIGRATION.
+_HEARING_TYPE_MIGRATION = {
+    # The Code names the audition au fond « instruction ».
+    "procès": "instruction",
+    # An appeal hearing is still an audience (before the Cour d'appel); also
+    # resolves the homograph with the « Appel » note category (phone call).
+    "appel": "audience",
+    # « Médiation » has no proper equivalent in the retained extrajudicial
+    # vocabulary — explicit fallback to « autre » (user reclassifies on next
+    # edit), like _MANDATE_TYPE_MIGRATION["mediation_arbitrage"].
+    "médiation": "autre",
+}
+
+
+def _migrate_hearing(doc: dict) -> dict:
+    """Read-time migration: fold removed hearing-type keys onto live ones and
+    default the modalité fields absent on legacy docs (get_hearing returns
+    to_dict() without a _default_doc merge). The permanent net (spec §7.1);
+    the one-shot script rewrites storage so jtx tiles refresh.
+    """
+    old = doc.get("hearing_type", "")
+    if old in _HEARING_TYPE_MIGRATION:
+        doc["hearing_type"] = _HEARING_TYPE_MIGRATION[old]
+    doc.setdefault("modalite", "présentiel")
+    doc.setdefault("conference_uri", "")
+    return doc
 
 
 def _default_doc() -> dict:
@@ -118,6 +213,11 @@ def _default_doc() -> dict:
         "notes": "",
         "reminder_minutes": 1440,
         "status": "à_confirmer",
+        # Modality (2026-07-24). conference_uri is kept even when modalite
+        # leaves visioconférence (round-trip); CONFERENCE is only emitted when
+        # modalite IS visioconférence and the URI is non-empty.
+        "modalite": "présentiel",
+        "conference_uri": "",
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -156,6 +256,16 @@ def _validate(data: dict) -> list[str]:
     ht = data.get("hearing_type", "")
     if ht and ht not in VALID_HEARING_TYPES:
         errors.append("Type d'audience invalide.")
+
+    modalite = data.get("modalite", "")
+    if modalite and modalite not in VALID_MODALITES:
+        errors.append("Modalité invalide.")
+
+    if not is_safe_conference_uri(data.get("conference_uri") or ""):
+        errors.append(
+            "L'hyperlien de visioconférence doit être une adresse "
+            "http:// ou https://."
+        )
 
     st = data.get("status", "")
     if st and st not in VALID_STATUSES:
@@ -232,7 +342,7 @@ def get_hearing(hearing_id: str) -> Optional[dict]:
     try:
         doc = db.collection(COLLECTION).document(hearing_id).get()
         if doc.exists:
-            return doc.to_dict()
+            return _migrate_hearing(doc.to_dict())
     except Exception as exc:
         logger.warning("get_hearing failed for %s: %s", sanitize_log_value(hearing_id), exc)
     return None
@@ -252,7 +362,7 @@ def list_hearings(
         if dossier_id:
             query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
 
-        results = [doc.to_dict() for doc in query.stream()]
+        results = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
 
         # Client-side filters (Firestore single-field index limitation)
         if status_filter and status_filter in VALID_STATUSES:
@@ -298,7 +408,7 @@ def list_hearings_in_range(
             .order_by("start_datetime")
             .limit(limit)
         )
-        hearings = [doc.to_dict() for doc in query.stream()]
+        hearings = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
         if len(hearings) >= limit:
             logger.warning(
                 "list_hearings_in_range: result window full (limit=%d) — "
@@ -348,7 +458,7 @@ def list_hearings_window(
                 .order_by("start_datetime")
                 .limit(limit)
             )
-        hearings = [doc.to_dict() for doc in query.stream()]
+        hearings = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
         if len(hearings) >= limit:
             logger.warning(
                 "list_hearings_window: result window full "
@@ -490,12 +600,29 @@ def hearing_to_vevent(hearing: dict) -> str:
     if hearing.get("hearing_type"):
         label = HEARING_TYPE_LABELS.get(hearing["hearing_type"], hearing["hearing_type"])
         desc_parts.append(f"Type: {label}")
+    # Modalité in DESCRIPTION only (visible in every client). NOT in
+    # CATEGORIES — that would add a second colored tile in jtx Board.
+    if hearing.get("modalite"):
+        desc_parts.append(
+            f"Modalité: {MODALITE_LABELS.get(hearing['modalite'], hearing['modalite'])}"
+        )
     if hearing.get("court"):
         desc_parts.append(f"Cour: {hearing['court']}")
     if hearing.get("judge"):
         desc_parts.append(f"Juge: {hearing['judge']}")
     if desc_parts:
         event.add("description", "\n".join(desc_parts))
+
+    # CONFERENCE (RFC 7986 §5.11) — only for a video event with a link.
+    # icalendar 7.0.3 knows CONFERENCE as a URI property and serializes it
+    # WITHOUT escaping (raw comma/semicolon preserved — Teams links carry
+    # them); do NOT rewrite this to a TEXT encoding.
+    if hearing.get("modalite") == "visioconférence" and hearing.get("conference_uri"):
+        event.add(
+            "conference",
+            hearing["conference_uri"],
+            parameters={"VALUE": "URI", "FEATURE": "VIDEO"},
+        )
 
     # STATUS mapping
     status_map = {
@@ -552,6 +679,10 @@ def hearing_to_vevent(hearing: dict) -> str:
         event.add("x-pallas-judge", hearing["judge"])
     if hearing.get("hearing_type"):
         event.add("x-pallas-hearing-type", hearing["hearing_type"])
+    # Modalité round-trip (invisible to the client; DESCRIPTION carries the
+    # human-readable line).
+    if hearing.get("modalite"):
+        event.add("x-pallas-modalite", hearing["modalite"])
 
     cal.add_component(event)
     return cal.to_ical().decode("utf-8")
@@ -647,6 +778,24 @@ def vevent_to_hearing(ical_str: str) -> dict:
             ht = str(hearing_type)
             if ht in VALID_HEARING_TYPES:
                 data["hearing_type"] = ht
+
+        # Modalité / CONFERENCE — NON-EFFACEMENT rule (spec §4.3): OMIT the
+        # key when the property is absent from the incoming VEVENT, never
+        # write "". A client (jtx/DavX5) that drops these on a plain time
+        # edit would otherwise wipe the stored conference link, because
+        # update_hearing merges {**existing, **data} — a present-but-empty
+        # key overwrites, an absent key survives.
+        if "X-PALLAS-MODALITE" in component:
+            m = str(component.get("x-pallas-modalite"))
+            if m in VALID_MODALITES:
+                data["modalite"] = m
+        if "CONFERENCE" in component:
+            uri = str(component.get("conference"))
+            # An incoming URI is client-supplied: re-run the scheme whitelist.
+            # A rejected URI is IGNORED (key omitted → stored value survives),
+            # never propagated.
+            if is_safe_conference_uri(uri):
+                data["conference_uri"] = uri
 
         # VALARM → reminder_minutes
         for sub in component.subcomponents:

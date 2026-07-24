@@ -30,13 +30,15 @@
 
   {# ── Header card ─────────────────────────────────────────────── #}
   {% set type_colors = {
-    'audience': 'bg-indigo-50 text-indigo-600',
     'conférence_de_gestion': 'bg-blue-50 text-blue-600',
     'conférence_de_règlement': 'bg-teal-50 text-teal-600',
+    'conférence_préparatoire': 'bg-purple-50 text-purple-600',
+    'audience': 'bg-indigo-50 text-indigo-600',
+    'instruction': 'bg-red-50 text-red-600',
+    'consultation': 'bg-green-50 text-green-600',
+    'rencontre': 'bg-orange-50 text-orange-600',
+    'conférence': 'bg-purple-50 text-purple-600',
     'interrogatoire': 'bg-amber-50 text-amber-600',
-    'médiation': 'bg-green-50 text-green-600',
-    'procès': 'bg-red-50 text-red-600',
-    'appel': 'bg-purple-50 text-purple-600',
     'autre': 'bg-gray-50 text-gray-600'
   } %}
   {% set status_colors = {
@@ -133,6 +135,24 @@
         <div class="flex justify-between">
           <dt class="text-gray-500">Juge</dt>
           <dd class="text-gray-900">{{ hearing.judge }}</dd>
+        </div>
+        {% endif %}
+        {% if hearing.modalite %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Modalité</dt>
+          <dd class="text-gray-900">{{ modalite_labels.get(hearing.modalite, hearing.modalite) }}</dd>
+        </div>
+        {% endif %}
+        {# Visioconférence link. The scheme is guaranteed http/https by
+           _validate on every write path (form + CalDAV PUT), so the href is
+           safe; rel="noopener noreferrer" + target=_blank as defense-in-depth. #}
+        {% if hearing.modalite == 'visioconférence' and hearing.conference_uri %}
+        <div>
+          <dt class="text-gray-500 mb-0.5">Visioconférence</dt>
+          <dd>
+            <a href="{{ hearing.conference_uri }}" target="_blank" rel="noopener noreferrer"
+               class="text-indigo-600 hover:text-indigo-700 break-all">{{ hearing.conference_uri }}</a>
+          </dd>
         </div>
         {% endif %}
         {% if not hearing.location and not hearing.court and not hearing.judge %}

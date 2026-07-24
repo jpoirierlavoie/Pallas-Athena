@@ -2,15 +2,30 @@
 {% block title %}{{ 'Modifier l\'audience' if hearing and hearing.id else 'Nouvelle audience' }} — Pallas Athena{% endblock %}
 
 {% block content %}
-<script nonce="{{ csp_nonce }}">const TITLE_SUGGESTIONS = {{ hearing_title_suggestions | tojson }};</script>
+<script nonce="{{ csp_nonce }}">
+  const TITLE_SUGGESTIONS = {{ hearing_title_suggestions | tojson }};
+  // First type of each forum — switching forum resets the type to it.
+  const FORUM_FIRST_TYPE = {
+    judiciaire: {{ valid_hearing_types_judiciaire[0] | tojson }},
+    extrajudiciaire: {{ valid_hearing_types_extrajudiciaire[0] | tojson }},
+  };
+</script>
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        dossierId: '{{ (hearing.dossier_id or '') if hearing else '' }}',
        dossierDisplay: {{ ((hearing.dossier_file_number or '') + (' — ' + hearing.dossier_title if hearing and hearing.dossier_title else '') if hearing else '') | jsattr }},
        searchOpen: false,
        hearingType: '{{ (hearing.hearing_type or 'audience') if hearing else 'audience' }}',
+       forum: '{{ forum_of(hearing.hearing_type) if hearing and hearing.hearing_type else 'judiciaire' }}',
+       modalite: '{{ (hearing.modalite or 'présentiel') if hearing else 'présentiel' }}',
        allDay: {{ 'true' if hearing and hearing.all_day else 'false' }},
        titleSuggestions: TITLE_SUGGESTIONS,
+       setForum(f) {
+         if (this.forum === f) return;
+         this.forum = f;
+         this.hearingType = FORUM_FIRST_TYPE[f];
+         this.suggestTitle();
+       },
        suggestTitle() {
          let el = this.$refs.titleInput;
          if (!el.value || el.value === this.titleSuggestions[this.oldType]) {
@@ -90,14 +105,46 @@
       </div>
     </div>
 
-    {# Hearing type #}
+    {# Forum (derived from the type, not stored) — segmented control filtering
+       the type list. #}
     <div>
-      <label for="hearing_type" class="block text-sm font-medium text-gray-700 mb-1">Type d'audience *</label>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Forum</label>
+      <div class="inline-flex rounded-xl border border-gray-300 p-0.5 bg-gray-50">
+        {% for f in ['judiciaire', 'extrajudiciaire'] %}
+        <button type="button"
+                @click="setForum('{{ f }}')"
+                :class="forum === '{{ f }}' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'"
+                class="px-4 py-1.5 text-sm font-medium rounded-lg transition-colors">
+          {{ forum_labels.get(f, f) }}
+        </button>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# Hearing type — two selects (one per forum); only the active one is
+       enabled, so exactly one submits (mirrors the dossiers forum picker). #}
+    <div>
+      <label for="hearing_type" class="block text-sm font-medium text-gray-700 mb-1">Type d'événement *</label>
       <select id="hearing_type" name="hearing_type"
+              x-show="forum === 'judiciaire'"
+              :disabled="forum !== 'judiciaire'"
               x-model="hearingType"
               @change="suggestTitle()"
               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-        {% for key in valid_hearing_types %}
+        {% for key in valid_hearing_types_judiciaire %}
+        <option value="{{ key }}" {{ 'selected' if hearing and hearing.hearing_type == key }}>
+          {{ hearing_type_labels.get(key, key) }}
+        </option>
+        {% endfor %}
+      </select>
+      <select name="hearing_type"
+              x-show="forum === 'extrajudiciaire'"
+              :disabled="forum !== 'extrajudiciaire'"
+              x-model="hearingType"
+              @change="suggestTitle()"
+              x-cloak
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for key in valid_hearing_types_extrajudiciaire %}
         <option value="{{ key }}" {{ 'selected' if hearing and hearing.hearing_type == key }}>
           {{ hearing_type_labels.get(key, key) }}
         </option>
@@ -170,6 +217,32 @@
       <input type="text" id="location" name="location" x-ref="locationInput"
              value="{{ hearing.location if hearing and hearing.location else '' }}"
              placeholder="Ex: Palais de justice de Montréal, salle 2.14"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+    </div>
+
+    {# Modalité #}
+    <div>
+      <label for="modalite" class="block text-sm font-medium text-gray-700 mb-1">Modalité</label>
+      <select id="modalite" name="modalite"
+              x-model="modalite"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        {% for key in valid_modalites %}
+        <option value="{{ key }}" {{ 'selected' if hearing and hearing.modalite == key else ('selected' if not hearing and key == 'présentiel') }}>
+          {{ modalite_labels.get(key, key) }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    {# Visioconférence link — shown only for a video event. The stored value is
+       kept even when the modality changes (round-trip); the server only emits
+       the CalDAV CONFERENCE property when modalité IS visioconférence. #}
+    <div x-show="modalite === 'visioconférence'"
+         {% if not hearing or hearing.modalite != 'visioconférence' %}style="display: none"{% endif %}>
+      <label for="conference_uri" class="block text-sm font-medium text-gray-700 mb-1">Hyperlien de visioconférence</label>
+      <input type="url" id="conference_uri" name="conference_uri"
+             value="{{ hearing.conference_uri if hearing and hearing.conference_uri else '' }}"
+             placeholder="https://…"
              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
     </div>
 

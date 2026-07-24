@@ -1,13 +1,17 @@
 {# HTMX fragment: Monthly calendar grid view #}
 
+{# Solid dots (-500). rencontre uses orange-400 — orange-500 isn't in the
+   compiled artifact and a 2px dot makes the shade imperceptible. #}
 {% set type_dot_colors = {
-  'audience': 'bg-indigo-500',
   'conférence_de_gestion': 'bg-blue-500',
   'conférence_de_règlement': 'bg-teal-500',
+  'conférence_préparatoire': 'bg-purple-500',
+  'audience': 'bg-indigo-500',
+  'instruction': 'bg-red-500',
+  'consultation': 'bg-green-500',
+  'rencontre': 'bg-orange-400',
+  'conférence': 'bg-purple-500',
   'interrogatoire': 'bg-amber-500',
-  'médiation': 'bg-green-500',
-  'procès': 'bg-red-500',
-  'appel': 'bg-purple-500',
   'autre': 'bg-gray-400'
 } %}
 

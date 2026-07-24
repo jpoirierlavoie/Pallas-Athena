@@ -19,17 +19,24 @@ from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
 from security import safe_internal_redirect
 from models.hearing import (
+    FORUM_LABELS,
     HEARING_TYPE_COLORS,
     HEARING_TYPE_LABELS,
     HEARING_TITLE_SUGGESTIONS,
+    MODALITE_LABELS,
     QUICK_LOCATIONS,
     REMINDER_LABELS,
     STATUS_LABELS,
+    VALID_FORUMS,
     VALID_HEARING_TYPES,
+    VALID_HEARING_TYPES_EXTRAJUDICIAIRE,
+    VALID_HEARING_TYPES_JUDICIAIRE,
+    VALID_MODALITES,
     VALID_REMINDER_MINUTES,
     VALID_STATUSES,
     create_hearing,
     delete_hearing,
+    forum_of,
     get_hearing,
     list_hearings,
     list_hearings_in_range,
@@ -102,6 +109,13 @@ def _template_context() -> dict:
         "status_labels": STATUS_LABELS,
         "reminder_labels": REMINDER_LABELS,
         "valid_hearing_types": VALID_HEARING_TYPES,
+        # Two-tier vocabulary: the form filters types by the derived forum.
+        "valid_hearing_types_judiciaire": VALID_HEARING_TYPES_JUDICIAIRE,
+        "valid_hearing_types_extrajudiciaire": VALID_HEARING_TYPES_EXTRAJUDICIAIRE,
+        "forum_labels": FORUM_LABELS,
+        "forum_of": forum_of,
+        "modalite_labels": MODALITE_LABELS,
+        "valid_modalites": VALID_MODALITES,
         "valid_statuses": VALID_STATUSES,
         "valid_reminder_minutes": VALID_REMINDER_MINUTES,
         "valid_courts": VALID_COURTS,
@@ -156,6 +170,8 @@ def _form_data() -> dict:
         "notes": f.get("notes", "").strip(),
         "reminder_minutes": _parse_int(f.get("reminder_minutes", ""), 1440),
         "status": f.get("status", "à_confirmer"),
+        "modalite": f.get("modalite", "présentiel"),
+        "conference_uri": f.get("conference_uri", "").strip(),
     }
 
 
