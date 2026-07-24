@@ -30,24 +30,43 @@ logger = logging.getLogger(__name__)
 COLLECTION = "notes"
 
 VALID_CATEGORIES = (
-    "appel",
     "rencontre",
+    "consultation",
+    "analyse",
     "recherche",
     "stratégie",
-    "correspondance",
-    "audience",
+    "vacation",
     "autre",
 )
 
 CATEGORY_LABELS = {
-    "appel": "Appel",
     "rencontre": "Rencontre",
+    "consultation": "Consultation",
+    "analyse": "Analyse",
     "recherche": "Recherche",
     "stratégie": "Stratégie",
-    "correspondance": "Correspondance",
-    "audience": "Audience",
+    "vacation": "Vacation",
     "autre": "Autre",
 }
+
+# Removed category keys → live key, applied ON READ (_migrate_category),
+# BEFORE validation. Mirrors models/dossier._MANDATE_TYPE_MIGRATION. NOTE
+# (spec §5): `appel` AND `correspondance` both fold to `autre` — the phone-
+# call / correspondence distinction is intentionally lost (user decision
+# 2026-07-24). `stratégie` is KEPT (the « Théorie de la cause » note uses it).
+_CATEGORY_MIGRATION = {
+    "audience": "vacation",   # a court appearance is a vacation
+    "appel": "autre",
+    "correspondance": "autre",
+}
+
+
+def _migrate_category(doc: dict) -> dict:
+    """Fold a removed category key onto its live target (read-time net)."""
+    old = doc.get("category", "")
+    if old in _CATEGORY_MIGRATION:
+        doc["category"] = _CATEGORY_MIGRATION[old]
+    return doc
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -168,7 +187,7 @@ def get_note(note_id: str) -> Optional[dict]:
     try:
         doc = db.collection(COLLECTION).document(note_id).get()
         if doc.exists:
-            return doc.to_dict()
+            return _migrate_category(doc.to_dict())
     except Exception as exc:
         logger.warning("get_note failed for %s: %s", sanitize_log_value(note_id), exc)
     return None
@@ -198,7 +217,7 @@ def list_notes(
         if dossier_id:
             query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
 
-        results = [doc.to_dict() for doc in query.stream()]
+        results = [_migrate_category(doc.to_dict()) for doc in query.stream()]
 
         if not include_analyse:
             results = [r for r in results if not r.get("is_analyse")]
@@ -269,7 +288,9 @@ def list_notes_recent(
             query = query.order_by(
                 "created_at", direction=firestore.Query.DESCENDING
             ).limit(limit)
-            results.extend(doc.to_dict() for doc in query.stream())
+            results.extend(
+                _migrate_category(doc.to_dict()) for doc in query.stream()
+            )
         if not include_analyse:
             results = [r for r in results if not r.get("is_analyse")]
         return results

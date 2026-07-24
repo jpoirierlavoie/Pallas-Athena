@@ -300,10 +300,12 @@ CONTENT_MAX_CHARS = 20_000
 NOTE_TITLE_MAX_CHARS = 200
 
 # Copied exactly from models.note.VALID_CATEGORIES (they are French).
-# tests/test_mcp_tools.py pins the two lists against each other.
+# tests/test_mcp_tools.py pins the two lists against each other. Kept as a
+# literal (not derived) because importing models.* runs firestore.Client()
+# at module load — see models/__init__.py.
 _NOTE_CATEGORIES = [
-    "appel", "rencontre", "recherche", "stratégie",
-    "correspondance", "audience", "autre",
+    "rencontre", "consultation", "analyse", "recherche",
+    "stratégie", "vacation", "autre",
 ]
 
 # Enum values copied exactly from the data model (they are French).
