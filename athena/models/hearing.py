@@ -601,11 +601,19 @@ def hearing_to_vevent(hearing: dict) -> str:
         label = HEARING_TYPE_LABELS.get(hearing["hearing_type"], hearing["hearing_type"])
         desc_parts.append(f"Type: {label}")
     # Modalité in DESCRIPTION only (visible in every client). NOT in
-    # CATEGORIES — that would add a second colored tile in jtx Board.
+    # CATEGORIES — that would add a second colored tile in a jtx-style client.
     if hearing.get("modalite"):
         desc_parts.append(
             f"Modalité: {MODALITE_LABELS.get(hearing['modalite'], hearing['modalite'])}"
         )
+    # The video link ALSO goes in DESCRIPTION, not only in the RFC 7986
+    # CONFERENCE property below: VEVENTs sync to the device CALENDAR (Google
+    # Calendar via DavX5), whose Android CalendarContract has no conferencing
+    # field — DavX5 drops CONFERENCE and the link never shows. Google Calendar
+    # renders a bare URL in the description as a tappable link (user report
+    # 2026-07-24, Pixel 10 Pro). CONFERENCE is kept for standards-aware clients.
+    if hearing.get("modalite") == "visioconférence" and hearing.get("conference_uri"):
+        desc_parts.append(f"Visioconférence: {hearing['conference_uri']}")
     if hearing.get("court"):
         desc_parts.append(f"Cour: {hearing['court']}")
     if hearing.get("judge"):
@@ -613,7 +621,9 @@ def hearing_to_vevent(hearing: dict) -> str:
     if desc_parts:
         event.add("description", "\n".join(desc_parts))
 
-    # CONFERENCE (RFC 7986 §5.11) — only for a video event with a link.
+    # CONFERENCE (RFC 7986 §5.11) — only for a video event with a link. Kept
+    # for standards-aware clients even though the Android calendar drops it
+    # (the DESCRIPTION line above is what actually shows on the device).
     # icalendar 7.0.3 knows CONFERENCE as a URI property and serializes it
     # WITHOUT escaping (raw comma/semicolon preserved — Teams links carry
     # them); do NOT rewrite this to a TEXT encoding.

@@ -100,6 +100,28 @@ def test_no_conference_when_not_video():
         assert "CONFERENCE" not in h.hearing_to_vevent(_video(modalite=m))
 
 
+def _description(ics: str) -> str:
+    import icalendar
+    for comp in icalendar.Calendar.from_ical(ics).walk():
+        if comp.name == "VEVENT":
+            return str(comp.get("description") or "")
+    return ""
+
+
+def test_video_uri_is_also_in_description():
+    """The RFC 7986 CONFERENCE property is dropped by the Android calendar
+    (Google Calendar via DavX5). The link must ALSO appear in DESCRIPTION —
+    the only place it renders on the device. The parsed (unescaped) value
+    carries the real URL; on the wire it is TEXT-escaped, which Google
+    Calendar unescapes and linkifies."""
+    desc = _description(h.hearing_to_vevent(_video()))
+    assert "Visioconférence: https://ex.com/j?a=1,2;b=3" in desc
+    # Not present for a non-video event.
+    assert "Visioconférence:" not in _description(
+        h.hearing_to_vevent(_video(modalite="présentiel"))
+    )
+
+
 def test_categories_stays_mono_valued():
     # A second CATEGORIES value would add a second colored jtx tile.
     assert h.hearing_to_vevent(_video()).count("CATEGORIES") == 1
