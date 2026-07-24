@@ -70,15 +70,20 @@ EXTENSION_MIME_TYPES = {
 # Max upload size: 25 MB
 MAX_FILE_SIZE = 25 * 1024 * 1024
 
-# Valid document categories
+# Valid document categories. NOTE (spec §6): « facture » and « déboursé »
+# here mean DOCUMENTS (the PDF of a received invoice, a disbursement receipt),
+# NOT the Honoraires / Dépenses records — a deliberate name overlap.
 VALID_CATEGORIES = (
     "procédure",
     "pièce",
-    "correspondance",
-    "preuve",
     "jugement",
-    "entente",
-    "note",
+    "correspondance",
+    "déboursé",
+    "facture",
+    "preuve",
+    "procès_verbal",
+    "transcription",
+    "mandat",
     "autre",
 )
 
@@ -86,13 +91,34 @@ VALID_CATEGORIES = (
 CATEGORY_LABELS = {
     "procédure": "Procédure",
     "pièce": "Pièce",
-    "correspondance": "Correspondance",
-    "preuve": "Preuve",
     "jugement": "Jugement",
-    "entente": "Entente",
-    "note": "Note",
+    "correspondance": "Correspondance",
+    "déboursé": "Déboursé",
+    "facture": "Facture",
+    "preuve": "Preuve",
+    "procès_verbal": "Procès-verbal",
+    "transcription": "Transcription",
+    "mandat": "Mandat",
     "autre": "Autre",
 }
+
+# Removed category keys → live key, applied ON READ (_migrate_category),
+# BEFORE validation. Mirrors models/dossier._MANDATE_TYPE_MIGRATION.
+_CATEGORY_MIGRATION = {
+    # A settlement is neither a judgment nor a mandate: explicit fallback.
+    "entente": "autre",
+    # « note » is redundant since notes became a distinct entity (late
+    # July 2026 split).
+    "note": "autre",
+}
+
+
+def _migrate_category(doc: dict) -> dict:
+    """Fold a removed document-category key onto its live target (read-time)."""
+    old = doc.get("category", "")
+    if old in _CATEGORY_MIGRATION:
+        doc["category"] = _CATEGORY_MIGRATION[old]
+    return doc
 
 # File type icons (category for template rendering)
 FILE_TYPE_ICONS = {
@@ -349,7 +375,7 @@ def get_document(document_id: str) -> Optional[dict]:
     try:
         doc = db.collection(COLLECTION).document(document_id).get()
         if doc.exists:
-            return doc.to_dict()
+            return _migrate_category(doc.to_dict())
     except Exception as exc:
         logger.warning("get_document failed for %s: %s", sanitize_log_value(document_id), exc)
     return None
@@ -383,7 +409,11 @@ def list_documents(
         if category and category in VALID_CATEGORIES:
             query = query.where(filter=FieldFilter("category", "==", category))
 
-        results = [doc.to_dict() for doc in query.stream()]
+        # Read-time category migration (display). The server-side category
+        # filter above still matches the STORED key, so a legacy « entente »
+        # doc surfaces under « autre » only after the one-shot script rewrites
+        # it — acceptable (same as the dossier migration net).
+        results = [_migrate_category(doc.to_dict()) for doc in query.stream()]
 
         # Client-side search (across all folders)
         if search:

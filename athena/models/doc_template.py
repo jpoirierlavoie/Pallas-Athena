@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 COLLECTION = "doc_templates"
 
+# A gabarit's category is a DISTINCT, deliberately-narrow taxonomy — it shares
+# only key names with models/document.VALID_CATEGORIES. Do NOT align it with
+# the (much larger) documents vocabulary (spec §11).
 VALID_CATEGORIES = ("procédure", "correspondance", "autre")
 CATEGORY_LABELS = {
     "procédure": "Procédure",

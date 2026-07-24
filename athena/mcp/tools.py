@@ -312,8 +312,9 @@ _NOTE_CATEGORIES = [
 _DOSSIER_STATUSES = ["actif", "en_attente", "fermé", "archivé"]
 _TASK_STATUSES = ["à_faire", "en_cours", "terminée", "annulée"]
 _DOCUMENT_CATEGORIES = [
-    "procédure", "pièce", "correspondance", "preuve",
-    "jugement", "entente", "note", "autre",
+    "procédure", "pièce", "jugement", "correspondance",
+    "déboursé", "facture", "preuve", "procès_verbal",
+    "transcription", "mandat", "autre",
 ]
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
