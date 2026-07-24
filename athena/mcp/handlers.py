@@ -109,14 +109,21 @@ def _hearing_row(h: dict) -> dict:
     all_day = bool(h.get("all_day"))
     start = _as_utc(h.get("start_datetime"))
     end = _as_utc(h.get("end_datetime"))
+    modalite = h.get("modalite", "présentiel")
     return {
         "id": h.get("id", ""),
         "title": h.get("title", ""),
         "hearing_type": h.get("hearing_type", ""),
+        # Forum is derived from the type (never stored) — expose it so a
+        # client need not carry the type→forum table.
+        "forum": hearing_model.forum_of(h.get("hearing_type", "")),
         "start": date_str(start) if all_day else iso_mtl(start),
         "end": date_str(end) if all_day else iso_mtl(end),
         "all_day": all_day,
         "location": h.get("location", ""),
+        "modalite": modalite,
+        "modalite_label": hearing_model.MODALITE_LABELS.get(modalite, modalite),
+        "conference_uri": h.get("conference_uri", ""),
         "court": h.get("court", ""),
         "judge": h.get("judge", ""),
         "status": h.get("status", ""),

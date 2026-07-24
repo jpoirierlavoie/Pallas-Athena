@@ -467,7 +467,9 @@ TOOLS: dict[str, dict] = {
             "List court hearings and agenda events between two dates (default: "
             "today to +60 days, max span 366 days), optionally scoped to one "
             "dossier. Includes cancelled hearings (status annulée) — check the "
-            "status field."
+            "status field. Each row carries the derived forum "
+            "(judiciaire/extrajudiciaire), the modalité, and a conference_uri "
+            "for video events."
         ),
         "input_schema": {
             "type": "object",
