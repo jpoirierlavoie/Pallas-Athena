@@ -321,6 +321,21 @@ def test_soumise_rejouee_aucun_second_accuse_ni_rehash(web, monkeypatch):
     assert not rehash.called
 
 
+def test_soumise_aucun_fichier_recu_aucun_accuse(web, monkeypatch):
+    # Tous les fichiers déclarés sont absents de GCS → recus vide. On ne doit
+    # PAS expédier un accusé attestant zéro fichier ; le marqueur poser_accuse
+    # est tout de même posé (converge la réconciliation).
+    bucket = _FakeBucket({
+        "submissions/inv1/b1/envelope.json": json.dumps(ENVELOPE).encode(),
+        # Aucun objet sous files/ → le fichier déclaré est « manquant ».
+    })
+    inv = _inv()
+    reponse, envoyer = _traiter(web, monkeypatch, bucket, inv)
+    assert reponse.status_code == 200
+    envoyer.assert_not_called()          # aucun accusé pour zéro fichier
+    assert inv["accuses"].get("b1") is True  # marqueur posé → pas de boucle
+
+
 def test_soumise_divergence_taille_consignee_non_bloquante(web, monkeypatch):
     bucket = _FakeBucket({
         "submissions/inv1/b1/envelope.json": json.dumps(ENVELOPE).encode(),

@@ -296,6 +296,21 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
     # NOT raised: the marker is already set, so a retry could never resend —
     # it would only burn queue attempts on no-ops.
     if pi.poser_accuse(inv_id, batch):
+        if not recus:
+            # Aucun fichier n'a atteint GCS (lot abandonné en cours, ou
+            # charge de finalisation falsifiée) : NE PAS expédier un accusé
+            # attestant « réception des fichiers suivants » avec zéro fichier
+            # (faux dans un contexte probatoire). Le marqueur poser_accuse a
+            # été posé à dessein — il fait converger la réconciliation (les
+            # objets ne réapparaîtront pas, le lot est clos côté client) au
+            # lieu de la laisser ré-enfiler ce lot vide toutes les 15 min. Le
+            # lot figure déjà en Réception (manifeste tout-« manquant » +
+            # soumission files_count=0), où le juriste peut relancer le client.
+            log_portail_event(
+                "accuse_envoye", "refused",
+                invitation_id=inv_id, batch=batch, reason="aucun_fichier_recu",
+            )
+            return
         invitation = pi.lire_invitation(inv_id) or {}
         # Sender (client) + judicial-file block resolved main-side; a lookup
         # failure degrades the block, never the accusé (best-effort).
