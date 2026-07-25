@@ -1,0 +1,32 @@
+{# Gabarit de base du PORTAIL CLIENT (spec L1) — coquille française minimale.
+   Actifs vendus (mêmes fichiers hachés que le service principal — le hash du
+   CSS fait partie du fan-out de recompilation Tailwind, voir CLAUDE.md).
+   Aucun htmx, aucun Alpine : tout le JS du portail est vanilla sous nonce,
+   ce qui permet une CSP sans 'unsafe-eval'. #}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}Portail sécurisé{% endblock %}</title>
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icons/favicon.ico') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.4a727cd9.css') }}">
+</head>
+<body class="min-h-screen bg-[#FAFAFA] text-gray-900 flex flex-col">
+  <main class="w-full max-w-lg mx-auto px-4 py-10 flex-1">
+    <div class="text-center mb-8">
+      <img src="{{ url_for('static', filename='owl.png') }}" alt=""
+           class="mx-auto mb-3 w-14 h-14 object-contain">
+      <h1 class="text-xl font-semibold text-gray-900 tracking-tight">Portail sécurisé</h1>
+      {% if firm_name %}<p class="mt-1 text-sm text-gray-500">{{ firm_name }}</p>{% endif %}
+    </div>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="py-6 text-center text-xs text-gray-400">
+    Transmission chiffrée — ce portail est réservé aux personnes invitées.
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

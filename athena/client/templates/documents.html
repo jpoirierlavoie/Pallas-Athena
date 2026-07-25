@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block title %}Transmission de documents — Portail sécurisé{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+  <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+    Transmission de documents
+  </h2>
+  <p class="text-lg font-semibold text-gray-900 mb-4">{{ invitation.display_label }}</p>
+
+  <div class="text-xs text-gray-500 space-y-1 mb-5">
+    <p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office,
+       texte, audio et vidéo. Taille maximale : {{ max_file_mb }} Mo par fichier.</p>
+    <p>Il vous reste {{ fichiers_restants }} fichier(s) pour cette transmission.</p>
+    <p class="text-amber-700 font-medium">Ce lien est strictement personnel et ne doit pas être transféré.</p>
+  </div>
+
+  <div id="zone-depot"
+       class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-gray-400">
+    <p class="text-sm text-gray-600">Glissez-déposez vos fichiers ici</p>
+    <p class="text-xs text-gray-400 mt-1">ou</p>
+    <span class="mt-2 inline-block text-sm font-medium text-indigo-600">choisissez des fichiers</span>
+    <input id="champ-fichiers" type="file" multiple class="hidden">
+  </div>
+
+  <ul id="liste-fichiers" class="mt-5 space-y-2"></ul>
+
+  <p id="erreur-globale" class="hidden mt-3 text-sm text-red-600"></p>
+
+  <button id="btn-soumettre" type="button" disabled
+          class="mt-6 w-full bg-gray-900 text-white rounded-lg px-4 py-2.5 text-sm font-medium
+                 hover:bg-gray-800 disabled:opacity-50">
+    Soumettre la transmission
+  </button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+<script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
+{% endif %}
+<script nonce="{{ csp_nonce }}">
+  'use strict';
+  // ── Téléverseur reprenable GCS, sans dépendance (spec §7.3) ────────────
+  // Les octets partent du navigateur DIRECTEMENT vers la session GCS
+  // (storage.googleapis.com, autorisée par connect-src) — jamais par le
+  // service. Tranches de CHUNK octets avec Content-Range ; 308 → relire
+  // l'en-tête Range ; reprise sur erreur réseau par PUT vide "bytes */total".
+  const CHUNK = {{ chunk_mib }} * 1024 * 1024;  // multiple de 256 Kio
+  const jetonCsrf = document.querySelector('meta[name="csrf-token"]').content;
+  const siteKey = {{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }};
+  if (siteKey && window.firebase) {
+    firebase.initializeApp({
+      apiKey: {{ config.FIREBASE_API_KEY|tojson }},
+      projectId: {{ config.FIREBASE_PROJECT_ID|tojson }},
+      appId: {{ config.FIREBASE_APP_ID|tojson }}
+    });
+    firebase.appCheck().activate(
+      new firebase.appCheck.ReCaptchaEnterpriseProvider(siteKey), true
+    );
+  }
+
+  const $ = function (id) { return document.getElementById(id); };
+  const fichiers = [];  // {file, name, size, content_type, objet, url, statut, pct, motif}
+
+  async function enTetesFetch() {
+    const entetes = { 'Content-Type': 'application/json', 'X-CSRFToken': jetonCsrf };
+    if (siteKey && window.firebase) {
+      try {
+        const t = await firebase.appCheck().getToken(false);
+        entetes['X-Firebase-AppCheck'] = t.token;
+      } catch (e) { /* le serveur tranchera */ }
+    }
+    return entetes;
+  }
+
+  function tailleLisible(octets) {
+    if (octets >= 1024 * 1024) { return (octets / (1024 * 1024)).toFixed(1) + ' Mo'; }
+    if (octets >= 1024) { return Math.round(octets / 1024) + ' ko'; }
+    return octets + ' o';
+  }
+
+  // Rendu 100 % DOM (jamais innerHTML avec un nom de fichier — XSS) ; la
+  // barre de progression est réglée via element.style (CSSOM, permis par la
+  // CSP, contrairement à un attribut style inline).
+  function rendre() {
+    const liste = $('liste-fichiers');
+    liste.textContent = '';
+    fichiers.forEach(function (f) {
+      const li = document.createElement('li');
+      li.className = 'border border-gray-200 rounded-lg px-3 py-2';
+
+      const ligne = document.createElement('div');
+      ligne.className = 'flex items-center justify-between gap-2';
+      const nom = document.createElement('span');
+      nom.className = 'text-sm text-gray-800 truncate';
+      nom.textContent = f.name;
+      const etat = document.createElement('span');
+      etat.className = 'text-xs whitespace-nowrap ' + (
+        f.statut === 'reçu' ? 'text-green-700' :
+        f.statut === 'rejeté' ? 'text-red-600' : 'text-gray-500');
+      etat.textContent =
+        f.statut === 'en cours' ? f.pct + ' %' :
+        f.statut === 'rejeté' ? ('rejeté : ' + (f.motif || '')) :
+        f.statut + ' · ' + tailleLisible(f.size);
+      ligne.appendChild(nom);
+      ligne.appendChild(etat);
+      li.appendChild(ligne);
+
+      if (f.statut === 'en cours') {
+        const fond = document.createElement('div');
+        fond.className = 'mt-2 h-1.5 bg-gray-200 rounded-full';
+        const barre = document.createElement('div');
+        barre.className = 'h-1.5 bg-indigo-600 rounded-full';
+        barre.style.width = f.pct + '%';
+        fond.appendChild(barre);
+        li.appendChild(fond);
+      }
+      liste.appendChild(li);
+    });
+
+    const recus = fichiers.filter(function (f) { return f.statut === 'reçu'; }).length;
+    const actifs = fichiers.some(function (f) {
+      return f.statut === 'en file' || f.statut === 'en cours';
+    });
+    $('btn-soumettre').disabled = !(recus > 0 && !actifs);
+  }
+
+  function putTranche(f, debut) {
+    return new Promise(function (resolve, reject) {
+      const fin = Math.min(debut + CHUNK, f.size);
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', f.url);
+      xhr.setRequestHeader('Content-Range',
+        'bytes ' + debut + '-' + (fin - 1) + '/' + f.size);
+      xhr.upload.onprogress = function (e) {
+        f.pct = Math.min(99, Math.round(((debut + e.loaded) / f.size) * 100));
+        rendre();
+      };
+      xhr.onload = function () { resolve(xhr); };
+      xhr.onerror = function () { reject(new Error('réseau')); };
+      xhr.send(f.file.slice(debut, fin));
+    });
+  }
+
+  function interrogerDecalage(f) {
+    // Reprise : PUT vide "bytes */total" → 308 + en-tête Range = déjà reçu.
+    return new Promise(function (resolve) {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', f.url);
+      xhr.setRequestHeader('Content-Range', 'bytes */' + f.size);
+      xhr.onload = function () {
+        if (xhr.status === 308) {
+          const range = xhr.getResponseHeader('Range');
+          resolve(range ? parseInt(range.split('-')[1], 10) + 1 : 0);
+        } else if (xhr.status === 200 || xhr.status === 201) {
+          resolve(f.size);
+        } else { resolve(0); }
+      };
+      xhr.onerror = function () { resolve(0); };
+      xhr.send();
+    });
+  }
+
+  async function televerser(f) {
+    let debut = 0, tentatives = 0;
+    while (true) {
+      let xhr = null;
+      try { xhr = await putTranche(f, debut); } catch (e) { /* réseau */ }
+      if (xhr && (xhr.status === 200 || xhr.status === 201)) { return; }
+      if (xhr && xhr.status === 308) {
+        const range = xhr.getResponseHeader('Range');
+        debut = range ? parseInt(range.split('-')[1], 10) + 1 : debut + CHUNK;
+        tentatives = 0;
+        continue;
+      }
+      tentatives += 1;
+      if (tentatives > 3) { throw new Error('interrompu'); }
+      await new Promise(function (r) { setTimeout(r, 1000 * Math.pow(2, tentatives)); });
+      debut = await interrogerDecalage(f);
+      if (debut >= f.size && f.size > 0) { return; }
+    }
+  }
+
+  async function demarrer(f) {
+    try {
+      const rep = await fetch('/api/televersement', {
+        method: 'POST',
+        headers: await enTetesFetch(),
+        body: JSON.stringify({ name: f.name, size: f.size, content_type: f.content_type })
+      });
+      const donnees = await rep.json().catch(function () { return {}; });
+      if (!rep.ok) {
+        f.statut = 'rejeté';
+        f.motif = donnees.erreur || 'refusé';
+        rendre();
+        return;
+      }
+      f.objet = donnees.objet;
+      f.url = donnees.url;
+      f.statut = 'en cours';
+      rendre();
+      await televerser(f);
+      f.statut = 'reçu';
+      f.pct = 100;
+    } catch (e) {
+      f.statut = 'rejeté';
+      f.motif = 'erreur réseau — réessayez';
+    }
+    rendre();
+  }
+
+  function ajouter(listeFichiers) {
+    Array.prototype.forEach.call(listeFichiers, function (fichier) {
+      const f = {
+        file: fichier,
+        name: fichier.name,
+        size: fichier.size,
+        content_type: fichier.type || 'application/octet-stream',
+        statut: 'en file', pct: 0
+      };
+      fichiers.push(f);
+      demarrer(f);
+    });
+    rendre();
+  }
+
+  const zone = $('zone-depot');
+  zone.addEventListener('click', function () { $('champ-fichiers').click(); });
+  zone.addEventListener('dragover', function (e) {
+    e.preventDefault();
+    zone.classList.add('border-gray-400');
+  });
+  zone.addEventListener('dragleave', function () {
+    zone.classList.remove('border-gray-400');
+  });
+  zone.addEventListener('drop', function (e) {
+    e.preventDefault();
+    zone.classList.remove('border-gray-400');
+    if (e.dataTransfer && e.dataTransfer.files) { ajouter(e.dataTransfer.files); }
+  });
+  $('champ-fichiers').addEventListener('change', function (e) {
+    ajouter(e.target.files);
+    e.target.value = '';
+  });
+
+  $('btn-soumettre').addEventListener('click', async function () {
+    const erreur = $('erreur-globale');
+    erreur.classList.add('hidden');
+    $('btn-soumettre').disabled = true;
+    const recus = fichiers.filter(function (f) { return f.statut === 'reçu'; })
+      .map(function (f) {
+        return { objet: f.objet, name: f.name, size: f.size, content_type: f.content_type };
+      });
+    try {
+      const rep = await fetch('/api/finaliser', {
+        method: 'POST',
+        headers: await enTetesFetch(),
+        body: JSON.stringify({ files: recus })
+      });
+      const donnees = await rep.json().catch(function () { return {}; });
+      if (rep.ok && donnees.suivant) { window.location = donnees.suivant; return; }
+      erreur.textContent = donnees.erreur || 'Erreur lors de la soumission. Réessayez.';
+      erreur.classList.remove('hidden');
+    } catch (e) {
+      erreur.textContent = 'Erreur réseau. Réessayez.';
+      erreur.classList.remove('hidden');
+    }
+    rendre();
+  });
+
+  window.addEventListener('beforeunload', function (e) {
+    if (fichiers.some(function (f) { return f.statut === 'en cours'; })) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+</script>
+{% endblock %}

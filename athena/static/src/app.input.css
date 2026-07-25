@@ -18,6 +18,9 @@
 @source "../../templates";
 @source "../../routes";
 @source "../../models";
+/* Portail client (spec L1) — the portal's templates live outside the main
+   template tree; without this line their classes silently never compile. */
+@source "../../client/templates";
 
 /* ── Hand-written styles formerly inlined in base.html ─────────────────── */
 

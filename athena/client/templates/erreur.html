@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Erreur — Portail sécurisé{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 text-center">
+  <h2 class="text-lg font-semibold text-gray-900">Une erreur est survenue</h2>
+  <p class="mt-2 text-sm text-gray-600">{{ message or "Réessayez plus tard." }}</p>
+  <a href="{{ url_for('portail.entree') }}"
+     class="mt-5 inline-block text-sm font-medium text-indigo-600 hover:text-indigo-500">
+    Retour à l'entrée
+  </a>
+</div>
+{% endblock %}

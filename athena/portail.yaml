@@ -1,0 +1,68 @@
+# Service « portail » — portail client (spec L1). Déployé DEPUIS athena/
+# (même répertoire source que le service principal ; le code du paquet
+# client/ n'enregistre que le blueprint du portail — voir client/wsgi.py).
+# gcloud app deploy portail.yaml — mais en pratique via cloudbuild.yaml,
+# APRÈS le service default et AVANT dispatch.yaml.
+service: portail
+runtime: python313
+# F1 : le portail ne fait que du JSON léger — les octets des fichiers vont
+# du navigateur DIRECTEMENT à la session GCS reprenable, jamais par ici.
+instance_class: F1
+automatic_scaling:
+  min_instances: 0
+  max_instances: 2
+  target_cpu_utilization: 0.65
+
+# Compte de service à moindre privilège (spec §3) : objectCreator sur le
+# bucket de quarantaine, datastore.viewer conditionné à la base « portail »,
+# cloudtasks.enqueuer sur la file, logWriter/cloudtrace.agent, accessor sur
+# portail-secret-key + firebase-api-key. RIEN d'autre — pas de Graph, pas
+# d'écriture Firestore, pas de lecture du bucket.
+service_account: portail-svc@athena-pallas.iam.gserviceaccount.com
+
+entrypoint: gunicorn -b :$PORT --workers 2 --threads 4 --timeout 60 --graceful-timeout 30 client.wsgi:app
+
+env_variables:
+  ENV: "production"
+  FIREBASE_PROJECT_ID: "athena-pallas"
+  FIREBASE_APP_ID: "1:1073430388324:web:6d60d0d67d74ce1b730971"
+  FIRM_NAME: "Me Jason Poirier Lavoie"
+  RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
+  PIP_REQUIRE_HASHES: "1"
+  PIP_NO_DEPS: "1"
+  # PORTAIL_SECRET_KEY et FIREBASE_API_KEY viennent de Secret Manager à
+  # l'exécution (client/config.py — résolution paresseuse). AUCUNE variable
+  # GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler Graph).
+
+handlers:
+  - url: /favicon.ico
+    static_files: static/icons/favicon.ico
+    upload: static/icons/favicon.ico
+    mime_type: image/x-icon
+
+  - url: /robots.txt
+    static_files: robots.txt
+    upload: robots.txt
+    mime_type: text/plain
+
+  # Actifs vendus (mêmes fichiers hachés que le service principal) —
+  # immuables un an ; un actif modifié DOIT changer de nom de fichier.
+  - url: /static/vendor
+    static_dir: static/vendor
+    secure: always
+    http_headers:
+      Cache-Control: "public, max-age=31536000, immutable"
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+
+  - url: /static
+    static_dir: static
+    secure: always
+    http_headers:
+      Cache-Control: "public, max-age=86400"
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+
+  - url: /.*
+    script: auto
+    secure: always
