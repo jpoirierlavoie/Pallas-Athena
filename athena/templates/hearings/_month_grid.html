@@ -78,6 +78,9 @@
          class="flex items-center gap-2 p-2 bg-white rounded-lg border border-gray-200 hover:border-gray-300 text-sm">
         <span class="w-2 h-2 rounded-full flex-shrink-0 {{ type_dot_colors.get(h.hearing_type, 'bg-gray-400') }}"></span>
         <span class="font-medium text-gray-900 truncate flex-1">{{ h.title }}</span>
+        {% if h.confirmation == "à_confirmer" %}
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 flex-shrink-0">À confirmer</span>
+        {% endif %}
         {% if not h.all_day and h.start_datetime and h.start_datetime.strftime is defined %}
         <span class="text-xs text-gray-500 flex-shrink-0">{{ (h.start_datetime|to_mtl).strftime('%H:%M') }}</span>
         {% endif %}

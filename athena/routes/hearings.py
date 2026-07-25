@@ -212,6 +212,16 @@ def dossier_search() -> str:
 # ── List (Calendar view) ─────────────────────────────────────────────────
 
 
+def _keep_calendar(hearing: dict) -> bool:
+    """True when a hearing belongs in the Calendar view (Bookings, L2).
+
+    The list functions already drop « refusée »; the Calendar additionally
+    hides « annulée_client » (a client-cancelled reservation), keeping only
+    confirmed events and « à_confirmer » imports (which render with a badge).
+    """
+    return (hearing.get("confirmation") or "") in ("", "à_confirmer")
+
+
 def _matches_filters(
     hearing: dict, hearing_type_filter: str, status_filter: str
 ) -> bool:
@@ -267,10 +277,18 @@ def hearing_list() -> str:
         # The month range is pushed server-side (bounded read) instead of
         # streaming the whole collection; type/status filters then apply
         # in Python over the (small) month window.
+        #
+        # Bookings (L2): the Calendar shows confirmed + « à_confirmer » (badged)
+        # but NOT annulée_client (decision D-L2-2). include_unconfirmed=True
+        # surfaces them; _keep_calendar drops annulée_client. DavX5/MCP stay on
+        # the default (confirmed only), so a pending reservation never syncs.
         hearings = [
             h
-            for h in list_hearings_in_range(month_start, month_end)
+            for h in list_hearings_in_range(
+                month_start, month_end, include_unconfirmed=True
+            )
             if _matches_filters(h, hearing_type_filter, status_filter)
+            and _keep_calendar(h)
         ]
 
         # Build calendar grid data
@@ -338,10 +356,15 @@ def hearing_list() -> str:
         # the past-window query when nothing will display it saves the reads.
         filters_active = bool(hearing_type_filter or status_filter)
 
+        # Bookings (L2): include « à_confirmer » (badged) in the Calendar, but
+        # drop annulée_client via _keep_calendar (D-L2-2). See the month view.
         upcoming_window = [
             h
-            for h in list_hearings_window(now, direction="upcoming")
+            for h in list_hearings_window(
+                now, direction="upcoming", include_unconfirmed=True
+            )
             if _matches_filters(h, hearing_type_filter, status_filter)
+            and _keep_calendar(h)
         ]
 
         # Cancelled future hearings belong with « Passées » (existing UX).
@@ -355,8 +378,11 @@ def hearing_list() -> str:
                 h for h in upcoming_window if h.get("status") == "annulée"
             ] + [
                 h
-                for h in list_hearings_window(now, direction="past")
+                for h in list_hearings_window(
+                    now, direction="past", include_unconfirmed=True
+                )
                 if _matches_filters(h, hearing_type_filter, status_filter)
+                and _keep_calendar(h)
             ]
             # Past: reverse chronological
             past.sort(

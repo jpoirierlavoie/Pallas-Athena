@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from firebase_admin import storage
@@ -30,6 +31,13 @@ from flask import (
 
 from auth import login_required
 from client.config import PORTAIL_BUCKET
+from config import Config
+from dav.sync import (
+    bump_ctag,
+    collection_for,
+    record_tombstone,
+    remove_tombstone,
+)
 from models import portail_invitation as pi
 from models.document import (
     ALLOWED_EXTENSIONS,
@@ -40,6 +48,7 @@ from models.document import (
 )
 from models.dossier import get_dossier, list_dossiers
 from models.folder import get_or_create_folder
+from models.hearing import get_hearing, list_hearings, update_hearing
 from models.partie import (
     ROLE_LABELS,
     display_name,
@@ -48,7 +57,9 @@ from models.partie import (
 )
 from security import sanitize
 from services import portail_emission as emission
-from utils.logging_setup import log_portail_event
+from utils import graph_calendrier
+from utils.graph import GraphError, GraphNotConfigured
+from utils.logging_setup import log_bookings_event, log_portail_event
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +75,39 @@ _BADGE_TTL_SECONDS = 60
 _badge_cache: dict = {"at": 0.0, "n": None}
 
 
+def _compter_rdv() -> int:
+    """Rendez-vous « à_confirmer » (Bookings L2) awaiting review.
+
+    A bounded stream over the hearings collection (single-practice scale),
+    behind the same 60 s badge cache. Fail-open: 0 on any error.
+    """
+    try:
+        return sum(
+            1 for h in list_hearings(include_unconfirmed=True)
+            if h.get("confirmation") == "à_confirmer"
+        )
+    except Exception:
+        logger.exception("reception: rdv count failed")
+        return 0
+
+
 def compteur_reception() -> Optional[int]:
-    """Invitations « soumise » en attente de revue — pour la pastille de nav.
+    """Transmissions « soumise » + rendez-vous « à_confirmer » en attente de
+    revue — pour la pastille de nav.
 
     Un COUNT Firestore par page serait payé sur CHAQUE rendu de gabarit ;
-    cache processus de 60 s. Fail-open : None (base absente, IAM, panne) →
-    aucune pastille, jamais une page cassée.
+    cache processus de 60 s. Fail-open : la base « portail » absente rend
+    ``compter_soumises`` None — on affiche quand même les RDV le cas échéant,
+    et None (les deux indisponibles) → aucune pastille, jamais une page cassée.
     """
     now = time.monotonic()
     if now - _badge_cache["at"] > _BADGE_TTL_SECONDS:
-        _badge_cache["n"] = pi.compter_soumises()
+        soumises = pi.compter_soumises()
+        rdv = _compter_rdv()
+        if soumises is None and rdv == 0:
+            _badge_cache["n"] = None
+        else:
+            _badge_cache["n"] = (soumises or 0) + rdv
         _badge_cache["at"] = now
     return _badge_cache["n"]
 
@@ -119,13 +153,68 @@ def _versable(entree: dict) -> bool:
     )
 
 
-def _rediriger(message: str = "", erreur: str = ""):
+def _rediriger(message: str = "", erreur: str = "", onglet: str = ""):
     args = {}
+    if onglet:
+        args["onglet"] = onglet
     if message:
         args["message"] = message
     if erreur:
         args["erreur"] = erreur
     return redirect(url_for("reception.index", **args))
+
+
+# ── Onglet « Rendez-vous » (Bookings L2 §5) ──────────────────────────────
+
+
+def _index_parties_par_courriel() -> dict:
+    """Index parties by their (lowercased) email / email_work — one bounded
+    read (single-practice scale, no index), for the §5.1 partie linkage."""
+    idx: dict = {}
+    for p in list_parties():
+        for key in ("email", "email_work"):
+            v = (p.get(key) or "").strip().lower()
+            if v:
+                idx.setdefault(v, p)
+    return idx
+
+
+def _lier_parties(hearings: list[dict]) -> None:
+    """Attach the recognized partie (exact courriel match) to each rendez-vous
+    as ``_partie_id`` / ``_partie_nom`` — precomputed so the template stays
+    logic-free."""
+    if not hearings:
+        return
+    idx = _index_parties_par_courriel()
+    for h in hearings:
+        courriel = (h.get("client_email") or "").strip().lower()
+        p = idx.get(courriel) if courriel else None
+        h["_partie_id"] = p["id"] if p else ""
+        h["_partie_nom"] = display_name(p) if p else ""
+
+
+def _contexte_rdv() -> dict:
+    """Build the « Rendez-vous » tab context: à_confirmer + annulée_client
+    cards, plus confirmed events carrying an unseen divergence."""
+    try:
+        tous = list_hearings(include_unconfirmed=True)
+    except Exception:
+        logger.exception("reception: hearings read failed")
+        return {"rdvs": [], "divergences": [], "erreur_rdv": True}
+    bookings = [h for h in tous if h.get("source") == "bookings"]
+    rdvs = [
+        h for h in bookings
+        if h.get("confirmation") in ("à_confirmer", "annulée_client")
+    ]
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    rdvs.sort(key=lambda h: h.get("start_datetime") or floor)
+    divergences = [
+        h for h in bookings
+        if (h.get("bookings_divergence") or {}).get("motif")
+        and not (h.get("bookings_divergence") or {}).get("vu")
+    ]
+    _lier_parties(rdvs + divergences)
+    return {"rdvs": rdvs, "divergences": divergences, "erreur_rdv": False}
 
 
 # ── Page principale ──────────────────────────────────────────────────────
@@ -144,9 +233,15 @@ def index():
         "lots": [],
         "actives": [],
         "traitees": [],
+        "rdvs": [],
+        "divergences": [],
+        "erreur_rdv": False,
+        "feature_intake": Config.FEATURE_INTAKE,
         "erreur_bucket": False,
         "est_expiree": pi.est_expiree,
     }
+    if onglet == "rdv":
+        contexte.update(_contexte_rdv())
     if onglet == "documents":
         toutes = pi.lister_invitations(type_="documents")
         contexte["actives"] = [
@@ -569,3 +664,155 @@ def traiter_lot(inv_id: str, batch: str):
         ))
     return _rediriger(message="Lot traité — fichiers de quarantaine purgés, "
                               "enveloppe et manifeste archivés.")
+
+
+# ── Actions « Rendez-vous » (Bookings L2 §5.2-5.4) ───────────────────────
+
+
+def _rdv_ou_erreur(hid: str) -> Optional[dict]:
+    """Fetch a Bookings hearing or None. get_hearing does NOT filter on
+    confirmation, so an à_confirmer/annulée_client import is reachable."""
+    hearing = get_hearing(hid)
+    if not hearing or hearing.get("source") != "bookings":
+        return None
+    return hearing
+
+
+@reception_bp.post("/rdv/<hid>/confirmer")
+@login_required
+def rdv_confirmer(hid: str):
+    hearing = _rdv_ou_erreur(hid)
+    if hearing is None:
+        return _rediriger(erreur="Rendez-vous introuvable.", onglet="rdv")
+
+    data = {"confirmation": ""}
+    partie_liee = False
+    if request.form.get("lier") == "on":
+        pid = request.form.get("partie_id", "").strip()
+        if pid and get_partie(pid):
+            data["partie_id"] = pid
+            partie_liee = True
+
+    _updated, errors = update_hearing(hid, data)
+    if errors:
+        return _rediriger(erreur=" ".join(errors), onglet="rdv")
+
+    # The event is now confirmed (confirmation="") → it enters DAV/Calendar.
+    # dossier_id is "" for a Bookings import → the « Général » collection. Drop
+    # any stale tombstone (mirrors the create paths) so one sync REPORT never
+    # reports the resource as both live and deleted.
+    sync_name = collection_for(hearing.get("dossier_id"))
+    remove_tombstone(sync_name, hid)
+    bump_ctag(sync_name)
+    log_bookings_event("reception_rdv_confirme", hearing_id=hid,
+                       partie_liee=partie_liee)
+    # Intake (L3): the « envoyer le formulaire d'ouverture » checkbox is inert
+    # in L2 — FEATURE_INTAKE is False, and no invitation is ever emitted here.
+    return _rediriger(
+        message="Rendez-vous confirmé — il apparaît au calendrier et se "
+                "synchronise avec vos appareils.",
+        onglet="rdv",
+    )
+
+
+@reception_bp.post("/rdv/<hid>/refuser")
+@login_required
+def rdv_refuser(hid: str):
+    hearing = _rdv_ou_erreur(hid)
+    if hearing is None:
+        return _rediriger(erreur="Rendez-vous introuvable.", onglet="rdv")
+
+    # Decision 2026-07-25 (Calendars.ReadWrite): a refusal CANCELS the Outlook
+    # meeting (notifying the client via Bookings) — but only for a still-active
+    # à_confirmer import. An annulée_client one is already cancelled by the
+    # client; do not re-cancel (Graph would 404). Best-effort: a Graph failure
+    # never blocks the refusal — the juriste is told to cancel manually.
+    graph_annule = False
+    avertissement = ""
+    gid = hearing.get("graph_event_id")
+    if (
+        hearing.get("confirmation") == "à_confirmer"
+        and gid and Config.bookings_configured()
+    ):
+        try:
+            graph_calendrier.annuler_reservation(
+                gid, "Rendez-vous refusé par le juriste."
+            )
+            graph_annule = True
+        except (GraphError, GraphNotConfigured):
+            logger.exception("reception: graph cancel failed")
+            avertissement = (
+                "Rendez-vous refusé, mais la réunion n'a PAS pu être annulée "
+                "côté Outlook — annulez-la manuellement pour prévenir le client."
+            )
+
+    _updated, errors = update_hearing(hid, {"confirmation": "refusée"})
+    if errors:
+        return _rediriger(erreur=" ".join(errors), onglet="rdv")
+    # No CTag bump — a refused/pending import was never in DAV.
+    log_bookings_event(
+        "reception_rdv_refuse", "refused" if avertissement else "success",
+        hearing_id=hid, graph_annule=graph_annule,
+        reason="graph_error" if avertissement else None,
+    )
+    if avertissement:
+        return _rediriger(erreur=avertissement, onglet="rdv")
+    message = (
+        "Rendez-vous refusé — la réunion Outlook a été annulée et le client "
+        "notifié." if graph_annule else "Rendez-vous refusé."
+    )
+    return _rediriger(message=message, onglet="rdv")
+
+
+@reception_bp.post("/rdv/<hid>/divergence/<action>")
+@login_required
+def rdv_divergence(hid: str, action: str):
+    if action not in ("appliquer", "ignorer", "annuler", "conserver"):
+        return _rediriger(erreur="Action inconnue.", onglet="rdv")
+    hearing = _rdv_ou_erreur(hid)
+    if hearing is None:
+        return _rediriger(erreur="Rendez-vous introuvable.", onglet="rdv")
+    div = hearing.get("bookings_divergence") or {}
+    if not div.get("motif"):
+        return _rediriger(erreur="Aucune divergence à traiter.", onglet="rdv")
+
+    data: dict = {}
+    bump = False
+    tombstone = False
+    if action == "appliquer" and div.get("motif") == "modifié_côté_client":
+        # Apply the client's new slot from the stashed values, then clear. The
+        # event STAYS live (still confirmed) — an update, not a removal, so no
+        # tombstone.
+        data["bookings_divergence"] = None
+        try:
+            if div.get("nouveau_debut"):
+                data["start_datetime"] = datetime.fromisoformat(div["nouveau_debut"])
+            if div.get("nouveau_fin"):
+                data["end_datetime"] = datetime.fromisoformat(div["nouveau_fin"])
+        except ValueError:
+            logger.warning("reception: bad divergence datetime")
+        bump = True
+    elif action == "annuler" and div.get("motif") == "annulé_côté_client":
+        # A CONFIRMED (already-synced) event LEAVES the DAV live set. A CTag
+        # bump alone does NOT propagate the removal — DavX5 keeps its local
+        # copy unless a tombstone reports the 404 (RFC 6578). Record one, or
+        # the cancelled meeting lingers on the device forever.
+        data["confirmation"] = "annulée_client"
+        data["bookings_divergence"] = None
+        bump = True
+        tombstone = True
+    else:
+        # ignorer / conserver → dismiss the alert (vu=True), keep the event.
+        data["bookings_divergence"] = {**div, "vu": True}
+
+    _updated, errors = update_hearing(hid, data)
+    if errors:
+        return _rediriger(erreur=" ".join(errors), onglet="rdv")
+    sync_name = collection_for(hearing.get("dossier_id"))
+    if tombstone:
+        record_tombstone(sync_name, hid)
+    if bump:
+        bump_ctag(sync_name)
+    log_bookings_event("reception_rdv_divergence_traitee", hearing_id=hid,
+                       action=action)
+    return _rediriger(message="Divergence traitée.", onglet="rdv")

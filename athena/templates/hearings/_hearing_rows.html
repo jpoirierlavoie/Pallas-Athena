@@ -50,6 +50,10 @@
         <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium {{ status_colors.get(h.status, 'bg-gray-100 text-gray-600') }}">
           {{ status_labels.get(h.status, h.status) }}
         </span>
+        {# Bookings (L2): a « Bookings with me » import awaiting review. #}
+        {% if h.confirmation == "à_confirmer" %}
+        <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700">À confirmer</span>
+        {% endif %}
       </div>
 
       {# Details #}

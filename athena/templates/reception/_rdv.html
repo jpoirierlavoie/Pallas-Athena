@@ -1,0 +1,145 @@
+{# Onglet « Rendez-vous » — imports « Bookings with me » à confirmer (L2 §5).
+   Toutes les valeurs client (client_nom, title, location) sont autoéchappées
+   par Jinja. Les formulaires portent le jeton CSRF (reception_bp, non exempt). #}
+
+{% if erreur_rdv %}
+<div class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
+  Lecture des rendez-vous impossible — réessayez dans un moment.
+</div>
+{% endif %}
+
+{# ── Divergences (événements confirmés modifiés/annulés côté client) ─── #}
+{% if divergences %}
+<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Divergences à traiter</h2>
+<div class="space-y-3 mb-8">
+  {% for h in divergences %}
+  {% set d = h.bookings_divergence or {} %}
+  <div class="bg-amber-50 rounded-xl border border-amber-200 p-4">
+    <div class="flex items-start justify-between gap-3 mb-2">
+      <div>
+        <p class="text-sm font-semibold text-gray-900">{{ h.title }}</p>
+        <p class="text-xs text-amber-800">
+          {% if d.motif == "modifié_côté_client" %}Modifié côté client&nbsp;: {{ d.detail }}
+          {% elif d.motif == "annulé_côté_client" %}Annulé côté client
+          {% else %}{{ d.detail }}{% endif %}
+        </p>
+      </div>
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-amber-100 text-amber-700 flex-shrink-0">Confirmé</span>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      {% if d.motif == "modifié_côté_client" %}
+      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='appliquer') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Appliquer la modification</button>
+      </form>
+      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='ignorer') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Ignorer</button>
+      </form>
+      {% elif d.motif == "annulé_côté_client" %}
+      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='annuler') }}"
+            data-confirm="Retirer ce rendez-vous de l'agenda et des appareils synchronisés ?">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-500">Annuler dans Athéna</button>
+      </form>
+      <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='conserver') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conserver</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Rendez-vous à confirmer ──────────────────────────────────────────── #}
+<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Rendez-vous à confirmer</h2>
+{% if not rdvs %}
+<div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+  Aucun rendez-vous à confirmer.
+</div>
+{% endif %}
+
+<div class="space-y-4">
+  {% for h in rdvs %}
+  {% set annule = h.confirmation == "annulée_client" %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 {{ 'opacity-70' if annule }}">
+    <div class="flex items-start justify-between gap-3 mb-2">
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-gray-900">{{ h.title }}</p>
+        <p class="text-xs text-gray-500 mt-0.5">
+          {% if h.start_datetime and h.start_datetime.strftime is defined %}
+            {{ (h.start_datetime|to_mtl).strftime('%Y-%m-%d à %H:%M') }}
+            {% if h.end_datetime and h.end_datetime.strftime is defined %}– {{ (h.end_datetime|to_mtl).strftime('%H:%M') }}{% endif %}
+          {% endif %}
+        </p>
+      </div>
+      <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0
+                   {{ 'bg-gray-200 text-gray-500' if annule else 'bg-amber-100 text-amber-700' }}">
+        {{ "Annulé par le client" if annule else "À confirmer" }}
+      </span>
+    </div>
+
+    {# Client + modalité #}
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 mb-3">
+      {% if h.client_nom %}<span class="font-medium text-gray-800">{{ h.client_nom }}</span>{% endif %}
+      {% if h.client_email %}<span>{{ h.client_email }}</span>{% endif %}
+      {% if h.modalite == "visioconférence" and h.conference_uri and h.conference_uri.startswith("http") %}
+      <a href="{{ h.conference_uri }}" target="_blank" rel="noopener noreferrer"
+         class="text-indigo-600 hover:text-indigo-500 font-medium">Lien Teams</a>
+      {% elif h.location %}
+      <span class="truncate max-w-[240px]">{{ h.location }}</span>
+      {% endif %}
+    </div>
+
+    {# Liaison partie #}
+    <div class="text-xs mb-3">
+      {% if h._partie_id %}
+      <span class="inline-flex items-center gap-1 text-green-700">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        Partie reconnue&nbsp;: {{ h._partie_nom }}
+      </span>
+      {% else %}
+      <span class="text-gray-400">Aucune partie au dossier pour ce courriel.</span>
+      {% endif %}
+    </div>
+
+    {# Actions #}
+    <div class="flex flex-wrap items-center gap-3">
+      {% if not annule %}
+      <form method="post" action="{{ url_for('reception.rdv_confirmer', hid=h.id) }}"
+            class="flex flex-wrap items-center gap-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if h._partie_id %}
+        <input type="hidden" name="partie_id" value="{{ h._partie_id }}">
+        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+          <input type="checkbox" name="lier" checked class="rounded border-gray-300">
+          Lier à {{ h._partie_nom }}
+        </label>
+        {% else %}
+        <label class="flex items-center gap-1.5 text-xs text-gray-400" title="Livré en phase L3">
+          <input type="checkbox" name="intake" disabled class="rounded border-gray-300">
+          Envoyer le formulaire d'ouverture (L3)
+        </label>
+        {% endif %}
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Confirmer</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ url_for('reception.rdv_refuser', hid=h.id) }}"
+            data-confirm="{{ 'Retirer ce rendez-vous de la réception ?' if annule else 'Refuser ce rendez-vous ? La réunion sera annulée côté Outlook et le client notifié.' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">
+          {{ "Retirer" if annule else "Refuser" }}
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<p class="mt-6 text-xs text-gray-400">
+  Les rendez-vous « Bookings with me » sont importés automatiquement toutes les
+  10 minutes. Ils n'apparaissent au calendrier synchronisé (DavX5) qu'une fois
+  confirmés.
+</p>
