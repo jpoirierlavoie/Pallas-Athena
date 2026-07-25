@@ -125,6 +125,47 @@ class Config:
             and cls.GRAPH_SENDER_UPN
         )
 
+    # Bookings sync (phase L2). Imports « Bookings with me » reservations as
+    # hearings gated behind confirmation="à_confirmer". Reuses the L1 Graph
+    # app registration (adds the Calendars.ReadWrite application permission —
+    # a manual Entra step). MAIN SERVICE ONLY.
+    BOOKINGS_SYNC_ACTIVE: bool = (
+        os.environ.get("BOOKINGS_SYNC_ACTIVE", "true").lower() == "true"
+    )
+    # Subject-prefix predicate: a Bookings meeting type is detected when its
+    # subject starts with any of these (comma-separated env, default "RDV").
+    BOOKINGS_SUBJECT_PREFIXES: tuple[str, ...] = tuple(
+        p.strip()
+        for p in os.environ.get("BOOKINGS_SUBJECT_PREFIXES", "RDV").split(",")
+        if p.strip()
+    )
+    BOOKINGS_SYNC_LOOKAHEAD_DAYS: int = int(
+        os.environ.get("BOOKINGS_SYNC_LOOKAHEAD_DAYS", "90")
+    )
+    BOOKINGS_SYNC_LOOKBACK_DAYS: int = int(
+        os.environ.get("BOOKINGS_SYNC_LOOKBACK_DAYS", "1")
+    )
+    # The mailbox whose calendar is queried (the juriste's Bookings mailbox).
+    # Empty → the sync short-circuits (nothing to query).
+    BOOKINGS_JURISTE_UPN: str = os.environ.get("BOOKINGS_JURISTE_UPN", "")
+    # §4.4 predicate tuning: log the raw JSON of the first detected + first
+    # undetected event at DEBUG (domains only — never full addresses).
+    BOOKINGS_DEBUG_PAYLOAD: bool = (
+        os.environ.get("BOOKINGS_DEBUG_PAYLOAD", "false").lower() == "true"
+    )
+
+    @classmethod
+    def bookings_configured(cls) -> bool:
+        """True when Bookings sync can run (Graph creds + a mailbox to poll)."""
+        return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
+
+    # Intake trigger (phase L3). False in L2: the confirmation screen shows the
+    # « envoyer le formulaire d'ouverture » checkbox DISABLED with a tooltip,
+    # and the confirm route never emits an intake invitation.
+    FEATURE_INTAKE: bool = (
+        os.environ.get("FEATURE_INTAKE", "false").lower() == "true"
+    )
+
     # Firm info (displayed on invoices)
     FIRM_NAME: str = os.environ.get("FIRM_NAME", "")
     FIRM_STREET: str = os.environ.get("FIRM_STREET", "")

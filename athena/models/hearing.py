@@ -192,7 +192,46 @@ def _migrate_hearing(doc: dict) -> dict:
         doc["hearing_type"] = _HEARING_TYPE_MIGRATION[old]
     doc.setdefault("modalite", "présentiel")
     doc.setdefault("conference_uri", "")
+    # Bookings sync (phase L2) — default every booking field on read so the
+    # filter and the UI never hit a KeyError on a legacy hearing. « confirmation »
+    # defaults to "" (confirmed): a doc that predates L2 is NEVER given a
+    # non-empty value here, so existing hearings stay visible everywhere.
+    doc.setdefault("source", "")
+    doc.setdefault("confirmation", "")
+    doc.setdefault("graph_event_id", "")
+    doc.setdefault("graph_ical_uid", "")
+    doc.setdefault("graph_last_modified", "")
+    doc.setdefault("client_email", "")
+    doc.setdefault("client_nom", "")
+    doc.setdefault("bookings_divergence", None)
+    doc.setdefault("partie_id", "")
     return doc
+
+
+# ── Confirmation gate (phase L2) ───────────────────────────────────────────
+# A hearing whose « confirmation » is one of these values is not a plain
+# confirmed event. Mirrors the models/note.py include_analyse contract: the
+# LIST functions exclude by default so DAV, MCP and the dashboard never see an
+# unconfirmed Bookings import; get_hearing (single fetch) does NOT filter, so
+# Réception and the confirmation route can still reach one.
+#
+# NB: "à_confirmer" is ALSO a hearing STATUS value (a court date pending
+# scheduling) — an entirely separate concept. Only the « confirmation » field
+# gates visibility; « status » never does.
+_UNCONFIRMED_ALL = ("à_confirmer", "annulée_client", "refusée")
+# "refusée" is the deleted-equivalent — removed from EVERY list, both modes.
+_UNCONFIRMED_REFUSED = ("refusée",)
+
+
+def _filter_confirmation(rows: list[dict], include_unconfirmed: bool) -> list[dict]:
+    """Drop unconfirmed hearings unless the caller opts in.
+
+    ``include_unconfirmed=False`` (DAV/MCP/dashboard/exports) keeps only
+    confirmed rows. ``True`` (Calendar + Réception) keeps confirmed +
+    à_confirmer + annulée_client, but « refusée » is dropped in both modes.
+    """
+    drop = _UNCONFIRMED_REFUSED if include_unconfirmed else _UNCONFIRMED_ALL
+    return [r for r in rows if r.get("confirmation") not in drop]
 
 
 def _default_doc() -> dict:
@@ -218,6 +257,20 @@ def _default_doc() -> dict:
         # modalite IS visioconférence and the URI is non-empty.
         "modalite": "présentiel",
         "conference_uri": "",
+        # Bookings sync (phase L2). source="" for an internal hearing;
+        # "bookings" for a « Bookings with me » import. confirmation="" reads
+        # as confirmed (visible everywhere); "à_confirmer"/"annulée_client"/
+        # "refusée" gate it out of DAV+MCP (and, except à_confirmer, the
+        # Calendar). See _filter_confirmation.
+        "source": "",
+        "confirmation": "",
+        "graph_event_id": "",
+        "graph_ical_uid": "",
+        "graph_last_modified": "",
+        "client_email": "",
+        "client_nom": "",
+        "bookings_divergence": None,
+        "partie_id": "",
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -354,8 +407,16 @@ def list_hearings(
     hearing_type_filter: Optional[str] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
+    include_unconfirmed: bool = False,
 ) -> list[dict]:
-    """Return hearings, optionally filtered."""
+    """Return hearings, optionally filtered.
+
+    ``include_unconfirmed`` (default False) mirrors models/note.py's
+    include_analyse contract: unconfirmed Bookings imports are excluded unless
+    the caller opts in. Only Réception and the Calendar view (and the sync
+    job's own upsert lookup) pass True — DAV, MCP and the dashboard keep the
+    default so a pending reservation never syncs or shows up as a real event.
+    """
     try:
         query = db.collection(COLLECTION)
 
@@ -363,6 +424,7 @@ def list_hearings(
             query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))
 
         results = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+        results = _filter_confirmation(results, include_unconfirmed)
 
         # Client-side filters (Firestore single-field index limitation)
         if status_filter and status_filter in VALID_STATUSES:
@@ -387,7 +449,10 @@ def list_hearings(
 
 
 def list_hearings_in_range(
-    date_from: datetime, date_to: datetime, limit: int = 100
+    date_from: datetime,
+    date_to: datetime,
+    limit: int = 100,
+    include_unconfirmed: bool = False,
 ) -> list[dict]:
     """Return hearings starting within [date_from, date_to], chronologically.
 
@@ -397,6 +462,10 @@ def list_hearings_in_range(
     (start_datetime), so the automatic single-field index serves the query —
     no composite index required. Status filtering (e.g. excluding annulée)
     stays with the caller, applied over the bounded result.
+
+    ``include_unconfirmed`` (default False) excludes unconfirmed Bookings
+    imports, applied in Python over the bounded window (same accepted
+    limitation as the existing caller-side status filtering).
 
     Returns [] on failure (the dashboard degrades gracefully).
     """
@@ -408,13 +477,15 @@ def list_hearings_in_range(
             .order_by("start_datetime")
             .limit(limit)
         )
-        hearings = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
-        if len(hearings) >= limit:
+        raw = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+        # Warn on the RAW window before the confirmation filter shrinks it, so
+        # a truncated fetch is still detected even when some rows are dropped.
+        if len(raw) >= limit:
             logger.warning(
                 "list_hearings_in_range: result window full (limit=%d) — "
                 "some hearings may be hidden", limit,
             )
-        return hearings
+        return _filter_confirmation(raw, include_unconfirmed)
     except Exception as exc:
         logger.warning("list_hearings_in_range: query failed: %s", exc)
         return []
@@ -424,6 +495,7 @@ def list_hearings_window(
     pivot: datetime,
     direction: str = "upcoming",
     limit: int = 100,
+    include_unconfirmed: bool = False,
 ) -> list[dict]:
     """Return a bounded window of hearings on one side of *pivot*.
 
@@ -438,6 +510,9 @@ def list_hearings_window(
     so the automatic single-field index serves both queries — no composite
     index required. Type/status filtering stays with the caller, applied
     over the bounded window.
+
+    ``include_unconfirmed`` (default False) excludes unconfirmed Bookings
+    imports over the bounded window (see :func:`list_hearings_in_range`).
 
     Returns [] on failure (the agenda view degrades gracefully).
     """
@@ -458,14 +533,14 @@ def list_hearings_window(
                 .order_by("start_datetime")
                 .limit(limit)
             )
-        hearings = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
-        if len(hearings) >= limit:
+        raw = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+        if len(raw) >= limit:
             logger.warning(
                 "list_hearings_window: result window full "
                 "(direction=%s, limit=%d) — some hearings may be hidden",
                 direction, limit,
             )
-        return hearings
+        return _filter_confirmation(raw, include_unconfirmed)
     except Exception as exc:
         # PII-free: log only the exception type, never document contents.
         logger.warning(
