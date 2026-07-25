@@ -1,0 +1,79 @@
+{# Fenêtre modale « détail d'une invitation traitée » — swappée dans
+   #reception-modal. Motif du modal gabarit (Alpine : Échap / clic-hors
+   ferme en vidant le mount). Lecture seule ; aucune mutation. #}
+<div x-data
+     @keydown.escape.window="$el.closest('#reception-modal').innerHTML = ''"
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+  <div @click.outside="$el.closest('#reception-modal').innerHTML = ''"
+       class="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-y-auto"
+       style="max-height: 90vh">
+
+    <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+      <h2 class="text-base font-semibold text-gray-900">
+        {% if invitation %}{{ invitation.display_label }}{% else %}Détail{% endif %}
+      </h2>
+      <button type="button"
+              @click="$el.closest('#reception-modal').innerHTML = ''"
+              class="p-3 text-gray-400 hover:text-gray-600" aria-label="Fermer">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="p-5 space-y-6">
+      {% if erreur %}
+      <div class="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
+        Lecture de l'archive impossible.
+      </div>
+      {% endif %}
+
+      {% if invitation %}
+      <p class="text-xs text-gray-500">
+        {{ invitation.email }}
+        {% if invitation.statut %} · <span class="font-medium">{{ invitation.statut }}</span>{% endif %}
+      </p>
+      {% endif %}
+
+      {% if not lots %}
+      <div class="text-sm text-gray-500">Aucune transmission conservée pour cette invitation.</div>
+      {% endif %}
+
+      {% for lot in lots %}
+      <div>
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Lot {{ lot.batch }}</h3>
+        {% if not lot.fichiers %}
+        <div class="text-sm text-gray-400">Aucun fichier conservé.</div>
+        {% else %}
+        <div class="border border-gray-200 rounded-lg divide-y divide-gray-100">
+          {% for f in lot.fichiers %}
+          <div class="px-3 py-2.5 text-sm">
+            <div class="flex items-start justify-between gap-2">
+              <span class="text-gray-900 break-all min-w-0">{{ f.name }}</span>
+              <span class="inline-flex whitespace-nowrap px-2 py-0.5 text-xs font-medium rounded-full
+                {{ 'bg-green-100 text-green-700' if f.etat == 'versé'
+                   else 'bg-red-100 text-red-700' if f.etat in ('refusé', 'manquant')
+                   else 'bg-gray-100 text-gray-700' }}">
+                {% if f.etat == 'versé' and f.verse_dossier %}versé · dossier {{ f.verse_dossier }}
+                {% else %}{{ f.etat }}{% endif %}
+              </span>
+            </div>
+            <div class="mt-1 text-xs text-gray-500">
+              {% if f.size_gcs is defined %}{% if f.size_gcs >= 1048576 %}{{ (f.size_gcs / 1048576)|round(1) }} Mo{% else %}{{ (f.size_gcs / 1024)|round|int }} ko{% endif %} · {% endif %}
+              {{ f.content_type or "—" }}
+            </div>
+            {% if f.sha512 %}
+            <div class="mt-1 text-xs text-gray-400 font-mono break-all">SHA-512 : {{ f.sha512 }}</div>
+            {% endif %}
+            {% if f.verse_nom and f.verse_nom != f.name %}
+            <div class="mt-1 text-xs text-gray-400">Nom au dossier : {{ f.verse_nom }}</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>

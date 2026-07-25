@@ -308,6 +308,43 @@ def revoquer(inv_id: str):
     )
 
 
+def _lire_manifeste_archive(inv_id: str, batch: str) -> Optional[dict]:
+    """Manifeste d'un lot traité : archive/ d'abord, submissions/ en repli."""
+    bucket = _bucket()
+    for chemin in (f"archive/{inv_id}/{batch}/manifeste.json",
+                   _prefix(inv_id, batch) + "manifeste.json"):
+        blob = bucket.blob(chemin)
+        if blob.exists():
+            return json.loads(blob.download_as_bytes())
+    return None
+
+
+@reception_bp.get("/invitations/<inv_id>/archive")
+@login_required
+def invitation_archive(inv_id: str):
+    """Fenêtre modale : le détail conservé d'une invitation traitée —
+    par lot, la liste des fichiers avec empreinte SHA-512 et le choix de
+    l'avocat (versé au dossier / refusé). Lu des manifestes archivés."""
+    invitation = pi.lire_invitation(inv_id)
+    if invitation is None:
+        return render_template("reception/_archive_modal.html",
+                               invitation=None, lots=[], erreur=True)
+    lots = []
+    erreur = False
+    for soumission in invitation.get("soumissions") or []:
+        batch = soumission.get("batch") or ""
+        try:
+            manifeste = _lire_manifeste_archive(inv_id, batch)
+        except Exception:
+            logger.exception("reception: archive manifest read failed")
+            erreur = True
+            manifeste = None
+        lots.append({"batch": batch, "soumission": soumission,
+                     "fichiers": (manifeste or {}).get("files") or []})
+    return render_template("reception/_archive_modal.html",
+                           invitation=invitation, lots=lots, erreur=erreur)
+
+
 # ── Fichiers d'un lot ────────────────────────────────────────────────────
 
 
@@ -406,6 +443,10 @@ def verser(inv_id: str, batch: str, seq: int):
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")
 
     entree["etat"] = "versé"
+    # Trace du choix de l'avocat dans le manifeste (visible plus tard dans
+    # la fenêtre d'archive) : le dossier de destination + le nom au dossier.
+    entree["verse_dossier"] = dossier.get("file_number", "")
+    entree["verse_nom"] = metadata["display_name"]
     log_portail_event(
         "document_verse",
         invitation_id=inv_id, batch=batch,

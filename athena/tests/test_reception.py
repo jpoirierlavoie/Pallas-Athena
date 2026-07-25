@@ -309,6 +309,70 @@ def test_compteur_reception_cache_et_fail_open(monkeypatch):
     rc._badge_cache.update(at=0.0, n=None)
 
 
+# ── Fenêtre d'archive (détail d'une invitation traitée) ──────────────────
+
+
+def test_archive_modal_affiche_fichiers_et_choix(web, monkeypatch):
+    inv = {"id": "inv1", "email": "client@exemple.com", "statut": "traitée",
+           "display_label": "Dossier 2026-001",
+           "soumissions": [{"batch": "b1", "files_count": 2}]}
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: inv)
+    manifeste = {"files": [
+        {"name": "requete.pdf", "size_gcs": 2048, "content_type": "application/pdf",
+         "sha512": "ab" * 32, "etat": "versé", "verse_dossier": "2026-001",
+         "verse_nom": "Requête introductive"},
+        {"name": "photo.heic", "size_gcs": 500, "content_type": "image/heic",
+         "sha512": "cd" * 32, "etat": "refusé"},
+    ]}
+    monkeypatch.setattr(rc, "_lire_manifeste_archive", lambda i, b: manifeste)
+
+    html = web.get("/reception/invitations/inv1/archive").get_data(as_text=True)
+    assert "Dossier 2026-001" in html
+    assert "requete.pdf" in html and ("ab" * 32) in html
+    assert "versé · dossier 2026-001" in html
+    assert "photo.heic" in html and "refusé" in html
+    assert "Requête introductive" in html
+    assert 'id="reception-modal"' not in html  # c'est le CONTENU, pas le mount
+
+
+def test_archive_modal_invitation_inconnue(web, monkeypatch):
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: None)
+    html = web.get("/reception/invitations/fantome/archive").get_data(as_text=True)
+    assert "impossible" in html.lower()
+
+
+def test_archive_modal_lot_sans_manifeste(web, monkeypatch):
+    inv = {"id": "inv1", "email": "c@e.com", "statut": "révoquée",
+           "display_label": "X", "soumissions": []}
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: inv)
+    html = web.get("/reception/invitations/inv1/archive").get_data(as_text=True)
+    assert "Aucune transmission" in html
+
+
+def test_archive_manifeste_prefere_archive_puis_submissions(monkeypatch):
+    # _lire_manifeste_archive lit archive/ d'abord, submissions/ en repli.
+    lus = []
+
+    class _Blob:
+        def __init__(self, nom, existe):
+            self._nom, self._existe = nom, existe
+
+        def exists(self):
+            lus.append(self._nom)
+            return self._existe
+
+        def download_as_bytes(self):
+            return b'{"files": [{"name": "a.pdf"}]}'
+
+    bucket = mock.Mock()
+    bucket.blob.side_effect = lambda nom: _Blob(
+        nom, nom.startswith("archive/"))
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    m = rc._lire_manifeste_archive("inv1", "b1")
+    assert m["files"][0]["name"] == "a.pdf"
+    assert lus[0] == "archive/inv1/b1/manifeste.json"  # archive d'abord
+
+
 # ── Sélecteur de client (autocomplétion + soumission) ────────────────────
 
 

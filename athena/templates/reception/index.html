@@ -235,17 +235,24 @@
   <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 mt-8">Récemment traitées</h2>
   <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-50">
     {% for inv in traitees %}
-    <div class="px-4 py-2.5 flex items-center justify-between text-sm">
+    <button type="button"
+            hx-get="{{ url_for('reception.invitation_archive', inv_id=inv.id) }}"
+            hx-target="#reception-modal" hx-swap="innerHTML"
+            class="w-full text-left px-4 py-2.5 flex items-center justify-between text-sm hover:bg-gray-50">
       <span class="text-gray-700">{{ inv.display_label }} <span class="text-gray-400">· {{ inv.email }}</span></span>
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full
                    {{ 'bg-green-100 text-green-700' if inv.statut == 'traitée' else 'bg-gray-100 text-gray-500' }}">
         {{ inv.statut }}
       </span>
-    </div>
+    </button>
     {% endfor %}
   </div>
+  <p class="mt-2 text-xs text-gray-400">Cliquez une invitation pour voir les fichiers conservés (empreintes et décisions).</p>
   {% endif %}
 
   {% endif %}
+
+  {# Point de montage de la fenêtre modale (détail d'archive) #}
+  <div id="reception-modal"></div>
 </div>
 {% endblock %}
