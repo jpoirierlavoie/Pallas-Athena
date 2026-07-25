@@ -154,6 +154,34 @@ Trust accounting (« comptabilité en fidéicommis », Phase K). `outcome` ∈ `
 | `trust_reconciliation_variance` | refused | Completion refused because the variance was non-zero; `reconciliation_id`, `account_id`, `variance_cents` |
 | `trust_export` | success | Journal / carte-client CSV or PDF export; `format`, `view`, `row_count` |
 
+### `log_portail_event(event, outcome='success', *, invitation_id=None, batch=None, dossier_id=None, document_id=None, reason=None, **extra)` — logger `pallas.portail`
+
+Portail client (spec L1). One vocabulary for **both services**: the portal process emits the client-facing events, the main service emits the task/reconciliation/courriel/Réception ones — Cloud Logging separates them by `resource.labels.module_id` (`portail` vs `default`; the log name `pallas-athena` is shared, so any alert filtering only on `logName` now also matches portal traffic). `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR** — a `failure` means work could be lost (enqueue failures, reconciliation repairs) and must reach error dashboards. **IDs and counts only**: a client's email, a file name, or a display label must NEVER appear in any field — the `RedactionFilter` auto-scrubs emails but not names/filenames, and portal identity is exactly what this boundary protects.
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `session_creee` | success | Portal session established after email-link sign-in; `invitation_id` |
+| `session_refusee` | refused | Session creation or the per-request guard refused; `reason` machine-stable (`token_invalid`, `claim_missing`, `email_mismatch`, `expired`, `inactive`, `no_session`, …) — the CLIENT always sees the same generic French message |
+| `televersement_ouvert` | success | Resumable GCS session opened; `invitation_id`, `batch`, `taille` |
+| `televersement_rejete` | refused | Upload refused at validation; `reason` ∈ `extension` / `taille` / `quota_files` / `quota_volume` |
+| `soumission_finalisee` | success | Envelope written (the submission is ACQUIRED); `invitation_id`, `batch`, `files_count` |
+| `renvoi_demande` | success | A sign-in link was re-generated (main service); `invitation_id`, `emailed: bool` |
+| `tache_enfilee` | success | Cloud Tasks enqueue; `invitation_id`, `batch`, `evenement` |
+| `tache_enfilage_echec` | **failure** | Enqueue failed. At finalization this is NOT fatal (the envelope exists; reconciliation replays); for `renvoi` it just means no email |
+| `tache_recue` | success / refused | Handler entry; `evenement`, `retry_count`; `refused` + `reason` (`malformed`, `no_batch`, `envelope_missing`) for the 200-no-op branches |
+| `manifeste_ecrit` | success | SHA-512 hashes computed + manifeste.json written; `invitation_id`, `batch`, `files_count` |
+| `accuse_envoye` | success | Accusé de réception emailed (behind the transactional `poser_accuse` test-and-set — at most once per lot) |
+| `courriel_envoye` / `courriel_echec` | success / refused ou failure | Graph sendMail outcome; `reason` = `graph_not_configured` (refused) or `graph_error` (failure). A failure AFTER the accusé marker is set is logged here and never retried — the marker already guarantees at-most-once |
+| `reconciliation_execute` | success | Cron sweep done; `lots_vus`, `lots_repares` |
+| `reconciliation_reparation` | **failure** | An envelope existed with no recorded submission/accusé → re-enqueued. **Every repair means the queue lost work — a symptom to watch** (§8.4) |
+| `document_verse` | success | A quarantine file was ingested into the dossier; `invitation_id`, `batch`, `dossier_id`, `document_id` |
+| `document_refuse` | success | A file was explicitly refused in Réception |
+| `lot_traite` | success | Lot archived (envelope+manifeste → `archive/`, files purged), invitation → `traitée` |
+| `invitation_emise` | success | Invitation created (+ claim stamped); `invitation_id`, `dossier_id`, `emailed: bool` |
+| `invitation_revoquee` | success | Instant revocation from Réception |
+
+> `log_auth_event` gained one `reason`: `portail_claim` — a Firebase token carrying the portal custom claim tried to open a session on the main service (spec L1 §1.2 defense in depth).
+
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
 Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log. The traceback text is PII-scrubbed by `RedactionFilter` before emission (see "PII redaction policy" above for the Error Reporting grouping trade-off).

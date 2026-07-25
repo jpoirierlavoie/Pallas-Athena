@@ -42,15 +42,19 @@ Several subsystems are **delicate and coupled to external frameworks/services, a
   npm install --no-save --no-package-lock @tailwindcss/cli@4.3.0 tailwindcss@4.3.0
   npx @tailwindcss/cli@4.3.0 -i athena/static/src/app.input.css -o athena/static/vendor/app.css --minify
   # rename to app.<first-8-of-sha256>.css; update the <link> in base.html +
-  # auth/login.html, the PRECACHE list in static/sw.js, AND the Early Hints
-  # lists in security.py (_EARLY_HINTS_*); delete the old hashed file;
-  # remove node_modules afterwards
+  # auth/login.html + client/templates/base.html (portal), the PRECACHE list
+  # in static/sw.js (and bump STATIC_CACHE), AND the Early Hints lists in
+  # security.py (_EARLY_HINTS_*); delete the old hashed file; remove
+  # node_modules afterwards. app.input.css scans templates/, routes/,
+  # models/ AND client/templates/ (@source lines — source(none) disables
+  # auto-detection, so a missing @source silently drops classes).
   ```
   The Firebase App Check bootstrap is also a vendored, hash-named asset (`static/vendor/appcheck-boot.<hash>.js`), configured via a non-executable JSON block in `base.html` — same rules apply if it changes (re-hash, update base.html + sw.js + security.py).
   **Script order in `base.html`/`login.html` is load-bearing:** Firebase/App Check boot → page scripts → htmx → Alpine, all at the end of `<body>`. Execution follows *document order* — the Firebase/App Check boot scripts run synchronously at parse time, and the vendored htmx/Alpine `defer` scripts run in document order at `DOMContentLoaded`; position, not a sync/defer phase, is the guarantee. (Cloudflare Rocket Loader, which used to defer every script while preserving that order, was **disabled at the edge on 2026-07-11** and is not returning.) Never move htmx/Alpine above the App Check boot or above inline component definitions.
   Vendored assets are served `Cache-Control: immutable` (1 year) — **a changed asset MUST get a new filename**; never edit one in place. Dynamically-assembled class names get purged at compile time: keep classes as complete string literals in templates / `routes/*.py` / `models/*.py` (all scanned via `@source`), or safelist them in `app.input.css`.
 - **DAV libraries:** `icalendar`, `vobject`. Custom CardDAV/CalDAV/RFC-5545 endpoints served directly from Flask.
 - **MCP connector (Phase I, extended by Phase L):** a hand-rolled, stateless **JSON-response-mode Streamable HTTP** MCP server at `POST /mcp` (no SSE, no sessions) plus an **embedded OAuth 2.1 authorization server** (`mcp/` package), exposing **19 tools** to Claude as a custom connector — 17 read-only (14 original + 3 Phase-K trust) and **2 note writes** (`create_note`, `append_to_note`, Phase L). **Zero new Python dependencies** — stdlib (`secrets`, `hashlib`, `base64`) + packages already pinned (Flask, flask-limiter, flask-wtf). Two kill switches: `MCP_ENABLED` (default `"true"`; `false` → every `/mcp` + `/oauth/*` route 404s) and `MCP_WRITE_ENABLED` (default `"true"`; `false` → the write tools vanish from `tools/list`, are refused at `tools/call`, and the consent checkbox disappears — reads unaffected).
+- **Portail client (spec « L1 », July 2026 — naming collision: the CLAUDE.md "Phase L" is the MCP note writes; this is the separate portail series L1→L2→L3):** a **second App Engine service `portail`** (host `portail.poirierlavoie.ca`, public — NO Cloudflare Access) through which an invited client transmits documents into a **quarantine GCS bucket**. Source package **`athena/client/`** (user decision 2026-07-25 — the lawyer-facing service may later move under `juriste/`), deployed from the SAME `athena/` source dir via `athena/portail.yaml`; `client.wsgi:app` registers ONLY the portal blueprint (route-map isolation pinned by test). Client auth = Firebase **email-link** (single-use, bound to the invited email) + a per-request re-read of the invitation document in the **named Firestore database `portail`** (single-writer: only the main service writes; the portal reads and signals via **Cloud Tasks** queue `portail`). Outbound email = **Microsoft Graph** client-credentials (`utils/graph.py` + `utils/courriel.py` — no msal; the phase-J foundation). Reviews happen in the main service's « **Réception** » page; nothing enters Firestore/canonical storage without an explicit « Verser » click, restricted to the existing documents vocabulary (6 MIME types ≤ 25 MB — user decision 2026-07-25). One new Python dependency: `google-cloud-tasks` (+ `requests` promoted to a direct pin).
 - **Markdown:** `Markdown` + `bleach` libraries for rendering note content (rendered via Jinja `markdown` filter).
 - **PDF:** `reportlab` (pure Python — do NOT use `weasyprint`; it requires cairo/pango system libs unavailable on App Engine Standard).
 - **Word templates (Phase H — gabarits):** user-managed `.docx` templates filled by a **stdlib-only engine** (`utils/docx_fill.py`: `zipfile` + `re` + `io` — direct string substitution on the XML zip entries, every other entry copied byte-identical). **`docxtpl`/`python-docx` are explicitly rejected** — their load/save round-trip rewrites enough of the OOXML package that Word refuses to open letterhead templates with multiple headers/footers, `titlePg` sections, and embedded fonts. Zero new Python dependencies. **The full placeholder inventory (all `{{…}}` names + syntax) is in [`GABARITS_PLACEHOLDERS.md`](GABARITS_PLACEHOLDERS.md).**
@@ -106,7 +110,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 - **CSRF** on every POST/PUT/DELETE via `flask-wtf` `CSRFProtect`. HTMX requests include the token via `hx-headers` on `<body>`. Failures are logged as `csrf_failure` security events and return 400.
 - **Rate limiting** on `/auth/login` (configurable via `RATE_LIMIT_LOGIN`, default `5 per minute`) via `flask-limiter` (in-memory store). The rate-limit key is `CF-Connecting-IP` (real client IP behind Cloudflare; falls back to the peer address) — only trustworthy because the firewall guarantees traffic transits Cloudflare.
 - **Request size limits:** 25 MB global cap (`MAX_CONTENT_LENGTH` in `config.py`); routes other than `/documents/upload` are capped at 1 MB and DAV/well-known paths at 5 MB by `_enforce_request_size` in `security.py`. **Phase H exemption:** template upload/replace (`POST /gabarits/` and `POST /gabarits/<id>`) get 10 MB (`_is_template_upload_path`); the generation POST (`/gabarits/generer`) and every other gabarit sub-route stay at 1 MB.
-- **Secrets live in Google Cloud Secret Manager**, not in `app.yaml`: `flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`. `config.py` resolves them at startup when `ENV=production`; locally they come from `.env` env vars (`SECRET_KEY`, `FIREBASE_API_KEY`, `DAV_PASSWORD_HASH`, `CF_ORIGIN_SECRET`).
+- **Secrets live in Google Cloud Secret Manager**, not in `app.yaml`: `flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, plus (portail L1) `portail-secret-key` (portal session key — DISTINCT from the main one; resolved lazily by `client/config.py`, never at import) and `graph-client-secret` (Graph outbound email — main service only, optional/fail-open). `config.py` resolves the main set at startup when `ENV=production`; locally they come from `.env` env vars (`SECRET_KEY`, `FIREBASE_API_KEY`, `DAV_PASSWORD_HASH`, `CF_ORIGIN_SECRET`, `PORTAIL_SECRET_KEY`, `GRAPH_CLIENT_SECRET`).
 - **Firebase Storage URLs:** always signed, 15-minute expiry. Never expose raw bucket URLs to the client. The signing path uses `iam.signBlob` via `google-auth` impersonation when running on App Engine.
 - **DAV authentication:** HTTP Basic Auth with bcrypt-hashed password (`DAV_PASSWORD_HASH`, from Secret Manager in prod). Username is the same as `AUTHORIZED_USER_EMAIL`. **Separate** from Firebase Auth.
 - **MCP authentication (Phase I):** `POST /mcp` requires an OAuth 2.1 **opaque bearer token** (32 bytes `secrets.token_urlsafe`, stored as SHA-256 hex doc IDs in `oauth_tokens` — no JWTs, no new crypto deps). Access tokens live 60 min, refresh tokens 30 days with **rotation** (a replayed rotated refresh token revokes its whole family; a replayed authorization code does too). The embedded AS (`mcp/oauth.py`) offers **open-but-neutered DCR**: `/oauth/register` accepts only Claude's callback URLs (`https://claude.ai|claude.com/api/mcp/auth_callback`; localhost additionally outside production), and the consent screen sits behind `@login_required` (session + MFA), so no third party can complete a flow. PKCE S256 only; public clients only; `hmac.compare_digest` for PKCE and cache comparisons. Bearer failures feed a **per-IP brake** (20 invalid tokens / 15 min → 429 before Firestore is touched) mirroring the DAV brake, with a 5-min HMAC-keyed success cache (revocation lag ≤ 5 min on a warm instance). CSRF exemptions: `/mcp`, `/oauth/register`, `/oauth/token`, `/oauth/revoke` — **not** the `/oauth/authorize` POST. Rate limits: register 10/h, token + revoke 60/h, `/mcp` 240/min (all keyed by `CF-Connecting-IP`). An `Origin` header on `/mcp` must be `claude.ai`/`claude.com`/the canonical origin (DNS-rebinding defense). Never log tokens, codes, or verifiers. Break-glass: `MCP_ENABLED=false` (kill switch), `MCP_WRITE_ENABLED=false` (writes only), or `python -m scripts.revoke_mcp_tokens`.
@@ -115,7 +119,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
   1. **App Engine firewall** allows only Cloudflare's published IP ranges (ops-side; configured in GCP).
   2. **Origin secret** (`_enforce_origin_secret` in `security.py`): when `CF_ORIGIN_SECRET` is set, every request must carry the matching `X-Origin-Auth` header, injected at the edge by a Cloudflare Transform Rule — defeats direct-to-App-Engine access with a spoofed Host. Unset = disabled (local dev).
   3. **Host check** (`block_appspot` in `main.py`): rejects `*.appspot.com` hosts (403). Weakest layer (Host is spoofable) but free.
-  App Engine internal paths (`/_ah/` — warmup, cron) never transit Cloudflare and are **exempt from layers 2 and 3**.
+  App Engine internal paths (`/_ah/` — warmup, cron) never transit Cloudflare and are **exempt from layers 2 and 3**. **Cloud Tasks / cron dispatches (portail L1)** arrive from the internal address `0.1.0.2` with `X-AppEngine-QueueName` / `X-Appengine-Cron` headers that **App Engine strips from ALL external traffic** — `security.is_appengine_internal_request()` gates a bypass of layers 2 and 3 on their presence (spoof-proof), and each machine handler re-checks its own header value (which queue, cron true). The App Engine firewall must ALLOW `0.1.0.2/32` (ops; without it tasks/cron are silently blocked at layer 1). The `portail` service shares the app-level firewall (Cloudflare ranges) but has **no** Cloudflare Access application (public host — WAF + rate limiting at the edge instead).
 - **Cloudflare Access** (Zero Trust) fronts `/dav/*` with a service-token policy for DavX5 and a Google SSO policy for interactive use.
 - **Firebase App Check** verifies attestation tokens on HTMX requests (`X-Firebase-AppCheck` header) when `RECAPTCHA_ENTERPRISE_SITE_KEY` is configured. Static, DAV, well-known, and `/auth/*` paths are exempt; non-HTMX (full page) requests are protected by session + CSRF. Fail-open when unconfigured, but logs a loud warning in production.
 - **Session establishment hardening** (`auth.py`): ID tokens are verified with `check_revoked=True`, and only tokens minted by an interactive sign-in **within the last 10 minutes** (`auth_time` replay guard) may create a session. Sessions are server-side with a `SESSION_LIFETIME_HOURS` expiry (default 12 h); cookies are `HttpOnly`, `SameSite=Lax`, `Secure` in prod.
@@ -169,6 +173,28 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── OBSERVABILITY.md            # Structured-logging event registry + tracing conventions (source of truth)
 │   ├── .gcloudignore               # Keeps tests/venv/dev/non-runtime files out of the deployed bundle
 │   │
+│   ├── portail.yaml                # App Engine config of the SECOND service « portail » (F1, SA
+│   │                               # portail-svc, entrypoint client.wsgi:app; deployed from athena/)
+│   │
+│   ├── client/                     # Portail client (spec L1) — the portal service's own package.
+│   │   ├── __init__.py             # portail_bp + its own Limiter (never the main service's)
+│   │   ├── wsgi.py                 # app = create_portail_app() — ONLY the portal blueprint
+│   │   ├── app.py                  # Factory: pa_portail cookie + portail-secret-key, 1 MB cap,
+│   │   │                           # CSRF (session-lifetime tokens), guard wiring
+│   │   ├── config.py               # Annexe C constants (importable by BOTH services) + LAZY
+│   │   │                           # secret functions (never resolved at import)
+│   │   ├── security.py             # Portal CSP (§10, no 'unsafe-eval' — no Alpine) + headers +
+│   │   │                           # fail-open App Check on POSTs
+│   │   ├── routes.py               # /entree /session /api/renvoi /documents /api/televersement
+│   │   │                           # /api/finaliser /confirmation /sante + the §6.5 guard
+│   │   ├── services/               # invitations.py (read-only named DB), stockage.py (sanitize,
+│   │   │                           # resumable sessions, create-only envelope), taches.py (enqueue)
+│   │   └── templates/              # base/entree/documents/confirmation/erreur (français, vanilla JS)
+│   │
+│   ├── services/                   # Main-service orchestration (multi-subsystem operations)
+│   │   └── portail_emission.py     # Invitation émission/renvoi: Firebase user + claim merge +
+│   │                               # email-link + Graph email (manual-link fallback)
+│   │
 │   ├── models/                     # Firestore data access layer
 │   │   ├── __init__.py             # Exposes `db` (Firestore client singleton) + aggregation_values() helper
 │   │   ├── partie.py               # Contacts (clients, opposing parties, counsel, experts…)
@@ -184,6 +210,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── folder.py               # Document folders (nested, Firestore-only)
 │   │   ├── doc_template.py         # Gabarits .docx (Phase H): CRUD + Storage + placeholder extraction
 │   │   ├── reference.py            # Read-only: ref_greffes, ref_juridictions
+│   │   ├── portail_invitation.py   # Invitations (NAMED database « portail », lazy client, single
+│   │   │                           # writer = main service; poser_accuse transactional test-and-set)
 │   │   └── trust.py                # Fidéicommis (Phase K): accounts + append-only register + reconciliation
 │   │
 │   ├── routes/                     # Flask blueprints (web UI)
@@ -200,7 +228,11 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── protocols.py            # /protocoles/*
 │   │   ├── documents.py            # /documents/*  (independent of dossier URL; dossier_id passed as query/form arg)
 │   │   ├── doc_templates.py        # /gabarits/*  (Phase H: lifecycle + HTMX generation popup)
-│   │   └── trust.py                # /fideicommis/*  (Phase K: journal, carte, comptes, conciliations, exports)
+│   │   ├── trust.py                # /fideicommis/*  (Phase K: journal, carte, comptes, conciliations, exports)
+│   │   ├── reception.py            # /reception/*  (portail L1: revue des lots, versement restreint,
+│   │   │                           # invitations, pastille de nav en cache 60 s fail-open)
+│   │   └── taches_portail.py       # /taches/portail/*  (MACHINE, CSRF-exempt: gestionnaire Cloud
+│   │                               # Tasks + réconciliation cron — gardes X-AppEngine-*)
 │   │
 │   ├── dav/                        # DAV protocol endpoints
 │   │   ├── __init__.py             # Principal + calendar/addressbook home-set; root PROPFIND lists collections dynamically
@@ -243,6 +275,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
 │   │   ├── invoice_docx.py         # Phase H.2: invoice → note-d'honoraires context (facture.* + rows + conditions)
 │   │   ├── format_fr.py            # Phase H.2: fr-CA currency/date/hours/rate formatting (centralized)
+│   │   ├── graph.py                # Portail L1 / phase J: Microsoft Graph client-credentials token
+│   │   │                           # (process cache, no msal) + graph_get (nextLink) + graph_post
+│   │   ├── courriel.py             # Outbound email via Graph sendMail (saveToSentItems: true)
 │   │   ├── validators.py           # Phone (E.164), email, postal code normalization, address defaults
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
 │   │   ├── export_pdf.py           # reportlab-based PDF export
@@ -319,6 +354,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── trust/                   # Phase K: list (journal), _transaction_rows, detail, form, card,
 │   │   │                            # transfer_form, reverse_confirm, client_consolidated, accounts_list,
 │   │   │                            # account_form/detail, reconciliations_list, reconciliation_form/worksheet
+│   │   ├── reception/              # Portail L1: index (onglets + lots + invitations), inviter, lien
 │   │   └── mcp/                    # consent.html (OAuth consent screen, French)
 │   │
 │   └── static/
@@ -899,6 +935,37 @@ Three new top-level collections (standard `id`/`created_at`/`updated_at`/`etag`;
 
 **`dossiers` gains three fields (Phase K):** `trust_balance` (cents — book, all clients), `trust_balance_by_client` (`{client_id: cents}`, book), `trust_cleared_by_client` (`{client_id: cents}`, cleared — the control). Absent on legacy docs → defaulted to `0`/`{}` on read by `_migrate_trust` (in the `_migrate_parties` chokepoint). Written only by `models/trust.py` (transactionally); `update_dossier` re-reads them just before its `set()` so a form save can't clobber a concurrent trust write.
 
+### Named database « portail » — `invitations/{invitationId}` (portail client L1)
+
+A **separate named Firestore database** (`gcloud firestore databases create --database=portail`), NOT a collection of the default DB. Accessed through dedicated lazy `firestore.Client(database="portail")` instances — never `models.db`, never `firebase_admin.firestore`. **Single-writer principle:** the main service (`models/portail_invitation.py`) writes everything; the portal service (`client/services/invitations.py`) only reads and signals via Cloud Tasks (IAM backstop: `datastore.viewer` conditioned to this database). No `etag` (not DAV-exposed); no composite index (single-field order/equality only — filters applied in Python over a bounded read).
+
+```python
+{
+    "id": UUIDv4, "type": "documents" | "intake",   # « intake » réservé à L3
+    "email": str,                    # minuscules — l'adresse invitée
+    "partie_id": str | None, "dossier_id": str | None,
+    "display_label": str,            # LA SEULE désignation vue du client —
+                                     # jamais un intitulé révélant la partie
+                                     # adverse ni un mémo interne (§5: tout ce
+                                     # document est lisible par le service
+                                     # PUBLIC)
+    "statut": "envoyée" | "ouverte" | "soumise" | "traitée" | "refusée" | "révoquée",
+    "created_at": ts, "updated_at": ts,
+    "expires_at": ts,                # expiration LOGIQUE (vérifiée à chaque
+                                     # requête) — aucun statut « expirée »
+    "resend_count": int,
+    "quota_files": int, "quota_mb": int,
+    "soumissions": [ {"batch": str, "files_count": int,
+                      "total_bytes": int, "recu_at": ts} ],
+    "accuses": { "<batch>": True },  # test-and-set transactionnel — l'unique
+                                     # garde de l'unique effet non idempotent
+                                     # (l'accusé courriel, au plus une fois)
+    "prefill": None,                 # réservé à L3
+}
+```
+
+The quarantine bucket (`athena-pallas-portail-quarantaine`) carries the durable truth: `submissions/{inv}/{batch}/files/{seq:03d}_{nom_assaini}` + `envelope.json` (portal, create-only `if_generation_match=0`) + `manifeste.json` (main service: SHA-512 hashes, per-file `etat` ∈ reçu/versé/refusé/manquant, copied `http`/`submitted_at`); processed lots move envelope+manifest under `archive/` (lifecycle: submissions 90 d, archive 365 d).
+
 ### `doc_templates/{templateId}` — Document templates ("gabarits", Phase H)
 
 Top-level collection; standard common fields (`id`, `created_at`, `updated_at`, `etag`). Not DAV-exposed — no DAV UID, no CTag bumping. Template files live in **Storage** at `users/{userId}/templates/{templateId}/{filename}` (signed URLs, 15-min expiry) and are **not** `documents` records; generated outputs saved into a dossier ARE regular `documents` records (independent copies — deleting a gabarit never touches them). No composite index (small collection: single `order_by("name")`, category/search filtered client-side).
@@ -1241,6 +1308,32 @@ All `@login_required`, French UI, standard CSRF (no exemption), default 1 MB req
 | `/fideicommis/conciliations/` · `/nouvelle` · `/<id>` · `/<id>/completer` | GET/POST | Reconciliation list / start / worksheet (live variance) / complete (refuses variance ≠ 0) |
 | `/fideicommis/export/<csv\|pdf>` · `/carte/<did>/<cid>/export/<csv\|pdf>` | GET | Journal / card export — 9 columns, « Recette »/« Crédit » split, `en_circulation` marked `*` |
 | `/fideicommis/{dossier,client,counterparty}-search` | GET | HTMX autocompletes (client-search scoped to one dossier; counterparty suggests parties as **text**) |
+
+### `reception.py` — `/reception/*` (portail client L1)
+
+All `@login_required`, French. POST+redirect with `?message=`/`?erreur=` (no flash). Fail-open display: a missing « portail » database or bucket renders empty states + a warning, never a 500.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/reception/` | GET | Tabs `?onglet=documents|rdv|ouvertures` (rdv/ouvertures = « Livré en phase L2/L3 »). Documents: submitted lots with the manifest table (nom d'origine, taille, type, SHA-512 abrégé + complet au survol, divergences, IP/UA), active invitations (renvoyer/révoquer), recent history |
+| `/reception/inviter` | GET·POST | Émission (courriel prérempli depuis la partie cliente, désignation défaut `Dossier {n°}`, durée) ; sans Graph → page « lien à transmettre » |
+| `/reception/invitations/<id>/renvoyer` · `/revoquer` | POST | Renvoi du lien / révocation instantanée |
+| `/reception/lots/<inv>/<batch>/fichiers/<seq>` | GET | Stream from quarantine — `Content-Disposition: attachment` FORCÉ, content_type déclaré (§7.5, jamais inline) |
+| `.../fichiers/<seq>/verser` | POST | Ingestion via `get_or_create_folder(« Reçus du portail »)` + `upload_document` — restreinte au vocabulaire documents existant ; provenance en `description` + tag `portail` |
+| `.../fichiers/<seq>/refuser` · `.../traiter` | POST | Refus explicite / lot traité (chaque fichier « reçu » exige une décision AVANT la purge ; enveloppe+manifeste → `archive/`) |
+
+### `taches_portail.py` — `/taches/portail/*` (MACHINE, portail L1)
+
+CSRF-exempt blueprint; no `@login_required`. Origin proof = the `X-AppEngine-*` headers (stripped from ALL external traffic).
+
+| Route | Method | Guard | Purpose |
+|---|---|---|---|
+| `/taches/portail/evenement` | POST | `X-AppEngine-QueueName == "portail"` sinon 403 | Handler §8.3: `ouverte` / `renvoi` / `soumise` (rapprochement + SHA-512 en flux + manifeste + accusé transactionnel). Exception → 5xx (reprise) ; no-op/malformé → 200 |
+| `/taches/portail/reconciliation` | GET | `X-Appengine-Cron == "true"` sinon 403 | §8.4: toute enveloppe sans soumission/accusé enregistrés → ré-enfilée + ERROR `reconciliation_reparation` |
+
+### Portal service routes (`client/routes.py`, service « portail » — separate process)
+
+Public host `portail.poirierlavoie.ca`; guard §6.5 re-reads the invitation each request (instant revocation). `/entree` (email-link landing + renvoi form, anti-enumeration), `POST /session` (verify_id_token WITHOUT check_revoked; requires `portail: True` + `email_verified` + email match; 10/min), `POST /api/renvoi` (5/h — always the identical response), `GET /documents`, `POST /api/televersement` (whitelist/quotas → GCS resumable session with `origin=`+`size=`), `POST /api/finaliser` (envelope create-only → 409 on replay; enqueue failure never fails the submission), `/confirmation`, `/sante`.
 
 ### Top-level miscellaneous routes (defined in `main.py`)
 
@@ -1855,6 +1948,12 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Trust: `sequence`, not `date`, is the register's order; a disbursement may only draw on the *cleared* balance.** Backdating (a date before the last entry's) is refused — correct a past error with a **reversal dated today**, never by rewriting history. The overdraft control (`check_disbursement_allowed`) lives INSIDE the Firestore transaction on the same read-set as the write (`create_transaction`), and is confirmed REQUIRED (user decision 2026-07-16 — do not relax to book-only). Reversals bypass the control; the create path refuses `purpose="correction"` so reversal stays the only way to mint one.
 - **Trust: `annulée` entries count in the book balance** (they net with their reversal — the register is chronological, so entries #5–#11 must still show the balance as it stood) **and are excluded from the cleared balance.** Getting this backwards double-counts funds. `compute_deltas(direction, amount, status)` is the single arithmetic atom (spec §4.4); `in_transit = book − cleared` per client (annulée pairs net out, so no query needed).
 - **Trust: `trust_transactions.date` and `.cleared_date` are date-only (midnight UTC)** — emit via `mcp.tools.date_str` in MCP output and render with `.strftime('%Y-%m-%d')` in templates, **never `to_mtl`/`iso_mtl`** (a Montréal shift moves them to the previous day). The register has **9 export columns, not 8** — column 7 « Recette / Crédit » is split into two per-direction columns « Recette » (recettes) / « Crédit » (déboursés) per the Barreau sheet (user decision 2026-07-16), diverging from spec §8; `to_barreau_row` + the export column lists carry this.
+- **Portail (L1): the portal process must NEVER import `models`/`security`/`config`.** `models/__init__.py` constructs the default-database Firestore client at import and `config.py` resolves the MAIN service's required secrets at import — either would make the portal service depend on permissions its least-privilege SA deliberately lacks. The portal imports only `client/*` + `utils/logging_setup`/`tracing_setup`/`validators`; `client/config.py` holds the shared constants with **lazy** secret functions, importable by BOTH services. The reverse direction is fine (the main service imports `client.config`, `client.services.taches`).
+- **Portail (L1): machine endpoints get their OWN CSRF-exempt blueprint and header-gated edge bypasses.** A Cloud Tasks POST to the main service is blocked three times by default (CSRF 400 → origin-secret 403 → appspot-host 403). The fix is `csrf.exempt(taches_portail_bp)` (a dedicated blueprint — never widen a browser blueprint) plus `is_appengine_internal_request()` bypasses in `_enforce_origin_secret`/`block_appspot`, safe because App Engine strips `X-AppEngine-*` from all external traffic. Never bypass on anything else; the handlers re-check the exact header value.
+- **Portail (L1): the invitation document is readable by the PUBLIC service.** `display_label` is the only designation the client ever sees — no dossier title revealing the opposing party, no internal memo, nothing beyond the necessary goes into an invitation (spec §5). Same discipline in logs: `pallas.portail` events carry IDs and counts only (a client email or file name is never auto-redacted for names). The log name `pallas-athena` is SHARED by both services — filter by `resource.labels.module_id` (`default` vs `portail`).
+- **Portail (L1): the accusé email is at-most-once BY DESIGN.** `poser_accuse` (transactional test-and-set on `accuses[batch]`) is the single guard of the single non-idempotent effect. A send failure after the marker is set is logged (`courriel_echec`, ERROR) and NOT retried — a retry could never resend (the marker is set) and would only burn queue attempts. Every reconciliation repair logs `reconciliation_reparation` at ERROR on purpose: it means the queue lost work.
+- **Portail (L1): the envelope is the durable truth; an enqueue failure never fails a finalization.** `envelope.json` is written create-only (`if_generation_match=0` — replayed finalization → 409) BEFORE the task is enqueued; if the enqueue fails the client still gets the confirmation and the 15-min reconciliation cron replays the batch. Never "fix" the ordering.
+- **Portail (L1): versement restricted to the EXISTING documents vocabulary** (6 MIME types, ≤ 25 MB, magic-byte sniff — user decision 2026-07-25). A HEIC/XLSX/MP4/150-MB-PDF is downloadable from Réception (attachment forced) but not versable; do not widen `ALLOWED_MIME_TYPES` for the portal without a new user decision. Marking a lot processed PURGES the quarantine files, so every « reçu » file requires an explicit verser/refuser decision first.
 - **Trust: the module fails CLOSED.** `create_transaction`/`clear`/`reverse`/`reconcile` abort on any read failure (never a partial write); list views propagate read errors to the route (never a silently-empty register). `update_dossier` re-reads the three trust map fields at the last moment before its full-doc `set()` so a form save can't clobber a concurrent trust write with a stale (possibly overdraft-permitting) cleared balance. A dossier that ever held a trust entry can **never be deleted** (`trust_transactions` in `_CHILD_COLLECTIONS`) — archive it.
 
 ---
@@ -2106,6 +2205,23 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
 ### Phase L — MCP note writes (July 2026, ✅ code complete)
 
 - **L** — The MCP connector gains its first write capability: **2 tools** (17 → 19), `create_note` (new note on a dossier) and `append_to_note` (appends under a dated separator). Deliberately **additive only** — no tool can edit or delete a note, and no other collection is writable. New scope **`athena:write`**, granted *only* by a default-unchecked « Autoriser l'écriture des notes » checkbox on the French consent screen (the hidden `scope` field can never escalate; `SCOPE_READ` is always force-included so a write-only grant can't brick the connector). Per-tool enforcement in `endpoint._tools_call` before argument validation via `bearer.ScopeRequired`, caught ahead of the generic `except Exception`; `tools/list` filtered by granted scope so a read-only connection never sees a write tool. The bearer **success cache now carries the scope** (both paths publish `g.mcp_scopes`) and writes additionally run `bearer.revalidate_for_write` — one keyed Firestore read bypassing the cache, so revocation stops a mutation immediately instead of ≤5 min later. Handlers resolve the dossier first (refusing an unknown id rather than blanking it), build the model payload from an **explicit whitelist** (a forwarded `id` would full-document-overwrite an existing note), **bump `dossier:{id}`** (+ `remove_tombstone` on create) inside their own `try/except` surfaced as `dav_synced`, normalize Markdown autolinks and **refuse** any residual `security.TAG_RE` match, refuse an append that would truncate at `CONTENT_MAX_LENGTH`, and stamp every write with a dated « Ajouté/rédigée par Claude » provenance line. Second kill switch **`MCP_WRITE_ENABLED`** (writes off, reads untouched). New events `mcp_note_written` / `mcp_write_refused` (IDs and counts only — never a note's title or body) + `scope` on `mcp_consent`/`mcp_token_issued`; `security.TAG_RE` public alias added. **Zero new Python dependencies; no new Tailwind class (verified against `app.af95b30d.css`), so no recompile/rehash.** **Ops prerequisite: the scope is frozen at issuance and copied across refresh rotation — the connector must be removed in claude.ai, `python -m scripts.revoke_mcp_tokens` run, and re-added with the box ticked.**
+
+### Portail client — socle + transmission de documents (spec « L1 », July 2026, ✅ code complete — **infrastructure pending**)
+
+- **Portail L1** — second App Engine service `portail` (package `athena/client/`, `athena/portail.yaml`, F1, SA `portail-svc` à moindre privilège) : client invité → connexion Firebase par **lien courriel** (usage unique, lié à l'adresse) → téléversement **directement vers GCS** (sessions reprenables, `origin=` pour le CORS, `size=` appliqué par GCS) dans le bucket de quarantaine → enveloppe create-only → tâche Cloud Tasks vers le gestionnaire du service principal (SHA-512 en flux, manifeste, accusé A.2 derrière un test-and-set transactionnel) → revue dans « **Réception** » (versement restreint au vocabulaire documents existant, refus, lot traité → archive 365 j). Réconciliation cron 15 min (« toute enveloppe finit traitée » — Cloud Tasks n'a pas de file de rebut). Fondations phase J introduites : `utils/graph.py` + `utils/courriel.py` (Graph client credentials, sans msal), la file + le motif de gestionnaire, `cron.yaml`. Garde-fous §1 : claim `portail: True` refusé à la session du principal ; auto-invitation du juriste refusée ; repli « lien manuel » quand Graph n'est pas configuré. Dépendances : + `google-cloud-tasks`, `requests` promu direct. Tailwind : `@source client/templates` + re-hachage (`app.4a727cd9.css`). Specs : `SPEC_PHASE_L1_PORTAIL_SOCLE_DOCUMENTS.md` (déviations documentées : paquet `athena/client/` au lieu de `portail/` racine ; versement restreint ; événements snake_case sous `pallas.portail`).
+- **Ops prerequisites (ordered — BEFORE pushing the CI-wiring commit):**
+  1. `gcloud services enable cloudtasks.googleapis.com`
+  2. `gcloud iam service-accounts create portail-svc`
+  3. Bucket `athena-pallas-portail-quarantaine` — **région = région App Engine (`gcloud app describe`)**, UBLA, non public + cycle de vie (submissions 90 j / archive 365 j, JSON au §12.3 de la spec)
+  4. IAM : `portail-svc` → `storage.objectCreator` (bucket), `datastore.viewer` (condition `resource.name.startsWith(".../databases/portail")`), `cloudtasks.enqueuer` (file), `logging.logWriter` + `cloudtrace.agent`, `secretmanager.secretAccessor` sur `portail-secret-key` + `firebase-api-key` ; SA principal → `storage.objectAdmin` (bucket) + `secretAccessor` sur `graph-client-secret` (+ vérifier son droit d'enfilage sur la file — la réconciliation ré-enfile) ; SA Cloud Build → `iam.serviceAccountUser` sur `portail-svc`
+  5. `gcloud firestore databases create --database=portail --location=<région>` ; `gcloud tasks queues create portail --location=<région>` puis update `--max-attempts=10 --min-backoff=10s --max-backoff=600s --max-concurrent-dispatches=3 --max-dispatches-per-second=5`
+  6. **Pare-feu App Engine : Autoriser `0.1.0.2/32` en priorité haute** (Cloud Tasks + cron — vérifier l'adresse dans la doc)
+  7. Entra ID : app « Pallas-Athena-Graph », permission d'application `Mail.Send` + consentement admin ; secret → `graph-client-secret` ; `GRAPH_TENANT_ID`/`GRAPH_CLIENT_ID`/`GRAPH_SENDER_UPN` dans `app.yaml` (recommandé : `ApplicationAccessPolicy` restreignant à la boîte du juriste)
+  8. Console Firebase → Authentication : activer la connexion par **lien courriel** ; ajouter `portail.poirierlavoie.ca` aux domaines autorisés
+  9. Clé reCAPTCHA Enterprise : ajouter le domaine du portail (App Check D-2)
+  10. Mappage `portail.poirierlavoie.ca` + DNS Cloudflare (CNAME proxied, Full Strict) ; **aucune** application Access sur cet hôte ; WAF + limite de débit (~120 req/min/IP) ; Transform Rule `X-Origin-Auth` zone-wide
+  11. Secrets `portail-secret-key` + `graph-client-secret`
+  12. Pousser le commit CI (portail.yaml + dispatch.yaml + cron.yaml) ; essai bout en bout avec un **alias** (jamais le courriel d'autorisation — §1.3), y compris l'accusé + sa copie « Éléments envoyés » et le test de panne (`gcloud tasks queues pause portail`)
 
 ### Proposed / not yet implemented
 
