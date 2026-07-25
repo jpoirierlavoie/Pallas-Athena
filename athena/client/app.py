@@ -78,6 +78,19 @@ def create_portail_app() -> Flask:
         # large files upload; flask-wtf's default 1 h token lifetime would
         # break the finalization POST. Tokens stay valid for the session.
         WTF_CSRF_TIME_LIMIT=None,
+        # The portal deliberately sends Referrer-Policy: no-referrer (spec
+        # §10 — a sign-in link must never leak through a Referer). But
+        # flask-wtf's SSL-strict CSRF check REQUIRES a Referer on HTTPS and
+        # 400s ("Session invalide") when it is absent — which no-referrer
+        # guarantees. Disable that referer check; CSRF stays fully enforced
+        # by the session-token match (HttpOnly cookie, unreadable by JS) plus
+        # SameSite=Lax, which is the modern defense. The main service keeps
+        # the referer check because its policy still emits a same-origin
+        # Referer. (Invisible to the HTTP test client — is_secure is False
+        # there, so the strict check never runs; only production HTTPS trips
+        # it. Pinned by tests/test_portail_app.py with an https-simulated
+        # request.)
+        WTF_CSRF_SSL_STRICT=False,
         FIREBASE_PROJECT_ID=os.environ.get("FIREBASE_PROJECT_ID", ""),
         FIREBASE_APP_ID=os.environ.get("FIREBASE_APP_ID", ""),
         FIREBASE_API_KEY=firebase_api_key(),

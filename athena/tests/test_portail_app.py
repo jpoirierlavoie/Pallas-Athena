@@ -160,6 +160,40 @@ def test_post_without_csrf_token_is_400(web, connecte):
     assert "erreur" in reponse.get_json()
 
 
+def test_csrf_ssl_strict_disabled_for_no_referrer_policy(app):
+    # Regression: the portal sends Referrer-Policy: no-referrer, so an HTTPS
+    # request carries NO Referer. flask-wtf's SSL-strict check would 400
+    # ("Session invalide") on such a request even WITH a valid token — which
+    # broke /session in production while the HTTP test client (is_secure
+    # False) never tripped it. With WTF_CSRF_SSL_STRICT False, a valid token
+    # over HTTPS + no Referer must pass CSRF and reach the view logic.
+    assert app.config["WTF_CSRF_SSL_STRICT"] is False
+
+    import re
+    # Both requests on the same HTTPS origin so the session cookie (and its
+    # CSRF secret) is retained, and is_secure is True (where the strict check
+    # lives).
+    base = "https://portail.poirierlavoie.ca"
+    web = app.test_client()
+    # GET /entree renders <meta name="csrf-token" ...>, which mints a real
+    # token AND stores its secret in the session cookie the client retains.
+    html = web.get("/entree", base_url=base).get_data(as_text=True)
+    token = re.search(r'name="csrf-token" content="([^"]+)"', html).group(1)
+
+    # Production edge: HTTPS, no Referer header.
+    reponse = web.post(
+        "/session",
+        data=json.dumps({"token": "x", "i": "inv1"}),
+        content_type="application/json",
+        headers={"X-CSRFToken": token},
+        base_url=base,
+    )
+    # CSRF must PASS (not 400) → the /session logic runs and refuses the fake
+    # Firebase token with its own 403. A 400 here would be the CSRF regression.
+    assert reponse.status_code != 400, reponse.get_data(as_text=True)
+    assert reponse.status_code == 403
+
+
 # ── §13.c — televersement validation ─────────────────────────────────────
 
 
