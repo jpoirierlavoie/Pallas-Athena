@@ -1,0 +1,13 @@
+# Table de routage inter-services App Engine (portail client L1).
+#
+# ⚠️ PIÈGE : `gcloud app deploy dispatch.yaml` REMPLACE LA TABLE ENTIÈRE.
+# Toute règle future doit être FUSIONNÉE dans CE fichier puis le fichier
+# complet redéployé — un fichier partiel effacerait silencieusement les
+# autres règles.
+#
+# Les hôtes non appariés (athena.poirierlavoie.ca, *.appspot.com, …)
+# continuent d'atteindre le service « default » — aucune règle à ajouter
+# pour eux.
+dispatch:
+  - url: "portail.poirierlavoie.ca/*"
+    service: portail

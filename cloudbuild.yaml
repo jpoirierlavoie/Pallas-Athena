@@ -11,33 +11,56 @@ steps:
         pip install -r athena/requirements-dev.txt
         cd athena && python -m pytest tests/ -q
 
-  # Step 2: Deploy to App Engine
+  # Step 2: Deploy the default service
   - name: 'gcr.io/cloud-builders/gcloud'
     args: ['app', 'deploy', 'app.yaml', '--quiet', '--version=$SHORT_SHA']
     dir: 'athena'
 
-  # Step 3: Conditional Cleanup (Keeps the 3 most recent versions)
+  # Step 2b: Deploy the « portail » service (portail client L1) — same source
+  # dir, own yaml. MUST come after the default service; requires the L1 infra
+  # checklist (SA portail-svc + IAM) to exist or the deploy fails the build.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args: ['app', 'deploy', 'portail.yaml', '--quiet', '--version=$SHORT_SHA']
+    dir: 'athena'
+
+  # Step 2c: Dispatch rules — AFTER the portail service exists (a rule naming
+  # an undeployed service is refused). ⚠ deploy REPLACES the whole table;
+  # dispatch.yaml at the repo root is the single source of truth.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args: ['app', 'deploy', 'dispatch.yaml', '--quiet']
+
+  # Step 2d: Cron — ⚠ deploy REPLACES every cron job; cron.yaml at the repo
+  # root is the single complete table (future phases MERGE into it).
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args: ['app', 'deploy', 'cron.yaml', '--quiet']
+
+  # Step 3: Conditional Cleanup (keeps the 3 most recent versions PER SERVICE).
+  # Both services share $SHORT_SHA version ids, so every delete MUST carry
+  # --service: a bare `gcloud app versions delete <id>` targets the id in
+  # EVERY service — it would delete a still-serving portail version (build
+  # failure) or silently prune the wrong service.
   - name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Get versions receiving 0% traffic, excluding the 3 most recent
-        OLD_VERSIONS=$$(gcloud app versions list \
-          --service=default \
-          --filter="traffic_split=0" \
-          --format="value(version.id)" \
-          --sort-by="~version.createTime" | tail -n +4)
+        for SERVICE in default portail; do
+          OLD_VERSIONS=$$(gcloud app versions list \
+            --service="$$SERVICE" \
+            --filter="traffic_split=0" \
+            --format="value(version.id)" \
+            --sort-by="~version.createTime" | tail -n +4)
 
-        if [ -n "$$OLD_VERSIONS" ]; then
-          gcloud app versions delete $$OLD_VERSIONS --quiet
-        else
-          echo "Cleanup skipped: No versions beyond the safety buffer found."
-        fi
+          if [ -n "$$OLD_VERSIONS" ]; then
+            gcloud app versions delete --service="$$SERVICE" $$OLD_VERSIONS --quiet
+          else
+            echo "Cleanup skipped for $$SERVICE: no versions beyond the safety buffer."
+          fi
+        done
 
-timeout: '1200s'
+timeout: '1800s'
 options:
-  logging: CLOUD_LOGGING_ONLY 
+  logging: CLOUD_LOGGING_ONLY
 
 substitutions:
   _SERVICE_NAME: default

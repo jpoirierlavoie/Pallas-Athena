@@ -1,0 +1,15 @@
+# Tâches cron App Engine — ce fichier est LA table complète du projet.
+#
+# ⚠️ PIÈGE : `gcloud app deploy cron.yaml` REMPLACE L'ENSEMBLE des tâches
+# cron de l'application. Toute phase ultérieure (L2 y ajoutera la
+# synchronisation Bookings) FUSIONNE dans CE fichier et redéploie le
+# fichier COMPLET — le remplacer par une entrée unique arrêterait
+# silencieusement la réconciliation du portail.
+#
+# Le gestionnaire vérifie X-Appengine-Cron: true (retiré de tout trafic
+# externe par App Engine) ; le pare-feu doit autoriser 0.1.0.2/32.
+cron:
+- description: portail — réconciliation des soumissions (spec L1 §8.4)
+  url: /taches/portail/reconciliation
+  schedule: every 15 minutes
+  target: default
