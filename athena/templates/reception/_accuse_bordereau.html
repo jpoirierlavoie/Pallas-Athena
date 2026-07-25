@@ -1,0 +1,111 @@
+{# Accusé de réception « bordereau » — corps du courriel (portail L1).
+   Rendu côté service principal par routes/taches_portail._corps_accuse et
+   expédié par Graph. AUTOESCAPÉ (noms de fichiers / parties / intitulés =
+   données client). STYLES EN LIGNE seulement : les clients courriel
+   ignorent les classes CSS et les blocs <style>.
+
+   Contexte attendu :
+     quand        : chaîne « 25 juillet 2026 à 13 h 09 » (date de RÉCEPTION)
+     client       : {nom, organisation, adresse_lignes[], telephone, courriel}
+     cabinet      : {nom, organisation, adresse_lignes[], telephone, telecopieur}
+     file_number  : « Notre référence » (vide → ligne omise)
+     dossier      : {court_file_number, title} ou None (bloc omis si None)
+     fichiers     : [{nom, taille, sha512}, …]
+#}
+<div style="font-family: Arial, sans-serif; font-size: 12px; color: #333; max-width: 650px; margin: auto; border: 1px solid #ccc; padding: 20px;">
+  <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 15px;">
+    <h2 style="margin: 0; font-size: 16px;">ACCUSÉ DE RÉCEPTION / ACKNOWLEDGMENT OF RECEIPT</h2>
+  </div>
+
+  {# ── Ligne d'accusé (date de réception) ─────────────────────────── #}
+  <p style="margin: 0 0 15px 0;">Nous accusons réception, le {{ quand }}, des fichiers suivants.</p>
+
+  {# ── Expéditeur (client) / Destinataire (cabinet) ───────────────── #}
+  <table width="100%" cellspacing="0" cellpadding="0" style="border-collapse: collapse; margin-bottom: 15px; table-layout: fixed;">
+    <tr>
+      <td style="padding-right: 10px; vertical-align: top;">
+        <table width="100%" cellspacing="0" cellpadding="5" style="border-collapse: collapse; border: 1px solid #000;">
+          <tr style="background-color: #e0e0e0;">
+            <td style="border-bottom: 1px solid #000;"><strong>EXPÉDITEUR / SENDER</strong></td>
+          </tr>
+          <tr>
+            <td width="50%" style="border: 1px solid #000; vertical-align: top;">
+              {{ client.nom }}<br>
+              {% if client.organisation %}<strong style="text-transform: uppercase;">{{ client.organisation }}</strong><br>{% endif %}
+              {% for ligne in client.adresse_lignes %}{{ ligne }}<br>{% endfor %}
+              {% if client.telephone %}Téléphone : {{ client.telephone }}<br>{% endif %}
+              {% if client.courriel %}Courriel : {{ client.courriel }}{% endif %}
+            </td>
+          </tr>
+        </table>
+      </td>
+      <td style="padding-left: 10px; vertical-align: top;">
+        <table width="100%" cellspacing="0" cellpadding="5" style="border-collapse: collapse; border: 1px solid #000;">
+          <tr style="background-color: #e0e0e0;">
+            <td style="border-bottom: 1px solid #000;"><strong style="text-transform: uppercase;">DESTINATAIRE / RECIPIENT</strong></td>
+          </tr>
+          <tr>
+            <td width="50%" style="border: 1px solid #000; vertical-align: top;">
+              {{ cabinet.nom }}<br>
+              {% if cabinet.organisation %}<strong style="text-transform: uppercase;">{{ cabinet.organisation }}</strong><br>{% endif %}
+              {% for ligne in cabinet.adresse_lignes %}{{ ligne }}<br>{% endfor %}
+              {% if cabinet.telephone %}Téléphone : {{ cabinet.telephone }}<br>{% endif %}
+              {% if cabinet.telecopieur %}Télécopieur : {{ cabinet.telecopieur }}<br>{% endif %}
+              {% if file_number %}Notre référence : {{ file_number }}{% endif %}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  {# ── Dossier judiciaire (seulement si un dossier est désigné) ────── #}
+  {% if dossier %}
+  <table width="100%" cellspacing="0" cellpadding="5" style="border-collapse: collapse; margin-bottom: 15px; border: 1px solid #000;">
+    <tr style="background-color: #e0e0e0;">
+      <td colspan="2" style="border-bottom: 1px solid #000;"><strong style="text-transform: uppercase;">DOSSIER JUDICIAIRE / JUDICIAL FILE</strong></td>
+    </tr>
+    <tr>
+      <td width="30%" style="width: 30%; border-bottom: 1px solid #eee;">N° de dossier / File N° :</td>
+      <td style="border-bottom: 1px solid #eee;">{{ dossier.court_file_number }}</td>
+    </tr>
+    <tr>
+      <td width="30%" style="width: 30%;">Intitulé / Style :</td>
+      <td>{{ dossier.title }}</td>
+    </tr>
+  </table>
+  {% endif %}
+
+  {# ── Fichiers transmis (un bloc par fichier) ────────────────────── #}
+  <table width="100%" cellspacing="0" cellpadding="5" style="border-collapse: collapse; margin-bottom: 15px; border: 1px solid #000;">
+    <tr style="background-color: #e0e0e0;">
+      <td colspan="2" style="border-bottom: 1px solid #000;"><strong style="text-transform: uppercase;">FICHIERS TRANSMIS / TRANSMITTED FILES</strong></td>
+    </tr>
+    {% for f in fichiers %}
+    <tr>
+      <td width="30%" style="width: 30%; border-bottom: 1px solid #eee;">Fichier / File :</td>
+      <td style="border-bottom: 1px solid #eee; word-break: break-word;">{{ f.nom }}</td>
+    </tr>
+    <tr>
+      <td width="30%" style="width: 30%; border-bottom: 1px solid #eee;">Taille / Size :</td>
+      <td style="border-bottom: 1px solid #eee;">{{ f.taille }}</td>
+    </tr>
+    <tr>
+      <td width="30%" style="width: 30%; {% if not loop.last %}border-bottom: 1px solid #000;{% endif %}">Empreinte / Fingerprint :</td>
+      <td style="word-break: break-all; overflow-wrap: anywhere; {% if not loop.last %}border-bottom: 1px solid #000;{% endif %}">SHA2-512 : {{ f.sha512 }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  {# ── Portée de l'accusé (spec Annexe A.2) ───────────────────────── #}
+  <p style="font-size: 11px; color: #444; margin: 0 0 12px 0; text-align: justify;">
+    L'empreinte SHA-512 est une signature numérique de l'intégrité de chaque
+    fichier tel que reçu. Le présent accusé confirme uniquement la
+    <strong>réception technique</strong> des fichiers énumérés ; il ne
+    constitue ni une opinion sur leur contenu, ni leur versement au dossier,
+    ni la formation ou la modification d'un mandat.
+  </p>
+
+  {# ── Avis de confidentialité (pied du bordereau) ────────────────── #}
+  <div style="font-size: 10px; color: #666; text-align: justify; border-top: 1px solid #000; padding-top: 10px;"><strong>AVIS DE CONFIDENTIALITÉ : </strong>Ce document est destiné uniquement à la personne ou à l'entité à qui il est adressé. L'information apparaissant dans ce document est de nature légalement privilégiée et confidentielle. Si vous n'êtes pas le destinataire visé ou la personne chargée de le remettre à son destinataire, vous êtes, par la présente, avisé que toute lecture, usage, copie ou communication du contenu de ce document est strictement interdit. / <strong>CONFIDENTIALITY NOTICE : </strong>This document is intended solely for the individual or entity to whom it is addressed. The information contained in this document is legally privileged and confidential. If you are not the intended recipient or the person responsible for delivering it to the intended recipient, you are hereby advised that you are strictly prohibited from reading, using, copying or disseminating the contents of this document.</div>
+</div>

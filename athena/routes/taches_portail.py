@@ -18,19 +18,21 @@ import logging
 from datetime import datetime, timezone
 
 from firebase_admin import storage
-from flask import Blueprint, abort, jsonify, request
-from markupsafe import escape
+from flask import Blueprint, abort, jsonify, render_template, request
 
 from client.config import PORTAIL_BUCKET, PORTAIL_QUEUE
 from client.services import taches
 from config import Config
 from models import portail_invitation as pi
+from models.dossier import get_dossier
+from models.partie import display_name, get_partie
 from services import portail_emission as emission
 from tz import to_mtl
 from utils import courriel
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_portail_event
+from utils.validators import format_phone_display
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,21 @@ def _sha512_blob(blob) -> str:
         return sha512_flux(f)
 
 
-# ── Accusé de réception (gabarit A.2) ────────────────────────────────────
+# ── Accusé de réception « bordereau » (spec A.2) ─────────────────────────
+
+# Bloc DESTINATAIRE (cabinet) — coordonnées statiques du bordereau fourni,
+# SANS le cellulaire (décision utilisateur 2026-07-25). Migration vers
+# config.FIRM_* (partagé avec les factures) = suite possible.
+_CABINET = {
+    "nom": "Me Jason Poirier Lavoie",
+    "organisation": "Poirier Lavoie, avocat",
+    "adresse_lignes": [
+        "9-4970, chemin de la Côte-des-Neiges",
+        "Montréal (Québec) H3V 1A4",
+    ],
+    "telephone": "(514) 737-2525",
+    "telecopieur": "(514) 737-6565",
+}
 
 
 def _taille_lisible(octets: int) -> str:
@@ -75,35 +91,103 @@ def _taille_lisible(octets: int) -> str:
     return f"{octets} o"
 
 
-def _corps_accuse(display_label: str, fichiers: list[dict],
-                  quand_utc: datetime) -> tuple[str, str]:
+def _adresse_lignes(partie: dict) -> list[str]:
+    """3-line letter address (mirror of templates/parties/_address_letter)."""
+    def champ(suffixe: str) -> str:
+        return str(partie.get(f"address_{suffixe}") or "").strip()
+
+    provinces = {
+        "QC": "Québec", "ON": "Ontario", "BC": "Colombie-Britannique",
+        "AB": "Alberta", "MB": "Manitoba", "SK": "Saskatchewan",
+        "NB": "Nouveau-Brunswick", "NS": "Nouvelle-Écosse",
+        "PE": "Île-du-Prince-Édouard", "NL": "Terre-Neuve-et-Labrador",
+        "YT": "Yukon", "NT": "Territoires du Nord-Ouest", "NU": "Nunavut",
+    }
+    pays = {"CA": "Canada", "US": "États-Unis"}
+    street, unit = champ("street"), champ("unit")
+    city = champ("city")
+    prov = provinces.get(champ("province").upper(), champ("province"))
+    postal = champ("postal_code")
+    country = pays.get(champ("country").upper(), champ("country"))
+
+    lignes: list[str] = []
+    ligne1 = f"{unit}-{street}" if unit and street else street
+    if ligne1:
+        lignes.append(ligne1)
+    ligne2 = city
+    if prov:
+        ligne2 = f"{ligne2} ({prov})" if ligne2 else f"({prov})"
+    if postal:
+        ligne2 = f"{ligne2} {postal}".strip()
+    if ligne2.strip():
+        lignes.append(ligne2.strip())
+    if country:
+        lignes.append(country)
+    return lignes
+
+
+def _client_expediteur(invitation: dict, partie: dict | None) -> dict:
+    """Build the SENDER block. With a party → full contact; else name+email."""
+    courriel_client = invitation.get("email", "")
+    if partie is None:
+        return {
+            "nom": invitation.get("client_name") or courriel_client,
+            "organisation": "",
+            "adresse_lignes": [],
+            "telephone": "",
+            "courriel": courriel_client,
+        }
+    telephone = (
+        partie.get("phone_cell") or partie.get("phone_home")
+        or partie.get("phone_work") or ""
+    )
+    organisation = (
+        partie.get("organization")
+        if partie.get("type") != "organization" else ""
+    )
+    return {
+        "nom": display_name(partie) or invitation.get("client_name") or courriel_client,
+        "organisation": organisation or "",
+        "adresse_lignes": _adresse_lignes(partie),
+        "telephone": format_phone_display(telephone) if telephone else "",
+        "courriel": partie.get("email") or courriel_client,
+    }
+
+
+def _corps_accuse(invitation: dict, fichiers: list[dict], quand_utc: datetime,
+                  partie: dict | None, dossier: dict | None) -> tuple[str, str]:
+    """Render the accusé « bordereau » email. Returns (objet, corps_html)."""
+    display_label = invitation.get("display_label", "")
     objet = f"Accusé de réception — {display_label}"
     local = to_mtl(quand_utc)
     quand = f"{format_date_fr(local.date())} à {local.strftime('%H h %M')}"
-    lignes = "".join(
-        "<tr>"
-        f"<td style=\"padding:4px 12px 4px 0;\">{escape(f['name'])}</td>"
-        f"<td style=\"padding:4px 12px 4px 0; white-space:nowrap;\">"
-        f"{_taille_lisible(int(f.get('size_gcs') or 0))}</td>"
-        f"<td style=\"padding:4px 0; font-family:monospace; font-size:11px; "
-        f"word-break:break-all;\">{f.get('sha512') or ''}</td>"
-        "</tr>"
+
+    liste = [
+        {
+            "nom": f.get("name") or "",
+            "taille": _taille_lisible(int(f.get("size_gcs") or 0)),
+            "sha512": (f.get("sha512") or "").upper(),
+        }
         for f in fichiers
         if f.get("sha512")
-    )
-    corps = (
-        "<p>Bonjour,</p>"
-        f"<p>Nous accusons réception, le {quand}, des fichiers suivants :</p>"
-        "<table style=\"border-collapse:collapse; font-size:13px;\">"
-        "<tr><th align=\"left\" style=\"padding:4px 12px 4px 0;\">Fichier</th>"
-        "<th align=\"left\" style=\"padding:4px 12px 4px 0;\">Taille</th>"
-        "<th align=\"left\" style=\"padding:4px 0;\">Empreinte SHA-512</th></tr>"
-        f"{lignes}</table>"
-        "<p>L'empreinte SHA-512 est une signature numérique de l'intégrité de "
-        "chaque fichier tel que reçu. Le présent accusé confirme uniquement la "
-        "<strong>réception technique</strong> des fichiers énumérés ; il ne "
-        "constitue ni une opinion sur leur contenu, ni leur versement au "
-        "dossier, ni la formation ou la modification d'un mandat.</p>"
+    ]
+    dossier_ctx = None
+    file_number = ""
+    if dossier:
+        dossier_ctx = {
+            "court_file_number": dossier.get("court_file_number", ""),
+            "title": dossier.get("title", ""),
+        }
+        file_number = dossier.get("file_number", "")
+
+    corps = render_template(
+        "reception/_accuse_bordereau.html",
+        quand=quand,
+        client=_client_expediteur(invitation, partie),
+        cabinet=_CABINET,
+        file_number=file_number,
+        dossier=dossier_ctx,
+        fichiers=liste,
     )
     return objet, corps
 
@@ -213,6 +297,16 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
     # it would only burn queue attempts on no-ops.
     if pi.poser_accuse(inv_id, batch):
         invitation = pi.lire_invitation(inv_id) or {}
+        # Sender (client) + judicial-file block resolved main-side; a lookup
+        # failure degrades the block, never the accusé (best-effort).
+        try:
+            partie = get_partie(invitation.get("partie_id") or "")
+        except Exception:
+            partie = None
+        try:
+            dossier = get_dossier(invitation.get("dossier_id") or "")
+        except Exception:
+            dossier = None
         # L'accusé atteste la date de RÉCEPTION (l'enveloppe écrite = la
         # soumission acquise, §7.4) — jamais l'heure de traitement, qui peut
         # suivre de plusieurs minutes (file, réconciliation).
@@ -220,9 +314,7 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
             quand = datetime.fromisoformat(manifeste.get("submitted_at") or "")
         except ValueError:
             quand = datetime.now(timezone.utc)
-        objet, corps = _corps_accuse(
-            invitation.get("display_label", ""), recus, quand,
-        )
+        objet, corps = _corps_accuse(invitation, recus, quand, partie, dossier)
         try:
             courriel.envoyer(invitation.get("email", ""), objet, corps)
             log_portail_event(

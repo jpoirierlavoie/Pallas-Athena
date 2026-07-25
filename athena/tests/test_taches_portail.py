@@ -28,9 +28,16 @@ with mock.patch("google.cloud.firestore.Client"):
 from flask import Flask  # noqa: E402
 
 
+_TEMPLATES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"
+)
+
+
 @pytest.fixture()
 def web():
-    app = Flask(__name__)
+    # template_folder set so _corps_accuse's render_template finds the
+    # bordereau email template.
+    app = Flask(__name__, template_folder=_TEMPLATES)
     app.config["SECRET_KEY"] = "test-secret"
     app.config["TESTING"] = True
     app.register_blueprint(tp.taches_portail_bp)
@@ -192,11 +199,14 @@ def test_ouverte_passe_par_le_cas_transactionnel(web, monkeypatch):
 # ── « soumise » : manifeste + idempotence (§13.m) ────────────────────────
 
 
-def _traiter(web, monkeypatch, bucket, inv, envoyer=None):
+def _traiter(web, monkeypatch, bucket, inv, envoyer=None,
+             partie=None, dossier=None):
     monkeypatch.setattr(tp, "_bucket", lambda: bucket)
     monkeypatch.setattr(tp.pi, "lire_invitation", lambda i: dict(inv))
     monkeypatch.setattr(tp.pi, "ajouter_soumission",
                         lambda *a, **k: True)
+    monkeypatch.setattr(tp, "get_partie", lambda p: partie)
+    monkeypatch.setattr(tp, "get_dossier", lambda d: dossier)
     accuses = inv.setdefault("accuses", {})
 
     def _poser(inv_id, batch):
@@ -235,10 +245,64 @@ def test_soumise_ecrit_manifeste_et_envoie_accuse(web, monkeypatch):
     destinataire, objet, corps = envoyer.call_args.args
     assert destinataire == "client@exemple.com"
     assert objet.startswith("Accusé de réception")
-    assert fichier["sha512"] in corps
+    assert fichier["sha512"].upper() in corps  # empreinte en MAJUSCULES
     assert "réception technique" in corps
     # L'accusé atteste la date de RÉCEPTION (enveloppe), pas de traitement.
     assert "20 juillet 2026" in corps
+    # Bordereau : en-tête accusé (pas « bordereau d'envoi »), colonnes,
+    # destinataire = cabinet, fichier listé.
+    assert "ACCUSÉ DE RÉCEPTION" in corps
+    assert "EXPÉDITEUR" in corps and "DESTINATAIRE" in corps
+    assert "Me Jason Poirier Lavoie" in corps
+    assert "a.pdf" in corps
+    assert "110, 133" not in corps  # ligne C.p.c. retirée
+
+
+def test_accuse_sans_dossier_ni_partie_expediteur_minimal(web, monkeypatch):
+    bucket = _bucket_soumis()
+    inv = _inv(client_name="Jean Tremblay")
+    reponse, envoyer = _traiter(web, monkeypatch, bucket, inv)  # partie/dossier None
+    assert reponse.status_code == 200
+    corps = envoyer.call_args.args[2]
+    # Expéditeur = nom + courriel seuls ; aucun bloc dossier ni référence.
+    assert "Jean Tremblay" in corps
+    assert "DOSSIER JUDICIAIRE" not in corps
+    assert "Notre référence" not in corps
+
+
+def test_accuse_avec_dossier_bloc_judiciaire_et_reference(web, monkeypatch):
+    bucket = _bucket_soumis()
+    inv = _inv(dossier_id="d1", client_name="Jean Tremblay")
+    dossier = {"file_number": "2026-002",
+               "court_file_number": "500-22-294848-265",
+               "title": "DESJARDINS c. BELANGER"}
+    reponse, envoyer = _traiter(web, monkeypatch, bucket, inv, dossier=dossier)
+    assert reponse.status_code == 200
+    corps = envoyer.call_args.args[2]
+    assert "DOSSIER JUDICIAIRE" in corps
+    assert "500-22-294848-265" in corps
+    assert "DESJARDINS c. BELANGER" in corps
+    assert "Notre référence : 2026-002" in corps
+
+
+def test_accuse_avec_partie_expediteur_complet(web, monkeypatch):
+    bucket = _bucket_soumis()
+    inv = _inv(partie_id="p1")
+    partie = {
+        "type": "individual", "prefix": "M.", "first_name": "Jean",
+        "last_name": "Tremblay", "email": "jean@exemple.com",
+        "phone_cell": "+15145551234",
+        "address_street": "10 rue Principale", "address_city": "Montréal",
+        "address_province": "QC", "address_postal_code": "H1A 1A1",
+        "address_country": "CA",
+    }
+    reponse, envoyer = _traiter(web, monkeypatch, bucket, inv, partie=partie)
+    assert reponse.status_code == 200
+    corps = envoyer.call_args.args[2]
+    assert "M. Jean Tremblay" in corps
+    assert "10 rue Principale" in corps
+    assert "Montréal (Québec) H1A 1A1" in corps
+    assert "(514) 555-1234" in corps  # téléphone formaté
 
 
 def test_soumise_rejouee_aucun_second_accuse_ni_rehash(web, monkeypatch):
