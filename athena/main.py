@@ -162,6 +162,15 @@ def create_app() -> Flask:
     csrf.exempt(carddav_bp)
     csrf.exempt(dossier_dav_bp)
 
+    # ── Portail client (spec L1): gestionnaire Cloud Tasks + cron ───────
+    from routes.taches_portail import taches_portail_bp
+    app.register_blueprint(taches_portail_bp)
+    # Machine blueprint: reached only by App Engine-internal dispatches
+    # (the X-AppEngine-* header guards inside the views are the proof of
+    # origin). Its OWN blueprint — never widen a browser blueprint's
+    # exemption (Security Rules).
+    csrf.exempt(taches_portail_bp)
+
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
     from mcp import mcp_bp, register_mcp
     register_mcp(app)
@@ -186,6 +195,12 @@ def create_app() -> Flask:
         # App Engine internal requests (warmup, cron) arrive on the appspot
         # host without Cloudflare headers — they must not be blocked.
         if request.path.startswith("/_ah/"):
+            return None
+        # Cloud Tasks / cron dispatches (portail L1) also hit the appspot
+        # host; their X-AppEngine-* headers are stripped from all external
+        # traffic, so presence proves internal origin (security.py).
+        from security import is_appengine_internal_request
+        if is_appengine_internal_request():
             return None
         host = request.host.split(":", 1)[0].lower().rstrip(".")
         if host == "appspot.com" or host.endswith(".appspot.com"):

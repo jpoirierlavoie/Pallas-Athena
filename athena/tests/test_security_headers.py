@@ -288,3 +288,33 @@ def test_template_sub_routes_stay_at_1mb():
 
 def test_other_routes_still_capped_at_1mb():
     assert _post_size("/api", _2MB) == 413
+
+
+# ── Origin secret vs App Engine-internal traffic (portail L1 §8.3) ─────────
+
+def test_origin_secret_blocks_without_header():
+    app = _make_app(CF_ORIGIN_SECRET="s3cret")
+    assert app.test_client().get("/").status_code == 403
+
+
+def test_origin_secret_passes_with_header():
+    app = _make_app(CF_ORIGIN_SECRET="s3cret")
+    reponse = app.test_client().get("/", headers={"X-Origin-Auth": "s3cret"})
+    assert reponse.status_code == 200
+
+
+def test_origin_secret_bypassed_only_for_internal_dispatch_headers():
+    # Cloud Tasks / cron traffic (source 0.1.0.2) carries X-AppEngine-* headers
+    # that App Engine STRIPS from all external traffic — presence proves the
+    # dispatch is internal, so the origin secret must not block it. The header
+    # VALUE is not trusted here; each machine handler re-checks its own.
+    app = _make_app(CF_ORIGIN_SECRET="s3cret")
+    web = app.test_client()
+    assert web.get(
+        "/", headers={"X-AppEngine-QueueName": "portail"}
+    ).status_code == 200
+    assert web.get(
+        "/", headers={"X-Appengine-Cron": "true"}
+    ).status_code == 200
+    # A plain external request (no internal header) is still refused.
+    assert web.get("/").status_code == 403

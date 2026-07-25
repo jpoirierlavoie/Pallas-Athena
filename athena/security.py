@@ -282,6 +282,22 @@ def _enforce_request_size() -> Optional[Response]:
 # Transform Rule to inject the header at the edge, and pair with an App
 # Engine firewall restricted to Cloudflare IP ranges.  Unset = check disabled
 # (local dev, pre-rollout).
+def is_appengine_internal_request() -> bool:
+    """True for genuine Cloud Tasks / cron traffic (portail L1 §8.3).
+
+    App Engine STRIPS every ``X-AppEngine-*`` header from external traffic —
+    including requests arriving through Cloudflare — so the mere presence of
+    ``X-AppEngine-QueueName`` or ``X-Appengine-Cron`` proves the request was
+    dispatched internally (source 0.1.0.2). This gates the origin-secret and
+    appspot-host bypasses; AUTHENTICITY (which queue, cron yes/no) is
+    re-checked inside the handlers themselves.
+    """
+    return bool(
+        request.headers.get("X-AppEngine-QueueName")
+        or request.headers.get("X-Appengine-Cron")
+    )
+
+
 def _enforce_origin_secret() -> Optional[Response]:
     """Reject requests missing the Cloudflare-injected origin header."""
     secret = current_app.config.get("CF_ORIGIN_SECRET", "")
@@ -289,6 +305,10 @@ def _enforce_origin_secret() -> Optional[Response]:
         return None
     # App Engine internal requests (warmup, cron) never transit Cloudflare.
     if request.path.startswith("/_ah/"):
+        return None
+    # Cloud Tasks / cron dispatches (portail L1) — header presence is
+    # spoof-proof, see is_appengine_internal_request().
+    if is_appengine_internal_request():
         return None
     supplied = request.headers.get("X-Origin-Auth", "")
     if not hmac.compare_digest(supplied, secret):
