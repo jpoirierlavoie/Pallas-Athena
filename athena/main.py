@@ -162,7 +162,20 @@ def create_app() -> Flask:
     csrf.exempt(carddav_bp)
     csrf.exempt(dossier_dav_bp)
 
-    # ── Portail client (spec L1): gestionnaire Cloud Tasks + cron ───────
+    # ── Portail client (spec L1): Réception + gestionnaire de tâches ────
+    from routes.reception import compteur_reception, reception_bp
+    app.register_blueprint(reception_bp)
+
+    # Nav badge: invitations awaiting review. Cached 60 s in-process and
+    # fail-open (None → no badge) so a missing « portail » database can
+    # never break a page render.
+    @app.context_processor
+    def inject_reception_badge() -> dict:
+        try:
+            return {"reception_count": compteur_reception()}
+        except Exception:
+            return {"reception_count": None}
+
     from routes.taches_portail import taches_portail_bp
     app.register_blueprint(taches_portail_bp)
     # Machine blueprint: reached only by App Engine-internal dispatches

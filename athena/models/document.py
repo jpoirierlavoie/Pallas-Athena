@@ -26,6 +26,10 @@ COLLECTION = "documents"
 # per-dossier folder (Phase H.2).
 GENERATED_FOLDER_NAME = "Projets"
 
+# Documents versés depuis la quarantaine du portail client (spec L1 §9.2)
+# land in this per-dossier folder (routes/reception.py).
+PORTAL_FOLDER_NAME = "Reçus du portail"
+
 
 def projet_document_name(reference: str, template_name: str, day: date) -> str:
     """Uniform display name for a generated document (Phase H.2):

@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Réception — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6 md:px-8 max-w-5xl">
+
+  {# ── En-tête ───────────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-semibold text-gray-900">Réception</h1>
+    <a href="{{ url_for('reception.inviter_form') }}"
+       class="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+      Nouvelle invitation
+    </a>
+  </div>
+
+  {# ── Onglets ───────────────────────────────────────────────────── #}
+  <div class="border-b border-gray-200 mb-6">
+    <nav class="flex gap-6 -mb-px">
+      {% for cle, libelle in [("documents", "Documents"), ("rdv", "Rendez-vous"), ("ouvertures", "Ouvertures")] %}
+      <a href="{{ url_for('reception.index', onglet=cle) }}"
+         class="pb-3 text-sm font-medium border-b-2 {{ 'border-indigo-600 text-indigo-600' if onglet == cle else 'border-transparent text-gray-500 hover:text-gray-700' }}">
+        {{ libelle }}
+      </a>
+      {% endfor %}
+    </nav>
+  </div>
+
+  {# ── Messages ──────────────────────────────────────────────────── #}
+  {% if message %}
+  <div class="mb-4 bg-green-50 border border-green-200 text-green-800 text-sm rounded-lg px-4 py-3">{{ message }}</div>
+  {% endif %}
+  {% if erreur %}
+  <div class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  {% endif %}
+  {% if erreur_bucket %}
+  <div class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
+    Lecture de la quarantaine impossible — vérifier que le bucket du portail existe et que les droits sont en place.
+  </div>
+  {% endif %}
+
+  {% if onglet != "documents" %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+    Livré en phase {{ "L2" if onglet == "rdv" else "L3" }}.
+  </div>
+  {% else %}
+
+  {# ── Lots soumis (à examiner) ──────────────────────────────────── #}
+  <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Transmissions à examiner</h2>
+  {% if not lots %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm mb-8">
+    Aucune transmission en attente.
+  </div>
+  {% endif %}
+  {% for lot in lots %}
+  <div class="bg-white rounded-xl border border-gray-200 mb-6">
+    <div class="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <p class="text-sm font-semibold text-gray-900">{{ lot.invitation.display_label }}</p>
+        <p class="text-xs text-gray-500">
+          Lot {{ lot.batch }}
+          {% if lot.manifeste and lot.manifeste.submitted_at %} · soumis le {{ lot.manifeste.submitted_at[:16].replace("T", " à ") }} (UTC){% endif %}
+          {% if lot.manifeste and lot.manifeste.http %} · IP {{ lot.manifeste.http.ip }}{% endif %}
+        </p>
+        {% if lot.manifeste and lot.manifeste.http and lot.manifeste.http.user_agent %}
+        <p class="text-xs text-gray-400 truncate max-w-md" title="{{ lot.manifeste.http.user_agent }}">{{ lot.manifeste.http.user_agent }}</p>
+        {% endif %}
+      </div>
+      <form method="post" action="{{ url_for('reception.traiter_lot', inv_id=lot.invitation.id, batch=lot.batch) }}"
+            data-confirm="Marquer le lot traité ? Les fichiers de quarantaine seront supprimés ; l'enveloppe et le manifeste seront archivés.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+          Marquer le lot traité
+        </button>
+      </form>
+    </div>
+
+    {% if not lot.manifeste %}
+    <div class="px-4 py-6 text-sm text-gray-500">
+      Traitement en cours — empreintes et accusé en préparation. Revenez dans quelques minutes.
+    </div>
+    {% else %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+            <th class="px-4 py-2 font-medium">Fichier</th>
+            <th class="px-4 py-2 font-medium">Taille</th>
+            <th class="px-4 py-2 font-medium">Type</th>
+            <th class="px-4 py-2 font-medium">SHA-512</th>
+            <th class="px-4 py-2 font-medium">État</th>
+            <th class="px-4 py-2 font-medium text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in lot.fichiers %}
+          <tr class="border-b border-gray-50 align-top">
+            <td class="px-4 py-2 text-gray-900">{{ f.name }}
+              {% if f.divergence %}<p class="text-xs text-amber-700">{{ f.divergence }}</p>{% endif %}
+            </td>
+            <td class="px-4 py-2 text-gray-600 whitespace-nowrap">
+              {% if f.size_gcs >= 1048576 %}{{ (f.size_gcs / 1048576)|round(1) }} Mo{% else %}{{ (f.size_gcs / 1024)|round|int }} ko{% endif %}
+            </td>
+            <td class="px-4 py-2 text-gray-600">{{ f.content_type or "—" }}</td>
+            <td class="px-4 py-2 text-gray-500 font-mono text-xs" title="{{ f.sha512 or '' }}">
+              {{ (f.sha512 or "—")[:16] }}{% if f.sha512 %}…{% endif %}
+            </td>
+            <td class="px-4 py-2">
+              <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full
+                {{ 'bg-green-100 text-green-700' if f.etat == 'versé'
+                   else 'bg-red-100 text-red-700' if f.etat in ('refusé', 'manquant')
+                   else 'bg-gray-100 text-gray-700' }}">{{ f.etat }}</span>
+            </td>
+            <td class="px-4 py-2 text-right whitespace-nowrap">
+              {% if f.etat != "manquant" %}
+              <a href="{{ url_for('reception.telecharger', inv_id=lot.invitation.id, batch=lot.batch, seq=f.seq) }}"
+                 class="text-xs font-medium text-indigo-600 hover:text-indigo-500">Télécharger</a>
+              {% endif %}
+              {% if f.etat in ("reçu", "manquant") %}
+              <form method="post" class="inline"
+                    action="{{ url_for('reception.refuser', inv_id=lot.invitation.id, batch=lot.batch, seq=f.seq) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="ml-3 text-xs font-medium text-red-600 hover:text-red-500">Refuser</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% if f.versable %}
+          <tr class="border-b border-gray-50">
+            <td colspan="6" class="px-4 pb-3">
+              <details>
+                <summary class="text-xs font-medium text-indigo-600 cursor-pointer">Verser au dossier…</summary>
+                <form method="post" class="mt-2 flex flex-wrap items-end gap-3"
+                      action="{{ url_for('reception.verser', inv_id=lot.invitation.id, batch=lot.batch, seq=f.seq) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">Dossier</label>
+                    <select name="dossier_id" class="rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                      {% for d in dossiers %}
+                      <option value="{{ d.id }}" {% if d.id == lot.invitation.dossier_id %}selected{% endif %}>
+                        {{ d.file_number }} — {{ d.title }}
+                      </option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-500 mb-1">Catégorie</label>
+                    <select name="category" class="rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                      {% for cle, libelle in category_labels.items() %}
+                      <option value="{{ cle }}" {% if cle == "pièce" %}selected{% endif %}>{{ libelle }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div class="flex-1 min-w-[12rem]">
+                    <label class="block text-xs text-gray-500 mb-1">Nom au dossier</label>
+                    <input type="text" name="display_name" value="{{ f.name }}"
+                           class="w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
+                  </div>
+                  <button type="submit"
+                          class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+                    Verser
+                  </button>
+                </form>
+              </details>
+            </td>
+          </tr>
+          {% elif f.etat == "reçu" %}
+          <tr class="border-b border-gray-50">
+            <td colspan="6" class="px-4 pb-3 text-xs text-gray-400">
+              Non versable tel quel (formats admis au dossier : PDF, Word, JPEG, PNG, TIFF ≤ 25 Mo) — télécharger et traiter hors application.
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {# ── Invitations actives ───────────────────────────────────────── #}
+  <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 mt-8">Invitations en cours</h2>
+  {% if not actives %}
+  <div class="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-500 text-sm mb-8">
+    Aucune invitation active.
+  </div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto mb-8">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-100">
+          <th class="px-4 py-2 font-medium">Désignation</th>
+          <th class="px-4 py-2 font-medium">Courriel</th>
+          <th class="px-4 py-2 font-medium">Statut</th>
+          <th class="px-4 py-2 font-medium">Expire</th>
+          <th class="px-4 py-2 font-medium text-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for inv in actives %}
+        <tr class="border-b border-gray-50">
+          <td class="px-4 py-2 text-gray-900">{{ inv.display_label }}</td>
+          <td class="px-4 py-2 text-gray-600">{{ inv.email }}</td>
+          <td class="px-4 py-2">
+            <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full
+                         {{ 'bg-red-100 text-red-700' if est_expiree(inv) else 'bg-gray-100 text-gray-700' }}">
+              {{ "expirée" if est_expiree(inv) else inv.statut }}
+            </span>
+            {% if inv.resend_count %}<span class="ml-1 text-xs text-gray-400">({{ inv.resend_count }} renvoi(s))</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-gray-600 whitespace-nowrap">{{ inv.expires_at.strftime("%Y-%m-%d") if inv.expires_at else "—" }}</td>
+          <td class="px-4 py-2 text-right whitespace-nowrap">
+            {% if not est_expiree(inv) %}
+            <form method="post" class="inline" action="{{ url_for('reception.renvoyer', inv_id=inv.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="text-xs font-medium text-indigo-600 hover:text-indigo-500">Renvoyer le lien</button>
+            </form>
+            {% endif %}
+            <form method="post" class="inline" action="{{ url_for('reception.revoquer', inv_id=inv.id) }}"
+                  data-confirm="Révoquer cette invitation ? Le lien du client cessera immédiatement de fonctionner.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="ml-3 text-xs font-medium text-red-600 hover:text-red-500">Révoquer</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Historique récent ─────────────────────────────────────────── #}
+  {% if traitees %}
+  <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3 mt-8">Récemment traitées</h2>
+  <div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-50">
+    {% for inv in traitees %}
+    <div class="px-4 py-2.5 flex items-center justify-between text-sm">
+      <span class="text-gray-700">{{ inv.display_label }} <span class="text-gray-400">· {{ inv.email }}</span></span>
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full
+                   {{ 'bg-green-100 text-green-700' if inv.statut == 'traitée' else 'bg-gray-100 text-gray-500' }}">
+        {{ inv.statut }}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% endif %}
+</div>
+{% endblock %}
