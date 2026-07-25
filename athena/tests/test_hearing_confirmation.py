@@ -174,6 +174,24 @@ def test_legacy_hearing_gets_confirmation_default_and_stays_visible(mixed_db):
     assert rows["h-legacy"]["source"] == ""
 
 
+def test_list_bookings_all_includes_refusee(monkeypatch):
+    """The sync-only lookup sees EVERY booking, incl. refusée — unlike
+    list_hearings(include_unconfirmed=True), which drops refusée. Prevents the
+    resurrection of a refused reservation whose Outlook cancel failed."""
+    monkeypatch.setattr(h, "db", _DB([
+        _hearing("b-ok", source="bookings"),     # confirmed booking
+        _hearing("b-refuse", "refusée"),
+        _hearing("b-pending", "à_confirmer"),
+        _legacy("not-a-booking"),                # no source → excluded
+    ]))
+    ids = {r["id"] for r in h.list_bookings_all()}
+    assert ids == {"b-ok", "b-refuse", "b-pending"}
+    # And refusée is STILL hidden from the normal include_unconfirmed=True path.
+    assert "b-refuse" not in {
+        r["id"] for r in h.list_hearings(include_unconfirmed=True)
+    }
+
+
 # ── list_hearings_in_range / _window ──────────────────────────────────────
 
 def test_list_hearings_in_range_honours_the_contract(monkeypatch):

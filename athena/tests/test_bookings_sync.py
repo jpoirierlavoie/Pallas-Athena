@@ -98,7 +98,9 @@ def _stored(uid="ical-1", confirmation="à_confirmer", last_mod=OLD, days=3,
 def _run(monkeypatch, reservations, existing):
     monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
                         lambda debut, fin: reservations)
-    monkeypatch.setattr(h, "list_hearings", lambda **k: existing)
+    # The reconciliation reads its prior imports via list_bookings_all (which
+    # includes refusée), NOT list_hearings.
+    monkeypatch.setattr(h, "list_bookings_all", lambda: existing)
     return tb._synchroniser()
 
 
@@ -125,18 +127,31 @@ def test_second_run_is_idempotent(monkeypatch, spy):
                         "modifies": 0, "annules": 0, "divergences": 0}
 
 
-def test_sync_lookup_uses_include_unconfirmed(monkeypatch, spy):
-    seen = {}
+def test_sync_lookup_uses_list_bookings_all(monkeypatch, spy):
+    """The lookup must go through list_bookings_all (which includes refusée),
+    never list_hearings (which drops it) — otherwise a refused booking whose
+    Outlook cancel failed is re-imported every cycle."""
+    called = {"all": 0}
     monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
                         lambda debut, fin: [])
+    monkeypatch.setattr(h, "list_bookings_all",
+                        lambda: called.__setitem__("all", called["all"] + 1) or [])
 
-    def _list(**k):
-        seen.update(k)
-        return []
+    def _forbidden(**k):
+        raise AssertionError("sync must not call list_hearings for its lookup")
 
-    monkeypatch.setattr(h, "list_hearings", _list)
+    monkeypatch.setattr(h, "list_hearings", _forbidden)
     tb._synchroniser()
-    assert seen.get("include_unconfirmed") is True
+    assert called["all"] == 1
+
+
+def test_refused_booking_not_resurrected(monkeypatch, spy):
+    """A refused booking whose Outlook cancel failed (Graph still returns it,
+    isCancelled=false) must NOT be re-imported as a fresh à_confirmer."""
+    counters = _run(monkeypatch, [_ev("ical-1", last_mod=NEW)],
+                    [_stored("ical-1", confirmation="refusée", last_mod=OLD)])
+    assert not spy.creates and not spy.updates
+    assert counters["crees"] == 0 and counters["detectes"] == 1
 
 
 # ── Modified ──────────────────────────────────────────────────────────────
@@ -239,7 +254,21 @@ def test_sync_runs_and_returns_counters(client, monkeypatch, spy):
         monkeypatch.setattr(Config, k, v)
     monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
                         lambda debut, fin: [_ev("ical-1")])
-    monkeypatch.setattr(h, "list_hearings", lambda **k: [])
+    monkeypatch.setattr(h, "list_bookings_all", lambda: [])
     r = client.get("/taches/bookings/sync", headers={"X-Appengine-Cron": "true"})
     body = r.get_json()
     assert r.status_code == 200 and body["actif"] is True and body["crees"] == 1
+
+
+def test_debug_payload_never_logs_the_subject(monkeypatch, caplog):
+    """PII: the predicate-tuning debug log must NOT contain the meeting
+    subject (it embeds the client name); only booleans + domains."""
+    import logging as _logging
+    monkeypatch.setattr(Config, "BOOKINGS_JURISTE_UPN", UPN)
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_PREFIXES", ("RDV",))
+    ev = _ev("ical-1", subject="RDV — Consultation Marie Tremblay")
+    with caplog.at_level(_logging.DEBUG, logger=tb.logger.name):
+        tb._debug_payload([ev])
+    text = caplog.text
+    assert "Marie Tremblay" not in text and "Consultation" not in text
+    assert "prefix_match" in text and "organizer_match" in text

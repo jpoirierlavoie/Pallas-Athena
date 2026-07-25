@@ -448,6 +448,28 @@ def list_hearings(
         return []
 
 
+def list_bookings_all() -> list[dict]:
+    """Every ``source == "bookings"`` hearing, NO confirmation filter — the
+    Bookings sync's reconciliation lookup ONLY.
+
+    Unlike ``list_hearings(include_unconfirmed=True)``, this INCLUDES
+    ``refusée`` (and ``annulée_client``): the sync must see the decisions the
+    juriste already made, or a refused reservation whose Outlook cancellation
+    failed (best-effort) would be re-imported as a brand-new ``à_confirmer``
+    every cycle. **Never call this from a UI/DAV/MCP path** — those must keep
+    ``refusée`` hidden (see :func:`_filter_confirmation`). Single-field
+    ``source`` equality → auto-indexed, no composite index.
+    """
+    try:
+        query = db.collection(COLLECTION).where(
+            filter=FieldFilter("source", "==", "bookings")
+        )
+        return [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+    except Exception:
+        logger.warning("list_bookings_all: query failed")
+        return []
+
+
 def list_hearings_in_range(
     date_from: datetime,
     date_to: datetime,

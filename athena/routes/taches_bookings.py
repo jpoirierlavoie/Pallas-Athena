@@ -146,7 +146,9 @@ def _appliquer_annulation(existing: dict, counters: dict) -> None:
 
 def _debug_payload(bruts: list[dict]) -> None:
     """§4.4 predicate tuning: log the first detected + first undetected event
-    at DEBUG, redacting attendee addresses to their domains only."""
+    at DEBUG. PII-FREE — the meeting SUBJECT is NEVER logged (it embeds the
+    client name); only the two predicate booleans + domain-reduced addresses,
+    which is what actually diagnoses why an event matched or not."""
     def _domains(ev: dict) -> list[str]:
         out = []
         for att in ev.get("attendees") or []:
@@ -154,6 +156,7 @@ def _debug_payload(bruts: list[dict]) -> None:
             out.append(addr.rsplit("@", 1)[-1] if "@" in addr else "?")
         return out
 
+    upn = Config.BOOKINGS_JURISTE_UPN.lower()
     detected = next((e for e in bruts if graph_calendrier.est_reservation(e)), None)
     undetected = next(
         (e for e in bruts if not graph_calendrier.est_reservation(e)), None
@@ -161,14 +164,19 @@ def _debug_payload(bruts: list[dict]) -> None:
     for label, ev in (("detected", detected), ("undetected", undetected)):
         if ev is None:
             continue
+        org = (
+            ((ev.get("organizer") or {}).get("emailAddress") or {}).get("address")
+            or ""
+        ).lower()
+        subj = ev.get("subject") or ""
         logger.debug(
-            "bookings predicate sample (%s): subject_prefix=%r "
-            "organizer_domain=%r attendee_domains=%r",
+            "bookings predicate sample (%s): organizer_match=%s prefix_match=%s "
+            "subject_len=%d organizer_domain=%r attendee_domains=%r",
             label,
-            (ev.get("subject") or "")[:24],
-            (((ev.get("organizer") or {}).get("emailAddress") or {}).get(
-                "address"
-            ) or "").rsplit("@", 1)[-1],
+            org == upn,
+            any(subj.startswith(p) for p in Config.BOOKINGS_SUBJECT_PREFIXES),
+            len(subj),
+            org.rsplit("@", 1)[-1],
             _domains(ev),
         )
 
@@ -183,13 +191,16 @@ def _synchroniser() -> dict:
     if Config.BOOKINGS_DEBUG_PAYLOAD:
         _debug_payload(bruts)
 
-    # THE TRAP: include_unconfirmed=True. On the default, list_hearings would
-    # hide the à_confirmer imports created last cycle and we would recreate a
-    # duplicate every 10 minutes.
+    # THE TRAP: the reconciliation lookup must see EVERY prior import,
+    # including refusée and annulée_client. list_hearings(include_unconfirmed=
+    # True) hides refusée (dropped in both modes), so a refused reservation
+    # whose best-effort Outlook cancel failed would return from calendarView
+    # and be re-imported as a fresh à_confirmer every cycle. list_bookings_all
+    # bypasses the confirmation filter for this ONE sync-internal caller.
     existants = {
         h["graph_ical_uid"]: h
-        for h in hearing.list_hearings(include_unconfirmed=True)
-        if h.get("source") == "bookings" and h.get("graph_ical_uid")
+        for h in hearing.list_bookings_all()
+        if h.get("graph_ical_uid")
     }
 
     counters = {
@@ -208,6 +219,12 @@ def _synchroniser() -> dict:
             continue  # no stable key → cannot reconcile
         detected_uids.add(uid)
         existing = existants.get(uid)
+        # A refused booking is a FINAL juriste decision. Never resurrect it,
+        # even if the best-effort Outlook cancellation didn't take and Graph
+        # still returns the event as active (uid is in detected_uids, so the
+        # absence loop below leaves it alone too).
+        if existing is not None and existing.get("confirmation") == "refusée":
+            continue
         if r["is_cancelled"]:
             if existing:
                 _appliquer_annulation(existing, counters)
