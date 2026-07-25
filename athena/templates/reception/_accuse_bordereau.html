@@ -18,7 +18,14 @@
   </div>
 
   {# ── Ligne d'accusé (date de réception) ─────────────────────────── #}
-  <p style="margin: 0 0 15px 0;">Nous accusons réception, le {{ quand }}, des fichiers suivants.</p>
+  <p style="margin: 0 0 10px 0;">Nous accusons réception, le {{ quand }}, des fichiers suivants.</p>
+
+  {# ── Portée de l'accusé (en tête, spec Annexe A.2) ──────────────── #}
+  <p style="font-size: 11px; color: #444; margin: 0 0 15px 0; text-align: justify;">
+    Le présent accusé confirme uniquement la <strong>réception technique</strong>
+    des fichiers énumérés ; il ne constitue ni une opinion sur leur contenu, ni
+    leur versement au dossier, ni la formation ou la modification d'un mandat.
+  </p>
 
   {# ── Expéditeur (client) / Destinataire (cabinet) ───────────────── #}
   <table width="100%" cellspacing="0" cellpadding="0" style="border-collapse: collapse; margin-bottom: 15px; table-layout: fixed;">
@@ -96,15 +103,6 @@
     </tr>
     {% endfor %}
   </table>
-
-  {# ── Portée de l'accusé (spec Annexe A.2) ───────────────────────── #}
-  <p style="font-size: 11px; color: #444; margin: 0 0 12px 0; text-align: justify;">
-    L'empreinte SHA-512 est une signature numérique de l'intégrité de chaque
-    fichier tel que reçu. Le présent accusé confirme uniquement la
-    <strong>réception technique</strong> des fichiers énumérés ; il ne
-    constitue ni une opinion sur leur contenu, ni leur versement au dossier,
-    ni la formation ou la modification d'un mandat.
-  </p>
 
   {# ── Avis de confidentialité (pied du bordereau) ────────────────── #}
   <div style="font-size: 10px; color: #666; text-align: justify; border-top: 1px solid #000; padding-top: 10px;"><strong>AVIS DE CONFIDENTIALITÉ : </strong>Ce document est destiné uniquement à la personne ou à l'entité à qui il est adressé. L'information apparaissant dans ce document est de nature légalement privilégiée et confidentielle. Si vous n'êtes pas le destinataire visé ou la personne chargée de le remettre à son destinataire, vous êtes, par la présente, avisé que toute lecture, usage, copie ou communication du contenu de ce document est strictement interdit. / <strong>CONFIDENTIALITY NOTICE : </strong>This document is intended solely for the individual or entity to whom it is addressed. The information contained in this document is legally privileged and confidential. If you are not the intended recipient or the person responsible for delivering it to the intended recipient, you are hereby advised that you are strictly prohibited from reading, using, copying or disseminating the contents of this document.</div>
