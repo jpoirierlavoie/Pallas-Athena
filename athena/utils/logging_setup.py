@@ -459,6 +459,7 @@ _PALLAS_UNEXPECTED = logging.getLogger("pallas.unexpected")
 _PALLAS_MCP = logging.getLogger("pallas.mcp")
 _PALLAS_TEMPLATES = logging.getLogger("pallas.templates")
 _PALLAS_TRUST = logging.getLogger("pallas.trust")
+_PALLAS_PORTAIL = logging.getLogger("pallas.portail")
 
 
 AuthEvent = Literal[
@@ -535,6 +536,35 @@ TrustEvent = Literal[
     "trust_export",
 ]
 TrustOutcome = Literal["success", "refused"]
+# Portail client (spec L1). One vocabulary for BOTH processes: the portal
+# service emits the portail_* client-facing events, the main service emits
+# the task/reconciliation/courriel/réception ones — Cloud Logging separates
+# them by resource.labels.module_id. IDs and counts only: a client's email,
+# a file name, or a display label must NEVER appear (RedactionFilter only
+# auto-scrubs emails/phones/postal — names and filenames pass through).
+PortailEvent = Literal[
+    "session_creee",
+    "session_refusee",
+    "televersement_ouvert",
+    "televersement_rejete",
+    "soumission_finalisee",
+    "renvoi_demande",
+    "tache_enfilee",
+    "tache_enfilage_echec",
+    "tache_recue",
+    "reconciliation_execute",
+    "reconciliation_reparation",
+    "courriel_envoye",
+    "courriel_echec",
+    "accuse_envoye",
+    "manifeste_ecrit",
+    "document_verse",
+    "document_refuse",
+    "lot_traite",
+    "invitation_emise",
+    "invitation_revoquee",
+]
+PortailOutcome = Literal["success", "failure", "refused"]
 
 
 def _emit(
@@ -726,6 +756,47 @@ def log_trust_event(
     _emit(_PALLAS_TRUST, level, event, fields)
 
 
+def log_portail_event(
+    event: PortailEvent,
+    outcome: PortailOutcome = "success",
+    *,
+    invitation_id: Optional[str] = None,
+    batch: Optional[str] = None,
+    dossier_id: Optional[str] = None,
+    document_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit a client-portal event — logger ``pallas.portail``.
+
+    ``success`` emits at INFO, ``refused`` at WARNING, ``failure`` at ERROR
+    (a ``failure`` means lost work is possible — enqueue failures and every
+    reconciliation repair must be visible in error dashboards, spec L1 §8.4).
+    ``reason`` is a short machine-stable string ("expired", "revoked",
+    "extension_refused", "quota_files") — **never** a client's name, email,
+    or a file name; the RedactionFilter does not auto-scrub those. Counters
+    (``files_count``, ``lots_vus``, ``lots_repares``, ``retry_count``) travel
+    in **extra. Only non-``None`` optional IDs are included.
+    """
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **extra}
+    if invitation_id is not None:
+        fields["invitation_id"] = invitation_id
+    if batch is not None:
+        fields["batch"] = batch
+    if dossier_id is not None:
+        fields["dossier_id"] = dossier_id
+    if document_id is not None:
+        fields["document_id"] = document_id
+    if reason is not None:
+        fields["reason"] = reason
+    level = {
+        "success": logging.INFO,
+        "refused": logging.WARNING,
+        "failure": logging.ERROR,
+    }[outcome]
+    _emit(_PALLAS_PORTAIL, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -764,6 +835,7 @@ __all__: Iterable[str] = (
     "log_dav_operation",
     "log_dossier_event",
     "log_mcp_event",
+    "log_portail_event",
     "log_security_event",
     "log_template_event",
     "log_trust_event",
