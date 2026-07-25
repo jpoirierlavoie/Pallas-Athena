@@ -186,18 +186,22 @@ def test_validate_postal_empty():
 
 # ── apply_address_defaults ────────────────────────────────────────────────
 
-def test_address_defaults_empty():
+def test_address_defaults_empty_stays_blank():
+    # No street → no address at all → NO default is applied (avoid the
+    # « (Québec) Canada » stub on addressless contacts).
     data = {}
     result = apply_address_defaults(data, "address")
-    assert result["address_country"] == "Canada"
-    assert result["address_province"] == "Québec"
-    # No street → no city default
+    assert result.get("address_country", "") == ""
+    assert result.get("address_province", "") == ""
     assert result.get("address_city", "") == ""
 
 def test_address_city_defaults_when_street_filled():
     data = {"address_street": "123 rue Principale"}
     result = apply_address_defaults(data, "address")
+    # A real street re-enables the speed defaults.
     assert result["address_city"] == "Montréal"
+    assert result["address_province"] == "Québec"
+    assert result["address_country"] == "Canada"
 
 def test_address_city_no_default_without_street():
     data = {}
@@ -205,8 +209,15 @@ def test_address_city_no_default_without_street():
     assert result.get("address_city", "") == ""
 
 def test_address_legacy_country_code_migrated():
-    # Legacy "CA" should be rewritten to the full name on save.
+    # Legacy "CA" is rewritten to the full name ALWAYS (migration runs even
+    # without a street) — but with no street, the province is NOT defaulted.
     data = {"address_country": "CA"}
+    result = apply_address_defaults(data, "address")
+    assert result["address_country"] == "Canada"
+    assert result.get("address_province", "") == ""
+
+def test_address_legacy_country_code_migrated_with_street_defaults_province():
+    data = {"address_country": "CA", "address_street": "1 rue X"}
     result = apply_address_defaults(data, "address")
     assert result["address_country"] == "Canada"
     assert result["address_province"] == "Québec"

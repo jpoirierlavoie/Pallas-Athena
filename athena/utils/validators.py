@@ -233,10 +233,11 @@ def apply_address_defaults(data: dict, prefix: str = "address") -> dict:
     Behavior:
     - Migrates legacy 2-letter codes to full names ("CA" → "Canada",
       "QC" → "Québec", …) so storage stays consistent with the new defaults.
-    - Defaults `{prefix}_country` to "Canada" when empty.
-    - Defaults `{prefix}_province` to "Québec" when country is "Canada".
-    - Defaults `{prefix}_city` to "Montréal" when province is "Québec" and
-      a street is provided.
+    - Migrates legacy 2-letter codes ALWAYS (so stored data stays consistent).
+    - Applies the city/province/country defaults ONLY when a street is
+      provided. An addressless contact therefore stays fully blank instead
+      of collecting a « (Québec) Canada » stub that would then surface
+      everywhere (invoices, the accusé bordereau, letter address blocks).
     """
     country_key = f"{prefix}_country"
     province_key = f"{prefix}_province"
@@ -252,6 +253,10 @@ def apply_address_defaults(data: dict, prefix: str = "address") -> dict:
     if raw_province.upper() in _LEGACY_PROVINCE_MAP:
         data[province_key] = _LEGACY_PROVINCE_MAP[raw_province.upper()]
 
+    # No street → no address at all: apply NO default (avoid the stub).
+    if not (data.get(street_key) or "").strip():
+        return data
+
     # Apply defaults when fields are still empty
     if not (data.get(country_key) or "").strip():
         data[country_key] = DEFAULT_COUNTRY
@@ -263,11 +268,7 @@ def apply_address_defaults(data: dict, prefix: str = "address") -> dict:
 
     province = (data.get(province_key) or "").strip()
 
-    if (
-        province == DEFAULT_PROVINCE
-        and not (data.get(city_key) or "").strip()
-        and (data.get(street_key) or "").strip()
-    ):
+    if province == DEFAULT_PROVINCE and not (data.get(city_key) or "").strip():
         data[city_key] = DEFAULT_CITY
 
     return data
