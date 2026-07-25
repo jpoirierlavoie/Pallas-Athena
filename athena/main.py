@@ -184,6 +184,14 @@ def create_app() -> Flask:
     # exemption (Security Rules).
     csrf.exempt(taches_portail_bp)
 
+    # ── Bookings sync (spec L2): cron-driven « Bookings with me » import ──
+    from routes.taches_bookings import taches_bookings_bp
+    app.register_blueprint(taches_bookings_bp)
+    # Machine blueprint (GET /taches/bookings/sync), guarded by
+    # X-Appengine-Cron. CSRF does not apply to GET, but exempting keeps it in
+    # its own machine blueprint like taches_portail (never a browser one).
+    csrf.exempt(taches_bookings_bp)
+
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
     from mcp import mcp_bp, register_mcp
     register_mcp(app)

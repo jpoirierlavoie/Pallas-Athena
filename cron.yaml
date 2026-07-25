@@ -13,3 +13,7 @@ cron:
   url: /taches/portail/reconciliation
   schedule: every 15 minutes
   target: default
+- description: bookings — synchronisation « Bookings with me » (spec L2 §4.1)
+  url: /taches/bookings/sync
+  schedule: every 10 minutes
+  target: default

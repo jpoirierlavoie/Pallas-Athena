@@ -182,6 +182,18 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 
 > `log_auth_event` gained one `reason`: `portail_claim` — a Firebase token carrying the portal custom claim tried to open a session on the main service (spec L1 §1.2 defense in depth).
 
+### `log_bookings_event(event, outcome='success', *, hearing_id=None, reason=None, **extra)` — logger `pallas.bookings`
+
+Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confirmer pipeline. `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR**. Same PII discipline as `pallas.portail`: **IDs, opaque Graph identifiers and counts only** — a client's name or a meeting subject must NEVER appear (the `RedactionFilter` scrubs full email addresses but not names/subjects). Counters travel in `**extra`.
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `bookings_sync_execute` | success | Cron sweep done; counters `vus`, `detectes`, `crees`, `modifies`, `annules`, `divergences` |
+| `bookings_sync_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (Graph creds / mailbox absent — fail-open, no-op); `failure` + `reason="graph_error"` (a Graph outage — the cycle was missed, the next 10-min run retries) |
+| `reception_rdv_confirme` | success | A rendez-vous was confirmed in Réception; `hearing_id`, `partie_liee: bool` — the event now enters DAV/Calendar (CTag bumped) |
+| `reception_rdv_refuse` | success ou refused | A rendez-vous was refused; `hearing_id`, `graph_annule: bool`. `refused` + `reason="graph_error"` when the Outlook cancellation failed (the Athéna refusal still stands — the juriste is told to cancel manually) |
+| `reception_rdv_divergence_traitee` | success | A `bookings_divergence` alert was applied/ignored/cancelled; `hearing_id`, `action` |
+
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
 Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log. The traceback text is PII-scrubbed by `RedactionFilter` before emission (see "PII redaction policy" above for the Error Reporting grouping trade-off).

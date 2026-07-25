@@ -460,6 +460,7 @@ _PALLAS_MCP = logging.getLogger("pallas.mcp")
 _PALLAS_TEMPLATES = logging.getLogger("pallas.templates")
 _PALLAS_TRUST = logging.getLogger("pallas.trust")
 _PALLAS_PORTAIL = logging.getLogger("pallas.portail")
+_PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
 
 
 AuthEvent = Literal[
@@ -565,6 +566,17 @@ PortailEvent = Literal[
     "invitation_revoquee",
 ]
 PortailOutcome = Literal["success", "failure", "refused"]
+# Bookings sync (spec L2). Same discipline as portail: IDs, opaque Graph
+# identifiers and counts only — a client's email domain is acceptable (the
+# RedactionFilter scrubs full addresses), a client's NAME is not.
+BookingsEvent = Literal[
+    "bookings_sync_execute",
+    "bookings_sync_erreur_graph",
+    "reception_rdv_confirme",
+    "reception_rdv_refuse",
+    "reception_rdv_divergence_traitee",
+]
+BookingsOutcome = Literal["success", "failure", "refused"]
 
 
 def _emit(
@@ -797,6 +809,37 @@ def log_portail_event(
     _emit(_PALLAS_PORTAIL, level, event, fields)
 
 
+def log_bookings_event(
+    event: BookingsEvent,
+    outcome: BookingsOutcome = "success",
+    *,
+    hearing_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit a Bookings-sync / rendez-vous event — logger ``pallas.bookings``.
+
+    ``success`` emits at INFO, ``refused`` at WARNING, ``failure`` at ERROR (a
+    Graph outage is a ``failure`` — the sync missed a cycle). Counters
+    (``vus``, ``detectes``, ``crees``, ``modifies``, ``annules``,
+    ``divergences``) travel in **extra. ``reason`` is a short machine-stable
+    string ("graph_error", "not_configured") — **never** a client's name or a
+    meeting subject; the RedactionFilter does not auto-scrub those. Only
+    non-``None`` optional fields are included.
+    """
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **extra}
+    if hearing_id is not None:
+        fields["hearing_id"] = hearing_id
+    if reason is not None:
+        fields["reason"] = reason
+    level = {
+        "success": logging.INFO,
+        "refused": logging.WARNING,
+        "failure": logging.ERROR,
+    }[outcome]
+    _emit(_PALLAS_BOOKINGS, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -832,6 +875,7 @@ __all__: Iterable[str] = (
     "clear_context",
     "init_app",
     "log_auth_event",
+    "log_bookings_event",
     "log_dav_operation",
     "log_dossier_event",
     "log_mcp_event",
