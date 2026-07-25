@@ -72,6 +72,15 @@ def verify_and_create_session(id_token: str) -> tuple[bool, str]:
         )
         return False, "Jeton invalide."
 
+    # Defense in depth (portail client, spec L1 §1.2): accounts minted by the
+    # client portal carry the custom claim ``portail: True`` and must never
+    # open a session on the main service, even if the allowlist below were
+    # ever misconfigured. Refused before the email check so the two guards
+    # stay independent.
+    if decoded.get("portail") is True:
+        log_auth_event("auth_failure", "failure", reason="portail_claim")
+        return False, "Accès non autorisé."
+
     email = decoded.get("email", "")
     authorized_email = current_app.config["AUTHORIZED_USER_EMAIL"]
 
