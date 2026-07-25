@@ -34,10 +34,16 @@ env_variables:
   # /mcp + /oauth/* route. MCP_CANONICAL_ORIGIN defaults to
   # https://athena.poirierlavoie.ca in config.py.
   MCP_ENABLED: "true"
+  # Microsoft Graph — outbound email (portail client L1; reused by phase J).
+  # Non-secret identifiers; GRAPH_CLIENT_SECRET comes from Secret Manager
+  # (graph-client-secret). MAIN SERVICE ONLY — never in portail.yaml.
+  GRAPH_TENANT_ID: "4c5c39a5-2e63-4b04-8408-973c58cd88c7"
+  GRAPH_CLIENT_ID: "988bf117-3aef-463b-8062-7dac226e50d9"
+  GRAPH_SENDER_UPN: "reception@poirierlavoie.ca"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
-  # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH) are pulled from
-  # Google Cloud Secret Manager at runtime — see config.py.
+  # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH, GRAPH_CLIENT_SECRET)
+  # are pulled from Google Cloud Secret Manager at runtime — see config.py.
 
 handlers:
   - url: /manifest.json
