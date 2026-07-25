@@ -231,8 +231,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── trust.py                # /fideicommis/*  (Phase K: journal, carte, comptes, conciliations, exports)
 │   │   ├── reception.py            # /reception/*  (portail L1: revue des lots, versement restreint,
 │   │   │                           # invitations, pastille de nav en cache 60 s fail-open)
-│   │   └── taches_portail.py       # /taches/portail/*  (MACHINE, CSRF-exempt: gestionnaire Cloud
-│   │                               # Tasks + réconciliation cron — gardes X-AppEngine-*)
+│   │   ├── taches_portail.py       # /taches/portail/*  (MACHINE, CSRF-exempt: gestionnaire Cloud
+│   │   │                           # Tasks + réconciliation cron — gardes X-AppEngine-*)
+│   │   └── taches_bookings.py      # /taches/bookings/sync  (L2, MACHINE, cron: synchro
+│   │                               # « Bookings with me » → hearings à_confirmer — garde X-Appengine-Cron)
 │   │
 │   ├── dav/                        # DAV protocol endpoints
 │   │   ├── __init__.py             # Principal + calendar/addressbook home-set; root PROPFIND lists collections dynamically
@@ -277,6 +279,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── format_fr.py            # Phase H.2: fr-CA currency/date/hours/rate formatting (centralized)
 │   │   ├── graph.py                # Portail L1 / phase J: Microsoft Graph client-credentials token
 │   │   │                           # (process cache, no msal) + graph_get (nextLink) + graph_post
+│   │   ├── graph_calendrier.py     # Bookings L2: calendarView reads (UTC), est_reservation
+│   │   │                           # predicate, extraire, annuler_reservation (Calendars.ReadWrite)
 │   │   ├── courriel.py             # Outbound email via Graph sendMail (saveToSentItems: true)
 │   │   ├── validators.py           # Phone (E.164), email, postal code normalization, address defaults
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
@@ -325,7 +329,11 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_trust.py           # Phase K: balance arithmetic, control, reversal, clearing, reconciliation, exports
 │   │   ├── test_hearing_vocab.py   # Two-tier hearing vocab, forum, modalité, CONFERENCE (roundtrip/non-effacement/non-escaping), URI whitelist
 │   │   ├── test_note_vocab.py      # Note category vocab + read-time migration
-│   │   └── test_document_vocab.py  # Document category vocab + migration + MCP enum parity
+│   │   ├── test_document_vocab.py  # Document category vocab + migration + MCP enum parity
+│   │   ├── test_hearing_confirmation.py  # L2: include_unconfirmed contract (DAV/MCP exclude by default)
+│   │   ├── test_graph_calendrier.py      # L2: Bookings predicate, UTC parse, cancel call
+│   │   ├── test_bookings_sync.py         # L2: reconciliation upsert + idempotence + cron guard
+│   │   └── test_reception_rdv.py         # L2: confirm/refuse/divergence routes + partie linkage + badge
 │   │
 │   ├── templates/
 │   │   ├── base.html
@@ -742,6 +750,20 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
     "notes": str,
     "reminder_minutes": int,              # 15|30|60|120|1440|2880|10080, default 1440 (24h)
     "status": "confirmée" | "à_confirmer" | "reportée" | "annulée" | "terminée",
+
+    # Bookings sync (Phase L2, 2026-07-25). All default ""/None; absent on
+    # legacy docs (defaulted on read by _migrate_hearing, NEVER back-filled).
+    # confirmation is a SEPARATE concept from status — note "à_confirmer" is
+    # ALSO a status value (a court date pending scheduling), which confirmation
+    # must never be conflated with.
+    "source": "" | "bookings",            # "bookings" = a « Bookings with me » import
+    "confirmation": "" | "à_confirmer"    # "" (or absent) = confirmed → visible everywhere;
+                  | "annulée_client"      # gates it out of DAV+MCP (and, except à_confirmer,
+                  | "refusée",            # the Calendar). See list_hearings include_unconfirmed.
+    "graph_event_id": str, "graph_ical_uid": str, "graph_last_modified": str,
+    "client_email": str, "client_nom": str,   # from the Bookings attendee (≠ juriste)
+    "bookings_divergence": dict | None,   # {motif, detail, nouveau_debut/_fin, vu} — §5.4
+    "partie_id": str,                     # recognized partie linked at confirmation (§5.1)
 
     # DAV
     "vevent_uid": UUIDv4, "dav_href": "/dav/calendar/{id}.ics",
@@ -1315,9 +1337,12 @@ All `@login_required`, French. POST+redirect with `?message=`/`?erreur=` (no fla
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/reception/` | GET | Tabs `?onglet=documents|rdv|ouvertures` (rdv/ouvertures = « Livré en phase L2/L3 »). Documents: submitted lots with the manifest table (nom d'origine, taille, type, SHA-512 abrégé + complet au survol, divergences, IP/UA), active invitations (renvoyer/révoquer), recent history |
+| `/reception/` | GET | Tabs `?onglet=documents|rdv|ouvertures` (**rdv = phase L2**, ouvertures = « Livré en phase L3 »). Documents: submitted lots with the manifest table (nom d'origine, taille, type, SHA-512 abrégé + complet au survol, divergences, IP/UA), active invitations (renvoyer/révoquer), recent history. **rdv** (`_contexte_rdv` → `_rdv.html`): à_confirmer + annulée_client cards + unseen-divergence alerts, partie exact-email linkage |
 | `/reception/inviter` | GET·POST | Émission (courriel prérempli depuis la partie cliente, désignation défaut `Dossier {n°}`, durée) ; sans Graph → page « lien à transmettre » |
 | `/reception/invitations/<id>/renvoyer` · `/revoquer` | POST | Renvoi du lien / révocation instantanée |
+| `/reception/rdv/<hid>/confirmer` | POST | **L2** — `confirmation → ""` (+ `partie_id` si coché) → `bump_ctag(collection_for(dossier_id))` : le rendez-vous entre au Calendrier + DavX5. Case intake inerte (FEATURE_INTAKE) |
+| `/reception/rdv/<hid>/refuser` | POST | **L2** — annule la réunion Outlook via Graph (best-effort, seulement pour un à_confirmer actif) + `confirmation → "refusée"` ; **pas de bump** (jamais en DAV). Bandeau si l'annulation Graph échoue |
+| `/reception/rdv/<hid>/divergence/<action>` | POST | **L2** — `appliquer` (applique le créneau stocké + bump) / `annuler` (`annulée_client` + bump) / `ignorer`·`conserver` (`vu=True`, pas de bump) |
 | `/reception/lots/<inv>/<batch>/fichiers/<seq>` | GET | Stream from quarantine — `Content-Disposition: attachment` FORCÉ, content_type déclaré (§7.5, jamais inline) |
 | `.../fichiers/<seq>/verser` | POST | Ingestion via `get_or_create_folder(« Reçus du portail »)` + `upload_document` — restreinte au vocabulaire documents existant ; provenance en `description` + tag `portail` |
 | `.../fichiers/<seq>/refuser` · `.../traiter` | POST | Refus explicite / lot traité (chaque fichier « reçu » exige une décision AVANT la purge ; enveloppe+manifeste → `archive/`) |
@@ -1330,6 +1355,14 @@ CSRF-exempt blueprint; no `@login_required`. Origin proof = the `X-AppEngine-*` 
 |---|---|---|---|
 | `/taches/portail/evenement` | POST | `X-AppEngine-QueueName == "portail"` sinon 403 | Handler §8.3: `ouverte` / `renvoi` / `soumise` (rapprochement + SHA-512 en flux + manifeste + accusé transactionnel). Exception → 5xx (reprise) ; no-op/malformé → 200 |
 | `/taches/portail/reconciliation` | GET | `X-Appengine-Cron == "true"` sinon 403 | §8.4: toute enveloppe sans soumission/accusé enregistrés → ré-enfilée + ERROR `reconciliation_reparation` |
+
+### `taches_bookings.py` — `/taches/bookings/*` (MACHINE, Bookings L2)
+
+CSRF-exempt blueprint; no `@login_required`. Same origin proof as `taches_portail` (`X-Appengine-*` stripped from external traffic).
+
+| Route | Method | Guard | Purpose |
+|---|---|---|---|
+| `/taches/bookings/sync` | GET | `X-Appengine-Cron == "true"` sinon 403 | §4 — lit `calendarView`, rapproche par `graph_ical_uid` (upsert : nouveau → à_confirmer **sans bump CTag** ; modifié+à_confirmer → maj silencieuse ; modifié/annulé + confirmé → divergence sans écraser). Court-circuit si `not BOOKINGS_SYNC_ACTIVE` / `not bookings_configured()` ; GraphError → 200 (pas de tempête de reprise). **La recherche de ses propres imports passe `include_unconfirmed=True`** — sinon un doublon serait recréé à chaque cycle |
 
 ### Portal service routes (`client/routes.py`, service « portail » — separate process)
 
@@ -1424,7 +1457,8 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `list_hearings_in_range(date_from, date_to, limit=100) -> list[dict]` — server-side range + order on `start_datetime` (single-field index); the dashboard's bounded hearing windows
 - `forum_of(hearing_type) -> str` — « judiciaire »/« extrajudiciaire », derived from the type (default extrajudiciaire); the forum is never stored
 - `is_safe_conference_uri(uri) -> bool` — http/https scheme whitelist (empty allowed); called by `_validate` (form → error) AND `vevent_to_hearing` (DAV → drop the bad value). The only guard on the `<a href>` render (stored-XSS)
-- `_migrate_hearing(doc)` — read-time net on every raw-read path (get/list/window/range): folds removed hearing_type keys (procès→instruction, appel→audience, médiation→autre) and defaults `modalite`/`conference_uri` (get_hearing returns `to_dict()` with no `_default_doc` merge)
+- `_migrate_hearing(doc)` — read-time net on every raw-read path (get/list/window/range): folds removed hearing_type keys (procès→instruction, appel→audience, médiation→autre), defaults `modalite`/`conference_uri`, and (L2) defaults the Bookings fields incl. `confirmation=""`/`source=""` (get_hearing returns `to_dict()` with no `_default_doc` merge; legacy docs are NEVER back-filled to a non-empty confirmation)
+- **`list_hearings` / `list_hearings_in_range` / `list_hearings_window` take `include_unconfirmed=False` (L2)** — `_filter_confirmation` drops unconfirmed Bookings imports by default (only confirmed reach DAV/MCP/dashboard); `True` keeps confirmed + à_confirmer + annulée_client but always drops `refusée`. `get_hearing` does NOT filter. `_UNCONFIRMED_ALL`/`_UNCONFIRMED_REFUSED` are the two drop sets.
 - `hearing_to_vevent(hearing) -> str` — VEVENT with VALARM (TRIGGER -PT{reminder_minutes}M); emits `CONFERENCE;VALUE=URI;FEATURE=VIDEO` only for a video event with a link (icalendar 7.0.3 serializes it raw), `X-PALLAS-MODALITE`, and a « Modalité: … » DESCRIPTION line — never a second `CATEGORIES` value
 - `vevent_to_hearing(ical_str) -> dict` — **NON-EFFACEMENT (§4.3):** OMITS `conference_uri`/`modalite` keys when the property is absent from the incoming VEVENT (never `""`), so a client that drops them on a plain edit can't wipe the stored link (`update_hearing` merges `{**existing, **data}`); an incoming URI re-runs the scheme whitelist
 - `create_hearing`/`update_hearing`/`_validate` treat `dossier_id` as **optional** — a hearing may be a standalone agenda event with no dossier (like standalone tasks); `_validate` requires only a title + start datetime. All hearings, linked or standalone, live in the single shared `hearings` / `/dav/calendar/` collection, so standalone events sync to DavX5 with no extra DAV routing (contrast tasks, which split per-dossier). `hearing_to_vevent` omits the `Dossier:` DESCRIPTION line when there is no dossier.
@@ -1923,6 +1957,11 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **The hearing `CONFERENCE` non-effacement rule (§4.3 of the vocabularies rework).** `vevent_to_hearing` must **OMIT** `conference_uri`/`modalite` from its returned dict when the incoming VEVENT lacks `CONFERENCE`/`X-PALLAS-MODALITE` — never return `""`. `update_hearing` merges `{**existing, **data}`, so a present-but-empty key overwrites while an absent key survives; a calendar client (Google Calendar via DavX5) that drops these on a plain time edit would otherwise wipe the stored visioconférence link server-side. Pinned by `tests/test_hearing_vocab.py`. Verify on a real device after any change to that parser: edit the time in the **device calendar**, resync, `GET …/<id>.ics`, confirm the `Visioconférence:` DESCRIPTION line (and `CONFERENCE`) are intact.
 - **`icalendar` 7.0.3 serializes `CONFERENCE` as a URI natively — do NOT "fix" it to a TEXT encoding.** `event.add("conference", uri, parameters={"VALUE":"URI","FEATURE":"VIDEO"})` emits the raw comma/semicolon a Teams/Meet link carries (`?a=1,2;b=3`), no `\,`/`\;` escaping. The `vUri`/`encode=0` workaround the vocabularies spec anticipated was for older 5.x/6.x where the property registry didn't know `CONFERENCE`; on the pinned 7.0.3 it is unnecessary and would double-handle. `tests/test_hearing_vocab.py::test_conference_serialized_as_uri_without_escaping` locks it. (A future `icalendar` bump is a Dependabot silent-trigger — re-run that test.)
 - **`hearing_type` uses strict equality / dict access only — `conférence` is a PREFIX of three keys.** The extrajudicial `conférence` key is a strict prefix of `conférence_de_gestion`/`_de_règlement`/`_préparatoire`; any `startswith("conférence")` or substring `in` test misclassifies. Every color dict and label lookup uses `.get(hearing_type, …)`; keep it that way.
+- **A hearing's `confirmation` field (Bookings L2) is NOT its `status` — and `à_confirmer` collides across both.** `confirmation` gates DAV/MCP/Calendar visibility (`""`/absent = confirmed, `à_confirmer`/`annulée_client`/`refusée` = hidden to varying degrees); `status` is the court-date state (`confirmée`/`à_confirmer`/…). **`à_confirmer` is a value of BOTH**, meaning entirely different things — an imported Bookings reservation is `status="confirmée"` (the client booked it) AND `confirmation="à_confirmer"` (the lawyer hasn't reviewed it). Never gate visibility on `status`, never let a status filter touch `confirmation`.
+- **The `include_unconfirmed` contract mirrors `include_analyse`, and a caller on the wrong default fails silently.** `list_hearings`/`list_hearings_in_range`/`list_hearings_window` default `include_unconfirmed=False` (confirmed only) — DAV (`_collection_members`), MCP agenda (`get_agenda`/`list_hearings` → `list_hearings_in_range`), the dashboard and exports MUST stay on the default, or a pending Bookings reservation leaks into DavX5/Claude as a real event. `True` keeps confirmed + à_confirmer + annulée_client but **always drops `refusée`**; only the Réception rdv tab and the Calendar view (`routes/hearings._keep_calendar` then drops annulée_client, badges à_confirmer) pass it. `get_hearing` (single fetch) does **NOT** filter — Réception and the confirm/refuse routes rely on reaching an unconfirmed import.
+- **The Bookings sync's OWN lookup MUST pass `include_unconfirmed=True` — the duplicate trap.** `routes/taches_bookings._synchroniser` reconciles by `graph_ical_uid` against `list_hearings(include_unconfirmed=True)`; on the default it would not see the `à_confirmer` imports it created last cycle and would **recreate a duplicate hearing every 10 minutes**. Pinned by `tests/test_bookings_sync.py`. A Bookings import **never bumps a CTag** (invisible until confirmed); the bump lives in `routes/reception.rdv_confirmer` (`collection_for(dossier_id)`, `""` → « Général »), never in the sync.
+- **Refusing a Bookings rendez-vous cancels the Outlook meeting (Calendars.ReadWrite) — best-effort, never blocking.** `routes/reception.rdv_refuser` calls `graph_calendrier.annuler_reservation` **only for a still-active `à_confirmer` import** (an `annulée_client` one is already cancelled — re-calling Graph would 404), catches `GraphError`/`GraphNotConfigured`, applies `confirmation="refusée"` regardless, and shows a « annulez manuellement » banner on failure. A refusal never bumps a CTag (a pending import was never in DAV).
+- **`cron.yaml` is the WHOLE project cron table — `gcloud app deploy cron.yaml` REPLACES it.** It now carries both the portail L1 reconciliation (15 min) and the Bookings L2 sync (10 min). Any future cron entry MERGES into this one file and redeploys the complete file — replacing it with a single entry silently stops the other job.
 - **MCP category/type enums in `mcp/tools.py` are hand-kept LITERALS, not derived.** `_NOTE_CATEGORIES`/`_DOCUMENT_CATEGORIES` copy the model `VALID_CATEGORIES` by hand because `mcp/tools.py` is imported at startup and importing `models.*` runs `firestore.Client()` at module load (`models/__init__.py`). `tests/test_mcp_tools.py`/`test_document_vocab.py` pin the literals against the models — update the literal when the model changes, don't switch to an import.
 - **`form-action` covers a form's whole REDIRECT CHAIN, not just its action URL.** The OAuth consent POST is same-origin, but it answers `302` to `https://claude.ai/api/mcp/auth_callback`, and the browser refuses that hop under `form-action 'self'` — the authorization code never reaches Claude and the connector cannot be added. Chrome reports the *original* same-origin action URL in the console message, which reads like a nonsensical "self violates 'self'"; the redirect is the actual violation. `security._form_action_for` therefore widens `form-action` to `'self' https://claude.ai https://claude.com` **on `/oauth/authorize` only** (plus loopback outside production, mirroring `mcp.oauth.redirect_uri_allowed`), and `tests/test_security_headers.py` pins the source list against `mcp.ALLOWED_REDIRECT_URIS` so the two cannot drift. **This is exercised only when a connector is added or re-authorized**, so it stayed latent from the 2026-07-11 CSP enforcement flip until the first re-consent.
 - **An MCP note write MUST bump the dossier CTag — nothing else will.** `models/note.py` never bumps (it does not even import `dav/`); bumping lives in the caller (`routes/notes.py`, `dav/dossier_collections.py`). A tool path that calls `create_note`/`update_note` and stops leaves the note in Firestore and visible in the web UI while **DavX5 silently never re-syncs it** — `_handle_sync_collection` short-circuits when the client's token equals the current one. The bump is wrapped in its own `try/except` in `mcp/handlers._bump_note_ctag` and surfaced as `dav_synced` + a French warning: letting it raise would hit `endpoint._tools_call`'s blanket `except Exception`, reporting an already-committed write as a failure, and the model would retry into a **duplicate note** (notes carry no idempotency key and `create_note` mints a fresh UUID each call).
@@ -2097,7 +2136,7 @@ handlers:
   - url: /.*                # script: auto, secure: always
 ```
 
-Additional firm/tax env vars consumed by `config.py` (set via `--set-env-vars` or `.env` locally): `FIRM_NAME`, `FIRM_STREET`, `FIRM_UNIT`, `FIRM_CITY`, `FIRM_PROVINCE`, `FIRM_POSTAL_CODE`, `FIRM_PHONE`, `FIRM_EMAIL`, `GST_NUMBER`, `QST_NUMBER`, `SESSION_LIFETIME_HOURS`, `RATE_LIMIT_LOGIN`, `TRACE_SAMPLE_RATIO`, `APPCHECK_DEBUG_TOKEN` (local dev).
+Additional firm/tax env vars consumed by `config.py` (set via `--set-env-vars` or `.env` locally): `FIRM_NAME`, `FIRM_STREET`, `FIRM_UNIT`, `FIRM_CITY`, `FIRM_PROVINCE`, `FIRM_POSTAL_CODE`, `FIRM_PHONE`, `FIRM_EMAIL`, `GST_NUMBER`, `QST_NUMBER`, `SESSION_LIFETIME_HOURS`, `RATE_LIMIT_LOGIN`, `TRACE_SAMPLE_RATIO`, `APPCHECK_DEBUG_TOKEN` (local dev). **Bookings L2:** `BOOKINGS_JURISTE_UPN` (the polled mailbox — empty disables the sync), `BOOKINGS_SYNC_ACTIVE` (default `true`), `BOOKINGS_SUBJECT_PREFIXES` (comma-separated, default `RDV`), `BOOKINGS_SYNC_LOOKAHEAD_DAYS`/`BOOKINGS_SYNC_LOOKBACK_DAYS` (90/1), `BOOKINGS_DEBUG_PAYLOAD` (predicate tuning), `FEATURE_INTAKE` (L3 trigger, default `false`).
 
 ### Local development
 
@@ -2223,6 +2262,16 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
   10. Mappage `portail.poirierlavoie.ca` + DNS Cloudflare (CNAME proxied, Full Strict) ; **aucune** application Access sur cet hôte ; WAF + limite de débit (~120 req/min/IP) ; Transform Rule `X-Origin-Auth` zone-wide
   11. Secrets `portail-secret-key` + `graph-client-secret`
   12. Pousser le commit CI (portail.yaml + dispatch.yaml + cron.yaml) ; essai bout en bout avec un **alias** (jamais le courriel d'autorisation — §1.3), y compris l'accusé + sa copie « Éléments envoyés » et le test de panne (`gcloud tasks queues pause portail`)
+
+### Phase L2 — Synchronisation « Bookings with me » → rendez-vous à confirmer (July 2026, ✅ code complete — **infrastructure pending**)
+
+- **L2** — Importe les réservations Microsoft « Bookings with me » de la boîte du juriste dans Athéna comme **hearings** (le dépôt n'a pas de `models/event.py` — les événements de calendrier SONT les hearings) verrouillés derrière un **nouveau champ `confirmation`** (`""`/absent = confirmé, `à_confirmer`, `annulée_client`, `refusée`) — **distinct du champ `status`**, où `à_confirmer` est déjà une valeur (audience à planifier). **Interrogation cron toutes les 10 min** (`GET /taches/bookings/sync`, blueprint machine `routes/taches_bookings.py`, gardé par `X-Appengine-Cron`), pas de webhook. Réutilise l'infra Graph + cron de L1 : `utils/graph_calendrier.py` (lecture `calendarView` paginée UTC via `graph_get`, prédicat préfixe-d'objet `est_reservation`, `extraire`, `annuler_reservation`). **Permission Graph `Calendars.ReadWrite`** (décision 2026-07-25) : refuser un rendez-vous **annule réellement** la réunion Outlook (best-effort + bandeau si échec). **Contrat `include_unconfirmed`** (miroir de `include_analyse`) sur `list_hearings`/`list_hearings_in_range`/`list_hearings_window` : défaut `False` = confirmés seulement (DAV, MCP, tableau de bord, exports) ; `True` = + à_confirmer + annulée_client (jamais `refusée`). Le **Calendrier** montre les à_confirmer avec un **badge** (décision D-L2-2 — `routes/hearings._keep_calendar` retire annulée_client), DavX5/MCP jamais avant confirmation. Onglet **Rendez-vous** de Réception (`templates/reception/_rdv.html`) : cartes confirmer/refuser + alertes de divergence (modifié/annulé côté client — jamais d'écrasement d'un confirmé, §5.4), liaison partie par courriel exact ; la confirmation `bump_ctag(collection_for(dossier_id))` (`""` → « Général »). `log_bookings_event` (logger `pallas.bookings`) + config `BOOKINGS_*`/`FEATURE_INTAKE` (déclencheur intake L3 inerte). **Zéro nouvelle dépendance ; aucune classe Tailwind nouvelle** (badge `bg-amber-100 text-amber-700` déjà compilé) → pas de recompilation. Spec : `SPEC_PHASE_L2_BOOKINGS_SYNC.md` (déviations documentées : `models/event.py` = `models/hearing.py` ; événements snake_case sous `pallas.bookings` ; décisions ReadWrite + badge Calendrier).
+- **Ops prerequisites (ordered):**
+  1. **Entra ID** : ajouter la permission d'application **`Calendars.ReadWrite`** à « Pallas-Athena-Graph » (créée en L1) + **consentement admin** (recommandé : `ApplicationAccessPolicy` restreignant l'accès calendrier à la seule boîte du juriste).
+  2. `app.yaml` env : `BOOKINGS_JURISTE_UPN=<UPN de la boîte Bookings>`, `BOOKINGS_SYNC_ACTIVE=true`, `FEATURE_INTAKE=false` (+ `BOOKINGS_SUBJECT_PREFIXES` / lookahead / lookback si autres que défauts `RDV` / 90 / 1).
+  3. **Bookings with me** : nommer les types de rencontre avec le préfixe convenu (« RDV — … »), lien Teams activé, publier la page.
+  4. **Déployer `cron.yaml` COMPLET** (⚠️ `gcloud app deploy cron.yaml` REMPLACE toute la table cron — le fichier contient DÉJÀ la réconciliation portail L1 + la synchro Bookings ; ne jamais le remplacer par la seule entrée Bookings).
+  5. Réservation d'essai + réglage du prédicat (`BOOKINGS_DEBUG_PAYLOAD=true` → journalise un événement détecté + un non détecté, domaines tronqués → ajuster préfixes → remettre `false`). Le pare-feu `0.1.0.2/32` est déjà autorisé (L1).
 
 ### Proposed / not yet implemented
 
