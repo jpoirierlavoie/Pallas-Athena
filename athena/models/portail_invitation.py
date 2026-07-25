@@ -79,10 +79,18 @@ def creer_invitation(
     *,
     dossier_id: Optional[str] = None,
     partie_id: Optional[str] = None,
+    client_name: str = "",
     display_label: str = "",
     jours: Optional[int] = None,
 ) -> tuple[Optional[dict], list[str]]:
-    """Create an invitation document (statut « envoyée »)."""
+    """Create an invitation document (statut « envoyée »).
+
+    ``client_name`` is the sender name shown on the accusé bordereau. It is
+    portail-readable (confidentiality trap §5) — a low-sensitivity string on
+    par with the ``email`` already stored; the richer contact (address,
+    phone) is NEVER stored, only resolved main-side from ``partie_id`` when
+    the accusé is built.
+    """
     errors: list[str] = []
     if type_ not in VALID_TYPES:
         errors.append("Type d'invitation invalide.")
@@ -108,6 +116,7 @@ def creer_invitation(
         "email": email,
         "partie_id": partie_id or None,
         "dossier_id": dossier_id or None,
+        "client_name": sanitize(client_name, max_length=200),
         "display_label": display_label,
         "statut": "envoyée",
         "created_at": now,

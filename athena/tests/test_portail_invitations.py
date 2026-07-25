@@ -133,17 +133,27 @@ def test_creer_invitation_validation(store):
 
 def test_creer_invitation_defaults(store):
     inv, errors = pi.creer_invitation(
-        "documents", "  Client@Exemple.com ", display_label="Dossier 2026-001"
+        "documents", "  Client@Exemple.com ",
+        client_name="Jean Tremblay", display_label="Dossier 2026-001"
     )
     assert errors == []
     assert inv["email"] == "client@exemple.com"
     assert inv["statut"] == "envoyée"
     assert inv["soumissions"] == [] and inv["accuses"] == {}
     assert inv["prefill"] is None
+    assert inv["client_name"] == "Jean Tremblay"
     assert store[inv["id"]]["display_label"] == "Dossier 2026-001"
     # 30-day documents expiry (Annexe C)
     delta = inv["expires_at"] - inv["created_at"]
     assert delta.days == 30
+
+
+def test_creer_invitation_client_name_defaults_empty(store):
+    inv, errors = pi.creer_invitation(
+        "documents", "client@exemple.com", display_label="Dossier X"
+    )
+    assert errors == []
+    assert inv["client_name"] == ""
 
 
 # ── Transactional guards ─────────────────────────────────────────────────
@@ -206,12 +216,14 @@ def test_emission_merges_claims_never_replaces(store, monkeypatch):
                         mock.Mock(side_effect=GraphNotConfigured("off")))
 
     inv, errors, lien_manuel = emission.emettre_invitation(
-        "documents", "client@exemple.com", display_label="Dossier 2026-001"
+        "documents", "client@exemple.com",
+        client_name="Jean Tremblay", display_label="Dossier 2026-001"
     )
     assert errors == []
     set_claims.assert_called_once_with("u9", {"existing": 1, "portail": True})
     # Graph unconfigured → invitation still created, link handed back.
     assert inv is not None and inv["id"] in store
+    assert store[inv["id"]]["client_name"] == "Jean Tremblay"
     assert lien_manuel == "https://lien.example/x"
 
 

@@ -98,6 +98,7 @@ def emettre_invitation(
     *,
     dossier_id: Optional[str] = None,
     partie_id: Optional[str] = None,
+    client_name: str = "",
     display_label: str = "",
     jours: Optional[int] = None,
 ) -> tuple[Optional[dict], list[str], str]:
@@ -135,7 +136,7 @@ def emettre_invitation(
 
     invitation, errors = inv_model.creer_invitation(
         type_, email_n,
-        dossier_id=dossier_id, partie_id=partie_id,
+        dossier_id=dossier_id, partie_id=partie_id, client_name=client_name,
         display_label=display_label, jours=jours,
     )
     if errors or invitation is None:
