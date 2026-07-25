@@ -40,7 +40,12 @@ from models.document import (
 )
 from models.dossier import get_dossier, list_dossiers
 from models.folder import get_or_create_folder
-from models.partie import get_partie
+from models.partie import (
+    ROLE_LABELS,
+    display_name,
+    get_partie,
+    list_parties,
+)
 from security import sanitize
 from services import portail_emission as emission
 from utils.logging_setup import log_portail_event
@@ -208,6 +213,26 @@ def inviter_form():
     )
 
 
+@reception_bp.get("/partie-search")
+@login_required
+def partie_search():
+    """HTMX autocomplete for the invitation client picker.
+
+    Rows carry data-id/data-name/data-email; a nonce'd delegated listener on
+    the inviter form fills the hidden partie_id + the name/email inputs.
+    """
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return render_template("reception/_partie_resultats.html",
+                               parties=None, role_labels=ROLE_LABELS)
+    parties = list_parties(search=q)[:10]
+    rows = [{"id": p["id"], "name": display_name(p),
+             "email": p.get("email") or p.get("email_work") or "",
+             "role": p.get("contact_role", "")} for p in parties]
+    return render_template("reception/_partie_resultats.html",
+                           parties=rows, role_labels=ROLE_LABELS)
+
+
 @reception_bp.post("/inviter")
 @login_required
 def inviter_submit():
@@ -222,10 +247,20 @@ def inviter_submit():
     except ValueError:
         jours = 30
 
+    # A chosen party links partie_id (richer contact resolved main-side at
+    # accusé time). An unresolvable id is ignored, never a blocking error —
+    # client_name + email still carry the manual case.
+    partie_id = f.get("partie_id", "").strip() or None
+    if partie_id and get_partie(partie_id) is None:
+        partie_id = None
+    client_name = sanitize(f.get("client_name", ""), max_length=200).strip()
+
     invitation, errors, lien_manuel = emission.emettre_invitation(
         "documents",
         f.get("email", ""),
         dossier_id=dossier["id"] if dossier else None,
+        partie_id=partie_id,
+        client_name=client_name,
         display_label=display_label,
         jours=jours,
     )

@@ -27,9 +27,15 @@ with mock.patch("google.cloud.firestore.Client"):
 from flask import Flask  # noqa: E402
 
 
+_TEMPLATES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"
+)
+
+
 @pytest.fixture()
 def web():
-    app = Flask(__name__)
+    # template_folder set so the partie-search partial renders.
+    app = Flask(__name__, template_folder=_TEMPLATES)
     app.config["SECRET_KEY"] = "test-secret"
     app.config["TESTING"] = True
     app.register_blueprint(rc.reception_bp)
@@ -301,3 +307,66 @@ def test_compteur_reception_cache_et_fail_open(monkeypatch):
     compte.return_value = None  # base « portail » absente → fail-open
     assert rc.compteur_reception() is None
     rc._badge_cache.update(at=0.0, n=None)
+
+
+# ── Sélecteur de client (autocomplétion + soumission) ────────────────────
+
+
+def test_partie_search_min_chars(web):
+    reponse = web.get("/reception/partie-search?q=a")
+    assert reponse.status_code == 200
+    assert "au moins 2" in reponse.get_data(as_text=True)
+
+
+def test_partie_search_renvoie_lignes(web, monkeypatch):
+    monkeypatch.setattr(rc, "list_parties", lambda search=None: [
+        {"id": "p1", "contact_role": "client",
+         "email": "jean@exemple.com", "first_name": "Jean", "last_name": "Tremblay"},
+    ])
+    monkeypatch.setattr(rc, "display_name", lambda p: "Jean Tremblay")
+    html = web.get("/reception/partie-search?q=tre").get_data(as_text=True)
+    assert 'data-partie-id="p1"' in html
+    assert 'data-partie-name="Jean Tremblay"' in html
+    assert 'data-partie-email="jean@exemple.com"' in html
+
+
+def test_inviter_submit_transmet_partie_et_nom(web, monkeypatch):
+    monkeypatch.setattr(rc, "get_dossier", lambda d: None)
+    monkeypatch.setattr(rc, "get_partie",
+                        lambda p: {"id": "p1"} if p == "p1" else None)
+    captures = {}
+
+    def _emettre(type_, email, **kw):
+        captures.update(email=email, **kw)
+        return {"id": "inv9"}, [], ""
+
+    monkeypatch.setattr(rc.emission, "emettre_invitation", _emettre)
+    with mock.patch("flask_wtf.csrf.validate_csrf", return_value=None):
+        reponse = web.post("/reception/inviter", data={
+            "email": "jean@exemple.com", "partie_id": "p1",
+            "client_name": "Jean Tremblay", "display_label": "Dossier X",
+            "jours": "30",
+        })
+    assert reponse.status_code == 302
+    assert captures["partie_id"] == "p1"
+    assert captures["client_name"] == "Jean Tremblay"
+
+
+def test_inviter_submit_ignore_partie_inconnue(web, monkeypatch):
+    monkeypatch.setattr(rc, "get_dossier", lambda d: None)
+    monkeypatch.setattr(rc, "get_partie", lambda p: None)  # id ne résout pas
+    captures = {}
+
+    def _emettre(type_, email, **kw):
+        captures.update(**kw)
+        return {"id": "inv9"}, [], ""
+
+    monkeypatch.setattr(rc.emission, "emettre_invitation", _emettre)
+    with mock.patch("flask_wtf.csrf.validate_csrf", return_value=None):
+        web.post("/reception/inviter", data={
+            "email": "jean@exemple.com", "partie_id": "fantome",
+            "client_name": "Jean", "display_label": "Dossier X",
+        })
+    # id non résolu → ignoré, jamais bloquant ; le nom manuel subsiste.
+    assert captures["partie_id"] is None
+    assert captures["client_name"] == "Jean"

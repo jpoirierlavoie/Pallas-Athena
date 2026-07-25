@@ -1,0 +1,25 @@
+{# Résultats d'autocomplétion du sélecteur de client (Réception → inviter).
+   Chaque ligne porte data-id/data-name/data-email ; un écouteur délégué sous
+   nonce (dans inviter.html) remplit partie_id + nom + courriel au clic.
+   Aucun gestionnaire inline (CSP). #}
+{% if parties is none %}
+<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères…</div>
+{% elif not parties %}
+<div class="px-3 py-2 text-sm text-gray-500">Aucun contact trouvé</div>
+{% else %}
+<ul class="divide-y divide-gray-100 max-h-48 overflow-y-auto">
+  {% for p in parties %}
+  <li>
+    <button type="button"
+            class="w-full text-left px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"
+            data-partie-id="{{ p.id }}"
+            data-partie-name="{{ p.name }}"
+            data-partie-email="{{ p.email }}">
+      <span class="font-medium text-gray-900">{{ p.name }}</span>
+      <span class="text-gray-500 ml-1">{{ role_labels.get(p.role, p.role) }}</span>
+      {% if p.email %}<span class="text-gray-400 text-xs ml-1">· {{ p.email }}</span>{% endif %}
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
