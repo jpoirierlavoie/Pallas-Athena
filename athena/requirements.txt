@@ -410,6 +410,7 @@ google-api-core==2.30.3 \
     #   google-cloud-logging
     #   google-cloud-secret-manager
     #   google-cloud-storage
+    #   google-cloud-tasks
     #   google-cloud-trace
 google-auth==2.49.2 \
     --hash=sha256:c1ae38500e73065dcae57355adb6278cf8b5c8e391994ae9cbadbcb9631ab409 \
@@ -422,6 +423,7 @@ google-auth==2.49.2 \
     #   google-cloud-logging
     #   google-cloud-secret-manager
     #   google-cloud-storage
+    #   google-cloud-tasks
     #   google-cloud-trace
 google-cloud-appengine-logging==1.9.0 \
     --hash=sha256:bbf3a7e4dc171678f7f481259d1f68c3ae7d337530f1f2361f8a0b214dbcfe36 \
@@ -458,6 +460,10 @@ google-cloud-storage==3.10.1 \
     # via
     #   -r requirements.in
     #   firebase-admin
+google-cloud-tasks==2.23.0 \
+    --hash=sha256:2a3e35c22b37947f829d62c50276a6f47c9ac1a789ec8ba0b646f31131b3c894 \
+    --hash=sha256:a6da2c114a4db5a59593eba64987a4bf6973a0f48b1a31a3d4acffb6f4c7beb9
+    # via -r requirements.in
 google-cloud-trace==1.19.0 \
     --hash=sha256:58293c6efcee6c74bb854ff01b008823bef66845c14f15ffa5209d545098a65d \
     --hash=sha256:59604c4c775c40af31b367df6bada0af34518cc35ac8cfedecd43898a120c51d
@@ -517,6 +523,7 @@ grpc-google-iam-v1==0.14.4 \
     # via
     #   google-cloud-logging
     #   google-cloud-secret-manager
+    #   google-cloud-tasks
 grpcio==1.80.0 \
     --hash=sha256:00168469238b022500e486c1c33916acf2f2a9b2c022202cf8a1885d2e3073c1 \
     --hash=sha256:02e64bb0bb2da14d947a49e6f120a75e947250aebe65f9629b62bb1f5c14e6e9 \
@@ -585,6 +592,7 @@ grpcio==1.80.0 \
     #   google-cloud-firestore
     #   google-cloud-logging
     #   google-cloud-secret-manager
+    #   google-cloud-tasks
     #   google-cloud-trace
     #   googleapis-common-protos
     #   grpc-google-iam-v1
@@ -1006,6 +1014,7 @@ proto-plus==1.27.2 \
     #   google-cloud-firestore
     #   google-cloud-logging
     #   google-cloud-secret-manager
+    #   google-cloud-tasks
     #   google-cloud-trace
 protobuf==6.33.6 \
     --hash=sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326 \
@@ -1025,6 +1034,7 @@ protobuf==6.33.6 \
     #   google-cloud-firestore
     #   google-cloud-logging
     #   google-cloud-secret-manager
+    #   google-cloud-tasks
     #   google-cloud-trace
     #   googleapis-common-protos
     #   grpc-google-iam-v1
@@ -1068,6 +1078,7 @@ requests==2.33.1 \
     --hash=sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517 \
     --hash=sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a
     # via
+    #   -r requirements.in
     #   cachecontrol
     #   google-api-core
     #   google-cloud-storage

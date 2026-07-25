@@ -103,6 +103,28 @@ class Config:
     # Request size limits
     MAX_CONTENT_LENGTH: int = 25 * 1024 * 1024  # 25 MB (document uploads)
 
+    # Microsoft Graph — outbound email (portail client L1; reused by the
+    # future phase J notification pipeline). All optional: unset means the
+    # outbound-email feature is disabled and callers degrade with a French
+    # message (never a crash). MAIN SERVICE ONLY — none of these values may
+    # appear in the portal service's environment (spec L1 §8.1).
+    GRAPH_TENANT_ID: str = os.environ.get("GRAPH_TENANT_ID", "")
+    GRAPH_CLIENT_ID: str = os.environ.get("GRAPH_CLIENT_ID", "")
+    GRAPH_SENDER_UPN: str = os.environ.get("GRAPH_SENDER_UPN", "")
+    GRAPH_CLIENT_SECRET: str = _secret(
+        "graph-client-secret", "GRAPH_CLIENT_SECRET", required=False
+    )
+
+    @classmethod
+    def graph_configured(cls) -> bool:
+        """True when every Graph credential needed to send email is present."""
+        return bool(
+            cls.GRAPH_TENANT_ID
+            and cls.GRAPH_CLIENT_ID
+            and cls.GRAPH_CLIENT_SECRET
+            and cls.GRAPH_SENDER_UPN
+        )
+
     # Firm info (displayed on invoices)
     FIRM_NAME: str = os.environ.get("FIRM_NAME", "")
     FIRM_STREET: str = os.environ.get("FIRM_STREET", "")

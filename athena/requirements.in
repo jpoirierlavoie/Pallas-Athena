@@ -12,6 +12,15 @@ google-cloud-firestore==2.27.0
 google-cloud-storage==3.10.1
 google-cloud-secret-manager==2.27.0
 google-cloud-logging==3.15.0
+# Portail client (spec L1): the portal enqueues events onto the « portail »
+# Cloud Tasks queue; the main service's handler consumes them. Reused as-is
+# by the future phase J notification pipeline.
+google-cloud-tasks==2.23.0
+# requests was already in the hash lock as a locked transitive (cachecontrol,
+# google-api-core, ...). utils/graph.py (Microsoft Graph outbound email) now
+# imports it directly, so it is promoted to a direct pin — Dependabot and
+# OSV-Scanner track direct deps only.
+requests==2.33.1
 # OpenTelemetry — distributed tracing → Cloud Trace.
 # Versions paired: SDK 1.27 ↔ instrumentation 0.48b0 (OTel's stable+beta
 # split).  GCP exporter 1.7.0 is the latest line tested against SDK 1.27.
