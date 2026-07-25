@@ -299,12 +299,20 @@ def telecharger(inv_id: str, batch: str, seq: int):
     blob = _bucket().blob(entree.get("objet", ""))
     if not blob.exists():
         return render_template("errors/404.html"), 404
+    # En-tête Content-Disposition : un CR/LF dans le nom (charge falsifiée
+    # à la finalisation — le nom d'origine est conservé VERBATIM dans
+    # l'enveloppe) ferait lever werkzeug. Contrôles retirés AU POINT
+    # D'USAGE seulement — l'enveloppe et le manifeste probants restent
+    # intacts.
+    nom = "".join(
+        c for c in (entree.get("name") or "document") if ord(c) >= 32
+    ) or "document"
     # §7.5 — téléchargement FORCÉ (attachment), content_type DÉCLARÉ,
     # jamais de rendu en ligne depuis la quarantaine.
     return send_file(
         blob.open("rb"),
         as_attachment=True,
-        download_name=entree.get("name") or "document",
+        download_name=nom,
         mimetype=entree.get("content_type") or "application/octet-stream",
     )
 
@@ -363,16 +371,25 @@ def verser(inv_id: str, batch: str, seq: int):
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")
 
     entree["etat"] = "versé"
-    try:
-        _ecrire_manifeste(inv_id, batch, manifeste)
-    except Exception:
-        # Le document EST au dossier ; seul l'état du manifeste retarde.
-        logger.exception("reception: manifest update failed after ingest")
     log_portail_event(
         "document_verse",
         invitation_id=inv_id, batch=batch,
         dossier_id=dossier_reel, document_id=document["id"],
     )
+    try:
+        _ecrire_manifeste(inv_id, batch, manifeste)
+    except Exception:
+        # Le document EST au dossier, mais l'état de quarantaine ne le
+        # reflète pas : un succès silencieux inviterait à re-verser le même
+        # fichier (le garde etat == « reçu » repasserait). Avertir.
+        logger.exception("reception: manifest update failed after ingest")
+        return _rediriger(erreur=(
+            f"Le fichier a bien été versé au dossier "
+            f"{dossier.get('file_number', '')}, mais l'état de quarantaine "
+            "n'a pas pu être mis à jour : il apparaîtra encore comme "
+            "« reçu ». Ne le versez pas une seconde fois — refusez-le pour "
+            "clore le lot."
+        ))
     return _rediriger(
         message=f"Fichier versé au dossier {dossier.get('file_number', '')} "
                 f"(dossier « {PORTAL_FOLDER_NAME} »)."
@@ -400,37 +417,79 @@ def refuser(inv_id: str, batch: str, seq: int):
 @reception_bp.post("/lots/<inv_id>/<batch>/traiter")
 @login_required
 def traiter_lot(inv_id: str, batch: str):
-    manifeste, _ = _entree_ou_none(inv_id, batch, 0)
-    if manifeste is None:
-        return _rediriger(erreur="Lot introuvable.")
-    # Chaque fichier reçu exige une décision EXPLICITE avant la purge —
-    # marquer traité supprime les objets de quarantaine (revue humaine
-    # systématique, jamais de suppression d'un fichier non examiné).
-    if any(f.get("etat") == "reçu" for f in manifeste.get("files") or []):
-        return _rediriger(erreur=(
-            "Chaque fichier du lot doit d'abord être versé ou refusé."
-        ))
-
-    manifeste["etat_lot"] = "traité"
     bucket = _bucket()
     prefix = _prefix(inv_id, batch)
     archive = f"archive/{inv_id}/{batch}/"
-    try:
-        _ecrire_manifeste(inv_id, batch, manifeste)
-        # Enveloppe + manifeste → archive/ (trace conservée 365 j, cycle de
-        # vie du bucket), puis purge des objets files/.
-        for nom in ("envelope.json", "manifeste.json"):
-            src = bucket.blob(prefix + nom)
-            if src.exists():
-                bucket.copy_blob(src, bucket, archive + nom)
-                src.delete()
-        for blob in list(bucket.list_blobs(prefix=prefix + "files/")):
-            blob.delete()
-    except Exception:
-        logger.exception("reception: lot archive failed")
-        return _rediriger(erreur="Archivage du lot impossible. Réessayez.")
 
-    pi.maj_statut(inv_id, "traitée")
-    log_portail_event("lot_traite", invitation_id=inv_id, batch=batch)
+    deja_archive = False
+    try:
+        manifeste = _lire_manifeste(inv_id, batch)
+        if manifeste is None:
+            # Peut-être archivé lors d'un essai précédent qui a échoué APRÈS
+            # l'archivage (p. ex. mise à jour du statut) : reprendre depuis
+            # archive/ pour que l'opération soit rejouable de bout en bout.
+            src = bucket.blob(archive + "manifeste.json")
+            if src.exists():
+                manifeste = json.loads(src.download_as_bytes())
+                deja_archive = True
+    except Exception:
+        logger.exception("reception: manifest read failed")
+        return _rediriger(erreur="Lecture du lot impossible. Réessayez.")
+    if manifeste is None:
+        return _rediriger(erreur="Lot introuvable.")
+
+    if not deja_archive:
+        # Chaque fichier reçu exige une décision EXPLICITE avant la purge —
+        # marquer traité supprime les objets de quarantaine (revue humaine
+        # systématique, jamais de suppression d'un fichier non examiné).
+        if any(f.get("etat") == "reçu" for f in manifeste.get("files") or []):
+            return _rediriger(erreur=(
+                "Chaque fichier du lot doit d'abord être versé ou refusé."
+            ))
+        manifeste["etat_lot"] = "traité"
+        try:
+            _ecrire_manifeste(inv_id, batch, manifeste)
+            # Purge des objets files/ D'ABORD, l'enveloppe puis le manifeste
+            # en DERNIER : le manifeste sous submissions/ est la clé de
+            # relecture d'un nouvel essai — le retirer en premier rendrait
+            # un échec partiel non rejouable (« Lot introuvable »). Les
+            # gardes exists() rendent chaque étape idempotente.
+            for blob in list(bucket.list_blobs(prefix=prefix + "files/")):
+                blob.delete()
+            for nom in ("envelope.json", "manifeste.json"):
+                src = bucket.blob(prefix + nom)
+                if src.exists():
+                    bucket.copy_blob(src, bucket, archive + nom)
+                    src.delete()
+        except Exception:
+            logger.exception("reception: lot archive failed")
+            return _rediriger(erreur="Archivage du lot impossible. Réessayez.")
+        log_portail_event("lot_traite", invitation_id=inv_id, batch=batch)
+
+    # Ne fermer l'invitation que si AUCUN autre lot vivant ne subsiste :
+    # l'enveloppe de CE lot vient d'être déplacée vers archive/, donc toute
+    # envelope.json encore sous submissions/{inv}/ est un lot FRÈRE (y
+    # compris un lot soumis dont la tâche n'a pas encore été traitée) — le
+    # statut « traitée » le rendrait invisible en Réception et la
+    # réconciliation ne le rejouerait jamais. Échec du balayage → fail
+    # closed (statut inchangé, le lot frère reste listé).
+    try:
+        freres = [
+            b for b in bucket.list_blobs(prefix=f"submissions/{inv_id}/")
+            if b.name.endswith("/envelope.json")
+        ]
+    except Exception:
+        logger.exception("reception: sibling-lot scan failed")
+        freres = [batch]
+    if freres:
+        return _rediriger(message=(
+            "Lot traité et archivé — un autre lot de cette invitation "
+            "reste à examiner."
+        ))
+    if not pi.maj_statut(inv_id, "traitée"):
+        return _rediriger(erreur=(
+            "Lot archivé, mais mise à jour du statut impossible. Cliquez de "
+            "nouveau « Marquer le lot traité » pour réessayer."
+        ))
     return _rediriger(message="Lot traité — fichiers de quarantaine purgés, "
                               "enveloppe et manifeste archivés.")

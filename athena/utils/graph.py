@@ -63,16 +63,24 @@ def jeton_application() -> str:
         if _cached_token and time.monotonic() < _token_expires_at:
             return _cached_token
 
-        response = requests.post(
-            _TOKEN_URL.format(tenant=Config.GRAPH_TENANT_ID),
-            data={
-                "grant_type": "client_credentials",
-                "client_id": Config.GRAPH_CLIENT_ID,
-                "client_secret": Config.GRAPH_CLIENT_SECRET,
-                "scope": "https://graph.microsoft.com/.default",
-            },
-            timeout=_HTTP_TIMEOUT,
-        )
+        try:
+            response = requests.post(
+                _TOKEN_URL.format(tenant=Config.GRAPH_TENANT_ID),
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": Config.GRAPH_CLIENT_ID,
+                    "client_secret": Config.GRAPH_CLIENT_SECRET,
+                    "scope": "https://graph.microsoft.com/.default",
+                },
+                timeout=_HTTP_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            # Network failures must honour the module's GraphError contract
+            # (callers catch GraphError, never requests internals). Type
+            # name only — a requests exception str can embed the URL.
+            raise GraphError(
+                f"Échec réseau Graph ({type(exc).__name__})."
+            ) from exc
         if response.status_code != 200:
             raise GraphError(f"Échec du jeton Graph (HTTP {response.status_code}).")
         payload = response.json()
@@ -100,12 +108,17 @@ def graph_get(path: str, params: Optional[dict[str, Any]] = None) -> dict:
     url = path if path.startswith("https://") else _GRAPH_BASE + path
     merged: Optional[dict] = None
     while url:
-        response = requests.get(
-            url,
-            params=params if merged is None else None,
-            headers=_auth_headers(),
-            timeout=_HTTP_TIMEOUT,
-        )
+        try:
+            response = requests.get(
+                url,
+                params=params if merged is None else None,
+                headers=_auth_headers(),
+                timeout=_HTTP_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            raise GraphError(
+                f"Échec réseau Graph ({type(exc).__name__})."
+            ) from exc
         if response.status_code != 200:
             raise GraphError(f"Échec d'un GET Graph (HTTP {response.status_code}).")
         data = response.json()
@@ -123,12 +136,15 @@ def graph_get(path: str, params: Optional[dict[str, Any]] = None) -> dict:
 
 def graph_post(path: str, json_body: dict) -> Optional[dict]:
     """POST to a Graph endpoint; returns the JSON body, or None on 202/204."""
-    response = requests.post(
-        _GRAPH_BASE + path,
-        json=json_body,
-        headers=_auth_headers(),
-        timeout=_HTTP_TIMEOUT,
-    )
+    try:
+        response = requests.post(
+            _GRAPH_BASE + path,
+            json=json_body,
+            headers=_auth_headers(),
+            timeout=_HTTP_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise GraphError(f"Échec réseau Graph ({type(exc).__name__}).") from exc
     if response.status_code not in (200, 201, 202, 204):
         raise GraphError(f"Échec d'un POST Graph (HTTP {response.status_code}).")
     if response.status_code in (202, 204) or not response.content:

@@ -116,6 +116,8 @@ class _FakeBucket:
 
 ENVELOPE = {
     "type": "documents", "invitation_id": "inv1", "batch": "b1",
+    "submitted_at": "2026-07-20T12:00:00+00:00",
+    "http": {"ip": "203.0.113.9", "user_agent": "Mozilla/5.0 test"},
     "files": [{"objet": "submissions/inv1/b1/files/001_a.pdf",
                "name": "a.pdf", "size": 4, "content_type": "application/pdf"}],
 }
@@ -169,23 +171,22 @@ def test_charge_invalide_200_sans_reprise(web):
 # ── « ouverte » ──────────────────────────────────────────────────────────
 
 
-def test_ouverte_transitionne_seulement_envoyee(web, monkeypatch):
-    monkeypatch.setattr(tp.pi, "lire_invitation",
-                        lambda i: _inv(statut="envoyée"))
-    maj = mock.Mock(return_value=True)
-    monkeypatch.setattr(tp.pi, "maj_statut", maj)
+def test_ouverte_passe_par_le_cas_transactionnel(web, monkeypatch):
+    # The handler delegates to the transactional CAS (never a plain
+    # read-check-write — a « soumise » task could race and be regressed).
+    cas = mock.Mock(return_value=True)
+    monkeypatch.setattr(tp.pi, "marquer_ouverte", cas)
     assert _post_evenement(
         web, {"event": "ouverte", "invitation_id": "inv1"}
     ).status_code == 200
-    maj.assert_called_once_with("inv1", "ouverte")
+    cas.assert_called_once_with("inv1")
 
-    # Already ouverte → nothing to do, still 200.
-    maj.reset_mock()
-    monkeypatch.setattr(tp.pi, "lire_invitation", lambda i: _inv())
-    assert _post_evenement(
-        web, {"event": "ouverte", "invitation_id": "inv1"}
-    ).status_code == 200
-    maj.assert_not_called()
+    # CAS failure → exception → 5xx so the queue retries (TESTING mode
+    # re-raises instead of rendering the 500).
+    monkeypatch.setattr(tp.pi, "marquer_ouverte",
+                        mock.Mock(return_value=False))
+    with pytest.raises(RuntimeError):
+        _post_evenement(web, {"event": "ouverte", "invitation_id": "inv1"})
 
 
 # ── « soumise » : manifeste + idempotence (§13.m) ────────────────────────
@@ -226,12 +227,18 @@ def test_soumise_ecrit_manifeste_et_envoie_accuse(web, monkeypatch):
     assert fichier["sha512"] == hashlib.sha512(b"data").hexdigest()
     assert fichier["size_gcs"] == 4 and fichier["divergence"] is None
 
+    # §9.2 : horodatage + IP/UA recopiés de l'enveloppe dans le manifeste.
+    assert manifeste["submitted_at"] == "2026-07-20T12:00:00+00:00"
+    assert manifeste["http"]["ip"] == "203.0.113.9"
+
     envoyer.assert_called_once()
     destinataire, objet, corps = envoyer.call_args.args
     assert destinataire == "client@exemple.com"
     assert objet.startswith("Accusé de réception")
     assert fichier["sha512"] in corps
     assert "réception technique" in corps
+    # L'accusé atteste la date de RÉCEPTION (enveloppe), pas de traitement.
+    assert "20 juillet 2026" in corps
 
 
 def test_soumise_rejouee_aucun_second_accuse_ni_rehash(web, monkeypatch):

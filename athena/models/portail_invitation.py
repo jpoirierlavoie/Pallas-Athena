@@ -186,6 +186,37 @@ def revoquer(inv_id: str) -> bool:
     return maj_statut(inv_id, "révoquée")
 
 
+def marquer_ouverte(inv_id: str) -> bool:
+    """Transactional « envoyée » → « ouverte »; any other statut is a no-op.
+
+    A plain read-check-write could race the « soumise » task (Cloud Tasks
+    guarantees neither ordering nor non-concurrency) and regress a processed
+    submission back to « ouverte », hiding it from Réception. Same CAS shape
+    as the module's other transactional guards. False only on failure.
+    """
+    ref = _col().document(inv_id)
+    transaction = _pdb().transaction()
+
+    @firestore.transactional
+    def _txn(txn) -> bool:
+        snap = ref.get(transaction=txn)
+        if not snap.exists:
+            return True  # nothing to open — no-op
+        if snap.to_dict().get("statut") != "envoyée":
+            return True  # already ouverte/soumise/… — never regress
+        txn.update(
+            ref,
+            {"statut": "ouverte", "updated_at": datetime.now(timezone.utc)},
+        )
+        return True
+
+    try:
+        return _txn(transaction)
+    except Exception:
+        logger.exception("portail invitation marquer_ouverte failed")
+        return False
+
+
 def incrementer_resend(inv_id: str) -> bool:
     try:
         _col().document(inv_id).update(

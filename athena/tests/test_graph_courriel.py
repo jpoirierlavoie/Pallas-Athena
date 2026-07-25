@@ -66,6 +66,19 @@ def test_token_request_shape():
     assert data["scope"] == "https://graph.microsoft.com/.default"
 
 
+def test_network_failure_raises_graph_error_without_url():
+    # requests exceptions must honour the GraphError contract (callers catch
+    # GraphError only) and never echo the URL into the message.
+    exc = graph.requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='login.microsoftonline.com'...)"
+    )
+    with mock.patch.object(graph.requests, "post", side_effect=exc):
+        with pytest.raises(graph.GraphError) as info:
+            graph.jeton_application()
+    assert "ConnectionError" in str(info.value)
+    assert "microsoftonline" not in str(info.value)
+
+
 def test_unconfigured_raises_not_configured(monkeypatch):
     monkeypatch.setattr(Config, "GRAPH_TENANT_ID", "")
     with pytest.raises(graph.GraphNotConfigured):

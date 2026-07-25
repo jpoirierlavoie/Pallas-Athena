@@ -57,9 +57,13 @@ def lire(inv_id: str) -> Optional[dict]:
     return snap.to_dict() if snap.exists else None
 
 
-def chercher_par_email(email: str, limit: int = 10) -> list[dict]:
+def chercher_par_email(email: str, limit: int = 100) -> list[dict]:
     """Bounded lookup for the no-``i`` renvoi path (single-field equality —
-    automatic index). Callers filter for active themselves."""
+    automatic index; NO order_by, which would demand a composite index on
+    the named database — Firestore's default order is by document id, so
+    the window must be wide enough to cover ALL of an address's invitations
+    or the newest active one could fall outside it). Callers filter for
+    active themselves."""
     if not email:
         return []
     try:

@@ -23,6 +23,7 @@ from markupsafe import escape
 
 from client.config import PORTAIL_BUCKET, PORTAIL_QUEUE
 from client.services import taches
+from config import Config
 from models import portail_invitation as pi
 from services import portail_emission as emission
 from tz import to_mtl
@@ -159,6 +160,11 @@ def _construire_manifeste(bucket, inv_id: str, batch: str,
         "batch": batch,
         "invitation_id": inv_id,
         "hashed_at": datetime.now(timezone.utc).isoformat(),
+        # Recopiés de l'enveloppe pour que Réception (horodatage, IP/UA —
+        # §9.2) et l'accusé (date de RÉCEPTION, pas de traitement) n'aient
+        # jamais à relire envelope.json.
+        "submitted_at": str(envelope.get("submitted_at") or ""),
+        "http": envelope.get("http") or {},
         "files": fichiers,
         "etat_lot": "soumis",
     }
@@ -207,9 +213,15 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
     # it would only burn queue attempts on no-ops.
     if pi.poser_accuse(inv_id, batch):
         invitation = pi.lire_invitation(inv_id) or {}
+        # L'accusé atteste la date de RÉCEPTION (l'enveloppe écrite = la
+        # soumission acquise, §7.4) — jamais l'heure de traitement, qui peut
+        # suivre de plusieurs minutes (file, réconciliation).
+        try:
+            quand = datetime.fromisoformat(manifeste.get("submitted_at") or "")
+        except ValueError:
+            quand = datetime.now(timezone.utc)
         objet, corps = _corps_accuse(
-            invitation.get("display_label", ""), recus,
-            datetime.now(timezone.utc),
+            invitation.get("display_label", ""), recus, quand,
         )
         try:
             courriel.envoyer(invitation.get("email", ""), objet, corps)
@@ -261,19 +273,27 @@ def evenement():
         return jsonify({"ok": False, "motif": "charge invalide"}), 200
 
     if event == "ouverte":
-        invitation = pi.lire_invitation(inv_id)
-        if invitation and invitation.get("statut") == "envoyée":
-            if not pi.maj_statut(inv_id, "ouverte"):
-                raise RuntimeError("statut ouverte update failed")  # retry
+        # Transactional CAS — a plain read-check-write could race the
+        # « soumise » task and regress the statut (Cloud Tasks guarantees
+        # no ordering).
+        if not pi.marquer_ouverte(inv_id):
+            raise RuntimeError("statut ouverte update failed")  # retry
         return jsonify({"ok": True})
 
     if event == "renvoi":
         invitation = pi.lire_invitation(inv_id)
         if invitation is None or not pi.est_active(invitation):
             return jsonify({"ok": True, "motif": "invitation inactive"})
-        ok, _message, _lien = emission.renvoyer_invitation(inv_id)
+        ok, _message, lien_manuel = emission.renvoyer_invitation(inv_id)
         if not ok:
             raise RuntimeError("renvoi failed")  # possibly transient — retry
+        if lien_manuel and Config.graph_configured():
+            # L'envoi a échoué (GraphError transitoire) alors que Graph EST
+            # configuré ; en contexte de tâche, personne ne peut remettre le
+            # lien manuel au client — lever pour que la file réessaie
+            # (§8.3 : échec → lever, la reprise appartient à Cloud Tasks).
+            # Graph non configuré : rien à réessayer, 200.
+            raise RuntimeError("renvoi email send failed")
         return jsonify({"ok": True})
 
     # event == "soumise"
@@ -328,8 +348,18 @@ def reconciliation():
                 continue  # fully processed — intact (§8.4.4)
 
             # The queue lost work — replay it. Every repair is an ERROR by
-            # design: it must be SEEN (§8.4.3).
-            taches.signaler("soumise", inv_id, batch=batch)
+            # design: it must be SEEN (§8.4.3). A failed re-enqueue must not
+            # abort the sweep — the remaining lots still deserve their scan
+            # (this lot comes back next cycle).
+            try:
+                taches.signaler("soumise", inv_id, batch=batch)
+            except Exception:
+                logger.exception("reconciliation re-enqueue failed")
+                log_portail_event(
+                    "tache_enfilage_echec", "failure",
+                    invitation_id=inv_id, batch=batch, evenement="soumise",
+                )
+                continue
             repares += 1
             log_portail_event(
                 "reconciliation_reparation", "failure",

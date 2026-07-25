@@ -171,6 +171,18 @@ def test_poser_accuse_missing_invitation_fails_closed(store):
     assert pi.poser_accuse("absent", "b1") is False
 
 
+def test_marquer_ouverte_cas_never_regresses(store):
+    store["inv1"] = _inv(statut="envoyée")
+    assert pi.marquer_ouverte("inv1") is True
+    assert store["inv1"]["statut"] == "ouverte"
+    # A racing « soumise » already advanced the statut: the CAS must be a
+    # no-op success, never a regression that hides a processed submission.
+    store["inv1"]["statut"] = "soumise"
+    assert pi.marquer_ouverte("inv1") is True
+    assert store["inv1"]["statut"] == "soumise"
+    assert pi.marquer_ouverte("absent") is True  # nothing to open
+
+
 # ── Émission (§1.3, claim merge, manual-link fallback) ───────────────────
 
 

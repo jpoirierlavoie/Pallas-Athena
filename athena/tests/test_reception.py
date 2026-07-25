@@ -168,23 +168,34 @@ def test_traiter_bloque_si_fichier_recu(web, monkeypatch):
     bucket.copy_blob.assert_not_called()  # never purge unexamined files
 
 
-def test_traiter_archive_et_purge(web, monkeypatch):
-    manifeste = _manifeste(_entree(etat="versé"), _entree(etat="refusé"))
-    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
-    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
-
+def _bucket_traiter(monkeypatch, freres=()):
+    """Mock bucket: files/ objects to purge, source JSONs, sibling scan."""
     fichiers_restants = [mock.Mock(), mock.Mock()]
     sources = {}
 
     def _blob(nom):
         src = sources.setdefault(nom, mock.Mock())
-        src.exists.return_value = True
+        src.exists.return_value = not nom.startswith("archive/")
         return src
+
+    def _list(prefix=""):
+        if prefix.endswith("files/"):
+            return fichiers_restants
+        # Sibling scan over submissions/{inv}/ — envelope.json of OTHER lots.
+        return [mock.Mock(name=n, **{"name": n}) for n in freres]
 
     bucket = mock.Mock()
     bucket.blob.side_effect = _blob
-    bucket.list_blobs.return_value = fichiers_restants
+    bucket.list_blobs.side_effect = _list
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    return bucket, sources, fichiers_restants
+
+
+def test_traiter_archive_et_purge(web, monkeypatch):
+    manifeste = _manifeste(_entree(etat="versé"), _entree(etat="refusé"))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
+    bucket, sources, fichiers_restants = _bucket_traiter(monkeypatch)
     statuts = []
     monkeypatch.setattr(rc.pi, "maj_statut",
                         lambda i, s: statuts.append((i, s)) or True)
@@ -197,11 +208,82 @@ def test_traiter_archive_et_purge(web, monkeypatch):
     assert {c[2] for c in copies} == {
         "archive/inv1/b1/envelope.json", "archive/inv1/b1/manifeste.json",
     }
-    for src in sources.values():
-        src.delete.assert_called_once()
+    for nom, src in sources.items():
+        if not nom.startswith("archive/"):
+            src.delete.assert_called_once()
     for restant in fichiers_restants:
         restant.delete.assert_called_once()
     assert statuts == [("inv1", "traitée")]
+
+
+def test_traiter_ne_ferme_pas_avec_un_lot_frere(web, monkeypatch):
+    # A second submitted batch of the SAME invitation must keep the statut
+    # « soumise » — flipping it would make the sibling lot invisible in
+    # Réception and the reconciliation would never replay it (review HIGH).
+    manifeste = _manifeste(_entree(etat="versé"))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
+    _bucket_traiter(monkeypatch,
+                    freres=("submissions/inv1/b2/envelope.json",))
+    maj = mock.Mock()
+    monkeypatch.setattr(rc.pi, "maj_statut", maj)
+
+    reponse = web.post("/reception/lots/inv1/b1/traiter")
+    assert "message=" in reponse.headers["Location"]
+    assert "examiner" in reponse.headers["Location"]
+    maj.assert_not_called()
+
+
+def test_traiter_reprend_un_lot_deja_archive(web, monkeypatch):
+    # A previous attempt failed AFTER archiving (e.g. the statut update):
+    # the retry must recover from archive/ instead of « Lot introuvable ».
+    import json as _json
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: None)
+    manifeste = _manifeste(_entree(etat="versé"))
+    manifeste["etat_lot"] = "traité"
+
+    def _blob(nom):
+        b = mock.Mock()
+        b.exists.return_value = nom == "archive/inv1/b1/manifeste.json"
+        b.download_as_bytes.return_value = _json.dumps(manifeste).encode()
+        return b
+
+    bucket = mock.Mock()
+    bucket.blob.side_effect = _blob
+    bucket.list_blobs.return_value = []  # no sibling lot
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    statuts = []
+    monkeypatch.setattr(rc.pi, "maj_statut",
+                        lambda i, s: statuts.append((i, s)) or True)
+
+    reponse = web.post("/reception/lots/inv1/b1/traiter")
+    assert "message=" in reponse.headers["Location"]
+    bucket.copy_blob.assert_not_called()  # nothing re-archived
+    assert statuts == [("inv1", "traitée")]
+
+
+def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
+    # The document IS in the dossier but the quarantine state still says
+    # « reçu » — a plain success message would invite a duplicate ingest.
+    manifeste = _manifeste(_entree())
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste",
+                        mock.Mock(side_effect=RuntimeError("gcs down")))
+    blob = mock.Mock()
+    blob.download_as_bytes.return_value = b"%PDF-1.4 data"
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
+    monkeypatch.setattr(rc, "get_or_create_folder", lambda d, n: None)
+    monkeypatch.setattr(rc, "upload_document",
+                        mock.Mock(return_value=({"id": "doc9"}, [])))
+
+    reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                       data={"dossier_id": "d1"})
+    assert "erreur=" in reponse.headers["Location"]
+    assert "seconde+fois" in reponse.headers["Location"].replace("%20", "+") \
+        or "seconde" in reponse.headers["Location"]
 
 
 # ── Pastille (cache + fail-open) ─────────────────────────────────────────
