@@ -22,8 +22,14 @@ def envoyer(destinataire: str, objet: str, corps_html: str) -> None:
             "message": {
                 "subject": objet,
                 "body": {"contentType": "HTML", "content": corps_html},
+                # « from » explicite = l'expéditeur affiché est bien
+                # reception@… (GRAPH_SENDER_UPN), même si c'est un alias d'une
+                # autre boîte : la boîte détient le « Send As » sur ses propres
+                # alias, donc pas de permission supplémentaire requise.
+                "from": {"emailAddress": {"address": Config.GRAPH_SENDER_UPN}},
                 "toRecipients": [{"emailAddress": {"address": destinataire}}],
             },
+            # Copie dans les « Éléments envoyés » de la boîte (trace probante).
             "saveToSentItems": True,
         },
     )

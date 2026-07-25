@@ -127,6 +127,10 @@ def test_envoyer_sendmail_payload_conforme():
     body = post.call_args.kwargs["json"]
     assert url.endswith("/users/juriste@example.com/sendMail")
     assert body["saveToSentItems"] is True
+    # « from » explicite = l'UPN expéditeur (alias affiché).
+    assert body["message"]["from"] == {
+        "emailAddress": {"address": "juriste@example.com"}
+    }
     assert body["message"]["subject"] == "Objet test"
     assert body["message"]["body"] == {"contentType": "HTML", "content": "<p>Bonjour</p>"}
     assert body["message"]["toRecipients"] == [
