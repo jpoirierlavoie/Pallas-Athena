@@ -1,5 +1,12 @@
 <!DOCTYPE html>
-<html lang="fr">
+{# translate="no" / .notranslate : l'interface est en français par choix et
+   n'a jamais à être traduite. Les extensions de traduction (DeepL, Google
+   Translate) RÉÉCRIVENT le DOM pour traduire — ce qui cassait la barre de
+   navigation latérale (rapport 2026-07-27). L'attribut est la façon normalisée
+   de leur dire de ne pas toucher à cette page. NE PAS l'ajouter au portail
+   client (client/templates/base.html) : un client anglophone peut légitimement
+   vouloir traduire ces pages-là. #}
+<html lang="fr" translate="no" class="notranslate">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
