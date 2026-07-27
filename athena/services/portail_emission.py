@@ -51,20 +51,48 @@ def _signature_html() -> str:
     return "<p>" + "<br>".join(str(l) for l in lines if l) + "</p>"
 
 
-def _corps_invitation(display_label: str, lien: str, expires_at) -> tuple[str, str]:
-    """Gabarit A.1 — invitation (type documents). Returns (objet, corps_html)."""
+def _corps_invitation(display_label: str, lien: str, expires_at,
+                      inv_id: str) -> tuple[str, str]:
+    """Gabarit A.1 — invitation (type documents). Returns (objet, corps_html).
+
+    Two DELIBERATE deviations from the spec's A.1 wording (2026-07-27):
+
+    1. It no longer says the *link* « demeure valide jusqu'au {date} ». A
+       Firebase email-link code is single-use and expires in hours, while the
+       INVITATION lasts 14 days — clients who opened the mail the next morning
+       were failing while holding written assurance it would work. The two
+       facts are now stated separately.
+    2. It carries a FALLBACK URL. This is the highest-value line in the whole
+       email: it gives every failure mode a working exit that needs no phone
+       call. Built from PORTAIL_HOST (never a literal, so dev/staging cannot
+       send clients to production) and carrying ``?i=`` so /api/renvoi takes
+       the exact-id branch rather than the unordered email scan. It leaks
+       nothing — the sign-in link already embeds the same host and id.
+    """
     objet = f"Transmission de documents — {display_label}"
     date_exp = format_date_fr(to_mtl(expires_at).date())
+    secours = f"https://{PORTAIL_HOST}/entree?i={inv_id}"
     corps = (
         "<p>Bonjour,</p>"
         f"<p>Dans le cadre du dossier {escape(display_label)}, vous êtes "
         "invité(e) à transmettre vos documents de façon sécurisée par le lien "
         f"suivant : <a href=\"{escape(lien)}\">transmettre mes documents</a>.</p>"
         "<p>Ce lien est <strong>strictement personnel</strong> et lié à la "
-        "présente adresse courriel ; il ne doit pas être transféré. Il demeure "
-        f"valide jusqu'au {date_exp}. Formats admis : PDF, images (JPEG, PNG, "
-        "HEIC, TIFF), documents Office et texte ; taille maximale de "
-        f"{PORTAIL_MAX_FILE_MB} Mo par fichier.</p>"
+        "présente adresse courriel ; il ne doit pas être transféré. Pour votre "
+        "sécurité, il est <strong>à usage unique et de courte durée</strong>.</p>"
+        f"<p><strong>Le lien ne fonctionne plus ?</strong> C'est normal s'il a "
+        "déjà servi ou s'il date de quelques heures. Votre invitation, elle, "
+        f"demeure valide jusqu'au {date_exp} : obtenez un nouveau lien en un "
+        f"clic à l'adresse <a href=\"{escape(secours)}\">{escape(secours)}</a>.</p>"
+        "<p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents "
+        f"Office et texte ; taille maximale de {PORTAIL_MAX_FILE_MB} Mo par "
+        "fichier.</p>"
+        + (
+            "<p>Une difficulté ? Répondez simplement à ce courriel, ou "
+            f"joignez-nous au {escape(Config.FIRM_PHONE)}.</p>"
+            if Config.FIRM_PHONE else
+            "<p>Une difficulté ? Répondez simplement à ce courriel.</p>"
+        ) +
         f"{_signature_html()}"
     )
     return objet, corps
@@ -156,7 +184,7 @@ def emettre_invitation(
         ], ""
 
     objet, corps = _corps_invitation(invitation["display_label"], lien,
-                                     invitation["expires_at"])
+                                     invitation["expires_at"], invitation["id"])
     lien_manuel = _expedier(email_n, objet, corps, lien, invitation["id"])
     log_portail_event(
         "invitation_emise",
@@ -169,11 +197,16 @@ def emettre_invitation(
 def renvoyer_invitation(inv_id: str) -> tuple[bool, str, str]:
     """Regenerate + resend the link (§6.2 steps 4-5).
 
-    Allowed only while the invitation is active (statut envoyée/ouverte, not
-    expired). Returns (ok, message, lien_manuel).
+    Allowed while the invitation may still receive files — statut
+    envoyée/ouverte/**soumise** (D-2: a submitted lot stays open until the
+    lawyer processes it, so a forgotten page is recoverable), not expired, and
+    under the per-invitation resend cap (D-4). MUST agree with the portal's
+    ``peut_relancer`` or a renvoi the portal enqueues gets dropped here with a
+    200 while the client is told a link was sent. Returns (ok, message,
+    lien_manuel).
     """
     invitation = inv_model.lire_invitation(inv_id)
-    if invitation is None or not inv_model.est_active(invitation):
+    if invitation is None or not inv_model.peut_relancer(invitation):
         # Generic wording — this path also serves the portal-initiated
         # anti-enumeration flow, which must not learn why.
         return False, "Invitation invalide ou expirée.", ""
@@ -185,7 +218,7 @@ def renvoyer_invitation(inv_id: str) -> tuple[bool, str, str]:
         return False, "Impossible de générer le lien de connexion.", ""
 
     objet, corps = _corps_invitation(invitation["display_label"], lien,
-                                     invitation["expires_at"])
+                                     invitation["expires_at"], inv_id)
     lien_manuel = _expedier(invitation["email"], objet, corps, lien, inv_id)
     inv_model.incrementer_resend(inv_id)
     log_portail_event(

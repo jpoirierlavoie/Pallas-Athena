@@ -27,6 +27,9 @@ env_variables:
   FIREBASE_PROJECT_ID: "athena-pallas"
   FIREBASE_APP_ID: "1:1073430388324:web:6d60d0d67d74ce1b730971"
   FIRM_NAME: "Me Jason Poirier Lavoie"
+  # Shown in the portal footer so a stuck client always has a way to reach a
+  # human (the anti-enumeration rules forbid telling them WHY they are stuck).
+  FIRM_PHONE: "(514) 737-2525"
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"

@@ -38,8 +38,14 @@ from utils.validators import normalize_email
 logger = logging.getLogger(__name__)
 
 _MIB = 1024 * 1024
+# Réponse CONSTANTE de /api/renvoi — identique que l'invitation existe ou non,
+# soit active, ou ait épuisé son plafond de renvois (§6.3 anti-énumération).
+# Elle porte le canal de secours (D-5) précisément parce qu'elle ne peut PAS
+# dire au client que son plafond est atteint : sans cela, il attendrait un
+# courriel qui n'arrivera jamais.
 _REPONSE_RENVOI = (
-    "Si l'invitation est valide, un nouveau lien vient d'être transmis."
+    "Si l'invitation est valide, un nouveau lien vient d'être transmis. "
+    "Si vous ne recevez rien, joignez-nous au (514) 737-2525."
 )
 
 # Endpoints reachable WITHOUT a session (spec §6.5). Everything else goes
@@ -56,15 +62,42 @@ _EXEMPT_ENDPOINTS = {
 # ── Per-request guard (§6.5) ─────────────────────────────────────────────
 
 
+_STATUTS_TERMINAUX = ("révoquée", "refusée")
+
+
 def _refus(reason: str):
     log_portail_event(
         "session_refusee", "refused",
         invitation_id=session.get("inv_id"), reason=reason,
     )
-    session.clear()
+    # Pop the IDENTITY keys rather than session.clear(): clearing also drops
+    # flask-wtf's CSRF secret, so the client's next POST failed CSRF and
+    # stacked a second, contradictory error (« Session invalide. Rechargez la
+    # page. ») on top of the first. Popping these IS the logout — _garde still
+    # denies at `if not inv_id`.
+    for cle in ("inv_id", "uid", "email", "batch", "seq",
+                "files_count", "total_bytes"):
+        session.pop(cle, None)
     if request.path.startswith("/api/"):
         return jsonify({"erreur": "Invitation invalide ou expirée."}), 401
     return redirect(url_for("portail.entree"))
+
+
+def _indisponible():
+    """A read failed — deny WITHOUT destroying the session (fail closed, but
+    not destructively: the invitation is re-read on the next request)."""
+    log_portail_event(
+        "session_refusee", "failure",
+        invitation_id=session.get("inv_id"), reason="lecture_indisponible",
+    )
+    if request.path.startswith("/api/"):
+        return jsonify({
+            "erreur": "Service momentanément indisponible. "
+                      "Réessayez dans un instant."
+        }), 503
+    return render_template("erreur.html", message=(
+        "Service momentanément indisponible. Réessayez dans un instant."
+    )), 503
 
 
 @portail_bp.before_request
@@ -74,19 +107,25 @@ def _garde():
     inv_id = session.get("inv_id")
     if not inv_id:
         return _refus("no_session")
-    invitation = invitations.lire(inv_id)
+    try:
+        invitation = invitations.lire(inv_id)
+    except invitations.LectureIndisponible:
+        return _indisponible()
     if invitation is None:
         return _refus("not_found")
     # L1 serves only the « documents » flow; an « intake » invitation (L3)
     # has no business on these routes.
     if invitation.get("type") != "documents":
         return _refus("type_mismatch")
-    if request.endpoint == "portail.confirmation":
-        # The submission is already acquired — show the confirmation even
-        # once the statut moved to « soumise », but never after revocation.
-        if invitation.get("statut") in ("révoquée", "refusée"):
+    if request.endpoint in ("portail.confirmation", "portail.api_finaliser"):
+        # The bytes are ALREADY in GCS and envelope.json is the first durable
+        # record: refusing finalisation here would orphan the whole batch
+        # (reconciliation skips envelope-less prefixes, so it is purged at 90
+        # days, unseen). Accept any NON-TERMINAL statut — the declared objects
+        # are already pinned to the caller's own batch prefix in api_finaliser.
+        if invitation.get("statut") in _STATUTS_TERMINAUX:
             return _refus("inactive")
-    elif not invitations.est_active(invitation):
+    elif not invitations.peut_televerser(invitation):
         return _refus("inactive")
     g.invitation = invitation
     return None
@@ -102,6 +141,25 @@ def racine():
 
 @portail_bp.get("/entree")
 def entree():
+    # « J'ai fermé le navigateur et je suis revenu » / a second click on the
+    # email: the client may ALREADY hold a valid pa_portail cookie, in which
+    # case sending them to a sign-in they cannot complete (the link is
+    # single-use) is a pure dead end. Validate their OWN session here and let
+    # them straight through. No new access: /documents re-reads the invitation
+    # through _garde anyway, so revocation and expiry stay instant.
+    inv_id = session.get("inv_id")
+    if inv_id:
+        try:
+            invitation = invitations.lire(inv_id)
+        except invitations.LectureIndisponible:
+            invitation = None  # render the page normally; never clear
+        # A « ?i= » naming a DIFFERENT invitation must not log the visitor out
+        # — that would let any URL kill a legitimate in-progress upload.
+        if invitation is not None and invitation.get("type") == "documents":
+            if invitations.peut_televerser(invitation):
+                return redirect(url_for("portail.page_documents"))
+            if invitation.get("statut") not in _STATUTS_TERMINAUX:
+                return redirect(url_for("portail.confirmation"))
     return render_template(
         "entree.html", invitation_id=request.args.get("i", "")
     )
@@ -144,8 +202,23 @@ def creer_session():
     if decoded.get("email_verified") is not True:
         return _session_refusee("email_unverified")
 
-    invitation = invitations.lire(inv_id)
-    if invitation is None or invitation.get("statut") not in invitations.ACTIVE_STATUTS:
+    try:
+        invitation = invitations.lire(inv_id)
+    except invitations.LectureIndisponible:
+        # The single-use oobCode is ALREADY spent by the time this POST lands,
+        # so answering « Invitation invalide ou expirée » on a transient
+        # Firestore blip would burn the client's link for good. 503 tells the
+        # page to invite a retry instead.
+        log_portail_event(
+            "session_refusee", "failure", reason="lecture_indisponible",
+        )
+        return jsonify({
+            "erreur": "Service momentanément indisponible. "
+                      "Réessayez dans un instant."
+        }), 503
+    # Distinct log reasons (internal diagnostics only — the CLIENT always sees
+    # the same generic message, §6.3).
+    if invitation is None or invitation.get("statut") not in invitations.STATUTS_SESSION:
         return _session_refusee("inactive")
     if invitations.est_expiree(invitation):
         return _session_refusee("expired")
@@ -182,17 +255,27 @@ def api_renvoi():
     inv_id = (donnees.get("i") or "").strip()
 
     cible = None
-    if email and inv_id:
-        inv = invitations.lire(inv_id)
-        if inv and inv.get("email") == email and invitations.est_active(inv):
-            cible = inv
-    elif email:
-        actives = [
-            i for i in invitations.chercher_par_email(email)
-            if invitations.est_active(i) and i.get("created_at")
-        ]
-        if actives:
-            cible = max(actives, key=lambda i: i["created_at"])
+    try:
+        if email and inv_id:
+            inv = invitations.lire(inv_id)
+            if inv and inv.get("email") == email and invitations.peut_relancer(inv):
+                cible = inv
+        # FALL THROUGH (not elif): a stale/inactive « i » in the URL must not
+        # swallow the request when the SAME address has another live
+        # invitation — the client would otherwise be told a link was sent and
+        # wait forever.
+        if cible is None and email:
+            candidates = [
+                i for i in invitations.chercher_par_email(email)
+                if invitations.peut_relancer(i) and i.get("created_at")
+            ]
+            if candidates:
+                cible = max(candidates, key=lambda i: i["created_at"])
+    except invitations.LectureIndisponible:
+        # The byte-identical-response invariant must survive the very outage
+        # it exists to survive: fall through to the constant reply below.
+        logger.warning("portal renvoi lookup unavailable")
+        cible = None
 
     if cible is not None:
         try:
@@ -213,10 +296,28 @@ def api_renvoi():
 # ── Transmission (§7) ────────────────────────────────────────────────────
 
 
+def _deja_transmis(invitation: dict) -> tuple[int, int]:
+    """(files, bytes) already ACQUIRED by previous batches of this invitation.
+
+    Since D-2 lets a client come back after submitting, the session counters
+    alone would hand each re-entry a fresh full quota for the invitation's 14
+    days. The durable record of past batches is ``soumissions[]``.
+    """
+    fichiers = octets = 0
+    for s in invitation.get("soumissions") or []:
+        try:
+            fichiers += int(s.get("files_count") or 0)
+            octets += int(s.get("total_bytes") or 0)
+        except (TypeError, ValueError):
+            continue
+    return fichiers, octets
+
+
 @portail_bp.get("/documents")
 def page_documents():
     invitation = g.invitation
-    files_count = session.get("files_count", 0)
+    passes_f, _passes_o = _deja_transmis(invitation)
+    files_count = session.get("files_count", 0) + passes_f
     quota_files = int(invitation.get("quota_files") or PORTAIL_MAX_FILES)
     return render_template(
         "documents.html",
@@ -264,13 +365,19 @@ def api_televersement():
                       f"{PORTAIL_MAX_FILE_MB} Mo."
         }), 422
 
-    # Session-scoped quota counters (§7.2 — the portal cannot list the
-    # bucket; a re-login resets them: accepted risk R-1, the hard per-file
-    # cap is enforced by GCS itself via the session's declared size).
+    # Quota spans the WHOLE invitation, not just this session: since D-2 lets a
+    # client come back after submitting, session-only counters would hand each
+    # re-entry a fresh 50-file / 1 GiB budget. `session_*` stay session-scoped
+    # (they are written back below); the durable part is added only for the
+    # comparison — folding it into the stored value would re-add the past
+    # batches on every subsequent upload.
     quota_files = int(invitation.get("quota_files") or PORTAIL_MAX_FILES)
     quota_octets = int(invitation.get("quota_mb") or PORTAIL_MAX_TOTAL_MB) * _MIB
-    files_count = session.get("files_count", 0)
-    total_bytes = session.get("total_bytes", 0)
+    passes_f, passes_o = _deja_transmis(invitation)
+    session_files = session.get("files_count", 0)
+    session_bytes = session.get("total_bytes", 0)
+    files_count = session_files + passes_f
+    total_bytes = session_bytes + passes_o
     if files_count >= quota_files:
         log_portail_event(
             "televersement_rejete", "refused",
@@ -307,8 +414,8 @@ def api_televersement():
             "erreur": "Erreur lors de l'ouverture du téléversement. Réessayez."
         }), 503
 
-    session["files_count"] = files_count + 1
-    session["total_bytes"] = total_bytes + size
+    session["files_count"] = session_files + 1
+    session["total_bytes"] = session_bytes + size
     log_portail_event(
         "televersement_ouvert",
         invitation_id=invitation["id"], batch=batch, taille=size,

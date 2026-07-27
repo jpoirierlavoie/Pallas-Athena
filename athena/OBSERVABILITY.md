@@ -174,6 +174,7 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 | `courriel_envoye` / `courriel_echec` | success / refused ou failure | Graph sendMail outcome; `reason` = `graph_not_configured` (refused) or `graph_error` (failure). A failure AFTER the accusé marker is set is logged here and never retried — the marker already guarantees at-most-once |
 | `reconciliation_execute` | success | Cron sweep done; `lots_vus`, `lots_repares` |
 | `reconciliation_reparation` | **failure** | An envelope existed with no recorded submission/accusé → re-enqueued. **Every repair means the queue lost work — a symptom to watch** (§8.4) |
+| `lot_abandonne` | **failure** | A quarantine prefix holds files but **no envelope**, and stopped moving >2 h ago: the client uploaded but never completed « Soumettre » (guard refusal mid-upload, expired session, closed tab). Nothing references it — Réception cannot see it and the 90-day lifecycle would delete it silently; `invitation_id`, `batch`. **No accusé is ever emitted for such a lot** — it would attest reception of files the client never confirmed |
 | `document_verse` | success | A quarantine file was ingested into the dossier; `invitation_id`, `batch`, `dossier_id`, `document_id` |
 | `document_refuse` | success | A file was explicitly refused in Réception |
 | `lot_traite` | success | Lot archived (envelope+manifeste → `archive/`, files purged), invitation → `traitée` |

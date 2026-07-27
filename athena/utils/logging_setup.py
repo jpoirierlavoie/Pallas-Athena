@@ -555,6 +555,7 @@ PortailEvent = Literal[
     "tache_recue",
     "reconciliation_execute",
     "reconciliation_reparation",
+    "lot_abandonne",
     "courriel_envoye",
     "courriel_echec",
     "accuse_envoye",

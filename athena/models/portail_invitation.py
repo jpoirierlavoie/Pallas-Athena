@@ -34,9 +34,11 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from client.config import (
     INVITATION_DOCUMENTS_JOURS,
     INVITATION_INTAKE_JOURS,
+    INVITATION_MAX_RENVOIS,
     PORTAIL_DB,
     PORTAIL_MAX_FILES,
     PORTAIL_MAX_TOTAL_MB,
+    STATUTS_SESSION,
 )
 from security import sanitize
 
@@ -71,6 +73,23 @@ def est_expiree(invitation: dict, now: Optional[datetime] = None) -> bool:
 
 def est_active(invitation: dict) -> bool:
     return invitation.get("statut") in ACTIVE_STATUTS and not est_expiree(invitation)
+
+
+def peut_relancer(invitation: dict) -> bool:
+    """May another sign-in link be sent for this invitation? (D-2 + D-4)
+
+    MIRRORS ``client.services.invitations.peut_relancer`` — the two services
+    MUST agree. If the portal enqueued a renvoi that this side refused, the
+    handler would drop it with a 200 while the client read « un nouveau lien
+    vient d'être transmis »: a phantom email. The statut vocabulary and the
+    cap both come from ``client/config.py``, which both services import, so
+    there is no third hand-maintained copy.
+    """
+    return (
+        invitation.get("statut") in STATUTS_SESSION
+        and not est_expiree(invitation)
+        and int(invitation.get("resend_count") or 0) < INVITATION_MAX_RENVOIS
+    )
 
 
 def creer_invitation(

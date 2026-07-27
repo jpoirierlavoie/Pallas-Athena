@@ -28,6 +28,10 @@ env_variables:
   # Firm identity — compliance signer (prefixed "Me " if absent) + invoice header.
   # Remaining FIRM_*/GST_NUMBER/QST_NUMBER stay unset until invoicing needs them.
   FIRM_NAME: "Me Jason Poirier Lavoie"
+  # Support channel shown to a stuck portal client (invitation email + portal
+  # footer) — a client who exhausts the resend cap gets no distinct message
+  # (anti-enumeration), so a reachable number is the fallback that matters.
+  FIRM_PHONE: "(514) 737-2525"
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   REQUIRE_MFA: "true"
   # MCP connector (Phase I) kill switch — set "false" to 404 every

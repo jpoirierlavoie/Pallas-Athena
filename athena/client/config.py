@@ -35,6 +35,21 @@ PORTAIL_MAX_FILES = 50
 PORTAIL_MAX_TOTAL_MB = 1024
 INVITATION_DOCUMENTS_JOURS = 14
 INVITATION_INTAKE_JOURS = 14    # réservé à la phase L3
+# Plafond de renvois de lien par invitation (décision utilisateur D-4,
+# 2026-07-27). La limite 5/h de /api/renvoi est par IP et se réinitialise ;
+# celle-ci borne le total sur la vie de l'invitation. Appliqué EN SILENCE :
+# la réponse de /api/renvoi reste identique octet pour octet (§6.3), sinon
+# un message distinct deviendrait un oracle d'existence.
+INVITATION_MAX_RENVOIS = 10
+# Statuts depuis lesquels le client peut encore ouvrir une session et
+# téléverser (décision D-2, 2026-07-27) : un lot soumis reste ouvert jusqu'à
+# ce que le JURISTE le marque traité, pour que « j'ai oublié une page » soit
+# récupérable. « traitée » est terminal — ses fichiers de quarantaine sont
+# purgés, un téléversement écrirait dans un lot archivé.
+# DÉFINI ICI parce que les DEUX services l'importent : une copie par service
+# dériverait, et le portail enfilerait des renvois que le service principal
+# rejetterait en silence (courriel fantôme).
+STATUTS_SESSION = ("envoyée", "ouverte", "soumise")
 CHUNK_MIB = 8                   # multiple of 256 KiB (GCS resumable protocol)
 
 # Inert-handling whitelist (spec §7.5): notably NO svg/html/htm/js, and no

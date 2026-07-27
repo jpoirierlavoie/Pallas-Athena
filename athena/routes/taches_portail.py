@@ -15,7 +15,7 @@ by the transactional test-and-set ``poser_accuse``.
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from firebase_admin import storage
 from flask import Blueprint, abort, jsonify, render_template, request
@@ -254,6 +254,33 @@ def _construire_manifeste(bucket, inv_id: str, batch: str,
     }
 
 
+# A batch whose newest object stopped moving this long ago is considered
+# abandoned rather than in flight (a 1 GiB upload on a slow link stays well
+# inside this window; the cron runs every 15 min).
+_ABANDON_APRES = timedelta(hours=2)
+
+
+def _lot_abandonne(bucket, prefix: str) -> bool:
+    """True when *prefix* holds files but no envelope, and has gone quiet.
+
+    Never raises: the reconciliation sweep must finish even if one prefix
+    misbehaves (the remaining lots still deserve their scan).
+    """
+    try:
+        blobs = list(bucket.list_blobs(prefix=prefix + "files/"))
+        if not blobs:
+            return False
+        recent = max(
+            (b.updated for b in blobs if b.updated is not None), default=None
+        )
+        if recent is None:
+            return False
+        return datetime.now(timezone.utc) - recent > _ABANDON_APRES
+    except Exception:
+        logger.exception("reconciliation: abandoned-lot scan failed")
+        return False
+
+
 def _traiter_soumission(inv_id: str, batch: str) -> None:
     bucket = _bucket()
     prefix = f"submissions/{inv_id}/{batch}/"
@@ -389,7 +416,10 @@ def evenement():
 
     if event == "renvoi":
         invitation = pi.lire_invitation(inv_id)
-        if invitation is None or not pi.est_active(invitation):
+        # peut_relancer, NOT est_active: must mirror the portal's own test
+        # (D-2 allows a resend while « soumise »; D-4 caps the total), or this
+        # pre-check silently drops a renvoi the client was told was sent.
+        if invitation is None or not pi.peut_relancer(invitation):
             return jsonify({"ok": True, "motif": "invitation inactive"})
         ok, _message, lien_manuel = emission.renvoyer_invitation(inv_id)
         if not ok:
@@ -436,7 +466,18 @@ def reconciliation():
         list(niveau2)
         for p_batch in sorted(niveau2.prefixes):
             if not bucket.blob(p_batch + "envelope.json").exists():
-                continue  # batch never finalized — not a submission
+                # No envelope = the client never pressed « Soumettre ». Usually
+                # an upload still in flight — but if the newest object stopped
+                # moving a while ago, the batch is ABANDONED: nothing will ever
+                # reference it, Réception cannot see it, and the 90-day
+                # lifecycle deletes the client's files unnoticed. Surface it.
+                if _lot_abandonne(bucket, p_batch):
+                    parts = p_batch.strip("/").split("/")
+                    log_portail_event(
+                        "lot_abandonne", "failure",
+                        invitation_id=parts[1], batch=parts[2],
+                    )
+                continue
             lots_vus += 1
             parts = p_batch.strip("/").split("/")
             inv_id, batch = parts[1], parts[2]
