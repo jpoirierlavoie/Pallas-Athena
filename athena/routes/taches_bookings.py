@@ -168,13 +168,13 @@ def _debug_payload(bruts: list[dict]) -> None:
             ((ev.get("organizer") or {}).get("emailAddress") or {}).get("address")
             or ""
         ).lower()
-        subj = ev.get("subject") or ""
+        subj = (ev.get("subject") or "").lower()
         logger.debug(
-            "bookings predicate sample (%s): organizer_match=%s prefix_match=%s "
+            "bookings predicate sample (%s): organizer_match=%s keyword_match=%s "
             "subject_len=%d organizer_domain=%r attendee_domains=%r",
             label,
             org == upn,
-            any(subj.startswith(p) for p in Config.BOOKINGS_SUBJECT_PREFIXES),
+            any(k.lower() in subj for k in Config.BOOKINGS_SUBJECT_KEYWORDS),
             len(subj),
             org.rsplit("@", 1)[-1],
             _domains(ev),

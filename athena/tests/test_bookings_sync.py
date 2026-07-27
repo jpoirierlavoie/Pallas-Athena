@@ -40,7 +40,7 @@ NEW = "2026-07-25T18:00:00Z"
 @pytest.fixture(autouse=True)
 def _configured(monkeypatch):
     monkeypatch.setattr(Config, "BOOKINGS_JURISTE_UPN", UPN)
-    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_PREFIXES", ("RDV",))
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("RDV",))
     monkeypatch.setattr(Config, "BOOKINGS_SYNC_LOOKBACK_DAYS", 1)
     monkeypatch.setattr(Config, "BOOKINGS_SYNC_LOOKAHEAD_DAYS", 90)
     monkeypatch.setattr(Config, "BOOKINGS_DEBUG_PAYLOAD", False)
@@ -265,10 +265,10 @@ def test_debug_payload_never_logs_the_subject(monkeypatch, caplog):
     subject (it embeds the client name); only booleans + domains."""
     import logging as _logging
     monkeypatch.setattr(Config, "BOOKINGS_JURISTE_UPN", UPN)
-    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_PREFIXES", ("RDV",))
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("RDV",))
     ev = _ev("ical-1", subject="RDV — Consultation Marie Tremblay")
     with caplog.at_level(_logging.DEBUG, logger=tb.logger.name):
         tb._debug_payload([ev])
     text = caplog.text
     assert "Marie Tremblay" not in text and "Consultation" not in text
-    assert "prefix_match" in text and "organizer_match" in text
+    assert "keyword_match" in text and "organizer_match" in text

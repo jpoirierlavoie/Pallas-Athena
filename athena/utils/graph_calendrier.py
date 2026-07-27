@@ -63,18 +63,20 @@ def est_reservation(ev: dict) -> bool:
     """True when *ev* is a « Bookings with me » reservation (spec §4.4).
 
     Deterministic predicate: the juriste is the organizer AND the subject
-    starts with a configured prefix. No archaeology of undocumented Graph
-    properties.
+    CONTAINS a configured keyword (case-insensitive). Bookings names the event
+    « {Customer} - {Service} », so the service name is a SUFFIX — a substring
+    match, not a prefix, is what detects it. No archaeology of undocumented
+    Graph properties.
     """
     org = (
         ((ev.get("organizer") or {}).get("emailAddress") or {}).get("address")
         or ""
     ).lower()
-    subj = ev.get("subject") or ""
+    subj = (ev.get("subject") or "").lower()
     upn = Config.BOOKINGS_JURISTE_UPN.lower()
     if not upn or org != upn:
         return False
-    return any(subj.startswith(p) for p in Config.BOOKINGS_SUBJECT_PREFIXES)
+    return any(k.lower() in subj for k in Config.BOOKINGS_SUBJECT_KEYWORDS)
 
 
 def extraire(ev: dict) -> dict:

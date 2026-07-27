@@ -132,12 +132,17 @@ class Config:
     BOOKINGS_SYNC_ACTIVE: bool = (
         os.environ.get("BOOKINGS_SYNC_ACTIVE", "true").lower() == "true"
     )
-    # Subject-prefix predicate: a Bookings meeting type is detected when its
-    # subject starts with any of these (comma-separated env, default "RDV").
-    BOOKINGS_SUBJECT_PREFIXES: tuple[str, ...] = tuple(
-        p.strip()
-        for p in os.environ.get("BOOKINGS_SUBJECT_PREFIXES", "RDV").split(",")
-        if p.strip()
+    # Subject-keyword predicate: a Bookings meeting type is detected when its
+    # subject CONTAINS any of these keywords (case-insensitive, comma-separated
+    # env). « Bookings with me » names the event « {Customer} - {Service} », so
+    # the service name (e.g. « Consultation ») is a SUFFIX, not a prefix — a
+    # substring match handles that and any other placement.
+    BOOKINGS_SUBJECT_KEYWORDS: tuple[str, ...] = tuple(
+        k.strip()
+        for k in os.environ.get(
+            "BOOKINGS_SUBJECT_KEYWORDS", "Consultation"
+        ).split(",")
+        if k.strip()
     )
     BOOKINGS_SYNC_LOOKAHEAD_DAYS: int = int(
         os.environ.get("BOOKINGS_SYNC_LOOKAHEAD_DAYS", "90")

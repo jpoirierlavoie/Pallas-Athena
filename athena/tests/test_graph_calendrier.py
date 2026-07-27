@@ -29,13 +29,15 @@ UPN = "juriste@example.com"
 @pytest.fixture(autouse=True)
 def _configured(monkeypatch):
     monkeypatch.setattr(Config, "BOOKINGS_JURISTE_UPN", UPN)
-    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_PREFIXES", ("RDV",))
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Consultation",))
 
 
 def _ev(**over):
     base = {
         "id": "EVT1", "iCalUId": "ical-1",
-        "subject": "RDV — Consultation initiale",
+        # Real « Bookings with me » format: « {Customer} - {Service} », so the
+        # service keyword is a SUFFIX (does NOT start the subject).
+        "subject": "Jason Poirier Lavoie - Consultation",
         "start": {"dateTime": "2026-09-01T13:30:00.0000000", "timeZone": "UTC"},
         "end": {"dateTime": "2026-09-01T14:30:00.0000000", "timeZone": "UTC"},
         "location": {"displayName": "Bureau"},
@@ -55,8 +57,17 @@ def _ev(**over):
 
 # ── est_reservation ───────────────────────────────────────────────────────
 
-def test_predicate_matches_organizer_and_prefix():
-    assert gc.est_reservation(_ev()) is True
+def test_predicate_matches_keyword_as_suffix():
+    """Regression: the keyword « Consultation » is at the END of the real
+    Bookings subject, so a startswith predicate would MISS it — the substring
+    match is what detects it."""
+    ev = _ev()
+    assert not ev["subject"].startswith("Consultation")  # not a prefix
+    assert gc.est_reservation(ev) is True
+
+
+def test_predicate_matches_case_insensitively():
+    assert gc.est_reservation(_ev(subject="Dupont - consultation")) is True
 
 
 def test_predicate_rejects_other_organizer():
@@ -65,7 +76,7 @@ def test_predicate_rejects_other_organizer():
     ) is False
 
 
-def test_predicate_rejects_wrong_subject_prefix():
+def test_predicate_rejects_subject_without_keyword():
     assert gc.est_reservation(_ev(subject="Réunion interne")) is False
 
 
