@@ -189,7 +189,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # /api/finaliser /confirmation /sante + the §6.5 guard
 │   │   ├── services/               # invitations.py (read-only named DB), stockage.py (sanitize,
 │   │   │                           # resumable sessions, create-only envelope), taches.py (enqueue)
-│   │   └── templates/              # base/entree/documents/confirmation/erreur (français, vanilla JS)
+│   │   └── templates/              # base/entree/documents/ouverture/confirmation/erreur
+│   │                               # (français, vanilla JS — aucun Alpine : CSP sans 'unsafe-eval')
 │   │
 │   ├── services/                   # Main-service orchestration (multi-subsystem operations)
 │   │   └── portail_emission.py     # Invitation émission/renvoi: Firebase user + claim merge +
@@ -230,7 +231,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── doc_templates.py        # /gabarits/*  (Phase H: lifecycle + HTMX generation popup)
 │   │   ├── trust.py                # /fideicommis/*  (Phase K: journal, carte, comptes, conciliations, exports)
 │   │   ├── reception.py            # /reception/*  (portail L1: revue des lots, versement restreint,
-│   │   │                           # invitations, pastille de nav en cache 60 s fail-open)
+│   │   │                           # invitations, pastille de nav en cache 60 s fail-open ;
+│   │   │                           # L3: onglet Ouvertures — création / fusion champ par champ)
 │   │   ├── taches_portail.py       # /taches/portail/*  (MACHINE, CSRF-exempt: gestionnaire Cloud
 │   │   │                           # Tasks + réconciliation cron — gardes X-AppEngine-*)
 │   │   └── taches_bookings.py      # /taches/bookings/sync  (L2, MACHINE, cron: synchro
@@ -281,6 +283,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # (process cache, no msal) + graph_get (nextLink) + graph_post
 │   │   ├── graph_calendrier.py     # Bookings L2: calendarView reads (UTC), est_reservation
 │   │   │                           # predicate, extraire, annuler_reservation (Calendars.ReadWrite)
+│   │   ├── rapprochement.py        # L3 (pur): candidats de rapprochement de noms pour l'aide au
+│   │   │                           # contrôle des conflits — propose, ne tranche JAMAIS
 │   │   ├── courriel.py             # Outbound email via Graph sendMail (saveToSentItems: true)
 │   │   ├── validators.py           # Phone (E.164), email, postal code normalization, address defaults
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
@@ -362,7 +366,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── trust/                   # Phase K: list (journal), _transaction_rows, detail, form, card,
 │   │   │                            # transfer_form, reverse_confirm, client_consolidated, accounts_list,
 │   │   │                            # account_form/detail, reconciliations_list, reconciliation_form/worksheet
-│   │   ├── reception/              # Portail L1: index (onglets + lots + invitations), inviter, lien
+│   │   ├── reception/              # Portail L1: index (onglets + lots + invitations), inviter, lien,
+│   │   │                           # _rdv (L2), _ouvertures + _confirmation_intake (L3)
 │   │   └── mcp/                    # consent.html (OAuth consent screen, French)
 │   │
 │   └── static/
@@ -415,6 +420,14 @@ etag:        UUIDv4, regenerated on every write
     # Individual (personne physique)
     "prefix": "Me" | "M." | "Mme" | "",
     "first_name": str, "last_name": str,
+    "birth_date": datetime | None,       # DATE SEULE à minuit UTC (convention
+                                         # dossier.opened_date) — rendre par
+                                         # strftime, JAMAIS to_mtl. Sérialisée
+                                         # en vCard BDAY (personnes physiques
+                                         # seulement) ET relue : l'absence de
+                                         # BDAY OMET la clé, jamais None, sinon
+                                         # un PUT DavX5 l'effacerait. Non
+                                         # exposée par MCP.
 
     # Organization (personne morale)
     "organization_name": str,                   # Legal name (nom légal) — required when type=="organization"
@@ -982,7 +995,12 @@ A **separate named Firestore database** (`gcloud firestore databases create --da
     "accuses": { "<batch>": True },  # test-and-set transactionnel — l'unique
                                      # garde de l'unique effet non idempotent
                                      # (l'accusé courriel, au plus une fois)
-    "prefill": None,                 # réservé à L3
+    "prefill": None | dict,          # L3 : instantané NON SENSIBLE d'une
+                                     # partie (models.portail_invitation
+                                     # .prefill_depuis_partie — LISTE BLANCHE :
+                                     # ni notes, ni conformité, ni liaison de
+                                     # dossier, ni date de naissance) pour
+                                     # préremplir le formulaire d'ouverture
 }
 ```
 
@@ -1337,15 +1355,18 @@ All `@login_required`, French. POST+redirect with `?message=`/`?erreur=` (no fla
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/reception/` | GET | Tabs `?onglet=documents|rdv|ouvertures` (**rdv = phase L2**, ouvertures = « Livré en phase L3 »). Documents: submitted lots with the manifest table (nom d'origine, taille, type, SHA-512 abrégé + complet au survol, divergences, IP/UA), active invitations (renvoyer/révoquer), recent history. **rdv** (`_contexte_rdv` → `_rdv.html`): à_confirmer + annulée_client cards + unseen-divergence alerts, partie exact-email linkage |
-| `/reception/inviter` | GET·POST | Émission (courriel prérempli depuis la partie cliente, désignation défaut `Dossier {n°}`, durée) ; sans Graph → page « lien à transmettre » |
+| `/reception/` | GET | Tabs `?onglet=documents|rdv|ouvertures` (**rdv = L2**, **ouvertures = L3**). Documents: submitted lots with the manifest table (nom d'origine, taille, type, SHA-512 abrégé + complet au survol, divergences, IP/UA), active invitations (renvoyer/révoquer), recent history. **rdv** (`_contexte_rdv` → `_rdv.html`): à_confirmer + annulée_client cards + unseen-divergence alerts, partie exact-email linkage. **ouvertures** (`_contexte_ouvertures` → `_ouvertures.html`): la DERNIÈRE enveloppe intake de chaque invitation `soumise`, la vue côte à côte pré-calculée (`_comparaison`) et les candidats de conflit (`_candidats_adverses`) |
+| `/reception/inviter` | GET·POST | Émission (courriel prérempli depuis la partie cliente, désignation défaut `Dossier {n°}`, durée) ; sans Graph → page « lien à transmettre ». **L3** : sélecteur `type` documents/intake — c'était le SEUL endroit où le type était écrit en dur ; `?type=intake&partie_id=` (déclencheur (b)) préremplit le contact et joint l'instantané `prefill_depuis_partie` |
 | `/reception/invitations/<id>/renvoyer` · `/revoquer` | POST | Renvoi du lien / révocation instantanée |
-| `/reception/rdv/<hid>/confirmer` | POST | **L2** — `confirmation → ""` (+ `partie_id` si coché) → `bump_ctag(collection_for(dossier_id))` : le rendez-vous entre au Calendrier + DavX5. Case intake inerte (FEATURE_INTAKE) |
+| `/reception/rdv/<hid>/confirmer` | POST | **L2** — `confirmation → ""` (+ `partie_id` si coché) → `bump_ctag(collection_for(dossier_id))` : le rendez-vous entre au Calendrier + DavX5. **L3** : la case `intake` (cochée par défaut, seulement si AUCUNE partie reconnue, derrière `FEATURE_INTAKE`) émet le formulaire d'ouverture — une panne n'annule jamais la confirmation déjà commise, elle produit un bandeau |
 | `/reception/rdv/<hid>/refuser` | POST | **L2** — annule la réunion Outlook via Graph (best-effort, seulement pour un à_confirmer actif) + `confirmation → "refusée"` ; **pas de bump** (jamais en DAV). Bandeau si l'annulation Graph échoue |
 | `/reception/rdv/<hid>/divergence/<action>` | POST | **L2** — `appliquer` (applique le créneau stocké + bump) / `annuler` (`annulée_client` + bump) / `ignorer`·`conserver` (`vu=True`, pas de bump) |
 | `/reception/lots/<inv>/<batch>/fichiers/<seq>` | GET | Stream from quarantine — `Content-Disposition: attachment` FORCÉ, content_type déclaré (§7.5, jamais inline) |
 | `.../fichiers/<seq>/verser` | POST | Ingestion via `get_or_create_folder(« Reçus du portail »)` + `upload_document` — restreinte au vocabulaire documents existant ; provenance en `description` + tag `portail` |
 | `.../fichiers/<seq>/refuser` · `.../traiter` | POST | Refus explicite / lot traité (chaque fichier « reçu » exige une décision AVANT la purge ; enveloppe+manifeste → `archive/`) |
+| `/reception/ouvertures/<inv>/<batch>/creer` | POST | **L3** — crée la partie (`contact_role="client"`, Conformité INTACTE) + les contacts adverses cochés → **`bump_ctag("parties")`** (un seul) → `traitée` + archivage → redirection vers la fiche avec `?message=` |
+| `.../appliquer` | POST | **L3** — mise à jour partielle des SEULS champs cochés (un champ soumis vide n'efface jamais) + adverses → bump si écriture → `traitée` + archivage |
+| `.../refuser` | POST | **L3** — `refusée` + archivage ; **aucun courriel** au client (D-L3-3) |
 
 ### `taches_portail.py` — `/taches/portail/*` (MACHINE, portail L1)
 
@@ -1353,7 +1374,7 @@ CSRF-exempt blueprint; no `@login_required`. Origin proof = the `X-AppEngine-*` 
 
 | Route | Method | Guard | Purpose |
 |---|---|---|---|
-| `/taches/portail/evenement` | POST | `X-AppEngine-QueueName == "portail"` sinon 403 | Handler §8.3: `ouverte` / `renvoi` / `soumise` (rapprochement + SHA-512 en flux + manifeste + accusé transactionnel). Exception → 5xx (reprise) ; no-op/malformé → 200 |
+| `/taches/portail/evenement` | POST | `X-AppEngine-QueueName == "portail"` sinon 403 | Handler §8.3: `ouverte` / `renvoi` / `soumise` (rapprochement + SHA-512 en flux + manifeste + accusé transactionnel). **L3** : `soumise` aiguille sur le TYPE de l'invitation — jamais sur l'enveloppe, dont la lecture vit dans le court-circuit d'idempotence — vers `_traiter_intake` (aucune empreinte ; enveloppe illisible → les deux marqueurs posés quand même, sinon réconciliation en boucle). Exception → 5xx (reprise) ; no-op/malformé → 200 |
 | `/taches/portail/reconciliation` | GET | `X-Appengine-Cron == "true"` sinon 403 | §8.4: toute enveloppe sans soumission/accusé enregistrés → ré-enfilée + ERROR `reconciliation_reparation` |
 
 ### `taches_bookings.py` — `/taches/bookings/*` (MACHINE, Bookings L2)
@@ -1366,7 +1387,11 @@ CSRF-exempt blueprint; no `@login_required`. Same origin proof as `taches_portai
 
 ### Portal service routes (`client/routes.py`, service « portail » — separate process)
 
-Public host `portail.poirierlavoie.ca`; guard §6.5 re-reads the invitation each request (instant revocation). `/entree` (email-link landing + renvoi form, anti-enumeration), `POST /session` (verify_id_token WITHOUT check_revoked; requires `portail: True` + `email_verified` + email match; 10/min), `POST /api/renvoi` (5/h — always the identical response), `GET /documents`, `POST /api/televersement` (whitelist/quotas → GCS resumable session with `origin=`+`size=`), `POST /api/finaliser` (envelope create-only → 409 on replay; enqueue failure never fails the submission), `/confirmation`, `/sante`.
+Public host `portail.poirierlavoie.ca`; guard §6.5 re-reads the invitation each request (instant revocation) and checks the **required type per endpoint** (`_TYPE_REQUIS`; an endpoint absent from the table is refused). `/entree` (email-link landing + renvoi form, anti-enumeration; reuses a live session ONLY for its own `?i=`), `POST /session` (verify_id_token WITHOUT check_revoked; requires `portail: True` + `email_verified` + email match; 10/min; `suivant` routed by type), `POST /api/renvoi` (5/h — always the identical response), `/confirmation` (both flows, type-aware), `/sante`.
+
+**Documents flow:** `GET /documents`, `POST /api/televersement` (whitelist/quotas → GCS resumable session with `origin=`+`size=`), `POST /api/finaliser` (envelope create-only; a 409 means the lot is already acquired → purge the session and answer SUCCESS).
+
+**Ouverture flow (L3):** `GET /ouverture` (4-step wizard, vanilla JS — no Alpine, the CSP has no `'unsafe-eval'`), `POST /api/intake/etape` (whitelist + per-field bounds + hard byte guard, merged into `session["intake"]`), `POST /api/intake/finaliser` (mints its own batch — intake never goes through `api_televersement`, the only other batch minter — writes a file-less `type: "intake"` envelope, then `signaler("soumise")`). Re-entry allowed until the lawyer marks the ouverture traitée.
 
 ### Top-level miscellaneous routes (defined in `main.py`)
 
@@ -1995,6 +2020,17 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Portail (L1): the envelope is the durable truth; an enqueue failure never fails a finalization.** `envelope.json` is written create-only (`if_generation_match=0` — replayed finalization → 409) BEFORE the task is enqueued; if the enqueue fails the client still gets the confirmation and the 15-min reconciliation cron replays the batch. Never "fix" the ordering.
 - **Portail (L1): versement restricted to the EXISTING documents vocabulary** (6 MIME types, ≤ 25 MB, magic-byte sniff — user decision 2026-07-25). A HEIC/XLSX/MP4/150-MB-PDF is downloadable from Réception (attachment forced) but not versable; do not widen `ALLOWED_MIME_TYPES` for the portal without a new user decision. Marking a lot processed PURGES the quarantine files, so every « reçu » file requires an explicit verser/refuser decision first.
 - **Trust: the module fails CLOSED.** `create_transaction`/`clear`/`reverse`/`reconcile` abort on any read failure (never a partial write); list views propagate read errors to the route (never a silently-empty register). `update_dossier` re-reads the three trust map fields at the last moment before its full-doc `set()` so a form save can't clobber a concurrent trust write with a stale (possibly overdraft-permitting) cleared balance. A dossier that ever held a trust entry can **never be deleted** (`trust_transactions` in `_CHILD_COLLECTIONS`) — archive it.
+- **`_normalize` must never inject a key the caller did not supply — it did, and every PARTIAL update of a partie was destructive.** `models/partie.update_partie` merges `{**existing, **data}` then writes the FULL document, so a key present-but-empty **erases** while an absent key survives. `_normalize` set `data["mandataires"] = cleaned` unconditionally, so `update_partie(pid, {"email": …})` silently wiped the stored mandataires list — latent in `update_kyc_status`/`link_kyc_document`, and the nominal path for L3's field-by-field apply. The normalization is now gated on `if "mandataires" in data`. **Apply the same reasoning to any future normalizer**: on a full-document-set model, injecting a default IS a deletion.
+- **A vCard property that is written but never READ gets erased by the first DAV PUT.** Same non-effacement rule as the hearing `CONFERENCE` property: `vcard_to_partie` **omits** `birth_date` when `BDAY` is absent rather than returning `None`, because the merge treats a present key as an instruction to overwrite. A CardDAV client that does not carry BDAY would otherwise delete the stored date server-side on a plain contact edit. `birth_date` is a **date-only value at midnight UTC** — render with `strftime`, **never `to_mtl`** (Montréal moves it to the previous day), and it is deliberately **not** exposed through MCP (`get_partie` builds a whitelist payload, so the outputSchema is untouched).
+- **The portal session IS a signed cookie, and overflowing it fails SILENTLY.** Browsers cap a cookie at ~4096 bytes and simply drop anything larger — the client loses their session mid-form while their single-use link is already spent, so the loss is unrecoverable. The intake draft therefore carries BOTH per-field character bounds (`INTAKE_*` in `client/config.py`) AND a hard **byte** guard (`INTAKE_BROUILLON_MAX`, refused with a French message). The two are not redundant: bounds count characters, the cookie counts bytes, and « é » is two — a fully-accented saturated form clears every bound and still overflows. Two traps when re-measuring: a repeated character compresses to nothing (itsdangerous zlib-compresses, so a naive test measured 195 bytes and proved nothing — use incompressible filler), and the cookie also carries the identity keys and the CSRF secret.
+- **Portal statut vocabulary lives in `client/config.py` because BOTH services depend on it.** `STATUTS_SESSION` (upload/session allowed — includes `soumise` since D-2) and `STATUTS_FERMES` (`révoquée`/`refusée`/**`traitée`**) are imported by the portal AND the main service. A per-service copy drifts, and the drift **reopens a closed invitation**: `ajouter_soumission` promotes the statut to `soumise`, which is upload-capable, so a late task or a reconciliation replay would undo a revocation. That promotion is now gated on `statut not in STATUTS_FERMES`.
+- **`_garde`'s type gate is a table, not an equality — and a route missing from it is refused.** `client/routes._TYPE_REQUIS` maps endpoint → required invitation type (`None` = both, as for `/confirmation`); `_TYPE_REQUIS.get(endpoint, "")` yields `""`, which no invitation type equals, so a new guarded route left out of the table fails closed rather than opening to both flows. Two other places assume a type and must move together: `creer_session`'s `suivant` and `entree()`'s redirect, both routed through `_PAGE_DU_TYPE`. **Any new session key must also join `_refus`'s pop tuple** (`intake` did) — otherwise a refusal leaves one client's draft behind for the next visitor on that device.
+- **`/entree` may only reuse a live session for ITS OWN invitation.** Every invitation email points at `/entree?i={id}` (the Firebase link and the fallback URL both), so a `?i=` naming a different invitation is the ordinary arrival of a second client on a shared browser. Reusing the cookie there dropped that visitor inside the previous holder's session — files written under the wrong prefix, and the accusé (names, sizes, SHA-512) mailed to the wrong client. `_garde` proves the INVITATION is live, never that the VISITOR is its invitee. Reuse is gated on `?i=` being empty or equal; the session is still never cleared (a foreign URL must not kill an upload in progress).
+- **A 409 on finalisation is a SUCCESS from the client's side, and must purge the session.** The envelope already exists, so the lot is acquired. This is the recovery path of the most ordinary failure — the response lost on a flaky mobile link, the browser re-arming the button — and answering with an error left `session["batch"]` naming an already-manifested lot: later uploads landed there unhashed, unlisted and purged at « traiter », every submit re-409'd forever, and the quota counted the lot twice.
+- **An intake task must dispatch on the INVITATION, never on the envelope.** In `routes/taches_portail`, the `envelope.json` read sits inside the idempotence short-circuit (`if manifeste.exists(): …`), so a branch keyed off the envelope runs only on the first attempt — never on a queue replay nor a reconciliation repair. And an unreadable intake envelope must still set **both** `soumissions[]` and `accuses[batch]`: those two are the reconciliation's only completion criteria, so a lot that sets one is re-enqueued every 15 minutes forever.
+- **Creating a partie from Réception must `bump_ctag("parties")` — nothing else will.** CTag bumping lives in the route layer (`routes/parties.py` does it at its three write sites); `models/partie.py` never bumps. An ouverture that creates the client fiche or the declared adverse contacts without bumping leaves them in Firestore, visible in the app, and **never in the DavX5 address book**, with no error anywhere. One bump per request covers all the contacts it created.
+- **`utils/rapprochement.candidats` proposes, it never decides.** Legal forms and civilities are stripped from BOTH sides (otherwise « Béton Nord » ↔ « Béton Nord inc. » is missed and « Me Jean Tremblay » ↔ « Me Paul Gagnon » is a false positive), and a single common token only counts when it constitutes one of the two names. Do not grow this into a conflict detector: a missed match is not a green light, a proposed match is not a conflict, and the ethical check remains the lawyer's. A test pins even the absence of an `est_en_conflit()`.
+- **A field submitted EMPTY never erases the stored value.** In Réception's field-by-field apply, only ticked boxes with a non-empty submitted value enter the payload — a client's silence is not a retraction, and an unticked box is not an instruction to delete. This works only because `update_partie` merges; combined with the `_normalize` trap above, an injected empty key would delete instead.
 
 ---
 
@@ -2272,6 +2308,30 @@ All foundation phases (1–12) and improvement phases (A–G) are completed. Thi
   3. **Bookings with me** : le mot-clé doit être une **sous-chaîne** du sujet — Bookings nomme l'événement `{Client} - {Service}` (p. ex. « Jason Poirier Lavoie - Consultation »), donc le nom du service est un **suffixe**. Régler `BOOKINGS_SUBJECT_KEYWORDS` sur ce nom de service ; lien Teams activé, publier la page.
   4. **Déployer `cron.yaml` COMPLET** (⚠️ `gcloud app deploy cron.yaml` REMPLACE toute la table cron — le fichier contient DÉJÀ la réconciliation portail L1 + la synchro Bookings ; ne jamais le remplacer par la seule entrée Bookings).
   5. Réservation d'essai + réglage du prédicat (`BOOKINGS_DEBUG_PAYLOAD=true` → journalise `organizer_match`/`keyword_match` + domaines tronqués, jamais le sujet → ajuster `BOOKINGS_SUBJECT_KEYWORDS` → remettre `false`). Le pare-feu `0.1.0.2/32` est déjà autorisé (L1).
+
+### Portail — survivabilité du lien (2026-07-27, ✅ livré)
+
+Deux lots successifs sur le socle L1, motivés par des essais réels où « une faute de frappe, un onglet fermé, un second clic sur le courriel » suffisaient à condamner un client. **Le lien Firebase est à USAGE UNIQUE et il est consommé AVANT que la session du portail existe** : tout refus survenant après ce point ne refuse pas une requête, il détruit l'invitation, sans recours. Tout ce qui suit découle de là.
+
+- **Le client n'est jamais sans issue** — passerelle « Le lien ne fonctionne pas ? » en permanence sous le formulaire ; tout échec révèle le formulaire de renvoi sans masquer le champ d'adresse (une faute de frappe se corrige en retapant ; seul un lien consommé exige un nouveau courriel). Le statut du renvoi est HONNÊTE : un 429/401/5xx affichait auparavant le message de succès.
+- **App Check ne bloque plus `POST /session`** (`client/security.verify_app_check`, dérogation unique et documentée). C'est ce qui expliquait « moi ça marche, mes amis non » : le code à usage unique est dépensé une ligne avant ce POST, donc un score reCAPTCHA faible — routine sur un téléphone neuf, en navigation privée ou derrière un VPN — ne refusait pas la requête, il **détruisait l'invitation**. La route garde toutes ses vraies gardes (jeton Firebase avec la revendication `portail`, `email_verified`, invitation active, courriel identique, 10/min). App Check reste APPLIQUÉ sur `/api/renvoi` (non authentifié, envoie du courriel) et sur les API de téléversement.
+- **`invitations.LectureIndisponible`** — une panne de lecture Firestore était indiscernable d'une révocation et effaçait la session. Elle rend désormais 503 **sans toucher la session** ; `/api/renvoi` reste octet pour octet identique même pendant la panne (l'invariant anti-énumération doit survivre à la panne qu'il sert à traverser).
+- **`STATUTS_SESSION = ("envoyée","ouverte","soumise")`** (décision D-2) : un lot soumis reste ouvert jusqu'à ce que le JURISTE le marque traité, pour que « j'ai oublié une page » soit récupérable. **`STATUTS_FERMES = ("révoquée","refusée","traitée")`** : les deux vivent dans `client/config.py` parce que les DEUX services en dépendent — une copie par service dériverait, et la dérive ROUVRIRAIT une invitation close.
+- **`lot_abandonne`** (ERROR) — un préfixe de quarantaine avec des fichiers mais **sans enveloppe**, immobile depuis plus de 2 h : le client a téléversé sans finaliser. Rien ne le référence, la réconciliation l'ignore, et le cycle de vie 90 j l'effacerait en silence.
+- **Le courriel dit la vérité** — il promettait que *le lien* restait valide 14 jours, alors que le lien dure quelques heures et que c'est l'*invitation* qui dure 14 jours. Les deux faits sont désormais distincts, et le courriel porte une **URL de secours** (`https://{PORTAIL_HOST}/entree?i={id}`) : c'est la ligne la plus utile du gabarit, celle qui donne une sortie à tout échec sans appel téléphonique.
+
+**Revue adversariale (2026-07-27) — 8 défauts confirmés, corrigés dans le même lot.** Le fil commun : `_garde` prouve qu'une INVITATION est vivante, jamais que le VISITEUR en est le destinataire. (i) `entree()` réutilisait la session sans comparer `?i=`, donc un 2e client sur un navigateur partagé atterrissait dans la session du premier — fichiers sous le mauvais préfixe, accusé (noms, tailles, SHA-512) expédié au mauvais client ; (ii) `ajouter_soumission` réécrivait `statut="soumise"` sans condition, ce qui ANNULAIT une révocation depuis que « soumise » ouvre la session ; (iii) la branche 409 de `api_finaliser` ne purgeait pas la session, coinçant définitivement le client sur le chemin de reprise le plus banal (réponse perdue sur un lien mobile) ; (iv) « traitée » manquait aux statuts terminaux ; (v) une invitation expirée était envoyée sur `/confirmation`, faux accusé et boucle fermée ; (vi) le commentaire du quota surestimait son étanchéité ; (vii-viii) le bloc de reprise restait cliquable après déconnexion et affichait l'adresse d'une identité persistée sans vérifier qu'elle appartenait à l'invitation de `?i=` (un marqueur local les lie désormais).
+
+### Phase L3 — Portail client : formulaire d'ouverture « intake » (July 2026, ✅ code complete)
+
+- **L3** — Le portail gagne une **seconde file** : un formulaire d'ouverture de dossier en 4 étapes (`type="intake"`), ouvert par la même invitation à lien courriel. La soumission produit une **enveloppe JSON en quarantaine, sans aucun fichier** ; le juriste l'examine dans **Réception → onglet « Ouvertures »** et **crée** la partie, ou **applique champ par champ** une mise à jour. **Aucune écriture Firestore avant son clic**, et la section Conformité n'est JAMAIS renseignée : recueillir n'est pas vérifier (le KYC reste hors périmètre, `pieces_identite: null` est un emplacement réservé). Trois déclencheurs : (a) confirmation d'un rendez-vous Bookings dont le courriel n'est lié à aucune partie (case cochée par défaut, derrière `FEATURE_INTAKE`), (b) bouton sur la fiche d'un contact (avec préremplissage), (c) sélecteur sur le formulaire d'invitation de Réception.
+  - **La porte par type** remplace l'égalité globale de `_garde` (`type != "documents"` → refus) par une table **endpoint → type requis** (`client/routes._TYPE_REQUIS`) : la porte reste au même endroit, et un endpoint absent de la table est refusé **par défaut**. Les deux autres endroits qui supposaient « documents » — le `suivant` de `creer_session` et le test de type de `entree()` — passent par `_PAGE_DU_TYPE`.
+  - **JS vanilla, pas d'Alpine** (la spec supposait Alpine) : la CSP du portail n'a pas `'unsafe-eval'`. Bascules d'étape par classe comme les panneaux de `entree.html`, lignes de parties adverses rendues intégralement en DOM (`textContent`, jamais `innerHTML`) comme la liste de `documents.html`. Chaque « Suivant » est un `fetch` vers `/api/intake/etape`, ce qui laisse **App Check pleinement appliqué** — un POST de formulaire HTML classique ne porterait pas l'en-tête et prendrait un 401.
+  - **Brouillon ceinture + bretelles (D-L3-1)** : `session["intake"]` est l'autorité (validée et bornée à chaque étape) ; un miroir `localStorage` (clé portant l'id de l'invitation) est proposé par un bouton explicite et **jamais fusionné d'office**.
+  - **Ré-entrée** : corriger et re-soumettre tant que le juriste n'a pas traité l'ouverture ; chaque envoi crée un nouveau lot, et Réception affiche **le plus récent**.
+  - `models/partie.py` gagne **`birth_date`** (date seule à minuit UTC, `BDAY` vCard émis ET relu) et un correctif de `_normalize` (voir Known Gotchas). `models/portail_invitation.prefill_depuis_partie` est une **liste blanche** — le document d'invitation est lu par le service PUBLIC. `utils/rapprochement.py` (pur) propose des candidats de conflit, **sans jamais rendre de verdict**.
+  - **Zéro nouvelle dépendance ; aucune classe Tailwind nouvelle** (168 classes vérifiées contre `app.0821ad87.css` ; 7 absentes ont été remplacées par des utilitaires existants, dont 3 qui traînaient depuis L2 dans `_rdv.html`) → **pas de recompilation**. Spec : `SPEC_PHASE_L3_PORTAIL_INTAKE.md` (déviations documentées : pas d'Alpine ; noms de champs du modèle vivant — `organization_name`/`company_neq`, adresse structurée ; `INTAKE_PRECISION_MAX` 200 → 160 pour tenir dans le témoin ; événements snake_case).
+- **Ops prerequisite :** `FEATURE_INTAKE: "true"` dans `app.yaml` (déclencheur (a) — suppose L2 en service). **Rien d'autre** : file, seau, base nommée, cron et permissions Graph sont ceux de L1 — et surtout **ne pas redéployer `cron.yaml`**, aucune entrée n'a changé.
 
 ### Proposed / not yet implemented
 

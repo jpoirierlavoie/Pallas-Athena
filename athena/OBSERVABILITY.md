@@ -180,6 +180,13 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 | `lot_traite` | success | Lot archived (envelope+manifeste → `archive/`, files purged), invitation → `traitée` |
 | `invitation_emise` | success | Invitation created (+ claim stamped); `invitation_id`, `dossier_id`, `emailed: bool` |
 | `invitation_revoquee` | success | Instant revocation from Réception |
+| `intake_etape` | success | Wizard step merged into the server-side draft (L3); `invitation_id`, `etape` (a digit). **Never a field value** — the draft is the client's identity |
+| `intake_soumis` | success / refused / **failure** | Intake envelope written; `invitation_id`, `batch`, `adverses` (count). `refused` + `reason=deja_soumis` on a replay within the same second (the batch id is second-resolution). **`failure` + `reason=enveloppe_malformee`** means the envelope could not be parsed main-side — both convergence markers are set anyway, or reconciliation would re-enqueue that lot every 15 min forever, and Réception shows it with a banner |
+| `intake_confirmation_envoyee` | success / refused | Gabarit A.3 emailed, behind the same `poser_accuse` test-and-set (at most once per lot). `refused` + `reason=enveloppe_malformee` when nothing was confirmed |
+| `intake_partie_creee` | success | Réception created a contact from an ouverture; `invitation_id`, `batch`, `adverses_crees`. Conformité is untouched — collecting is not verifying |
+| `intake_partie_mise_a_jour` | success | Field-by-field apply; `champs` (count applied), `adverses_crees` |
+| `intake_adverse_cree` | success | A declared adverse party was created as a contact (D-L3-2); `invitation_id` only — **never the name** |
+| `intake_refuse` | refused | An ouverture was refused; no email is sent to the client (D-L3-3) |
 
 > `log_auth_event` gained one `reason`: `portail_claim` — a Firebase token carrying the portal custom claim tried to open a session on the main service (spec L1 §1.2 defense in depth).
 
