@@ -9,6 +9,7 @@ Error messages are GENERIC on purpose (« Invitation invalide ou expirée »)
 — never the precise cause (anti-enumeration, §6.3).
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -26,6 +27,13 @@ from google.api_core.exceptions import PreconditionFailed
 from client import limiter, portail_bp
 from client.config import (
     CHUNK_MIB,
+    INTAKE_BROUILLON_MAX,
+    INTAKE_CHAMP_MAX,
+    INTAKE_CHAMP_MAX_PAR_NOM,
+    INTAKE_CONSENTEMENT_VERSION,
+    INTAKE_MAX_ADVERSES,
+    INTAKE_NOM_MAX,
+    INTAKE_PRECISION_MAX,
     PORTAIL_EXTENSIONS,
     PORTAIL_MAX_FILE_MB,
     PORTAIL_MAX_FILES,
@@ -85,7 +93,7 @@ def _refus(reason: str):
     # page. ») on top of the first. Popping these IS the logout — _garde still
     # denies at `if not inv_id`.
     for cle in ("inv_id", "uid", "email", "batch", "seq",
-                "files_count", "total_bytes"):
+                "files_count", "total_bytes", "intake"):
         session.pop(cle, None)
     if request.path.startswith("/api/"):
         return jsonify({"erreur": "Invitation invalide ou expirée."}), 401
@@ -109,6 +117,86 @@ def _indisponible():
     )), 503
 
 
+# Type d'invitation exigé PAR ENDPOINT. C'était une égalité globale
+# (« type != documents » → refus), ce qui interdisait toute autre file. Une
+# table plutôt qu'un test par vue : la porte reste au même endroit, donc une
+# route ajoutée sans y figurer est refusée par défaut (fail closed) plutôt que
+# d'être ouverte aux deux types par inadvertance.
+_TYPE_REQUIS = {
+    "portail.page_documents": "documents",
+    "portail.api_televersement": "documents",
+    "portail.api_finaliser": "documents",
+    "portail.page_ouverture": "intake",
+    "portail.api_intake_etape": "intake",
+    "portail.api_intake_finaliser": "intake",
+    "portail.confirmation": None,        # les deux files y aboutissent
+}
+
+# Endpoints où le refus doit être fondé sur le STATUT seul, pas sur
+# « peut_televerser » : le travail du client est déjà acquis quelque part
+# (les octets dans GCS, ou le formulaire entièrement saisi) et le refuser
+# l'orphelinerait — la réconciliation ignore les préfixes sans enveloppe, qui
+# sont purgés à 90 jours sans que personne les voie.
+_ENDPOINTS_FINALISATION = (
+    "portail.confirmation",
+    "portail.api_finaliser",
+    "portail.api_intake_finaliser",
+)
+
+# Page d'accueil de chaque file — après l'ouverture de session comme au retour
+# sur /entree. Un type inconnu n'a PAS de page : on rend l'écran de connexion
+# plutôt que d'inventer une destination.
+_PAGE_DU_TYPE = {
+    "documents": "portail.page_documents",
+    "intake": "portail.page_ouverture",
+}
+
+# Vocabulaire du formulaire d'ouverture. Volontairement en français et DISTINCT
+# des noms de champs du modèle des contacts : le portail ne connaît pas
+# ``models``, et la table de correspondance vit côté juriste (§5.3), là où le
+# versement est décidé. « parties_adverses » est traité à part (liste).
+_CHAMPS_INTAKE = (
+    "nature", "prenom", "nom", "denomination", "neq", "langue",
+    "telephone", "telephone2",
+    "adresse_rue", "adresse_app", "adresse_ville",
+    "adresse_province", "adresse_code_postal", "adresse_pays",
+    "parties_adverses", "consentement",
+)
+
+# prefill (instantané non sensible joint à l'invitation) → champs du
+# formulaire. Le sens inverse — formulaire → contact — vit dans Réception.
+_PREFILL_VERS_FORMULAIRE = {
+    "first_name": "prenom",
+    "last_name": "nom",
+    "organization_name": "denomination",
+    "company_neq": "neq",
+    "language": "langue",
+    "phone_cell": "telephone",
+    "phone_home": "telephone2",
+    "address_street": "adresse_rue",
+    "address_unit": "adresse_app",
+    "address_city": "adresse_ville",
+    "address_province": "adresse_province",
+    "address_postal_code": "adresse_code_postal",
+    "address_country": "adresse_pays",
+}
+
+
+def _depuis_prefill(prefill: dict) -> dict:
+    brouillon = {
+        champ: str(prefill[cle])
+        for cle, champ in _PREFILL_VERS_FORMULAIRE.items()
+        if prefill.get(cle)
+    }
+    if prefill.get("type") == "organization":
+        brouillon["nature"] = "morale"
+    elif prefill.get("type"):
+        brouillon["nature"] = "physique"
+    if brouillon.get("langue") not in ("fr", "en"):
+        brouillon.pop("langue", None)
+    return brouillon
+
+
 @portail_bp.before_request
 def _garde():
     if request.endpoint in _EXEMPT_ENDPOINTS or request.endpoint is None:
@@ -122,16 +210,10 @@ def _garde():
         return _indisponible()
     if invitation is None:
         return _refus("not_found")
-    # L1 serves only the « documents » flow; an « intake » invitation (L3)
-    # has no business on these routes.
-    if invitation.get("type") != "documents":
+    attendu = _TYPE_REQUIS.get(request.endpoint, "")
+    if attendu is not None and invitation.get("type") != attendu:
         return _refus("type_mismatch")
-    if request.endpoint in ("portail.confirmation", "portail.api_finaliser"):
-        # The bytes are ALREADY in GCS and envelope.json is the first durable
-        # record: refusing finalisation here would orphan the whole batch
-        # (reconciliation skips envelope-less prefixes, so it is purged at 90
-        # days, unseen). Accept any NON-TERMINAL statut — the declared objects
-        # are already pinned to the caller's own batch prefix in api_finaliser.
+    if request.endpoint in _ENDPOINTS_FINALISATION:
         if invitation.get("statut") in _STATUTS_TERMINAUX:
             return _refus("inactive")
     elif not invitations.peut_televerser(invitation):
@@ -173,9 +255,9 @@ def entree():
             invitation = invitations.lire(inv_id)
         except invitations.LectureIndisponible:
             invitation = None  # render the page normally; never clear
-        if invitation is not None and invitation.get("type") == "documents":
+        if invitation is not None and invitation.get("type") in _PAGE_DU_TYPE:
             if invitations.peut_televerser(invitation):
-                return redirect(url_for("portail.page_documents"))
+                return redirect(url_for(_PAGE_DU_TYPE[invitation["type"]]))
             # Only a lot that was really SUBMITTED may see the confirmation —
             # it states « Transmission reçue ». An EXPIRED invitation still
             # reads « envoyée »/« ouverte », so a statut-only test sent it
@@ -263,7 +345,13 @@ def creer_session():
                 "tache_enfilage_echec", "failure",
                 invitation_id=inv_id, evenement="ouverte",
             )
-    return jsonify({"ok": True, "suivant": url_for("portail.page_documents")})
+    suivant = _PAGE_DU_TYPE.get(invitation.get("type"))
+    if suivant is None:
+        # Type inconnu (jamais en pratique — creer_invitation le valide) : la
+        # session existe, mais aucune page ne lui correspond. Mieux vaut le
+        # refus générique qu'une redirection inventée.
+        return _session_refusee("type_inconnu")
+    return jsonify({"ok": True, "suivant": url_for(suivant)})
 
 
 # ── Renvoi (§6.3 — anti-enumeration) ─────────────────────────────────────
@@ -568,3 +656,215 @@ def api_finaliser():
 @portail_bp.get("/confirmation")
 def confirmation():
     return render_template("confirmation.html", invitation=g.invitation)
+
+
+# ── Formulaire d'ouverture « intake » (L3 §3-4) ──────────────────────────
+
+
+def _texte(brut, maxi: int) -> str:
+    """Coerce + trim + borne. La borne n'est pas cosmétique — voir
+    INTAKE_BROUILLON_MAX dans client/config.py."""
+    if brut is None:
+        return ""
+    return str(brut).strip()[:maxi]
+
+
+def _nettoyer_etape(charge: dict) -> dict:
+    """Retenir les seuls champs connus, chacun borné (liste blanche).
+
+    Rien de ce que le client envoie n'atteint la session sans passer ici : le
+    brouillon vit dans un témoin signé au plafond dur, donc un champ inattendu
+    n'est pas seulement du bruit, c'est du budget.
+    """
+    propre: dict = {}
+    for cle in _CHAMPS_INTAKE:
+        if cle in charge:
+            propre[cle] = _texte(
+                charge.get(cle),
+                INTAKE_CHAMP_MAX_PAR_NOM.get(cle, INTAKE_CHAMP_MAX),
+            )
+    if "nature" in propre and propre["nature"] not in ("physique", "morale"):
+        propre["nature"] = "physique"
+    if "langue" in propre and propre["langue"] not in ("fr", "en"):
+        propre["langue"] = "fr"
+    if "parties_adverses" in charge:
+        lignes = charge.get("parties_adverses")
+        propre["parties_adverses"] = [
+            {
+                "nom": _texte(ligne.get("nom"), INTAKE_NOM_MAX),
+                "precision": _texte(
+                    ligne.get("precision"), INTAKE_PRECISION_MAX
+                ),
+            }
+            for ligne in (lignes if isinstance(lignes, list) else [])
+            if isinstance(ligne, dict) and _texte(ligne.get("nom"), 1)
+        ][:INTAKE_MAX_ADVERSES]
+    if "consentement" in charge:
+        propre["consentement"] = charge.get("consentement") is True
+    return propre
+
+
+def _brouillon_trop_gros(brouillon: dict) -> bool:
+    """La session du portail EST le témoin ``pa_portail``.
+
+    Les navigateurs plafonnent un témoin à ~4096 octets et un dépassement est
+    SILENCIEUX : le navigateur le jette, donc le client perd sa session en
+    plein formulaire — alors que son lien à usage unique est déjà consommé, ce
+    qui rend la perte irrécupérable. Mieux vaut refuser l'étape avec un
+    message français que déborder sans bruit.
+    """
+    taille = len(json.dumps(brouillon, ensure_ascii=False).encode("utf-8"))
+    return taille > INTAKE_BROUILLON_MAX
+
+
+def _brouillon() -> dict:
+    """Brouillon serveur : l'AUTORITÉ. Le miroir localStorage du navigateur
+    n'est qu'un filet de récupération, jamais fusionné automatiquement."""
+    courant = session.get("intake")
+    return dict(courant) if isinstance(courant, dict) else {}
+
+
+def _valider_final(brouillon: dict) -> list[str]:
+    """Contrôles que seule la soumission exige (§4.1)."""
+    erreurs: list[str] = []
+    nature = brouillon.get("nature") or "physique"
+    if nature == "morale":
+        if not brouillon.get("denomination"):
+            erreurs.append("La dénomination sociale est requise.")
+    elif not brouillon.get("nom"):
+        erreurs.append("Le nom de famille est requis.")
+    if not brouillon.get("telephone"):
+        erreurs.append("Un numéro de téléphone est requis.")
+    if brouillon.get("consentement") is not True:
+        erreurs.append("Le consentement est requis pour transmettre le "
+                       "formulaire.")
+    return erreurs
+
+
+@portail_bp.get("/ouverture")
+def page_ouverture():
+    invitation = g.invitation
+    brouillon = _brouillon()
+    if not brouillon:
+        # Premier passage : partir de l'instantané non sensible que le juriste
+        # a joint à l'invitation (déclencheur « mise à jour », §2).
+        prefill = invitation.get("prefill")
+        if isinstance(prefill, dict):
+            brouillon = _depuis_prefill(prefill)
+    # Le courriel est celui de l'INVITATION, jamais un champ libre : il est la
+    # cohérence d'identité entre le lien, la session et l'enveloppe.
+    brouillon["courriel"] = invitation.get("email", "")
+    return render_template(
+        "ouverture.html",
+        invitation=invitation,
+        brouillon=brouillon,
+        max_adverses=INTAKE_MAX_ADVERSES,
+        nom_max=INTAKE_NOM_MAX,
+        precision_max=INTAKE_PRECISION_MAX,
+        champ_max=INTAKE_CHAMP_MAX,
+        deja_soumis=bool(invitation.get("soumissions")),
+    )
+
+
+@portail_bp.post("/api/intake/etape")
+def api_intake_etape():
+    charge = request.get_json(silent=True) or {}
+    fusionne = {**_brouillon(), **_nettoyer_etape(charge)}
+    fusionne.pop("courriel", None)      # jamais du client : il vient du doc
+    if _brouillon_trop_gros(fusionne):
+        return jsonify({
+            "erreur": "Vos réponses dépassent la taille permise. Abrégez les "
+                      "précisions, puis réessayez."
+        }), 422
+    session["intake"] = fusionne
+    log_portail_event(
+        "intake_etape", invitation_id=g.invitation.get("id"),
+        etape=_texte(charge.get("etape"), 2),
+    )
+    return jsonify({"ok": True})
+
+
+@portail_bp.post("/api/intake/finaliser")
+def api_intake_finaliser():
+    invitation = g.invitation
+    inv_id = invitation["id"]
+    charge = request.get_json(silent=True) or {}
+    # La dernière étape porte l'état complet : un client qui a rechargé la page
+    # et repris son brouillon local doit pouvoir soumettre sans avoir rejoué
+    # chaque étape côté serveur.
+    brouillon = {**_brouillon(), **_nettoyer_etape(charge)}
+    brouillon.pop("courriel", None)
+    if _brouillon_trop_gros(brouillon):
+        return jsonify({
+            "erreur": "Vos réponses dépassent la taille permise. Abrégez les "
+                      "précisions, puis réessayez."
+        }), 422
+
+    erreurs = _valider_final(brouillon)
+    if erreurs:
+        return jsonify({"erreur": " ".join(erreurs)}), 422
+
+    # L'intake ne passe jamais par api_televersement, seul frappeur de batch :
+    # il frappe le sien à la finalisation.
+    batch = stockage.horodatage_utc_compact()
+    adverses = brouillon.get("parties_adverses") or []
+    envelope = {
+        "type": "intake",
+        "invitation_id": inv_id,
+        "batch": batch,
+        "partie_id": invitation.get("partie_id"),
+        "dossier_id": invitation.get("dossier_id"),
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "client": {"email": session.get("email"), "uid": session.get("uid")},
+        "http": {
+            "ip": request.headers.get("CF-Connecting-IP")
+            or request.remote_addr or "",
+            "user_agent": (request.user_agent.string or "")[:300],
+        },
+        "donnees": {
+            cle: brouillon.get(cle, "")
+            for cle in _CHAMPS_INTAKE if cle != "parties_adverses"
+        } | {"courriel": invitation.get("email", "")},
+        "parties_adverses": adverses,
+        "consentement": {
+            "accepte": True,
+            "horodatage": datetime.now(timezone.utc).isoformat(),
+            "version_texte": INTAKE_CONSENTEMENT_VERSION,
+        },
+        # Emplacement RÉSERVÉ (§6) : aucune pièce d'identité n'est collectée.
+        "pieces_identite": None,
+    }
+    try:
+        stockage.ecrire_enveloppe(inv_id, batch, envelope)
+    except PreconditionFailed:
+        # Deux finalisations dans la même seconde (double clic, rejeu) : le
+        # batch est horodaté à la seconde, donc la seconde écriture retombe sur
+        # le même objet. Le formulaire EST transmis — c'est un succès.
+        log_portail_event(
+            "intake_soumis", "refused",
+            invitation_id=inv_id, batch=batch, reason="deja_soumis",
+        )
+        return jsonify({
+            "ok": True, "suivant": url_for("portail.confirmation")
+        }), 200
+    except Exception:
+        logger.exception("portal intake envelope write failed")
+        return jsonify({
+            "erreur": "Erreur lors de la soumission. Réessayez."
+        }), 503
+
+    try:
+        taches.signaler("soumise", inv_id, batch=batch)
+    except Exception:
+        logger.exception("portal enqueue 'soumise' (intake) failed")
+        log_portail_event(
+            "tache_enfilage_echec", "failure",
+            invitation_id=inv_id, batch=batch, evenement="soumise",
+        )
+
+    session.pop("intake", None)
+    log_portail_event(
+        "intake_soumis", invitation_id=inv_id, batch=batch,
+        adverses=len(adverses),
+    )
+    return jsonify({"ok": True, "suivant": url_for("portail.confirmation")})

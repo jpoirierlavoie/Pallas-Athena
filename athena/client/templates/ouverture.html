@@ -1,0 +1,568 @@
+{# Formulaire d'ouverture de dossier (spec L3 §3) — assistant en 4 étapes.
+
+   JS VANILLA, pas d'Alpine : la CSP du portail n'a pas 'unsafe-eval' (une
+   propriété gagnée délibérément, cf. client/security.py). Les étapes sont
+   quatre <section> basculées par classe, comme les panneaux de entree.html ;
+   les lignes de parties adverses sont rendues intégralement en DOM
+   (createElement/textContent, jamais innerHTML) comme la liste de
+   documents.html.
+
+   Chaque « Suivant » poste vers /api/intake/etape en fetch : c'est ce qui
+   permet à App Check de rester APPLIQUÉ (un POST de formulaire HTML classique
+   ne porterait pas l'en-tête X-Firebase-AppCheck et prendrait un 401). #}
+{% extends "base.html" %}
+{% block title %}Ouverture de votre dossier — Portail sécurisé{% endblock %}
+
+{% block content %}
+<div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+  <h2 class="text-base font-semibold text-gray-900">{{ invitation.display_label }}</h2>
+  <p class="mt-1 text-sm text-gray-500">
+    Ces renseignements nous servent à ouvrir votre dossier. Comptez environ
+    cinq minutes.
+  </p>
+
+  {% if deja_soumis %}
+  <p class="mt-3 px-3 py-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    Vous avez déjà transmis ce formulaire. Vous pouvez le corriger et le
+    transmettre de nouveau : c'est la dernière version qui sera examinée.
+  </p>
+  {% endif %}
+
+  {# Reprise d'un brouillon local — proposée, jamais appliquée d'office. #}
+  <div id="bloc-reprise-brouillon" class="hidden mt-3 px-3 py-2 text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg">
+    Des réponses commencées sur cet appareil ont été retrouvées.
+    <button type="button" id="btn-reprendre"
+            class="ml-1 font-medium text-indigo-600 hover:text-indigo-500">Les reprendre</button>
+    <button type="button" id="btn-ignorer-brouillon"
+            class="ml-2 text-gray-500 hover:text-gray-700">Recommencer</button>
+  </div>
+
+  {# Fil d'étapes #}
+  <ol id="fil-etapes" class="flex items-center gap-2 mt-5 mb-5 text-xs text-gray-400">
+    <li data-fil="1" class="font-medium text-gray-900">1. Identité</li>
+    <li aria-hidden="true">›</li>
+    <li data-fil="2">2. Coordonnées</li>
+    <li aria-hidden="true">›</li>
+    <li data-fil="3">3. Parties adverses</li>
+    <li aria-hidden="true">›</li>
+    <li data-fil="4">4. Révision</li>
+  </ol>
+
+  <p id="erreur-globale" class="hidden mb-4 px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg"></p>
+
+  {# ── Étape 1 — Identité ─────────────────────────────────────────── #}
+  <section data-etape="1">
+    <div class="flex gap-2 mb-4">
+      <label class="flex-1">
+        <input type="radio" name="nature" value="physique" class="peer sr-only"
+               {{ 'checked' if brouillon.get('nature', 'physique') != 'morale' }}>
+        {# Mêmes utilitaires que la bascule du formulaire des contacts : ils
+           existent dans l'artefact Tailwind compilé (une classe absente ne
+           s'appliquerait pas, en silence). #}
+        <span class="block px-3 py-2.5 text-sm text-center rounded-lg border border-gray-300 text-gray-700 cursor-pointer hover:bg-gray-50 peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900">
+          Personne physique
+        </span>
+      </label>
+      <label class="flex-1">
+        <input type="radio" name="nature" value="morale" class="peer sr-only"
+               {{ 'checked' if brouillon.get('nature') == 'morale' }}>
+        {# Mêmes utilitaires que la bascule du formulaire des contacts : ils
+           existent dans l'artefact Tailwind compilé (une classe absente ne
+           s'appliquerait pas, en silence). #}
+        <span class="block px-3 py-2.5 text-sm text-center rounded-lg border border-gray-300 text-gray-700 cursor-pointer hover:bg-gray-50 peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900">
+          Entreprise / organisme
+        </span>
+      </label>
+    </div>
+
+    <div id="bloc-physique" class="space-y-4">
+      <div>
+        <label for="prenom" class="block text-sm text-gray-700 mb-1">Prénom</label>
+        <input type="text" id="prenom" data-champ="prenom" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('prenom', '') }}" autocomplete="given-name"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="nom" class="block text-sm text-gray-700 mb-1">Nom <span class="text-red-500">*</span></label>
+        <input type="text" id="nom" data-champ="nom" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('nom', '') }}" autocomplete="family-name"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+    </div>
+
+    <div id="bloc-morale" class="hidden space-y-4">
+      <div>
+        <label for="denomination" class="block text-sm text-gray-700 mb-1">Dénomination sociale <span class="text-red-500">*</span></label>
+        <input type="text" id="denomination" data-champ="denomination" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('denomination', '') }}" autocomplete="organization"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="neq" class="block text-sm text-gray-700 mb-1">NEQ <span class="text-gray-400">(facultatif)</span></label>
+        <input type="text" id="neq" data-champ="neq" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('neq', '') }}"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <label for="langue" class="block text-sm text-gray-700 mb-1">Langue de communication</label>
+      <select id="langue" data-champ="langue"
+              class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="fr" {{ 'selected' if brouillon.get('langue', 'fr') != 'en' }}>Français</option>
+        <option value="en" {{ 'selected' if brouillon.get('langue') == 'en' }}>Anglais</option>
+      </select>
+    </div>
+  </section>
+
+  {# ── Étape 2 — Coordonnées ──────────────────────────────────────── #}
+  <section data-etape="2" class="hidden space-y-4">
+    <div>
+      <label for="courriel" class="block text-sm text-gray-700 mb-1">Courriel</label>
+      {# Lecture seule : c'est l'adresse invitée, la cohérence d'identité entre
+         le lien, la session et l'enveloppe. Le serveur l'écrit lui-même. #}
+      <input type="email" id="courriel" value="{{ brouillon.get('courriel', '') }}" readonly
+             class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg bg-gray-50 text-gray-500">
+      <p class="mt-1 text-xs text-gray-400">
+        C'est l'adresse à laquelle votre invitation a été transmise.
+      </p>
+    </div>
+    <div>
+      <label for="telephone" class="block text-sm text-gray-700 mb-1">Téléphone <span class="text-red-500">*</span></label>
+      <input type="tel" id="telephone" data-champ="telephone" maxlength="{{ champ_max }}"
+             value="{{ brouillon.get('telephone', '') }}" autocomplete="tel"
+             class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
+    <div>
+      <label for="telephone2" class="block text-sm text-gray-700 mb-1">Autre téléphone <span class="text-gray-400">(facultatif)</span></label>
+      <input type="tel" id="telephone2" data-champ="telephone2" maxlength="{{ champ_max }}"
+             value="{{ brouillon.get('telephone2', '') }}"
+             class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
+    <div>
+      <label for="adresse_rue" class="block text-sm text-gray-700 mb-1">Adresse</label>
+      <input type="text" id="adresse_rue" data-champ="adresse_rue" maxlength="{{ champ_max }}"
+             value="{{ brouillon.get('adresse_rue', '') }}" autocomplete="street-address"
+             placeholder="Numéro et rue"
+             class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="adresse_app" class="block text-sm text-gray-700 mb-1">Appartement</label>
+        <input type="text" id="adresse_app" data-champ="adresse_app" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('adresse_app', '') }}"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="adresse_ville" class="block text-sm text-gray-700 mb-1">Ville</label>
+        <input type="text" id="adresse_ville" data-champ="adresse_ville" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('adresse_ville', '') }}" autocomplete="address-level2"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label for="adresse_province" class="block text-sm text-gray-700 mb-1">Province</label>
+        <input type="text" id="adresse_province" data-champ="adresse_province" maxlength="{{ champ_max }}"
+               value="{{ brouillon.get('adresse_province', 'Québec') }}"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+      <div>
+        <label for="adresse_code_postal" class="block text-sm text-gray-700 mb-1">Code postal</label>
+        <input type="text" id="adresse_code_postal" data-champ="adresse_code_postal" maxlength="7"
+               value="{{ brouillon.get('adresse_code_postal', '') }}" placeholder="A1A 1A1"
+               autocomplete="postal-code"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+    </div>
+  </section>
+
+  {# ── Étape 3 — Parties adverses ─────────────────────────────────── #}
+  <section data-etape="3" class="hidden">
+    <p class="px-3 py-2.5 mb-4 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+      Indiquez uniquement les <strong>noms</strong>. <strong>N'exposez pas
+      votre situation</strong> ni les faits de l'affaire dans ce formulaire ;
+      ils seront abordés avec votre avocat.
+    </p>
+    <p class="mb-3 text-sm text-gray-600">
+      Qui sont les autres personnes ou entreprises concernées ? Cela nous
+      permet de vérifier que nous n'avons aucun conflit d'intérêts.
+    </p>
+    <div id="liste-adverses" class="space-y-3"></div>
+    <button type="button" id="btn-ajouter-adverse"
+            class="mt-3 text-sm font-medium text-indigo-600 hover:text-indigo-500">
+      + Ajouter une partie
+    </button>
+    <p id="limite-adverses" class="hidden mt-2 text-xs text-gray-400">
+      Maximum de {{ max_adverses }} parties. Vous pourrez compléter avec votre
+      avocat.
+    </p>
+  </section>
+
+  {# ── Étape 4 — Révision et consentement ─────────────────────────── #}
+  <section data-etape="4" class="hidden">
+    <dl id="recapitulatif" class="text-sm divide-y divide-gray-100"></dl>
+    <label class="flex items-start gap-2 mt-5 text-xs text-gray-600">
+      <input type="checkbox" id="consentement" class="mt-0.5 rounded border-gray-300"
+             {{ 'checked' if brouillon.get('consentement') }}>
+      <span>
+        Je consens à ce que {{ firm_name or 'le cabinet' }} recueille les
+        renseignements fournis au présent formulaire aux fins de l'ouverture et
+        de la gestion de mon dossier, de la vérification des conflits
+        d'intérêts et des communications avec moi. Ces renseignements sont
+        conservés de façon sécurisée au Québec/Canada et traités conformément
+        aux obligations professionnelles de l'avocat et à la législation
+        applicable sur la protection des renseignements personnels. Je peux
+        retirer mon consentement en communiquant avec le cabinet, sous réserve
+        des obligations légales de conservation.
+      </span>
+    </label>
+  </section>
+
+  {# ── Navigation ─────────────────────────────────────────────────── #}
+  <div class="flex items-center gap-3 mt-6 pt-4 border-t border-gray-100">
+    <button type="button" id="btn-precedent"
+            class="hidden px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+      Précédent
+    </button>
+    <button type="button" id="btn-suivant"
+            class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      Suivant
+    </button>
+  </div>
+  <button type="button" id="btn-effacer"
+          class="mt-3 w-full text-xs text-gray-400 hover:text-gray-600">
+    Effacer mes réponses sur cet appareil
+  </button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+<script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
+{% endif %}
+<script nonce="{{ csp_nonce }}">
+  'use strict';
+  const jetonCsrf = document.querySelector('meta[name="csrf-token"]').content;
+  const siteKey = {{ config.RECAPTCHA_ENTERPRISE_SITE_KEY|tojson }};
+  if (siteKey && window.firebase) {
+    firebase.initializeApp({
+      apiKey: {{ config.FIREBASE_API_KEY|tojson }},
+      projectId: {{ config.FIREBASE_PROJECT_ID|tojson }},
+      appId: {{ config.FIREBASE_APP_ID|tojson }}
+    });
+    firebase.appCheck().activate(
+      new firebase.appCheck.ReCaptchaEnterpriseProvider(siteKey), true
+    );
+  }
+
+  const $ = function (id) { return document.getElementById(id); };
+  const MAX_ADVERSES = {{ max_adverses }};
+  const NOM_MAX = {{ nom_max }};
+  const PRECISION_MAX = {{ precision_max }};
+  // Le brouillon local est nominatif de l'invitation : un 2e client sur le
+  // même appareil ne doit jamais voir les réponses du premier.
+  const CLE_BROUILLON = 'pa_intake_' + {{ invitation.id|tojson }};
+  const LIBELLES = {
+    prenom: 'Prénom', nom: 'Nom', denomination: 'Dénomination sociale',
+    neq: 'NEQ', langue: 'Langue', courriel: 'Courriel',
+    telephone: 'Téléphone', telephone2: 'Autre téléphone',
+    adresse_rue: 'Adresse', adresse_app: 'Appartement',
+    adresse_ville: 'Ville', adresse_province: 'Province',
+    adresse_code_postal: 'Code postal'
+  };
+
+  async function enTetesFetch() {
+    const entetes = { 'Content-Type': 'application/json', 'X-CSRFToken': jetonCsrf };
+    if (siteKey && window.firebase) {
+      try {
+        const t = await firebase.appCheck().getToken(false);
+        entetes['X-Firebase-AppCheck'] = t.token;
+      } catch (e) { /* le serveur tranchera */ }
+    }
+    return entetes;
+  }
+
+  // ── État ───────────────────────────────────────────────────────────────
+  // Le serveur reste l'AUTORITÉ (il valide et borne à chaque étape) ; ceci
+  // n'est que le reflet de ce qui est à l'écran.
+  let adverses = {{ (brouillon.get('parties_adverses') or [])|tojson }};
+  let etape = 1;
+
+  function champs() {
+    const valeurs = {};
+    document.querySelectorAll('[data-champ]').forEach(function (el) {
+      valeurs[el.dataset.champ] = el.value;
+    });
+    const nature = document.querySelector('input[name="nature"]:checked');
+    valeurs.nature = nature ? nature.value : 'physique';
+    valeurs.parties_adverses = adverses;
+    valeurs.consentement = $('consentement').checked;
+    return valeurs;
+  }
+
+  // ── Brouillon local (filet de récupération, jamais l'autorité) ─────────
+  function sauverLocal() {
+    try { localStorage.setItem(CLE_BROUILLON, JSON.stringify(champs())); }
+    catch (e) { /* mode privé / quota : le serveur garde l'essentiel */ }
+  }
+  function effacerLocal() {
+    try { localStorage.removeItem(CLE_BROUILLON); } catch (e) { /* idem */ }
+  }
+  function appliquer(valeurs) {
+    document.querySelectorAll('[data-champ]').forEach(function (el) {
+      if (typeof valeurs[el.dataset.champ] === 'string') {
+        el.value = valeurs[el.dataset.champ];
+      }
+    });
+    if (valeurs.nature) {
+      const radio = document.querySelector(
+        'input[name="nature"][value="' + valeurs.nature + '"]');
+      if (radio) { radio.checked = true; }
+    }
+    if (Array.isArray(valeurs.parties_adverses)) {
+      adverses = valeurs.parties_adverses.slice(0, MAX_ADVERSES);
+    }
+    $('consentement').checked = valeurs.consentement === true;
+    majNature();
+    rendreAdverses();
+  }
+
+  // ── Parties adverses : rendu DOM intégral (jamais innerHTML) ───────────
+  function rendreAdverses() {
+    const liste = $('liste-adverses');
+    liste.textContent = '';
+    adverses.forEach(function (ligne, i) {
+      const carte = document.createElement('div');
+      carte.className = 'p-3 border border-gray-200 rounded-lg space-y-2';
+
+      const nom = document.createElement('input');
+      nom.type = 'text';
+      nom.maxLength = NOM_MAX;
+      nom.value = ligne.nom || '';
+      nom.placeholder = 'Nom de la personne ou de l’entreprise';
+      nom.className = 'w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500';
+      nom.addEventListener('input', function () {
+        adverses[i].nom = nom.value; sauverLocal();
+      });
+      carte.appendChild(nom);
+
+      const precision = document.createElement('input');
+      precision.type = 'text';
+      precision.maxLength = PRECISION_MAX;
+      precision.value = ligne.precision || '';
+      precision.placeholder = 'Lien avec vous (facultatif) — ex. « mon ancien employeur »';
+      precision.className = 'w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500';
+      precision.addEventListener('input', function () {
+        adverses[i].precision = precision.value; sauverLocal();
+      });
+      carte.appendChild(precision);
+
+      const retirer = document.createElement('button');
+      retirer.type = 'button';
+      retirer.className = 'text-xs text-gray-400 hover:text-red-600';
+      retirer.textContent = 'Retirer';
+      retirer.addEventListener('click', function () {
+        adverses.splice(i, 1); rendreAdverses(); sauverLocal();
+      });
+      carte.appendChild(retirer);
+
+      liste.appendChild(carte);
+    });
+    if (!adverses.length) {
+      const vide = document.createElement('p');
+      vide.className = 'text-sm text-gray-400';
+      vide.textContent = 'Aucune partie indiquée. Vous pouvez passer cette étape.';
+      liste.appendChild(vide);
+    }
+    const plein = adverses.length >= MAX_ADVERSES;
+    $('btn-ajouter-adverse').classList.toggle('hidden', plein);
+    $('limite-adverses').classList.toggle('hidden', !plein);
+  }
+
+  $('btn-ajouter-adverse').addEventListener('click', function () {
+    if (adverses.length >= MAX_ADVERSES) { return; }
+    adverses.push({ nom: '', precision: '' });
+    rendreAdverses();
+  });
+
+  // ── Nature : bascule physique / morale ─────────────────────────────────
+  function majNature() {
+    const nature = document.querySelector('input[name="nature"]:checked');
+    const morale = nature && nature.value === 'morale';
+    $('bloc-physique').classList.toggle('hidden', morale);
+    $('bloc-morale').classList.toggle('hidden', !morale);
+  }
+  document.querySelectorAll('input[name="nature"]').forEach(function (r) {
+    r.addEventListener('change', function () { majNature(); sauverLocal(); });
+  });
+
+  // ── Récapitulatif (étape 4) ────────────────────────────────────────────
+  function rendreRecapitulatif() {
+    const dl = $('recapitulatif');
+    dl.textContent = '';
+    const valeurs = champs();
+    const morale = valeurs.nature === 'morale';
+    const ordre = morale
+      ? ['denomination', 'neq', 'langue', 'courriel', 'telephone', 'telephone2',
+         'adresse_rue', 'adresse_app', 'adresse_ville', 'adresse_province',
+         'adresse_code_postal']
+      : ['prenom', 'nom', 'langue', 'courriel', 'telephone', 'telephone2',
+         'adresse_rue', 'adresse_app', 'adresse_ville', 'adresse_province',
+         'adresse_code_postal'];
+    ordre.forEach(function (cle) {
+      const valeur = (valeurs[cle] || '').trim();
+      if (!valeur) { return; }
+      const ligne = document.createElement('div');
+      ligne.className = 'flex justify-between gap-4 py-1.5';
+      const dt = document.createElement('dt');
+      dt.className = 'text-gray-500';
+      dt.textContent = LIBELLES[cle] || cle;
+      const dd = document.createElement('dd');
+      dd.className = 'text-gray-900 text-right';
+      dd.textContent = cle === 'langue'
+        ? (valeur === 'en' ? 'Anglais' : 'Français') : valeur;
+      ligne.appendChild(dt); ligne.appendChild(dd);
+      dl.appendChild(ligne);
+    });
+    adverses.forEach(function (a) {
+      if (!(a.nom || '').trim()) { return; }
+      const ligne = document.createElement('div');
+      ligne.className = 'flex justify-between gap-4 py-1.5';
+      const dt = document.createElement('dt');
+      dt.className = 'text-gray-500';
+      dt.textContent = 'Partie adverse';
+      const dd = document.createElement('dd');
+      dd.className = 'text-gray-900 text-right';
+      dd.textContent = a.precision ? a.nom + ' — ' + a.precision : a.nom;
+      ligne.appendChild(dt); ligne.appendChild(dd);
+      dl.appendChild(ligne);
+    });
+  }
+
+  // ── Navigation ─────────────────────────────────────────────────────────
+  function montrer(n) {
+    etape = n;
+    document.querySelectorAll('[data-etape]').forEach(function (s) {
+      s.classList.toggle('hidden', Number(s.dataset.etape) !== n);
+    });
+    document.querySelectorAll('[data-fil]').forEach(function (li) {
+      const actif = Number(li.dataset.fil) === n;
+      li.classList.toggle('font-medium', actif);
+      li.classList.toggle('text-gray-900', actif);
+    });
+    $('btn-precedent').classList.toggle('hidden', n === 1);
+    $('btn-suivant').textContent = n === 4 ? 'Transmettre' : 'Suivant';
+    if (n === 4) { rendreRecapitulatif(); }
+    $('erreur-globale').classList.add('hidden');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function erreurLocale(message) {
+    const boite = $('erreur-globale');
+    boite.textContent = message;
+    boite.classList.remove('hidden');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function valider(n) {
+    const valeurs = champs();
+    if (n === 1) {
+      if (valeurs.nature === 'morale' && !(valeurs.denomination || '').trim()) {
+        return 'Veuillez indiquer la dénomination sociale.';
+      }
+      if (valeurs.nature !== 'morale' && !(valeurs.nom || '').trim()) {
+        return 'Veuillez indiquer votre nom de famille.';
+      }
+    }
+    if (n === 2 && !(valeurs.telephone || '').trim()) {
+      return 'Veuillez indiquer un numéro de téléphone.';
+    }
+    if (n === 4 && !valeurs.consentement) {
+      return 'Veuillez cocher le consentement pour transmettre le formulaire.';
+    }
+    return '';
+  }
+
+  async function envoyer(chemin, charge) {
+    const rep = await fetch(chemin, {
+      method: 'POST', headers: await enTetesFetch(),
+      body: JSON.stringify(charge)
+    });
+    const donnees = await rep.json().catch(function () { return {}; });
+    return { rep: rep, donnees: donnees };
+  }
+
+  $('btn-precedent').addEventListener('click', function () {
+    if (etape > 1) { montrer(etape - 1); }
+  });
+
+  $('btn-suivant').addEventListener('click', async function () {
+    const probleme = valider(etape);
+    if (probleme) { erreurLocale(probleme); return; }
+    $('btn-suivant').disabled = true;
+    sauverLocal();
+    const charge = champs();
+    charge.etape = String(etape);
+    try {
+      const dernier = etape === 4;
+      const r = await envoyer(
+        dernier ? '/api/intake/finaliser' : '/api/intake/etape', charge);
+      if (r.rep.ok && dernier && r.donnees.suivant) {
+        effacerLocal();
+        window.location = r.donnees.suivant;
+        return;
+      }
+      if (r.rep.ok) {
+        montrer(etape + 1);
+      } else {
+        erreurLocale(r.donnees.erreur ||
+          'Une erreur est survenue. Réessayez dans un instant.');
+      }
+    } catch (e) {
+      // Le brouillon local est déjà écrit : rien n'est perdu.
+      erreurLocale('Erreur de réseau. Vos réponses sont conservées sur cet ' +
+        'appareil — réessayez dans un instant.');
+    }
+    $('btn-suivant').disabled = false;
+  });
+
+  $('btn-effacer').addEventListener('click', function () {
+    effacerLocal();
+    window.location.reload();
+  });
+
+  // ── Reprise d'un brouillon local ───────────────────────────────────────
+  // Proposée, jamais appliquée d'office : même discipline que la reprise
+  // d'identité de entree.html. Le serveur reste l'autorité — le local ne sert
+  // qu'à survivre à une session perdue (24 h) ou à un navigateur fermé.
+  let brouillonLocal = null;
+  try {
+    const brut = localStorage.getItem(CLE_BROUILLON);
+    if (brut) { brouillonLocal = JSON.parse(brut); }
+  } catch (e) { brouillonLocal = null; }
+
+  const serveurVide = {{ (not brouillon.get('nom') and not brouillon.get('denomination'))|tojson }};
+  if (brouillonLocal && serveurVide) {
+    $('bloc-reprise-brouillon').classList.remove('hidden');
+  }
+  $('btn-reprendre').addEventListener('click', function () {
+    if (brouillonLocal) { appliquer(brouillonLocal); }
+    $('bloc-reprise-brouillon').classList.add('hidden');
+  });
+  $('btn-ignorer-brouillon').addEventListener('click', function () {
+    effacerLocal();
+    $('bloc-reprise-brouillon').classList.add('hidden');
+  });
+
+  document.querySelectorAll('[data-champ]').forEach(function (el) {
+    el.addEventListener('input', sauverLocal);
+  });
+  $('consentement').addEventListener('change', sauverLocal);
+
+  majNature();
+  rendreAdverses();
+  montrer(1);
+</script>
+{% endblock %}

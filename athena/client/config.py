@@ -62,6 +62,44 @@ STATUTS_SESSION = ("envoyée", "ouverte", "soumise")
 STATUTS_FERMES = ("révoquée", "refusée", "traitée")
 CHUNK_MIB = 8                   # multiple of 256 KiB (GCS resumable protocol)
 
+# ── Formulaire d'ouverture « intake » (L3 §7) ────────────────────────────
+# Les bornes ne sont PAS cosmétiques. Le brouillon vit dans la session Flask,
+# c'est-à-dire dans un témoin signé, que les navigateurs plafonnent à ~4096
+# octets — et un dépassement est SILENCIEUX : le navigateur jette le témoin,
+# donc le client perd sa session en plein formulaire, alors que son lien à
+# usage unique est déjà consommé. INTAKE_BROUILLON_MAX est la ceinture : le
+# serveur refuse une étape en français plutôt que de laisser le témoin
+# déborder. Pire cas des bornes ci-dessous ≈ 2,4 Ko sérialisés.
+INTAKE_MAX_ADVERSES = 5
+INTAKE_NOM_MAX = 120
+# La spec L3 §7 disait 200. Mesure faite (test_portail_intake), le pire cas à
+# 200 pèse 4451 octets sérialisés — au-delà du témoin, donc un formulaire
+# légitimement rempli au maximum aurait été refusé, ou pire aurait fait
+# disparaître la session. 160 caractères restent très généreux pour une ligne
+# du genre « mon ancien employeur ».
+INTAKE_PRECISION_MAX = 160
+INTAKE_CHAMP_MAX = 100          # champs libres d'identité et d'adresse
+# Bornes plus serrées là où la donnée l'est : un code postal ou une province
+# n'a aucune raison de consommer le budget d'un nom.
+INTAKE_CHAMP_MAX_PAR_NOM = {
+    "nature": 8,
+    "langue": 2,
+    "adresse_app": 60,
+    "adresse_province": 60,
+    "adresse_pays": 60,
+    "adresse_code_postal": 10,
+}
+# Plafond DUR, en octets UTF-8 du brouillon sérialisé. Il ne double pas les
+# bornes par champ ci-dessus, il les CEINTURE : celles-ci bornent chaque
+# saisie, celui-ci garantit que le témoin final tient, accents compris (« é »
+# pèse deux octets, donc un formulaire entièrement accentué pèse le double
+# d'un formulaire ASCII de même longueur). La valeur tient compte de
+# l'inflation base64 (4/3) et de ce que le témoin porte aussi l'identité, le
+# secret CSRF et la signature. Épinglé empiriquement par
+# tests/test_portail_intake.py, qui mesure le Set-Cookie réel.
+INTAKE_BROUILLON_MAX = 2500
+INTAKE_CONSENTEMENT_VERSION = "1"
+
 # Inert-handling whitelist (spec §7.5): notably NO svg/html/htm/js, and no
 # archives (zip refused in v1 — décision D-4).
 PORTAIL_EXTENSIONS = {

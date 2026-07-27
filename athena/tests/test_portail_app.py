@@ -85,6 +85,8 @@ def test_route_map_is_exactly_the_portal_set(app):
     assert rules == {
         "/", "/entree", "/session", "/api/renvoi", "/documents",
         "/api/televersement", "/api/finaliser", "/confirmation", "/sante",
+        # Formulaire d'ouverture (L3)
+        "/ouverture", "/api/intake/etape", "/api/intake/finaliser",
         "/static/<path:filename>",
     }
     # Belt: none of the main service's surfaces exist in this process.

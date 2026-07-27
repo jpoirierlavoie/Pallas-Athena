@@ -565,6 +565,16 @@ PortailEvent = Literal[
     "lot_traite",
     "invitation_emise",
     "invitation_revoquee",
+    # Formulaire d'ouverture (L3). Compteurs et identifiants seulement : ni
+    # nom, ni adresse, ni nom de partie adverse — le filtre de rédaction ne
+    # scrute PAS automatiquement les noms.
+    "intake_etape",
+    "intake_soumis",
+    "intake_confirmation_envoyee",
+    "intake_partie_creee",
+    "intake_partie_mise_a_jour",
+    "intake_adverse_cree",
+    "intake_refuse",
 ]
 PortailOutcome = Literal["success", "failure", "refused"]
 # Bookings sync (spec L2). Same discipline as portail: IDs, opaque Graph
