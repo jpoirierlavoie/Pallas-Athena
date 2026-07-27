@@ -247,3 +247,75 @@ def test_compteur_fail_open_when_both_unavailable(monkeypatch):
                         lambda **k: (_ for _ in ()).throw(RuntimeError("down")))
     reception._badge_cache["at"] = 0.0
     assert reception.compteur_reception() is None
+
+
+# ── Déclencheur (a) : formulaire d'ouverture à la confirmation (L3) ──────
+
+
+@pytest.fixture()
+def emissions(monkeypatch):
+    """Confirmation d'un rendez-vous Bookings dont le courriel n'est lié à
+    aucune partie ; capture les invitations émises."""
+    appels = []
+
+    def _emettre(type_, email, **kw):
+        appels.append({"type": type_, "email": email, **kw})
+        return {"id": "inv9"}, [], ""
+
+    monkeypatch.setattr(reception, "get_hearing", lambda i: {
+        "id": "h1", "source": "bookings", "confirmation": "à_confirmer",
+        "dossier_id": "", "client_email": "nouveau@exemple.com",
+        "client_nom": "Nouveau Client",
+    })
+    _spy_update(monkeypatch)
+    _spy_bump(monkeypatch)
+    _spy_tombstones(monkeypatch)
+    monkeypatch.setattr(reception.emission, "emettre_invitation", _emettre)
+    monkeypatch.setattr(reception.Config, "FEATURE_INTAKE", True)
+    return appels
+
+
+def test_intake_coche_emet_une_invitation(client, emissions):
+    r = client.post("/reception/rdv/h1/confirmer", data={"intake": "on"})
+    assert r.status_code == 302
+    assert emissions[0]["type"] == "intake"
+    assert emissions[0]["email"] == "nouveau@exemple.com"
+    # Libellé générique : le client ne doit rien apprendre du dossier.
+    assert emissions[0]["display_label"] == "Ouverture de votre dossier client"
+
+
+def test_intake_non_coche_n_emet_rien(client, emissions):
+    client.post("/reception/rdv/h1/confirmer")
+    assert emissions == []
+
+
+def test_intake_inerte_quand_le_drapeau_est_baisse(client, emissions,
+                                                    monkeypatch):
+    monkeypatch.setattr(reception.Config, "FEATURE_INTAKE", False)
+    client.post("/reception/rdv/h1/confirmer", data={"intake": "on"})
+    assert emissions == []
+
+
+def test_intake_non_emis_quand_une_partie_est_liee(client, emissions,
+                                                    monkeypatch):
+    """Le formulaire d'ouverture sert un NOUVEAU client : un contact déjà
+    reconnu n'a rien à remplir."""
+    monkeypatch.setattr(reception, "get_partie", lambda pid: {"id": "p1"})
+    client.post("/reception/rdv/h1/confirmer",
+                data={"intake": "on", "lier": "on", "partie_id": "p1"})
+    assert emissions == []
+
+
+def test_une_panne_d_emission_n_annule_pas_la_confirmation(client, emissions,
+                                                            monkeypatch):
+    """La confirmation est DÉJÀ commise (CTag bumpé) : un échec d'envoi produit
+    un bandeau, jamais un échec — sinon le juriste croirait le rendez-vous non
+    confirmé alors qu'il l'est."""
+    monkeypatch.setattr(
+        reception.emission, "emettre_invitation",
+        mock.Mock(side_effect=RuntimeError("graph down")),
+    )
+    r = client.post("/reception/rdv/h1/confirmer", data={"intake": "on"})
+    assert r.status_code == 302
+    cible = r.headers["Location"]
+    assert "message=" in cible and "erreur=" not in cible

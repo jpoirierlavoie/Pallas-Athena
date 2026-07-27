@@ -40,7 +40,7 @@
       <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='annuler') }}"
             data-confirm="Retirer ce rendez-vous de l'agenda et des appareils synchronisés ?">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-500">Annuler dans Athéna</button>
+        <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-red-600 rounded-lg hover:bg-red-700">Annuler dans Athéna</button>
       </form>
       <form method="post" action="{{ url_for('reception.rdv_divergence', hid=h.id, action='conserver') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -82,14 +82,14 @@
     </div>
 
     {# Client + modalité #}
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600 mb-3">
+    <div class="flex flex-wrap items-center gap-3 text-xs text-gray-600 mb-3">
       {% if h.client_nom %}<span class="font-medium text-gray-800">{{ h.client_nom }}</span>{% endif %}
       {% if h.client_email %}<span>{{ h.client_email }}</span>{% endif %}
       {% if h.modalite == "visioconférence" and h.conference_uri and h.conference_uri.startswith("http") %}
       <a href="{{ h.conference_uri }}" target="_blank" rel="noopener noreferrer"
          class="text-indigo-600 hover:text-indigo-500 font-medium">Lien Teams</a>
       {% elif h.location %}
-      <span class="truncate max-w-[240px]">{{ h.location }}</span>
+      <span class="truncate max-w-xs">{{ h.location }}</span>
       {% endif %}
     </div>
 
@@ -117,10 +117,12 @@
           <input type="checkbox" name="lier" checked class="rounded border-gray-300">
           Lier à {{ h._partie_nom }}
         </label>
-        {% else %}
-        <label class="flex items-center gap-1.5 text-xs text-gray-400" title="Livré en phase L3">
-          <input type="checkbox" name="intake" disabled class="rounded border-gray-300">
-          Envoyer le formulaire d'ouverture (L3)
+        {% elif feature_intake and h.client_email %}
+        {# Déclencheur (a) : aucune partie ne correspond au courriel — c'est
+           un nouveau client. Cochée par défaut (§2). #}
+        <label class="flex items-center gap-1.5 text-xs text-gray-600">
+          <input type="checkbox" name="intake" checked class="rounded border-gray-300">
+          Envoyer le formulaire d'ouverture
         </label>
         {% endif %}
         <button type="submit" class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Confirmer</button>

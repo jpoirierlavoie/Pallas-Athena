@@ -20,6 +20,20 @@
       Contacts
     </a>
     <div class="flex items-center gap-2">
+      {# Déclencheur (b) de la phase L3 : inviter ce contact à compléter ses
+         renseignements. Rendu SEULEMENT s'il a une adresse — une invitation
+         sans destinataire n'existe pas. Un GET vers le formulaire d'émission
+         (pas un POST direct) : le juriste garde la main sur la désignation et
+         la durée avant l'envoi. #}
+      {% set courriel_invitation = partie.email or partie.email_work %}
+      {% if courriel_invitation %}
+      <a href="{{ url_for('reception.inviter_form', type='intake', partie_id=partie.id) }}"
+         title="Inviter à compléter le dossier client"
+         aria-label="Inviter à compléter le dossier client"
+         class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75"/></svg>
+      </a>
+      {% endif %}
       <button type="button"
               title="Générer un document"
               aria-label="Générer un document"

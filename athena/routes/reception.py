@@ -30,7 +30,11 @@ from flask import (
 )
 
 from auth import login_required
-from client.config import INVITATION_DOCUMENTS_JOURS, PORTAIL_BUCKET
+from client.config import (
+    INVITATION_DOCUMENTS_JOURS,
+    INVITATION_INTAKE_JOURS,
+    PORTAIL_BUCKET,
+)
 from config import Config
 from dav.sync import (
     bump_ctag,
@@ -477,13 +481,27 @@ def _email_du_dossier(dossier: dict) -> str:
 def inviter_form():
     dossier_id = request.args.get("dossier_id", "")
     dossier = get_dossier(dossier_id) if dossier_id else None
+    type_ = request.args.get("type", "documents")
+    if type_ not in ("documents", "intake"):
+        type_ = "documents"
+    # Déclencheur (b) : la fiche partie amène ici avec ?partie_id=, ce qui
+    # préremplit le contact et, à la soumission, l'instantané non sensible.
+    partie = get_partie(request.args.get("partie_id", "")) or None
     return render_template(
         "reception/inviter.html",
         dossiers=list_dossiers(status_filter="actif"),
         dossier=dossier,
-        email_prefill=_email_du_dossier(dossier) if dossier else "",
+        type_=type_,
+        partie=partie,
+        email_prefill=(
+            (partie.get("email") or partie.get("email_work") or "") if partie
+            else (_email_du_dossier(dossier) if dossier else "")
+        ),
         jours_choix=_JOURS_CHOIX,
-        jours_selection=INVITATION_DOCUMENTS_JOURS,
+        jours_selection=(
+            INVITATION_INTAKE_JOURS if type_ == "intake"
+            else INVITATION_DOCUMENTS_JOURS
+        ),
         errors=[],
         form={},
     )
@@ -513,38 +531,63 @@ def partie_search():
 @login_required
 def inviter_submit():
     f = request.form
+    # Déclencheur (c) : un sélecteur sur le formulaire existant plutôt qu'un
+    # second formulaire — c'est ici le SEUL endroit où le type était écrit en
+    # dur, donc le seul à brancher.
+    type_ = f.get("type", "documents")
+    if type_ not in ("documents", "intake"):
+        type_ = "documents"
     dossier_id = f.get("dossier_id", "").strip()
     dossier = get_dossier(dossier_id) if dossier_id else None
     display_label = sanitize(f.get("display_label", ""), max_length=120).strip()
-    if not display_label and dossier:
-        display_label = f"Dossier {dossier.get('file_number', '')}".strip()
+    if not display_label:
+        if type_ == "intake":
+            # Générique à dessein (§2) : jamais un numéro de dossier ni une
+            # partie adverse — ce libellé est le seul que le client voit, et
+            # tout le document d'invitation est lu par le service PUBLIC.
+            display_label = "Ouverture de votre dossier client"
+        elif dossier:
+            display_label = f"Dossier {dossier.get('file_number', '')}".strip()
+    defaut_jours = (
+        INVITATION_INTAKE_JOURS if type_ == "intake"
+        else INVITATION_DOCUMENTS_JOURS
+    )
     try:
-        jours = int(f.get("jours", str(INVITATION_DOCUMENTS_JOURS)))
+        jours = int(f.get("jours", str(defaut_jours)))
     except ValueError:
-        jours = INVITATION_DOCUMENTS_JOURS
+        jours = defaut_jours
 
     # A chosen party links partie_id (richer contact resolved main-side at
     # accusé time). An unresolvable id is ignored, never a blocking error —
     # client_name + email still carry the manual case.
     partie_id = f.get("partie_id", "").strip() or None
-    if partie_id and get_partie(partie_id) is None:
+    partie = get_partie(partie_id) if partie_id else None
+    if partie is None:
         partie_id = None
     client_name = sanitize(f.get("client_name", ""), max_length=200).strip()
 
     invitation, errors, lien_manuel = emission.emettre_invitation(
-        "documents",
+        type_,
         f.get("email", ""),
         dossier_id=dossier["id"] if dossier else None,
         partie_id=partie_id,
         client_name=client_name,
         display_label=display_label,
         jours=jours,
+        # Le préremplissage n'a de sens que pour une MISE À JOUR : une
+        # ouverture sans contact lié part de zéro.
+        prefill=(
+            pi.prefill_depuis_partie(partie)
+            if type_ == "intake" and partie else None
+        ),
     )
     if errors:
         return render_template(
             "reception/inviter.html",
             dossiers=list_dossiers(status_filter="actif"),
             dossier=dossier,
+            type_=type_,
+            partie=partie,
             email_prefill="",
             jours_choix=_JOURS_CHOIX,
             jours_selection=jours,
@@ -557,7 +600,10 @@ def inviter_submit():
         return render_template(
             "reception/lien.html", invitation=invitation, lien=lien_manuel
         )
-    return _rediriger(message="Invitation transmise par courriel.")
+    return _rediriger(
+        message="Invitation transmise par courriel.",
+        onglet="ouvertures" if type_ == "intake" else "",
+    )
 
 
 @reception_bp.post("/invitations/<inv_id>/renvoyer")
@@ -888,13 +934,40 @@ def rdv_confirmer(hid: str):
     bump_ctag(sync_name)
     log_bookings_event("reception_rdv_confirme", hearing_id=hid,
                        partie_liee=partie_liee)
-    # Intake (L3): the « envoyer le formulaire d'ouverture » checkbox is inert
-    # in L2 — FEATURE_INTAKE is False, and no invitation is ever emitted here.
-    return _rediriger(
-        message="Rendez-vous confirmé — il apparaît au calendrier et se "
-                "synchronise avec vos appareils.",
-        onglet="rdv",
-    )
+
+    message = ("Rendez-vous confirmé — il apparaît au calendrier et se "
+               "synchronise avec vos appareils.")
+    # Déclencheur (a) de la phase L3 : le courriel du rendez-vous ne
+    # correspond à aucune partie → proposer le formulaire d'ouverture. Une
+    # panne d'émission n'annule JAMAIS la confirmation, qui est déjà commise
+    # (CTag bumpé) : bandeau, jamais un échec.
+    if (
+        Config.FEATURE_INTAKE
+        and request.form.get("intake") == "on"
+        and not partie_liee
+        and (hearing.get("client_email") or "").strip()
+    ):
+        try:
+            _inv, erreurs, lien_manuel = emission.emettre_invitation(
+                "intake",
+                hearing["client_email"],
+                client_name=hearing.get("client_nom", ""),
+                display_label="Ouverture de votre dossier client",
+            )
+        except Exception:
+            logger.exception("reception: intake invitation from rdv failed")
+            erreurs, lien_manuel = ["Erreur inattendue."], ""
+        if erreurs:
+            message += (" Le formulaire d'ouverture n'a PAS pu être envoyé — "
+                        "réessayez depuis l'onglet Ouvertures.")
+        elif lien_manuel:
+            message += (" Le formulaire d'ouverture a été créé, mais le "
+                        "courriel n'est pas parti : transmettez le lien depuis "
+                        "l'onglet Ouvertures.")
+        else:
+            message += " Le formulaire d'ouverture a été envoyé au client."
+
+    return _rediriger(message=message, onglet="rdv")
 
 
 @reception_bp.post("/rdv/<hid>/refuser")

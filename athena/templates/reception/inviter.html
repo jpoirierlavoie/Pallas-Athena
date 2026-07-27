@@ -10,10 +10,14 @@
     Réception
   </a>
 
-  <h1 class="text-2xl font-semibold text-gray-900 mb-1">Demander des documents</h1>
+  <h1 class="text-2xl font-semibold text-gray-900 mb-1">
+    {{ "Demander l'ouverture d'un dossier" if type_ == 'intake' else "Demander des documents" }}
+  </h1>
   <p class="text-sm text-gray-500 mb-6">
     Le client recevra un lien de connexion strictement personnel, lié à son
-    adresse courriel, vers le portail sécurisé de transmission.
+    adresse courriel,
+    {{ "vers le formulaire d'ouverture sécurisé." if type_ == 'intake'
+       else "vers le portail sécurisé de transmission." }}
   </p>
 
   {% if errors %}
@@ -27,7 +31,39 @@
   <form method="post" action="{{ url_for('reception.inviter_submit') }}"
         class="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" id="partie_id" name="partie_id" value="{{ form.get('partie_id', '') }}">
+    <input type="hidden" id="partie_id" name="partie_id"
+           value="{{ form.get('partie_id') or (partie.id if partie else '') }}">
+
+    {# Type d'invitation (L3, déclencheur (c)) — un sélecteur ici plutôt qu'un
+       second formulaire : c'est le SEUL endroit où le type était écrit en dur
+       côté juriste. #}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Type de demande</label>
+      <div class="flex gap-2">
+        <label class="flex-1">
+          <input type="radio" name="type" value="documents" class="sr-only peer"
+                 {{ 'checked' if type_ != 'intake' }}>
+          <div class="text-center py-2.5 text-sm font-medium rounded-lg border cursor-pointer
+                      peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900
+                      border-gray-300 text-gray-700 hover:bg-gray-50">
+            Documents
+          </div>
+        </label>
+        <label class="flex-1">
+          <input type="radio" name="type" value="intake" class="sr-only peer"
+                 {{ 'checked' if type_ == 'intake' }}>
+          <div class="text-center py-2.5 text-sm font-medium rounded-lg border cursor-pointer
+                      peer-checked:bg-gray-900 peer-checked:text-white peer-checked:border-gray-900
+                      border-gray-300 text-gray-700 hover:bg-gray-50">
+            Ouverture de dossier
+          </div>
+        </label>
+      </div>
+      <p class="mt-1 text-xs text-gray-400">
+        « Ouverture » envoie le formulaire de renseignements ; avec un contact
+        choisi, il lui est prérempli pour mise à jour.
+      </p>
+    </div>
 
     {# Sélecteur de client par recherche autocomplétée. Un contact choisi
        remplit le nom + le courriel ; sinon saisie manuelle. #}

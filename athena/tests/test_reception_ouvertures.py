@@ -386,3 +386,84 @@ def test_une_enveloppe_malformee_reste_visible(monkeypatch):
     ctx = rc._contexte_ouvertures()
     assert len(ctx["ouvertures"]) == 1
     assert ctx["ouvertures"][0]["lisible"] is False
+
+
+# ── Déclencheurs d'invitation (§2, C5) ───────────────────────────────────
+
+
+@pytest.fixture()
+def emission(monkeypatch):
+    """Capture les appels à emettre_invitation."""
+    appels = []
+
+    def _emettre(type_, email, **kw):
+        appels.append({"type": type_, "email": email, **kw})
+        return {"id": "inv9"}, [], ""
+
+    monkeypatch.setattr(rc.emission, "emettre_invitation", _emettre)
+    monkeypatch.setattr(rc, "list_dossiers", lambda **k: [])
+    monkeypatch.setattr(rc, "get_dossier", lambda d: None)
+    return appels
+
+
+def test_declencheur_c_emet_une_ouverture(web, emission, monkeypatch):
+    monkeypatch.setattr(rc, "get_partie", lambda pid: None)
+    _post(web, "/reception/inviter",
+          {"type": "intake", "email": "client@exemple.com"})
+    assert emission[0]["type"] == "intake"
+    # Libellé générique (§2) : jamais un numéro de dossier ni une partie
+    # adverse — c'est la SEULE désignation que le client voit.
+    assert emission[0]["display_label"] == "Ouverture de votre dossier client"
+    assert emission[0]["prefill"] is None
+
+
+def test_declencheur_c_reste_sur_documents_par_defaut(web, emission, monkeypatch):
+    monkeypatch.setattr(rc, "get_partie", lambda pid: None)
+    _post(web, "/reception/inviter", {"email": "client@exemple.com"})
+    assert emission[0]["type"] == "documents"
+
+
+def test_un_type_inconnu_retombe_sur_documents(web, emission, monkeypatch):
+    monkeypatch.setattr(rc, "get_partie", lambda pid: None)
+    _post(web, "/reception/inviter",
+          {"type": "intruder", "email": "client@exemple.com"})
+    assert emission[0]["type"] == "documents"
+
+
+def test_declencheur_b_joint_un_prefill_en_liste_blanche(web, emission,
+                                                         monkeypatch):
+    monkeypatch.setattr(rc, "get_partie", lambda pid: {
+        "id": "p1", "type": "individual", "first_name": "Jean",
+        "last_name": "Tremblay", "email": "jean@exemple.com",
+        "address_city": "Montréal",
+        "notes": "Mémo interne", "identity_verified": "vérifié",
+    })
+    _post(web, "/reception/inviter", {
+        "type": "intake", "email": "jean@exemple.com", "partie_id": "p1",
+    })
+    prefill = emission[0]["prefill"]
+    assert prefill["first_name"] == "Jean"
+    assert prefill["address_city"] == "Montréal"
+    # Le document d'invitation est lu par le service PUBLIC (§5).
+    for interdit in ("notes", "identity_verified", "birth_date"):
+        assert interdit not in prefill
+
+
+def test_une_demande_de_documents_ne_joint_jamais_de_prefill(web, emission,
+                                                             monkeypatch):
+    monkeypatch.setattr(rc, "get_partie", lambda pid: {
+        "id": "p1", "first_name": "Jean", "last_name": "Tremblay",
+    })
+    _post(web, "/reception/inviter", {
+        "type": "documents", "email": "jean@exemple.com", "partie_id": "p1",
+    })
+    assert emission[0]["prefill"] is None
+
+
+def test_l_ouverture_utilise_sa_propre_duree(web, emission, monkeypatch):
+    from client.config import INVITATION_INTAKE_JOURS
+
+    monkeypatch.setattr(rc, "get_partie", lambda pid: None)
+    _post(web, "/reception/inviter",
+          {"type": "intake", "email": "client@exemple.com"})
+    assert emission[0]["jours"] == INVITATION_INTAKE_JOURS
