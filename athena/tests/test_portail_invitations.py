@@ -143,9 +143,9 @@ def test_creer_invitation_defaults(store):
     assert inv["prefill"] is None
     assert inv["client_name"] == "Jean Tremblay"
     assert store[inv["id"]]["display_label"] == "Dossier 2026-001"
-    # 30-day documents expiry (Annexe C)
+    # 14-day documents expiry (user decision 2026-07-27)
     delta = inv["expires_at"] - inv["created_at"]
-    assert delta.days == 30
+    assert delta.days == 14
 
 
 def test_creer_invitation_client_name_defaults_empty(store):

@@ -30,7 +30,7 @@ from flask import (
 )
 
 from auth import login_required
-from client.config import PORTAIL_BUCKET
+from client.config import INVITATION_DOCUMENTS_JOURS, PORTAIL_BUCKET
 from config import Config
 from dav.sync import (
     bump_ctag,
@@ -303,6 +303,7 @@ def inviter_form():
         dossier=dossier,
         email_prefill=_email_du_dossier(dossier) if dossier else "",
         jours_choix=_JOURS_CHOIX,
+        jours_selection=INVITATION_DOCUMENTS_JOURS,
         errors=[],
         form={},
     )
@@ -338,9 +339,9 @@ def inviter_submit():
     if not display_label and dossier:
         display_label = f"Dossier {dossier.get('file_number', '')}".strip()
     try:
-        jours = int(f.get("jours", "30"))
+        jours = int(f.get("jours", str(INVITATION_DOCUMENTS_JOURS)))
     except ValueError:
-        jours = 30
+        jours = INVITATION_DOCUMENTS_JOURS
 
     # A chosen party links partie_id (richer contact resolved main-side at
     # accusé time). An unresolvable id is ignored, never a blocking error —
@@ -366,6 +367,7 @@ def inviter_submit():
             dossier=dossier,
             email_prefill="",
             jours_choix=_JOURS_CHOIX,
+            jours_selection=jours,
             errors=errors,
             form=f,
         ), 400
