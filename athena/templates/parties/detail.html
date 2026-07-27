@@ -4,6 +4,14 @@
 {% block content %}
 <div class="max-w-4xl mx-auto px-4 py-6">
 
+  {# Bandeau d'arrivée depuis Réception (versement d'une ouverture du
+     portail). Assaini côté route, autoescapé ici. #}
+  {% if message %}
+  <div class="mb-6 px-4 py-3 text-sm text-green-800 bg-green-50 border border-green-200 rounded-lg">
+    {{ message }}
+  </div>
+  {% endif %}
+
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('parties.partie_list') }}"

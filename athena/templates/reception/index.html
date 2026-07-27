@@ -41,10 +41,8 @@
 
   {% if onglet == "rdv" %}
   {% include "reception/_rdv.html" %}
-  {% elif onglet != "documents" %}
-  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
-    Livré en phase L3.
-  </div>
+  {% elif onglet == "ouvertures" %}
+  {% include "reception/_ouvertures.html" %}
   {% else %}
 
   {# ── Lots soumis (à examiner) ──────────────────────────────────── #}

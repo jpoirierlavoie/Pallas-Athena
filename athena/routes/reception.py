@@ -51,13 +51,15 @@ from models.folder import get_or_create_folder
 from models.hearing import get_hearing, list_hearings, update_hearing
 from models.partie import (
     ROLE_LABELS,
+    create_partie,
     display_name,
     get_partie,
     list_parties,
+    update_partie,
 )
 from security import sanitize
 from services import portail_emission as emission
-from utils import graph_calendrier
+from utils import graph_calendrier, rapprochement
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_bookings_event, log_portail_event
 
@@ -128,6 +130,31 @@ def _lire_manifeste(inv_id: str, batch: str) -> Optional[dict]:
     if not blob.exists():
         return None
     return json.loads(blob.download_as_bytes())
+
+
+def _lire_enveloppe(inv_id: str, batch: str) -> Optional[dict]:
+    """Jumeau de _lire_manifeste pour les ouvertures (L3) : l'enveloppe EST la
+    soumission — il n'y a ni fichier ni manifeste."""
+    blob = _bucket().blob(_prefix(inv_id, batch) + "envelope.json")
+    if not blob.exists():
+        return None
+    return json.loads(blob.download_as_bytes())
+
+
+def _archiver_enveloppe(inv_id: str, batch: str) -> None:
+    """Déplacer l'enveloppe traitée sous archive/ (cycle de vie 365 j).
+
+    Copie PUIS suppression, dans cet ordre : une panne entre les deux laisse
+    l'enveloppe en place, donc rejouable, plutôt que perdue.
+    """
+    bucket = _bucket()
+    source = bucket.blob(_prefix(inv_id, batch) + "envelope.json")
+    if not source.exists():
+        return
+    bucket.copy_blob(
+        source, bucket, f"archive/{inv_id}/{batch}/envelope.json"
+    )
+    source.delete()
 
 
 def _ecrire_manifeste(inv_id: str, batch: str, manifeste: dict) -> None:
@@ -217,6 +244,153 @@ def _contexte_rdv() -> dict:
     return {"rdvs": rdvs, "divergences": divergences, "erreur_rdv": False}
 
 
+# ── Ouvertures (L3 §5) ───────────────────────────────────────────────────
+
+# Table de correspondance formulaire → contact (§5.3). Elle vit ICI, du côté
+# juriste, et non dans le portail : c'est au moment du versement que la
+# décision se prend, et le portail ne connaît pas ``models``. L'ordre est celui
+# du formulaire des contacts, pour que la vue côte à côte se lise comme la
+# fiche.
+_CORRESPONDANCE = (
+    ("prenom", "first_name", "Prénom"),
+    ("nom", "last_name", "Nom"),
+    ("denomination", "organization_name", "Dénomination sociale"),
+    ("neq", "company_neq", "NEQ"),
+    ("langue", "language", "Langue"),
+    ("courriel", "email", "Courriel"),
+    ("telephone", "phone_cell", "Cellulaire"),
+    ("telephone2", "phone_home", "Domicile"),
+    ("adresse_rue", "address_street", "Rue"),
+    ("adresse_app", "address_unit", "Appartement"),
+    ("adresse_ville", "address_city", "Ville"),
+    ("adresse_province", "address_province", "Province"),
+    ("adresse_code_postal", "address_postal_code", "Code postal"),
+    ("adresse_pays", "address_country", "Pays"),
+)
+
+
+def _comparaison(donnees: dict, partie: Optional[dict]) -> list[dict]:
+    """Lignes de la vue côte à côte : valeur actuelle ↔ valeur soumise.
+
+    ``applicable`` n'est vrai que pour les champs qui DIFFÈRENT et dont la
+    valeur soumise n'est pas vide : c'est ce qui pré-coche les cases (§5.3).
+    Un champ soumis vide ne propose jamais d'effacer une valeur au dossier —
+    le silence d'un client n'est pas une rétractation.
+    """
+    lignes = []
+    for champ, cible, libelle in _CORRESPONDANCE:
+        soumis = (donnees.get(champ) or "").strip()
+        actuel = ""
+        if partie:
+            valeur = partie.get(cible)
+            actuel = "" if valeur is None else str(valeur)
+        if not soumis and not actuel:
+            continue
+        lignes.append({
+            "champ": champ,
+            "cible": cible,
+            "libelle": libelle,
+            "actuel": actuel,
+            "soumis": soumis,
+            "differe": bool(soumis) and soumis != actuel,
+            "applicable": bool(soumis) and soumis != actuel,
+        })
+    return lignes
+
+
+def _candidats_adverses(adverses: list[dict], parties: list[dict]) -> list[dict]:
+    """Aide VISUELLE au contrôle des conflits (§5.2) — jamais un verdict."""
+    index = [(p["id"], display_name(p)) for p in parties if p.get("id")]
+    enrichies = []
+    for ligne in adverses:
+        nom = (ligne.get("nom") or "").strip()
+        if not nom:
+            continue
+        trouves = rapprochement.candidats(nom, index)
+        enrichies.append({
+            "nom": nom,
+            "precision": (ligne.get("precision") or "").strip(),
+            "candidats": [
+                {"id": c.cle, "nom": c.nom, "motif": c.motif} for c in trouves
+            ],
+        })
+    return enrichies
+
+
+def _contexte_ouvertures() -> dict:
+    """Onglet « Ouvertures » — même forme que _contexte_rdv : lecture sous
+    try/except → drapeau d'erreur, tri en Python, TOUT précalculé pour que le
+    gabarit reste sans logique."""
+    try:
+        toutes = pi.lister_invitations(type_="intake")
+    except Exception:
+        logger.exception("reception: intake invitations read failed")
+        return {"ouvertures": [], "intake_actives": [], "intake_traitees": [],
+                "erreur_ouvertures": True}
+
+    contexte: dict = {
+        "ouvertures": [],
+        "intake_actives": [
+            i for i in toutes if i.get("statut") in ("envoyée", "ouverte")
+        ],
+        "intake_traitees": [
+            i for i in toutes
+            if i.get("statut") in ("traitée", "refusée", "révoquée")
+        ][:20],
+        "erreur_ouvertures": False,
+    }
+
+    soumises = [i for i in toutes if i.get("statut") == "soumise"]
+    if not soumises:
+        return contexte
+
+    # Une seule lecture des contacts pour tout l'onglet (jeu de données d'un
+    # cabinet solo — borné, aucun index requis).
+    try:
+        parties = list_parties()
+    except Exception:
+        logger.exception("reception: parties read failed")
+        parties = []
+
+    for inv in soumises:
+        # La DERNIÈRE soumission fait foi : la ré-entrée permet de corriger,
+        # et c'est la version corrigée que le juriste doit voir.
+        lots = inv.get("soumissions") or []
+        if not lots:
+            continue
+        batch = (lots[-1].get("batch") or "")
+        enveloppe = None
+        try:
+            enveloppe = _lire_enveloppe(inv["id"], batch)
+        except Exception:
+            logger.exception("reception: intake envelope read failed")
+            contexte["erreur_bucket"] = True
+        donnees = (enveloppe or {}).get("donnees") or {}
+        partie = None
+        if inv.get("partie_id"):
+            try:
+                partie = get_partie(inv["partie_id"])
+            except Exception:
+                logger.exception("reception: partie read failed")
+        contexte["ouvertures"].append({
+            "invitation": inv,
+            "batch": batch,
+            "enveloppe": enveloppe,
+            # Une enveloppe illisible ne disparaît pas en silence : la fiche
+            # s'affiche avec un bandeau et reste actionnable (refus).
+            "lisible": bool(donnees),
+            "partie": partie,
+            "nature": donnees.get("nature") or "physique",
+            "lignes": _comparaison(donnees, partie),
+            "adverses": _candidats_adverses(
+                (enveloppe or {}).get("parties_adverses") or [], parties
+            ),
+            "consentement": (enveloppe or {}).get("consentement") or {},
+            "versions": len(lots),
+        })
+    return contexte
+
+
 # ── Page principale ──────────────────────────────────────────────────────
 
 
@@ -236,12 +410,18 @@ def index():
         "rdvs": [],
         "divergences": [],
         "erreur_rdv": False,
+        "ouvertures": [],
+        "intake_actives": [],
+        "intake_traitees": [],
+        "erreur_ouvertures": False,
         "feature_intake": Config.FEATURE_INTAKE,
         "erreur_bucket": False,
         "est_expiree": pi.est_expiree,
     }
     if onglet == "rdv":
         contexte.update(_contexte_rdv())
+    if onglet == "ouvertures":
+        contexte.update(_contexte_ouvertures())
     if onglet == "documents":
         toutes = pi.lister_invitations(type_="documents")
         contexte["actives"] = [
@@ -818,3 +998,178 @@ def rdv_divergence(hid: str, action: str):
     log_bookings_event("reception_rdv_divergence_traitee", hearing_id=hid,
                        action=action)
     return _rediriger(message="Divergence traitée.", onglet="rdv")
+
+
+# ── Ouvertures : actions (§5.3) ──────────────────────────────────────────
+
+
+def _ouverture_ou_erreur(inv_id: str, batch: str):
+    """(invitation, enveloppe) ou (None, None) — jamais une exception."""
+    try:
+        invitation = pi.lire_invitation(inv_id)
+    except Exception:
+        logger.exception("reception: intake invitation read failed")
+        return None, None
+    if invitation is None or invitation.get("type") != "intake":
+        return None, None
+    try:
+        return invitation, _lire_enveloppe(inv_id, batch)
+    except Exception:
+        logger.exception("reception: intake envelope read failed")
+        return invitation, None
+
+
+def _valeurs_choisies(donnees: dict) -> dict:
+    """Champs contact issus des seules cases cochées.
+
+    Le formulaire poste ``appliquer=<champ>`` par case ; rien d'autre n'entre.
+    Une case non cochée n'est PAS une instruction d'effacer : elle est
+    simplement absente du dictionnaire, et update_partie fusionne — donc la
+    valeur au dossier survit.
+    """
+    choisis = set(request.form.getlist("appliquer"))
+    valeurs: dict = {}
+    for champ, cible, _libelle in _CORRESPONDANCE:
+        if champ in choisis:
+            valeur = (donnees.get(champ) or "").strip()
+            if valeur:
+                valeurs[cible] = valeur
+    return valeurs
+
+
+def _creer_adverses_coches(adverses: list[dict], inv_id: str) -> int:
+    """Créer les contacts « partie adverse » dont la case reste cochée (D-L3-2).
+
+    Chaque création bumpe le CTag du carnet — le compteur retourné sert au
+    message ; le bump, lui, appartient à l'appelant (un seul par requête).
+    """
+    coches = set(request.form.getlist("creer_adverse"))
+    crees = 0
+    for ligne in adverses:
+        nom = (ligne.get("nom") or "").strip()
+        if not nom or nom not in coches:
+            continue
+        _partie, erreurs = create_partie({
+            "type": "individual",
+            "contact_role": "partie_adverse",
+            "last_name": nom,
+            # Provenance dans le champ de notes EXISTANT — aucun champ nouveau,
+            # et le juriste voit d'où vient la fiche.
+            "notes": f"Déclaré par le client via le portail, invitation {inv_id}.",
+        })
+        if erreurs:
+            logger.warning("reception: adverse contact refused: %s", erreurs)
+            continue
+        crees += 1
+        log_portail_event("intake_adverse_cree", invitation_id=inv_id)
+    return crees
+
+
+def _cloturer(inv_id: str, batch: str, statut: str) -> None:
+    pi.maj_statut(inv_id, statut)
+    try:
+        _archiver_enveloppe(inv_id, batch)
+    except Exception:
+        # L'archivage rate → le cycle de vie du seau purgera à 90 jours. Ne
+        # jamais faire échouer un versement déjà commis pour un déplacement
+        # d'objet.
+        logger.exception("reception: intake envelope archive failed")
+
+
+@reception_bp.post("/ouvertures/<inv_id>/<batch>/creer")
+@login_required
+def ouverture_creer(inv_id: str, batch: str):
+    invitation, enveloppe = _ouverture_ou_erreur(inv_id, batch)
+    if invitation is None or not enveloppe:
+        return _rediriger(erreur="Soumission introuvable.", onglet="ouvertures")
+    donnees = enveloppe.get("donnees") or {}
+
+    valeurs = {
+        cible: (donnees.get(champ) or "").strip()
+        for champ, cible, _l in _CORRESPONDANCE
+        if (donnees.get(champ) or "").strip()
+    }
+    valeurs["type"] = (
+        "organization" if donnees.get("nature") == "morale" else "individual"
+    )
+    valeurs["contact_role"] = "client"
+    # Section Conformité INTACTE (§5.3) : la collecte n'est pas une
+    # vérification. create_partie applique déjà « non_vérifié » par défaut —
+    # ne rien écrire ici est donc délibéré, pas un oubli.
+    valeurs["notes"] = (
+        f"Ouverture transmise par le client via le portail, "
+        f"invitation {inv_id}."
+    )
+
+    partie, erreurs = create_partie(valeurs)
+    if erreurs or partie is None:
+        return _rediriger(
+            erreur=" ".join(erreurs) or "Création impossible.",
+            onglet="ouvertures",
+        )
+
+    crees = _creer_adverses_coches(enveloppe.get("parties_adverses") or [],
+                                   inv_id)
+    # ⚠️ Le bump du CTag vit dans la ROUTE, jamais dans le modèle : une
+    # création de partie qui l'oublie n'atteint JAMAIS le carnet DavX5, en
+    # silence. Un seul bump couvre la fiche cliente et les parties adverses.
+    bump_ctag("parties")
+    _cloturer(inv_id, batch, "traitée")
+    log_portail_event("intake_partie_creee", invitation_id=inv_id, batch=batch,
+                      adverses_crees=crees)
+    message = "Fiche créée — vérifiez et complétez-la."
+    if crees:
+        message += f" {crees} contact(s) « partie adverse » créé(s)."
+    # url_for encode le message ; une concaténation le casserait au premier
+    # « & » ou accent.
+    return redirect(url_for("parties.partie_detail",
+                            partie_id=partie["id"], message=message))
+
+
+@reception_bp.post("/ouvertures/<inv_id>/<batch>/appliquer")
+@login_required
+def ouverture_appliquer(inv_id: str, batch: str):
+    invitation, enveloppe = _ouverture_ou_erreur(inv_id, batch)
+    if invitation is None or not enveloppe:
+        return _rediriger(erreur="Soumission introuvable.", onglet="ouvertures")
+    partie_id = invitation.get("partie_id") or ""
+    if not partie_id or not get_partie(partie_id):
+        return _rediriger(
+            erreur="Le contact lié à cette invitation est introuvable.",
+            onglet="ouvertures",
+        )
+
+    valeurs = _valeurs_choisies(enveloppe.get("donnees") or {})
+    if valeurs:
+        _maj, erreurs = update_partie(partie_id, valeurs)
+        if erreurs:
+            return _rediriger(erreur=" ".join(erreurs), onglet="ouvertures")
+
+    crees = _creer_adverses_coches(enveloppe.get("parties_adverses") or [],
+                                   inv_id)
+    if valeurs or crees:
+        bump_ctag("parties")
+    _cloturer(inv_id, batch, "traitée")
+    log_portail_event("intake_partie_mise_a_jour", invitation_id=inv_id,
+                      batch=batch, champs=len(valeurs), adverses_crees=crees)
+    message = (
+        f"{len(valeurs)} champ(s) appliqué(s)." if valeurs
+        else "Aucun champ appliqué."
+    )
+    if crees:
+        message += f" {crees} contact(s) « partie adverse » créé(s)."
+    return redirect(url_for("parties.partie_detail",
+                            partie_id=partie_id, message=message))
+
+
+@reception_bp.post("/ouvertures/<inv_id>/<batch>/refuser")
+@login_required
+def ouverture_refuser(inv_id: str, batch: str):
+    invitation, _enveloppe = _ouverture_ou_erreur(inv_id, batch)
+    if invitation is None:
+        return _rediriger(erreur="Soumission introuvable.", onglet="ouvertures")
+    # D-L3-3 : aucun courriel au client — le suivi est humain.
+    _cloturer(inv_id, batch, "refusée")
+    log_portail_event("intake_refuse", "refused", invitation_id=inv_id,
+                      batch=batch)
+    return _rediriger(message="Ouverture refusée.", onglet="ouvertures")

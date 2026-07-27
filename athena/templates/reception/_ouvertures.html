@@ -1,0 +1,221 @@
+{# Onglet « Ouvertures » de Réception (spec L3 §5) — partiel nu, inclus par
+   index.html (ni extends ni block : il hérite du contexte).
+
+   AUTOESCAPÉ : tout ce qui vient de `enveloppe` est saisi par le client —
+   noms, adresses, noms de parties adverses. Aucun |safe nulle part.
+
+   RIEN n'est écrit en Firestore avant un clic : cette page ne fait
+   qu'afficher, et chaque bouton est un POST distinct portant son CSRF. #}
+
+{% if erreur_ouvertures %}
+<div class="mb-6 px-4 py-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+  Les ouvertures sont momentanément indisponibles.
+</div>
+{% endif %}
+
+{# ── Soumissions à examiner ──────────────────────────────────────── #}
+<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Ouvertures à examiner</h2>
+
+{% if not ouvertures %}
+<div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm mb-8">
+  Aucune ouverture en attente.
+</div>
+{% endif %}
+
+{% for o in ouvertures %}
+{% set inv = o.invitation %}
+<div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+
+  <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+    <div>
+      <h3 class="text-sm font-semibold text-gray-900">{{ inv.display_label }}</h3>
+      <p class="mt-0.5 text-xs text-gray-500">
+        {{ inv.email }}
+        {% if o.versions > 1 %}
+        · <span class="text-amber-700">{{ o.versions }}e version — la plus récente est affichée</span>
+        {% endif %}
+      </p>
+    </div>
+    <span class="inline-flex px-2.5 py-0.5 text-xs font-medium rounded-full
+                 {{ 'bg-blue-100 text-blue-700' if o.partie else 'bg-green-100 text-green-700' }}">
+      {{ "Mise à jour d’un contact" if o.partie else "Nouveau client" }}
+    </span>
+  </div>
+
+  {% if not o.lisible %}
+  <div class="mb-4 px-3 py-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
+    Cette soumission est illisible (enveloppe absente ou malformée). Rien ne
+    peut en être versé — vous pouvez la refuser et redemander le formulaire.
+  </div>
+  {% else %}
+
+  {# ── Corps : nouveau contact, ou vue côte à côte ───────────────── #}
+  <form method="post" id="ouverture-{{ inv.id }}"
+        action="{{ url_for('reception.ouverture_appliquer', inv_id=inv.id, batch=o.batch)
+                  if o.partie else
+                  url_for('reception.ouverture_creer', inv_id=inv.id, batch=o.batch) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {% if o.partie %}
+    {# Vue côte à côte : une case par champ, pré-cochées sur les seules
+       différences. Un champ soumis vide ne propose jamais d'effacer une
+       valeur au dossier — le silence d'un client n'est pas une rétractation. #}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-xs text-gray-500 uppercase tracking-wider">
+            <th class="text-left font-medium pb-1">Champ</th>
+            <th class="text-left font-medium pb-1">Au dossier</th>
+            <th class="text-left font-medium pb-1">Transmis</th>
+            <th class="text-center font-medium pb-1">Appliquer</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for l in o.lignes %}
+          <tr class="{{ 'bg-amber-50' if l.differe }}">
+            <td class="py-2 px-2 text-gray-500">{{ l.libelle }}</td>
+            <td class="py-2 px-2 text-gray-700">{{ l.actuel or "—" }}</td>
+            <td class="py-2 px-2 text-gray-900">{{ l.soumis or "—" }}</td>
+            <td class="py-2 text-center">
+              {% if l.applicable %}
+              <input type="checkbox" name="appliquer" value="{{ l.champ }}" checked
+                     class="rounded border-gray-300">
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <dl class="text-sm divide-y divide-gray-100">
+      {% for l in o.lignes %}
+      <div class="flex justify-between gap-4 py-1.5">
+        <dt class="text-gray-500">{{ l.libelle }}</dt>
+        <dd class="text-gray-900 text-right">{{ l.soumis or "—" }}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    <p class="mt-3 text-xs text-gray-400">
+      La section Conformité n'est pas touchée : la fiche sera créée
+      « non vérifié ».
+    </p>
+    {% endif %}
+
+    {# ── Parties adverses déclarées — aide au contrôle des conflits ─ #}
+    {% if o.adverses %}
+    <div class="mt-5 pt-4 border-t border-gray-100">
+      <h4 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+        Parties adverses déclarées
+      </h4>
+      <p class="mb-3 text-xs text-gray-400">
+        Rapprochements proposés à titre indicatif. La vérification des
+        conflits demeure la vôtre.
+      </p>
+      {% for a in o.adverses %}
+      <div class="mb-3 p-3 border border-gray-200 rounded-lg">
+        <p class="text-sm text-gray-900">
+          {{ a.nom }}
+          {% if a.precision %}<span class="text-gray-500">— {{ a.precision }}</span>{% endif %}
+        </p>
+        {% if a.candidats %}
+        <p class="mt-1 text-xs text-amber-700">
+          Contacts existants :
+          {% for c in a.candidats %}
+          <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
+             class="hover:underline">{{ c.nom }}</a>
+          <span class="text-gray-400">({{ c.motif }})</span>{% if not loop.last %} · {% endif %}
+          {% endfor %}
+        </p>
+        {% else %}
+        <p class="mt-1 text-xs text-gray-400">Aucun contact correspondant.</p>
+        {% endif %}
+        <label class="flex items-center gap-1.5 mt-2 text-xs text-gray-600">
+          <input type="checkbox" name="creer_adverse" value="{{ a.nom }}" checked
+                 class="rounded border-gray-300">
+          Créer comme contact (rôle : partie adverse)
+        </label>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if o.consentement.horodatage %}
+    <p class="mt-4 text-xs text-gray-400">
+      Consentement recueilli (version {{ o.consentement.version_texte or "1" }})
+      le {{ o.consentement.horodatage[:10] }}.
+    </p>
+    {% endif %}
+  </form>
+  {% endif %}
+
+  {# ── Actions ───────────────────────────────────────────────────── #}
+  <div class="flex flex-wrap items-center gap-3 mt-5 pt-4 border-t border-gray-100">
+    {% if o.lisible %}
+    <button type="submit" form="ouverture-{{ inv.id }}"
+            class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ "Appliquer la sélection" if o.partie else "Créer la partie" }}
+    </button>
+    {% endif %}
+    <form method="post"
+          action="{{ url_for('reception.ouverture_refuser', inv_id=inv.id, batch=o.batch) }}"
+          data-confirm="Refuser cette ouverture ? Aucun courriel ne sera transmis au client.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">
+        Refuser
+      </button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+{# ── Invitations en cours ────────────────────────────────────────── #}
+{% if intake_actives %}
+<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mt-8 mb-3">Formulaires en attente</h2>
+<div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+  {% for inv in intake_actives %}
+  <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+    <div>
+      <p class="text-sm text-gray-900">{{ inv.display_label }}</p>
+      <p class="text-xs text-gray-500">
+        {{ inv.email }} ·
+        {% if est_expiree(inv) %}<span class="text-red-600">expirée</span>
+        {% else %}valide jusqu'au {{ inv.expires_at|to_mtl }}{% endif %}
+      </p>
+    </div>
+    <div class="flex items-center gap-3">
+      <form method="post" action="{{ url_for('reception.renvoyer', inv_id=inv.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="text-xs font-medium text-indigo-600 hover:text-indigo-500">Renvoyer</button>
+      </form>
+      <form method="post" action="{{ url_for('reception.revoquer', inv_id=inv.id) }}"
+            data-confirm="Révoquer cette invitation ? Le lien cessera immédiatement de fonctionner.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">Révoquer</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Historique récent ───────────────────────────────────────────── #}
+{% if intake_traitees %}
+<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mt-8 mb-3">Historique</h2>
+<div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+  {% for inv in intake_traitees %}
+  <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+    <p class="text-sm text-gray-700">{{ inv.display_label }}</p>
+    <span class="text-xs text-gray-400">{{ inv.statut }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<p class="mt-6 text-xs text-gray-400">
+  Aucune donnée n'entre au dossier avant votre clic. La section Conformité
+  d'un contact n'est jamais renseignée par le portail : recueillir n'est pas
+  vérifier.
+</p>

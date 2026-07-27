@@ -17,6 +17,7 @@ from markupsafe import escape
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
+from security import sanitize
 from models.partie import (
     MANDATAIRE_KIND_LABELS,
     ROLE_LABELS,
@@ -300,6 +301,12 @@ def partie_detail(partie_id: str) -> str:
     return render_template(
         "parties/detail.html",
         partie=partie,
+        # Bandeau d'arrivée : Réception redirige ICI après avoir créé ou mis à
+        # jour une fiche depuis une ouverture du portail, et doit pouvoir dire
+        # ce qui vient de se passer (« vérifiez et complétez », combien de
+        # champs appliqués, combien de contacts adverses créés). Sans lui, le
+        # message était construit puis silencieusement perdu.
+        message=sanitize(request.args.get("message", ""), max_length=300),
         role_labels=ROLE_LABELS,
         mandataires=mandataires,
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
