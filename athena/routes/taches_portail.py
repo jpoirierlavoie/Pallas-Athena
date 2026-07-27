@@ -376,6 +376,107 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
             )
 
 
+def _enveloppe_intake_valide(envelope: dict) -> bool:
+    """Contrôle de forme minimal (§4.2) — le portail a déjà tout borné."""
+    return (
+        isinstance(envelope, dict)
+        and envelope.get("type") == "intake"
+        and isinstance(envelope.get("donnees"), dict)
+        and isinstance(envelope.get("parties_adverses"), list)
+        and isinstance(envelope.get("consentement"), dict)
+    )
+
+
+def _corps_confirmation_intake(quand_utc: datetime) -> tuple[str, str]:
+    """Gabarit A.3 — confirmation de RÉCEPTION, jamais d'ouverture.
+
+    Le libellé est juridiquement chargé : accuser réception d'un formulaire ne
+    forme aucun mandat et n'ouvre aucun dossier. La dernière phrase le dit
+    explicitement, et ne doit pas être adoucie. Aucune donnée du formulaire
+    n'est reprise dans le courriel — la boîte du client n'est pas le lieu où
+    faire circuler les noms qu'il vient de déclarer.
+    """
+    local = to_mtl(quand_utc)
+    quand = f"{format_date_fr(local.date())} à {local.strftime('%H h %M')}"
+    objet = "Confirmation de réception — formulaire d'ouverture"
+    corps = render_template(
+        "reception/_confirmation_intake.html",
+        quand=quand, cabinet=_CABINET,
+    )
+    return objet, corps
+
+
+def _traiter_intake(inv_id: str, batch: str, invitation: dict) -> None:
+    """Branche « ouverture » du traitement d'une soumission (L3 §4.2).
+
+    Aucune empreinte de fichier : l'enveloppe EST la soumission. Ce qui doit
+    absolument arriver, c'est que ``soumissions[]`` ET ``accuses[batch]``
+    finissent renseignés — la réconciliation ne connaît que ces deux critères,
+    donc un lot qui n'en pose qu'un serait ré-enfilé toutes les 15 minutes à
+    perpétuité.
+    """
+    bucket = _bucket()
+    prefix = f"submissions/{inv_id}/{batch}/"
+    env_blob = bucket.blob(prefix + "envelope.json")
+    if not env_blob.exists():
+        log_portail_event(
+            "tache_recue", "refused",
+            invitation_id=inv_id, batch=batch, reason="envelope_missing",
+        )
+        return
+
+    try:
+        envelope = json.loads(env_blob.download_as_bytes())
+    except Exception:
+        logger.exception("intake envelope unreadable")
+        envelope = {}
+
+    lisible = _enveloppe_intake_valide(envelope)
+    if not lisible:
+        # Consigner FORT, mais poser quand même les deux marqueurs : sans eux
+        # la réconciliation ré-enfilerait ce lot indéfiniment. Réception
+        # l'affiche avec un bandeau, donc rien ne disparaît en silence.
+        log_portail_event(
+            "intake_soumis", "failure",
+            invitation_id=inv_id, batch=batch, reason="enveloppe_malformee",
+        )
+
+    if not pi.ajouter_soumission(inv_id, batch, 0, 0):
+        raise RuntimeError("portail invitation submission update failed")
+
+    if pi.poser_accuse(inv_id, batch):
+        if not lisible:
+            log_portail_event(
+                "intake_confirmation_envoyee", "refused",
+                invitation_id=inv_id, batch=batch,
+                reason="enveloppe_malformee",
+            )
+            return
+        try:
+            quand = datetime.fromisoformat(envelope.get("submitted_at") or "")
+        except ValueError:
+            quand = datetime.now(timezone.utc)
+        objet, corps = _corps_confirmation_intake(quand)
+        try:
+            courriel.envoyer(invitation.get("email", ""), objet, corps)
+            log_portail_event(
+                "intake_confirmation_envoyee",
+                invitation_id=inv_id, batch=batch,
+            )
+        except GraphNotConfigured:
+            log_portail_event(
+                "courriel_echec", "refused",
+                invitation_id=inv_id, batch=batch,
+                reason="graph_not_configured",
+            )
+        except GraphError:
+            logger.exception("intake confirmation send failed")
+            log_portail_event(
+                "courriel_echec", "failure",
+                invitation_id=inv_id, batch=batch, reason="graph_error",
+            )
+
+
 # ── POST /taches/portail/evenement ───────────────────────────────────────
 
 
@@ -439,7 +540,17 @@ def evenement():
             "tache_recue", "refused", invitation_id=inv_id, reason="no_batch",
         )
         return jsonify({"ok": False, "motif": "charge invalide"}), 200
-    _traiter_soumission(inv_id, str(batch))
+    # Aiguillage documents / ouverture. Il se fait sur l'INVITATION, pas sur
+    # l'enveloppe : la lecture de envelope.json vit à l'intérieur du
+    # court-circuit d'idempotence de _traiter_soumission (« si le manifeste
+    # existe, ne rien recalculer »), donc un aiguillage placé là ne
+    # s'exécuterait qu'au premier essai — jamais sur un rejeu ni sur une
+    # réparation de la réconciliation.
+    invitation = pi.lire_invitation(inv_id)
+    if invitation is not None and invitation.get("type") == "intake":
+        _traiter_intake(inv_id, str(batch), invitation)
+    else:
+        _traiter_soumission(inv_id, str(batch))
     return jsonify({"ok": True})
 
 

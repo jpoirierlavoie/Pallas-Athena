@@ -1,0 +1,61 @@
+{# Confirmation de réception du formulaire d'ouverture (portail L3, gabarit
+   A.3) — corps du courriel. Rendu côté service principal par
+   routes/taches_portail._corps_confirmation_intake et expédié par Graph.
+   STYLES EN LIGNE seulement : les clients courriel ignorent les classes CSS
+   et les blocs <style>.
+
+   Volontairement SANS bordereau et SANS aucune donnée du formulaire : ce
+   courriel atteste une réception, il ne fait pas circuler dans la boîte du
+   client les noms qu'il vient de déclarer. C'est ce qui le distingue de
+   l'accusé « documents », dont l'objet même est d'attester des empreintes.
+
+   Contexte attendu :
+     quand   : chaîne « 25 juillet 2026 à 13 h 09 » (date de RÉCEPTION)
+     cabinet : {nom, organisation, adresse_lignes[], telephone, telecopieur}
+#}
+<div style="font-family: Arial, sans-serif; font-size: 12px; color: #333; max-width: 650px; margin: auto; border: 1px solid #ccc; padding: 20px;">
+  <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 15px;">
+    <h2 style="margin: 0; font-size: 16px;">CONFIRMATION DE RÉCEPTION / ACKNOWLEDGMENT OF RECEIPT</h2>
+  </div>
+
+  <p style="margin: 0 0 10px 0;">Bonjour,</p>
+
+  <p style="margin: 0 0 10px 0;">
+    Nous confirmons la réception de votre formulaire d'ouverture le
+    {{ quand }}. Son contenu sera examiné et nous vous reviendrons pour la
+    suite.
+  </p>
+
+  {# Mention juridiquement chargée — ne pas adoucir. Accuser réception d'un
+     formulaire ne forme aucun mandat et n'ouvre aucun dossier. #}
+  <p style="margin: 0 0 15px 0;">
+    La présente confirmation atteste uniquement de la
+    <strong>réception</strong> du formulaire ; elle ne constitue ni
+    l'ouverture d'un dossier ni la formation d'un mandat.
+  </p>
+
+  <table width="100%" cellspacing="0" cellpadding="5" style="border-collapse: collapse; margin-bottom: 15px; border: 1px solid #000;">
+    <tr style="background-color: #e0e0e0;">
+      <td colspan="2" style="border-bottom: 1px solid #000;"><strong style="text-transform: uppercase;">Cabinet</strong></td>
+    </tr>
+    <tr>
+      <td width="30%" style="width: 30%;">Nom :</td>
+      <td>{{ cabinet.nom }}{% if cabinet.organisation %}<br>{{ cabinet.organisation }}{% endif %}</td>
+    </tr>
+    {% if cabinet.adresse_lignes %}
+    <tr>
+      <td width="30%" style="width: 30%;">Adresse :</td>
+      <td>{% for ligne in cabinet.adresse_lignes %}{{ ligne }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+    </tr>
+    {% endif %}
+    {% if cabinet.telephone %}
+    <tr>
+      <td width="30%" style="width: 30%;">Téléphone :</td>
+      <td>{{ cabinet.telephone }}</td>
+    </tr>
+    {% endif %}
+  </table>
+
+  {# ── Avis de confidentialité (pied du bordereau) ────────────────── #}
+  <div style="font-size: 10px; color: #666; text-align: justify; border-top: 1px solid #000; padding-top: 10px;"><strong>AVIS DE CONFIDENTIALITÉ : </strong>Ce document est destiné uniquement à la personne ou à l'entité à qui il est adressé. L'information apparaissant dans ce document est de nature légalement privilégiée et confidentielle. Si vous n'êtes pas le destinataire visé ou la personne chargée de le remettre à son destinataire, vous êtes, par la présente, avisé que toute lecture, usage, copie ou communication du contenu de ce document est strictement interdit. / <strong>CONFIDENTIALITY NOTICE : </strong>This document is intended solely for the individual or entity to whom it is addressed. The information contained in this document is legally privileged and confidential. If you are not the intended recipient or the person responsible for delivering it to the intended recipient, you are hereby advised that you are strictly prohibited from reading, using, copying or disseminating the contents of this document.</div>
+</div>

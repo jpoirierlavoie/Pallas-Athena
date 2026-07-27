@@ -400,3 +400,147 @@ def test_reconciliation_ignore_lot_sans_enveloppe(web, monkeypatch):
     reponse, signale = _reconcilier(web, monkeypatch, bucket, _inv())
     assert reponse.get_json() == {"lots_vus": 0, "repares": 0}
     signale.assert_not_called()
+
+
+# ── « soumise » de type intake (L3 §4.2) ─────────────────────────────────
+
+
+ENVELOPPE_INTAKE = {
+    "type": "intake", "invitation_id": "inv1", "batch": "b1",
+    "partie_id": None, "dossier_id": None,
+    "submitted_at": "2026-07-20T12:00:00+00:00",
+    "client": {"email": "client@exemple.com", "uid": "u1"},
+    "http": {"ip": "203.0.113.9", "user_agent": "Mozilla/5.0 test"},
+    "donnees": {"nature": "physique", "prenom": "Jean", "nom": "Tremblay",
+                "courriel": "client@exemple.com", "telephone": "514 555-1234"},
+    "parties_adverses": [{"nom": "Béton Nord inc.", "precision": ""}],
+    "consentement": {"accepte": True, "horodatage": "2026-07-20T12:00:00+00:00",
+                     "version_texte": "1"},
+    "pieces_identite": None,
+}
+
+
+def _bucket_intake(envelope=None) -> _FakeBucket:
+    return _FakeBucket({
+        "submissions/inv1/b1/envelope.json":
+            json.dumps(envelope or ENVELOPPE_INTAKE).encode(),
+    })
+
+
+def _traiter_intake(web, monkeypatch, bucket, inv, envoyer=None):
+    monkeypatch.setattr(tp, "_bucket", lambda: bucket)
+    monkeypatch.setattr(tp.pi, "lire_invitation", lambda i: dict(inv))
+    ajouts = []
+    monkeypatch.setattr(
+        tp.pi, "ajouter_soumission",
+        lambda *a, **k: (ajouts.append(a), True)[1],
+    )
+    accuses = inv.setdefault("accuses", {})
+
+    def _poser(inv_id, batch):
+        if accuses.get(batch):
+            return False
+        accuses[batch] = True
+        return True
+
+    monkeypatch.setattr(tp.pi, "poser_accuse", _poser)
+    envoyer = envoyer or mock.Mock()
+    monkeypatch.setattr(tp.courriel, "envoyer", envoyer)
+    reponse = _post_evenement(
+        web, {"event": "soumise", "invitation_id": "inv1", "batch": "b1"}
+    )
+    return reponse, envoyer, ajouts
+
+
+def test_intake_ne_construit_aucun_manifeste(web, monkeypatch):
+    """L'enveloppe EST la soumission : aucun fichier, donc aucune empreinte."""
+    bucket = _bucket_intake()
+    reponse, envoyer, ajouts = _traiter_intake(
+        web, monkeypatch, bucket, _inv(type="intake")
+    )
+    assert reponse.status_code == 200
+    assert not bucket.blob("submissions/inv1/b1/manifeste.json").exists()
+    assert ajouts[0][2:] == (0, 0)          # files_count, total_bytes
+    assert envoyer.call_count == 1
+
+
+def test_intake_envoie_la_confirmation_sans_reprendre_les_donnees(
+    web, monkeypatch
+):
+    """La boîte du client n'est pas le lieu où faire circuler les noms qu'il
+    vient de déclarer — et la mention « ni mandat ni ouverture » est
+    juridiquement chargée, donc épinglée."""
+    _reponse, envoyer, _a = _traiter_intake(
+        web, monkeypatch, _bucket_intake(), _inv(type="intake")
+    )
+    destinataire, objet, corps = envoyer.call_args[0]
+    assert destinataire == "client@exemple.com"
+    assert "Confirmation de réception" in objet
+    assert "ni la formation d'un mandat" in corps
+    assert "20 juillet 2026" in corps
+    for interdit in ("Tremblay", "Béton Nord", "514 555-1234"):
+        assert interdit not in corps, interdit
+
+
+def test_intake_rejoue_n_envoie_pas_un_second_courriel(web, monkeypatch):
+    """poser_accuse est la garde unique du seul effet non idempotent."""
+    inv = _inv(type="intake")
+    bucket = _bucket_intake()
+    _r1, envoyer, _a = _traiter_intake(web, monkeypatch, bucket, inv)
+    assert envoyer.call_count == 1
+    _r2, envoyer2, _a2 = _traiter_intake(web, monkeypatch, bucket, inv)
+    assert envoyer2.call_count == 0
+
+
+def test_intake_malformee_pose_quand_meme_les_deux_marqueurs(web, monkeypatch):
+    """Sans soumissions[] ET accuses[batch], la réconciliation ré-enfilerait ce
+    lot toutes les 15 minutes à perpétuité. On consigne fort, on ne confirme
+    rien au client, mais on fait converger."""
+    bucket = _bucket_intake({"type": "intake", "donnees": "pas un objet"})
+    reponse, envoyer, ajouts = _traiter_intake(
+        web, monkeypatch, bucket, _inv(type="intake")
+    )
+    assert reponse.status_code == 200
+    assert ajouts                       # soumissions[] renseigné
+    assert envoyer.call_count == 0      # aucune confirmation
+
+
+def test_intake_sans_enveloppe_200(web, monkeypatch):
+    reponse, envoyer, _a = _traiter_intake(
+        web, monkeypatch, _FakeBucket({}), _inv(type="intake")
+    )
+    assert reponse.status_code == 200
+    assert envoyer.call_count == 0
+
+
+def test_l_aiguillage_se_fait_sur_l_invitation_pas_sur_l_enveloppe(
+    web, monkeypatch
+):
+    """Piège : la lecture de envelope.json vit à l'intérieur du court-circuit
+    d'idempotence de _traiter_soumission (« si le manifeste existe, ne rien
+    recalculer »), donc un aiguillage fondé sur elle ne s'exécuterait qu'au
+    PREMIER essai — jamais sur un rejeu ni sur une réparation. Ici le manifeste
+    existe déjà, et l'intake doit tout de même être reconnu comme tel."""
+    bucket = _FakeBucket({
+        "submissions/inv1/b1/envelope.json": json.dumps(ENVELOPPE_INTAKE).encode(),
+        "submissions/inv1/b1/manifeste.json": json.dumps(
+            {"files": [], "etat_lot": "soumis"}
+        ).encode(),
+    })
+    _reponse, envoyer, _a = _traiter_intake(
+        web, monkeypatch, bucket, _inv(type="intake")
+    )
+    # La branche documents aurait vu « aucun fichier reçu » et n'aurait envoyé
+    # aucun accusé ; la branche intake confirme.
+    assert envoyer.call_count == 1
+    assert "Confirmation de réception" in envoyer.call_args[0][1]
+
+
+def test_une_invitation_documents_reste_sur_la_branche_documents(
+    web, monkeypatch
+):
+    bucket = _bucket_soumis()
+    reponse, envoyer = _traiter(web, monkeypatch, bucket, _inv())
+    assert reponse.status_code == 200
+    assert bucket.blob("submissions/inv1/b1/manifeste.json").exists()
+    assert "Accusé de réception" in envoyer.call_args[0][1]
