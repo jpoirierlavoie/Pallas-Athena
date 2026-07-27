@@ -30,6 +30,7 @@ from client.config import (
     PORTAIL_MAX_FILE_MB,
     PORTAIL_MAX_FILES,
     PORTAIL_MAX_TOTAL_MB,
+    STATUTS_FERMES,
 )
 from client.services import invitations, stockage, taches
 from utils.logging_setup import log_portail_event
@@ -62,7 +63,15 @@ _EXEMPT_ENDPOINTS = {
 # ── Per-request guard (§6.5) ─────────────────────────────────────────────
 
 
-_STATUTS_TERMINAUX = ("révoquée", "refusée")
+# Statuts d'où l'on ne revient jamais — DÉFINIS DANS client/config.py, parce
+# que le service principal en dépend aussi (``ajouter_soumission``). « traitée »
+# en fait partie : ses fichiers de quarantaine sont purgés, donc une
+# finalisation tardive écrirait dans un lot qui n'existe plus — et pire, elle
+# rappellerait ``ajouter_soumission``, qui remet le statut à « soumise », un
+# état d'où le client peut de nouveau téléverser. Le lot resté en vol que la
+# dérogation de _garde protégeait est couvert autrement : l'alerte
+# ``lot_abandonne`` de la réconciliation le rend visible.
+_STATUTS_TERMINAUX = STATUTS_FERMES
 
 
 def _refus(reason: str):
@@ -147,22 +156,35 @@ def entree():
     # single-use) is a pure dead end. Validate their OWN session here and let
     # them straight through. No new access: /documents re-reads the invitation
     # through _garde anyway, so revocation and expiry stay instant.
+    demande = (request.args.get("i") or "").strip()
     inv_id = session.get("inv_id")
-    if inv_id:
+    # …but ONLY for its own invitation. Every invitation email points at
+    # /entree?i={id} (the Firebase link AND the fallback URL), so a « ?i= »
+    # naming a DIFFERENT invitation is the ordinary arrival of a SECOND client
+    # on a shared browser — or of the same client's next invitation. Reusing
+    # the cookie there would drop that visitor inside the previous holder's
+    # session: their files would be written under the other invitation's
+    # prefix and the accusé (names, sizes, SHA-512) mailed to the other
+    # client. _garde proves the INVITATION is live, never that the VISITOR is
+    # its invitee. Still no session.clear(): a foreign URL must not kill an
+    # upload in progress — the successful POST /session clears it properly.
+    if inv_id and demande in ("", inv_id):
         try:
             invitation = invitations.lire(inv_id)
         except invitations.LectureIndisponible:
             invitation = None  # render the page normally; never clear
-        # A « ?i= » naming a DIFFERENT invitation must not log the visitor out
-        # — that would let any URL kill a legitimate in-progress upload.
         if invitation is not None and invitation.get("type") == "documents":
             if invitations.peut_televerser(invitation):
                 return redirect(url_for("portail.page_documents"))
-            if invitation.get("statut") not in _STATUTS_TERMINAUX:
+            # Only a lot that was really SUBMITTED may see the confirmation —
+            # it states « Transmission reçue ». An EXPIRED invitation still
+            # reads « envoyée »/« ouverte », so a statut-only test sent it
+            # there: a false receipt, and a closed loop (/ → /entree →
+            # /confirmation) with no way back to « Demander un nouveau lien »
+            # — the one case where a new link IS the answer.
+            if invitation.get("statut") == "soumise":
                 return redirect(url_for("portail.confirmation"))
-    return render_template(
-        "entree.html", invitation_id=request.args.get("i", "")
-    )
+    return render_template("entree.html", invitation_id=demande)
 
 
 @portail_bp.get("/sante")
@@ -296,12 +318,34 @@ def api_renvoi():
 # ── Transmission (§7) ────────────────────────────────────────────────────
 
 
+def _purger_lot() -> None:
+    """Drop the in-flight batch's session state.
+
+    Called on BOTH terminal outcomes of a finalisation — the write and the
+    409 that means someone already wrote it. Leaving these behind on the 409
+    wedges the client permanently (see api_finaliser).
+    """
+    for cle in ("batch", "seq", "files_count", "total_bytes"):
+        session.pop(cle, None)
+
+
 def _deja_transmis(invitation: dict) -> tuple[int, int]:
     """(files, bytes) already ACQUIRED by previous batches of this invitation.
 
     Since D-2 lets a client come back after submitting, the session counters
     alone would hand each re-entry a fresh full quota for the invitation's 14
     days. The durable record of past batches is ``soumissions[]``.
+
+    NOT a watertight cap, and it must not be described as one (risque R-1
+    assumé). ``soumissions[]`` is written by the MAIN service when the Cloud
+    Task lands, so two windows stay open: bytes uploaded but never finalised
+    are recorded nowhere durable, and between a finalisation and the task
+    landing (seconds normally, but 15 minutes whenever the queue is degraded
+    and the reconciliation cron is doing the rescuing) the consumed budget
+    reads zero on both sides. ``creer_session`` clears the session counters,
+    and nothing rate-limits re-opening a session with a retained Firebase
+    refresh token. This bounds the honest client, not a determined one; the
+    real ceilings are the per-file size check and the bucket lifecycle.
     """
     fichiers = octets = 0
     for s in invitation.get("soumissions") or []:
@@ -476,7 +520,25 @@ def api_finaliser():
     try:
         stockage.ecrire_enveloppe(inv_id, batch, envelope)
     except PreconditionFailed:
-        return jsonify({"erreur": "Transmission déjà soumise."}), 409
+        # L'enveloppe EXISTE : ce lot est acquis. C'est le chemin de reprise du
+        # scénario le plus banal — la réponse du premier POST s'est perdue sur
+        # un lien mobile, le navigateur a affiché « Erreur réseau. Réessayez »
+        # et réarmé le bouton, mais le Set-Cookie n'a jamais été appliqué. Il
+        # faut donc purger les MÊMES clés que sur le succès : autrement
+        # ``session["batch"]`` désigne encore un lot déjà manifesté, les
+        # téléversements suivants y atterrissent sans jamais être hachés ni
+        # listés (puis sont purgés au « traiter »), chaque envoi re-409 à
+        # l'infini, et les compteurs restés en place comptent le lot deux fois
+        # dans le quota. Du point de vue du client c'est un SUCCÈS — on le mène
+        # à la confirmation plutôt que de lui montrer une erreur.
+        _purger_lot()
+        log_portail_event(
+            "soumission_finalisee", "refused",
+            invitation_id=inv_id, batch=batch, reason="deja_soumise",
+        )
+        return jsonify({
+            "ok": True, "suivant": url_for("portail.confirmation")
+        }), 200
     except Exception:
         logger.exception("portal envelope write failed")
         return jsonify({
@@ -495,8 +557,7 @@ def api_finaliser():
             invitation_id=inv_id, batch=batch, evenement="soumise",
         )
 
-    for cle in ("batch", "seq", "files_count", "total_bytes"):
-        session.pop(cle, None)
+    _purger_lot()
     log_portail_event(
         "soumission_finalisee",
         invitation_id=inv_id, batch=batch, files_count=len(propres),

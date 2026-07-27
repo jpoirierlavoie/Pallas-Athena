@@ -163,6 +163,28 @@
 
   $('lien-renvoi').addEventListener('click', afficherRenvoi);
 
+  // ── Marqueur de reprise ────────────────────────────────────────────────
+  // Firebase persiste l'identité dans localStorage, mais SANS rien dire de
+  // l'invitation pour laquelle elle a été créée. Or la déconnexion D-1 ne
+  // s'exécute qu'au SUCCÈS : c'est donc exactement le chemin d'échec qui
+  // laisse une identité derrière elle. Sans ce marqueur, « Continuer comme … »
+  // afficherait l'adresse d'un client à un autre (ordinateur partagé) et lui
+  // proposerait d'ouvrir une session avec elle. On enregistre donc l'id de
+  // l'invitation au moment de la tentative, et on ne propose la reprise que
+  // s'il correspond à celle de l'URL courante.
+  const CLE_REPRISE = 'pa_portail_reprise';
+  function noterReprise() {
+    try { localStorage.setItem(CLE_REPRISE, invitationId); } catch (e) { /* mode privé */ }
+  }
+  function oublierReprise() {
+    try { localStorage.removeItem(CLE_REPRISE); } catch (e) { /* mode privé */ }
+  }
+  function repriseAutorisee() {
+    if (!invitationId) { return false; }
+    try { return localStorage.getItem(CLE_REPRISE) === invitationId; }
+    catch (e) { return false; }
+  }
+
   // POST /session avec un jeton frais. Retourne '' en cas de succès (la
   // navigation est déclenchée), sinon le message à afficher.
   async function ouvrirSession(user) {
@@ -178,6 +200,7 @@
       // fois la session du portail ouverte (ordinateur familial/partagé).
       // Le témoin pa_portail (24 h) devient la seule autorisation.
       try { await auth.signOut(); } catch (e) { /* sans conséquence */ }
+      oublierReprise();
       window.location = donnees.suivant;
       return '';
     }
@@ -188,9 +211,17 @@
   }
 
   // Identité persistée : la restauration est ASYNCHRONE — auth.currentUser
-  // est encore null au moment du parse, d'où onAuthStateChanged.
+  // est encore null au moment du parse, d'où onAuthStateChanged. Le callback
+  // se rejoue à CHAQUE changement d'état, y compris vers null (déconnexion) :
+  // il faut donc masquer le bloc sur cette branche, et non simplement sortir.
+  // Sinon « Continuer » restait cliquable après une déconnexion et appelait
+  // ouvrirSession(null) → TypeError avalé par le catch → le client lisait
+  // « Vérifiez l'adresse saisie » alors que ce bloc n'a aucun champ d'adresse.
   auth.onAuthStateChanged(function (user) {
-    if (!user || !invitationId) { return; }
+    if (!user || !repriseAutorisee()) {
+      $('bloc-reprise').classList.add('hidden');
+      return;
+    }
     $('reprise-courriel').textContent = user.email || '';
     $('bloc-reprise').classList.remove('hidden');
   });
@@ -198,9 +229,15 @@
   $('btn-reprise').addEventListener('click', async function () {
     const erreur = $('erreur-reprise');
     erreur.classList.add('hidden');
+    const utilisateur = auth.currentUser;
+    if (!utilisateur) {
+      $('bloc-reprise').classList.add('hidden');
+      afficherRenvoi();
+      return;
+    }
     $('btn-reprise').disabled = true;
     try {
-      const msg = await ouvrirSession(auth.currentUser);
+      const msg = await ouvrirSession(utilisateur);
       if (msg) {
         erreur.textContent = msg;
         erreur.classList.remove('hidden');
@@ -216,6 +253,7 @@
 
   $('btn-pas-moi').addEventListener('click', async function () {
     try { await auth.signOut(); } catch (e) { /* sans conséquence */ }
+    oublierReprise();
     $('bloc-reprise').classList.add('hidden');
     if (!aUnLien) { afficherRenvoi(); }
   });
@@ -227,6 +265,10 @@
     if (!courriel) { return; }
     $('btn-verif').disabled = true;
     try {
+      // Noté AVANT la tentative : si elle échoue après que Firebase a persisté
+      // l'identité, le marqueur est ce qui autorisera la reprise — et il la
+      // lie à CETTE invitation.
+      noterReprise();
       const cred = await auth.signInWithEmailLink(courriel, window.location.href);
       // Message NEUTRE quant à la cause (anti-énumération) mais qui indique
       // les DEUX issues : retaper l'adresse, ou demander un nouveau lien.

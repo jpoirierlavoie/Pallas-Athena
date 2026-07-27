@@ -50,6 +50,16 @@ INVITATION_MAX_RENVOIS = 10
 # dériverait, et le portail enfilerait des renvois que le service principal
 # rejetterait en silence (courriel fantôme).
 STATUTS_SESSION = ("envoyée", "ouverte", "soumise")
+# Statuts FERMÉS — dont rien ne fait jamais revenir. Ils gouvernent deux
+# décisions qui doivent s'accorder, et qui vivaient dans deux fichiers
+# différents (portail et service principal) : la dérogation de finalisation du
+# portail, et la promotion de statut de ``ajouter_soumission``. « traitée » en
+# fait partie au même titre que « révoquée »/« refusée » : ses fichiers de
+# quarantaine sont purgés et son enveloppe archivée. La leçon de
+# STATUTS_SESSION ci-dessus vaut ici : une copie par service dériverait, et la
+# dérive ROUVRIRAIT une invitation close — ``ajouter_soumission`` remet le
+# statut à « soumise », lequel autorise de nouveau le téléversement.
+STATUTS_FERMES = ("révoquée", "refusée", "traitée")
 CHUNK_MIB = 8                   # multiple of 256 KiB (GCS resumable protocol)
 
 # Inert-handling whitelist (spec §7.5): notably NO svg/html/htm/js, and no

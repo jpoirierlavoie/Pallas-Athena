@@ -38,6 +38,7 @@ from client.config import (
     PORTAIL_DB,
     PORTAIL_MAX_FILES,
     PORTAIL_MAX_TOTAL_MB,
+    STATUTS_FERMES,
     STATUTS_SESSION,
 )
 from security import sanitize
@@ -267,6 +268,16 @@ def ajouter_soumission(
     Transactional read-modify-write (an ArrayUnion cannot express « append
     if absent » because ``recu_at`` differs per attempt). Idempotent: a
     replayed task or a reconciliation replay leaves an existing entry alone.
+
+    The statut is promoted to « soumise » ONLY from a live statut. Writing it
+    unconditionally used to be inert — the upload gate was « envoyée »/
+    « ouverte », so an invitation knocked back to « soumise » stayed shut. Now
+    that D-2 makes « soumise » an upload-capable statut (STATUTS_SESSION), an
+    unconditional write would UNDO A REVOCATION: a late task or a 15-minute
+    reconciliation replay would lift « révoquée » back into a usable state,
+    and ``peut_relancer`` would even mint a fresh sign-in link for it. The
+    submission is still recorded — the register must stay faithful; only the
+    statut is left alone.
     """
     ref = _col().document(inv_id)
     transaction = _pdb().transaction()
@@ -288,14 +299,13 @@ def ajouter_soumission(
                 "recu_at": datetime.now(timezone.utc),
             }
         )
-        txn.update(
-            ref,
-            {
-                "soumissions": soumissions,
-                "statut": "soumise",
-                "updated_at": datetime.now(timezone.utc),
-            },
-        )
+        maj = {
+            "soumissions": soumissions,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if doc.get("statut") not in STATUTS_FERMES:
+            maj["statut"] = "soumise"
+        txn.update(ref, maj)
         return True
 
     try:

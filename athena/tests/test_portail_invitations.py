@@ -169,6 +169,28 @@ def test_ajouter_soumission_appends_once(store):
     assert doc["statut"] == "soumise"
 
 
+@pytest.mark.parametrize("ferme", ["révoquée", "refusée", "traitée"])
+def test_ajouter_soumission_ne_ressuscite_pas_une_invitation_fermee(
+    store, ferme
+):
+    """Une tâche tardive ou un rejeu de réconciliation ne doit PAS rouvrir une
+    invitation close.
+
+    L'écriture inconditionnelle de « soumise » était inerte tant que la porte
+    de téléversement était « envoyée »/« ouverte ». Depuis que D-2 fait de
+    « soumise » un statut de session, elle ANNULERAIT une révocation — et
+    ``peut_relancer`` frapperait même un lien de connexion tout neuf. La
+    soumission reste enregistrée (le registre doit rester fidèle) ; seul le
+    statut est laissé intact.
+    """
+    store["inv1"] = _inv(statut=ferme)
+    assert pi.ajouter_soumission("inv1", "b1", 2, 50) is True
+    doc = store["inv1"]
+    assert doc["statut"] == ferme
+    assert len(doc["soumissions"]) == 1
+    assert pi.peut_relancer(doc) is False
+
+
 def test_poser_accuse_test_and_set(store):
     store["inv1"] = _inv()
     assert pi.poser_accuse("inv1", "b1") is True    # won — send the accusé

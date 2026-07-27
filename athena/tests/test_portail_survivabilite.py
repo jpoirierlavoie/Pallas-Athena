@@ -194,6 +194,18 @@ def test_traitee_est_terminal(web, connecte, monkeypatch):
     assert _upload(web).status_code == 401
 
 
+def test_traitee_refuse_aussi_la_finalisation(web, connecte, monkeypatch):
+    """La dérogation « ne pas orphéliner des octets » ne couvre PAS une
+    invitation traitée : ses fichiers de quarantaine sont purgés et son
+    enveloppe archivée, donc il n'y a plus rien à sauver — tandis que la
+    finalisation appellerait ``ajouter_soumission``, qui remettait le statut à
+    « soumise », d'où le client peut de nouveau téléverser. Le lot resté en vol
+    est couvert par l'alerte ``lot_abandonne`` de la réconciliation."""
+    monkeypatch.setattr(invitations, "lire",
+                        lambda i: _invitation(statut="traitée"))
+    assert _post_json(web, "/api/finaliser", {"files": []}).status_code == 401
+
+
 def test_soumise_expiree_reste_refusee(web, connecte, monkeypatch):
     """Le piège que le helper combiné existe pour éviter : un simple test
     d'appartenance laisserait téléverser une invitation EXPIRÉE."""
@@ -274,6 +286,74 @@ def test_entree_ne_deconnecte_pas_sur_un_i_etranger(web, connecte):
     web.get("/entree?i=autre")
     with web.session_transaction() as s:
         assert s.get("inv_id") == "inv1"
+
+
+def test_entree_ne_livre_pas_la_session_d_autrui_sur_un_i_etranger(
+    web, connecte
+):
+    """L'autre moitié — celle qui manquait.
+
+    Chaque courriel d'invitation pointe /entree?i={id} (le lien Firebase ET
+    l'URL de secours), donc un « ?i= » étranger est l'arrivée ORDINAIRE d'un
+    2e client sur un navigateur partagé. Le rediriger vers /documents le
+    plaçait dans la session du premier : ses fichiers sous le préfixe de
+    l'autre invitation, et l'accusé (noms, tailles, SHA-512) expédié à
+    l'autre client. _garde prouve que l'INVITATION est vivante, jamais que le
+    VISITEUR en est le destinataire.
+    """
+    r = web.get("/entree?i=autre")
+    assert r.status_code == 200          # la page de connexion, pas un 302
+    with web.session_transaction() as s:
+        assert s.get("inv_id") == "inv1"  # et toujours sans déconnexion
+
+
+def test_entree_sans_i_reutilise_encore_la_session(web, connecte):
+    """Le raccourci de ré-entrée reste entier quand aucune invitation n'est
+    nommée (signet, saisie directe)."""
+    r = web.get("/entree")
+    assert r.status_code == 302
+    assert "/documents" in r.headers["Location"]
+
+
+def test_entree_expiree_ne_ment_pas_et_ne_piege_pas(web, connecte, monkeypatch):
+    """Une invitation EXPIRÉE garde le statut « envoyée » : un test par statut
+    l'envoyait sur /confirmation, qui affirme « Transmission reçue » — un faux
+    accusé — et refermait la boucle / → /entree → /confirmation, sans chemin
+    vers « Demander un nouveau lien », le seul cas où un lien neuf est la
+    réponse."""
+    passe = datetime.now(timezone.utc) - timedelta(days=1)
+    monkeypatch.setattr(invitations, "lire",
+                        lambda i: _invitation(expires_at=passe))
+    r = web.get("/entree?i=inv1")
+    assert r.status_code == 200
+
+
+def test_entree_soumise_puis_expiree_mene_a_la_confirmation(
+    web, connecte, monkeypatch
+):
+    """Un lot RÉELLEMENT soumis, lui, a droit à la confirmation.
+
+    Tant que l'invitation reste ouverte, « soumise » mène à /documents (D-2 :
+    « j'ai oublié une page »). C'est une fois expirée que la confirmation est
+    le bon écran — et elle ne ment pas : la transmission a bien eu lieu.
+    """
+    passe = datetime.now(timezone.utc) - timedelta(days=1)
+    monkeypatch.setattr(invitations, "lire",
+                        lambda i: _invitation(statut="soumise",
+                                              expires_at=passe))
+    r = web.get("/entree?i=inv1")
+    assert r.status_code == 302
+    assert "/confirmation" in r.headers["Location"]
+
+
+def test_entree_soumise_encore_ouverte_mene_aux_documents(
+    web, connecte, monkeypatch
+):
+    monkeypatch.setattr(invitations, "lire",
+                        lambda i: _invitation(statut="soumise"))
+    r = web.get("/entree?i=inv1")
+    assert r.status_code == 302
+    assert "/documents" in r.headers["Location"]
 
 
 def test_entree_reste_rendue_pendant_une_panne(web, connecte, monkeypatch):

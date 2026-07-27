@@ -277,7 +277,17 @@ def test_finaliser_ecrit_l_enveloppe_et_signale(web, connecte, monkeypatch):
         assert "batch" not in s
 
 
-def test_finaliser_double_soumission_409(web, connecte, monkeypatch):
+def test_finaliser_double_soumission_est_un_succes_et_purge_le_lot(
+    web, connecte, monkeypatch
+):
+    """L'enveloppe existe déjà → le lot est ACQUIS, donc c'est un succès.
+
+    Le chemin réel est la réponse perdue sur un lien mobile : le navigateur
+    réarme le bouton et rejoue le POST. Répondre 409 laissait ``batch`` et les
+    compteurs en session — les téléversements suivants tombaient dans un lot
+    déjà manifesté (jamais hachés, jamais listés, purgés au « traiter »), tout
+    envoi ultérieur re-409ait, et le quota comptait le lot deux fois.
+    """
     monkeypatch.setattr(
         stockage, "ecrire_enveloppe",
         mock.Mock(side_effect=PreconditionFailed("exists")),
@@ -287,8 +297,11 @@ def test_finaliser_double_soumission_409(web, connecte, monkeypatch):
         "objet": "submissions/inv1/20260725T120000/files/001_a.pdf",
         "name": "a.pdf", "size": 10, "content_type": "application/pdf",
     }]})
-    assert reponse.status_code == 409
-    assert "déjà soumise" in reponse.get_json()["erreur"]
+    assert reponse.status_code == 200
+    assert reponse.get_json()["suivant"].endswith("/confirmation")
+    with web.session_transaction() as s:
+        for cle in ("batch", "seq", "files_count", "total_bytes"):
+            assert cle not in s
 
 
 def test_finaliser_echec_enfilage_ne_fait_pas_echouer(web, connecte, monkeypatch):
