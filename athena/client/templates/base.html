@@ -26,6 +26,12 @@
   </main>
   <footer class="py-6 text-center text-xs text-gray-400">
     Transmission chiffrée — ce portail est réservé aux personnes invitées.
+    {% if firm_phone %}
+    {# Canal de secours : les messages du portail sont volontairement
+       génériques (anti-énumération), donc un client bloqué ne peut PAS
+       apprendre pourquoi. Un numéro joignable est la sortie de secours. #}
+    <br>Une difficulté ? Joignez-nous au {{ firm_phone }}.
+    {% endif %}
   </footer>
   {% block scripts %}{% endblock %}
 </body>

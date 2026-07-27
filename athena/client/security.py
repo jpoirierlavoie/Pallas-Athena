@@ -92,8 +92,21 @@ def verify_app_check() -> Optional[Response]:
     predicate: the portal has no HTMX — its JS ``fetch`` calls attach
     ``X-Firebase-AppCheck`` themselves, so enforcement targets every POST.
     Fail-open when the site key is unset (loud in production).
+
+    ONE deliberate exception: ``portail.creer_session``. There, the caller has
+    ALREADY spent the single-use email-link code before this check runs, so an
+    attestation hiccup would not merely refuse the request — it would destroy
+    the client's invitation permanently (the reCAPTCHA score of a client on a
+    fresh phone or a private window is routinely low). The route keeps its own
+    hard gates: a Firebase ID token carrying the ``portail`` claim,
+    ``email_verified``, an active non-expired invitation and an exact email
+    match, behind 10/min per IP. Enforcement stays ON for /api/renvoi (which is
+    unauthenticated and sends email — the real bot surface) and the upload APIs.
     """
     if request.method != "POST":
+        return None
+
+    if request.endpoint == "portail.creer_session":
         return None
 
     if not current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):

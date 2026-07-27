@@ -120,7 +120,10 @@ def create_portail_app() -> Flask:
 
     @app.context_processor
     def _inject_firm() -> dict:
-        return {"firm_name": os.environ.get("FIRM_NAME", "")}
+        return {
+            "firm_name": os.environ.get("FIRM_NAME", ""),
+            "firm_phone": os.environ.get("FIRM_PHONE", ""),
+        }
 
     # ── Error handlers (generic French, JSON on /api/*) ──────────────────
 
@@ -140,6 +143,32 @@ def create_portail_app() -> Flask:
     @app.errorhandler(CSRFError)
     def _csrf(e):
         return _api_or_page("Session invalide. Rechargez la page.", 400)
+
+    # 401/403/429/503 previously fell through to Werkzeug's HTML body, so the
+    # portal's fetch() got un-parseable HTML, `rep.json()` threw, and the
+    # client was shown a message that did not match what happened (the renvoi
+    # form even reported SUCCESS on a refusal). The wording stays generic —
+    # what changes is that the browser can read a status at all.
+    @app.errorhandler(401)
+    def _unauthorized(e):
+        return _api_or_page("Invitation invalide ou expirée.", 401)
+
+    @app.errorhandler(403)
+    def _forbidden(e):
+        return _api_or_page("Invitation invalide ou expirée.", 403)
+
+    @app.errorhandler(429)
+    def _too_many(e):
+        return _api_or_page(
+            "Trop de demandes. Réessayez dans un moment.", 429
+        )
+
+    @app.errorhandler(503)
+    def _unavailable(e):
+        return _api_or_page(
+            "Service momentanément indisponible. Réessayez dans un instant.",
+            503,
+        )
 
     @app.errorhandler(500)
     def _server_error(e):

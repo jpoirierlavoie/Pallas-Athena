@@ -25,15 +25,51 @@
     </button>
   </div>
 
+  {# ── État 0 : une identité Firebase persiste dans ce navigateur ────
+       Récupération en une touche pour « 2e clic » / « j'ai fermé le
+       navigateur ». JAMAIS automatique : le client confirme explicitement. #}
+  <div id="bloc-reprise" class="hidden">
+    <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider text-center mb-6">
+      Reprendre
+    </h2>
+    <p class="text-sm text-gray-600 mb-4">
+      Ce navigateur est déjà identifié comme
+      <span id="reprise-courriel" class="font-medium text-gray-900"></span>.
+    </p>
+    <p id="erreur-reprise" class="hidden mt-3 text-sm text-red-600"></p>
+    <button id="btn-reprise" type="button"
+            class="mt-2 w-full bg-gray-900 text-white rounded-lg px-4 py-2.5 text-sm font-medium
+                   hover:bg-gray-800 disabled:opacity-50">
+      Continuer
+    </button>
+    <button id="btn-pas-moi" type="button"
+            class="mt-3 w-full text-sm font-medium text-gray-500 hover:text-gray-600">
+      Ce n'est pas moi
+    </button>
+  </div>
+
+  {# ── Passerelle vers le renvoi — TOUJOURS présente quand le lien est
+       présenté (§ survivabilité). Un oobCode consommé garde la MÊME forme
+       d'URL qu'un lien neuf : isSignInWithEmailLink() ne fait aucun appel
+       réseau et ne peut pas le savoir. Sans cette passerelle, un 2e clic
+       affichait le bloc de vérification, échouait, et laissait le client
+       sans aucune issue. #}
+  <div id="passerelle-renvoi" class="hidden mt-4 pt-4 border-t border-gray-200 text-center">
+    <button type="button" id="lien-renvoi"
+            class="text-sm font-medium text-indigo-600 hover:text-indigo-500">
+      Le lien ne fonctionne pas ? Demander un nouveau lien
+    </button>
+  </div>
+
   {# ── État 2 : lien absent/expiré → demander un renvoi ─────────────── #}
   <div id="bloc-renvoi" class="hidden">
     <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider text-center mb-6">
-      Invitation requise
+      Nouveau lien
     </h2>
     <p class="text-sm text-gray-600 mb-4">
-      L'accès à ce portail se fait uniquement par le lien personnel transmis
-      par courriel. Si votre lien est expiré ou déjà utilisé, demandez-en un
-      nouveau ci-dessous.
+      Les liens de connexion sont à usage unique et de courte durée. Saisissez
+      l'adresse exacte à laquelle l'invitation vous a été transmise : un
+      nouveau lien vous sera envoyé immédiatement.
     </p>
     <label for="courriel-renvoi" class="block text-sm font-medium text-gray-700 mb-1">
       Adresse courriel de l'invitation
@@ -85,6 +121,12 @@
   }
   const auth = firebase.auth();
   const invitationId = {{ invitation_id|tojson }};
+  // Un seul message d'échec pour TOUTES les causes (anti-énumération §6.3) —
+  // il ne désigne aucune cause mais nomme les deux issues possibles.
+  const _ECHEC_OUVERTURE = "Impossible d'ouvrir la session avec ce lien. " +
+    "Vérifiez l'adresse saisie, ou demandez un nouveau lien ci-dessous.";
+  const _RENVOI_OK =
+    "Si l'invitation est valide, un nouveau lien vient d'être transmis.";
   const jetonCsrf = document.querySelector('meta[name="csrf-token"]').content;
   const $ = function (id) { return document.getElementById(id); };
 
@@ -99,11 +141,84 @@
     return entetes;
   }
 
-  if (auth.isSignInWithEmailLink(window.location.href)) {
+  // isSignInWithEmailLink() n'inspecte que la FORME de l'URL (mode=signIn +
+  // oobCode) : aucun appel réseau, donc un code déjà consommé ou expiré
+  // répond encore « true ». Le bloc de renvoi doit donc rester JOIGNABLE en
+  // permanence — sinon un 2e clic est un cul-de-sac.
+  const aUnLien = auth.isSignInWithEmailLink(window.location.href);
+  if (aUnLien) {
     $('bloc-verification').classList.remove('hidden');
+    $('passerelle-renvoi').classList.remove('hidden');
   } else {
     $('bloc-renvoi').classList.remove('hidden');
   }
+
+  function afficherRenvoi() {
+    $('bloc-renvoi').classList.remove('hidden');
+    $('passerelle-renvoi').classList.add('hidden');
+    // Ne PAS masquer le bloc de vérification : une simple faute de frappe se
+    // corrige en retapant l'adresse, sans attendre un nouveau courriel.
+    $('bloc-renvoi').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  $('lien-renvoi').addEventListener('click', afficherRenvoi);
+
+  // POST /session avec un jeton frais. Retourne '' en cas de succès (la
+  // navigation est déclenchée), sinon le message à afficher.
+  async function ouvrirSession(user) {
+    const token = await user.getIdToken();
+    const rep = await fetch('/session', {
+      method: 'POST',
+      headers: await enTetesFetch(),
+      body: JSON.stringify({ token: token, i: invitationId })
+    });
+    const donnees = await rep.json().catch(function () { return {}; });
+    if (rep.ok && donnees.suivant) {
+      // Décision D-1 : ne laisser AUCUNE identité durable derrière nous une
+      // fois la session du portail ouverte (ordinateur familial/partagé).
+      // Le témoin pa_portail (24 h) devient la seule autorisation.
+      try { await auth.signOut(); } catch (e) { /* sans conséquence */ }
+      window.location = donnees.suivant;
+      return '';
+    }
+    if (rep.status === 503) {
+      return 'Service momentanément indisponible. Réessayez dans un instant.';
+    }
+    return donnees.erreur || _ECHEC_OUVERTURE;
+  }
+
+  // Identité persistée : la restauration est ASYNCHRONE — auth.currentUser
+  // est encore null au moment du parse, d'où onAuthStateChanged.
+  auth.onAuthStateChanged(function (user) {
+    if (!user || !invitationId) { return; }
+    $('reprise-courriel').textContent = user.email || '';
+    $('bloc-reprise').classList.remove('hidden');
+  });
+
+  $('btn-reprise').addEventListener('click', async function () {
+    const erreur = $('erreur-reprise');
+    erreur.classList.add('hidden');
+    $('btn-reprise').disabled = true;
+    try {
+      const msg = await ouvrirSession(auth.currentUser);
+      if (msg) {
+        erreur.textContent = msg;
+        erreur.classList.remove('hidden');
+        afficherRenvoi();
+      }
+    } catch (e) {
+      erreur.textContent = _ECHEC_OUVERTURE;
+      erreur.classList.remove('hidden');
+      afficherRenvoi();
+    }
+    $('btn-reprise').disabled = false;
+  });
+
+  $('btn-pas-moi').addEventListener('click', async function () {
+    try { await auth.signOut(); } catch (e) { /* sans conséquence */ }
+    $('bloc-reprise').classList.add('hidden');
+    if (!aUnLien) { afficherRenvoi(); }
+  });
 
   $('btn-verif').addEventListener('click', async function () {
     const courriel = $('courriel-verif').value.trim();
@@ -113,20 +228,18 @@
     $('btn-verif').disabled = true;
     try {
       const cred = await auth.signInWithEmailLink(courriel, window.location.href);
-      const token = await cred.user.getIdToken();
-      const rep = await fetch('/session', {
-        method: 'POST',
-        headers: await enTetesFetch(),
-        body: JSON.stringify({ token: token, i: invitationId })
-      });
-      const donnees = await rep.json().catch(function () { return {}; });
-      if (rep.ok && donnees.suivant) { window.location = donnees.suivant; return; }
-      erreur.textContent = donnees.erreur || 'Invitation invalide ou expirée.';
-      erreur.classList.remove('hidden');
+      // Message NEUTRE quant à la cause (anti-énumération) mais qui indique
+      // les DEUX issues : retaper l'adresse, ou demander un nouveau lien.
+      const msg = await ouvrirSession(cred.user);
+      if (msg) {
+        erreur.textContent = msg;
+        erreur.classList.remove('hidden');
+        afficherRenvoi();
+      }
     } catch (e) {
-      // Message générique — jamais la cause précise (anti-énumération).
-      erreur.textContent = 'Invitation invalide ou expirée.';
+      erreur.textContent = _ECHEC_OUVERTURE;
       erreur.classList.remove('hidden');
+      afficherRenvoi();
     }
     $('btn-verif').disabled = false;
   });
@@ -143,11 +256,23 @@
         body: JSON.stringify({ courriel: courriel, i: invitationId })
       });
       const donnees = await rep.json().catch(function () { return {}; });
-      message.textContent = donnees.message ||
-        "Si l'invitation est valide, un nouveau lien vient d'être transmis.";
+      // NE JAMAIS annoncer un succès sur un échec de transport : un 429 (trop
+      // de demandes), un 401 (attestation) ou un 5xx renvoyaient auparavant le
+      // message de succès, laissant le client attendre un courriel qui
+      // n'arriverait jamais. Le 429 est évalué AVANT le corps de la route et
+      // dépend de l'IP seule — il ne révèle donc rien sur l'invitation.
+      if (rep.ok) {
+        message.textContent = donnees.message || _RENVOI_OK;
+      } else if (rep.status === 429) {
+        message.textContent = 'Trop de demandes. Réessayez dans une heure, ' +
+          'ou joignez-nous directement.';
+      } else {
+        message.textContent = "Impossible d'envoyer le lien pour l'instant. " +
+          'Réessayez dans quelques minutes.';
+      }
     } catch (e) {
-      message.textContent =
-        "Si l'invitation est valide, un nouveau lien vient d'être transmis.";
+      message.textContent = 'Erreur de réseau. Vérifiez votre connexion et ' +
+        'réessayez.';
     }
     message.classList.remove('hidden');
     $('btn-renvoi').disabled = false;
