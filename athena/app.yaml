@@ -40,6 +40,16 @@ env_variables:
   GRAPH_TENANT_ID: "4c5c39a5-2e63-4b04-8408-973c58cd88c7"
   GRAPH_CLIENT_ID: "988bf117-3aef-463b-8062-7dac226e50d9"
   GRAPH_SENDER_UPN: "reception@poirierlavoie.ca"
+  # Bookings sync (phase L2) — imports « Bookings with me » reservations from
+  # this mailbox as hearings gated behind confirmation="à_confirmer". Same
+  # Graph app registration (Calendars.ReadWrite added in Entra). The prefix
+  # matches the meeting-type name (« Consultation »); a booked event's subject
+  # starts with it. BOOKINGS_JURISTE_UPN is the polled mailbox (the juriste's,
+  # NOT the reception@ send-as alias).
+  BOOKINGS_JURISTE_UPN: "jason@poirierlavoie.ca"
+  BOOKINGS_SUBJECT_PREFIXES: "Consultation"
+  BOOKINGS_SYNC_ACTIVE: "true"
+  FEATURE_INTAKE: "false"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
   # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH, GRAPH_CLIENT_SECRET)
