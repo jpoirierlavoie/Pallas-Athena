@@ -86,6 +86,12 @@
         {% if partie.type == 'organization' and partie.trade_name %}
         <p class="text-sm text-gray-500 mt-1">Aussi connue sous : {{ partie.trade_name }}</p>
         {% endif %}
+        {% if partie.type != 'organization' and partie.birth_date %}
+        {# Date SEULE (minuit UTC) — strftime, jamais to_mtl. #}
+        <p class="text-sm text-gray-500 mt-1">
+          Né(e) le {{ partie.birth_date.strftime('%Y-%m-%d') }}
+        </p>
+        {% endif %}
       </div>
     </div>
 

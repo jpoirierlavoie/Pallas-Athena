@@ -93,6 +93,28 @@ def peut_relancer(invitation: dict) -> bool:
     )
 
 
+def prefill_depuis_partie(partie: Optional[dict]) -> Optional[dict]:
+    """Snapshot d'une partie destiné au formulaire d'ouverture (L3 §2).
+
+    LISTE BLANCHE, jamais une copie du document. Tout ce qui entre ici devient
+    lisible par le service PUBLIC du portail (piège §5) : ni notes, ni
+    conformité/KYC, ni liaison de dossier — et pas la date de naissance non
+    plus, que le client retapera. Ce sont ses propres coordonnées, qu'il ne
+    verra qu'après s'être authentifié sur son invitation.
+    """
+    if not partie:
+        return None
+    champs = (
+        "type", "first_name", "last_name", "organization_name",
+        "company_neq", "language", "email",
+        "phone_cell", "phone_home",
+        "address_street", "address_unit", "address_city",
+        "address_province", "address_postal_code", "address_country",
+    )
+    instantane = {c: partie.get(c) or "" for c in champs}
+    return {c: v for c, v in instantane.items() if v}
+
+
 def creer_invitation(
     type_: str,
     email: str,
@@ -102,6 +124,7 @@ def creer_invitation(
     client_name: str = "",
     display_label: str = "",
     jours: Optional[int] = None,
+    prefill: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Create an invitation document (statut « envoyée »).
 
@@ -147,7 +170,17 @@ def creer_invitation(
         "quota_mb": PORTAIL_MAX_TOTAL_MB,
         "soumissions": [],
         "accuses": {},
-        "prefill": None,  # réservé à L3
+        # Instantané NON SENSIBLE pour préremplir le formulaire d'ouverture
+        # (L3). Toujours passer par prefill_depuis_partie : ce document est lu
+        # par le service PUBLIC. Chaque valeur est assainie et bornée, comme
+        # tout ce qui traverse cette frontière.
+        "prefill": (
+            {
+                str(c): sanitize(str(v), max_length=200)
+                for c, v in prefill.items()
+            }
+            if isinstance(prefill, dict) and prefill else None
+        ),
     }
     try:
         _col().document(inv_id).set(doc)

@@ -129,8 +129,13 @@ def emettre_invitation(
     client_name: str = "",
     display_label: str = "",
     jours: Optional[int] = None,
+    prefill: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str], str]:
-    """Create + send an invitation. Returns (invitation, errors, lien_manuel)."""
+    """Create + send an invitation. Returns (invitation, errors, lien_manuel).
+
+    ``prefill`` (L3, type « intake » seulement) doit venir de
+    ``inv_model.prefill_depuis_partie`` — jamais d'un document de partie brut.
+    """
     email_n = normalize_email(email or "")
     if not email_n:
         return None, ["Adresse courriel invalide."], ""
@@ -165,7 +170,7 @@ def emettre_invitation(
     invitation, errors = inv_model.creer_invitation(
         type_, email_n,
         dossier_id=dossier_id, partie_id=partie_id, client_name=client_name,
-        display_label=display_label, jours=jours,
+        display_label=display_label, jours=jours, prefill=prefill,
     )
     if errors or invitation is None:
         return None, errors or ["Erreur lors de la création de l'invitation."], ""

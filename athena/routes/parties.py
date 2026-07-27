@@ -54,6 +54,9 @@ def _form_data() -> dict:
         "prefix": f.get("prefix", ""),
         "first_name": f.get("first_name", "").strip(),
         "last_name": f.get("last_name", "").strip(),
+        # <input type="date"> → « AAAA-MM-JJ » ; le modèle la fixe à minuit
+        # UTC, et une chaîne vide efface la date (_validate la remet à None).
+        "birth_date": f.get("birth_date", "").strip(),
         # Organization (personne morale)
         "organization_name": f.get("organization_name", "").strip(),
         "trade_name": f.get("trade_name", "").strip(),

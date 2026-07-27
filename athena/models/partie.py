@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import vobject
@@ -87,6 +87,10 @@ def _default_doc() -> dict:
         "first_name": "",
         "last_name": "",
         "prefix": "",
+        # Date de naissance — DATE SEULE, stockée à minuit UTC (convention
+        # dossier.opened_date). Ne JAMAIS la rendre via to_mtl : la conversion
+        # vers Montréal la reculerait d'un jour.
+        "birth_date": None,
         # Organization (personne morale)
         "organization_name": "",   # Legal name (nom légal)
         "trade_name": "",          # Trade / "doing business as" name (nom d'emprunt)
@@ -157,6 +161,31 @@ def _sanitize_data(data: dict) -> dict:
     return out
 
 
+def _coerce_birth_date(brut) -> Optional[datetime]:
+    """Coerce a birth date to midnight UTC, or None when unusable.
+
+    Accepts a datetime, a date, or an « AAAA-MM-JJ » string (the form, the
+    vCard BDAY parser and the portal all speak that shape). The result is a
+    DATE-ONLY value pinned at midnight UTC — same convention as
+    ``dossier.opened_date``, which is why it must never be rendered through
+    ``to_mtl`` (Montréal would move it to the previous day).
+    """
+    if isinstance(brut, datetime):
+        return datetime(brut.year, brut.month, brut.day, tzinfo=timezone.utc)
+    if isinstance(brut, date):
+        return datetime(brut.year, brut.month, brut.day, tzinfo=timezone.utc)
+    if isinstance(brut, str):
+        texte = brut.strip()
+        if not texte:
+            return None
+        try:
+            jour = date.fromisoformat(texte[:10])
+        except ValueError:
+            return None
+        return datetime(jour.year, jour.month, jour.day, tzinfo=timezone.utc)
+    return None
+
+
 def _validate(data: dict) -> list[str]:
     """Return a list of validation error messages (empty = valid)."""
     errors: list[str] = []
@@ -173,6 +202,21 @@ def _validate(data: dict) -> list[str]:
 
     if data.get("contact_role", "") not in VALID_CONTACT_ROLES:
         errors.append("Rôle de contact invalide.")
+
+    # Date de naissance — normalisée à minuit UTC (date seule) et jamais dans
+    # le futur. Une chaîne « AAAA-MM-JJ » est acceptée : le formulaire, le DAV
+    # (BDAY) et le portail la fournissent tous sous cette forme.
+    brut_naissance = data.get("birth_date")
+    if brut_naissance not in (None, ""):
+        normalisee = _coerce_birth_date(brut_naissance)
+        if normalisee is None:
+            errors.append("Date de naissance invalide.")
+        elif normalisee > datetime.now(timezone.utc):
+            errors.append("La date de naissance ne peut pas être dans le futur.")
+        else:
+            data["birth_date"] = normalisee
+    elif brut_naissance == "":
+        data["birth_date"] = None
 
     # Phone validation
     for field, label in [
@@ -293,24 +337,30 @@ def _normalize(data: dict) -> dict:
                 data[f"{prefix}_postal_code"] = normalized
 
     # Sanitize the mandataires list: drop empties, dedupe by id, coerce types.
-    raw_list = data.get("mandataires") or []
-    if not isinstance(raw_list, list):
-        raw_list = []
-    cleaned: list[dict] = []
-    seen: set[str] = set()
-    for entry in raw_list:
-        if not isinstance(entry, dict):
-            continue
-        mid = str(entry.get("id") or "").strip()
-        if not mid or mid in seen:
-            continue
-        seen.add(mid)
-        cleaned.append({
-            "id": mid,
-            "kind": str(entry.get("kind") or "").strip(),
-            "notes": str(entry.get("notes") or "").strip(),
-        })
-    data["mandataires"] = cleaned
+    # ONLY when the caller actually supplied the key. Writing it unconditionally
+    # made every PARTIAL update destructive: update_partie merges
+    # {**existing, **data}, so an injected empty list overwrote the stored
+    # mandataires. update_kyc_status and link_kyc_document already pass partial
+    # dicts, and the portal's field-by-field apply (L3) is partial by design.
+    if "mandataires" in data:
+        raw_list = data.get("mandataires") or []
+        if not isinstance(raw_list, list):
+            raw_list = []
+        cleaned: list[dict] = []
+        seen: set[str] = set()
+        for entry in raw_list:
+            if not isinstance(entry, dict):
+                continue
+            mid = str(entry.get("id") or "").strip()
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            cleaned.append({
+                "id": mid,
+                "kind": str(entry.get("kind") or "").strip(),
+                "notes": str(entry.get("notes") or "").strip(),
+            })
+        data["mandataires"] = cleaned
 
     # Drop any legacy single-mandataire fields so they don't get re-saved.
     for legacy_key in ("mandataire_id", "mandataire_kind", "mandataire_notes"):
@@ -697,6 +747,15 @@ def partie_to_vcard(partie: dict) -> str:
     if org_value:
         card.add("org").value = [org_value]
 
+    # BDAY — vCard 4.0 date value, « AAAAMMJJ » (RFC 6350 §6.2.5). Émise pour
+    # les personnes physiques seulement : une personne morale n'a pas de date
+    # de naissance, et un carnet Android l'afficherait comme un anniversaire.
+    naissance = partie.get("birth_date")
+    if naissance and partie.get("type") != "organization":
+        jour = _coerce_birth_date(naissance)
+        if jour is not None:
+            card.add("bday").value = jour.strftime("%Y%m%d")
+
     # TITLE
     if partie.get("job_title"):
         card.add("title").value = partie["job_title"]
@@ -832,6 +891,23 @@ def vcard_to_partie(vcard_str: str) -> dict:
         data["job_title"] = card.title.value
     if hasattr(card, "role"):
         data["job_role"] = card.role.value
+
+    # BDAY — la clé est OMISE quand la propriété est absente, jamais mise à
+    # None : update_partie fusionne {**existing, **data}, donc une clé
+    # présente-mais-vide EFFACE, tandis qu'une clé absente survit. Un client
+    # CardDAV qui ne gère pas BDAY ne doit pas pouvoir supprimer la date au
+    # premier PUT (même règle de non-effacement que CONFERENCE côté hearings).
+    # « AAAAMMJJ » (vCard 4.0) comme « AAAA-MM-JJ » (3.0) sont acceptés ; une
+    # date partielle (« --0317 », année inconnue) est ignorée.
+    if hasattr(card, "bday"):
+        brut = (card.bday.value or "").strip()
+        compact = brut.replace("-", "")
+        if len(compact) == 8 and compact.isdigit():
+            jour = _coerce_birth_date(
+                f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}"
+            )
+            if jour is not None:
+                data["birth_date"] = jour
 
     # Determine type (organization if no last_name but has org)
     if not data.get("last_name") and data.get("organization"):
