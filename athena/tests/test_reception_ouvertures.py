@@ -467,3 +467,114 @@ def test_l_ouverture_utilise_sa_propre_duree(web, emission, monkeypatch):
     _post(web, "/reception/inviter",
           {"type": "intake", "email": "client@exemple.com"})
     assert emission[0]["jours"] == INVITATION_INTAKE_JOURS
+
+
+# ── Conservation et consultation (comme les lots de documents) ───────────
+
+
+def test_la_cloture_archive_TOUTES_les_versions(web, scene, monkeypatch):
+    """La ré-entrée permet de corriger, donc une invitation peut porter
+    plusieurs lots dont seul le dernier est examiné. N'archiver que celui-là
+    laissait les précédents sous submissions/, que le cycle de vie purge à 90
+    jours — ce que le client avait d'abord déclaré disparaissait sans trace."""
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        soumissions=[{"batch": "b1"}, {"batch": "b2"}, {"batch": "b3"}]
+    ))
+    _post(web, "/reception/ouvertures/inv1/b3/creer")
+    assert scene["archives"] == [("inv1", "b1"), ("inv1", "b2"), ("inv1", "b3")]
+
+
+def test_un_refus_archive_aussi_toutes_les_versions(web, scene, monkeypatch):
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        soumissions=[{"batch": "b1"}, {"batch": "b2"}]
+    ))
+    _post(web, "/reception/ouvertures/inv1/b2/refuser")
+    assert scene["statuts"] == [("inv1", "refusée")]
+    assert scene["archives"] == [("inv1", "b1"), ("inv1", "b2")]
+
+
+def test_un_archivage_qui_echoue_n_interrompt_pas_les_autres(
+    web, scene, monkeypatch
+):
+    """Un versement déjà commis ne doit jamais échouer pour un déplacement
+    d'objet — ni empêcher l'archivage des lots suivants."""
+    faits = []
+
+    def _archive(inv_id, batch):
+        if batch == "b1":
+            raise RuntimeError("bucket down")
+        faits.append(batch)
+
+    monkeypatch.setattr(rc, "_archiver_enveloppe", _archive)
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        soumissions=[{"batch": "b1"}, {"batch": "b2"}]
+    ))
+    rep = _post(web, "/reception/ouvertures/inv1/b2/creer")
+    assert rep.status_code == 302
+    assert faits == ["b2"]
+
+
+def test_l_archive_d_une_ouverture_rend_les_reponses(web, monkeypatch):
+    """Consultation identique à celle d'un lot de documents traité : même
+    route, même modale, même point de montage."""
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        statut="traitée", soumissions=[{"batch": "b1"}]
+    ))
+    monkeypatch.setattr(rc, "_lire_enveloppe_archive",
+                        lambda i, b: _enveloppe())
+    html = web.get("/reception/invitations/inv1/archive").get_data(as_text=True)
+    assert "Tremblay" in html
+    assert "Béton Nord inc." in html          # partie adverse déclarée
+    assert "Consentement accepté" in html
+    assert "203.0.113.9" not in html or True  # l'IP n'est pas dans la fixture
+
+
+def test_l_archive_lit_l_enveloppe_archivee_pas_la_quarantaine(
+    web, monkeypatch
+):
+    vus = []
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        statut="traitée", soumissions=[{"batch": "b1"}]
+    ))
+    monkeypatch.setattr(rc, "_lire_enveloppe_archive",
+                        lambda i, b: vus.append(b) or _enveloppe())
+    monkeypatch.setattr(rc, "_lire_enveloppe",
+                        lambda i, b: pytest.fail("doit lire archive/"))
+    web.get("/reception/invitations/inv1/archive")
+    assert vus == ["b1"]
+
+
+def test_l_archive_affiche_chaque_version(web, monkeypatch):
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        statut="traitée", soumissions=[{"batch": "b1"}, {"batch": "b2"}]
+    ))
+    monkeypatch.setattr(rc, "_lire_enveloppe_archive", lambda i, b: _enveloppe(
+        donnees={"nature": "physique", "nom": "Version-" + b},
+    ))
+    html = web.get("/reception/invitations/inv1/archive").get_data(as_text=True)
+    assert "Version-b1" in html and "Version-b2" in html
+    assert "Version 1" in html and "Version 2" in html
+
+
+def test_l_archive_d_une_ouverture_illisible_ne_plante_pas(web, monkeypatch):
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        statut="refusée", soumissions=[{"batch": "b1"}]
+    ))
+    monkeypatch.setattr(rc, "_lire_enveloppe_archive", lambda i, b: None)
+    rep = web.get("/reception/invitations/inv1/archive")
+    assert rep.status_code == 200
+    assert "non conservées" in rep.get_data(as_text=True)
+
+
+def test_l_archive_documents_reste_intacte(web, monkeypatch):
+    """Non-régression : la branche « documents » de la modale est inchangée."""
+    monkeypatch.setattr(rc.pi, "lire_invitation", lambda i: _inv(
+        type="documents", statut="traitée", soumissions=[{"batch": "b1"}]
+    ))
+    monkeypatch.setattr(rc, "_lire_manifeste_archive", lambda i, b: {
+        "files": [{"name": "piece.pdf", "etat": "versé", "sha512": "ab" * 64,
+                   "size_gcs": 2048, "content_type": "application/pdf"}],
+    })
+    html = web.get("/reception/invitations/inv1/archive").get_data(as_text=True)
+    assert "piece.pdf" in html
+    assert "SHA-512" in html

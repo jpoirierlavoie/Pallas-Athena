@@ -161,6 +161,18 @@ def _archiver_enveloppe(inv_id: str, batch: str) -> None:
     source.delete()
 
 
+def _lire_enveloppe_archive(inv_id: str, batch: str) -> Optional[dict]:
+    """Enveloppe d'une ouverture close : archive/ d'abord, submissions/ en
+    repli — jumeau exact de _lire_manifeste_archive."""
+    bucket = _bucket()
+    for chemin in (f"archive/{inv_id}/{batch}/envelope.json",
+                   _prefix(inv_id, batch) + "envelope.json"):
+        blob = bucket.blob(chemin)
+        if blob.exists():
+            return json.loads(blob.download_as_bytes())
+    return None
+
+
 def _ecrire_manifeste(inv_id: str, batch: str, manifeste: dict) -> None:
     _bucket().blob(_prefix(inv_id, batch) + "manifeste.json").upload_from_string(
         json.dumps(manifeste, ensure_ascii=False),
@@ -651,21 +663,47 @@ def invitation_archive(inv_id: str):
     invitation = pi.lire_invitation(inv_id)
     if invitation is None:
         return render_template("reception/_archive_modal.html",
-                               invitation=None, lots=[], erreur=True)
+                               invitation=None, lots=[], erreur=True,
+                               est_intake=False)
+    # Une ouverture (L3) se conserve et se consulte comme un lot de documents,
+    # à ceci près que l'enveloppe EST la soumission : pas de fichiers, donc pas
+    # d'empreintes — le récapitulatif des réponses tient lieu de contenu.
+    est_intake = invitation.get("type") == "intake"
     lots = []
     erreur = False
     for soumission in invitation.get("soumissions") or []:
         batch = soumission.get("batch") or ""
+        lot = {"batch": batch, "soumission": soumission, "fichiers": []}
         try:
-            manifeste = _lire_manifeste_archive(inv_id, batch)
+            if est_intake:
+                enveloppe = _lire_enveloppe_archive(inv_id, batch) or {}
+                donnees = enveloppe.get("donnees") or {}
+                lot.update({
+                    "lisible": bool(donnees),
+                    # Vue en lecture seule : aucune partie de référence, donc
+                    # « actuel » reste vide et seul le déclaré s'affiche.
+                    "lignes": _comparaison(donnees, None),
+                    "adverses": [
+                        {"nom": (a.get("nom") or "").strip(),
+                         "precision": (a.get("precision") or "").strip()}
+                        for a in (enveloppe.get("parties_adverses") or [])
+                        if (a.get("nom") or "").strip()
+                    ],
+                    "consentement": enveloppe.get("consentement") or {},
+                    "soumis_le": enveloppe.get("submitted_at") or "",
+                    "http": enveloppe.get("http") or {},
+                })
+            else:
+                manifeste = _lire_manifeste_archive(inv_id, batch)
+                lot["fichiers"] = (manifeste or {}).get("files") or []
         except Exception:
-            logger.exception("reception: archive manifest read failed")
+            logger.exception("reception: archive read failed")
             erreur = True
-            manifeste = None
-        lots.append({"batch": batch, "soumission": soumission,
-                     "fichiers": (manifeste or {}).get("files") or []})
+            lot.setdefault("lisible", False)
+        lots.append(lot)
     return render_template("reception/_archive_modal.html",
-                           invitation=invitation, lots=lots, erreur=erreur)
+                           invitation=invitation, lots=lots, erreur=erreur,
+                           est_intake=est_intake)
 
 
 # ── Fichiers d'un lot ────────────────────────────────────────────────────
@@ -1138,15 +1176,33 @@ def _creer_adverses_coches(adverses: list[dict], inv_id: str) -> int:
     return crees
 
 
-def _cloturer(inv_id: str, batch: str, statut: str) -> None:
+def _cloturer(invitation: dict, batch: str, statut: str) -> None:
+    """Clore une ouverture : statut + archivage de TOUTES ses enveloppes.
+
+    Toutes, pas seulement celle qui vient d'être traitée : la ré-entrée permet
+    au client de corriger, donc une invitation peut porter plusieurs lots dont
+    seul le dernier a été examiné. Les précédents restaient sous
+    ``submissions/``, que le cycle de vie purge à 90 jours — ce qui aurait fait
+    disparaître, sans trace, ce que le client avait d'abord déclaré. Un
+    formulaire traité ou refusé se conserve intégralement, comme un lot de
+    documents.
+    """
+    inv_id = invitation["id"]
     pi.maj_statut(inv_id, statut)
-    try:
-        _archiver_enveloppe(inv_id, batch)
-    except Exception:
-        # L'archivage rate → le cycle de vie du seau purgera à 90 jours. Ne
-        # jamais faire échouer un versement déjà commis pour un déplacement
-        # d'objet.
-        logger.exception("reception: intake envelope archive failed")
+    batches = [
+        s.get("batch") for s in (invitation.get("soumissions") or [])
+        if s.get("batch")
+    ]
+    if batch and batch not in batches:
+        batches.append(batch)
+    for b in batches:
+        try:
+            _archiver_enveloppe(inv_id, b)
+        except Exception:
+            # L'archivage rate → le cycle de vie du seau purgera à 90 jours.
+            # Ne jamais faire échouer un versement déjà commis pour un
+            # déplacement d'objet, ni interrompre les lots suivants.
+            logger.exception("reception: intake envelope archive failed")
 
 
 @reception_bp.post("/ouvertures/<inv_id>/<batch>/creer")
@@ -1187,7 +1243,7 @@ def ouverture_creer(inv_id: str, batch: str):
     # création de partie qui l'oublie n'atteint JAMAIS le carnet DavX5, en
     # silence. Un seul bump couvre la fiche cliente et les parties adverses.
     bump_ctag("parties")
-    _cloturer(inv_id, batch, "traitée")
+    _cloturer(invitation, batch, "traitée")
     log_portail_event("intake_partie_creee", invitation_id=inv_id, batch=batch,
                       adverses_crees=crees)
     message = "Fiche créée — vérifiez et complétez-la."
@@ -1222,7 +1278,7 @@ def ouverture_appliquer(inv_id: str, batch: str):
                                    inv_id)
     if valeurs or crees:
         bump_ctag("parties")
-    _cloturer(inv_id, batch, "traitée")
+    _cloturer(invitation, batch, "traitée")
     log_portail_event("intake_partie_mise_a_jour", invitation_id=inv_id,
                       batch=batch, champs=len(valeurs), adverses_crees=crees)
     message = (
@@ -1242,7 +1298,7 @@ def ouverture_refuser(inv_id: str, batch: str):
     if invitation is None:
         return _rediriger(erreur="Soumission introuvable.", onglet="ouvertures")
     # D-L3-3 : aucun courriel au client — le suivi est humain.
-    _cloturer(inv_id, batch, "refusée")
+    _cloturer(invitation, batch, "refusée")
     log_portail_event("intake_refuse", "refused", invitation_id=inv_id,
                       batch=batch)
     return _rediriger(message="Ouverture refusée.", onglet="ouvertures")

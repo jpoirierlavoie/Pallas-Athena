@@ -39,6 +39,49 @@
       <div class="text-sm text-gray-500">Aucune transmission conservée pour cette invitation.</div>
       {% endif %}
 
+      {# ── Ouvertures (L3) : l'enveloppe EST la soumission ───────────── #}
+      {% if est_intake %}
+      {% for lot in lots %}
+      <div>
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+          {% if lots|length > 1 %}Version {{ loop.index }} — {% endif %}{{ lot.batch }}
+        </h3>
+        {% if not lot.lisible %}
+        <div class="text-sm text-gray-400">Réponses non conservées ou illisibles.</div>
+        {% else %}
+        <dl class="text-sm border border-gray-200 rounded-lg divide-y divide-gray-100">
+          {% for l in lot.lignes %}
+          <div class="flex justify-between gap-4 px-3 py-2">
+            <dt class="text-gray-500">{{ l.libelle }}</dt>
+            <dd class="text-gray-900 text-right break-all min-w-0">{{ l.soumis or "—" }}</dd>
+          </div>
+          {% endfor %}
+          {% for a in lot.adverses %}
+          <div class="flex justify-between gap-4 px-3 py-2">
+            <dt class="text-gray-500">Partie adverse</dt>
+            <dd class="text-gray-900 text-right break-all min-w-0">
+              {{ a.nom }}{% if a.precision %} <span class="text-gray-500">— {{ a.precision }}</span>{% endif %}
+            </dd>
+          </div>
+          {% endfor %}
+        </dl>
+        <div class="mt-2 text-xs text-gray-400 space-y-1">
+          {% if lot.soumis_le %}<div>Transmis le {{ lot.soumis_le[:10] }} à {{ lot.soumis_le[11:16] }} UTC</div>{% endif %}
+          {% if lot.consentement.horodatage %}
+          <div>
+            Consentement accepté (version {{ lot.consentement.version_texte or "1" }})
+            le {{ lot.consentement.horodatage[:10] }}
+          </div>
+          {% endif %}
+          {% if lot.http.ip %}<div>IP {{ lot.http.ip }}</div>{% endif %}
+          {% if lot.http.user_agent %}<div class="break-all">{{ lot.http.user_agent }}</div>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+
+      {% else %}
+      {# ── Documents : fichiers, empreintes et décisions ─────────────── #}
       {% for lot in lots %}
       <div>
         <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Lot {{ lot.batch }}</h3>
@@ -74,6 +117,7 @@
         {% endif %}
       </div>
       {% endfor %}
+      {% endif %}
     </div>
   </div>
 </div>

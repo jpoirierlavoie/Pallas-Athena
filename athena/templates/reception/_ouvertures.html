@@ -201,17 +201,27 @@
 </div>
 {% endif %}
 
-{# ── Historique récent ───────────────────────────────────────────── #}
+{# ── Historique — même consultation que les lots de documents traités ── #}
 {% if intake_traitees %}
-<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mt-8 mb-3">Historique</h2>
-<div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+<h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mt-8 mb-3">Récemment traitées</h2>
+<div class="bg-white rounded-xl border border-gray-200 divide-y divide-gray-50">
   {% for inv in intake_traitees %}
-  <div class="flex flex-wrap items-center justify-between gap-3 p-4">
-    <p class="text-sm text-gray-700">{{ inv.display_label }}</p>
-    <span class="text-xs text-gray-400">{{ inv.statut }}</span>
-  </div>
+  <button type="button"
+          hx-get="{{ url_for('reception.invitation_archive', inv_id=inv.id) }}"
+          hx-target="#reception-modal" hx-swap="innerHTML"
+          class="w-full text-left px-4 py-2.5 flex items-center justify-between text-sm hover:bg-gray-50">
+    <span class="text-gray-700">{{ inv.display_label }} <span class="text-gray-400">· {{ inv.email }}</span></span>
+    <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full
+                 {{ 'bg-green-100 text-green-700' if inv.statut == 'traitée' else 'bg-gray-100 text-gray-500' }}">
+      {{ inv.statut }}
+    </span>
+  </button>
   {% endfor %}
 </div>
+<p class="mt-2 text-xs text-gray-400">
+  Cliquez une ouverture pour revoir les réponses conservées — toutes les
+  versions transmises, y compris celles d'un formulaire refusé.
+</p>
 {% endif %}
 
 <p class="mt-6 text-xs text-gray-400">
