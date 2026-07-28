@@ -139,6 +139,16 @@
         <dd class="text-gray-900 text-right">{{ dossier.date_avis.strftime('%d %B %Y') }}</dd>
       </div>
       {% endif %}
+      {# Prise d'action — même garde additive que « Date d'avis ». C'est le SEUL
+         endroit qui rappelle pourquoi ce dossier ne déclenche plus d'alerte :
+         il doit rester lisible, et la mention le dit explicitement. #}
+      {% if dossier.prise_action_date and dossier.prise_action_date.strftime is defined %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Prise d'action</dt>
+        <dd class="text-green-700 text-right font-medium">{{ dossier.prise_action_date.strftime('%d %B %Y') }}</dd>
+      </div>
+      <p class="text-xs text-gray-400 pt-1">Alerte de prescription en sourdine — le délai a été interrompu.</p>
+      {% endif %}
     </dl>
   </div>
 
