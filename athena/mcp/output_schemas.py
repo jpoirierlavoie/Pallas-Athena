@@ -398,6 +398,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "prescription_label": _str(),
                 "droit_action_date": _nstr(),
                 "date_avis": _nstr("Confirmed avis préalable date — manual."),
+                "prise_action_date": _nstr(
+                    "Date the recourse was filed / the limitation period "
+                    "interrupted (art. 2892 C.c.Q.) — manual. When set, this "
+                    "dossier is also dropped from get_agenda's "
+                    "prescription_alerts: the deadline no longer looms."
+                ),
                 "prescription_notes": _str(),
                 "created_at": _nstr(),
                 "updated_at": _nstr(),

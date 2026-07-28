@@ -306,6 +306,7 @@ def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):
             "prescription_date": None, "hourly_rate": 25000, "flat_fee": None,
             # date-only (midnight UTC) — must emit as the UTC calendar date
             "date_avis": datetime(2026, 8, 3, tzinfo=UTC),
+            "prise_action_date": datetime(2026, 9, 15, tzinfo=UTC),
             "clients": [{"id": "p1", "name": "Jean Tremblay"}],
             "opposing_parties": [{"id": "p2", "name": "Marc Lavoie"}]}
 
@@ -392,6 +393,9 @@ def test_get_dossier_composes_summaries(monkeypatch):
     # date_avis is date-only (midnight UTC): the UTC calendar date, never a
     # Montréal-shifted timestamp.
     assert d["date_avis"] == "2026-08-03"
+    # Même règle pour la prise d'action — date seule, jamais un décalage
+    # Montréal qui la reculerait d'un jour.
+    assert d["prise_action_date"] == "2026-09-15"
     # matter_type/objet were superseded by the taxonomy.
     assert "matter_type" not in d
     assert "objet" not in d

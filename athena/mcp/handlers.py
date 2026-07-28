@@ -414,6 +414,11 @@ def get_dossier(args: dict) -> dict:
             # Confirmed avis préalable date — manual, optional; date-only
             # (midnight UTC), so date_str, never iso_mtl.
             "date_avis": date_str(_as_utc(d.get("date_avis"))),
+            # Acte interruptif posé (art. 2892 C.c.Q.). Renseignée, elle
+            # retire aussi le dossier des prescription_alerts de get_agenda —
+            # sans quoi l'assistant continuerait d'avertir d'un délai qui ne
+            # court plus. Date seule : date_str, jamais iso_mtl.
+            "prise_action_date": date_str(_as_utc(d.get("prise_action_date"))),
             "prescription_notes": d.get("prescription_notes", ""),
             "created_at": iso_mtl(_as_utc(d.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(d.get("updated_at"))),

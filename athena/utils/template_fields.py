@@ -620,6 +620,8 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.prescription": ("dossier", _dossier_prescription),
     "dossier.droit_action": ("dossier", _dossier_date("droit_action_date")),
     "dossier.date_pour_agir": ("dossier", _dossier_date("prescription_date")),
+    # Acte interruptif posé (art. 2892 C.c.Q.) — manuel, jamais calculé.
+    "dossier.prise_action": ("dossier", _dossier_date("prise_action_date")),
     # dossier.* mandate / fees / lifecycle (« Mandat » card)
     "dossier.type_mandat": ("dossier", _dossier_labelled("mandate_type", _MANDATE_TYPE_LABEL)),
     # « Type de dossier » became « Domaine » (July 2026); the old placeholder
@@ -689,6 +691,7 @@ FLAT_ALIASES: dict[str, str] = {
     "prescription": "dossier.prescription",
     "droit_action": "dossier.droit_action",
     "date_pour_agir": "dossier.date_pour_agir",
+    "prise_action": "dossier.prise_action",
     "type_mandat": "dossier.type_mandat",
     "type_dossier": "dossier.type_dossier",
     # Taxonomy (July 2026). `objet` had no flat alias before — a skill emitting

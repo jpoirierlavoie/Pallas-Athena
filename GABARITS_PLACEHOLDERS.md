@@ -91,6 +91,7 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.prescription}}` | The confirmed delay label (« 3 ans », « 90 jours », « Imprescriptible »). Generic since July 2026 — the delay's article now travels with `{{dossier.reference}}` (and the right of action's with `{{dossier.fondement}}`), because one period serves many articles |
 | `{{dossier.droit_action}}` | Droit d'action — start of prescription (French long date) |
 | `{{dossier.date_pour_agir}}` | Date pour agir — computed limitation deadline (French long date) |
+| `{{dossier.prise_action}}` | Prise d'action — date the recourse was filed / the limitation period interrupted (art. 2892 C.c.Q.). Manual, never computed; when set it silences the prescription alert |
 | `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire », « Transactionnel », « Consultatif », « Autre ») |
 | `{{dossier.type_dossier}}` | **Renamed « Domaine » (July 2026)** — kept as an alias of `{{dossier.domaine}}` |
 | `{{dossier.type_honoraires}}` | Fee-type label (« Horaire », « Forfaitaire », « Mixte », « Contingence », « Pro bono », « Aide juridique ») |
@@ -173,6 +174,7 @@ same-spelled namespaced field.
 | `{{prescription}}` | `dossier.prescription` |
 | `{{droit_action}}` | `dossier.droit_action` |
 | `{{date_pour_agir}}` | `dossier.date_pour_agir` |
+| `{{prise_action}}` | `dossier.prise_action` |
 | `{{domaine}}` | `dossier.domaine` |
 | `{{action}}` | `dossier.action` |
 | `{{objet}}` | `dossier.objet` (→ the action label; **new alias** — `{{objet}}` used to fall silently into passthrough) |

@@ -177,7 +177,8 @@ def _dossier_doc(**over):
         "mandate_type": "judiciaire", "fee_type": "hourly", "fee_notes": "",
         "hourly_rate": 25000, "flat_fee": None, "contingency_percent": None,
         "valeur": None, "prescription_type": "3_ans",
-        "droit_action_date": DT, "date_avis": None, "prescription_notes": "",
+        "droit_action_date": DT, "date_avis": None,
+        "prise_action_date": None, "prescription_notes": "",
         "created_at": DT, "updated_at": DT,
     }
     doc.update(over)
@@ -269,7 +270,8 @@ def test_get_dossier_both_branches_conform(monkeypatch):
         handlers.dossier_model, "get_dossier",
         lambda i: _dossier_doc(
             valeur=1500000, flat_fee=500000,
-            contingency_percent=2500, date_avis=DT, closed_date=DT,
+            contingency_percent=2500, date_avis=DT, prise_action_date=DT,
+            closed_date=DT,
             # Full July-2026 party shape: roles + avocat per entry.
             clients=[{"id": "p1", "name": "Jean Tremblay",
                       "roles": ["défendeur", "demandeur reconventionnel"],
