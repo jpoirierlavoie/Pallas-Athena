@@ -615,6 +615,16 @@ A dossier holds multiple clients and multiple opposing parties as **arrays of `{
     # cause d'action… — not droit_action_date). The form shows the action's
     # structured avis (délai/point de départ/sanction) as the suggestion.
     "date_avis": datetime | None,
+    # Acte interruptif posé — la demande déposée (art. 2892 C.c.Q.).
+    # MANUEL, jamais dérivé, additif (juillet 2026, aucune migration :
+    # absent sur un dossier hérité = aucune action prise). Sa présence
+    # TAIT l'alerte de prescription partout — list_prescription_alerts
+    # (donc le tableau de bord ET le MCP get_agenda) et
+    # _attach_prescription_warnings (pastille de liste + couleur de la
+    # carte). Ne recalcule PAS prescription_date : l'art. 2903 fait
+    # courir un nouveau délai, mais le déduire serait produire du
+    # contenu juridique que personne n'a confirmé.
+    "prise_action_date": datetime | None,
     "prescription_notes": str,
 
     # REMOVED FIELDS — popped on read by models/dossier._strip_removed_fields
@@ -1120,7 +1130,7 @@ All UI routes require `@login_required` (in `auth.py`). DAV routes use `@dav_aut
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/` | GET | Landing dashboard: hearings (next 7 days + 7-60 days), urgent tasks (≤14 days or overdue), urgent protocol steps, prescription alerts (within 60 days, with judicially-adjusted last-action date), quick stats (open dossiers, unbilled hours/amount, outstanding invoices) |
+| `/` | GET | Landing dashboard: hearings (next 7 days + 7-60 days), urgent tasks (≤14 days or overdue), urgent protocol steps, prescription alerts (within 60 days, with judicially-adjusted last-action date, **excluding dossiers carrying a `prise_action_date`**), quick stats (open dossiers, unbilled hours/amount, outstanding invoices) |
 
 ### `parties.py` — `/parties/*`
 
@@ -1449,7 +1459,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 ### `models/dossier.py`
 - `suggest_file_number() -> str` — public wrapper around `_suggest_next_file_number`, "YYYY-NNN" sequential
 - `count_open() -> int` — COUNT aggregation over `status in (actif, en_attente)` (dashboard stat)
-- `list_prescription_alerts(cutoff, limit=50) -> list[dict]` — server-side `status==actif AND prescription_date<=cutoff`, ordered + bounded; logs a warning when the window fills (needs the `dossiers` composite index)
+- `list_prescription_alerts(cutoff, limit=50) -> list[dict]` — server-side `status==actif AND prescription_date<=cutoff`, ordered + bounded; logs a warning when the window fills, on the RAW count (needs the `dossiers` composite index). Dossiers carrying a `prise_action_date` are dropped **in Python** — see the Known Gotcha; this one seam serves the dashboard and the MCP `get_agenda` alike
 - `count_dossiers_for_partie(partie_id) -> int` (returns 0 on query failure — display only), `count_dossiers_for_partie_strict(partie_id) -> int` (propagates errors — used by FK safety checks), `list_dossiers_for_partie(partie_id) -> list[dict]` — query `client_ids`, `opposing_party_ids` **and `avocat_ids`** (a contact linked as a party's lawyer counts as referenced: it blocks deletion, and `get_partie` reports the dossier with `relation: "avocat"`)
 - `delete_dossier` REFUSES deletion while child records exist (documents, time entries, expenses, invoices, hearings, tasks, notes, protocols, folders, **trust transactions**) and fails CLOSED when the child check errors — archive instead of deleting. **A dossier that has EVER had a trust entry can never be deleted** even at a zero balance (the register is permanent; `trust_transactions` rows are never hard-deleted, so the `count>0` check enforces "ever existed")
 - `dossier_to_vjournal(dossier) -> str`, `vjournal_to_dossier(ical_str) -> dict` — legacy, retained for potential export (not used by DAV post-D1). CATEGORIES now emits the domaine label + the action label; an unknown key resolves to nothing rather than leaking a raw snake_case key as a French category (the old `matter_type` line did).
@@ -1962,6 +1972,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **A `-99` « Autre (préciser) » row must never carry a délai.** Every domaine ends with one so no file is unclassifiable; they have no delay of their own, and the domaine's default (e.g. RES's « 3 ans (art. 2925) ») is **not** theirs to inherit — `action_precision` is where the real object goes.
 - **`delai_types` is a tuple over a closed 11-token vocabulary; annex asymmetries are deliberate.** Tokens combine (`("PE","A")`), `D` (stricte, rouge) outranks `DR` (relevable, orange) in `niveau_decheance`, and the legal content of `taxonomie.py` changes **only on an approved spec**. Do not "fix" COR-11 (token `A`, `avis == ()`) or RCV-03 (two conditional avis, typed `(PE,)`) — both are binding annex content, pinned by `test_a_token_and_avis_sets_are_pinned`. The six pinned `ref_delai == ""` rows (CST-05, COR-04, COR-09, FAM-01, FAM-02, FAM-06) are equally deliberate — no statutory delay source exists, and inventing one would derive legal content.
 - **§ 4's déchéance list is a cross-section claim.** `niveau_decheance` derives from the `delai_types` tokens, but **APP-01** states « déchéance expresse » only in prose — a per-section reader cannot catch that. `tests/test_taxonomie.py::test_section_4_decheances_all_carry_D` pins the § 4 cross-section as `stricte`; extend it when the source changes.
+- **Silencing a prescription alert filters in PYTHON, never with a Firestore `where`.** `prise_action_date` drops a dossier from `models/dossier.list_prescription_alerts` — the single seam both consumers pass through (`routes/dashboard.py` **and** `mcp/handlers.get_agenda`; silencing only the dashboard would leave Claude warning about a limitation period that no longer runs, which is advice that is actively wrong). It must stay a Python filter over the bounded result for two reasons that each fail SILENTLY: a Firestore equality on `None` **does not match documents where the key is ABSENT**, which is every pre-existing dossier (the field is additive, with no migration) — so a server-side filter would make every current alert vanish without a trace; and a third `.where()` would need a new composite index, whose build window degrades the query to an **empty list**, the worst possible failure mode for a limitation deadline. The « result window full » warning is computed on the RAW count, before filtering: a silenced dossier still consumes one of the 50 slots, so a full window still means real alerts are hidden beyond it. `routes/dossiers._attach_prescription_warnings` must be silenced by the same field, or the dossier leaves the dashboard while keeping its red dot in the list and a red « Date pour agir » on its own card — a contradiction that teaches the lawyer to distrust the colour.
 - **`date_avis` is manual, never derived.** Each avis has its own factual starting point (délivrance du bien, cause d'action…), which is NOT `droit_action_date` — deriving the date would silently compute from the wrong start. The form shows the action's structured avis as the suggestion; the lawyer confirms by filling the field. `compute_echeances` dates an avis only from an explicit `date_depart_avis` + a confirmed scenario (`avis_confirmes`).
 - **Direct App Engine access is blocked at three layers** (App Engine firewall → Cloudflare IPs only, `X-Origin-Auth` origin secret, appspot Host check). When debugging, hit the Cloudflare hostname — `gcloud app browse` will 403. New App Engine internal endpoints (cron, queues) must be under `/_ah/` or they'll be rejected by the origin checks.
 - **`requirements.txt` is generated — never hand-edit it.** Change `requirements.in`, then re-lock with `uv pip compile` (recipe in the Tech Stack section). Production pip runs with `--require-hashes --no-deps`, so an unhashed edit simply won't deploy.
