@@ -88,6 +88,21 @@
                value="{{ brouillon.get('nom', '') }}" autocomplete="family-name"
                class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
       </div>
+      <div>
+        <label for="date_naissance" class="block text-sm text-gray-700 mb-1">
+          Date de naissance <span class="text-gray-400">(facultatif)</span>
+        </label>
+        {# type="date" produit nativement AAAA-MM-JJ, la seule forme que le
+           serveur accepte — le contrôle serveur reste, un navigateur sans
+           support retombant sur un champ texte libre. #}
+        <input type="date" id="date_naissance" data-champ="date_naissance"
+               max="{{ aujourdhui }}" value="{{ brouillon.get('date_naissance', '') }}"
+               autocomplete="bday"
+               class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <p class="mt-1 text-xs text-gray-400">
+          Nous aide à vous distinguer d'un homonyme.
+        </p>
+      </div>
     </div>
 
     <div id="bloc-morale" class="hidden space-y-4">
@@ -265,7 +280,8 @@
   // même appareil ne doit jamais voir les réponses du premier.
   const CLE_BROUILLON = 'pa_intake_' + {{ invitation.id|tojson }};
   const LIBELLES = {
-    prenom: 'Prénom', nom: 'Nom', denomination: 'Dénomination sociale',
+    prenom: 'Prénom', nom: 'Nom', date_naissance: 'Date de naissance',
+    denomination: 'Dénomination sociale',
     neq: 'NEQ', langue: 'Langue', courriel: 'Courriel',
     telephone: 'Téléphone', telephone2: 'Autre téléphone',
     adresse_rue: 'Adresse', adresse_app: 'Appartement',
@@ -408,7 +424,7 @@
       ? ['denomination', 'neq', 'langue', 'courriel', 'telephone', 'telephone2',
          'adresse_rue', 'adresse_app', 'adresse_ville', 'adresse_province',
          'adresse_code_postal']
-      : ['prenom', 'nom', 'langue', 'courriel', 'telephone', 'telephone2',
+      : ['prenom', 'nom', 'date_naissance', 'langue', 'courriel', 'telephone', 'telephone2',
          'adresse_rue', 'adresse_app', 'adresse_ville', 'adresse_province',
          'adresse_code_postal'];
     ordre.forEach(function (cle) {
@@ -474,6 +490,18 @@
       }
       if (valeurs.nature !== 'morale' && !(valeurs.nom || '').trim()) {
         return 'Veuillez indiquer votre nom de famille.';
+      }
+      // Miroir du contrôle serveur : une date illisible écartée en silence
+      // ferait croire au client qu'il l'a fournie.
+      const naissance = (valeurs.date_naissance || '').trim();
+      if (valeurs.nature !== 'morale' && naissance) {
+        const d = new Date(naissance + 'T00:00:00Z');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(naissance) || isNaN(d.getTime())) {
+          return 'La date de naissance doit être au format AAAA-MM-JJ.';
+        }
+        if (d > new Date()) {
+          return 'La date de naissance ne peut pas être dans le futur.';
+        }
       }
     }
     if (n === 2 && !(valeurs.telephone || '').trim()) {

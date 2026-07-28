@@ -270,6 +270,7 @@ def _contexte_rdv() -> dict:
 _CORRESPONDANCE = (
     ("prenom", "first_name", "Prénom"),
     ("nom", "last_name", "Nom"),
+    ("date_naissance", "birth_date", "Date de naissance"),
     ("denomination", "organization_name", "Dénomination sociale"),
     ("neq", "company_neq", "NEQ"),
     ("langue", "language", "Langue"),
@@ -299,7 +300,17 @@ def _comparaison(donnees: dict, partie: Optional[dict]) -> list[dict]:
         actuel = ""
         if partie:
             valeur = partie.get(cible)
-            actuel = "" if valeur is None else str(valeur)
+            if valeur is None:
+                actuel = ""
+            elif hasattr(valeur, "strftime"):
+                # birth_date est une DATE SEULE à minuit UTC : str() en ferait
+                # « 1985-03-17 00:00:00+00:00 », qui ne serait jamais égal au
+                # « 1985-03-17 » transmis — le champ paraîtrait toujours
+                # différent, donc toujours pré-coché. strftime, jamais to_mtl
+                # (Montréal reculerait la date d'un jour).
+                actuel = valeur.strftime("%Y-%m-%d")
+            else:
+                actuel = str(valeur)
         if not soumis and not actuel:
             continue
         lignes.append({

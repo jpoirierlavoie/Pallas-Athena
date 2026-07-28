@@ -11,7 +11,7 @@ Error messages are GENERIC on purpose (« Invitation invalide ou expirée »)
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from flask import (
     g,
@@ -156,12 +156,28 @@ _PAGE_DU_TYPE = {
 # ``models``, et la table de correspondance vit côté juriste (§5.3), là où le
 # versement est décidé. « parties_adverses » est traité à part (liste).
 _CHAMPS_INTAKE = (
-    "nature", "prenom", "nom", "denomination", "neq", "langue",
-    "telephone", "telephone2",
+    "nature", "prenom", "nom", "date_naissance", "denomination", "neq",
+    "langue", "telephone", "telephone2",
     "adresse_rue", "adresse_app", "adresse_ville",
     "adresse_province", "adresse_code_postal", "adresse_pays",
     "parties_adverses", "consentement",
 )
+
+
+def _date_valide(texte: str) -> bool:
+    """AAAA-MM-JJ, pas dans le futur.
+
+    Contrôle LOCAL : le portail n'importe jamais ``models`` (son compte de
+    service n'a délibérément pas les droits qu'une telle importation
+    exigerait), donc il ne peut pas réutiliser ``partie._coerce_birth_date``.
+    Les deux doivent rester d'accord sur la forme acceptée — c'est pourquoi
+    l'assistant impose ``<input type="date">``, qui la produit nativement.
+    """
+    try:
+        jour = date.fromisoformat(texte)
+    except ValueError:
+        return False
+    return jour <= datetime.now(timezone.utc).date()
 
 # prefill (instantané non sensible joint à l'invitation) → champs du
 # formulaire. Le sens inverse — formulaire → contact — vit dans Réception.
@@ -735,6 +751,13 @@ def _valider_final(brouillon: dict) -> list[str]:
         erreurs.append("Le nom de famille est requis.")
     if not brouillon.get("telephone"):
         erreurs.append("Un numéro de téléphone est requis.")
+    # Facultative — mais si elle est là, elle doit être exploitable : une date
+    # illisible silencieusement écartée ferait croire au client qu'il l'a
+    # fournie, et le juriste ne la verrait jamais.
+    naissance = (brouillon.get("date_naissance") or "").strip()
+    if nature != "morale" and naissance and not _date_valide(naissance):
+        erreurs.append("La date de naissance est invalide "
+                       "(format AAAA-MM-JJ, jamais dans le futur).")
     if brouillon.get("consentement") is not True:
         erreurs.append("Le consentement est requis pour transmettre le "
                        "formulaire.")
@@ -762,6 +785,8 @@ def page_ouverture():
         nom_max=INTAKE_NOM_MAX,
         precision_max=INTAKE_PRECISION_MAX,
         champ_max=INTAKE_CHAMP_MAX,
+        # Borne le sélecteur de date natif : on ne naît pas demain.
+        aujourdhui=datetime.now(timezone.utc).date().isoformat(),
         deja_soumis=bool(invitation.get("soumissions")),
     )
 

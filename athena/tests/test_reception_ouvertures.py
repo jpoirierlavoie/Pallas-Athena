@@ -578,3 +578,47 @@ def test_l_archive_documents_reste_intacte(web, monkeypatch):
     html = web.get("/reception/invitations/inv1/archive").get_data(as_text=True)
     assert "piece.pdf" in html
     assert "SHA-512" in html
+
+
+# ── Date de naissance : du formulaire au contact ─────────────────────────
+
+
+def test_la_date_de_naissance_est_versee_a_la_creation(web, scene, monkeypatch):
+    monkeypatch.setattr(rc, "_lire_enveloppe", lambda i, b: _enveloppe(
+        donnees={"nature": "physique", "nom": "Tremblay",
+                 "date_naissance": "1985-03-17"},
+    ))
+    _post(web, "/reception/ouvertures/inv1/b1/creer")
+    assert scene["crees"][0]["birth_date"] == "1985-03-17"
+
+
+def test_une_date_stockee_se_compare_en_date_seule(monkeypatch):
+    """birth_date est un datetime à minuit UTC : str() en ferait
+    « 1985-03-17 00:00:00+00:00 », qui ne serait JAMAIS égal au « 1985-03-17 »
+    transmis — la ligne paraîtrait toujours différente, donc toujours
+    pré-cochée, et le juriste réappliquerait sans fin la même valeur."""
+    partie = {"birth_date": datetime(1985, 3, 17, tzinfo=timezone.utc)}
+    lignes = {l["champ"]: l
+              for l in rc._comparaison({"date_naissance": "1985-03-17"}, partie)}
+    ligne = lignes["date_naissance"]
+    assert ligne["actuel"] == "1985-03-17"
+    assert ligne["differe"] is False
+    assert ligne["applicable"] is False
+
+
+def test_une_date_differente_est_bien_proposee(monkeypatch):
+    partie = {"birth_date": datetime(1985, 3, 17, tzinfo=timezone.utc)}
+    lignes = {l["champ"]: l
+              for l in rc._comparaison({"date_naissance": "1990-01-02"}, partie)}
+    assert lignes["date_naissance"]["applicable"] is True
+
+
+def test_une_date_absente_n_efface_pas_celle_au_dossier(monkeypatch):
+    """Le prefill ne porte JAMAIS la date (document lu par le service public),
+    donc le client la retrouve vide et la laisse souvent vide. Cela ne doit pas
+    proposer d'effacer celle qui est au dossier."""
+    partie = {"birth_date": datetime(1985, 3, 17, tzinfo=timezone.utc)}
+    lignes = {l["champ"]: l
+              for l in rc._comparaison({"date_naissance": ""}, partie)}
+    assert lignes["date_naissance"]["applicable"] is False
+    assert lignes["date_naissance"]["actuel"] == "1985-03-17"

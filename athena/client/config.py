@@ -88,6 +88,7 @@ INTAKE_CHAMP_MAX_PAR_NOM = {
     "adresse_province": 60,
     "adresse_pays": 60,
     "adresse_code_postal": 10,
+    "date_naissance": 10,       # AAAA-MM-JJ
 }
 # Plafond DUR, en octets UTF-8 du brouillon sérialisé. Il ne double pas les
 # bornes par champ ci-dessus, il les CEINTURE : celles-ci bornent chaque

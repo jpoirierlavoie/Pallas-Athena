@@ -436,3 +436,60 @@ def test_un_refus_purge_le_brouillon(web, connecte, monkeypatch):
     web.get("/ouverture")
     with web.session_transaction() as s:
         assert "intake" not in s
+
+
+# ── Date de naissance (facultative) ──────────────────────────────────────
+
+
+def test_la_date_de_naissance_atteint_l_enveloppe(web, connecte, monkeypatch):
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    _post_json(web, "/api/intake/finaliser",
+               _complet(date_naissance="1985-03-17"))
+    _i, _b, envelope = ecrit.call_args[0]
+    assert envelope["donnees"]["date_naissance"] == "1985-03-17"
+
+
+def test_elle_reste_facultative(web, connecte, monkeypatch):
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    assert _post_json(
+        web, "/api/intake/finaliser", _complet()
+    ).status_code == 200
+    _i, _b, envelope = ecrit.call_args[0]
+    assert envelope["donnees"]["date_naissance"] == ""
+
+
+@pytest.mark.parametrize("mauvaise", ["17/03/1985", "hier", "1985-13-45", "2999-01-01"])
+def test_une_date_illisible_est_refusee_et_non_ecartee(
+    web, connecte, monkeypatch, mauvaise
+):
+    """L'écarter en silence ferait croire au client qu'il l'a fournie, et le
+    juriste ne la verrait jamais — c'est la classe d'échec que ce dépôt
+    refuse."""
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    rep = _post_json(web, "/api/intake/finaliser",
+                     _complet(date_naissance=mauvaise))
+    assert rep.status_code == 422
+    assert "naissance" in rep.get_json()["erreur"].lower()
+    ecrit.assert_not_called()
+
+
+def test_une_personne_morale_n_est_pas_bloquee_par_ce_champ(
+    web, connecte, monkeypatch
+):
+    """Une entreprise n'a pas de date de naissance : un résidu dans le
+    brouillon (bascule physique → morale) ne doit pas la bloquer."""
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", mock.Mock())
+    rep = _post_json(web, "/api/intake/finaliser", _complet(
+        nature="morale", denomination="Béton Sud inc.", nom="",
+        date_naissance="pas une date",
+    ))
+    assert rep.status_code == 200
+
+
+def test_le_selecteur_natif_est_borne_a_aujourd_hui(web, connecte):
+    page = web.get("/ouverture").get_data(as_text=True)
+    assert 'type="date"' in page
+    assert f'max="{datetime.now(timezone.utc).date().isoformat()}"' in page
