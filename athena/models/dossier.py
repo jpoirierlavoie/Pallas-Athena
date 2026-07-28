@@ -264,6 +264,14 @@ def _default_doc() -> dict:
         # du bien, cause d'action… — not droit_action_date). Additive July
         # 2026; absent on legacy docs means "no confirmed avis".
         "date_avis": None,
+        # Date de l'acte qui a interrompu la prescription — la demande déposée
+        # (art. 2892 C.c.Q.). MANUELLE et jamais dérivée, comme date_avis :
+        # seul le juriste sait ce qui a été fait et quand. Sa présence TAIT
+        # l'alerte de prescription partout (list_prescription_alerts,
+        # _attach_prescription_warnings) ; la vider la réveille. Additive
+        # juillet 2026 ; absente sur un dossier hérité = aucune action prise,
+        # ce qui est le bon défaut.
+        "prise_action_date": None,
         "prescription_notes": "",
         # Metadata
         "created_at": None,
@@ -1090,6 +1098,22 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
     Python-side behaviour. Legacy party fields are migrated on read, like
     every other dossier read path.
 
+    A dossier carrying a ``prise_action_date`` is dropped: the recourse has
+    been filed, so the deadline no longer looms. That filter lives HERE, and
+    in Python, for three reasons:
+
+    * both consumers must agree — the dashboard (``routes/dashboard.py``) and
+      the MCP ``get_agenda`` tool (``mcp/handlers.py``). Silencing only the
+      dashboard would leave Claude warning about a prescription that has
+      already been interrupted — advice that is actively wrong;
+    * a third ``.where()`` would need a new composite index, and until it
+      finished building the query would fail and the view degrade to an EMPTY
+      LIST — the worst possible failure mode for a limitation deadline;
+    * a server-side ``== None`` would not match documents where the key is
+      simply ABSENT, which is every pre-existing dossier (the field is
+      additive, with no migration). Every current alert would vanish, in
+      silence.
+
     Returns [] on failure (the dashboard degrades gracefully).
     """
     try:
@@ -1102,12 +1126,15 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
         )
         alerts = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
         if len(alerts) >= limit:
-            # Prescription deadlines must never be silently truncated.
+            # Prescription deadlines must never be silently truncated. Checked
+            # on the RAW count, before the prise-d'action filter: a silenced
+            # dossier still consumes a slot, so a full window means real alerts
+            # are hidden beyond it — which must still be said.
             logger.warning(
                 "list_prescription_alerts: result window full (limit=%d) — "
                 "some alerts may be hidden", limit,
             )
-        return alerts
+        return [d for d in alerts if not d.get("prise_action_date")]
     except Exception as exc:
         logger.warning("list_prescription_alerts: query failed: %s", exc)
         return []

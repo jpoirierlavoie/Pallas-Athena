@@ -370,6 +370,63 @@ def test_prescription_alerts_failure_returns_empty(monkeypatch):
     assert dossier_model.list_prescription_alerts(NOW) == []
 
 
+# ── prise d'action : taire l'alerte (2026-07-28) ──────────────────────────
+
+
+def _alerte(id_, **over) -> dict:
+    base = {"id": id_, "prescription_date": NOW + timedelta(days=5)}
+    base.update(over)
+    return base
+
+
+def test_une_prise_d_action_tait_l_alerte(monkeypatch):
+    """Le recours a été déposé : le délai ne court plus."""
+    stub = _ChainQueryStub(stream_result=[
+        _FakeSnap(_alerte("d1"), snap_id="d1"),
+        _FakeSnap(_alerte("d2", prise_action_date=NOW - timedelta(days=2)),
+                  snap_id="d2"),
+    ])
+    monkeypatch.setattr(dossier_model, "db", stub)
+    alertes = dossier_model.list_prescription_alerts(NOW + timedelta(days=60))
+    assert [a["id"] for a in alertes] == ["d1"]
+
+
+def test_un_dossier_herite_sans_la_cle_reste_alerte(monkeypatch):
+    """LE piège que le filtre Python existe pour éviter : un `where == None`
+    côté Firestore ne trouverait AUCUN document où la clé est absente — donc
+    tous les dossiers existants, et chaque alerte en cours, disparaîtraient en
+    silence."""
+    herite = {"id": "d1", "prescription_date": NOW + timedelta(days=5)}
+    assert "prise_action_date" not in herite
+    stub = _ChainQueryStub(stream_result=[_FakeSnap(herite, snap_id="d1")])
+    monkeypatch.setattr(dossier_model, "db", stub)
+    assert len(dossier_model.list_prescription_alerts(NOW + timedelta(days=60))) == 1
+
+
+def test_vider_la_date_reveille_l_alerte(monkeypatch):
+    """Une date effacée au formulaire arrive à None, pas absente."""
+    stub = _ChainQueryStub(stream_result=[
+        _FakeSnap(_alerte("d1", prise_action_date=None), snap_id="d1"),
+    ])
+    monkeypatch.setattr(dossier_model, "db", stub)
+    assert len(dossier_model.list_prescription_alerts(NOW + timedelta(days=60))) == 1
+
+
+def test_la_fenetre_pleine_se_mesure_avant_le_filtrage(monkeypatch, caplog):
+    """Un dossier tu consomme quand même un rang des 50 : si la fenêtre est
+    pleine, de vraies alertes sont cachées au-delà, et il faut le dire — même
+    si la liste rendue paraît courte."""
+    lot = [
+        _FakeSnap(_alerte(f"d{i}", prise_action_date=NOW), snap_id=f"d{i}")
+        for i in range(50)
+    ]
+    monkeypatch.setattr(dossier_model, "db", _ChainQueryStub(stream_result=lot))
+    with caplog.at_level("WARNING"):
+        alertes = dossier_model.list_prescription_alerts(NOW + timedelta(days=60))
+    assert alertes == []
+    assert any("result window full" in r.message for r in caplog.records)
+
+
 # ── dossier._suggest_next_file_number (P7 carry-over) ─────────────────────
 
 

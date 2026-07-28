@@ -212,6 +212,9 @@ def _form_data() -> dict:
         # Confirmed avis préalable date — manual, optional, never derived
         # (each avis has its own factual starting point).
         "date_avis": _parse_date(f.get("date_avis", "")),
+        # Acte interruptif posé — manuelle, jamais dérivée ; sa présence tait
+        # l'alerte de prescription.
+        "prise_action_date": _parse_date(f.get("prise_action_date", "")),
         "prescription_notes": f.get("prescription_notes", "").strip(),
     }
     normalize_forum(data)
@@ -257,11 +260,20 @@ def _template_context() -> dict:
 
 
 def _attach_prescription_warnings(dossiers: list[dict]) -> None:
-    """Attach _prescription_warning ('red', 'orange', or '') to each dossier."""
+    """Attach _prescription_warning ('red', 'orange', or '') to each dossier.
+
+    A ``prise_action_date`` silences it: the recourse has been filed, so the
+    deadline no longer looms. Without this the dossier would leave the
+    dashboard alerts while keeping its red dot in the list and a red « Date
+    pour agir » on its own card — a contradiction that would teach the lawyer
+    to distrust the colour.
+    """
     now = datetime.now(timezone.utc)
     for d in dossiers:
         pd = d.get("prescription_date")
-        if pd and hasattr(pd, "date"):
+        if d.get("prise_action_date"):
+            d["_prescription_warning"] = ""
+        elif pd and hasattr(pd, "date"):
             delta = (pd - now).days
             if delta <= 30:
                 d["_prescription_warning"] = "red"

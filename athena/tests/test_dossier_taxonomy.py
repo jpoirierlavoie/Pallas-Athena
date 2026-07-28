@@ -238,6 +238,25 @@ def test_date_avis_defaults_to_none():
     assert dossier._default_doc()["date_avis"] is None
 
 
+def test_deadline_never_touches_prise_action_date():
+    """Comme date_avis : manuelle, jamais dérivée. Seul le juriste sait ce qui
+    a été fait et quand — et une prise d'action inventée tairait une alerte de
+    prescription."""
+    doc = {"action": "TRN-01", "prescription_type": "3_ans",
+           "droit_action_date": _dt(2026, 7, 18),
+           "prise_action_date": _dt(2026, 8, 1)}
+    dossier._apply_prescription_deadline(doc)
+    assert doc["prise_action_date"] == _dt(2026, 8, 1)
+    # …et la date pour agir reste la trace de l'échéance respectée : on ne
+    # recalcule pas un nouveau délai (art. 2903 C.c.Q. serait du contenu
+    # juridique que personne n'a confirmé).
+    assert doc["prescription_date"] == _dt(2029, 7, 18)
+
+
+def test_prise_action_date_defaults_to_none():
+    assert dossier._default_doc()["prise_action_date"] is None
+
+
 # ── mandate_type vocabulary rework (July 2026) ────────────────────────
 
 
