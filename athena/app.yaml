@@ -46,12 +46,24 @@ env_variables:
   GRAPH_SENDER_UPN: "reception@poirierlavoie.ca"
   # Bookings sync (phase L2) — imports « Bookings with me » reservations from
   # this mailbox as hearings gated behind confirmation="à_confirmer". Same
-  # Graph app registration (Calendars.ReadWrite added in Entra). Bookings names
-  # the event « {Customer} - {Service} », so the keyword (« Consultation ») is
-  # matched as a SUBSTRING of the subject, not a prefix. BOOKINGS_JURISTE_UPN is
-  # the polled mailbox (the juriste's, NOT the reception@ send-as alias).
+  # Graph app registration (Calendars.ReadWrite added in Entra).
+  # BOOKINGS_JURISTE_UPN is the polled mailbox (the juriste's, NOT the
+  # reception@ send-as alias).
+  #
+  # One keyword per published Bookings service. Bookings names the event
+  # « {Customer} - {Service} », so the keyword must END the subject: the
+  # predicate is ANCHORED on « {séparateur} {mot-clé} », not a substring.
+  # That anchor is load-bearing — the polled mailbox is the juriste's own, so
+  # every event he creates himself carries the same organizer as a real
+  # reservation, and the keyword is the ONLY discriminant. A substring match
+  # on « Réunion » would pull « Réunion d'équipe » into the review queue,
+  # where refusing CANCELS the real Outlook meeting.
+  # Each keyword also needs an entry in Config.BOOKINGS_TYPE_PAR_MOT_CLE, or
+  # the import falls back to « consultation » (logged, never silent).
+  # ⚠️ An EMPTY value disables the predicate entirely — the sync then imports
+  # nothing and the absence loop flags existing reservations as cancelled.
   BOOKINGS_JURISTE_UPN: "jason@poirierlavoie.ca"
-  BOOKINGS_SUBJECT_KEYWORDS: "Consultation"
+  BOOKINGS_SUBJECT_KEYWORDS: "Consultation,Réunion"
   BOOKINGS_SYNC_ACTIVE: "true"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
