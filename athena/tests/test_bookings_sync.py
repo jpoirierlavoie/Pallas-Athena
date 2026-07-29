@@ -68,7 +68,10 @@ def spy(monkeypatch):
     return s
 
 
-def _ev(uid="ical-1", last_mod=OLD, cancelled=False, days=3, subject="RDV — X"):
+# Le sujet suit le format Bookings « {Client} - {Service} » : le mot-clé
+# TERMINE le sujet. C'était « RDV — X » (mot-clé en préfixe), ce que le
+# prédicat ancré rejette désormais — et c'est précisément l'intention.
+def _ev(uid="ical-1", last_mod=OLD, cancelled=False, days=3, subject="X — RDV"):
     start = NOW + timedelta(days=days)
     end = start + timedelta(hours=1)
     return {
@@ -272,3 +275,90 @@ def test_debug_payload_never_logs_the_subject(monkeypatch, caplog):
     text = caplog.text
     assert "Marie Tremblay" not in text and "Consultation" not in text
     assert "keyword_match" in text and "organizer_match" in text
+
+
+# ── Type d'audience dérivé du service Bookings (2026-07-28) ──────────────
+
+
+def test_le_type_est_derive_du_mot_cle(client, monkeypatch, spy):
+    """Le juriste publie plusieurs services ; les couler tous dans
+    « consultation » perdrait l'information que Bookings donne gratuitement."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS",
+                        ("Consultation", "Réunion"))
+    monkeypatch.setattr(h, "list_bookings_all", lambda: [])
+    monkeypatch.setattr(
+        tb.graph_calendrier, "lister_reservations",
+        lambda debut, fin: [_ev("ical-c", subject="Jean - Consultation"),
+                            _ev("ical-r", subject="Jean - Réunion")],
+    )
+    tb._synchroniser()
+    types = sorted(d["hearing_type"] for d in spy.creates)
+    assert types == ["consultation", "rencontre"]
+
+
+def test_un_mot_cle_non_mappe_retombe_sur_le_defaut_en_le_disant(
+    client, monkeypatch, spy, caplog
+):
+    """Un service ajouté dans app.yaml sans entrée dans la table serait sinon
+    importé sous un type faux, en silence."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Médiation",))
+    monkeypatch.setattr(h, "list_bookings_all", lambda: [])
+    monkeypatch.setattr(
+        tb.graph_calendrier, "lister_reservations",
+        lambda debut, fin: [_ev("ical-m", subject="Jean - Médiation")],
+    )
+    with caplog.at_level("WARNING"):
+        tb._synchroniser()
+    assert spy.creates[0]["hearing_type"] == Config.BOOKINGS_TYPE_DEFAUT
+    assert any("sans type d'audience mapp" in r.message for r in caplog.records)
+
+
+def test_les_deux_types_restent_extrajudiciaires():
+    """forum_of dérive du type ; les deux valeurs doivent rester du
+    vocabulaire existant, sinon _validate refuserait l'import."""
+    for t in Config.BOOKINGS_TYPE_PAR_MOT_CLE.values():
+        assert t in h.VALID_HEARING_TYPES
+        assert h.forum_of(t) == "extrajudiciaire"
+
+
+def test_un_titre_interne_n_est_plus_importe(client, monkeypatch, spy):
+    """Le scénario que l'ancrage existe pour empêcher, de bout en bout."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Réunion",))
+    monkeypatch.setattr(h, "list_bookings_all", lambda: [])
+    monkeypatch.setattr(
+        tb.graph_calendrier, "lister_reservations",
+        lambda debut, fin: [_ev("ical-x", subject="Réunion d'équipe")],
+    )
+    counters = tb._synchroniser()
+    assert counters["detectes"] == 0 and counters["crees"] == 0
+    assert spy.creates == []
+
+
+def test_aucun_mot_cle_est_signale_fort_et_ne_synchronise_rien(
+    client, monkeypatch
+):
+    """Un BOOKINGS_SUBJECT_KEYWORDS vide désactive TOUT le prédicat. Sans ce
+    garde-fou la synchro tournerait indéfiniment sans rien importer, puis la
+    boucle d'absence déclarerait « annulées côté client » les réservations
+    déjà importées — une panne totale, entièrement silencieuse."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ())
+    appele = []
+    monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
+                        lambda *a, **k: appele.append(1) or [])
+    r = client.get("/taches/bookings/sync", headers={"X-Appengine-Cron": "true"})
+    assert r.status_code == 200
+    assert r.get_json()["mots_cles"] == 0
+    assert appele == []          # Graph n'est même pas interrogé
+
+
+def test_un_refus_du_modele_est_journalise(client, monkeypatch, caplog):
+    """Un échec de création était avalé : la réservation n'apparaissait jamais
+    en Réception et rien n'en disait la cause, dix minutes après dix minutes."""
+    monkeypatch.setattr(h, "list_bookings_all", lambda: [])
+    monkeypatch.setattr(h, "create_hearing", lambda d: (None, ["Titre requis."]))
+    monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
+                        lambda debut, fin: [_ev("ical-1")])
+    with caplog.at_level("WARNING"):
+        counters = tb._synchroniser()
+    assert counters["detectes"] == 1 and counters["crees"] == 0
+    assert any("cr\u00e9ation refus\u00e9e" in r.message for r in caplog.records)

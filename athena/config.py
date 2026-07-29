@@ -132,11 +132,13 @@ class Config:
     BOOKINGS_SYNC_ACTIVE: bool = (
         os.environ.get("BOOKINGS_SYNC_ACTIVE", "true").lower() == "true"
     )
-    # Subject-keyword predicate: a Bookings meeting type is detected when its
-    # subject CONTAINS any of these keywords (case-insensitive, comma-separated
-    # env). « Bookings with me » names the event « {Customer} - {Service} », so
-    # the service name (e.g. « Consultation ») is a SUFFIX, not a prefix — a
-    # substring match handles that and any other placement.
+    # Subject-keyword predicate: a Bookings meeting type is detected when the
+    # subject ENDS with « {séparateur} {keyword} » (case- and accent-folded;
+    # comma-separated env). « Bookings with me » names the event
+    # « {Customer} - {Service} », so the service name is a SUFFIX — and the
+    # anchor is what keeps « Réunion d'équipe » out (see graph_calendrier
+    # .mot_cle_correspondant: the organizer is the juriste for a self-created
+    # event too, so the keyword is the ONLY discriminant).
     BOOKINGS_SUBJECT_KEYWORDS: tuple[str, ...] = tuple(
         k.strip()
         for k in os.environ.get(
@@ -144,6 +146,18 @@ class Config:
         ).split(",")
         if k.strip()
     )
+    # Keyword → hearing_type. Keys are accent/case-folded (the lookup folds the
+    # detected keyword the same way). Both values belong to the EXISTING
+    # extrajudiciaire vocabulary of models/hearing.py, so forum_of keeps
+    # deriving correctly and the Calendar already has a label and a colour for
+    # them. A keyword with no entry falls back to BOOKINGS_TYPE_DEFAUT and is
+    # LOGGED — adding a service in app.yaml without mapping it here must not
+    # be silent.
+    BOOKINGS_TYPE_PAR_MOT_CLE: dict[str, str] = {
+        "consultation": "consultation",
+        "reunion": "rencontre",
+    }
+    BOOKINGS_TYPE_DEFAUT: str = "consultation"
     BOOKINGS_SYNC_LOOKAHEAD_DAYS: int = int(
         os.environ.get("BOOKINGS_SYNC_LOOKAHEAD_DAYS", "90")
     )

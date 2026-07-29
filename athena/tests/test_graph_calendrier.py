@@ -151,3 +151,98 @@ def test_annuler_reservation_posts_cancel():
     body = p.call_args.args[1]
     assert path == f"/users/{UPN}/events/EVT1/cancel"
     assert body["Comment"] == "Refusé par le juriste"
+
+
+# ── Ancrage du mot-clé sur la fin du sujet (2026-07-28) ──────────────────
+
+
+def test_le_mot_cle_doit_terminer_le_sujet():
+    """Le prédicat ne peut PAS distinguer une réservation Bookings d'un
+    événement que le juriste crée lui-même : dans les deux cas il est
+    l'organisateur. Le mot-clé est donc le seul discriminant, et une simple
+    sous-chaîne capturerait un titre interne — importé comme rendez-vous
+    client, avec un refus qui annulerait la vraie réunion Outlook."""
+    assert gc.est_reservation(_ev(subject="Jean Tremblay - Consultation"))
+    assert not gc.est_reservation(_ev(subject="Consultation interne dossier X"))
+    assert not gc.est_reservation(_ev(subject="Préparation consultation CA"))
+
+
+def test_le_separateur_est_exige():
+    """Un événement intitulé du seul nom du service ne mord pas : Bookings
+    écrit toujours « {Client} - {Service} »."""
+    assert not gc.est_reservation(_ev(subject="Consultation"))
+
+
+@pytest.mark.parametrize("tiret", ["-", "–", "—"])
+def test_les_trois_tirets_sont_admis(tiret):
+    """Outlook substitue parfois un cadratin au trait d'union saisi."""
+    assert gc.est_reservation(_ev(subject=f"Jean Tremblay {tiret} Consultation"))
+
+
+def test_espaces_de_fin_toleres():
+    assert gc.est_reservation(_ev(subject="Jean Tremblay - Consultation  "))
+
+
+# ── Pliage des accents (le mode de défaillance né avec « Réunion ») ──────
+
+
+def test_un_sujet_decompose_est_reconnu(monkeypatch):
+    """LE piège que « Consultation » n'avait pas : « é » précomposé (NFC,
+    U+00E9) et « é » décomposé (NFD, e + U+0301) sont des chaînes DIFFÉRENTES.
+    Sans pliage, un mot-clé accentué peut ne jamais mordre, sans le moindre
+    message — selon l'appareil avec lequel le service a été nommé."""
+    import unicodedata
+
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Réunion",))
+    nfd = unicodedata.normalize("NFD", "Jean Tremblay - Réunion")
+    nfc = unicodedata.normalize("NFC", "Jean Tremblay - Réunion")
+    assert nfd != nfc                      # ce sont bien deux chaînes
+    assert gc.est_reservation(_ev(subject=nfd))
+    assert gc.est_reservation(_ev(subject=nfc))
+
+
+def test_un_mot_cle_sans_accent_mord_un_sujet_accentue(monkeypatch):
+    """Effet de bord heureux : BOOKINGS_SUBJECT_KEYWORDS=« Reunion » saisi
+    sans accent dans app.yaml fonctionne quand même."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Reunion",))
+    assert gc.est_reservation(_ev(subject="Jean Tremblay - Réunion"))
+
+
+def test_la_casse_accentuee_est_pliee(monkeypatch):
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Réunion",))
+    assert gc.est_reservation(_ev(subject="JEAN TREMBLAY - RÉUNION"))
+
+
+# ── Le mot-clé détecté, et le type qu'il commande ───────────────────────
+
+
+def test_le_mot_cle_detecte_est_rendu(monkeypatch):
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS",
+                        ("Consultation", "Réunion"))
+    assert gc.mot_cle_correspondant(
+        _ev(subject="Jean - Réunion")) == "Réunion"
+    assert gc.mot_cle_correspondant(
+        _ev(subject="Jean - Consultation")) == "Consultation"
+    assert gc.mot_cle_correspondant(_ev(subject="Réunion d'équipe")) == ""
+
+
+def test_extraire_transporte_le_mot_cle(monkeypatch):
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS",
+                        ("Consultation", "Réunion"))
+    assert gc.extraire(_ev(subject="Jean - Réunion"))["mot_cle"] == "Réunion"
+
+
+def test_un_mot_cle_vide_ne_capture_rien(monkeypatch):
+    """Garde conservée de la version sous-chaîne : une chaîne vide serait
+    « contenue » partout."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("",))
+    assert not gc.est_reservation(_ev(subject="Jean Tremblay - Consultation"))
+
+
+def test_l_organisateur_reste_exige(monkeypatch):
+    """L'ancrage resserre le sujet ; il ne relâche pas l'organisateur."""
+    monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("Réunion",))
+    assert not gc.est_reservation(_ev(
+        subject="Jean - Réunion",
+        organizer={"emailAddress": {"address": "autre@example.com"}},
+    ))

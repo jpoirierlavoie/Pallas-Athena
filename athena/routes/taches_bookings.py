@@ -42,13 +42,33 @@ def _fmt(dt) -> str:
     return f"{local.strftime('%Y-%m-%d %H:%M')}"
 
 
+def _type_audience(mot_cle: str) -> str:
+    """hearing_type dérivé du service Bookings détecté.
+
+    Le juriste publie plusieurs types de rendez-vous (« Consultation »,
+    « Réunion »…) ; les couler tous dans « consultation » perdrait d'emblée
+    l'information que Bookings donne gratuitement. Un mot-clé non mappé
+    retombe sur le défaut mais le DIT : un service ajouté dans app.yaml sans
+    entrée dans la table serait sinon importé sous un type faux, en silence.
+    """
+    plie = graph_calendrier._plier(mot_cle)
+    type_ = Config.BOOKINGS_TYPE_PAR_MOT_CLE.get(plie)
+    if type_ is None:
+        logger.warning(
+            "bookings: mot-clé sans type d'audience mappé, repli sur %s",
+            Config.BOOKINGS_TYPE_DEFAUT,
+        )
+        return Config.BOOKINGS_TYPE_DEFAUT
+    return type_
+
+
 def _creer(r: dict, counters: dict) -> None:
     """Create a new hearing from a Bookings reservation (NO CTag bump —
     it stays invisible in DAV until confirmed)."""
     data = {
         "source": "bookings",
         "confirmation": "à_confirmer",
-        "hearing_type": "consultation",
+        "hearing_type": _type_audience(r["mot_cle"]),
         # The meeting IS confirmed with the client (Bookings); « confirmation »
         # is the Athéna-side review gate, orthogonal to « status ».
         "status": "confirmée",
@@ -65,8 +85,14 @@ def _creer(r: dict, counters: dict) -> None:
         "graph_last_modified": r["graph_last_modified"],
     }
     _created, errors = hearing.create_hearing(data)
-    if not errors:
-        counters["crees"] += 1
+    if errors:
+        # Sans ce journal, un refus de validation était avalé en silence et
+        # retenté toutes les 10 minutes indéfiniment : la réservation ne
+        # paraissait jamais en Réception et rien n'en disait la cause. Les
+        # messages du modèle ne portent ni sujet ni adresse.
+        logger.warning("bookings: création refusée par le modèle: %s", errors)
+        return
+    counters["crees"] += 1
 
 
 def _rapprocher_modif(existing: dict, r: dict, counters: dict) -> None:
@@ -145,10 +171,16 @@ def _appliquer_annulation(existing: dict, counters: dict) -> None:
 
 
 def _debug_payload(bruts: list[dict]) -> None:
-    """§4.4 predicate tuning: log the first detected + first undetected event
-    at DEBUG. PII-FREE — the meeting SUBJECT is NEVER logged (it embeds the
-    client name); only the two predicate booleans + domain-reduced addresses,
-    which is what actually diagnoses why an event matched or not."""
+    """§4.4 predicate tuning: log the first detected + first undetected event.
+    PII-FREE — the meeting SUBJECT is NEVER logged (it embeds the client name);
+    only the predicate booleans + domain-reduced addresses, which is what
+    actually diagnoses why an event matched or not.
+
+    Emitted at INFO, not DEBUG: the root logger sits at INFO in production
+    (utils/logging_setup), so a DEBUG line produced NOTHING there — the one
+    tool meant for tuning the predicate was mute exactly where it is needed.
+    BOOKINGS_DEBUG_PAYLOAD is itself the gate, and it defaults to false.
+    """
     def _domains(ev: dict) -> list[str]:
         out = []
         for att in ev.get("attendees") or []:
@@ -168,13 +200,15 @@ def _debug_payload(bruts: list[dict]) -> None:
             ((ev.get("organizer") or {}).get("emailAddress") or {}).get("address")
             or ""
         ).lower()
-        subj = (ev.get("subject") or "").lower()
-        logger.debug(
+        subj = ev.get("subject") or ""
+        mot_cle = graph_calendrier.mot_cle_correspondant(ev)
+        logger.info(
             "bookings predicate sample (%s): organizer_match=%s keyword_match=%s "
-            "subject_len=%d organizer_domain=%r attendee_domains=%r",
+            "mot_cle=%r subject_len=%d organizer_domain=%r attendee_domains=%r",
             label,
             org == upn,
-            any(k.lower() in subj for k in Config.BOOKINGS_SUBJECT_KEYWORDS),
+            bool(mot_cle),
+            mot_cle,
             len(subj),
             org.rsplit("@", 1)[-1],
             _domains(ev),
@@ -256,6 +290,17 @@ def sync():
 
     if not Config.BOOKINGS_SYNC_ACTIVE:
         return jsonify({"actif": False})
+    if not Config.BOOKINGS_SUBJECT_KEYWORDS:
+        # Un BOOKINGS_SUBJECT_KEYWORDS vide (valeur vide, virgule seule,
+        # espaces) produit un tuple vide, et le prédicat ne mord alors JAMAIS :
+        # la synchro tourne toutes les 10 minutes sans jamais rien importer, et
+        # rien ne le dit. Pire, la boucle d'absence finirait par déclarer
+        # « annulées côté client » les réservations déjà importées. Le dire
+        # fort est la seule défense contre une panne totale silencieuse.
+        log_bookings_event(
+            "bookings_sync_erreur_graph", "failure", reason="aucun_mot_cle"
+        )
+        return jsonify({"actif": True, "mots_cles": 0}), 200
     if not Config.bookings_configured():
         # Graph creds or the mailbox are absent — nothing to poll. Fail-open.
         log_bookings_event(
