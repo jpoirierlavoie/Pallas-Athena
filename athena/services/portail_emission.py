@@ -14,7 +14,7 @@ import logging
 from typing import Optional
 
 from firebase_admin import auth as fb_auth
-from markupsafe import escape
+from flask import render_template
 
 from client.config import PORTAIL_HOST, PORTAIL_MAX_FILE_MB
 from config import Config
@@ -42,60 +42,60 @@ def _generer_lien(email: str, inv_id: str) -> str:
     return fb_auth.generate_sign_in_with_email_link(email, acs)
 
 
-def _signature_html() -> str:
-    lines = [escape(Config.FIRM_NAME or "")]
-    if Config.FIRM_PHONE:
-        lines.append(escape(Config.FIRM_PHONE))
-    if Config.FIRM_EMAIL:
-        lines.append(escape(Config.FIRM_EMAIL))
-    return "<p>" + "<br>".join(str(l) for l in lines if l) + "</p>"
+# Objet + gabarit, par type d'invitation. Les deux objets se terminent par la
+# désignation vue du client (décision 2026-07-29, symétrie assumée).
+_COURRIELS = {
+    "documents": (
+        "Transmission de documents",
+        "reception/_invitation_documents.html",
+    ),
+    "intake": (
+        "Ouverture de votre dossier",
+        "reception/_invitation_ouverture.html",
+    ),
+}
 
 
-def _corps_invitation(display_label: str, lien: str, expires_at,
-                      inv_id: str) -> tuple[str, str]:
-    """Gabarit A.1 — invitation (type documents). Returns (objet, corps_html).
+def _corps_invitation(invitation: dict, lien: str) -> tuple[str, str]:
+    """Corps de l'invitation, selon le type. Rend (objet, corps_html).
 
-    Two DELIBERATE deviations from the spec's A.1 wording (2026-07-27):
+    Prend l'invitation ENTIÈRE plutôt que quatre valeurs éparses : le type
+    voyage ainsi avec le reste, et les deux appelants — emettre_invitation et
+    renvoyer_invitation — l'ont déjà en main. C'est ce qui règle d'un coup les
+    quatre points d'appel de ``routes/`` : avant, le renvoi d'une invitation
+    « intake » expédiait le texte « documents », y compris lorsque c'était le
+    CLIENT qui redemandait un lien depuis le portail.
 
-    1. It no longer says the *link* « demeure valide jusqu'au {date} ». A
-       Firebase email-link code is single-use and expires in hours, while the
-       INVITATION lasts 14 days — clients who opened the mail the next morning
-       were failing while holding written assurance it would work. The two
-       facts are now stated separately.
-    2. It carries a FALLBACK URL. This is the highest-value line in the whole
-       email: it gives every failure mode a working exit that needs no phone
-       call. Built from PORTAIL_HOST (never a literal, so dev/staging cannot
-       send clients to production) and carrying ``?i=`` so /api/renvoi takes
-       the exact-id branch rather than the unordered email scan. It leaks
-       nothing — the sign-in link already embeds the same host and id.
+    Partage des responsabilités, calqué sur ``taches_portail._corps_accuse`` :
+    le Python possède l'objet et tout ce qui se dérive (la date formatée,
+    l'URL de secours avec son ``?i=``) ; le gabarit ne possède que le libellé
+    et la mise en page, et ne reçoit que des chaînes déjà prêtes. Le juriste
+    qui retouche le texte ne peut donc casser ni la date ni le lien.
+
+    Les deux DÉROGATIONS aux annexes A.1 des specs (2026-07-27) vivent
+    désormais dans ``_invitation_pied.html``, avec le commentaire qui interdit
+    de les « corriger » : la durée du lien distinguée de celle de
+    l'invitation, et l'URL de secours.
     """
-    objet = f"Transmission de documents — {display_label}"
-    date_exp = format_date_fr(to_mtl(expires_at).date())
-    secours = f"https://{PORTAIL_HOST}/entree?i={inv_id}"
-    corps = (
-        "<p>Bonjour,</p>"
-        f"<p>Dans le cadre du dossier {escape(display_label)}, vous êtes "
-        "invité(e) à transmettre vos documents de façon sécurisée par le lien "
-        f"suivant : <a href=\"{escape(lien)}\">transmettre mes documents</a>.</p>"
-        "<p>Ce lien est <strong>strictement personnel</strong> et lié à la "
-        "présente adresse courriel ; il ne doit pas être transféré. Pour votre "
-        "sécurité, il est <strong>à usage unique et de courte durée</strong>.</p>"
-        f"<p><strong>Le lien ne fonctionne plus ?</strong> C'est normal s'il a "
-        "déjà servi ou s'il date de quelques heures. Votre invitation, elle, "
-        f"demeure valide jusqu'au {date_exp} : obtenez un nouveau lien en un "
-        f"clic à l'adresse <a href=\"{escape(secours)}\">{escape(secours)}</a>.</p>"
-        "<p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents "
-        f"Office et texte ; taille maximale de {PORTAIL_MAX_FILE_MB} Mo par "
-        "fichier.</p>"
-        + (
-            "<p>Une difficulté ? Répondez simplement à ce courriel, ou "
-            f"joignez-nous au {escape(Config.FIRM_PHONE)}.</p>"
-            if Config.FIRM_PHONE else
-            "<p>Une difficulté ? Répondez simplement à ce courriel.</p>"
-        ) +
-        f"{_signature_html()}"
+    type_ = invitation.get("type") or "documents"
+    prefixe, gabarit = _COURRIELS.get(type_, _COURRIELS["documents"])
+    display_label = invitation.get("display_label", "")
+    corps = render_template(
+        gabarit,
+        display_label=display_label,
+        lien=lien,
+        max_file_mb=PORTAIL_MAX_FILE_MB,
+        date_expiration=format_date_fr(to_mtl(invitation["expires_at"]).date()),
+        # Jamais un littéral : un environnement de développement ne doit pas
+        # pouvoir renvoyer un client vers la production. Le « ?i= » fait
+        # prendre à /api/renvoi la branche par identifiant exact plutôt que le
+        # balayage par courriel.
+        url_secours=f"https://{PORTAIL_HOST}/entree?i={invitation['id']}",
+        firm_name=Config.FIRM_NAME,
+        firm_phone=Config.FIRM_PHONE,
+        firm_email=Config.FIRM_EMAIL,
     )
-    return objet, corps
+    return f"{prefixe} — {display_label}", corps
 
 
 def _expedier(email: str, objet: str, corps_html: str, lien: str,
@@ -188,8 +188,7 @@ def emettre_invitation(
             "(checklist §12.8)."
         ], ""
 
-    objet, corps = _corps_invitation(invitation["display_label"], lien,
-                                     invitation["expires_at"], invitation["id"])
+    objet, corps = _corps_invitation(invitation, lien)
     lien_manuel = _expedier(email_n, objet, corps, lien, invitation["id"])
     log_portail_event(
         "invitation_emise",
@@ -222,8 +221,7 @@ def renvoyer_invitation(inv_id: str) -> tuple[bool, str, str]:
         logger.exception("portail resend link generation failed")
         return False, "Impossible de générer le lien de connexion.", ""
 
-    objet, corps = _corps_invitation(invitation["display_label"], lien,
-                                     invitation["expires_at"], inv_id)
+    objet, corps = _corps_invitation(invitation, lien)
     lien_manuel = _expedier(invitation["email"], objet, corps, lien, inv_id)
     inv_model.incrementer_resend(inv_id)
     log_portail_event(

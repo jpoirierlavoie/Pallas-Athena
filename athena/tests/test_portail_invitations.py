@@ -25,7 +25,23 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.portail_invitation as pi
     import services.portail_emission as emission
 
+from flask import Flask  # noqa: E402
+
 from utils.graph import GraphNotConfigured  # noqa: E402
+
+_TEMPLATES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"
+)
+
+
+@pytest.fixture(autouse=True)
+def _contexte_gabarits():
+    """Les corps de courriel sont des gabarits Jinja depuis 2026-07-29 :
+    render_template exige un contexte d'application. Les appelants réels
+    (routes de Réception, gestionnaire de tâches) en ont toujours un."""
+    app = Flask(__name__, template_folder=_TEMPLATES)
+    with app.app_context():
+        yield
 
 
 # ── Fake named-DB plumbing (transactions included) ───────────────────────
@@ -287,3 +303,126 @@ def test_renvoi_active_increments_and_falls_back_to_manual_link(store, monkeypat
     assert ok is True and message == ""
     assert lien == "https://lien.example/r"
     assert store["inv1"]["resend_count"] == 1
+
+
+# ── Deux courriels distincts : documents vs ouverture (2026-07-29) ───────
+
+
+def _plat(html: str) -> str:
+    """Espacement normalisé : le gabarit replie ses phrases sur plusieurs
+    lignes, et l'espace est insignifiant en HTML. Sans cela, un simple
+    re-repliage du texte casserait des tests qui ne portent pas là-dessus."""
+    return " ".join(html.split())
+
+
+def _capturer(store, monkeypatch, type_, **kw):
+    """Émettre une invitation et rendre (objet, corps) du courriel expédié.
+
+    Le corps est renvoyé à espacement normalisé (voir _plat)."""
+    user = mock.Mock(uid="u9", custom_claims=None)
+    monkeypatch.setattr(emission.fb_auth, "get_user_by_email",
+                        mock.Mock(return_value=user))
+    monkeypatch.setattr(emission.fb_auth, "set_custom_user_claims", mock.Mock())
+    monkeypatch.setattr(emission, "_generer_lien",
+                        lambda email, inv_id: "https://lien.example/x")
+    envoyer = mock.Mock()
+    monkeypatch.setattr(emission.courriel, "envoyer", envoyer)
+    inv, errors, _lien = emission.emettre_invitation(
+        type_, "client@exemple.com", **kw
+    )
+    assert errors == [] and inv is not None
+    _destinataire, objet, corps = envoyer.call_args.args
+    return objet, _plat(corps)
+
+
+def test_l_ouverture_parle_du_formulaire_pas_de_documents(store, monkeypatch):
+    """Le défaut corrigé : une invitation à REMPLIR UN FORMULAIRE annonçait
+    « Transmission de documents » et énumérait les formats de fichiers admis,
+    alors que le lien mène à un formulaire."""
+    objet, corps = _capturer(store, monkeypatch, "intake",
+                             display_label="Ouverture de votre dossier client")
+    assert objet.startswith("Ouverture de votre dossier")
+    assert "remplir le formulaire d'ouverture" in corps
+    # Assertions NÉGATIVES : rien du vocabulaire « documents » ne doit rester.
+    for interdit in ("transmettre vos documents", "transmettre mes documents",
+                     "Formats admis", "Mo par fichier", "PDF"):
+        assert interdit not in corps, interdit
+
+
+def test_l_ouverture_annonce_ce_qui_sera_demande(store, monkeypatch):
+    _objet, corps = _capturer(store, monkeypatch, "intake",
+                              display_label="Ouverture")
+    assert "vos coordonnées" in corps
+    assert "reprendre plus tard" in corps
+    assert "qu'après examen" in corps
+
+
+def test_l_ouverture_ne_parle_que_de_noms(store, monkeypatch):
+    """Le formulaire enjoint au client de ne PAS exposer sa situation ni les
+    faits ; le courriel ne doit pas l'y inviter par la bande."""
+    _objet, corps = _capturer(store, monkeypatch, "intake",
+                              display_label="Ouverture")
+    assert "le nom des autres personnes" in corps
+    for interdit in ("votre situation", "les faits", "décrivez"):
+        assert interdit not in corps, interdit
+
+
+def test_les_documents_gardent_leur_texte(store, monkeypatch):
+    objet, corps = _capturer(store, monkeypatch, "documents",
+                             display_label="Dossier 2026-001")
+    assert objet == "Transmission de documents — Dossier 2026-001"
+    assert "transmettre mes documents" in corps
+    assert "Formats admis" in corps and "Mo par fichier" in corps
+    assert "formulaire d'ouverture" not in corps
+
+
+def test_le_renvoi_d_une_ouverture_emploie_le_texte_d_ouverture(
+    store, monkeypatch
+):
+    """LE défaut le plus discret : renvoyer_invitation était aveugle au type.
+    Ce chemin est atteignable depuis le bouton « Renvoyer » de Réception ET
+    depuis le « Le lien ne fonctionne pas ? » que le CLIENT actionne
+    lui-même — un client d'ouverture bloqué recevait, une seconde fois, un
+    courriel sur des documents."""
+    store["inv1"] = _inv(type="intake",
+                         display_label="Ouverture de votre dossier client")
+    monkeypatch.setattr(emission, "_generer_lien",
+                        lambda email, inv_id: "https://lien.example/r")
+    monkeypatch.setattr(pi, "incrementer_resend", lambda inv_id: True)
+    envoyer = mock.Mock()
+    monkeypatch.setattr(emission.courriel, "envoyer", envoyer)
+
+    ok, _message, _lien = emission.renvoyer_invitation("inv1")
+    assert ok is True
+    _dest, objet, corps = envoyer.call_args.args
+    corps = _plat(corps)
+    assert objet.startswith("Ouverture de votre dossier")
+    assert "remplir le formulaire d'ouverture" in corps
+    assert "Formats admis" not in corps
+
+
+def test_un_type_inconnu_retombe_sur_documents(store, monkeypatch):
+    """Le modèle valide le type, mais un document hérité ou tronqué ne doit
+    pas faire échouer un envoi : on retombe sur la file historique."""
+    store["inv1"] = _inv(type="", display_label="Dossier X")
+    monkeypatch.setattr(emission, "_generer_lien",
+                        lambda email, inv_id: "https://lien.example/r")
+    monkeypatch.setattr(pi, "incrementer_resend", lambda inv_id: True)
+    envoyer = mock.Mock()
+    monkeypatch.setattr(emission.courriel, "envoyer", envoyer)
+    emission.renvoyer_invitation("inv1")
+    assert envoyer.call_args.args[1].startswith("Transmission de documents")
+
+
+@pytest.mark.parametrize("type_", ["documents", "intake"])
+def test_les_invariants_du_pied_sont_dans_les_deux(store, monkeypatch, type_):
+    """L'URL de secours et la distinction lien/invitation ont coûté un lot de
+    correctifs entier. Elles vivent dans un partiel commun précisément pour
+    qu'une retouche ne puisse pas en corriger une seule des deux files."""
+    _objet, corps = _capturer(store, monkeypatch, type_, display_label="X")
+    # L'URL de secours, avec son « ?i= » (branche par identifiant exact).
+    assert "/entree?i=" in corps
+    # La durée du LIEN et celle de l'INVITATION, énoncées séparément.
+    assert "usage unique et de courte durée" in corps
+    assert "Votre invitation, elle, demeure valide jusqu'au" in corps
+    assert "Une difficulté ?" in corps

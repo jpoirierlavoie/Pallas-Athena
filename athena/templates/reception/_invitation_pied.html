@@ -1,0 +1,50 @@
+{# Pied COMMUN aux deux courriels d'invitation (documents et ouverture).
+   Inclus par _invitation_documents.html et _invitation_ouverture.html.
+
+   ⚠️ C'est le PREMIER {% include %} de la famille des courriels — les deux
+   bordereaux, eux, dupliquent leur pied de page. La dérogation est délibérée :
+   ce qui est partagé ici n'est pas de la mise en forme, c'est un invariant de
+   correction. Dupliquer ces paragraphes, ce serait accepter qu'une future
+   retouche en corrige un et pas l'autre, et réintroduise le défaut dans une
+   seule des deux files, en silence.
+
+   Contexte attendu (fourni par services/portail_emission._corps_invitation) :
+     date_expiration : chaîne « 10 août 2026 » — celle de l'INVITATION
+     url_secours     : « https://{PORTAIL_HOST}/entree?i={id} »
+     firm_name / firm_phone / firm_email : identité du cabinet (peuvent être vides)
+#}
+<p>Ce lien est <strong>strictement personnel</strong> et lié à la présente
+adresse courriel ; il ne doit pas être transféré. Pour votre sécurité, il est
+<strong>à usage unique et de courte durée</strong>.</p>
+
+{# ⚠️ NE PAS « corriger » ce paragraphe d'après l'annexe A.1 des specs L1/L3,
+   qui écrivent « Il demeure valide jusqu'au {date} » à propos du LIEN. C'est
+   faux, et ce fut coûteux : un code de connexion Firebase est à usage unique
+   et expire en quelques heures, tandis que l'INVITATION dure quatorze jours.
+   Des clients ont échoué en tenant de nous l'assurance écrite du contraire.
+   Les deux durées sont énoncées séparément, et l'URL de secours donne une
+   sortie à tout échec sans appel téléphonique — c'est la ligne la plus utile
+   du courriel. #}
+<p><strong>Le lien ne fonctionne plus ?</strong> C'est normal s'il a déjà servi
+ou s'il date de quelques heures. Votre invitation, elle, demeure valide
+jusqu'au {{ date_expiration }} : obtenez un nouveau lien en un clic à l'adresse
+<a href="{{ url_secours }}">{{ url_secours }}</a>.</p>
+
+{% if firm_phone %}
+<p>Une difficulté ? Répondez simplement à ce courriel, ou joignez-nous au
+{{ firm_phone }}.</p>
+{% else %}
+<p>Une difficulté ? Répondez simplement à ce courriel.</p>
+{% endif %}
+
+{# Signature — les trois champs sont passés séparément plutôt que pré-assemblés
+   en HTML, pour que l'échappement reste celui de Jinja et que l'ordre des
+   lignes se change ici, sans toucher au Python. Le bloc entier disparaît si
+   rien n'est configuré, plutôt que de laisser un paragraphe vide. #}
+{% if firm_name or firm_phone or firm_email %}
+<p>
+  {%- if firm_name %}{{ firm_name }}{% endif %}
+  {%- if firm_phone %}{% if firm_name %}<br>{% endif %}{{ firm_phone }}{% endif %}
+  {%- if firm_email %}{% if firm_name or firm_phone %}<br>{% endif %}{{ firm_email }}{% endif %}
+</p>
+{% endif %}

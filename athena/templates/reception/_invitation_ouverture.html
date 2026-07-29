@@ -1,0 +1,34 @@
+{# Invitation à remplir le formulaire d'ouverture de dossier (portail L3,
+   annexe A.1) — corps du courriel. Rendu par
+   services/portail_emission._corps_invitation et expédié par Graph.
+   AUTOESCAPÉ (display_label est saisi par le juriste).
+
+   Ce courriel existe parce que l'invitation d'ouverture empruntait le gabarit
+   « documents » : son objet annonçait une « Transmission de documents » et son
+   corps énumérait les formats de fichiers admis, alors que le lien mène à un
+   formulaire. Le renvoi souffrait du même défaut — y compris quand c'est le
+   CLIENT qui redemande un lien depuis le portail.
+
+   Le troisième paragraphe ne parle que de NOMS. Le formulaire lui-même
+   enjoint au client de ne pas exposer sa situation ni les faits de l'affaire ;
+   le courriel ne doit pas l'y inviter par la bande.
+
+   Contexte attendu :
+     display_label : la SEULE désignation que le client voit
+     lien          : lien de connexion Firebase (usage unique)
+     + le contexte de _invitation_pied.html
+#}
+<p>Bonjour,</p>
+
+<p>Afin de préparer l'ouverture de votre dossier, nous vous invitons à remplir
+le formulaire sécurisé suivant :
+<a href="{{ lien }}">remplir le formulaire d'ouverture</a>.</p>
+
+<p>Le formulaire recueille vos coordonnées ainsi que le nom des autres
+personnes ou entreprises concernées. Vous pouvez l'interrompre et le reprendre
+plus tard : vos réponses sont conservées.</p>
+
+<p>Vos renseignements demeurent confidentiels et ne seront versés à votre
+dossier qu'après examen.</p>
+
+{% include "reception/_invitation_pied.html" %}

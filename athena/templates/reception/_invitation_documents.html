@@ -1,0 +1,27 @@
+{# Invitation à transmettre des documents (portail L1, annexe A.1) — corps du
+   courriel. Rendu par services/portail_emission._corps_invitation et expédié
+   par Graph. AUTOESCAPÉ (display_label est saisi par le juriste).
+
+   Volontairement SANS bordereau ni styles en ligne, contrairement à l'accusé
+   de réception : une invitation est une lettre courte, pas une pièce
+   probante. Ce registre est le même dans les deux invitations.
+
+   Le paragraphe propre à cette file est le deuxième — tout ce qui suit
+   l'include est commun aux deux courriels.
+
+   Contexte attendu :
+     display_label : la SEULE désignation que le client voit
+     lien          : lien de connexion Firebase (usage unique)
+     max_file_mb   : taille maximale par fichier
+     + le contexte de _invitation_pied.html
+#}
+<p>Bonjour,</p>
+
+<p>Dans le cadre du dossier {{ display_label }}, vous êtes invité(e) à
+transmettre vos documents de façon sécurisée par le lien suivant :
+<a href="{{ lien }}">transmettre mes documents</a>.</p>
+
+<p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office et
+texte ; taille maximale de {{ max_file_mb }} Mo par fichier.</p>
+
+{% include "reception/_invitation_pied.html" %}
