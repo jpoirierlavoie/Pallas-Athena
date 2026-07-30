@@ -517,14 +517,23 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "file_size_display": _str(),
             "version": _int(),
             "folder_id": _nstr("null = dossier root."),
+            "folder_path": _str(
+                "« Parent / Enfant » resolved per row; \"\" = dossier "
+                "root."),
+            "document_date": _nstr(
+                "YYYY-MM-DD — the document's OWN date (PV, jugement…), "
+                "manually entered; null on documents not yet dated. "
+                "created_at is only the upload instant."),
             "description": _str(),
             "tags": _arr(_str()),
             "created_at": _nstr(),
         }),
         # Present ONLY when the request carried folder_id — typed, never
-        # required.
-        extra={"folder_path": _str("Breadcrumb, « Parent / Enfant ». Only "
-                                   "present when folder_id was given.")},
+        # required (kept for compatibility; the per-row folder_path is the
+        # general resolver).
+        extra={"folder_path": _str("Breadcrumb of the REQUESTED folder. "
+                                   "Only present when folder_id was "
+                                   "given.")},
     ),
 
     "list_parties": _list_envelope(_obj({

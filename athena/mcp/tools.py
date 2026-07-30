@@ -572,8 +572,12 @@ TOOLS: dict[str, dict] = {
         "description": (
             "List document metadata for a dossier — names, categories, sizes, "
             "versions; never file contents or download links. Optionally filter "
-            "by folder, category, or a free-text query over names, description, "
-            "and tags."
+            "by folder, category, a free-text query over names, description "
+            "and tags, or a date window. Each row carries folder_path "
+            "(resolved; \"\" = dossier root) and document_date — the "
+            "document's OWN date when the lawyer entered one (null "
+            "otherwise; created_at is only the upload instant, often days "
+            "after the event on scanned papers)."
         ),
         "input_schema": {
             "type": "object",
@@ -595,6 +599,14 @@ TOOLS: dict[str, dict] = {
                     "description": ("Free-text match on names, description "
                                     "and tags."),
                 },
+                "date_from": _date(
+                    "Earliest EFFECTIVE date, YYYY-MM-DD inclusive — the "
+                    "document's own document_date when set, else its "
+                    "upload date."
+                ),
+                "date_to": _date(
+                    "Latest effective date, YYYY-MM-DD inclusive."
+                ),
                 "limit": _limit(25),
             },
             "required": ["dossier_id"],

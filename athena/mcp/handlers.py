@@ -681,6 +681,25 @@ def get_note(args: dict) -> dict:
 
 # ── 8. list_documents ───────────────────────────────────────────────────
 
+def _folder_paths(dossier_id: str) -> dict[str, str]:
+    """folder_id → « Parent / Enfant » map from ONE folder query.
+
+    Never per-row breadcrumb walks: get_folder_breadcrumb costs one doc
+    read per ancestor (≤5), which per row would turn a 25-row listing into
+    ~100 reads. get_folder_tree is a single dossier_id== query."""
+    paths: dict[str, str] = {}
+
+    def _walk(nodes: list[dict], prefix: str) -> None:
+        for n in nodes:
+            path = f"{prefix} / {n['name']}" if prefix else n.get("name", "")
+            if n.get("id"):
+                paths[n["id"]] = path
+            _walk(n.get("children", []), path)
+
+    _walk(folder_model.get_folder_tree(dossier_id), "")
+    return paths
+
+
 def list_documents(args: dict) -> dict:
     limit = _limit_arg(args, 25)
     dossier_id = args["dossier_id"]
@@ -702,6 +721,36 @@ def list_documents(args: dict) -> dict:
         # truthful.
         docs = [d for d in docs if d.get("folder_id") == folder_id]
 
+    if args.get("date_from") or args.get("date_to"):
+        # Filter on the document's EFFECTIVE date: its own document_date
+        # (date-only midnight UTC) when set, else the upload instant's
+        # Montréal calendar date — so legacy docs without the new field
+        # stay findable by period.
+        lo = (
+            _parse_iso_date(args["date_from"], "date_from")
+            if args.get("date_from") else None
+        )
+        hi = (
+            _parse_iso_date(args["date_to"], "date_to")
+            if args.get("date_to") else None
+        )
+
+        def _effective(doc: dict):
+            own = _as_utc(doc.get("document_date"))
+            if own:
+                return own.date()
+            ts = _as_utc(doc.get("created_at"))
+            return ts.astimezone(MTL).date() if ts else None
+
+        def _in_window(doc: dict) -> bool:
+            d = _effective(doc)
+            if d is None:
+                return False
+            return (lo is None or d >= lo) and (hi is None or d <= hi)
+
+        docs = [d for d in docs if _in_window(d)]
+
+    paths = _folder_paths(dossier_id)
     truncated = len(docs) > limit
     items = []
     for doc in docs[:limit]:
@@ -716,6 +765,10 @@ def list_documents(args: dict) -> dict:
                 "file_size_display": document_model.format_file_size(size),
                 "version": doc.get("version", 1),
                 "folder_id": doc.get("folder_id"),
+                # Resolved per row from the one-query map — "" = dossier
+                # root (folder_id null) or a dangling folder reference.
+                "folder_path": paths.get(doc.get("folder_id") or "", ""),
+                "document_date": date_str(_as_utc(doc.get("document_date"))),
                 "description": doc.get("description", ""),
                 "tags": doc.get("tags", []),
                 "created_at": iso_mtl(_as_utc(doc.get("created_at"))),

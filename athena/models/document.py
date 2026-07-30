@@ -150,6 +150,14 @@ def _default_doc() -> dict:
         "category": "autre",
         "description": "",
         "tags": [],
+        # The DOCUMENT'S OWN date (a procès-verbal's service date, a
+        # judgment's date…) — MANUAL, date-only at midnight UTC, never
+        # derived: created_at is the upload/generation instant, which for
+        # scanned or received papers is days after the event (PA-G03).
+        # Absent on legacy docs; no backfill exists or is possible (the
+        # display-name convention only dates generated docs, with the
+        # upload date).
+        "document_date": None,
         "folder_id": None,
         "version": 1,
         "parent_document_id": None,
@@ -170,6 +178,27 @@ def _sanitize_data(data: dict) -> dict:
         else:
             out[key] = val
     return out
+
+
+def _coerce_document_date(raw) -> Optional[datetime]:
+    """Coerce a form/date value into a date-only midnight-UTC datetime.
+
+    Accepts a datetime (time dropped), a date, or a "YYYY-MM-DD" string;
+    anything else — including "" (the form's « no date ») — is None. The
+    convention mirrors dossier.opened_date / partie.birth_date: render with
+    strftime/date_str, never to_mtl.
+    """
+    if isinstance(raw, datetime):
+        return datetime(raw.year, raw.month, raw.day, tzinfo=timezone.utc)
+    if isinstance(raw, date):
+        return datetime(raw.year, raw.month, raw.day, tzinfo=timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            d = datetime.strptime(raw.strip(), "%Y-%m-%d")
+            return d.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
 
 
 def _validate_metadata(data: dict) -> list[str]:
@@ -302,6 +331,7 @@ def upload_document(
     merged = {**_default_doc(), **_sanitize_data(metadata)}
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
+    merged["document_date"] = _coerce_document_date(merged.get("document_date"))
 
     # Validate folder_id if provided
     folder_id = merged.get("folder_id")
@@ -463,9 +493,17 @@ def update_metadata(
         return None, ["Document introuvable."]
 
     # Only allow updating specific metadata fields
-    allowed_fields = {"display_name", "category", "description", "tags"}
+    allowed_fields = {
+        "display_name", "category", "description", "tags", "document_date",
+    }
     sanitized = _sanitize_data({k: v for k, v in data.items() if k in allowed_fields})
     merged = {**existing, **sanitized}
+    if "document_date" in sanitized:
+        # Presence-gated: a caller that does not carry the key never touches
+        # the stored date; a carried empty string clears it deliberately.
+        merged["document_date"] = _coerce_document_date(
+            sanitized["document_date"]
+        )
 
     # Validate
     if merged.get("category") and merged["category"] not in VALID_CATEGORIES:

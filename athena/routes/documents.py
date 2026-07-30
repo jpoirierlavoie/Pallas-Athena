@@ -274,6 +274,9 @@ def document_upload() -> str:
             "tags": tags,
             "display_name": request.form.get("display_name", "").strip() or "",
             "folder_id": folder_id,
+            # The document's OWN date (PV, jugement…) — optional, distinct
+            # from the upload instant.
+            "document_date": request.form.get("document_date", "").strip(),
         }
 
         doc, errors = upload_document(
@@ -349,6 +352,8 @@ def document_update(document_id: str) -> str:
         "category": f.get("category", "autre").strip(),
         "description": f.get("description", "").strip(),
         "tags": [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else [],
+        # Always carried by this form — an emptied input clears the date.
+        "document_date": f.get("document_date", "").strip(),
     }
 
     doc, errors = update_metadata(document_id, data)

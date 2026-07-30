@@ -667,6 +667,58 @@ def test_list_documents_metadata_only_and_folder_sentinel(monkeypatch):
     assert "signed_url" not in item
 
 
+def test_list_documents_resolves_folder_path_per_row(monkeypatch):
+    """PA-G11: folder_id used to be a bare UUID with no resolver unless the
+    CALLER already knew the folder. One folder-tree query per request, an
+    id→path map, never per-row breadcrumb walks."""
+    tree = [{"id": "f1", "name": "Procédures", "children": [
+        {"id": "f2", "name": "Significations", "children": []},
+    ]}]
+    docs = [
+        {"id": "doc1", "display_name": "PV Solo.pdf", "folder_id": "f2",
+         "document_date": datetime(2026, 7, 15, tzinfo=UTC),
+         "created_at": datetime(2026, 7, 25, 14, 0, tzinfo=UTC)},
+        {"id": "doc2", "display_name": "Racine.pdf", "folder_id": None},
+    ]
+    monkeypatch.setattr(handlers.document_model, "list_documents",
+                        lambda **kw: list(docs))
+    monkeypatch.setattr(handlers.folder_model, "get_folder_tree",
+                        lambda d: tree)
+    payload = handlers.list_documents({"dossier_id": "d1"})
+    by_id = {i["id"]: i for i in payload["items"]}
+    assert by_id["doc1"]["folder_path"] == "Procédures / Significations"
+    assert by_id["doc2"]["folder_path"] == ""          # dossier root
+    # PA-G03: the document's OWN date, not the upload instant.
+    assert by_id["doc1"]["document_date"] == "2026-07-15"
+    assert by_id["doc2"]["document_date"] is None
+
+
+def test_list_documents_date_window_uses_the_effective_date(monkeypatch):
+    """The window reads document_date when set, else the upload date — a
+    July-uploaded PV dated the 15th matches « July 15 », and an undated
+    legacy doc stays findable by its upload period."""
+    docs = [
+        {"id": "dated", "folder_id": None,
+         "document_date": datetime(2026, 7, 15, tzinfo=UTC),
+         "created_at": datetime(2026, 7, 25, 14, 0, tzinfo=UTC)},
+        {"id": "undated", "folder_id": None,
+         "created_at": datetime(2026, 7, 25, 14, 0, tzinfo=UTC)},
+    ]
+    monkeypatch.setattr(handlers.document_model, "list_documents",
+                        lambda **kw: list(docs))
+    monkeypatch.setattr(handlers.folder_model, "get_folder_tree", lambda d: [])
+    on_the_15th = handlers.list_documents(
+        {"dossier_id": "d1", "date_from": "2026-07-15",
+         "date_to": "2026-07-15"}
+    )
+    assert [i["id"] for i in on_the_15th["items"]] == ["dated"]
+    on_the_25th = handlers.list_documents(
+        {"dossier_id": "d1", "date_from": "2026-07-25",
+         "date_to": "2026-07-25"}
+    )
+    assert [i["id"] for i in on_the_25th["items"]] == ["undated"]
+
+
 # ── parties ─────────────────────────────────────────────────────────────
 
 def test_get_partie_card_with_dossier_relations(monkeypatch):

@@ -45,6 +45,60 @@ def test_mcp_document_enum_matches_model():
     )
 
 
+# ── document_date (PA-G03) ──────────────────────────────────────────────
+
+
+def test_coerce_document_date_three_forms():
+    from datetime import date, datetime, timezone
+    attendu = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    assert doc._coerce_document_date("2026-07-15") == attendu
+    assert doc._coerce_document_date(date(2026, 7, 15)) == attendu
+    assert doc._coerce_document_date(
+        datetime(2026, 7, 15, 14, 30, tzinfo=timezone.utc)
+    ) == attendu   # time dropped — date-only convention
+
+
+def test_coerce_document_date_refuses_junk():
+    for raw in ("", "  ", "hier", "2026-13-45", None, 42, []):
+        assert doc._coerce_document_date(raw) is None
+
+
+def test_update_metadata_presence_gates_document_date(monkeypatch):
+    """A caller that does not carry the key never touches the stored date;
+    a carried empty string CLEARS it (the edit form always submits it)."""
+    from datetime import datetime, timezone
+    stored = {**doc._default_doc(), "id": "doc1", "dossier_id": "d1",
+              "display_name": "PV",
+              "document_date": datetime(2026, 7, 15, tzinfo=timezone.utc)}
+    monkeypatch.setattr(doc, "get_document", lambda i: dict(stored))
+    written = {}
+
+    class _Doc:
+        def set(self, payload):
+            written.update(payload)
+
+    monkeypatch.setattr(
+        doc, "db",
+        mock.Mock(collection=lambda n: mock.Mock(document=lambda i: _Doc())),
+    )
+    # Key absent → date survives.
+    _, errs = doc.update_metadata("doc1", {"description": "maj"})
+    assert errs == []
+    assert written["document_date"] == stored["document_date"]
+    # Key carried empty → cleared.
+    written.clear()
+    _, errs = doc.update_metadata("doc1", {"document_date": ""})
+    assert errs == []
+    assert written["document_date"] is None
+    # Key carried with a date → stored at midnight UTC.
+    written.clear()
+    _, errs = doc.update_metadata("doc1", {"document_date": "2026-07-21"})
+    assert errs == []
+    assert written["document_date"] == datetime(
+        2026, 7, 21, tzinfo=timezone.utc
+    )
+
+
 def test_gabarit_taxonomy_is_separate_and_untouched():
     # Spec §11 — doc_template keeps its own narrow taxonomy.
     assert doc_template.VALID_CATEGORIES == ("procédure", "correspondance", "autre")
