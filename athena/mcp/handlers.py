@@ -1,17 +1,22 @@
-"""The 21 MCP tool handlers — 19 read-only, plus 2 note writes.
+"""The 29 MCP tool handlers — 20 read-only, plus 9 create-only writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
 Handlers call EXISTING model/util functions only.
 
 **Read handlers must never write to Firestore.** The invariant survives the
-Phase-L write tools in this narrowed form: only the handlers named in
-:data:`mcp.tools.WRITE_TOOLS` (``create_note``, ``append_to_note``) mutate
-anything, and they mutate the ``notes`` collection and nothing else. That is
-why, for example, ``list_protocol_steps`` derives overdue status by date
-comparison instead of calling ``check_overdue_steps``, which writes.
-(Note the request path itself does write outside the tool path:
-``bearer.stamp_token_last_used`` and ``oauth.touch_client``.)
+write tools in this narrowed form: only the handlers named in
+:data:`mcp.tools.WRITE_TOOLS` mutate anything, every one of them is
+CREATE-ONLY (a new note/task/hearing/time-entry/expense, an appended
+register entry, a fill-only-if-empty dossier field — never an edit, never a
+delete), and the writable collections are ``notes``, ``tasks``,
+``hearings``, ``timeentries``, ``expenses`` and ``dossiers`` (arrays +
+empty fields only). That is why, for example, ``list_protocol_steps``
+derives overdue status by date comparison instead of calling
+``check_overdue_steps``, which writes. (Note the request path itself does
+write outside the tool path: ``bearer.stamp_token_last_used``,
+``oauth.touch_client``, and ``mcp/write_support.py``'s idempotency
+records.)
 
 **Every note write MUST bump the dossier's CTag.** ``models/note.py`` never
 bumps — bumping lives in the caller (``routes/notes.py``,

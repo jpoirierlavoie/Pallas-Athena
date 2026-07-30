@@ -511,14 +511,25 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
         "/oauth/authorize", query_string=_authorize_params(client_doc, challenge)
     )
     body = page.data.decode("utf-8")
-    # The old copy was a flat misrepresentation once write tools exist.
+    # The old copies were flat misrepresentations once write tools exist:
+    # first « read-only », then « notes only » once WP16/WP17 landed.
     assert "Aucune modification de vos données n'est possible" not in body
     assert "demande un accès <strong>en lecture seule</strong>" not in body
-    # The grant control and what it grants must both be named.
+    assert "Autoriser l'écriture des notes" not in body
+    # The grant control and what it grants must both be named — every
+    # write family, and the create-only ceiling.
     assert 'name="grant_write"' in body
-    assert "Autoriser l'écriture des notes" in body
-    assert "créer une nouvelle note dans un dossier" in body
-    assert "ajouter du texte à la fin d'une note existante" in body
+    assert "Autoriser les écritures (création" in body
+    assert "des notes dans un dossier" in body
+    assert "des tâches" in body
+    assert "des événements au calendrier" in body
+    assert "des entrées de temps et des déboursés" in body
+    assert "remplir des champs encore" in body
+    assert "jamais écraser une valeur existante" in body
+    assert "significations et des événements de prescription" in body
+    # And what stays impossible must be said as plainly.
+    assert "jamais de modification ni de" in body
+    assert "intouchables" in body
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)

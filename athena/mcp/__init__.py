@@ -9,14 +9,17 @@ Exposes Pallas Athena's data to Claude as a custom connector:
 * ``mcp_bp`` — ``POST /mcp``: a stateless, JSON-response-mode Streamable
   HTTP server (initialize / ping / tools list + call). No SSE, no sessions.
 
-**Almost everything is read-only.** The two exceptions are the note-write
-tools listed in :data:`mcp.tools.WRITE_TOOLS` (``create_note`` and
-``append_to_note``). Notes are DAV-exposed as VJOURNAL resources inside
-the per-dossier CalDAV collection, and ``models/note.py`` never bumps a
-CTag — bumping lives in the caller. **Every note write on a tool path
-MUST call ``bump_ctag(f"dossier:{dossier_id}")``**, or the note lands in
-Firestore, shows up in the web UI, and DavX5 silently never re-syncs it.
-No other collection is writable from a tool path.
+**Reads dominate; every write is create-only.** The write tools are
+pinned in :data:`mcp.tools.WRITE_TOOLS` (notes, tasks, hearings, time
+entries, expenses, plus the dossier recorders ``complete_dossier`` /
+``record_signification`` / ``record_prescription_event``); none can edit
+or delete, and no other collection is writable from a tool path. Notes,
+tasks and hearings are DAV-exposed, and the models never bump a CTag —
+bumping lives in the caller. **Every DAV-exposed write on a tool path
+MUST call ``bump_ctag(collection_for(dossier_id))``**, or the item lands
+in Firestore, shows up in the web UI, and DavX5 silently never re-syncs
+it. All writes run through ``mcp/write_support.run_write`` (``dry_run``
++ ``idempotency_key``).
 
 Two independent kill switches, both defaulting to on:
 

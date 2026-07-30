@@ -188,13 +188,18 @@ def test_initialize_shape(client):
     assert result["capabilities"] == {"tools": {"listChanged": False}}
     instructions = result["instructions"]
     # A bare `"read-only" in instructions` would keep passing against
-    # "Every tool is read-only EXCEPT two…" while proving nothing. Assert the
-    # write disclosure the client model actually needs.
+    # "20 tools read; 9 write…" while proving nothing. Assert the write
+    # disclosure the client model actually needs: the create-only ceiling,
+    # the fill-only rule, and the WP15 retry protocol (dry_run +
+    # idempotency_key replaced the old blind-retry-duplicates advice).
+    assert "CREATE-ONLY" in instructions
     assert "create_note" in instructions
-    assert "append_to_note" in instructions
+    assert "complete_dossier" in instructions
     assert "athena:write" in instructions
-    assert "confirm with the user before writing" in instructions
-    assert "never retry a write that appeared to fail" in instructions
+    assert "refuses to overwrite" in instructions
+    assert "dry_run" in instructions
+    assert "idempotency_key" in instructions
+    assert "never writable" in instructions
 
 
 # ── tools/list & tools/call ─────────────────────────────────────────────
