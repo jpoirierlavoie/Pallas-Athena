@@ -577,18 +577,28 @@ def update_partie(
     merged["updated_at"] = now
     merged["etag"] = str(uuid.uuid4())
 
-    # Auto-set verification dates on status change
-    if (
-        data.get("identity_verified")
-        and data["identity_verified"] != existing.get("identity_verified")
+    # KYC stamps: each *_date answers « when was this DECIDED », never
+    # « when was the field last touched ». Stamp only on a transition INTO
+    # a decided status (a downgrade used to re-stamp, leaving « non_vérifié »
+    # beside a fresh timestamp — the PA-D07 incoherence); force the date
+    # null whenever the submitted status is « non_vérifié », so the
+    # invariant date-present ⇔ status-decided self-heals pre-fix rows on
+    # their next KYC edit. Presence-gated: a partial update that does not
+    # carry the key never touches the date (on a full-document set,
+    # injecting a default IS a deletion). « conflit_détecté » counts as
+    # decided — the check WAS performed; its date is the check's date.
+    for field, decided in (
+        ("identity_verified", ("vérifié", "exempté")),
+        ("conflict_check", ("vérifié", "conflit_détecté")),
     ):
-        merged["identity_verified_date"] = now
-
-    if (
-        data.get("conflict_check")
-        and data["conflict_check"] != existing.get("conflict_check")
-    ):
-        merged["conflict_check_date"] = now
+        if not data.get(field):
+            continue
+        date_key = f"{field}_date"
+        if data[field] in decided:
+            if data[field] != existing.get(field):
+                merged[date_key] = now
+        elif data[field] == "non_vérifié":
+            merged[date_key] = None
 
     try:
         db.collection(COLLECTION).document(partie_id).set(merged)
