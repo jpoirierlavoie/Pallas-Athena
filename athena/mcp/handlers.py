@@ -979,13 +979,17 @@ def parse_court_file_number(args: dict) -> dict:
     result = reference.parse_court_file_number(args["court_file_number"])
     greffe = result.get("greffe") or {}
     juridiction = result.get("juridiction") or {}
+    # An alpha prefix (TAL-594531…) resolves to a _FORUMS entry — its name
+    # fills the same nullable `tribunal` key the judicial path uses, so a
+    # client asking « which tribunal » gets the answer either way (PA-D09).
+    forum = result.get("forum") or {}
     return {
         "greffe_number": result.get("greffe_number"),
         "juridiction_number": result.get("juridiction_number"),
         "palais_de_justice": greffe.get("palais_de_justice"),
         "district_judiciaire": greffe.get("district_judiciaire"),
         "point_de_service": greffe.get("point_de_service"),
-        "tribunal": juridiction.get("tribunal"),
+        "tribunal": juridiction.get("tribunal") or forum.get("name"),
         "competence": juridiction.get("competence"),
         "greffe_type": juridiction.get("greffe_type"),
         "is_administrative": bool(result.get("is_administrative")),

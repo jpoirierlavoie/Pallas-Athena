@@ -814,8 +814,30 @@ def test_parse_court_file_number_success():
 
 
 def test_parse_court_file_number_administrative():
+    """An alpha prefix resolves to its tribunal via _FORUMS (PA-D09) —
+    the prefix IS the answer to the question the tool was asked."""
     payload = handlers.parse_court_file_number({"court_file_number": "TAL-12345"})
     assert payload["is_administrative"] is True
+    assert payload["tribunal"] == "Tribunal administratif du logement"
+    assert payload["parse_error"] is None
+
+
+def test_parse_court_file_number_federal_is_not_administrative():
+    """Federal courts resolve by dotted or dotless prefix, and are NOT
+    administrative tribunals (reference.py design note)."""
+    for raw in ("C.F.-T-1234-26", "CF-T-1234-26"):
+        payload = handlers.parse_court_file_number({"court_file_number": raw})
+        assert payload["tribunal"] == "Cour fédérale", raw
+        assert payload["is_administrative"] is False, raw
+        assert payload["parse_error"] is None, raw
+
+
+def test_parse_court_file_number_unmapped_prefix_keeps_historical_shape():
+    """An unknown alpha prefix stays conservatively flagged administrative
+    with tribunal null — never an error, never a guessed name."""
+    payload = handlers.parse_court_file_number({"court_file_number": "XYZ-9999"})
+    assert payload["is_administrative"] is True
+    assert payload["tribunal"] is None
     assert payload["parse_error"] is None
 
 

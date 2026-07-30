@@ -251,6 +251,25 @@ FORUM_CATEGORY_LABELS: dict[str, str] = {
 }
 
 
+def _build_forum_prefix_index() -> dict[str, str]:
+    """Reverse index: court-file-number prefix -> _FORUMS slug.
+
+    A TAL/TAQ/CPTAQ… file number starts with the tribunal's abbreviation —
+    the prefix IS the answer to « which tribunal ». Normalized uppercase
+    without dots so the federal abbreviations (« C.F. », « C.A.F. ») match a
+    « CF- »/« CAF- » prefix too; the slug itself is indexed as a fallback
+    spelling.
+    """
+    index: dict[str, str] = {}
+    for key, spec in _FORUMS.items():
+        index[spec["abbr"].upper().replace(".", "")] = key
+        index[key.upper()] = key
+    return index
+
+
+_FORUM_PREFIX_INDEX: dict[str, str] = _build_forum_prefix_index()
+
+
 # ── Lookup helpers ────────────────────────────────────────────────────
 
 
@@ -397,6 +416,10 @@ def parse_court_file_number(court_file_number: str) -> dict:
             "juridiction_number": "05" or None,
             "greffe": { ... } or None,
             "juridiction": { ... } or None,
+            "forum": { ... } or None,   # resolved from an alpha prefix
+                                        # (TAL-…) via _FORUMS; None for
+                                        # judicial numbers and unmapped
+                                        # prefixes
             "is_administrative": False,
             "parse_error": None or "error message"
         }
@@ -406,6 +429,7 @@ def parse_court_file_number(court_file_number: str) -> dict:
         "juridiction_number": None,
         "greffe": None,
         "juridiction": None,
+        "forum": None,
         "is_administrative": False,
         "parse_error": None,
     }
@@ -416,9 +440,28 @@ def parse_court_file_number(court_file_number: str) -> dict:
 
     cleaned = court_file_number.strip()
 
-    # Check for administrative tribunal prefix (starts with letters)
+    # Letters prefix: a non-judicial forum's own numbering (TAL-594531…).
+    # The prefix IS the tribunal — resolve it against _FORUMS instead of
+    # discarding it. is_administrative is True only for the "administratif"
+    # category (a federal court is NOT an administrative tribunal); an
+    # UNMAPPED alpha prefix keeps the historical shape (True, forum None)
+    # so unknown bodies stay conservatively flagged rather than erroring.
     if cleaned[0].isalpha():
-        result["is_administrative"] = True
+        prefix_chars = []
+        for ch in cleaned:
+            if ch.isalpha() or ch == ".":
+                prefix_chars.append(ch)
+            else:
+                break
+        prefix = "".join(prefix_chars).upper().replace(".", "")
+        forum_key = _FORUM_PREFIX_INDEX.get(prefix)
+        if forum_key:
+            result["forum"] = get_forum(forum_key)
+            result["is_administrative"] = (
+                result["forum"]["category"] == ADMINISTRATIF
+            )
+        else:
+            result["is_administrative"] = True
         return result
 
     # Parse: expect NNN-NN-...
