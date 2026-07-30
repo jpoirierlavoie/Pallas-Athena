@@ -80,9 +80,20 @@ def _corps_invitation(invitation: dict, lien: str) -> tuple[str, str]:
     type_ = invitation.get("type") or "documents"
     prefixe, gabarit = _COURRIELS.get(type_, _COURRIELS["documents"])
     display_label = invitation.get("display_label", "")
+    # Variante « de phrase » : le gabarit documents écrit « Dans le cadre du
+    # dossier {label} », et le libellé PAR DÉFAUT commence lui-même par
+    # « Dossier » — ce qui donnait « du dossier Dossier 2026-001 ». On retire
+    # un tel préfixe pour la phrase SEULEMENT ; l'objet du courriel, le
+    # portail et Réception gardent le libellé intégral, qui s'y lit bien.
+    # Dérivé en Python, pas dans le gabarit : la règle maison veut que le
+    # gabarit ne possède que le libellé, jamais une transformation.
+    label_phrase = display_label
+    if label_phrase.lower().startswith("dossier "):
+        label_phrase = label_phrase[len("dossier "):].strip() or display_label
     corps = render_template(
         gabarit,
         display_label=display_label,
+        display_label_phrase=label_phrase,
         lien=lien,
         max_file_mb=PORTAIL_MAX_FILE_MB,
         date_expiration=format_date_fr(to_mtl(invitation["expires_at"]).date()),

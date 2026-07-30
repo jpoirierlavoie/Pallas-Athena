@@ -493,3 +493,31 @@ def test_le_selecteur_natif_est_borne_a_aujourd_hui(web, connecte):
     page = web.get("/ouverture").get_data(as_text=True)
     assert 'type="date"' in page
     assert f'max="{datetime.now(timezone.utc).date().isoformat()}"' in page
+
+
+def test_le_pays_atteint_l_enveloppe(web, connecte, monkeypatch):
+    """Le champ manquait au FORMULAIRE seulement : la liste blanche, le
+    préremplissage et la table de Réception l'acceptaient déjà. Ce test
+    verrouille le trajet complet maintenant que l'input existe."""
+    ecrit = mock.Mock()
+    monkeypatch.setattr(stockage, "ecrire_enveloppe", ecrit)
+    _post_json(web, "/api/intake/finaliser",
+               _complet(adresse_pays="France"))
+    _i, _b, envelope = ecrit.call_args[0]
+    assert envelope["donnees"]["adresse_pays"] == "France"
+
+
+def test_le_pays_est_visible_dans_l_assistant(web, connecte):
+    page = web.get("/ouverture").get_data(as_text=True)
+    assert 'data-champ="adresse_pays"' in page
+    # Prérempli « Canada », comme la province est préremplie « Québec ».
+    assert 'value="Canada"' in page
+
+
+def test_le_prefill_remplit_le_pays(web, connecte, monkeypatch):
+    monkeypatch.setattr(invitations, "lire", lambda i: _invitation(prefill={
+        "type": "individual", "last_name": "Tremblay",
+        "address_country": "Belgique",
+    }))
+    page = web.get("/ouverture").get_data(as_text=True)
+    assert 'value="Belgique"' in page

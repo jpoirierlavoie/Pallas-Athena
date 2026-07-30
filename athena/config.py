@@ -111,6 +111,15 @@ class Config:
     GRAPH_TENANT_ID: str = os.environ.get("GRAPH_TENANT_ID", "")
     GRAPH_CLIENT_ID: str = os.environ.get("GRAPH_CLIENT_ID", "")
     GRAPH_SENDER_UPN: str = os.environ.get("GRAPH_SENDER_UPN", "")
+    # Nom d'affichage de l'expéditeur (le « name » du from Graph). Sans lui,
+    # les clients voient le nom d'annuaire de la boîte dont reception@ est
+    # l'alias — « Jason Poirier Lavoie » — plutôt que la réception du cabinet.
+    # Vide = comportement historique (aucun name dans la charge sendMail).
+    # NB : Exchange Online peut réécrire le nom d'affichage d'un expéditeur de
+    # l'organisation vers sa valeur d'annuaire ; si ce réglage ne tient pas à
+    # l'essai réel, la solution durable est de convertir reception@ en boîte
+    # partagée portant son propre nom (opération Exchange, pas code).
+    GRAPH_SENDER_NAME: str = os.environ.get("GRAPH_SENDER_NAME", "")
     GRAPH_CLIENT_SECRET: str = _secret(
         "graph-client-secret", "GRAPH_CLIENT_SECRET", required=False
     )

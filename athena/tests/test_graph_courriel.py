@@ -27,6 +27,9 @@ def _graph_configured(monkeypatch):
     monkeypatch.setattr(Config, "GRAPH_CLIENT_ID", "client-1")
     monkeypatch.setattr(Config, "GRAPH_CLIENT_SECRET", "s3cret")
     monkeypatch.setattr(Config, "GRAPH_SENDER_UPN", "juriste@example.com")
+    # Épinglé à vide pour que le test de forme exacte du from ne dépende pas
+    # de l'environnement de la machine.
+    monkeypatch.setattr(Config, "GRAPH_SENDER_NAME", "")
     graph._reset_token_cache_for_tests()
     yield
     graph._reset_token_cache_for_tests()
@@ -127,7 +130,8 @@ def test_envoyer_sendmail_payload_conforme():
     body = post.call_args.kwargs["json"]
     assert url.endswith("/users/juriste@example.com/sendMail")
     assert body["saveToSentItems"] is True
-    # « from » explicite = l'UPN expéditeur (alias affiché).
+    # « from » explicite = l'UPN expéditeur (alias affiché). SANS « name »
+    # quand GRAPH_SENDER_NAME est vide — la forme historique reste le défaut.
     assert body["message"]["from"] == {
         "emailAddress": {"address": "juriste@example.com"}
     }
@@ -136,6 +140,27 @@ def test_envoyer_sendmail_payload_conforme():
     assert body["message"]["toRecipients"] == [
         {"emailAddress": {"address": "client@exemple.com"}}
     ]
+
+
+def test_envoyer_porte_le_nom_d_affichage_configure(monkeypatch):
+    """GRAPH_SENDER_NAME remplace, dans la boîte du client, le nom d'annuaire
+    de la boîte dont reception@ est l'alias (« Jason Poirier Lavoie »).
+    NB : Exchange Online peut réécrire ce nom vers la valeur d'annuaire — le
+    test prouve la charge émise, l'affichage final se vérifie sur un envoi
+    réel (voir la note dans config.py)."""
+    monkeypatch.setattr(Config, "GRAPH_SENDER_NAME",
+                        "Réception — Poirier Lavoie, avocat")
+    send = mock.Mock(status_code=202, content=b"")
+    with mock.patch.object(graph.requests, "post",
+                           side_effect=[_token_response(), send]) as post:
+        courriel.envoyer("client@exemple.com", "Objet", "<p>x</p>")
+    body = post.call_args.kwargs["json"]
+    assert body["message"]["from"] == {
+        "emailAddress": {
+            "address": "juriste@example.com",
+            "name": "Réception — Poirier Lavoie, avocat",
+        }
+    }
 
 
 def test_envoyer_raises_on_http_failure():

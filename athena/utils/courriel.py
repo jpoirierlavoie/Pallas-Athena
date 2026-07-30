@@ -16,17 +16,22 @@ def envoyer(destinataire: str, objet: str, corps_html: str) -> None:
     Raises GraphNotConfigured when the GRAPH_* configuration is absent and
     GraphError on any HTTP failure — never swallows.
     """
+    # « from » explicite = l'expéditeur affiché est bien reception@…
+    # (GRAPH_SENDER_UPN), même si c'est un alias d'une autre boîte : la boîte
+    # détient le « Send As » sur ses propres alias, donc pas de permission
+    # supplémentaire requise. Le « name » (GRAPH_SENDER_NAME) remplace le nom
+    # d'annuaire de la boîte hôte dans la boîte de réception du client ; omis
+    # quand il n'est pas configuré, pour garder la forme historique.
+    expediteur: dict = {"address": Config.GRAPH_SENDER_UPN}
+    if Config.GRAPH_SENDER_NAME:
+        expediteur["name"] = Config.GRAPH_SENDER_NAME
     graph.graph_post(
         f"/users/{Config.GRAPH_SENDER_UPN}/sendMail",
         {
             "message": {
                 "subject": objet,
                 "body": {"contentType": "HTML", "content": corps_html},
-                # « from » explicite = l'expéditeur affiché est bien
-                # reception@… (GRAPH_SENDER_UPN), même si c'est un alias d'une
-                # autre boîte : la boîte détient le « Send As » sur ses propres
-                # alias, donc pas de permission supplémentaire requise.
-                "from": {"emailAddress": {"address": Config.GRAPH_SENDER_UPN}},
+                "from": {"emailAddress": expediteur},
                 "toRecipients": [{"emailAddress": {"address": destinataire}}],
             },
             # Copie dans les « Éléments envoyés » de la boîte (trace probante).

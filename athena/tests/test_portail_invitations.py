@@ -426,3 +426,36 @@ def test_les_invariants_du_pied_sont_dans_les_deux(store, monkeypatch, type_):
     assert "usage unique et de courte durée" in corps
     assert "Votre invitation, elle, demeure valide jusqu'au" in corps
     assert "Une difficulté ?" in corps
+
+
+# ── Le double « Dossier » de la phrase (2026-07-30) ──────────────────────
+
+
+def test_le_libelle_par_defaut_ne_double_pas_le_mot_dossier(store, monkeypatch):
+    """« Dans le cadre du dossier Dossier 2026-001 » : la phrase préfixe
+    « du dossier » à un libellé dont la valeur PAR DÉFAUT commence elle-même
+    par « Dossier ». La variante de phrase retire ce préfixe — la phrase
+    seulement : l'objet, le portail et Réception gardent le libellé intégral."""
+    objet, corps = _capturer(store, monkeypatch, "documents",
+                             display_label="Dossier 2026-001")
+    assert "du dossier 2026-001" in corps
+    assert "du dossier Dossier" not in corps
+    # L'objet, lui, garde le libellé intégral.
+    assert objet == "Transmission de documents — Dossier 2026-001"
+
+
+def test_un_libelle_sans_prefixe_passe_inchange(store, monkeypatch):
+    _objet, corps = _capturer(store, monkeypatch, "documents",
+                              display_label="Succession Tremblay")
+    assert "du dossier Succession Tremblay" in corps
+
+
+def test_un_libelle_reduit_au_seul_mot_dossier_ne_devient_pas_vide(
+    store, monkeypatch
+):
+    """Cas limite : un libellé « Dossier » tout court. Retirer le préfixe le
+    viderait — on retombe alors sur le libellé intégral plutôt que d'écrire
+    « Dans le cadre du dossier , »."""
+    _objet, corps = _capturer(store, monkeypatch, "documents",
+                              display_label="Dossier ")
+    assert "du dossier ," not in corps

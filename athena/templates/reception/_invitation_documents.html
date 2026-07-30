@@ -10,14 +10,18 @@
    l'include est commun aux deux courriels.
 
    Contexte attendu :
-     display_label : la SEULE désignation que le client voit
-     lien          : lien de connexion Firebase (usage unique)
-     max_file_mb   : taille maximale par fichier
+     display_label        : la SEULE désignation que le client voit
+     display_label_phrase : le même, sans son éventuel préfixe « Dossier »
+     lien                 : lien de connexion Firebase (usage unique)
+     max_file_mb          : taille maximale par fichier
      + le contexte de _invitation_pied.html
 #}
 <p>Bonjour,</p>
 
-<p>Dans le cadre du dossier {{ display_label }}, vous êtes invité(e) à
+{# display_label_phrase = le libellé SANS son éventuel préfixe « Dossier »,
+   dérivé par le Python : le libellé par défaut est « Dossier {n°} », et la
+   phrase disait « du dossier Dossier 2026-001 ». #}
+<p>Dans le cadre du dossier {{ display_label_phrase }}, vous êtes invité(e) à
 transmettre vos documents de façon sécurisée par le lien suivant :
 <a href="{{ lien }}">transmettre mes documents</a>.</p>
 
