@@ -258,6 +258,8 @@ def test_get_agenda_filters_cancelled_and_formats_money(monkeypatch):
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
                         lambda: 1234567)
 
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 0})
     payload = handlers.get_agenda({"days_ahead": 7})
     assert [h["id"] for h in payload["hearings"]] == ["h1"]
     assert payload["hearings"][0]["start"] == "2026-07-08T14:00:00-04:00"
@@ -286,6 +288,8 @@ def test_get_agenda_marks_overdue_tasks(monkeypatch):
                         lambda: {"hours": 0.0, "amount": 0})
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
 
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 0})
     payload = handlers.get_agenda({})
     assert payload["urgent_tasks"][0]["is_overdue"] is True
     step = payload["urgent_protocol_steps"][0]
@@ -321,6 +325,8 @@ def test_get_agenda_prescription_alert_last_action_semantics(monkeypatch):
                         lambda: {"hours": 0.0, "amount": 0})
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
 
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 0})
     rows = handlers.get_agenda({})["prescription_alerts"]
     on_business_day, on_weekend = rows[0], rows[1]
 
@@ -640,11 +646,46 @@ def test_billing_snapshot_global(monkeypatch):
                         lambda: 300000)
     monkeypatch.setattr(handlers.invoice_model, "list_invoices",
                         lambda **kw: invoices)
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 77434})
+    unbilled_time = [
+        {"id": "e1", "dossier_id": "d1", "dossier_file_number": "2026-018",
+         "dossier_title": "Gaudreau c. Bossé", "billable": True,
+         "invoiced": False, "hours": 2.0, "amount": 50000},
+        # non-billable row: non_facture includes it, hours must NOT count it
+        {"id": "e2", "dossier_id": "d1", "dossier_file_number": "2026-018",
+         "dossier_title": "Gaudreau c. Bossé", "billable": False,
+         "invoiced": False, "hours": 9.0, "amount": 0},
+        {"id": "e3", "dossier_id": "d2", "dossier_file_number": "2026-027",
+         "dossier_title": "Hraki c. Solo", "billable": True,
+         "invoiced": False, "hours": 1.5, "amount": 37500},
+    ]
+    unbilled_exp = [
+        {"id": "x1", "dossier_id": "d1", "dossier_file_number": "2026-018",
+         "dossier_title": "Gaudreau c. Bossé", "amount": 57495},
+        {"id": "x2", "dossier_id": "d2", "dossier_file_number": "2026-027",
+         "dossier_title": "Hraki c. Solo", "amount": 19939},
+    ]
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        lambda **kw: (unbilled_time, None))
+    monkeypatch.setattr(handlers.expense_model, "list_expenses_page",
+                        lambda **kw: (unbilled_exp, None))
     payload = handlers.get_billing_snapshot({})
     assert payload["scope"] == "global"
     assert {i["id"] for i in payload["outstanding_invoices"]} == {"i1", "i3"}
     assert payload["outstanding_invoices"][0]["date"] == "2026-06-01"
     assert payload["outstanding_display"] == f"3{NBSP}000,00{NBSP}$"
+    # PA-G09: the firm-wide figure now carries the unbilled disbursements…
+    assert payload["unbilled_expenses_cents"] == 77434
+    # …and by_dossier says which files hold the WIP, newest file first.
+    assert [b["file_number"] for b in payload["by_dossier"]] == [
+        "2026-027", "2026-018"
+    ]
+    d1 = payload["by_dossier"][1]
+    assert d1["unbilled_hours"] == 2.0          # billable-only (e2 excluded)
+    assert d1["unbilled_fees_cents"] == 50000
+    assert d1["unbilled_expenses_cents"] == 57495
+    assert payload["by_dossier_truncated"] is False
 
 
 def test_billing_snapshot_unknown_dossier_is_found_false(monkeypatch):
@@ -739,6 +780,8 @@ def test_step_and_task_due_today_are_not_overdue(monkeypatch):
     monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
                         lambda: {"hours": 0.0, "amount": 0})
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 0})
     agenda = handlers.get_agenda({})
     assert agenda["urgent_tasks"][0]["is_overdue"] is False
 

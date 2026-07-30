@@ -356,6 +356,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "open_dossiers": _int(),
             "unbilled_hours": _num(),
             **_money("unbilled"),
+            **_money("unbilled_expenses"),
             **_money("outstanding"),
         }),
     }),
@@ -603,7 +604,20 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "scope": {"type": "string", "enum": ["global"]},
             "unbilled_hours": _num(),
             **_money("unbilled"),
+            **_money("unbilled_expenses"),
             **_money("outstanding"),
+            "by_dossier": _arr(_obj({
+                "dossier_id": _str(),
+                "file_number": _str(),
+                "title": _str(),
+                "unbilled_hours": _num(),
+                **_money("unbilled_fees"),
+                **_money("unbilled_expenses"),
+            }), "Which dossiers hold the unbilled work (fees + "
+                "disbursements), newest file first."),
+            "by_dossier_truncated": _bool(
+                "True when >200 unbilled rows exist — the breakdown may "
+                "then under-count vs the exact aggregate totals."),
             "outstanding_invoices": _arr(_invoice_row()),
             "outstanding_invoices_truncated": _bool(),
         }, description="Firm-wide posture (no dossier_id given)."),

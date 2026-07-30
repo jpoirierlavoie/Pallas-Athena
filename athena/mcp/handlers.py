@@ -289,6 +289,15 @@ def get_agenda(args: dict) -> dict:
         "unbilled_hours": unbilled.get("hours", 0.0),
     }
     _money(stats, "unbilled", unbilled.get("amount", 0))
+    # Same PA-G09 gap as the billing snapshot, fixed in the same commit —
+    # two contradictory firm-wide unbilled figures would be worse than one.
+    _money(
+        stats,
+        "unbilled_expenses",
+        expense_model.get_filtered_expense_totals(
+            billable_filter="non_facture"
+        ).get("amount", 0),
+    )
     _money(stats, "outstanding", invoice_model.get_outstanding_total())
 
     return {
@@ -809,6 +818,68 @@ def get_partie(args: dict) -> dict:
 
 # ── 11. get_billing_snapshot ────────────────────────────────────────────
 
+def _unbilled_by_dossier() -> tuple[list[dict], bool]:
+    """Group the firm's unbilled work by dossier (PA-G09).
+
+    Two bounded indexed reads (invoiced==False, date DESC — the /temps
+    indexes) grouped in Python on the denormalized dossier labels; no
+    per-dossier queries. The `non_facture` filter means « not yet
+    invoiced » and INCLUDES non-billable time rows (their amount is zeroed
+    at write) — hours re-apply `billable` so the breakdown matches
+    get_unbilled_totals' semantics. The truncation flag is honest: past
+    _FETCH_CAP unbilled rows, the breakdown can disagree with the exact
+    aggregate totals beside it.
+    """
+    time_rows, time_cursor = time_entry_model.list_time_entries_page(
+        billable_filter="non_facture", limit=_FETCH_CAP
+    )
+    exp_rows, exp_cursor = expense_model.list_expenses_page(
+        billable_filter="non_facture", limit=_FETCH_CAP
+    )
+    per: dict[str, dict] = {}
+
+    def _bucket(row: dict) -> dict:
+        did = row.get("dossier_id", "")
+        b = per.get(did)
+        if b is None:
+            b = per[did] = {
+                "dossier_id": did,
+                "file_number": row.get("dossier_file_number", ""),
+                "title": row.get("dossier_title", ""),
+                "unbilled_hours": 0.0,
+                "_fees": 0,
+                "_expenses": 0,
+            }
+        return b
+
+    for e in time_rows:
+        if not e.get("billable"):
+            continue
+        b = _bucket(e)
+        b["unbilled_hours"] = round(
+            b["unbilled_hours"] + float(e.get("hours") or 0), 1
+        )
+        b["_fees"] += int(e.get("amount") or 0)
+    for e in exp_rows:
+        b = _bucket(e)
+        b["_expenses"] += int(e.get("amount") or 0)
+
+    rows = []
+    for b in sorted(
+        per.values(), key=lambda r: r.get("file_number", ""), reverse=True
+    ):
+        row = {
+            "dossier_id": b["dossier_id"],
+            "file_number": b["file_number"],
+            "title": b["title"],
+            "unbilled_hours": b["unbilled_hours"],
+        }
+        _money(row, "unbilled_fees", b["_fees"])
+        _money(row, "unbilled_expenses", b["_expenses"])
+        rows.append(row)
+    return rows, bool(time_cursor or exp_cursor)
+
+
 def get_billing_snapshot(args: dict) -> dict:
     dossier_id = args.get("dossier_id")
     if not dossier_id:
@@ -823,7 +894,19 @@ def get_billing_snapshot(args: dict) -> dict:
             "unbilled_hours": unbilled.get("hours", 0.0),
         }
         _money(payload, "unbilled", unbilled.get("amount", 0))
+        # Unbilled DISBURSEMENTS were absent from the firm-wide figure
+        # entirely (PA-G09) — the aggregation + its index already existed
+        # for the /temps tab and simply was never called here.
+        expense_unbilled = expense_model.get_filtered_expense_totals(
+            billable_filter="non_facture"
+        )
+        _money(
+            payload, "unbilled_expenses", expense_unbilled.get("amount", 0)
+        )
         _money(payload, "outstanding", invoice_model.get_outstanding_total())
+        by_dossier, by_dossier_truncated = _unbilled_by_dossier()
+        payload["by_dossier"] = by_dossier
+        payload["by_dossier_truncated"] = by_dossier_truncated
         payload["outstanding_invoices"] = [
             _invoice_row(inv) for inv in outstanding_rows[:_UNBILLED_ROW_CAP]
         ]

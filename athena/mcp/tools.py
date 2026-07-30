@@ -628,10 +628,14 @@ TOOLS: dict[str, dict] = {
     "get_billing_snapshot": {
         "title": "Portrait de facturation",
         "description": (
-            "Billing posture. Without dossier_id: firm-wide unbilled totals, "
-            "outstanding amount, and the outstanding invoices. With dossier_id: "
-            "that dossier's time/expense/invoice summaries plus unbilled line "
-            "detail (up to 50 rows each)."
+            "Billing posture. Without dossier_id: firm-wide unbilled totals "
+            "— fees AND disbursements (unbilled_expenses) — the outstanding "
+            "amount and invoices, plus by_dossier: which files hold the "
+            "work in progress (hours, fees, disbursements per dossier). "
+            "With dossier_id: that dossier's time/expense/invoice summaries "
+            "plus unbilled line detail (up to 50 rows each). Note "
+            "total_hours counts ALL time incl. non-billable; unbilled "
+            "figures are billable-and-not-yet-invoiced only."
         ),
         "input_schema": {
             "type": "object",

@@ -232,6 +232,8 @@ def test_get_agenda_conforms(monkeypatch):
                         lambda c, limit=50: [_dossier_doc()])
     monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
                         lambda: {"hours": 4.0, "amount": 100000})
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 57495})
     monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 7)
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
                         lambda: 150000)
@@ -418,6 +420,21 @@ def test_get_billing_snapshot_three_branches_conform(monkeypatch):
                         lambda: [_invoice_doc()])
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
                         lambda: 150000)
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda billable_filter=None, **kw: {"amount": 57495})
+    monkeypatch.setattr(
+        handlers.time_entry_model, "list_time_entries_page",
+        lambda **kw: ([{"id": "e1", "dossier_id": "d1",
+                        "dossier_file_number": "2026-001",
+                        "dossier_title": "Tremblay c. Lavoie",
+                        "billable": True, "invoiced": False,
+                        "hours": 2.0, "amount": 50000}], None))
+    monkeypatch.setattr(
+        handlers.expense_model, "list_expenses_page",
+        lambda **kw: ([{"id": "x1", "dossier_id": "d1",
+                        "dossier_file_number": "2026-001",
+                        "dossier_title": "Tremblay c. Lavoie",
+                        "amount": 57495}], None))
     _conforms("get_billing_snapshot", handlers.get_billing_snapshot({}))
 
     # Branch 2: dossier
