@@ -131,7 +131,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 22  # 20 read-only + 2 note writes
+    assert len(tools.TOOLS) == 26  # 20 read-only + 6 writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -144,13 +144,17 @@ def test_registry_shape():
 
 def test_write_tools_set_is_pinned():
     """A third write tool must not be able to ship unnoticed."""
-    assert tools.WRITE_TOOLS == frozenset({"create_note", "append_to_note"})
+    assert tools.WRITE_TOOLS == frozenset({
+        "create_note", "append_to_note",
+        "create_task", "create_hearing",
+        "create_time_entry", "create_expense",
+    })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 22
+    assert len(descriptors) == 26
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -1435,6 +1439,183 @@ def test_append_only_ever_updates_content(monkeypatch, bumps):
     )
     assert set(seen) == {"content"}
     assert seen["content"].startswith("A")
+
+
+# ── WP16 creators: the pinned write invariants, per tool ────────────────
+
+
+def test_create_task_bumps_collection_for_and_pins_status(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    created = {}
+
+    def _create(data):
+        created.update(data)
+        return {**data, "id": "t-new"}, []
+
+    monkeypatch.setattr(handlers.task_model, "create_task", _create)
+    payload = handlers.create_task({
+        "dossier_id": "d1", "title": "Produire la réponse",
+        "due_date": "2026-08-05",
+        # injection attempts — must never reach the model:
+        "status": "terminée", "id": "victim", "completed_date": "2020-01-01",
+    })
+    assert bumps["bump"] == ["dossier:d1"]
+    assert payload["ctag_bumped"] is True
+    assert created["status"] == "à_faire"          # pinned, never caller's
+    assert "id" not in created
+    assert "completed_date" not in created
+    assert created["dossier_file_number"] == "2026-001"
+    assert created["created_via"] == "mcp"
+    # Provenance lives in the description, dated.
+    assert "Créée par Claude" in created["description"]
+
+
+def test_create_task_general_stores_none_and_bumps_tasks(monkeypatch, bumps):
+    """Tasks store None for « no dossier » (notes/hearings store "") — the
+    model convention collection_for depends on."""
+    created = {}
+
+    def _create(data):
+        created.update(data)
+        return {**data, "id": "t-new"}, []
+
+    monkeypatch.setattr(handlers.task_model, "create_task", _create)
+    handlers.create_task({"title": "Veille hebdo"})
+    assert created["dossier_id"] is None
+    assert bumps["bump"] == ["general"]     # the « Général » collection
+
+
+def test_create_task_refuses_unknown_dossier_without_writing(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+
+    def _must_not_run(_data):
+        raise AssertionError("create_task reached the model with a bad dossier")
+
+    monkeypatch.setattr(handlers.task_model, "create_task", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
+        handlers.create_task({"dossier_id": "nope", "title": "T"})
+    assert bumps["bump"] == []
+
+
+def test_create_task_refuses_the_2000_char_ceiling(monkeypatch, bumps):
+    """task._sanitize_data truncates at 2000 chars — refuse loudly, never
+    let the model truncate a computed deadline's justification silently."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    with pytest.raises(tools.ToolArgumentError, match="2000"):
+        handlers.create_task({"dossier_id": "d1", "title": "T",
+                              "description": "x" * 2001})
+
+
+def test_create_task_dry_run_writes_nothing(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+
+    def _must_not_run(_data):
+        raise AssertionError("dry_run reached the model")
+
+    monkeypatch.setattr(handlers.task_model, "create_task", _must_not_run)
+    payload = handlers.create_task(
+        {"dossier_id": "d1", "title": "T", "dry_run": True}
+    )
+    assert payload["dry_run"] is True
+    assert payload["entity"]["id"] == ""
+    assert bumps["bump"] == []                     # no CTag on a simulation
+    assert any("Simulation" in w for w in payload["warnings"])
+
+
+def test_create_hearing_times_are_montreal_and_bump_fires(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    created = {}
+
+    def _create(data):
+        created.update(data)
+        return {**data, "id": "h-new"}, []
+
+    monkeypatch.setattr(handlers.hearing_model, "create_hearing", _create)
+    handlers.create_hearing({
+        "dossier_id": "d1", "title": "Interrogatoire",
+        "hearing_type": "interrogatoire",
+        "date": "2026-09-10", "start_time": "09:30",
+        "id": "victim", "vevent_uid": "x",     # injection — must not pass
+    })
+    assert bumps["bump"] == ["dossier:d1"]
+    # 09:30 Montréal (EDT, UTC-4) = 13:30 UTC.
+    assert created["start_datetime"].hour == 13
+    assert created["start_datetime"].tzinfo is not None
+    assert "id" not in created
+    assert "vevent_uid" not in created
+    assert created["created_via"] == "mcp"
+    assert "Créée par Claude" in created["notes"]
+
+
+def test_create_hearing_defaults_to_rencontre(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    created = {}
+    monkeypatch.setattr(
+        handlers.hearing_model, "create_hearing",
+        lambda data: (created.update(data) or ({**data, "id": "h"}, [])),
+    )
+    payload = handlers.create_hearing(
+        {"dossier_id": "d1", "title": "Rendez-vous", "date": "2026-09-10"}
+    )
+    assert created["hearing_type"] == "rencontre"
+    assert payload["entity"]["forum"] == "extrajudiciaire"
+    assert created["all_day"] is True              # no start_time given
+
+
+def test_create_time_entry_defaults_to_the_dossier_rate(monkeypatch):
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: {**_wdossier(), "hourly_rate": 32500},
+    )
+    created = {}
+    monkeypatch.setattr(
+        handlers.time_entry_model, "create_time_entry",
+        lambda data: (created.update(data) or ({**data, "id": "e",
+                                                "amount": 48750}, [])),
+    )
+    payload = handlers.create_time_entry({
+        "dossier_id": "d1", "date": "2026-07-30",
+        "description": "Rédaction", "hours": 1.5,
+    })
+    assert created["rate"] == 32500                # dossier default
+    assert created["invoiced"] is False
+    assert created["created_via"] == "mcp"
+    # NO provenance text — the description prints on the client's invoice.
+    assert "Claude" not in created["description"]
+    assert "ctag_bumped" not in payload            # not DAV-exposed
+
+
+def test_create_expense_requires_dossier_and_positive_amount(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    with pytest.raises(tools.ToolArgumentError, match="dossier_id"):
+        handlers.create_expense({"date": "2026-07-30",
+                                 "description": "X", "amount_cents": 100})
+    with pytest.raises(tools.ToolArgumentError, match="amount_cents"):
+        handlers.create_expense({"dossier_id": "d1", "date": "2026-07-30",
+                                 "description": "X", "amount_cents": 0})
+
+
+def test_wp16_enums_track_the_models():
+    """The tools.py literals are hand-copied (firestore-at-import rule) —
+    pin them against the models so they cannot drift."""
+    from models import expense as expense_model
+    from models import hearing as hearing_model
+    from models import task as task_model
+
+    assert (tools.TOOLS["create_task"]["input_schema"]["properties"]
+            ["priority"]["enum"] == list(task_model.VALID_PRIORITIES))
+    assert (tools.TOOLS["create_task"]["input_schema"]["properties"]
+            ["category"]["enum"] == list(task_model.VALID_CATEGORIES))
+    assert (tools.TOOLS["create_hearing"]["input_schema"]["properties"]
+            ["hearing_type"]["enum"] == list(hearing_model.VALID_HEARING_TYPES))
+    assert (tools.TOOLS["create_expense"]["input_schema"]["properties"]
+            ["category"]["enum"] == list(expense_model.VALID_CATEGORIES))
 
 
 # ── Markdown survival ───────────────────────────────────────────────────

@@ -642,3 +642,64 @@ def test_append_to_note_conforms(write_world, monkeypatch):
                             "updated_at": DT, **data}, []))
     _conforms("append_to_note", handlers.append_to_note(
         {"note_id": "n1", "content": "Suite"}))
+
+
+# ── WP16 creators: conformance, live and dry ────────────────────────────
+
+
+def test_create_task_conforms_live_and_dry(write_world, monkeypatch):
+    monkeypatch.setattr(
+        handlers.task_model, "create_task",
+        lambda data: ({**data, "id": "t-new"}, []))
+    args = {"dossier_id": "d1", "title": "Produire la réponse",
+            "due_date": "2026-08-05", "priority": "haute"}
+    payload = handlers.create_task(dict(args))
+    _conforms("create_task", payload)
+    assert payload["entity"]["status"] == "à_faire"
+    dry = handlers.create_task({**args, "dry_run": True})
+    _conforms("create_task", dry)
+    assert dry["dry_run"] is True and dry["entity"]["id"] == ""
+
+
+def test_create_hearing_conforms_live_and_dry(write_world, monkeypatch):
+    monkeypatch.setattr(
+        handlers.hearing_model, "create_hearing",
+        lambda data: ({**data, "id": "h-new"}, []))
+    args = {"dossier_id": "d1", "title": "Interrogatoire",
+            "hearing_type": "interrogatoire", "date": "2026-09-10",
+            "start_time": "09:30"}
+    payload = handlers.create_hearing(dict(args))
+    _conforms("create_hearing", payload)
+    assert payload["entity"]["forum"] == "extrajudiciaire"
+    dry = handlers.create_hearing({**args, "dry_run": True})
+    _conforms("create_hearing", dry)
+
+
+def test_create_time_entry_conforms_live_and_dry(write_world, monkeypatch):
+    monkeypatch.setattr(
+        handlers.time_entry_model, "create_time_entry",
+        lambda data: ({**data, "id": "e-new",
+                       "amount": int(data["hours"] * data["rate"])}, []))
+    args = {"dossier_id": "d1", "date": "2026-07-30",
+            "description": "Rédaction de la demande", "hours": 1.5,
+            "rate_cents": 30000}
+    payload = handlers.create_time_entry(dict(args))
+    _conforms("create_time_entry", payload)
+    assert payload["entity"]["amount_cents"] == 45000
+    assert "ctag_bumped" not in payload      # not DAV-exposed — never faked
+    dry = handlers.create_time_entry({**args, "dry_run": True})
+    _conforms("create_time_entry", dry)
+
+
+def test_create_expense_conforms_live_and_dry(write_world, monkeypatch):
+    monkeypatch.setattr(
+        handlers.expense_model, "create_expense",
+        lambda data: ({**data, "id": "x-new"}, []))
+    args = {"dossier_id": "d1", "date": "2026-07-30",
+            "description": "Huissier — signification", "amount_cents": 9500,
+            "category": "signification"}
+    payload = handlers.create_expense(dict(args))
+    _conforms("create_expense", payload)
+    assert "ctag_bumped" not in payload
+    dry = handlers.create_expense({**args, "dry_run": True})
+    _conforms("create_expense", dry)

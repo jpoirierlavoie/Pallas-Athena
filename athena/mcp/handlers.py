@@ -2086,3 +2086,419 @@ def _append_to_note_impl(args: dict, dry_run: bool) -> dict:
     result = _write_result(note, created=False, dossier=dossier)
     result["appended_chars"] = len(block)
     return result
+
+
+# ════════════════════════════════════════════════════════════════════════
+# WP16 — the four entity creators (create-only, never modify, never delete)
+# ════════════════════════════════════════════════════════════════════════
+
+# task/hearing _sanitize_data caps EVERY string at 2000 characters — a far
+# lower ceiling than notes' 100k, and the same silent-truncation class the
+# note pre-checks exist for.
+_ENTITY_FIELD_MAX = 2000
+
+
+def _clean_entity_text(raw: str, field: str) -> str:
+    """Length-then-chevron refusal at the task/hearing field ceiling."""
+    value = (raw or "").strip()
+    if len(value) > _ENTITY_FIELD_MAX:
+        raise ToolArgumentError(
+            f"« {field} » dépasse {_ENTITY_FIELD_MAX} caractères — il serait "
+            "tronqué silencieusement à l'enregistrement. Raccourcissez, ou "
+            "mettez le détail dans une note (create_note)."
+        )
+    if not _survives_storage(value, _ENTITY_FIELD_MAX):
+        raise ToolArgumentError(
+            f"« {field} » contient du texte entre chevrons qui serait "
+            f"supprimé à l'enregistrement. {_CHEVRON_ADVICE}"
+        )
+    return value
+
+
+def _resolve_write_dossier(
+    args: dict, *, required: bool
+) -> tuple[str, dict]:
+    """Resolve the write target dossier; refuse an unknown id, never
+    downgrade (the create_note rule). ``required=False`` allows the
+    « Général » fallback for agenda entities."""
+    dossier_id = (args.get("dossier_id") or "").strip()
+    if dossier_id:
+        dossier = dossier_model.get_dossier(dossier_id)
+        if dossier is None:
+            raise ToolArgumentError(
+                f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
+                "ou get_dossier pour obtenir un dossier_id valide."
+            )
+        return dossier_id, dossier
+    if required:
+        raise ToolArgumentError(
+            "dossier_id est requis pour cette écriture — utilisez "
+            "list_dossiers pour le trouver."
+        )
+    return "", _general_scope()
+
+
+def _write_date(args: dict, key: str, *, required: bool) -> Optional[datetime]:
+    """A YYYY-MM-DD argument as a date-only midnight-UTC datetime."""
+    raw = (args.get(key) or "").strip()
+    if not raw:
+        if required:
+            raise ToolArgumentError(f"`{key}` est requis (AAAA-MM-JJ).")
+        return None
+    d = _parse_iso_date(raw, key)
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
+
+def _entity_write_result(
+    entity_type: str,
+    entity: dict,
+    *,
+    dossier: Optional[dict],
+    dav_exposed: bool,
+    dry_run: bool,
+) -> dict:
+    """Success payload for the WP16 creators.
+
+    DAV-exposed entities (task, hearing) carry ctag_bumped/dav_synced with
+    the exact semantics of the note tools; time entries and expenses are
+    not DAV-exposed and deliberately do NOT fake those keys.
+    """
+    payload: dict[str, Any] = {
+        "created": True,
+        "entity_type": entity_type,
+        "entity": entity,
+        "warnings": [],
+    }
+    if dav_exposed:
+        if dry_run:
+            bumped = False
+        else:
+            bumped = _bump_note_ctag(
+                entity.get("dossier_id") or "", entity.get("id", ""),
+                created=True,
+            )
+        status = dossier.get("status", "") if dossier is not None else None
+        dav_visible = status is None or status in ("actif", "en_attente")
+        payload["ctag_bumped"] = bumped
+        payload["dav_synced"] = bumped and dav_visible
+        if not dry_run and not bumped:
+            payload["warnings"].append(
+                "L'écriture est enregistrée, mais la synchronisation DavX5 "
+                "n'a pas pu être déclenchée. Elle apparaîtra sur l'appareil "
+                "au prochain changement dans ce dossier. Ne pas réessayer."
+            )
+        if not dry_run and not dav_visible:
+            payload["warnings"].append(
+                f"Le dossier est « {status} » : l'entrée est enregistrée et "
+                "visible dans l'application, mais les dossiers fermés ou "
+                "archivés ne sont pas exposés à DavX5 — elle n'apparaîtra "
+                "pas sur le téléphone."
+            )
+    if dry_run:
+        payload["warnings"].append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+    return payload
+
+
+# ── 23. create_task (WRITE) ─────────────────────────────────────────────
+
+def create_task(args: dict) -> dict:
+    return run_write("create_task", args, lambda dry: _create_task_impl(args, dry))
+
+
+def _create_task_impl(args: dict, dry_run: bool) -> dict:
+    # Tasks store None for « no dossier » (notes/hearings store "") —
+    # collection_for handles all three, but the stored value must match
+    # the model's convention.
+    dossier_id, dossier = _resolve_write_dossier(args, required=False)
+    title = _clean_entity_text(args.get("title") or "", "title")
+    description = (args.get("description") or "").strip()
+    stamp = f"*Créée par Claude le {format_date_fr(_today_mtl())}*"
+    description = f"{description}\n\n{stamp}" if description else stamp
+    description = _clean_entity_text(description, "description")
+    due = _write_date(args, "due_date", required=False)
+
+    # EXPLICIT whitelist. `status` is PINNED to « à_faire »: a caller-
+    # supplied « terminée » would mint a completed task with a fabricated
+    # completion timestamp (models/task auto-stamps completed_date) — and
+    # create-only means creating WORK, never history.
+    data = {
+        "dossier_id": dossier_id or None,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "title": title,
+        "description": description,
+        "priority": args.get("priority") or "normale",
+        "category": args.get("category") or "autre",
+        "status": "à_faire",
+        "due_date": due,
+        "created_via": "mcp",
+    }
+
+    def _entity(doc: dict) -> dict:
+        return {
+            "id": doc.get("id", ""),
+            "dossier_id": doc.get("dossier_id") or "",
+            "dossier_file_number": doc.get("dossier_file_number", ""),
+            "dossier_title": doc.get("dossier_title", ""),
+            "label": doc.get("title", ""),
+            "date": date_str(doc.get("due_date")),
+            "status": doc.get("status", ""),
+            "priority": doc.get("priority", ""),
+            "category": doc.get("category", ""),
+        }
+
+    if dry_run:
+        return _entity_write_result(
+            "task", _entity({**data, "id": ""}),
+            dossier=dossier, dav_exposed=True, dry_run=True,
+        )
+    task, errors = task_model.create_task(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _entity_write_result(
+        "task", _entity(task), dossier=dossier, dav_exposed=True,
+        dry_run=False,
+    )
+
+
+# ── 24. create_hearing (WRITE) ──────────────────────────────────────────
+
+def create_hearing(args: dict) -> dict:
+    return run_write(
+        "create_hearing", args, lambda dry: _create_hearing_impl(args, dry)
+    )
+
+
+def _parse_hhmm(raw: str, name: str) -> tuple[int, int]:
+    try:
+        parsed = datetime.strptime(raw.strip(), "%H:%M")
+        return parsed.hour, parsed.minute
+    except (ValueError, AttributeError):
+        raise ToolArgumentError(f"`{name}` doit être une heure HH:MM.")
+
+
+def _create_hearing_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=False)
+    title = _clean_entity_text(args.get("title") or "", "title")
+    if not title:
+        raise ToolArgumentError("`title` est requis.")
+    hearing_type = args.get("hearing_type") or "rencontre"
+    all_day = bool(args.get("all_day"))
+
+    raw_date = (args.get("date") or "").strip()
+    if not raw_date:
+        raise ToolArgumentError("`date` est requise (AAAA-MM-JJ).")
+    day = _parse_iso_date(raw_date, "date")
+    if all_day or not args.get("start_time"):
+        # All-day (or timeless) events live at midnight UTC — the
+        # date-only convention of the calendar layer.
+        start_dt = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        end_dt = None
+        all_day = True
+    else:
+        h, m = _parse_hhmm(args["start_time"], "start_time")
+        start_dt = datetime(
+            day.year, day.month, day.day, h, m, tzinfo=MTL
+        ).astimezone(timezone.utc)
+        end_dt = None
+        if args.get("end_time"):
+            eh, em = _parse_hhmm(args["end_time"], "end_time")
+            end_dt = datetime(
+                day.year, day.month, day.day, eh, em, tzinfo=MTL
+            ).astimezone(timezone.utc)
+
+    notes_text = (args.get("notes") or "").strip()
+    stamp = f"*Créée par Claude le {format_date_fr(_today_mtl())}*"
+    notes_text = f"{notes_text}\n\n{stamp}" if notes_text else stamp
+    notes_text = _clean_entity_text(notes_text, "notes")
+
+    # EXPLICIT whitelist — `id`/`vevent_uid` must never be addressable
+    # (create_hearing HONOURS a caller-supplied id, the CalDAV-PUT
+    # affordance, which here would overwrite an existing event); status
+    # stays the model default « à_confirmer » and `confirmation` stays ""
+    # (visible everywhere — this is not a Bookings import).
+    data = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "title": title,
+        "hearing_type": hearing_type,
+        "start_datetime": start_dt,
+        "end_datetime": end_dt,
+        "all_day": all_day,
+        "location": _clean_entity_text(args.get("location") or "", "location"),
+        "court": _clean_entity_text(args.get("court") or "", "court"),
+        "judge": _clean_entity_text(args.get("judge") or "", "judge"),
+        "notes": notes_text,
+        "created_via": "mcp",
+    }
+
+    def _entity(doc: dict) -> dict:
+        d_all_day = bool(doc.get("all_day"))
+        start = _as_utc(doc.get("start_datetime"))
+        return {
+            "id": doc.get("id", ""),
+            "dossier_id": doc.get("dossier_id") or "",
+            "dossier_file_number": doc.get("dossier_file_number", ""),
+            "dossier_title": doc.get("dossier_title", ""),
+            "label": doc.get("title", ""),
+            "date": date_str(start) if d_all_day else iso_mtl(start),
+            "hearing_type": doc.get("hearing_type", ""),
+            "forum": hearing_model.forum_of(doc.get("hearing_type", "")),
+            "all_day": d_all_day,
+        }
+
+    if dry_run:
+        return _entity_write_result(
+            "hearing", _entity({**data, "id": ""}),
+            dossier=dossier, dav_exposed=True, dry_run=True,
+        )
+    hearing, errors = hearing_model.create_hearing(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _entity_write_result(
+        "hearing", _entity(hearing), dossier=dossier, dav_exposed=True,
+        dry_run=False,
+    )
+
+
+# ── 25. create_time_entry (WRITE) ───────────────────────────────────────
+
+def create_time_entry(args: dict) -> dict:
+    return run_write(
+        "create_time_entry", args,
+        lambda dry: _create_time_entry_impl(args, dry),
+    )
+
+
+def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    description = _clean_entity_text(
+        args.get("description") or "", "description"
+    )
+    if not description:
+        raise ToolArgumentError("`description` est requise.")
+    when = _write_date(args, "date", required=True)
+    hours = round(float(args.get("hours") or 0), 1)
+    if hours <= 0:
+        raise ToolArgumentError("`hours` doit être positif (incréments de 0,1).")
+    billable = bool(args.get("billable", True))
+    rate = args.get("rate_cents")
+    if rate is None:
+        # The dossier's hourly rate is the natural default — the same one
+        # the web form prefills.
+        rate = int(dossier.get("hourly_rate") or 0)
+
+    # No provenance TEXT: descriptions print verbatim on invoices, and a
+    # provenance sentence would leak into a client-facing billing
+    # narrative. The stored created_via field carries it instead.
+    data = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "date": when,
+        "description": description,
+        "hours": hours,
+        "rate": int(rate),
+        "billable": billable,
+        "invoiced": False,
+        "created_via": "mcp",
+    }
+
+    def _entity(doc: dict) -> dict:
+        row = {
+            "id": doc.get("id", ""),
+            "dossier_id": doc.get("dossier_id", ""),
+            "dossier_file_number": doc.get("dossier_file_number", ""),
+            "dossier_title": doc.get("dossier_title", ""),
+            "label": doc.get("description", ""),
+            "date": date_str(doc.get("date")),
+            "hours": float(doc.get("hours") or 0),
+            "billable": bool(doc.get("billable")),
+        }
+        _money(row, "rate", doc.get("rate", 0))
+        _money(row, "amount", doc.get("amount", 0))
+        return row
+
+    if dry_run:
+        preview = {
+            **data, "id": "",
+            "amount": int(round(hours * int(rate))) if billable else 0,
+        }
+        return _entity_write_result(
+            "time_entry", _entity(preview),
+            dossier=dossier, dav_exposed=False, dry_run=True,
+        )
+    entry, errors = time_entry_model.create_time_entry(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _entity_write_result(
+        "time_entry", _entity(entry), dossier=dossier, dav_exposed=False,
+        dry_run=False,
+    )
+
+
+# ── 26. create_expense (WRITE) ──────────────────────────────────────────
+
+def create_expense(args: dict) -> dict:
+    return run_write(
+        "create_expense", args, lambda dry: _create_expense_impl(args, dry)
+    )
+
+
+def _create_expense_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    description = _clean_entity_text(
+        args.get("description") or "", "description"
+    )
+    if not description:
+        raise ToolArgumentError("`description` est requise.")
+    when = _write_date(args, "date", required=True)
+    amount = int(args.get("amount_cents") or 0)
+    if amount <= 0:
+        raise ToolArgumentError(
+            "`amount_cents` doit être un montant positif en cents."
+        )
+
+    data = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "date": when,
+        "description": description,
+        "category": args.get("category") or "autre",
+        "amount": amount,
+        "taxable": bool(args.get("taxable", True)),
+        "invoiced": False,
+        "created_via": "mcp",
+    }
+
+    def _entity(doc: dict) -> dict:
+        row = {
+            "id": doc.get("id", ""),
+            "dossier_id": doc.get("dossier_id", ""),
+            "dossier_file_number": doc.get("dossier_file_number", ""),
+            "dossier_title": doc.get("dossier_title", ""),
+            "label": doc.get("description", ""),
+            "date": date_str(doc.get("date")),
+            "category": doc.get("category", ""),
+            "taxable": bool(doc.get("taxable")),
+        }
+        _money(row, "amount", doc.get("amount", 0))
+        return row
+
+    if dry_run:
+        return _entity_write_result(
+            "expense", _entity({**data, "id": ""}),
+            dossier=dossier, dav_exposed=False, dry_run=True,
+        )
+    expense, errors = expense_model.create_expense(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _entity_write_result(
+        "expense", _entity(expense), dossier=dossier, dav_exposed=False,
+        dry_run=False,
+    )

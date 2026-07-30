@@ -355,7 +355,11 @@ _WRITE_ANNOTATIONS = {
 # The single source of truth for which tools mutate. Enforcement
 # (mcp/endpoint.py) and advertisement (list_tool_descriptors) both derive
 # from it, so a new write tool cannot ship without declaring itself.
-WRITE_TOOLS: frozenset[str] = frozenset({"create_note", "append_to_note"})
+WRITE_TOOLS: frozenset[str] = frozenset({
+    "create_note", "append_to_note",
+    # WP16 — the entity creators (create-only; no delete, no modify).
+    "create_task", "create_hearing", "create_time_entry", "create_expense",
+})
 
 # Per-call content ceiling, deliberately far below models.note's
 # CONTENT_MAX_LENGTH (100_000). Two reasons: an oversized write is refused
@@ -387,6 +391,25 @@ _CONTACT_ROLES = [
     "expert", "huissier", "notaire", "autre",
 ]
 _PARTIE_TYPES = ["individual", "organization"]
+
+# WP16 write-tool enums — literals for the same firestore-at-import reason,
+# each pinned against its model by tests/test_mcp_tools.py.
+_TASK_PRIORITIES = ["haute", "normale", "basse"]
+_TASK_CATEGORIES = [
+    "rédaction", "recherche", "correspondance", "dépôt",
+    "signification", "suivi", "admin", "autre",
+]
+_HEARING_TYPES = [
+    # judiciaire tier…
+    "conférence_de_gestion", "conférence_de_règlement",
+    "conférence_préparatoire", "audience", "instruction",
+    # …extrajudiciaire tier (forum derives from the type)
+    "consultation", "rencontre", "conférence", "interrogatoire", "autre",
+]
+_EXPENSE_CATEGORIES = [
+    "signification", "expertise", "transcription", "deplacement",
+    "photocopie", "timbre_judiciaire", "autre",
+]
 
 
 # ── Registry ────────────────────────────────────────────────────────────
@@ -1156,6 +1179,260 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "append_to_note",
+        "scope": SCOPE_WRITE,
+    },
+    "create_task": {
+        "title": "Créer une tâche",
+        "description": (
+            "WRITE. Create a task — the deadline-custody entry point: a "
+            "deadline you computed belongs HERE, in the agenda that raises "
+            "alarms, not in the prose of a note. With dossier_id it is "
+            "filed on that dossier (an unresolvable id is refused, never "
+            "downgraded); omit it only for practice-wide to-dos "
+            "(« Général »). The task is created à_faire — this connector "
+            "can never complete, edit or delete it, and it syncs to the "
+            "lawyer's phone. Confirm with the user before calling; use "
+            "dry_run to propose first, and an idempotency_key on every "
+            "scheduled call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier to file the task on (UUIDv4). Omit for a "
+                    "standalone (« Général ») task."
+                ),
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "Task title, in French — the actionable.",
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": 1500,
+                    "description": (
+                        "Optional detail (basis of the deadline, article, "
+                        "computation), in French. A provenance stamp is "
+                        "appended automatically."
+                    ),
+                },
+                "due_date": _date(
+                    "Deadline, YYYY-MM-DD. Omit for an undated task — but "
+                    "an undated task never appears in the urgent lists, "
+                    "so a computed deadline should always carry its date."
+                ),
+                "priority": {
+                    "type": "string",
+                    "enum": _TASK_PRIORITIES,
+                    "description": "Defaults to 'normale'.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": _TASK_CATEGORIES,
+                    "description": "Defaults to 'autre'.",
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["title"],
+            "additionalProperties": False,
+        },
+        "handler": "create_task",
+        "scope": SCOPE_WRITE,
+    },
+    "create_hearing": {
+        "title": "Créer un événement au calendrier",
+        "description": (
+            "WRITE. Create a calendar event (hearing, meeting, "
+            "examination…) on the shared agenda. hearing_type drives the "
+            "derived forum: the five judicial types (audience, "
+            "instruction, conférence_de_gestion/_de_règlement/"
+            "_préparatoire) read as court events; it defaults to "
+            "« rencontre » (extrajudiciaire). Times are Montréal local "
+            "(HH:MM); omitting start_time makes it an all-day event. The "
+            "event is created with status à_confirmer and syncs to the "
+            "lawyer's phone; this connector can never edit or delete it. "
+            "Confirm with the user before calling; dry_run to propose."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier this event belongs to (UUIDv4). Omit for "
+                    "a standalone (« Général ») event."
+                ),
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "Event title, in French.",
+                },
+                "hearing_type": {
+                    "type": "string",
+                    "enum": _HEARING_TYPES,
+                    "description": (
+                        "Two-tier vocabulary; the FORUM derives from it. "
+                        "Defaults to 'rencontre' (extrajudiciaire) — pick "
+                        "a judicial type only for a real court event."
+                    ),
+                },
+                "date": _date("Event date, YYYY-MM-DD (Montréal). Required."),
+                "start_time": {
+                    "type": "string",
+                    "maxLength": 5,
+                    "description": (
+                        "HH:MM Montréal. Omit for an all-day event."
+                    ),
+                },
+                "end_time": {
+                    "type": "string",
+                    "maxLength": 5,
+                    "description": (
+                        "HH:MM Montréal. Defaults to start + 1 h."
+                    ),
+                },
+                "all_day": {
+                    "type": "boolean",
+                    "description": "true forces an all-day event.",
+                },
+                "location": {
+                    "type": "string",
+                    "maxLength": 300,
+                    "description": "Room, address or palais de justice.",
+                },
+                "court": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Court name, for judicial events.",
+                },
+                "judge": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "Presiding judge, when known.",
+                },
+                "notes": {
+                    "type": "string",
+                    "maxLength": 1500,
+                    "description": (
+                        "Free notes, in French. A provenance stamp is "
+                        "appended automatically."
+                    ),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["title", "date"],
+            "additionalProperties": False,
+        },
+        "handler": "create_hearing",
+        "scope": SCOPE_WRITE,
+    },
+    "create_time_entry": {
+        "title": "Créer une entrée de temps",
+        "description": (
+            "WRITE. Record billable (or non-billable) time on a dossier — "
+            "capture work at the moment it happens instead of "
+            "reconstructing at billing time. dossier_id is REQUIRED (time "
+            "always belongs to a file). The description prints VERBATIM "
+            "on the client's invoice: write it as a billing narrative, in "
+            "French, and never include provenance or internal notes — the "
+            "entry is marked machine-created internally. rate_cents "
+            "defaults to the dossier's hourly rate. This connector can "
+            "never edit or delete the entry. Confirm with the user before "
+            "calling; dry_run shows the computed amount first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier the time belongs to (UUIDv4). Required."
+                ),
+                "date": _date("Work date, YYYY-MM-DD. Required."),
+                "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": (
+                        "Billing narrative, in French — prints verbatim "
+                        "on the invoice."
+                    ),
+                },
+                "hours": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 24,
+                    "description": "Hours worked, 0.1 increments.",
+                },
+                "rate_cents": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "description": (
+                        "Hourly rate in cents. Omit to use the dossier's "
+                        "rate."
+                    ),
+                },
+                "billable": {
+                    "type": "boolean",
+                    "description": (
+                        "Defaults to true. Non-billable time is recorded "
+                        "with amount 0."
+                    ),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "date", "description", "hours"],
+            "additionalProperties": False,
+        },
+        "handler": "create_time_entry",
+        "scope": SCOPE_WRITE,
+    },
+    "create_expense": {
+        "title": "Créer un déboursé",
+        "description": (
+            "WRITE. Record a disbursement (débours) on a dossier — "
+            "bailiff, expert, transcript, filing stamp… dossier_id is "
+            "REQUIRED. The description prints verbatim on the client's "
+            "invoice: billing narrative in French, no internal notes. "
+            "Amount in integer cents. This connector can never edit or "
+            "delete the entry. Confirm with the user before calling."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier the expense belongs to (UUIDv4). Required."
+                ),
+                "date": _date("Expense date, YYYY-MM-DD. Required."),
+                "description": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": (
+                        "Billing narrative, in French — prints verbatim "
+                        "on the invoice."
+                    ),
+                },
+                "amount_cents": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100000000,
+                    "description": "Amount in integer cents (15000 = 150,00 $).",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": _EXPENSE_CATEGORIES,
+                    "description": "Defaults to 'autre'.",
+                },
+                "taxable": {
+                    "type": "boolean",
+                    "description": "Defaults to true.",
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "date", "description", "amount_cents"],
+            "additionalProperties": False,
+        },
+        "handler": "create_expense",
         "scope": SCOPE_WRITE,
     },
 }

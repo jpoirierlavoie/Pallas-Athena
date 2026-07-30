@@ -346,6 +346,48 @@ def _write_protocol_keys() -> dict[str, Any]:
     }
 
 
+def _written_entity(extra: dict[str, Any]) -> dict:
+    """The WP16 creators' entity snapshot — common core + per-tool keys."""
+    props: dict[str, Any] = {
+        "id": _str("Empty on a dry run — nothing was written."),
+        "dossier_id": _str("Empty for a « Général » (standalone) entity."),
+        "dossier_file_number": _str(),
+        "dossier_title": _str(),
+        "label": _str("Title/description snapshot."),
+        "date": _nstr("The operative date (due/start/entry); YYYY-MM-DD "
+                      "or ISO-Montréal for a timed event."),
+    }
+    props.update(extra)
+    return _obj(props)
+
+
+def _entity_write_result(
+    entity_extra: dict[str, Any], *, dav: bool
+) -> dict:
+    """Result contract of a WP16 creator.
+
+    DAV-exposed entities (task, hearing) carry ctag_bumped/dav_synced;
+    time entries and expenses are not DAV-exposed and deliberately do NOT
+    declare those keys — faking them would claim a sync that does not
+    exist."""
+    props: dict[str, Any] = {
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str(),
+        "entity": _written_entity(entity_extra),
+        "warnings": _arr(_str(), "French, human-readable; empty when clean."),
+        **_write_protocol_keys(),
+    }
+    if dav:
+        props["ctag_bumped"] = _bool(
+            "Whether the DavX5 sync trigger fired. false = the write "
+            "COMMITTED but the phone will only catch up on the next "
+            "change; do not retry. Always false on a dry run.")
+        props["dav_synced"] = _bool(
+            "ctag_bumped AND the collection is visible to DavX5 (a "
+            "fermé/archivé dossier's is not).")
+    return _obj(props)
+
+
 def _write_result(verb: str, extra: Optional[dict[str, Any]] = None) -> dict:
     properties: dict[str, Any] = {
         verb: {"type": "boolean", "enum": [True]},
@@ -986,4 +1028,30 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "Length of the appended block, separator and provenance "
             "stamp included.")},
     ),
+
+    "create_task": _entity_write_result({
+        "status": _str("Always « à_faire » — a created task is WORK, "
+                       "never history."),
+        "priority": _str(),
+        "category": _str(),
+    }, dav=True),
+
+    "create_hearing": _entity_write_result({
+        "hearing_type": _str(),
+        "forum": _str("Derived from the type."),
+        "all_day": _bool(),
+    }, dav=True),
+
+    "create_time_entry": _entity_write_result({
+        "hours": _num(),
+        "billable": _bool(),
+        **_money("rate"),
+        **_money("amount"),
+    }, dav=False),
+
+    "create_expense": _entity_write_result({
+        "category": _str(),
+        "taxable": _bool(),
+        **_money("amount"),
+    }, dav=False),
 }
