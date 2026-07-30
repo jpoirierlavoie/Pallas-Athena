@@ -503,16 +503,46 @@ TOOLS: dict[str, dict] = {
             "List notes (pinned first, then newest) with a 280-character "
             "plain-text preview. With dossier_id: that dossier's notes. "
             "WITHOUT dossier_id: the « Général » notes — free journal entries "
-            "attached to no file. Use get_note for the full Markdown. A note "
-            "flagged is_analyse is the dossier's « Théorie de la cause » "
-            "(the lawyer's structured case analysis) — readable but "
-            "READ-ONLY: never target it with append_to_note."
+            "attached to no file. `query` searches the FULL title and "
+            "content, so a match may sit past the preview — fetch the note "
+            "before concluding it is irrelevant. Use get_note for the full "
+            "Markdown. A note flagged is_analyse is the dossier's « Théorie "
+            "de la cause » (the lawyer's structured case analysis) — "
+            "readable but READ-ONLY: never target it with append_to_note."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "dossier_id": _id(
                     "The dossier whose notes to list (UUIDv4). OMIT to list the « Général » notes — journal entries attached to no dossier."
+                ),
+                "query": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": (
+                        "Case-insensitive substring over each note's title "
+                        "AND full content (not just the preview)."
+                    ),
+                },
+                "category": {
+                    "type": "string",
+                    "enum": _NOTE_CATEGORIES,
+                    "description": "Filter to one note category.",
+                },
+                "pinned": {
+                    "type": "boolean",
+                    "description": (
+                        "true = pinned notes only; false = unpinned only. "
+                        "Omit for both."
+                    ),
+                },
+                "date_from": _date(
+                    "Earliest creation date (Montréal calendar), "
+                    "YYYY-MM-DD inclusive."
+                ),
+                "date_to": _date(
+                    "Latest creation date (Montréal calendar), "
+                    "YYYY-MM-DD inclusive."
                 ),
                 "limit": _limit(20),
             },

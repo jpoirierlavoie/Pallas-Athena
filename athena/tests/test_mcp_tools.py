@@ -566,6 +566,75 @@ def test_list_notes_preview_is_truncated_plain_text(monkeypatch):
     assert "content" not in payload["items"][0]
 
 
+def test_list_notes_passes_query_and_category_to_the_model(monkeypatch):
+    """PA-G08: category + query are pure model passthrough — and never lose
+    include_analyse=True on the way (the load-bearing flag)."""
+    captured = {}
+
+    def _list(**kw):
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(handlers.note_model, "list_notes", _list)
+    handlers.list_notes({"dossier_id": "d1", "query": "Olivares",
+                         "category": "stratégie"})
+    assert captured["search"] == "Olivares"
+    assert captured["category"] == "stratégie"
+    assert captured["include_analyse"] is True
+
+    captured.clear()
+    handlers.list_notes({"query": "veille"})     # « Général » branch
+    assert captured["search"] == "veille"
+    assert captured["include_analyse"] is True
+
+
+def test_list_notes_pinned_is_a_select_filter(monkeypatch):
+    """`pinned` SELECTS — it is deliberately not wired to the model's
+    pinned_first flag, which only reorders."""
+    notes = [
+        {"id": "n1", "dossier_id": "d1", "pinned": True, "content": "a",
+         "created_at": datetime(2026, 7, 10, 12, 0, tzinfo=UTC)},
+        {"id": "n2", "dossier_id": "d1", "pinned": False, "content": "b",
+         "created_at": datetime(2026, 7, 20, 12, 0, tzinfo=UTC)},
+    ]
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(notes))
+    only_pinned = handlers.list_notes({"dossier_id": "d1", "pinned": True})
+    assert [i["id"] for i in only_pinned["items"]] == ["n1"]
+    only_unpinned = handlers.list_notes({"dossier_id": "d1", "pinned": False})
+    assert [i["id"] for i in only_unpinned["items"]] == ["n2"]
+
+
+def test_list_notes_date_window_is_montreal_calendar(monkeypatch):
+    """created_at is a true instant: 2026-07-16 01:30 UTC is still July 15
+    in Montréal — a UTC comparison would file the note on the wrong day."""
+    notes = [
+        {"id": "late-evening", "dossier_id": "d1", "content": "a",
+         "created_at": datetime(2026, 7, 16, 1, 30, tzinfo=UTC)},
+        {"id": "next-day", "dossier_id": "d1", "content": "b",
+         "created_at": datetime(2026, 7, 16, 15, 0, tzinfo=UTC)},
+    ]
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(notes))
+    payload = handlers.list_notes(
+        {"dossier_id": "d1", "date_from": "2026-07-15",
+         "date_to": "2026-07-15"}
+    )
+    assert [i["id"] for i in payload["items"]] == ["late-evening"]
+
+
+def test_list_dossiers_query_matches_the_sommaire(monkeypatch):
+    rows = [
+        _dossier(did="d1", fn="2026-001"),
+        {**_dossier(did="d2", fn="2026-002", title="Succession Untel"),
+         "sommaire": "Litige successoral entre les héritiers."},
+    ]
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
+                        lambda **kw: (rows, None))
+    payload = handlers.list_dossiers({"query": "successoral"})
+    assert [i["id"] for i in payload["items"]] == ["d2"]
+
+
 def test_get_note_found_and_not_found(monkeypatch):
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
     assert handlers.get_note({"note_id": "n9"})["found"] is False

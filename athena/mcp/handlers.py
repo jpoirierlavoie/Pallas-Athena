@@ -325,6 +325,9 @@ def list_dossiers(args: dict) -> dict:
         status_filter=status, limit=_FETCH_CAP
     )
     if query:
+        # The sommaire is where the SUBSTANCE lives (« litige successoral »,
+        # party circumstances…) — matching only labels made every
+        # subject-matter search fail (§7 Q6 of the MCP audit).
         rows = [
             d
             for d in rows
@@ -334,6 +337,7 @@ def list_dossiers(args: dict) -> dict:
                     d.get("file_number", ""),
                     d.get("title", ""),
                     d.get("court_file_number", ""),
+                    d.get("sommaire", ""),
                 ]
             ).lower()
         ]
@@ -583,21 +587,57 @@ def list_hearings(args: dict) -> dict:
 def list_notes(args: dict) -> dict:
     limit = _limit_arg(args, 20)
     dossier_id = args.get("dossier_id")
+    # category + query are pure model passthrough (models/note.py already
+    # filters both, Python-side over its fetch — PA-G08); the enum at the
+    # schema gate matters, because the model silently NO-OPS on an unknown
+    # category value instead of erroring.
+    category = args.get("category")
+    search = args.get("query")
     # include_analyse=True: the MCP read paths EXPOSE the « Théorie de la
     # cause » note (read-only — append_to_note refuses it). The model's
     # default would silently hide it from Claude.
     if dossier_id:
         notes = note_model.list_notes(
-            dossier_id=dossier_id, include_analyse=True
+            dossier_id=dossier_id, category=category, search=search,
+            include_analyse=True,
         )
     else:
         # « Général »: notes attached to no dossier. Filtered in Python —
         # the model has no "no dossier" query (see dav/dossier_collections
         # ._collection_members for the same constraint).
         notes = [
-            n for n in note_model.list_notes(include_analyse=True)
+            n
+            for n in note_model.list_notes(
+                category=category, search=search, include_analyse=True
+            )
             if not n.get("dossier_id")
         ]
+    if args.get("pinned") is not None:
+        # A SELECT filter — deliberately not the model's `pinned_first`,
+        # which only reorders (the obvious mis-wiring).
+        want = bool(args["pinned"])
+        notes = [n for n in notes if bool(n.get("pinned")) == want]
+    if args.get("date_from") or args.get("date_to"):
+        # created_at is a true instant; the argument is a Montréal calendar
+        # date — compare in MTL (the list_hearings boundary precedent),
+        # never date_str/UTC, or an evening note lands on the wrong day.
+        lo = (
+            _parse_iso_date(args["date_from"], "date_from")
+            if args.get("date_from") else None
+        )
+        hi = (
+            _parse_iso_date(args["date_to"], "date_to")
+            if args.get("date_to") else None
+        )
+
+        def _in_window(n: dict) -> bool:
+            ts = _as_utc(n.get("created_at"))
+            if ts is None:
+                return False
+            d = ts.astimezone(MTL).date()
+            return (lo is None or d >= lo) and (hi is None or d <= hi)
+
+        notes = [n for n in notes if _in_window(n)]
     truncated = len(notes) > limit
     items = [
         {
