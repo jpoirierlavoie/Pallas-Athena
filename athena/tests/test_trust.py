@@ -412,6 +412,9 @@ class _FakeDocRef:
             raise KeyError(f"update on missing {self._coll}/{self.id}")
         doc.update(copy.deepcopy(fields))
 
+    def delete(self):
+        self._store.setdefault(self._coll, {}).pop(self.id, None)
+
 
 class _FakeQuery:
     def __init__(self, store, coll):
@@ -483,6 +486,9 @@ class _FakeTransaction:
 
     def update(self, ref, fields):
         ref.update(fields)
+
+    def delete(self, ref):
+        ref.delete()
 
 
 class _FakeDB:
@@ -802,13 +808,18 @@ def test_inter_dossier_transfer_same_couple_refused(store):
 
 
 # ── reconciliation (§13) ───────────────────────────────────────────────────
+# NOTE: relative dates throughout — the anti-future guard on period_end
+# refuses any hardcoded date the calendar eventually overtakes.
+
+
+def _day(n: int) -> datetime:
+    """n days AGO, tz-aware UTC (period_ends and entry dates for retro tests)."""
+    return datetime.now(timezone.utc) - timedelta(days=n)
 
 
 def test_complete_reconciliation_variance_refused(store):
     trust.create_transaction(_new(direction="recette", amount=100000))  # in transit
-    rec, _ = trust.create_reconciliation(
-        "acc1", datetime(2026, 7, 31, tzinfo=timezone.utc), statement_balance=500
-    )
+    rec, _ = trust.create_reconciliation("acc1", _day(1), statement_balance=500)
     _, errs = trust.complete_reconciliation(rec["id"], [])
     assert errs
     assert store["trust_reconciliations"][rec["id"]]["status"] == "brouillon"
@@ -816,9 +827,7 @@ def test_complete_reconciliation_variance_refused(store):
 
 def test_complete_reconciliation_balanced(store):
     r, _ = trust.create_transaction(_new(direction="recette", amount=100000))
-    rec, _ = trust.create_reconciliation(
-        "acc1", datetime(2026, 7, 31, tzinfo=timezone.utc), statement_balance=100000
-    )
+    rec, _ = trust.create_reconciliation("acc1", _day(1), statement_balance=100000)
     result, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
     assert errs == []
     assert result["status"] == "complétée"
@@ -826,13 +835,316 @@ def test_complete_reconciliation_balanced(store):
     entry = store["trust_transactions"][r["id"]]
     assert entry["status"] == "compensée"
     assert entry["reconciliation_id"] == rec["id"]
+    # bank_balance is INCREMENTED by the ticked deltas (0 + 100000) — the
+    # regression pin that the += semantics keeps the current-period behavior.
     assert store["trust_accounts"]["acc1"]["bank_balance"] == 100000
 
 
 def test_create_reconciliation_one_brouillon_per_account(store):
-    trust.create_reconciliation("acc1", datetime(2026, 7, 31, tzinfo=timezone.utc), 0)
-    _, errs = trust.create_reconciliation("acc1", datetime(2026, 8, 31, tzinfo=timezone.utc), 0)
+    trust.create_reconciliation("acc1", _day(2), 0)
+    _, errs = trust.create_reconciliation("acc1", _day(1), 0)
     assert errs
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Retroactive (as-of) reconciliation — every figure is anchored to period_end,
+# never to now. The old completion compared a September statement against
+# TODAY's book/bank balances, so a retro reconciliation could never balance
+# (and, a brouillon being neither editable nor deletable, permanently blocked
+# the account). These tests pin the as-of reconstruction, the resurrection
+# sets, the cross-period outstanding cheque, and the abandon escape hatch.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ── book_balance_as_of ──────────────────────────────────────────────────────
+
+
+def test_book_as_of_empty_register_is_zero(store):
+    assert trust.book_balance_as_of("acc1", _day(10)) == 0
+
+
+def test_book_as_of_picks_last_by_sequence_same_day(store):
+    """Two entries the same day: the frozen balance of the HIGHER sequence is
+    the end-of-day figure (dates are non-decreasing in sequence order, so the
+    sequence disambiguates same-day entries)."""
+    trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.create_transaction(_new(direction="recette", amount=50000, date=_day(40)))
+    assert trust.book_balance_as_of("acc1", _day(40)) == 150000
+    assert trust.book_balance_as_of("acc1", _day(41)) == 0
+
+
+def test_book_as_of_ignores_later_entries(store):
+    trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.create_transaction(_new(direction="recette", amount=50000, date=_day(5)))
+    assert trust.book_balance_as_of("acc1", _day(30)) == 100000
+
+
+# ── retro completion — the production shape and the settled requirements ───
+
+
+def test_retro_verification_only_completion(store):
+    """The production data shape: everything already cleared by hand with
+    accurate cleared_dates, later activity after the statement date. A retro
+    reconciliation is then a pure VERIFICATION pass — zero ticks, variance 0.
+    Under the old now-anchored arithmetic this compared the old statement to
+    today's balances and could never balance."""
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.clear_transaction(r["id"], _day(40))
+    d, _ = trust.create_transaction(
+        _new(direction="déboursé", amount=30000, purpose="déboursé_tiers", date=_day(10))
+    )
+    trust.clear_transaction(d["id"], _day(10))
+
+    rec, errs = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
+    assert errs == []
+    result, errs = trust.complete_reconciliation(rec["id"], [])
+    assert errs == []
+    assert result["status"] == "complétée" and result["variance"] == 0
+    assert result["cleared_transaction_ids"] == []
+    # No tick → the current bank balance is untouched (100000 − 30000).
+    assert store["trust_accounts"]["acc1"]["bank_balance"] == 70000
+
+
+def test_cross_period_outstanding_cheque(store):
+    """Settled requirement #2: a cheque left unticked in period N counts as
+    outstanding-as-of in N's variance, STAYS en_circulation, and is cleared by
+    period N+1's reconciliation — across statements."""
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.clear_transaction(r["id"], _day(39))
+    cheque, _ = trust.create_transaction(
+        _new(direction="déboursé", amount=20000, purpose="déboursé_tiers", date=_day(35))
+    )
+
+    # Period 1: the cheque has not cleared the bank — left unticked.
+    rec1, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
+    result1, errs = trust.complete_reconciliation(rec1["id"], [])
+    assert errs == [] and result1["variance"] == 0
+    assert result1["outstanding_cheques_total"] == 20000
+    assert store["trust_transactions"][cheque["id"]]["status"] == "en_circulation"
+
+    # Period 2: the cheque appears on THIS statement — ticked.
+    rec2, _ = trust.create_reconciliation("acc1", _day(1), statement_balance=80000)
+    result2, errs = trust.complete_reconciliation(rec2["id"], [cheque["id"]])
+    assert errs == [] and result2["variance"] == 0
+    entry = store["trust_transactions"][cheque["id"]]
+    assert entry["status"] == "compensée"
+    assert entry["reconciliation_id"] == rec2["id"]
+    assert trust._as_utc(entry["cleared_date"]).date() == _day(1).date()
+    assert store["trust_accounts"]["acc1"]["bank_balance"] == 80000
+
+
+def test_resurrection_cleared_after_period(store):
+    """An entry manually cleared AFTER the statement date was still in transit
+    AT that date: it counts in the as-of variance (fixed set) and is NOT
+    tickable (it is already compensée)."""
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.clear_transaction(r["id"], _day(20))  # cleared AFTER the period below
+
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=0)
+    # Ticking a resurrected (already compensée) entry is refused loudly.
+    _, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+    assert errs and "conciliable" in errs[0]
+    assert store["trust_reconciliations"][rec["id"]]["status"] == "brouillon"
+    # Untouched, it balances: 0 (relevé) + 100000 (transit as-of) − 100000 (livre).
+    result, errs = trust.complete_reconciliation(rec["id"], [])
+    assert errs == [] and result["variance"] == 0
+    assert result["deposits_in_transit_total"] == 100000
+
+
+def test_annulled_after_period_counts_outstanding(store):
+    """An entry reversed AFTER the statement date was still en_circulation AT
+    that date — the annulée original counts in the as-of variance."""
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.reverse_transaction(r["id"], "erreur")  # reversal dated TODAY
+
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=0)
+    result, errs = trust.complete_reconciliation(rec["id"], [])
+    assert errs == [] and result["variance"] == 0
+    assert result["deposits_in_transit_total"] == 100000
+
+
+def test_annulled_before_period_excluded(store):
+    """A pair fully annulled BEFORE the statement date contributes nothing:
+    the frozen book already nets it, and the original was no longer
+    outstanding at period_end. (Hand-crafted rows — the API cannot backdate a
+    reversal, by design.)"""
+    store["trust_transactions"]["orig"] = {
+        "id": "orig", "account_id": "acc1", "status": "annulée",
+        "direction": "recette", "amount": 100000, "date": _day(40),
+        "sequence": 1, "balance_after_account": 100000,
+        "reversed_by_id": "rev", "reverses_id": None,
+    }
+    store["trust_transactions"]["rev"] = {
+        "id": "rev", "account_id": "acc1", "status": "annulée",
+        "direction": "déboursé", "amount": 100000, "date": _day(38),
+        "sequence": 2, "balance_after_account": 0,
+        "reversed_by_id": None, "reverses_id": "orig",
+    }
+    assert trust._list_annulled_after("acc1", _day(30)) == []
+    assert trust.book_balance_as_of("acc1", _day(30)) == 0
+
+
+def test_tick_entry_dated_after_period_refused(store):
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.clear_transaction(r["id"], _day(39))
+    late, _ = trust.create_transaction(_new(direction="recette", amount=50000, date=_day(5)))
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
+    _, errs = trust.complete_reconciliation(rec["id"], [late["id"]])
+    assert errs and "conciliable" in errs[0]
+
+
+def test_create_reconciliation_future_period_refused(store):
+    _, errs = trust.create_reconciliation(
+        "acc1", datetime.now(timezone.utc) + timedelta(days=2), 0
+    )
+    assert errs == ["La date de fin de période ne peut être dans le futur."]
+    rec, errs = trust.create_reconciliation("acc1", datetime.now(timezone.utc), 0)
+    assert errs == [] and rec is not None
+
+
+def test_statement_blank_refused_zero_accepted(store):
+    """None (blank/unparseable form input) must ERROR; the literal 0 is a
+    LEGITIMATE statement balance (an emptied account reads exactly 0,00 $)."""
+    _, errs = trust.create_reconciliation("acc1", _day(1), None)
+    assert errs == ["Le solde du relevé est requis."]
+    rec, errs = trust.create_reconciliation("acc1", _day(1), 0)
+    assert errs == [] and rec["statement_balance"] == 0
+
+
+def test_route_statement_parse_never_coalesces_to_zero():
+    """Static source guard (house pattern): the reconciliation route used to
+    do ``_parse_cents(f.get("statement_balance", "")) or 0`` — a malformed
+    amount silently became a 0,00 $ statement, which is a LEGITIMATE value
+    (an emptied account) and therefore an undetectable corruption. (The
+    transfer route's ``or 0`` on ``amount`` is different: 0 is never a valid
+    transfer, so the model refuses it — fail closed, not silent.)"""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "routes", "trust.py",
+    )
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    statement_parses = [
+        line for line in src.splitlines() if 'f.get("statement_balance"' in line
+    ]
+    assert statement_parses, "routes/trust.py: statement_balance parse not found"
+    for line in statement_parses:
+        assert "or 0" not in line, (
+            "routes/trust.py: _parse_cents(statement_balance) or 0 silently "
+            "turns a malformed statement amount into 0,00 $ — None must error"
+        )
+
+
+# ── abandon d'un brouillon ──────────────────────────────────────────────────
+
+
+def test_delete_reconciliation_brouillon(store):
+    rec, _ = trust.create_reconciliation("acc1", _day(30), 0)
+    ok, errs = trust.delete_reconciliation(rec["id"])
+    assert ok is True and errs == []
+    assert rec["id"] not in store["trust_reconciliations"]
+    # The one-brouillon guard is unblocked by construction.
+    rec2, errs = trust.create_reconciliation("acc1", _day(20), 0)
+    assert errs == [] and rec2 is not None
+
+
+def test_delete_reconciliation_completee_refused(store):
+    rec, _ = trust.create_reconciliation("acc1", _day(30), 0)
+    _, errs = trust.complete_reconciliation(rec["id"], [])  # empty register → 0
+    assert errs == []
+    ok, errs = trust.delete_reconciliation(rec["id"])
+    assert ok is False and errs == ["Cette conciliation est déjà complétée."]
+    assert rec["id"] in store["trust_reconciliations"]
+
+
+def test_delete_reconciliation_missing(store):
+    ok, errs = trust.delete_reconciliation("nope")
+    assert ok is False and errs == ["Conciliation introuvable."]
+
+
+# ── arithmétique bancaire + concurrence + instantanés ───────────────────────
+
+
+def test_complete_bank_balance_incremented_not_set(store):
+    """The retro arithmetic pin: bank_balance moves by the ticked deltas, it is
+    never SET to the statement figure — under the old code this completion
+    aborted because current bank (150000) − 20000 ≠ statement (80000)."""
+    a, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.clear_transaction(a["id"], _day(39))
+    cheque, _ = trust.create_transaction(
+        _new(direction="déboursé", amount=20000, purpose="déboursé_tiers", date=_day(35))
+    )
+    b, _ = trust.create_transaction(_new(direction="recette", amount=50000, date=_day(10)))
+    trust.clear_transaction(b["id"], _day(9))
+
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=80000)
+    result, errs = trust.complete_reconciliation(rec["id"], [cheque["id"]])
+    assert errs == [] and result["variance"] == 0
+    assert store["trust_accounts"]["acc1"]["bank_balance"] == 130000
+
+
+def test_complete_concurrency_abort_on_account_change(store):
+    """The etag sentinel replaces the old « bank + deltas == relevé » equality
+    as the concurrency check: any register movement between the pre-pass and
+    the transaction regenerates the account etag and aborts the commit."""
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
+
+    original_get = trust.get_account
+
+    def _get_then_mutate(account_id):
+        account = original_get(account_id)
+        store["trust_accounts"][account_id]["etag"] = "moved-since-pre-pass"
+        return account
+
+    with mock.patch.object(trust, "get_account", _get_then_mutate):
+        _, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+    assert errs == ["Le compte a changé pendant la conciliation. Veuillez recommencer."]
+    assert store["trust_transactions"][r["id"]]["status"] == "en_circulation"
+    assert store["trust_reconciliations"][rec["id"]]["status"] == "brouillon"
+
+
+def test_completed_rec_snapshots_as_of_totals(store):
+    """The finalized doc snapshots the AS-OF figures — book at period_end and
+    totals including the resurrection sets — never today's balances."""
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    trust.clear_transaction(r["id"], _day(20))  # resurrected for the period below
+    late, _ = trust.create_transaction(_new(direction="recette", amount=50000, date=_day(5)))
+    trust.clear_transaction(late["id"], _day(4))
+
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=0)
+    result, errs = trust.complete_reconciliation(rec["id"], [])
+    assert errs == []
+    assert result["book_balance"] == 100000          # as-of, NOT 150000 (today)
+    assert result["deposits_in_transit_total"] == 100000
+    assert result["outstanding_cheques_total"] == 0
+    assert result["variance"] == 0
+
+
+def test_ticked_recette_increments_dossier_cleared_map(store):
+    r, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    rec, _ = trust.create_reconciliation("acc1", _day(30), statement_balance=100000)
+    _, errs = trust.complete_reconciliation(rec["id"], [r["id"]])
+    assert errs == []
+    assert store["dossiers"]["dos1"]["trust_cleared_by_client"]["c1"] == 100000
+
+
+def test_as_of_context_partition(store):
+    """Each row lands in exactly ONE as-of bucket: tickable (a), resurrected
+    (b), or excluded (dated after the period)."""
+    a, _ = trust.create_transaction(_new(direction="recette", amount=100000, date=_day(40)))
+    b, _ = trust.create_transaction(_new(direction="recette", amount=50000, date=_day(39)))
+    trust.clear_transaction(b["id"], _day(20))
+    trust.create_transaction(_new(direction="recette", amount=25000, date=_day(5)))
+
+    ctx = trust.reconciliation_as_of_context("acc1", _day(30))
+    assert [e["id"] for e in ctx["in_transit"]] == [a["id"]]
+    assert [e["id"] for e in ctx["cleared_later"]] == [b["id"]]
+    assert ctx["annulled_later"] == []
+    assert ctx["outstanding"] == []
+    assert ctx["fixed_in_transit_total"] == 50000
+    assert ctx["fixed_outstanding_total"] == 0
+    assert ctx["book_as_of"] == 150000
 
 
 # ── get_trust_summary (in_transit = book − cleared) ────────────────────────
@@ -1036,3 +1348,46 @@ def test_resolve_invoice_number_hard_errors_on_typo(monkeypatch):
     non_transfer = {"purpose": "dépôt_client", "dossier_id": "d1", "invoice_number": "2026-F001"}
     assert rt._resolve_invoice_number(non_transfer) == []
     assert non_transfer["invoice_id"] is None
+
+
+# ── Worksheet as-of wiring guards (retro reconciliation) ────────────────────
+
+
+def test_worksheet_variance_reads_the_as_of_book_balance():
+    """The client-side variance must consume the SAME as-of numbers as the
+    server gate (reconciliation_as_of_context) — reading the account's
+    CURRENT book_balance is exactly the now-anchoring bug being fixed."""
+    html = _template("reconciliation_worksheet.html")
+    assert "bookCents: {{ book_as_of | int }}" in html
+    assert "account.book_balance if account else 0) | int" not in html
+    # The resurrection sets seed the recompute as fixed constants.
+    assert "fixedOutstanding" in html and "fixedInTransit" in html
+
+
+def test_worksheet_has_abandon_form_with_csrf():
+    """The abandon dialog must POST with a CSRF token — and live OUTSIDE the
+    completion <form> (nested forms are invalid HTML: the browser drops the
+    inner one and the button would submit the COMPLETION instead)."""
+    html = _template("reconciliation_worksheet.html")
+    assert "trust.reconciliation_abandon" in html
+    abandon_form = html.split("trust.reconciliation_abandon")[1]
+    assert 'name="csrf_token"' in abandon_form
+    completion = html.split("trust.reconciliation_complete")[1].split("</form>")[0]
+    assert "trust.reconciliation_abandon" not in completion
+
+
+def test_worksheet_readonly_sections_carry_no_checkbox():
+    """The resurrection sections are informational: an <input> there would let
+    a click try to re-clear an already-compensée entry (refused server-side,
+    but the worksheet must not invite it)."""
+    html = _template("reconciliation_worksheet.html")
+    for heading in ("Compensées après cette période", "Annulées après cette période"):
+        assert heading in html
+        section = html.split(heading)[1].split("</div>\n    {% endif %}")[0]
+        assert "cleared_tx_ids" not in section
+
+
+def test_reconciliation_form_caps_period_end_at_today():
+    html = _template("reconciliation_form.html")
+    tags = [t for t in _input_tags(html) if 'name="period_end"' in t]
+    assert tags and 'max="{{ today }}"' in tags[0]

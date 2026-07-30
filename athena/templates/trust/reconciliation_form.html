@@ -20,7 +20,9 @@
     </div>
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Fin de période (date du relevé)</label>
-      <input type="date" name="period_end" required value="{{ form.get('period_end', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      {# max = aujourd'hui : un relevé bancaire ne peut être futur (le garde
+         serveur de create_reconciliation reste l'autorité). #}
+      <input type="date" name="period_end" required max="{{ today }}" value="{{ form.get('period_end', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
     </div>
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1">Solde selon le relevé bancaire</label>

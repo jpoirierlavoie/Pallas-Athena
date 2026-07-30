@@ -351,6 +351,12 @@ _ABORT_MESSAGES = {
     "conciliation_non_brouillon": "Cette conciliation est déjà complétée.",
     "conciliation_variance": "La conciliation n'est pas équilibrée (écart non nul).",
     "conciliation_modifiée": "Le compte a changé pendant la conciliation. Veuillez recommencer.",
+    "conciliation_période_future": "La date de fin de période ne peut être dans le futur.",
+    "conciliation_écriture_invalide": (
+        "Une des écritures sélectionnées n'est pas conciliable pour cette période "
+        "(déjà compensée, annulée ou postérieure à la fin de période)."
+    ),
+    "relevé_requis": "Le solde du relevé est requis.",
     "transfert_identique": "La source et la destination doivent être différentes.",
 }
 
@@ -1271,19 +1277,146 @@ def list_in_transit(account_id: str, as_of=None) -> list[dict]:
     return _list_en_circ(account_id, "recette", as_of)
 
 
-def _list_en_circ(account_id: str, direction: str, as_of) -> list[dict]:
+def _list_by_status(account_id: str, status: str, direction: str) -> list[dict]:
+    """All entries of one status+direction on the account, sequence order.
+
+    Same query shape for every status value — the composite index #4
+    (account_id, status, direction, sequence) serves them all (equality
+    slots share the composite; no new index).
+    """
     q = (
         db.collection(TRANSACTIONS_COLLECTION)
         .where(filter=FieldFilter("account_id", "==", account_id))
-        .where(filter=FieldFilter("status", "==", "en_circulation"))
+        .where(filter=FieldFilter("status", "==", status))
         .where(filter=FieldFilter("direction", "==", direction))
         .order_by("sequence")
     )
-    rows = [d.to_dict() for d in q.stream()]
+    return [d.to_dict() for d in q.stream()]
+
+
+def _list_en_circ(account_id: str, direction: str, as_of) -> list[dict]:
+    rows = _list_by_status(account_id, "en_circulation", direction)
     if as_of is not None:
         cutoff = _as_utc(as_of).date()
         rows = [r for r in rows if _as_utc(r.get("date")).date() <= cutoff]
     return rows
+
+
+def book_balance_as_of(account_id: str, as_of) -> int:
+    """Book balance at the END of day *as_of*: the frozen
+    ``balance_after_account`` of the highest-sequence entry dated <= as_of;
+    0 when no entry qualifies.
+
+    Exact because per-account dates are NON-DECREASING in sequence order —
+    the backdating guard refuses an earlier date and reversals/transfer legs
+    are dated now — so the first row of a ``sequence DESC`` stream (index #1,
+    the ``list_transactions_page`` index) whose date <= as_of IS the last
+    entry of the day. No SUM, no recomputation, no new index. Read errors
+    propagate (fail CLOSED — callers catch).
+    """
+    cutoff = _as_utc(as_of).date()
+    q = (
+        db.collection(TRANSACTIONS_COLLECTION)
+        .where(filter=FieldFilter("account_id", "==", account_id))
+        .order_by("sequence", direction=firestore.Query.DESCENDING)
+    )
+    for snap in q.stream():
+        row = snap.to_dict()
+        if _as_utc(row.get("date")).date() <= cutoff:
+            return int(row.get("balance_after_account", 0))
+    return 0
+
+
+def _list_cleared_after(account_id: str, as_of) -> list[dict]:
+    """Resurrection set: entries dated <= as_of that were STILL outstanding at
+    as_of because they cleared later (``cleared_date`` > as_of — a later
+    statement, or a manual « Compenser » after the period). Counted as
+    outstanding/in-transit in the as-of variance; NEVER tickable (they are
+    already compensée). Both directions, sequence order."""
+    cutoff = _as_utc(as_of).date()
+    rows = _list_by_status(account_id, "compensée", "déboursé") + _list_by_status(
+        account_id, "compensée", "recette"
+    )
+    kept = []
+    for r in rows:
+        cd = r.get("cleared_date")
+        if not isinstance(cd, (datetime, date)):
+            # A compensée entry without a cleared_date is a data-integrity
+            # impossibility — treat as not-resurrected; the variance will say
+            # so loudly rather than this helper guessing.
+            continue
+        if (
+            _as_utc(r.get("date")).date() <= cutoff
+            and _as_utc(cd).date() > cutoff
+        ):
+            kept.append(r)
+    kept.sort(key=lambda r: int(r.get("sequence", 0)))
+    return kept
+
+
+def _list_annulled_after(account_id: str, as_of) -> list[dict]:
+    """Annulée exactness: an annulée ORIGINAL dated <= as_of whose reversal
+    happened AFTER as_of was still en_circulation at as_of. The reversal is a
+    ``correction`` row dated at reversal time, linked via ``reversed_by_id``;
+    rows born annulée (the correction minted by reversing an en_circulation
+    entry, ``reverses_id`` set) were never outstanding. The reverser normally
+    sits in the same annulée result set; keyed ``get_transaction`` fallback
+    otherwise — a failed read there raises (fail CLOSED)."""
+    cutoff = _as_utc(as_of).date()
+    rows = _list_by_status(account_id, "annulée", "déboursé") + _list_by_status(
+        account_id, "annulée", "recette"
+    )
+    by_id = {r.get("id"): r for r in rows}
+    kept = []
+    for r in rows:
+        reverser_id = r.get("reversed_by_id")
+        if not reverser_id or r.get("reverses_id"):
+            continue  # not an original (or not reversed — impossible for annulée)
+        if _as_utc(r.get("date")).date() > cutoff:
+            continue
+        reverser = by_id.get(reverser_id)
+        if reverser is None:
+            reverser = get_transaction(reverser_id)
+            if reverser is None:
+                raise RuntimeError("trust: reversal row unreadable for as-of")
+        if _as_utc(reverser.get("date")).date() > cutoff:
+            kept.append(r)
+    kept.sort(key=lambda r: int(r.get("sequence", 0)))
+    return kept
+
+
+def reconciliation_as_of_context(account_id: str, as_of) -> dict:
+    """Every as-of input a worksheet render and a completion gate share, so
+    the two can never drift (the server gate stays the only authority; the
+    worksheet's client-side variance is UX). Raises on any read failure
+    (fail CLOSED — never a silently wrong worksheet). Keys:
+
+      book_as_of               int — frozen book balance at end of as_of
+      outstanding              list — (a) en_circulation déboursés <= as_of, TICKABLE
+      in_transit               list — (a) en_circulation recettes <= as_of, TICKABLE
+      cleared_later            list — (b) compensée after the period, read-only
+      annulled_later           list — (c) annulée after the period, read-only
+      fixed_outstanding_total  int — Σ déboursés of (b)+(c)
+      fixed_in_transit_total   int — Σ recettes  of (b)+(c)
+    """
+    outstanding = list_outstanding(account_id, as_of=as_of)
+    in_transit = list_in_transit(account_id, as_of=as_of)
+    cleared_later = _list_cleared_after(account_id, as_of)
+    annulled_later = _list_annulled_after(account_id, as_of)
+    fixed = cleared_later + annulled_later
+    return {
+        "book_as_of": book_balance_as_of(account_id, as_of),
+        "outstanding": outstanding,
+        "in_transit": in_transit,
+        "cleared_later": cleared_later,
+        "annulled_later": annulled_later,
+        "fixed_outstanding_total": sum(
+            int(e.get("amount", 0)) for e in fixed if e.get("direction") == "déboursé"
+        ),
+        "fixed_in_transit_total": sum(
+            int(e.get("amount", 0)) for e in fixed if e.get("direction") == "recette"
+        ),
+    }
 
 
 def create_reconciliation(
@@ -1293,11 +1426,21 @@ def create_reconciliation(
     account; period_end must be after the last complétée reconciliation."""
     if get_account(account_id) is None:
         return None, [_ABORT_MESSAGES["compte_introuvable"]]
+    if statement_balance is None:
+        # Backstop of the route-level fix: a blank/unparseable amount must
+        # error, never silently become 0,00 $ (0 itself is a LEGITIMATE
+        # statement balance — an emptied account reads exactly zero).
+        return None, [_ABORT_MESSAGES["relevé_requis"]]
     if not isinstance(statement_balance, int) or isinstance(statement_balance, bool):
         return None, ["Le solde du relevé doit être un montant en cents."]
     pe = _midnight_utc(period_end)
     if pe is None:
         return None, ["La date de fin de période est requise."]
+    if pe.date() > datetime.now(timezone.utc).date():
+        # A bank statement cannot postdate today — and completion stamps
+        # cleared_date = period_end, which the clear-guard convention
+        # (no future cleared_date) must keep honouring.
+        return None, [_ABORT_MESSAGES["conciliation_période_future"]]
 
     existing = list_reconciliations(account_id)
     if any(r.get("status") == "brouillon" for r in existing):
@@ -1353,13 +1496,61 @@ def list_reconciliations(account_id: Optional[str] = None) -> list[dict]:
     return [d.to_dict() for d in query.stream()]
 
 
+def delete_reconciliation(rec_id: str) -> tuple[bool, list[str]]:
+    """Abandon a DRAFT reconciliation. Only a brouillon may be deleted — a
+    complétée rec is the audit trail behind stamped reconciliation_ids. A
+    brouillon has never mutated any transaction (stamping happens only at
+    completion), so deleting it violates no append-only invariant; it simply
+    unblocks the one-brouillon guard. Transactional (status re-read then
+    delete) to close the TOCTOU with a concurrent completion. Fails CLOSED.
+    """
+    rec_ref = db.collection(RECONCILIATIONS_COLLECTION).document(rec_id)
+    transaction = db.transaction()
+    info: dict = {}
+
+    @firestore.transactional
+    def _abandon(txn) -> None:
+        snap = rec_ref.get(transaction=txn)
+        if not snap.exists:
+            raise _TxnAbort("conciliation_introuvable")
+        rec = snap.to_dict()
+        if rec.get("status") != "brouillon":
+            raise _TxnAbort("conciliation_non_brouillon")
+        info["account_id"] = rec.get("account_id")
+        txn.delete(rec_ref)
+
+    try:
+        _abandon(transaction)
+    except _TxnAbort as abort:
+        return False, [_ABORT_MESSAGES.get(abort.reason, "Conciliation refusée.")]
+    except Exception as exc:
+        logger.error("delete_reconciliation failed: %s", type(exc).__name__)
+        return False, ["Erreur lors de la suppression. Veuillez réessayer."]
+
+    log_trust_event(
+        "trust_reconciliation_abandoned",
+        reconciliation_id=rec_id,
+        account_id=info.get("account_id"),
+    )
+    return True, []
+
+
 def complete_reconciliation(
     rec_id: str, cleared_tx_ids: list
 ) -> tuple[Optional[dict], list[str]]:
     """Finalize a reconciliation: clear the checked entries, stamp them with
     the reconciliation id, and mark it complétée — but ONLY if the variance is
-    zero (§3.3). Refuses otherwise (logs the variance). All writes are one
-    transaction; a concurrent change to the account aborts."""
+    zero (§3.3). Refuses otherwise (logs the variance).
+
+    Every figure is AS OF ``period_end`` — never as of now — so a
+    RETROACTIVE reconciliation balances: the book balance is the frozen
+    running balance at the end of the period, and entries cleared/annulled
+    AFTER the period count as still outstanding (the resurrection sets). Only
+    still-en_circulation entries dated <= period_end are tickable; an item
+    left unticked stays en_circulation and carries to the NEXT period's
+    worksheet (cross-statement outstanding cheques). All writes are one
+    transaction; a concurrent change to the account (etag sentinel) aborts.
+    """
     rec = get_reconciliation(rec_id)
     if rec is None:
         return None, [_ABORT_MESSAGES["conciliation_introuvable"]]
@@ -1370,29 +1561,33 @@ def complete_reconciliation(
     account = get_account(account_id)
     if account is None:
         return None, [_ABORT_MESSAGES["compte_introuvable"]]
+    account_etag = account.get("etag")
     period_end = _as_utc(rec.get("period_end"))
     statement_balance = int(rec.get("statement_balance", 0))
     checked_ids = set(cleared_tx_ids or [])
 
-    # Pre-pass: compute the variance (fresh reads) for the gate + the log.
-    en_circ = [
-        d.to_dict()
-        for d in db.collection(TRANSACTIONS_COLLECTION)
-        .where(filter=FieldFilter("account_id", "==", account_id))
-        .where(filter=FieldFilter("status", "==", "en_circulation"))
-        .stream()
-    ]
-    en_circ_ids = {e["id"] for e in en_circ}
-    if not checked_ids.issubset(en_circ_ids):
-        return None, ["Une des écritures sélectionnées n'est plus en circulation."]
-    remaining = [e for e in en_circ if e["id"] not in checked_ids]
-    outstanding_after = sum(
+    # Pre-pass: the as-of context (fresh reads) feeds the gate + the log.
+    # Streams cannot run inside the transaction (keyed reads only there);
+    # the etag sentinel + in-txn per-entry re-reads carry the concurrency
+    # duty the old « bank courant + deltas == relevé » equality used to.
+    try:
+        ctx = reconciliation_as_of_context(account_id, period_end)
+    except Exception as exc:
+        logger.error(
+            "reconciliation as-of read failed: %s", type(exc).__name__
+        )
+        return None, ["Erreur lors de la conciliation. Veuillez réessayer."]
+    tickable = {e["id"]: e for e in ctx["outstanding"] + ctx["in_transit"]}
+    if not checked_ids.issubset(tickable.keys()):
+        return None, [_ABORT_MESSAGES["conciliation_écriture_invalide"]]
+    remaining = [e for eid, e in tickable.items() if eid not in checked_ids]
+    outstanding_after = ctx["fixed_outstanding_total"] + sum(
         int(e["amount"]) for e in remaining if e.get("direction") == "déboursé"
     )
-    in_transit_after = sum(
+    in_transit_after = ctx["fixed_in_transit_total"] + sum(
         int(e["amount"]) for e in remaining if e.get("direction") == "recette"
     )
-    book_balance = int(account.get("book_balance", 0))
+    book_balance = ctx["book_as_of"]
     variance = reconciliation_variance(
         statement_balance, book_balance, outstanding_after, in_transit_after
     )
@@ -1421,11 +1616,18 @@ def complete_reconciliation(
         if not acc_snap.exists:
             raise _TxnAbort("compte_introuvable")
         acc = acc_snap.to_dict()
+        # Etag sentinel: every trust write path regenerates the account etag,
+        # so any register movement between the pre-pass (whose as-of numbers
+        # passed the gate) and this commit is caught here.
+        if acc.get("etag") != account_etag:
+            raise _TxnAbort("conciliation_modifiée")
 
         entries = []
         for ref in tx_refs:
             snap = ref.get(transaction=txn)
             e = snap.to_dict() if snap.exists else None
+            # The entry's date is immutable, so the pre-pass <= period_end
+            # check needs no re-verification — only the status can move.
             if not e or e.get("status") != "en_circulation":
                 raise _TxnAbort("conciliation_modifiée")
             entries.append(e)
@@ -1453,10 +1655,13 @@ def complete_reconciliation(
                     cleared_add[e["dossier_id"]].get(e["client_id"], 0) + amt
                 )
 
+        # bank_balance is INCREMENTED, never set to the statement figure: the
+        # ticked items did clear at the bank (on or before the statement
+        # date), so today's cleared balance includes them — but for a
+        # RETROACTIVE period the old « = statement » equality is false (later
+        # clearings already sit in bank_balance). += preserves exactly the
+        # Σ-of-cleared-deltas invariant that verify_trust_integrity recomputes.
         post_clear_bank = int(acc.get("bank_balance", 0)) + bank_delta
-        if post_clear_bank != statement_balance:
-            # The account moved since the pre-pass — variance would no longer be 0.
-            raise _TxnAbort("conciliation_modifiée")
 
         cd = _midnight_utc(period_end)
         for ref, e in zip(tx_refs, entries):

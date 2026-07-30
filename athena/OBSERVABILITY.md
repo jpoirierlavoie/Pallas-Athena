@@ -152,6 +152,7 @@ Trust accounting (« comptabilité en fidéicommis », Phase K). `outcome` ∈ `
 | `trust_transaction_refused` | refused | Any other create abort; `reason` = a §5 abort string (`compte_fermé`, `client_hors_dossier`, `antidatage_refusé`, `facture_non_émise`, …) |
 | `trust_reconciliation_completed` | success | A reconciliation was balanced and completed; `reconciliation_id`, `account_id`, `cleared_count` |
 | `trust_reconciliation_variance` | refused | Completion refused because the variance was non-zero; `reconciliation_id`, `account_id`, `variance_cents` |
+| `trust_reconciliation_abandoned` | success | A DRAFT reconciliation was deleted (« Abandonner » — a brouillon never mutated any transaction); `reconciliation_id`, `account_id` |
 | `trust_export` | success | Journal / carte-client CSV or PDF export; `format`, `view`, `row_count` |
 
 ### `log_portail_event(event, outcome='success', *, invitation_id=None, batch=None, dossier_id=None, document_id=None, reason=None, **extra)` — logger `pallas.portail`

@@ -534,6 +534,7 @@ TrustEvent = Literal[
     "trust_transaction_refused",
     "trust_reconciliation_completed",
     "trust_reconciliation_variance",
+    "trust_reconciliation_abandoned",
     "trust_export",
 ]
 TrustOutcome = Literal["success", "refused"]

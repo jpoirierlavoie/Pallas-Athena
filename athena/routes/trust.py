@@ -575,11 +575,17 @@ def reconciliation_new():
     if request.method == "GET":
         return render_template("trust/reconciliation_form.html", accounts=accounts, errors=[], form={}, **_labels())
     f = request.form
-    rec, errors = trust.create_reconciliation(
-        account_id=f.get("account_id", "").strip(),
-        period_end=_parse_date(f.get("period_end", "")),
-        statement_balance=_parse_cents(f.get("statement_balance", "")) or 0,
-    )
+    # None (blank/unparseable) must ERROR — never coalesce to 0, which is a
+    # LEGITIMATE statement balance (an emptied account reads exactly 0,00 $).
+    statement_cents = _parse_cents(f.get("statement_balance", ""))
+    if statement_cents is None:
+        rec, errors = None, ["Le solde du relevé est requis."]
+    else:
+        rec, errors = trust.create_reconciliation(
+            account_id=f.get("account_id", "").strip(),
+            period_end=_parse_date(f.get("period_end", "")),
+            statement_balance=statement_cents,
+        )
     if errors:
         return render_template(
             "trust/reconciliation_form.html", accounts=accounts, errors=errors,
@@ -588,18 +594,27 @@ def reconciliation_new():
     return redirect(url_for("trust.reconciliation_worksheet", rec_id=rec["id"]))
 
 
+def _worksheet_context(rec: dict) -> dict:
+    """The shared worksheet context: account + the AS-OF picture at the rec's
+    period_end. One seam for the GET render and the 400 re-renders, so the
+    displayed numbers can never drift from what the completion gate computes
+    (both consume trust.reconciliation_as_of_context). A read failure raises
+    — fail closed, never a silently wrong worksheet."""
+    return {
+        "rec": rec,
+        "account": trust.get_account(rec["account_id"]),
+        **trust.reconciliation_as_of_context(rec["account_id"], rec["period_end"]),
+    }
+
+
 @trust_bp.route("/conciliations/<rec_id>")
 @login_required
 def reconciliation_worksheet(rec_id: str):
     rec = trust.get_reconciliation(rec_id)
     if not rec:
         return render_template("errors/404.html"), 404
-    account = trust.get_account(rec["account_id"])
-    outstanding = trust.list_outstanding(rec["account_id"])
-    in_transit = trust.list_in_transit(rec["account_id"])
     return render_template(
-        "trust/reconciliation_worksheet.html", rec=rec, account=account,
-        outstanding=outstanding, in_transit=in_transit, **_labels(),
+        "trust/reconciliation_worksheet.html", **_worksheet_context(rec), **_labels(),
     )
 
 
@@ -610,14 +625,31 @@ def reconciliation_complete(rec_id: str):
     rec, errors = trust.complete_reconciliation(rec_id, cleared_ids)
     if errors:
         current = trust.get_reconciliation(rec_id)
-        account = trust.get_account(current["account_id"]) if current else None
-        outstanding = trust.list_outstanding(current["account_id"]) if current else []
-        in_transit = trust.list_in_transit(current["account_id"]) if current else []
+        if not current:
+            return render_template("errors/404.html"), 404
         return render_template(
-            "trust/reconciliation_worksheet.html", rec=current, account=account,
-            outstanding=outstanding, in_transit=in_transit, errors=errors, **_labels(),
+            "trust/reconciliation_worksheet.html",
+            **_worksheet_context(current), errors=errors, **_labels(),
         ), 400
     return redirect(url_for("trust.reconciliation_worksheet", rec_id=rec_id))
+
+
+@trust_bp.route("/conciliations/<rec_id>/abandonner", methods=["POST"])
+@login_required
+def reconciliation_abandon(rec_id: str):
+    """Abandon a draft reconciliation — the escape hatch a brouillon lacked
+    (an unbalanceable draft used to block the account forever, the
+    one-brouillon guard having no other exit)."""
+    ok, errors = trust.delete_reconciliation(rec_id)
+    if errors:
+        current = trust.get_reconciliation(rec_id)
+        if not current:
+            return redirect(url_for("trust.reconciliations_list"))
+        return render_template(
+            "trust/reconciliation_worksheet.html",
+            **_worksheet_context(current), errors=errors, **_labels(),
+        ), 400
+    return redirect(url_for("trust.reconciliations_list"))
 
 
 # ── Exports (spec §8) — TWO-column « Recette » / « Crédit » ─────────────────
