@@ -101,9 +101,14 @@ def _get_urgent_protocol_steps(now: datetime) -> list[dict]:
         from models.protocol import list_urgent_steps
         cutoff = now + timedelta(days=14)
         urgent_steps = list_urgent_steps(cutoff)
+        # Calendar-date rule (shared with the model summary and the MCP
+        # step row): a step due TODAY is not overdue.
+        today = now.date()
         for step in urgent_steps:
             deadline = step.get("deadline_date")
-            step["_overdue"] = bool(deadline and deadline < now)
+            step["_overdue"] = bool(
+                deadline and deadline.astimezone(timezone.utc).date() < today
+            )
 
         urgent_steps.sort(
             key=lambda s: (not s.get("_overdue", False), s.get("deadline_date") or now)

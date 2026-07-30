@@ -197,13 +197,16 @@ def protocol_detail(protocol_id: str) -> str:
     ctx["steps_completed"] = completed
     ctx["steps_total"] = total
 
-    # Compute days remaining/overdue for each step
-    now = datetime.now(timezone.utc)
+    # Days remaining per step, on CALENDAR dates (deadline_date is midnight
+    # UTC, so a wall-clock delta read « due today » as -1) — due today = 0,
+    # aligned with get_protocol_summary and the MCP is_overdue rule.
+    today = datetime.now(timezone.utc).date()
     for step in steps:
         deadline = step.get("deadline_date")
         if deadline and step.get("status") != "complété":
-            delta = (deadline - now).days
-            step["_days_remaining"] = delta
+            step["_days_remaining"] = (
+                deadline.astimezone(timezone.utc).date() - today
+            ).days
         else:
             step["_days_remaining"] = None
 

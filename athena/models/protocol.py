@@ -22,6 +22,12 @@ STEPS_SUBCOLLECTION = "steps"
 VALID_PROTOCOL_TYPES = ("cq_simplifié", "cs_ordinaire", "conventionnel")
 VALID_STATUSES = ("actif", "complété", "suspendu")
 VALID_STEP_STATUSES = ("à_venir", "en_cours", "complété", "en_retard")
+
+# The « Prochaines » window: get_protocol_summary's `upcoming` counts open
+# steps due within this many calendar days. Shared by the dossier-tab amber
+# tile and the MCP summary — the value travels in the payload
+# (upcoming_window_days) so consumers stop guessing what « upcoming » means.
+UPCOMING_WINDOW_DAYS = 7
 VALID_COURTS = (
     "Cour du Québec",
     "Cour supérieure",
@@ -841,19 +847,26 @@ def recompute_deadlines(
 
 
 def check_overdue_steps(protocol_id: str) -> int:
-    """Scan steps and update status to en_retard where overdue. Returns count."""
+    """Scan steps and update status to en_retard where overdue. Returns count.
+
+    Calendar-date rule (shared with get_protocol_summary and the MCP step
+    row): a step due TODAY is not overdue yet — the old wall-clock compare
+    flipped the stored status to en_retard at 00:00 UTC on the due date,
+    a day earlier than every read surface claimed.
+    """
     protocol = get_protocol(protocol_id)
     if not protocol:
         return 0
 
     now = datetime.now(timezone.utc)
+    today = now.date()
     count = 0
 
     for step in protocol.get("steps", []):
         deadline = step.get("deadline_date")
         if (
             deadline
-            and deadline < now
+            and deadline.astimezone(timezone.utc).date() < today
             and step.get("status") not in ("complété",)
         ):
             if step.get("status") != "en_retard":
@@ -970,24 +983,27 @@ def get_protocol_summary(dossier_id: str) -> dict:
             "completed": 0,
             "overdue": 0,
             "upcoming": 0,
+            "upcoming_window_days": UPCOMING_WINDOW_DAYS,
+            "next_deadline_date": None,
         }
 
     steps = protocol.get("steps", [])
-    now = datetime.now(timezone.utc)
+    # Calendar-date rule, shared with the MCP step row: deadline_date is
+    # date-only (midnight UTC), so comparisons run on UTC calendar dates —
+    # a step due TODAY is upcoming, never overdue (the old wall-clock
+    # comparison flipped it to overdue at 00:00 UTC while the MCP row said
+    # is_overdue: false, a cross-tool contradiction on the same document).
+    today = datetime.now(timezone.utc).date()
+    window_end = today + timedelta(days=UPCOMING_WINDOW_DAYS)
     completed = [s for s in steps if s.get("status") == "complété"]
-    overdue = [
-        s for s in steps
-        if s.get("deadline_date")
-        and s["deadline_date"] < now
-        and s.get("status") not in ("complété",)
+    open_dated = [
+        (s, s["deadline_date"].astimezone(timezone.utc).date())
+        for s in steps
+        if s.get("deadline_date") and s.get("status") not in ("complété",)
     ]
-    upcoming = [
-        s for s in steps
-        if s.get("deadline_date")
-        and s["deadline_date"] >= now
-        and (s["deadline_date"] - now).days <= 7
-        and s.get("status") not in ("complété",)
-    ]
+    overdue = [s for s, d in open_dated if d < today]
+    upcoming = [s for s, d in open_dated if today <= d <= window_end]
+    next_deadline = min((d for _, d in open_dated), default=None)
 
     all_protos = list_protocols_for_dossier(dossier_id)
     return {
@@ -998,7 +1014,15 @@ def get_protocol_summary(dossier_id: str) -> dict:
         "total": len(steps),
         "completed": len(completed),
         "overdue": len(overdue),
+        # « upcoming » was an unnamed 7-day web-tile window leaking into the
+        # MCP contract as if it meant « all future steps » (PA-D05) — the
+        # window now travels with the count, and next_deadline_date is the
+        # field a caller actually wants.
         "upcoming": len(upcoming),
+        "upcoming_window_days": UPCOMING_WINDOW_DAYS,
+        "next_deadline_date": (
+            next_deadline.isoformat() if next_deadline else None
+        ),
     }
 
 
