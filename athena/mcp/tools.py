@@ -651,7 +651,11 @@ TOOLS: dict[str, dict] = {
             "Case-protocol timeline for a dossier: the active protocol's "
             "ordered steps with deadlines and a derived is_overdue flag. Set "
             "include_history=true to also include prior (completed/suspended) "
-            "protocols."
+            "protocols. Check regime_mismatch on every protocol: true means "
+            "the template's C.p.c. regime does not govern the dossier's "
+            "forum (e.g. a Cour du Québec simplified-track template — arts. "
+            "535.x — on a Superior Court file), so its tracked deadlines "
+            "are suspect and must be raised, not relied on."
         ),
         "input_schema": {
             "type": "object",

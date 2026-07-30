@@ -701,10 +701,16 @@ def test_list_protocol_steps_derives_overdue_without_writes(monkeypatch):
     monkeypatch.setattr(handlers.protocol_model, "check_overdue_steps", forbidden)
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: protocol)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda d: _dossier(did=d, fn="2026-018"))
     payload = handlers.list_protocol_steps({"dossier_id": "d1"})
     steps = payload["protocols"][0]["steps"]
     assert [s["is_overdue"] for s in steps] == [True, False, False]
     assert payload["has_active_protocol"] is True
+    # The audit's live case (PA-D03): a cq_simplifié (arts. 535.x) on a
+    # Superior Court dossier — the payload must say so, not hide it.
+    assert payload["protocols"][0]["regime_mismatch"] is True
+    assert payload["protocols"][0]["dossier_tribunal"] == "Cour supérieure"
 
 
 def test_step_and_task_due_today_are_not_overdue(monkeypatch):
@@ -716,6 +722,8 @@ def test_step_and_task_due_today_are_not_overdue(monkeypatch):
                            "status": "à_venir", "deadline_date": today_midnight}]}
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: protocol)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda d: _dossier(did=d))
     payload = handlers.list_protocol_steps({"dossier_id": "d1"})
     assert payload["protocols"][0]["steps"][0]["is_overdue"] is False
 
@@ -756,6 +764,8 @@ def test_list_documents_folder_filter_survives_query(monkeypatch):
 def test_list_protocol_steps_history(monkeypatch):
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: None)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda d: _dossier(did=d))
     monkeypatch.setattr(handlers.protocol_model, "list_protocols_for_dossier",
                         lambda d: [{"id": "p1"}, {"id": "p2"}])
     monkeypatch.setattr(handlers.protocol_model, "get_protocol",

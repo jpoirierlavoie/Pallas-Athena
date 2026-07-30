@@ -52,6 +52,9 @@
     <div class="p-4 bg-gray-50 rounded-xl border border-gray-200">
       <p class="text-xs text-gray-500 mb-1">Dossier</p>
       <p class="text-sm font-medium text-gray-900">{{ dossier.file_number }} — {{ dossier.title }}</p>
+      {% if dossier.tribunal %}
+      <p class="text-xs text-gray-500 mt-1">Tribunal : <span class="font-medium text-gray-700">{{ dossier.tribunal }}</span></p>
+      {% endif %}
     </div>
     {% endif %}
 
@@ -75,6 +78,9 @@
               <div>
                 <p class="text-sm font-semibold text-gray-900">Cour du Québec — Simplifié</p>
                 <p class="text-xs text-gray-500 mt-1">Protocole prescrit par le C.p.c. avec délais fixes. Les étapes obligatoires ne peuvent pas être modifiées.</p>
+                {% if regime_mismatches and regime_mismatches.get('cq_simplifié') %}
+                <p class="text-xs font-medium text-amber-700 mt-1">Ce gabarit vise la Cour du Québec — ce dossier est devant {{ dossier.tribunal }}.</p>
+                {% endif %}
               </div>
             </div>
           </div>
@@ -94,6 +100,9 @@
               <div>
                 <p class="text-sm font-semibold text-gray-900">Cour supérieure — Ordinaire</p>
                 <p class="text-xs text-gray-500 mt-1">Protocole standard avec jalons habituels. Les dates sont à adapter selon l'entente des parties ou l'ordonnance du tribunal.</p>
+                {% if regime_mismatches and regime_mismatches.get('cs_ordinaire') %}
+                <p class="text-xs font-medium text-amber-700 mt-1">Ce gabarit vise la Cour supérieure — ce dossier est devant {{ dossier.tribunal }}.</p>
+                {% endif %}
               </div>
             </div>
           </div>

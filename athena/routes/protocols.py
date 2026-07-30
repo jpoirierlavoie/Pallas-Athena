@@ -17,6 +17,7 @@ from models.protocol import (
     PROTOCOL_TYPE_COLORS,
     PROTOCOL_TYPE_LABELS,
     PROTOCOL_TYPE_SHORT_LABELS,
+    PROTOCOL_TYPE_TRIBUNAL,
     STATUS_LABELS,
     STEP_STATUS_COLORS,
     STEP_STATUS_LABELS,
@@ -32,6 +33,7 @@ from models.protocol import (
     get_protocol_for_dossier,
     list_protocols,
     recompute_deadlines,
+    regime_mismatch,
     update_protocol,
     update_step,
 )
@@ -67,6 +69,13 @@ def _template_context() -> dict:
         "valid_protocol_types": VALID_PROTOCOL_TYPES,
         "valid_statuses": VALID_STATUSES,
         "now": datetime.now(timezone.utc),
+    }
+
+
+def _regime_mismatches(dossier: dict | None) -> dict[str, bool]:
+    """Per-template mismatch flags for the wizard's radio-card warnings."""
+    return {
+        t: regime_mismatch(t, dossier) for t in PROTOCOL_TYPE_TRIBUNAL
     }
 
 
@@ -121,7 +130,8 @@ def protocol_new() -> str:
         )
 
     ctx = _template_context()
-    ctx.update(dossier=dossier, protocol=None, errors=[])
+    ctx.update(dossier=dossier, protocol=None, errors=[],
+               regime_mismatches=_regime_mismatches(dossier))
     return render_template("protocols/form.html", **ctx)
 
 
@@ -143,7 +153,11 @@ def protocol_create() -> str:
 
     data = {
         "title": f.get("title", "").strip() or "Protocole de l'instance",
-        "court": dossier.get("court", ""),
+        # The dossier field is `tribunal` — a `court` key has never existed
+        # on dossiers, so this copy silently wrote "" on every protocol
+        # ever created (scripts/backfill_protocol_court.py heals the
+        # existing docs).
+        "court": dossier.get("tribunal", ""),
         "dossier_file_number": dossier.get("file_number", ""),
         "dossier_title": dossier.get("title", ""),
         "notes": f.get("notes", "").strip(),
@@ -159,7 +173,8 @@ def protocol_create() -> str:
 
     if errors:
         ctx = _template_context()
-        ctx.update(dossier=dossier, protocol=data, errors=errors)
+        ctx.update(dossier=dossier, protocol=data, errors=errors,
+                   regime_mismatches=_regime_mismatches(dossier))
         return render_template("protocols/form.html", **ctx)
 
     target = url_for("protocols.protocol_detail", protocol_id=protocol["id"])

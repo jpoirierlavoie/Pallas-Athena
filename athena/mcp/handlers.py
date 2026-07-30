@@ -893,13 +893,20 @@ def get_billing_snapshot(args: dict) -> dict:
 
 # ── 12. list_protocol_steps ─────────────────────────────────────────────
 
-def _protocol_payload(p: dict, now: datetime) -> dict:
+def _protocol_payload(p: dict, now: datetime, dossier: Optional[dict]) -> dict:
     return {
         "id": p.get("id", ""),
         "title": p.get("title", ""),
         "protocol_type": p.get("protocol_type", ""),
         "status": p.get("status", ""),
         "court": p.get("court", ""),
+        # The mismatch flag surfaces protocols created BEFORE the regime
+        # gate (PA-D03) — a cq_simplifié tracking arts. 535.x on a Superior
+        # Court file is a litigation risk the payload must not hide.
+        "dossier_tribunal": (dossier or {}).get("tribunal", ""),
+        "regime_mismatch": protocol_model.regime_mismatch(
+            p.get("protocol_type", ""), dossier
+        ),
         "start_date": date_str(_as_utc(p.get("start_date"))),
         "end_date": date_str(_as_utc(p.get("end_date"))),
         "notes": p.get("notes", ""),
@@ -915,6 +922,7 @@ def list_protocol_steps(args: dict) -> dict:
     # Derived-only overdue status (never calls check_overdue_steps, which
     # writes to Firestore — see Phase I non-goals).
     active = protocol_model.get_protocol_for_dossier(dossier_id, active_only=True)
+    dossier = dossier_model.get_dossier(dossier_id)
 
     protocols: list[dict] = []
     if include_history:
@@ -928,7 +936,7 @@ def list_protocol_steps(args: dict) -> dict:
     return {
         "dossier_id": dossier_id,
         "has_active_protocol": active is not None,
-        "protocols": [_protocol_payload(p, now) for p in protocols],
+        "protocols": [_protocol_payload(p, now, dossier) for p in protocols],
     }
 
 

@@ -655,6 +655,13 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "protocol_type": _str(),
             "status": _str(),
             "court": _str(),
+            "dossier_tribunal": _str(
+                "The dossier's current tribunal, for context."),
+            "regime_mismatch": _bool(
+                "True when the template's C.p.c. regime cannot govern "
+                "this dossier's forum (e.g. a cq_simplifié — arts. 535.x "
+                "— on a Superior Court file). Treat the tracked deadlines "
+                "as suspect and raise it."),
             "start_date": _nstr(),
             "end_date": _nstr(),
             "notes": _str(),

@@ -28,6 +28,17 @@ VALID_STEP_STATUSES = ("à_venir", "en_cours", "complété", "en_retard")
 # tile and the MCP summary — the value travels in the payload
 # (upcoming_window_days) so consumers stop guessing what « upcoming » means.
 UPCOMING_WINDOW_DAYS = 7
+
+# Which court each C.p.c. template regime GOVERNS — the coherence gate
+# (PA-D03). cq_simplifié tracks arts. 535.x (Cour du Québec simplified
+# track); cs_ordinaire tracks arts. 145-148 + 173 (Superior Court);
+# conventionnel is deliberately absent — it is the unrestricted escape
+# hatch (admin tribunals, arbitration, appeals…). The strings match what
+# models/dossier writes into `tribunal` from the juridiction table.
+PROTOCOL_TYPE_TRIBUNAL = {
+    "cq_simplifié": "Cour du Québec",
+    "cs_ordinaire": "Cour supérieure",
+}
 VALID_COURTS = (
     "Cour du Québec",
     "Cour supérieure",
@@ -307,6 +318,65 @@ def _validate_protocol(data: dict) -> list[str]:
     return errors
 
 
+def regime_mismatch(protocol_type: str, dossier: Optional[dict]) -> bool:
+    """True when the template's C.p.c. regime cannot govern this dossier.
+
+    The live case that motivated the gate: a cq_simplifié protocol (arts.
+    535.x C.p.c.) active on a Superior Court file — deadlines tracked from a
+    Code regime that does not govern it. Pure predicate, shared by the
+    creation gate, the wizard annotation and the MCP regime_mismatch flag,
+    so the three surfaces cannot drift.
+
+    Conservative on unknowns: no dossier, a conventionnel template, or a
+    dossier whose tribunal is blank (préjudiciaire, unparsed) → False —
+    there is nothing to validate against, and refusing would strand the
+    file. A non-judicial forum (administratif/federal) mismatches BOTH
+    C.p.c. templates.
+    """
+    if not dossier:
+        return False
+    expected = PROTOCOL_TYPE_TRIBUNAL.get(protocol_type)
+    if not expected:
+        return False
+    if (dossier.get("forum_type") or "judiciaire") in ("administratif", "federal"):
+        return True
+    tribunal = (dossier.get("tribunal") or "").strip()
+    return bool(tribunal) and tribunal != expected
+
+
+def _regime_errors(dossier_id: str, protocol_type: str) -> list[str]:
+    """French, actionable refusal when the template regime is incoherent."""
+    expected = PROTOCOL_TYPE_TRIBUNAL.get(protocol_type)
+    if not expected:
+        return []
+    # Deferred function-level import — the house pattern for the
+    # protocol↔dossier edge (see _sync_task_status / _auto_create_tasks).
+    from models.dossier import get_dossier
+    dossier = get_dossier(dossier_id)
+    if not regime_mismatch(protocol_type, dossier):
+        return []
+    label = PROTOCOL_TYPE_LABELS.get(protocol_type, protocol_type)
+    tribunal = (dossier.get("tribunal") or "").strip()
+    if (dossier.get("forum_type") or "judiciaire") in ("administratif", "federal"):
+        where = tribunal or "un forum non judiciaire"
+        return [
+            f"Le gabarit « {label} » suit le C.p.c., mais ce dossier est "
+            f"devant {where}. Utilisez le gabarit « Conventionnel »."
+        ]
+    suggestion = next(
+        (
+            PROTOCOL_TYPE_LABELS[t]
+            for t, trib in PROTOCOL_TYPE_TRIBUNAL.items()
+            if trib == tribunal
+        ),
+        PROTOCOL_TYPE_LABELS["conventionnel"],
+    )
+    return [
+        f"Le gabarit « {label} » vise la {expected}, mais ce dossier est "
+        f"devant la {tribunal}. Utilisez le gabarit « {suggestion} »."
+    ]
+
+
 def _validate_step(data: dict) -> list[str]:
     """Return a list of validation error messages for a step."""
     errors: list[str] = []
@@ -377,6 +447,14 @@ def create_protocol(
     errors = _validate_protocol(merged)
     if errors:
         return None, errors
+
+    # Regime/forum coherence gate (PA-D03): a C.p.c. template whose court
+    # disagrees with the dossier's tribunal is refused with the expected
+    # template named — a protocol tracking the wrong Code is a litigation
+    # risk, not a preference.
+    regime = _regime_errors(dossier_id, protocol_type)
+    if regime:
+        return None, regime
 
     # Check: only one active protocol per dossier
     active_protocols = _get_active_protocols(dossier_id)

@@ -454,8 +454,12 @@ def test_list_protocol_steps_conforms(monkeypatch):
                 "notes": "", "steps": [_step_doc()]}
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda d, active_only=True: protocol)
-    _conforms("list_protocol_steps",
-              handlers.list_protocol_steps({"dossier_id": "d1"}))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda d: _dossier_doc())
+    payload = handlers.list_protocol_steps({"dossier_id": "d1"})
+    _conforms("list_protocol_steps", payload)
+    # cs_ordinaire on the fixture's Cour supérieure dossier — coherent.
+    assert payload["protocols"][0]["regime_mismatch"] is False
 
 
 def test_compute_judicial_deadline_both_branches_conform():
