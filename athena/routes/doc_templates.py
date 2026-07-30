@@ -35,6 +35,7 @@ from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from auth import login_required
+from models.audit_event import record_deletion
 from config import Config
 from models.doc_template import (
     CATEGORY_LABELS,
@@ -280,9 +281,15 @@ def template_update(template_id: str) -> Response | str:
 @doc_templates_bp.route("/<template_id>/delete", methods=["POST"])
 @login_required
 def template_delete(template_id: str) -> Response | str:
+    existing = get_template(template_id)
     success, error = delete_template(template_id)
     if success:
         log_template_event("template_deleted", template_id=template_id)
+        record_deletion(
+            "doc_template", template_id,
+            title=(existing or {}).get("name", ""),
+            status=(existing or {}).get("category", ""),
+        )
         target = url_for("doc_templates.template_list")
         if _is_htmx():
             resp = redirect(target)

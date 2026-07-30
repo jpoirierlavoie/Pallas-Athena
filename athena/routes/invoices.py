@@ -32,6 +32,7 @@ from models.invoice import (
     update_status,
     void_invoice,
 )
+from models.audit_event import record_deletion
 from models.dossier import get_dossier, list_dossiers
 from models.partie import display_name, get_partie
 from models.time_entry import get_unbilled_time_entries
@@ -617,7 +618,18 @@ def invoice_void(invoice_id: str) -> str:
 def invoice_delete(invoice_id: str) -> str:
     """Delete a cancelled invoice."""
     return_to = request.form.get("return_to", "")
+    existing, _ = get_invoice_with_items(invoice_id)
     success, error = delete_invoice(invoice_id)
+
+    if success:
+        # Append-only deletion trail (PA-G06) — only annulée invoices can
+        # get here; the trail keeps the number that disappeared.
+        record_deletion(
+            "invoice", invoice_id,
+            dossier_id=(existing or {}).get("dossier_id", ""),
+            title=(existing or {}).get("invoice_number", ""),
+            status=(existing or {}).get("status", ""),
+        )
 
     if not success:
         target = url_for("invoices.invoice_detail", invoice_id=invoice_id)

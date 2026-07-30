@@ -12,6 +12,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
+from models.audit_event import record_deletion
 from models.dossier import get_dossier
 from models.protocol import (
     PROTOCOL_TYPE_COLORS,
@@ -302,6 +303,16 @@ def protocol_delete(protocol_id: str) -> str:
 
     success, error = delete_protocol(protocol_id)
 
+    if success:
+        # Append-only deletion trail (PA-G06) — a deleted protocol takes
+        # its whole step timeline with it, which is worth remembering.
+        record_deletion(
+            "protocol", protocol_id,
+            dossier_id=dossier_id or "",
+            title=(protocol or {}).get("title", ""),
+            status=(protocol or {}).get("protocol_type", ""),
+        )
+
     target = (
         url_for("dossiers.dossier_detail", dossier_id=dossier_id)
         if dossier_id
@@ -396,7 +407,20 @@ def step_complete(protocol_id: str, step_id: str) -> str:
 @login_required
 def step_delete(protocol_id: str, step_id: str) -> str:
     """Delete a custom (non-mandatory) step."""
+    protocol = get_protocol(protocol_id)
+    step = next(
+        (s for s in (protocol or {}).get("steps", []) if s.get("id") == step_id),
+        None,
+    )
     success, error = delete_step(protocol_id, step_id)
+
+    if success:
+        record_deletion(
+            "protocol_step", step_id,
+            dossier_id=(protocol or {}).get("dossier_id", "") or "",
+            title=(step or {}).get("title", ""),
+            status=(step or {}).get("status", ""),
+        )
 
     if not success and _is_htmx():
         return f'<div class="text-red-600 text-sm p-3">{escape(error)}</div>', 422

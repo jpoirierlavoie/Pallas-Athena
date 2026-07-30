@@ -16,6 +16,7 @@ from markupsafe import escape
 
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
+from models.audit_event import record_deletion
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import sanitize
 from models.partie import (
@@ -420,11 +421,18 @@ def partie_update(partie_id: str) -> str:
 @login_required
 def partie_delete(partie_id: str) -> str:
     """Delete a partie and redirect to the list."""
+    existing = get_partie(partie_id)
     success, error = delete_partie(partie_id)
 
     if success:
         record_tombstone("parties", partie_id)
         bump_ctag("parties")
+        # Append-only deletion trail (PA-G06).
+        record_deletion(
+            "partie", partie_id,
+            title=display_name(existing) if existing else "",
+            status=(existing or {}).get("contact_role", ""),
+        )
 
     if _is_htmx():
         if success:

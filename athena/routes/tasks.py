@@ -17,6 +17,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
+from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from models.task import (
     CATEGORY_LABELS,
@@ -438,6 +439,14 @@ def task_delete(task_id: str) -> str:
         scope = collection_for(dossier_id)
         record_tombstone(scope, task_id)
         bump_ctag(scope)
+        # Append-only deletion trail (PA-G06) — best-effort, after the
+        # committed delete, never able to fail the route.
+        record_deletion(
+            "task", task_id,
+            dossier_id=dossier_id or "",
+            title=(existing_task or {}).get("title", ""),
+            status=(existing_task or {}).get("status", ""),
+        )
 
     target = safe_internal_redirect(return_to, url_for("tasks.task_list"))
     if _is_htmx():

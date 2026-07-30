@@ -822,6 +822,45 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "list_expenses",
     },
+    "list_deletions": {
+        "title": "Journal des suppressions",
+        "description": (
+            "The append-only deletion trail, newest first: what was "
+            "deleted, when, and the minimal snapshot (title + status) it "
+            "carried. Use it when something that used to appear has "
+            "vanished — it distinguishes « deleted » from « never "
+            "existed ». Two honest limits: the trail starts at its own "
+            "deployment (silence about anything earlier), and the read "
+            "window is the 200 most recent events — an empty answer past "
+            "that means « not in the recent window », never « never "
+            "deleted »."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_type": {
+                    "type": "string",
+                    "enum": [
+                        "task", "hearing", "note", "document", "expense",
+                        "time_entry", "invoice", "partie", "protocol",
+                        "protocol_step", "folder", "doc_template",
+                        "dossier",
+                    ],
+                    "description": "Filter to one entity type.",
+                },
+                "dossier_id": _id(
+                    "Only deletions on this dossier (UUIDv4)."
+                ),
+                "date_from": _date(
+                    "Earliest deletion date (Montréal calendar), "
+                    "YYYY-MM-DD inclusive."
+                ),
+                "limit": _limit(25),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "list_deletions",
+    },
     "list_protocol_steps": {
         "title": "Étapes du protocole",
         "description": (

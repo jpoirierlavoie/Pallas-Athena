@@ -16,6 +16,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
+from models.audit_event import record_deletion
 from dav.sync import (
     bump_ctag,
     clear_tombstones,
@@ -785,9 +786,20 @@ def dossier_update(dossier_id: str) -> str:
 @login_required
 def dossier_delete(dossier_id: str) -> str:
     """Delete a dossier and redirect to the list."""
+    existing = get_dossier(dossier_id)
     success, error = delete_dossier(dossier_id)
 
     if success:
+        # Append-only deletion trail (PA-G06) — recorded BEFORE the sync
+        # teardown wipes the last context. delete_dossier refuses while any
+        # child exists, so this only ever records a childless shell.
+        record_deletion(
+            "dossier", dossier_id,
+            dossier_id=dossier_id,
+            title=(existing or {}).get("file_number", "")
+            or (existing or {}).get("title", ""),
+            status=(existing or {}).get("status", ""),
+        )
         # No DAV endpoint reads a "dossiers" sync collection post-D1; instead,
         # tear down the deleted dossier's live per-collection DAV sync state
         # (its /dav/dossier-{id}/ collection no longer exists).

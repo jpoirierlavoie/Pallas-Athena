@@ -20,6 +20,7 @@ from dav.sync import (
     record_tombstone,
     remove_tombstone,
 )
+from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from models.note import (
     CATEGORY_LABELS,
@@ -370,6 +371,14 @@ def note_delete(note_id: str) -> str:
         scope = collection_for(dossier_id)
         record_tombstone(scope, note_id)
         bump_ctag(scope)
+        # Append-only deletion trail (PA-G06) — the snapshot keeps the
+        # title only, never the note's content.
+        record_deletion(
+            "note", note_id,
+            dossier_id=dossier_id or "",
+            title=(existing_note or {}).get("title", ""),
+            status=(existing_note or {}).get("category", ""),
+        )
 
     target = safe_internal_redirect(return_to, url_for("notes.note_list"))
     if _is_htmx():

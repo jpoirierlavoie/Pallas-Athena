@@ -39,6 +39,7 @@ from dav.sync import (
     record_tombstone,
     remove_tombstone,
 )
+from models.audit_event import record_deletion
 from dav.xml_utils import (
     add_propstat,
     add_response,
@@ -1009,6 +1010,14 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         sync_name = collection_for(dossier_id)
         record_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
+        # Append-only deletion trail (PA-G06) -- a phone-side delete must
+        # leave the same trace as a web one.
+        record_deletion(
+            "task", resource_id,
+            dossier_id=dossier_id or "",
+            title=existing.get("title", ""),
+            status=existing.get("status", ""),
+        )
         return Response("", status=204)
 
     existing_note = get_note(resource_id)
@@ -1028,6 +1037,14 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         sync_name = collection_for(dossier_id)
         record_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
+        # Append-only deletion trail (PA-G06) -- a phone-side delete must
+        # leave the same trace as a web one.
+        record_deletion(
+            "note", resource_id,
+            dossier_id=dossier_id or "",
+            title=existing_note.get("title", ""),
+            status=existing_note.get("category", ""),
+        )
         return Response("", status=204)
 
     existing_hearing = get_hearing(resource_id)
@@ -1047,6 +1064,14 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         sync_name = collection_for(dossier_id)
         record_tombstone(sync_name, resource_id)
         bump_ctag(sync_name)
+        # Append-only deletion trail (PA-G06) -- a phone-side delete must
+        # leave the same trace as a web one.
+        record_deletion(
+            "hearing", resource_id,
+            dossier_id=dossier_id or "",
+            title=existing_hearing.get("title", ""),
+            status=existing_hearing.get("status", ""),
+        )
         return Response("", status=204)
 
     return Response("Not Found", status=404)

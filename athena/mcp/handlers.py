@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
 from pagination import encode_cursor
+from models import audit_event as audit_event_model
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -1346,6 +1347,48 @@ def list_expenses(args: dict) -> dict:
         _money(row, "amount", e.get("amount", 0))
         items.append(row)
     return _list_payload(items, len(rows) > limit or window_full)
+
+
+# ── 11c. list_deletions ─────────────────────────────────────────────────
+
+def list_deletions(args: dict) -> dict:
+    """The append-only deletion trail (PA-G06) — newest first.
+
+    Closes the vanishing-deadline hole: a hard-deleted task used to leave
+    NO trace anywhere, so a briefing could not distinguish a deliberate
+    withdrawal from an accidental deletion. The trail records deletions
+    from the moment it shipped — silence about anything earlier, and an
+    empty answer past the 200-event window means « not in the recent
+    window », never « never deleted ».
+    """
+    limit = _limit_arg(args, 25)
+    rows = audit_event_model.list_recent(
+        entity_type=args.get("entity_type"),
+        dossier_id=args.get("dossier_id"),
+        limit=_FETCH_CAP,
+    )
+    if args.get("date_from"):
+        lo = _parse_iso_date(args["date_from"], "date_from")
+        rows = [
+            r
+            for r in rows
+            if (ts := _as_utc(r.get("at"))) is not None
+            and ts.astimezone(MTL).date() >= lo
+        ]
+    truncated = len(rows) > limit
+    items = []
+    for r in rows[:limit]:
+        snap = r.get("snapshot_min") or {}
+        items.append({
+            "id": r.get("id", ""),
+            "at": iso_mtl(_as_utc(r.get("at"))),
+            "entity_type": r.get("entity_type", ""),
+            "entity_id": r.get("entity_id", ""),
+            "dossier_id": r.get("dossier_id", ""),
+            "title": snap.get("title", ""),
+            "status": snap.get("status", ""),
+        })
+    return _list_payload(items, truncated)
 
 
 # ── 12. list_protocol_steps ─────────────────────────────────────────────

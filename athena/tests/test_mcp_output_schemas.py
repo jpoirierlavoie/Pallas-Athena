@@ -489,6 +489,18 @@ def test_list_expenses_conforms(monkeypatch):
     _conforms("list_expenses", handlers.list_expenses({}))
 
 
+def test_list_deletions_conforms(monkeypatch):
+    monkeypatch.setattr(
+        handlers.audit_event_model, "list_recent",
+        lambda **kw: [{"id": "ev1", "at": DT, "entity_type": "task",
+                       "entity_id": "t9", "dossier_id": "d1",
+                       "snapshot_min": {"title": "Produire la proposition",
+                                        "status": "à_faire"}}])
+    payload = handlers.list_deletions({})
+    _conforms("list_deletions", payload)
+    assert payload["items"][0]["title"] == "Produire la proposition"
+
+
 def test_list_protocol_steps_conforms(monkeypatch):
     protocol = {"id": "pr1", "title": "Protocole de l'instance",
                 "protocol_type": "cs_ordinaire", "status": "actif",

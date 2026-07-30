@@ -33,9 +33,11 @@ from dav.xml_utils import (
     propfind_requests_prop,
     serialize_multistatus,
 )
+from models.audit_event import record_deletion
 from models.partie import (
     create_partie,
     delete_partie,
+    display_name,
     get_partie,
     list_parties,
     partie_to_vcard,
@@ -428,6 +430,13 @@ def delete_resource(partie_id: str) -> Response:
 
     record_tombstone(COLLECTION_NAME, partie_id)
     bump_ctag(COLLECTION_NAME)
+    # Append-only deletion trail (PA-G06) — a phone-side contact delete
+    # must leave the same trace as a web one.
+    record_deletion(
+        "partie", partie_id,
+        title=display_name(existing),
+        status=existing.get("contact_role", ""),
+    )
     return Response("", status=204)
 
 

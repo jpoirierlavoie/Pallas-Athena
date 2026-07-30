@@ -14,6 +14,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
+from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
@@ -445,6 +446,16 @@ def document_delete(document_id: str) -> str:
 
     success, error = delete_document(document_id)
 
+    if success:
+        # Append-only deletion trail (PA-G06) — the Storage blob is gone
+        # with the delete; the trail records only that it existed.
+        record_deletion(
+            "document", document_id,
+            dossier_id=dossier_id,
+            title=(doc or {}).get("display_name", ""),
+            status=(doc or {}).get("category", ""),
+        )
+
     if dossier_id:
         fallback = url_for("documents.document_list", dossier_id=dossier_id, folder_id=folder_id or "")
     else:
@@ -559,6 +570,14 @@ def folder_delete_route(folder_id: str) -> str:
     parent_id = folder_data.get("parent_folder_id") if folder_data else None
 
     success, error = delete_folder(dossier_id, folder_id, recursive=recursive)
+
+    if success:
+        record_deletion(
+            "folder", folder_id,
+            dossier_id=dossier_id,
+            title=(folder_data or {}).get("name", ""),
+            status="récursif" if recursive else "",
+        )
 
     if _is_htmx():
         if not success:

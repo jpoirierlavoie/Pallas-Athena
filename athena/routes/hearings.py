@@ -17,6 +17,7 @@ from flask import (
 
 from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
+from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from models.hearing import (
     FORUM_LABELS,
@@ -547,6 +548,13 @@ def hearing_delete(hearing_id: str) -> str:
     if success:
         record_tombstone(collection_for(dossier_id), hearing_id)
         bump_ctag(collection_for(dossier_id))
+        # Append-only deletion trail (PA-G06).
+        record_deletion(
+            "hearing", hearing_id,
+            dossier_id=dossier_id or "",
+            title=(existing_hearing or {}).get("title", ""),
+            status=(existing_hearing or {}).get("status", ""),
+        )
 
     target = safe_internal_redirect(return_to, url_for("hearings.hearing_list"))
     if _is_htmx():

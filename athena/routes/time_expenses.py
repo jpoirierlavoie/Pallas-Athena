@@ -17,6 +17,7 @@ from flask import (
 )
 
 from auth import login_required
+from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from models.time_entry import (
@@ -363,7 +364,17 @@ def time_entry_update(entry_id: str) -> str:
 def time_entry_delete(entry_id: str) -> str:
     """Delete a time entry and redirect to the list (or back to the caller)."""
     return_to = request.form.get("return_to", "")
+    existing = get_time_entry(entry_id)
     success, error = delete_time_entry(entry_id)
+
+    if success:
+        # Append-only deletion trail (PA-G06).
+        record_deletion(
+            "time_entry", entry_id,
+            dossier_id=(existing or {}).get("dossier_id", ""),
+            title=(existing or {}).get("description", ""),
+            status="facturée" if (existing or {}).get("invoiced") else "",
+        )
 
     target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
     if _is_htmx():
@@ -487,7 +498,16 @@ def expense_update(expense_id: str) -> str:
 def expense_delete(expense_id: str) -> str:
     """Delete an expense and redirect to the list (or back to the caller)."""
     return_to = request.form.get("return_to", "")
+    existing = get_expense(expense_id)
     success, error = delete_expense(expense_id)
+
+    if success:
+        record_deletion(
+            "expense", expense_id,
+            dossier_id=(existing or {}).get("dossier_id", ""),
+            title=(existing or {}).get("description", ""),
+            status="facturée" if (existing or {}).get("invoiced") else "",
+        )
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
     target = safe_internal_redirect(return_to, fallback)

@@ -734,6 +734,16 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         **_money("amount"),
     })),
 
+    "list_deletions": _list_envelope(_obj({
+        "id": _str(),
+        "at": _nstr("ISO-8601 Montréal — the deletion instant."),
+        "entity_type": _str(),
+        "entity_id": _str(),
+        "dossier_id": _str("Empty when the entity had no dossier."),
+        "title": _str("Minimal snapshot — never the deleted content."),
+        "status": _str("The entity's status/category at deletion."),
+    })),
+
     "list_protocol_steps": _obj({
         "dossier_id": _str(),
         "has_active_protocol": _bool(),

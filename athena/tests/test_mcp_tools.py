@@ -131,7 +131,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 21  # 19 read-only + 2 note writes
+    assert len(tools.TOOLS) == 22  # 20 read-only + 2 note writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -150,7 +150,7 @@ def test_write_tools_set_is_pinned():
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 21
+    assert len(descriptors) == 22
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -176,7 +176,7 @@ def test_required_scope_defaults_to_read_never_write():
 def test_list_tool_descriptors_filters_by_scope():
     read_only = tools.list_tool_descriptors(frozenset({"athena:read"}))
     names = {d["name"] for d in read_only}
-    assert len(read_only) == 19
+    assert len(read_only) == 20
     assert not (names & tools.WRITE_TOOLS)
 
     both = tools.list_tool_descriptors(
