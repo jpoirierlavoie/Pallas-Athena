@@ -791,6 +791,16 @@ def _put_hearing(
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
         data["id"] = resource_id
+        # A phone-created VEVENT (Google Calendar via DavX5) carries no
+        # X-PALLAS-HEARING-TYPE, so _default_doc stamped it « audience » —
+        # every personal appointment silently became forum="judiciaire"
+        # (PA-D01, the psychologist-appointment defect). A phone-created
+        # event is far more often a meeting than a court date, and a real
+        # court date gets its type set in the app; the CREATE path defaults
+        # to « rencontre » (extrajudiciaire) instead. Updates keep the
+        # non-effacement rule — an absent property never re-defaults an
+        # existing type (vevent_to_hearing omits the key).
+        data.setdefault("hearing_type", "rencontre")
         created, errors = create_hearing(data)
         if errors:
             logger.warning(

@@ -370,6 +370,87 @@ def test_put_forces_the_dossier_from_the_url(app, monkeypatch):
     assert bumps == ["dossier:d1"]
 
 
+def test_put_created_event_without_type_defaults_to_rencontre(app, monkeypatch):
+    """PA-D01: a phone-created VEVENT (Google Calendar via DavX5) carries no
+    X-PALLAS-HEARING-TYPE — _default_doc used to stamp it « audience »,
+    silently making every personal appointment forum="judiciaire" (the
+    psychologist-appointment misclassification). The DAV CREATE path now
+    defaults to « rencontre » (extrajudiciaire); an explicitly-typed PUT
+    keeps its type; and the UPDATE path stays under the non-effacement rule
+    (an absent property never re-defaults an existing type)."""
+    monkeypatch.setattr(dc, "get_hearing", lambda i: None)
+    monkeypatch.setattr(dc, "get_task", lambda i: None)
+    monkeypatch.setattr(dc, "get_note", lambda i: None)
+    monkeypatch.setattr(
+        dc, "get_dossier",
+        lambda i: {"id": "d1", "file_number": "2026-001",
+                   "title": "Tremblay", "status": "actif"},
+    )
+    monkeypatch.setattr(dc, "bump_ctag", lambda n: None)
+    monkeypatch.setattr(dc, "remove_tombstone", lambda n, r: None)
+
+    seen = {}
+
+    def _create(data):
+        seen.clear()
+        seen.update(data)
+        return {**data, "etag": "new"}, []
+
+    monkeypatch.setattr(dc, "create_hearing", _create)
+
+    # No X-PALLAS-HEARING-TYPE → the parser omits the key → « rencontre ».
+    monkeypatch.setattr(
+        dc, "vevent_to_hearing",
+        lambda s: {"title": "Rendez-vous avec Dre. Awada",
+                   "start_datetime": datetime(2026, 9, 1, tzinfo=UTC)},
+    )
+    resp = app.test_client().put(
+        "/dav/dossier-d1/h-phone.ics", headers=AUTH,
+        data="BEGIN:VCALENDAR\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR",
+    )
+    assert resp.status_code == 201
+    assert seen["hearing_type"] == "rencontre"
+    assert hearing_model.forum_of(seen["hearing_type"]) == "extrajudiciaire"
+
+    # An explicitly-typed payload keeps its type.
+    monkeypatch.setattr(
+        dc, "vevent_to_hearing",
+        lambda s: {"title": "Instruction", "hearing_type": "instruction",
+                   "start_datetime": datetime(2026, 9, 1, tzinfo=UTC)},
+    )
+    resp = app.test_client().put(
+        "/dav/dossier-d1/h-typed.ics", headers=AUTH,
+        data="BEGIN:VCALENDAR\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR",
+    )
+    assert resp.status_code == 201
+    assert seen["hearing_type"] == "instruction"
+
+    # UPDATE path: the stored type survives an untyped edit (non-effacement).
+    monkeypatch.setattr(
+        dc, "get_hearing",
+        lambda i: {"id": "h-live", "dossier_id": "d1", "etag": "e1",
+                   "hearing_type": "audience"},
+    )
+    updated = {}
+
+    def _update(rid, data):
+        updated.update(data)
+        return {"id": rid, "etag": "e2"}, []
+
+    monkeypatch.setattr(dc, "update_hearing", _update)
+    monkeypatch.setattr(
+        dc, "vevent_to_hearing",
+        lambda s: {"title": "Audience reportée",
+                   "start_datetime": datetime(2026, 9, 2, tzinfo=UTC)},
+    )
+    resp = app.test_client().put(
+        "/dav/dossier-d1/h-live.ics", headers=AUTH,
+        data="BEGIN:VCALENDAR\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR",
+    )
+    assert resp.status_code == 204
+    assert "hearing_type" not in updated   # merge keeps the stored value
+
+
 def test_create_hearing_honours_a_supplied_id_and_uid(monkeypatch):
     """A CalDAV PUT names the resource in its URL. Minting a fresh uuid
     stored the event under an id the client never learns: every later GET of

@@ -242,6 +242,13 @@ def _default_doc() -> dict:
         "dossier_file_number": "",
         "dossier_title": "",
         "title": "",
+        # « audience » serves the WEB form (routes/hearings.py defaults it
+        # anyway) and Bookings (explicit types). The DAV PUT create path
+        # overrides this to « rencontre » BEFORE create_hearing — a
+        # phone-created VEVENT carries no X-PALLAS-HEARING-TYPE, and
+        # stamping it « audience » made every personal appointment
+        # forum="judiciaire" (PA-D01). Change one without the other and the
+        # defect returns silently.
         "hearing_type": "audience",
         "start_datetime": None,
         "end_datetime": None,
