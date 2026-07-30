@@ -111,11 +111,23 @@ def _resolve_sample_ratio() -> float:
 
 
 def _build_resource() -> Resource:
+    """Service identity attached to every span.
+
+    ``deployment.environment.name`` is the STABLE semantic-convention key;
+    the bare ``deployment.environment`` it replaced is deprecated upstream.
+
+    ``Resource.create`` also merges any *detected* resource attributes — but
+    since SDK 1.42 (PR #5145) detectors are only loaded when
+    ``OTEL_EXPERIMENTAL_RESOURCE_DETECTORS`` is set, which app.yaml /
+    portail.yaml do (``gcp``). Google's own migration guide claims the GCP
+    detector is picked up automatically; that is FALSE on 1.42+, and the
+    failure is silent — you simply get no GCP resource labels.
+    """
     return Resource.create(
         {
             "service.name": "pallas-athena",
             "service.version": os.getenv("GAE_VERSION", "local"),
-            "deployment.environment": os.getenv("ENV", "development"),
+            "deployment.environment.name": os.getenv("ENV", "development"),
         }
     )
 
@@ -330,9 +342,17 @@ class _SanitizingSpanExporter(SpanExporter):
                     k: _sanitize_attribute_value(k, v)
                     for k, v in attrs.items()
                 }
-            except Exception:  # pragma: no cover — never block the export
-                logger.debug(
-                    "Span attribute sanitization failed", exc_info=True
+            except Exception:  # never block the export
+                # ERROR, not debug: this except is the ONLY thing between a
+                # broken scrub and PII reaching Cloud Trace, and the root
+                # logger sits at INFO in production — a debug line was
+                # invisible exactly where it mattered. The export still
+                # proceeds (tracing must never break the app), so this log
+                # is the sole signal that spans are shipping unsanitized.
+                logger.error(
+                    "Span attribute sanitization FAILED — spans may carry "
+                    "unsanitized values",
+                    exc_info=True,
                 )
         return self._delegate.export(spans)
 

@@ -22,15 +22,25 @@ google-cloud-tasks==2.23.0
 # OSV-Scanner track direct deps only.
 requests==2.33.1
 # OpenTelemetry — distributed tracing → Cloud Trace.
-# Versions paired: SDK 1.27 ↔ instrumentation 0.48b0 (OTel's stable+beta
-# split).  GCP exporter 1.7.0 is the latest line tested against SDK 1.27.
-opentelemetry-api==1.27.0
-opentelemetry-sdk==1.27.0
-opentelemetry-exporter-gcp-trace==1.7.0
-opentelemetry-propagator-gcp==1.7.0
-opentelemetry-instrumentation-flask==0.48b0
-opentelemetry-instrumentation-requests==0.48b0
-opentelemetry-instrumentation-jinja2==0.48b0
+# Versions are PAIRED and must move together: the stable line (api/sdk 1.44.0)
+# ships alongside the beta contrib line (instrumentation 0.65b0), and each
+# instrumentation package hard-pins its siblings at `==0.65b0`. Bumping one
+# alone is unresolvable — this is a single atomic edit, and Dependabot cannot
+# automate it (majors are not grouped; each per-package PR would conflict).
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-gcp-trace==1.13.0
+opentelemetry-propagator-gcp==1.12.0
+opentelemetry-instrumentation-flask==0.65b0
+opentelemetry-instrumentation-requests==0.65b0
+opentelemetry-instrumentation-jinja2==0.65b0
+# Transitive via the GCP exporter, pinned explicitly because the version
+# immediately below is a trap: 1.13.0 is YANKED upstream ("breaks imports" —
+# the package moved from opentelemetry-operations-python to
+# opentelemetry-python-contrib with a wrong namespace; 1.14.0 restored it).
+# An import failure here is swallowed by tracing_setup's `except Exception`,
+# so landing on 1.13.0 would disable trace export SILENTLY.
+opentelemetry-resourcedetector-gcp==1.14.0
 icalendar==7.0.3
 vobject==0.9.9
 bcrypt==5.0.0
@@ -59,9 +69,10 @@ defusedxml==0.7.1
 # out-of-bounds read after a caught error (GHSA-6v7p-g79w-8964).
 cryptography==48.0.1
 msgpack==1.2.1
-# opentelemetry-instrumentation 0.48b0 imports pkg_resources at runtime,
-# which setuptools removed in 81+ — with a newer setuptools the OTel Flask
-# auto-instrumentation fails ("No module named 'pkg_resources'") and tracing
-# silently disables. Constrain until the OTel stack is bumped to >=0.50b0
-# (which dropped the pkg_resources dependency).
-setuptools<81
+# NOTE: the `setuptools<81` constraint that used to live here is GONE, and
+# with it setuptools itself — `opentelemetry-instrumentation` dropped its
+# pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the
+# graph any more. That is what closes CVE-2026-59890 (PYSEC-2026-3447 /
+# GHSA-h35f-9h28-mq5c) on all three scanning surfaces at once, rather than
+# suppressing it on each. Do not reintroduce a setuptools pin without
+# re-reading why it existed.

@@ -1,74 +1,30 @@
 # OSV-Scanner configuration — https://google.github.io/osv-scanner/configuration/
 #
-# Targeted allowlist of vulnerabilities triaged as NOT APPLICABLE to this
-# deployment, so a known non-issue does not fail the *blocking* OSV-Scanner CI
-# check (.github/workflows/osv-scanner.yml, which exits non-zero on any finding).
-# This is NOT a blanket "continue-on-error": every vulnerability not listed
-# here still fails the check. Each entry mirrors a GitHub code-scanning alert
-# dismissal — keep the two in sync.
+# Referenced explicitly by .github/workflows/osv-scanner.yml
+# (`--config=athena/osv-scanner.toml`), so this file must exist even when it
+# suppresses nothing. The workflow is a BLOCKING check: it exits non-zero on
+# any finding, and only vulnerabilities listed below are exempted.
 #
-# ── setuptools: PYSEC-2026-3447 / CVE-2026-59890 / GHSA-h35f-9h28-mq5c ────────
-# One advisory, three IDs (OSV keys it as PYSEC, the SARIF/GitHub alert shows
-# the CVE) — all three are listed so the ignore matches whichever ID
-# OSV-Scanner compares against.
+# ── Currently: NO suppressions. ──────────────────────────────────────────
 #
-# It is an sdist BUILD-TIME bug: setuptools' FileList applies MANIFEST.in
-# exclude / prune directives without Unicode normalization, so on APFS/HFS+ an
-# NFD file name can slip past an NFC exclude rule when building a *source
-# distribution*. This project never builds an sdist — it is an App Engine app
-# that Cloud Build only pip-installs and deploys (no setup.py, no pyproject,
-# no MANIFEST.in anywhere) — so the vulnerable path is unreachable at build,
-# at test and at runtime. Note the load-bearing reason is the ABSENT packaging
-# step, not the advisory's macOS framing: HFS+/APFS is merely where the
-# NFC/NFD collision arises silently, and an NFD-named file authored anywhere
-# would evade an NFC exclude rule just the same. Note also that consuming an
-# sdist (pip building a wheel at install time) exercises the build backend,
-# NOT the sdist-creation/MANIFEST.in filtering path. The harm direction is
-# over-INCLUSION of files an author meant to exclude, which matters to whoever
-# PUBLISHES a distribution; this repo publishes none.
+# This file used to carry three entries (PYSEC-2026-3447 / CVE-2026-59890 /
+# GHSA-h35f-9h28-mq5c) for a setuptools sdist-packaging bug that was
+# unreachable here. They were removed on 2026-07-30 when the OpenTelemetry
+# stack moved to api/sdk 1.44.0 + instrumentation 0.65b0: contrib dropped its
+# `pkg_resources` dependency at 0.49b0, which let the deliberate
+# `setuptools<81` constraint go — and with it setuptools left the dependency
+# graph entirely (its only two sources were that constraint and
+# opentelemetry-instrumentation). The advisory stopped being reported on all
+# three surfaces at once rather than being silenced on each.
 #
-# setuptools is BOTH a direct constraint (requirements.in `setuptools<81` —
-# the file's one deliberately non-exact pin, which makes it self-enforcing:
-# uv resolves it to the highest allowed and Dependabot cannot cross 81 without
-# a human edit) AND transitive via opentelemetry-instrumentation. The fix
-# (83.0.0) is therefore blocked by that pin, which exists because
-# opentelemetry-instrumentation 0.48b0 imports `pkg_resources` at runtime
-# (setuptools removed it in 81+) and tracing would silently disable.
-#
-# The remediation is NOT "upgrade setuptools" — it is the OTel bump, after
-# which **setuptools leaves the dependency graph entirely** (its only two
-# `# via` sources, this file's constraint and opentelemetry-instrumentation,
-# disappear together), so the advisory stops being reported on all three
-# surfaces at once and these IgnoredVulns blocks become dead. Verified
-# 2026-07-30: `setuptools` drops out of opentelemetry-instrumentation's
-# requires_dist at **0.49b0** (upstream announces it under the 0.48b0 heading,
-# the removal lands in 0.49b0 — an earlier note here said 0.50b0). The bump
-# must move flask/requests/jinja2 instrumentation in lockstep (each release
-# hard-pins its siblings at `==`), lift api/sdk off 1.27.0, and delete the
-# `setuptools<81` line in the SAME commit, or the resolver keeps 80.10.2 and
-# nothing changes. Target set checked 2026-07-30: api/sdk 1.44.0 +
-# instrumentation 0.65b0 + exporter/propagator-gcp 1.12.0 resolve cleanly
-# (the GCP exporter's `~=1.30` admits 1.44). Deferred deliberately: it lands
-# on the observability component, which fails SILENTLY.
-#
-# THIS FILE ONLY SILENCES OSV-SCANNER. Two other surfaces report the same
-# advisory independently and must be dismissed by hand, per surface:
-#   • Dependabot — does not read this file at all (dismiss in the UI:
-#     "Vulnerable code is not actually used").
-#   • Trivy — observed filing it as a code-scanning alert even though
-#     .github/workflows/trivy.yml sets severity: 'CRITICAL,HIGH' and the
-#     advisory is MEDIUM (the filter does not reliably prune the SARIF
-#     output). Dismiss that alert directly if it is noise.
-# Keep all three in sync; a dismissal on one surface does nothing to the rest.
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-3447"
-reason = "setuptools sdist build-only bug (MANIFEST.in exclude bypass); this app never builds a source distribution (no setup.py/pyproject/MANIFEST.in), so unreachable at build, test and runtime. Direct constraint in requirements.in AND transitive via opentelemetry-instrumentation; fix 83.0.0 blocked by the setuptools<81 pin (OTel 0.48b0 needs pkg_resources)."
-
-[[IgnoredVulns]]
-id = "CVE-2026-59890"
-reason = "Alias of PYSEC-2026-3447 (setuptools sdist build-only bug) — see the entry above."
-
-[[IgnoredVulns]]
-id = "GHSA-h35f-9h28-mq5c"
-reason = "Alias of PYSEC-2026-3447 (setuptools sdist build-only bug) — see the entry above."
+# Adding a suppression here is a real decision, not routine hygiene. If you
+# add one:
+#   • state WHY the vulnerable code path is unreachable in THIS deployment,
+#     and make the reason load-bearing (an OS or platform caveat in the
+#     advisory usually is NOT the reason — an absent code path is);
+#   • list every alias (OSV keys some advisories as PYSEC while the SARIF
+#     alert shows the CVE), or the ignore will not match;
+#   • remember this file silences OSV-Scanner ONLY. Dependabot does not read
+#     it, and Trivy has been observed filing the same advisory as a
+#     code-scanning alert regardless of its CRITICAL,HIGH severity filter.
+#     Each surface is dismissed separately, and they drift apart silently.

@@ -43,10 +43,13 @@ def _provider() -> InMemorySpanExporter:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
 
-    otel_trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    previous = getattr(otel_trace, "_TRACER_PROVIDER", None)
     set_once = getattr(otel_trace, "_TRACER_PROVIDER_SET_ONCE", None)
+    previous_done = getattr(set_once, "_done", None) if set_once else None
+
+    otel_trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
     if set_once is not None:
-        # ``Once`` exposes a private flag indicating completion; clearing it
+        # ``Once`` exposes a private flag indicating completion; setting it
         # lets later ``set_tracer_provider`` calls (e.g. from init_app) be
         # no-ops without warnings.
         if hasattr(set_once, "_done"):
@@ -54,7 +57,18 @@ def _provider() -> InMemorySpanExporter:
 
     yield exporter
 
-    otel_trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+    # Restore BOTH globals. Setting the provider to None while leaving
+    # ``_done`` True used to poison the process for every later module: the
+    # proxy provider hands out NonRecordingSpans (trace_id 0) and no
+    # subsequent ``set_tracer_provider`` can take effect, so
+    # ``current_trace_field`` returns None and the trace↔log correlation test
+    # in test_logging_setup fails — but ONLY when that file happens to run
+    # after this one. The full suite passed by the accident of alphabetical
+    # ordering. Verified against both OTel 1.27.0/0.48b0 and 1.44.0/0.65b0:
+    # same failure, so this is a test-isolation bug, not a version issue.
+    otel_trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+    if set_once is not None and previous_done is not None:
+        set_once._done = previous_done
 
 
 @pytest.fixture(autouse=True)
@@ -418,6 +432,11 @@ def test_sanitizing_exporter_never_blocks_export_on_failure(caplog) -> None:
         tracing_setup._SanitizingSpanExporter(delegate).export([_Hostile()])
     assert len(delegate.batches) == 1  # exported anyway
     assert caplog.records, "a failed sanitization must be logged, not silent"
+    # ERROR, not DEBUG: the root logger sits at INFO in production, so a
+    # debug line was invisible exactly where a PII leak would matter.
+    assert any(r.levelname == "ERROR" for r in caplog.records), [
+        r.levelname for r in caplog.records
+    ]
 
 
 # ── Layer 1: the three instrumentation hooks ─────────────────────────────
@@ -499,6 +518,10 @@ def test_build_resource_carries_service_identity(
     attrs = tracing_setup._build_resource().attributes
     assert attrs["service.name"] == "pallas-athena"
     assert attrs["service.version"] == "v42"
+    # The STABLE semconv key; the bare `deployment.environment` it replaced
+    # is deprecated upstream.
+    assert "deployment.environment.name" in attrs
+    assert "deployment.environment" not in attrs
 
 
 def test_is_production_from_config_or_env(monkeypatch: pytest.MonkeyPatch) -> None:

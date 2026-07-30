@@ -376,10 +376,7 @@ defusedxml==0.7.1 \
 deprecated==1.3.1 \
     --hash=sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f \
     --hash=sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223
-    # via
-    #   limits
-    #   opentelemetry-api
-    #   opentelemetry-semantic-conventions
+    # via limits
 firebase-admin==7.4.0 \
     --hash=sha256:08d7550efdba32fbd306141ce82150f9ffb91c1550e07aa4ed5757af4895d1ff \
     --hash=sha256:416967d1aacd30cfece2a5b0c606a52ba7614eb3093f054399be3868489cd7a8
@@ -640,12 +637,6 @@ idna==3.18 \
     #   anyio
     #   httpx
     #   requests
-importlib-metadata==8.4.0 \
-    --hash=sha256:66f342cc6ac9818fc6ff340576acd24d65ba0b3efabb2b4ac08b598965a4a2f1 \
-    --hash=sha256:9a547d3bc3608b025f93d403fdd1aae741c24fbb8314df4b155675742ce303c5
-    # via
-    #   opentelemetry-api
-    #   opentelemetry-instrumentation-flask
 itsdangerous==2.2.0 \
     --hash=sha256:c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef \
     --hash=sha256:e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173
@@ -829,9 +820,9 @@ msgpack==1.2.1 \
     # via
     #   -r requirements.in
     #   cachecontrol
-opentelemetry-api==1.27.0 \
-    --hash=sha256:953d5871815e7c30c81b56d910c707588000fff7a3ca1c73e6531911d53065e7 \
-    --hash=sha256:ed673583eaa5f81b5ce5e86ef7cdaf622f88ef65f0b9aab40b843dcae5bef342
+opentelemetry-api==1.44.0 \
+    --hash=sha256:67647e5e9566edcf421166fdf022b3537f818635daa852b289e34604dc6fb33a \
+    --hash=sha256:94b98c893a91b88657eaac1e3ba89618cdb85be6918196705354f34728b2cdef
     # via
     #   -r requirements.in
     #   google-cloud-logging
@@ -845,60 +836,63 @@ opentelemetry-api==1.27.0 \
     #   opentelemetry-resourcedetector-gcp
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-exporter-gcp-trace==1.7.0 \
-    --hash=sha256:2752dacdd3fdbfd73079d5ac58fc68179758e76535690d479de2bfbe03646583 \
-    --hash=sha256:6fd66256a0a7feb3d87334ec7981f2a477c63cb6d7696b1bc603f105293b06db
+opentelemetry-exporter-gcp-trace==1.13.0 \
+    --hash=sha256:8b2572235b4683563c21caa8bc97071df11f766f477274a5547751d74eae0643 \
+    --hash=sha256:f0b797272f9c237f5086159c63db500a8736029e1ed4fbade3c4edcb89c5bc5a
     # via -r requirements.in
-opentelemetry-instrumentation==0.48b0 \
-    --hash=sha256:94929685d906380743a71c3970f76b5f07476eea1834abd5dd9d17abfe23cc35 \
-    --hash=sha256:a69750dc4ba6a5c3eb67986a337185a25b739966d80479befe37b546fc870b44
+opentelemetry-instrumentation==0.65b0 \
+    --hash=sha256:071d9d9eced9bd6460444ec3b0c77229870ed05a881c22c84fdede58e4eed09b \
+    --hash=sha256:ea967a72b9939b5fcfdad572753b4306c59dcb99e3f382d95dae04286805e137
     # via
     #   opentelemetry-instrumentation-flask
     #   opentelemetry-instrumentation-jinja2
     #   opentelemetry-instrumentation-requests
     #   opentelemetry-instrumentation-wsgi
-opentelemetry-instrumentation-flask==0.48b0 \
-    --hash=sha256:26b045420b9d76e85493b1c23fcf27517972423480dc6cf78fd6924248ba5808 \
-    --hash=sha256:e03a34428071aebf4864ea6c6a564acef64f88c13eb3818e64ea90da61266c3d
+opentelemetry-instrumentation-flask==0.65b0 \
+    --hash=sha256:887de3a97c09953da09ae713fbb777172900f33b2924d85dad314a033156ef66 \
+    --hash=sha256:d5337dac3b2af7f658fbc11c879667c9978910e38744b9706508f0b9908f7841
     # via -r requirements.in
-opentelemetry-instrumentation-jinja2==0.48b0 \
-    --hash=sha256:0eae7cd1ba95772dbccc08c1e837807a1cc52d889d8f4a48e528ca0f5f02d6f2 \
-    --hash=sha256:cc9163e65d393459bd787e7cfde689e41cf5b42afa7ba89d3fcf44f77a2e97fe
+opentelemetry-instrumentation-jinja2==0.65b0 \
+    --hash=sha256:1ed49d337139263f57f08034f293c43051530bdf0706420cddd151a381e07cd8 \
+    --hash=sha256:6aad5e4189423ed5d6ede83123b0aa8ff21434c0efd734b34736bd11cefc7432
     # via -r requirements.in
-opentelemetry-instrumentation-requests==0.48b0 \
-    --hash=sha256:67ab9bd877a0352ee0db4616c8b4ae59736ddd700c598ed907482d44f4c9a2b3 \
-    --hash=sha256:d4f01852121d0bd4c22f14f429654a735611d4f7bf3cf93f244bdf1489b2233d
+opentelemetry-instrumentation-requests==0.65b0 \
+    --hash=sha256:1d601548f89236d5ab373c7208a2e1e162a8d6462b5b972f9ad8fb0ed82d7438 \
+    --hash=sha256:91688ec0d4d1fed75ea8d026ef2c66274ed9868c22b6be211ef85d832d16f957
     # via -r requirements.in
-opentelemetry-instrumentation-wsgi==0.48b0 \
-    --hash=sha256:1a1e752367b0df4397e0b835839225ef5c2c3c053743a261551af13434fc4d51 \
-    --hash=sha256:c6051124d741972090fe94b2fa302555e1e2a22e9cdda32dd39ed49a5b34e0c6
+opentelemetry-instrumentation-wsgi==0.65b0 \
+    --hash=sha256:af23e6686c7cd2abcd7d14ac03fb7e3b438273eb2d54a8f8dc401dc71bc52a9f \
+    --hash=sha256:d4a62ae98667ddfe04fe538c3c54abad538feb8c9c7a407ba19f016e1ce4a89a
     # via opentelemetry-instrumentation-flask
-opentelemetry-propagator-gcp==1.7.0 \
-    --hash=sha256:49e338b41c53b98f0d74402d103656271f17cabed15793b88387a0b43c4a3518 \
-    --hash=sha256:c4e5ffd4bce5f71702edbeefd3243e8ad10040a59b9d83c0246c603b578a4020
+opentelemetry-propagator-gcp==1.12.0 \
+    --hash=sha256:5495b891e7c816688d4e12fda7b365572dc8cb7ea8027a4390c5d2d868db1b98 \
+    --hash=sha256:8b7d6b5a2b21cdc8ae6d546c01f38335db44c03125b6248e92a4aa8fbbfdd36f
     # via -r requirements.in
-opentelemetry-resourcedetector-gcp==1.9.0a0 \
-    --hash=sha256:4e5a0822b0f0d7647b7ceb282d7aa921dd7f45466540bd0a24f954f90db8fde8 \
-    --hash=sha256:6860a6649d1e3b9b7b7f09f3918cc16b72aa0c0c590d2a72ea6e42b67c9a42e7
-    # via opentelemetry-exporter-gcp-trace
-opentelemetry-sdk==1.27.0 \
-    --hash=sha256:365f5e32f920faf0fd9e14fdfd92c086e317eaa5f860edba9cdc17a380d9197d \
-    --hash=sha256:d525017dea0ccce9ba4e0245100ec46ecdc043f2d7b8315d56b19aff0904fa6f
+opentelemetry-resourcedetector-gcp==1.14.0 \
+    --hash=sha256:10b41802acf815838a85c9fe1dae02f5d27ebc17527b77441111c010bead95bc \
+    --hash=sha256:cc4818570933b5c651aef80fbf6e8fbe26d63fe6fbc24ce22ae37e78744d30eb
+    # via
+    #   -r requirements.in
+    #   opentelemetry-exporter-gcp-trace
+opentelemetry-sdk==1.44.0 \
+    --hash=sha256:cebe7f65dc12f26ead75c6064de12fd2a9052e5060c0272d402cfa203aae123b \
+    --hash=sha256:df081c4c6bcfdb1211e3e86140376792643128a25f8d72d1d27675936e7e96ad
     # via
     #   -r requirements.in
     #   opentelemetry-exporter-gcp-trace
     #   opentelemetry-resourcedetector-gcp
-opentelemetry-semantic-conventions==0.48b0 \
-    --hash=sha256:12d74983783b6878162208be57c9effcb89dc88691c64992d70bb89dc00daa1a \
-    --hash=sha256:a0de9f45c413a8669788a38569c7e0a11ce6ce97861a628cca785deecdc32a1f
+opentelemetry-semantic-conventions==0.65b0 \
+    --hash=sha256:1cacde7b0ad306f84c5ef08c3dbe1bbaf20165bba6f8bff43b670e555a086bcb \
+    --hash=sha256:f9b2b81e9d5b64f11bc952075e7e9c7fb0aab075c7fd1c46d597f1b919852d60
     # via
+    #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-flask
     #   opentelemetry-instrumentation-requests
     #   opentelemetry-instrumentation-wsgi
     #   opentelemetry-sdk
-opentelemetry-util-http==0.48b0 \
-    --hash=sha256:60312015153580cc20f322e5cdc3d3ecad80a71743235bdb77716e742814623c \
-    --hash=sha256:76f598af93aab50328d2a69c786beaedc8b6a7770f7a818cc307eb353debfffb
+opentelemetry-util-http==0.65b0 \
+    --hash=sha256:7553b606f963097cb190536dc30556cce85090692e471a422fff30ca29b04348 \
+    --hash=sha256:84f82d826978bba416ab453460ff6a7391cdc3534c93a786595e4068680016b7
     # via
     #   opentelemetry-instrumentation-flask
     #   opentelemetry-instrumentation-requests
@@ -913,6 +907,7 @@ packaging==26.2 \
     # via
     #   gunicorn
     #   limits
+    #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-flask
 pillow==12.3.0 \
     --hash=sha256:00808c5e14ef63ac5161091d242999076604ff74b883423a11e5d7bbb38bf756 \
@@ -1083,12 +1078,6 @@ requests==2.33.1 \
     #   google-api-core
     #   google-cloud-storage
     #   opentelemetry-resourcedetector-gcp
-setuptools==80.10.2 \
-    --hash=sha256:8b0e9d10c784bf7d262c4e5ec5d4ec94127ce206e8738f29a437945fbc219b70 \
-    --hash=sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173
-    # via
-    #   -r requirements.in
-    #   opentelemetry-instrumentation
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
@@ -1102,8 +1091,10 @@ typing-extensions==4.15.0 \
     #   flask-limiter
     #   grpcio
     #   limits
-    #   opentelemetry-resourcedetector-gcp
+    #   opentelemetry-api
+    #   opentelemetry-exporter-gcp-trace
     #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
 tzdata==2026.2 \
     --hash=sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10 \
     --hash=sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7
@@ -1214,7 +1205,3 @@ wtforms==3.2.1 \
     --hash=sha256:583bad77ba1dd7286463f21e11aa3043ca4869d03575921d1a1698d0715e0fd4 \
     --hash=sha256:df3e6b70f3192e92623128123ec8dca3067df9cfadd43d59681e210cfb8d4682
     # via flask-wtf
-zipp==3.23.1 \
-    --hash=sha256:0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc \
-    --hash=sha256:32120e378d32cd9714ad503c1d024619063ec28aad2248dc6672ad13edfa5110
-    # via importlib-metadata

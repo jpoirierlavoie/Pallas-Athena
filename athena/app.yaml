@@ -38,6 +38,13 @@ env_variables:
   # /mcp + /oauth/* route. MCP_CANONICAL_ORIGIN defaults to
   # https://athena.poirierlavoie.ca in config.py.
   MCP_ENABLED: "true"
+  # Cloud Trace resource labels (instance, zone, service). Since OTel SDK
+  # 1.42 (PR #5145) resource detectors are loaded ONLY when this is set —
+  # Google's migration guide still claims the GCP detector is picked up
+  # automatically, which is FALSE on 1.42+, and the failure is silent (no
+  # GCP labels, no error). Unset here until 2026-07-30, so traces carried
+  # no GCP resource attributes at all.
+  OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
   # Microsoft Graph — outbound email (portail client L1; reused by phase J).
   # Non-secret identifiers; GRAPH_CLIENT_SECRET comes from Secret Manager
   # (graph-client-secret). MAIN SERVICE ONLY — never in portail.yaml.

@@ -33,6 +33,11 @@ env_variables:
   RECAPTCHA_ENTERPRISE_SITE_KEY: "6LeR9Y0sAAAAAJhkKWa_wYdbproZUQFjEO7FkfEb"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
+  # Étiquettes de ressource Cloud Trace — voir le commentaire d'app.yaml :
+  # depuis le SDK OTel 1.42 les détecteurs ne sont chargés QUE si cette
+  # variable est définie. Le portail exécute le même utils/tracing_setup.py
+  # dans son propre processus, donc il lui faut sa propre déclaration.
+  OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
   # PORTAIL_SECRET_KEY et FIREBASE_API_KEY viennent de Secret Manager à
   # l'exécution (client/config.py — résolution paresseuse). AUCUNE variable
   # GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler Graph).

@@ -219,6 +219,12 @@ Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(E
 
 Distributed tracing is configured by `athena/utils/tracing_setup.py`. It runs OpenTelemetry, exports to **Cloud Trace** in production, and emits spans to the console in dev. Auto-instrumentation covers Flask, `requests` (so `firebase-admin` outbound calls are captured), and Jinja2.
 
+**Versions (2026-07-30):** api/sdk **1.44.0** with contrib instrumentation **0.65b0** — the stable and beta lines are paired and each instrumentation package hard-pins its siblings at `==`, so they move as one atomic edit. The claims in this section are pinned by `tests/test_tracing_setup.py`, which was written against the *previous* versions (1.27.0/0.48b0) and re-run against these — a deliberate order, so the tests measure a bump rather than record its outcome.
+
+**`CloudTraceSpanExporter` is deprecated upstream** (exporter 1.13.0): Google deprecated all its exporters in favour of OTLP → `telemetry.googleapis.com`. It still works; it emits one `DeprecationWarning` per instance boot, which is expected, not a regression. The OTLP migration is the next chantier for this component and will rewrite the production export path — the characterization tests exist so that can be done without fear.
+
+**Resource detectors need an env var.** Since SDK 1.42 they are loaded **only** when `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` is set (`gcp` in `app.yaml` and `portail.yaml`). Google's migration guide still claims the GCP detector is automatic — that is false on 1.42+, and the failure is silent: no GCP resource labels, no error.
+
 ### Sampling
 
 - Production: 10% of traces, `ParentBased(TraceIdRatioBased(0.1))` — child spans inherit the parent's decision so cross-service traces stay coherent.
@@ -231,7 +237,7 @@ Distributed tracing is configured by `athena/utils/tracing_setup.py`. It runs Op
 Three layers in `utils/tracing_setup.py` keep PII out of exported spans:
 
 1. **Instrumentation hooks.** The Flask request/response hooks overwrite `http.target` (and `http.url` when present) with the request path only, so query strings (e.g. client-name searches like `/parties/?q=Tremblay`) never persist on request spans. The `requests` hook rewrites outbound `http.url` to `scheme://host/path` — and for `*storage.googleapis.com` hosts keeps `scheme://host` only, because both the object path and the `name=` query param embed uid / dossier / filename.
-2. **Sanitizing exporter.** `_SanitizingSpanExporter` wraps the Cloud Trace exporter (and the dev console exporter). Before delegating, it strips query strings from URL-like attribute keys (`http.target`, `http.url`, `http.route`, `url.full`, `url.path`, `url.query`) and applies the same email / phone / postal regex scrub as the logging `RedactionFilter` (the patterns are imported from `logging_setup`, not duplicated) to every string attribute value. This is the defense-in-depth backstop for anything the hooks miss.
+2. **Sanitizing exporter.** `_SanitizingSpanExporter` wraps the Cloud Trace exporter (and the dev console exporter). Before delegating, it strips query strings from URL-like attribute keys (`http.target`, `http.url`, `http.route`, `url.full`, `url.path`, `url.query`) and applies the same email / phone / postal regex scrub as the logging `RedactionFilter` (the patterns are imported from `logging_setup`, not duplicated) to every string attribute value. This is the defense-in-depth backstop for anything the hooks miss. **It works by replacing the private `ReadableSpan._attributes` slot** — the SDK exposes no public setter — so a failure there is caught and logged at **ERROR** (it was DEBUG until 2026-07-30, i.e. invisible under the production INFO root level, which is precisely how a leak would have gone unnoticed). The export proceeds regardless: tracing must never break the app.
 3. **Manual-span guard.** `span()`, `add_attributes()` and `firestore_span()` drop any attribute whose key is in the logging layer's `SENSITIVE_KEYS` and scrub string values before setting them.
 
 These layers are a safety net, not an invitation: as with logs, never attach raw vCard / iCalendar bodies, client names, or signed URLs as span attributes.
@@ -261,7 +267,8 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 |---|---|---|---|
 | `service.name` | string | resource | Always `pallas-athena` |
 | `service.version` | string | resource | App Engine `GAE_VERSION` (or `local`) |
-| `deployment.environment` | string | resource | `production` / `development` |
+| `deployment.environment.name` | string | resource | `production` / `development` — the STABLE semconv key (the bare `deployment.environment` it replaced is deprecated upstream) |
+| `service.instance.id` | string | resource | Random UUID per process, added automatically by the SDK since 1.43 — new cardinality on the resource, not PII |
 | `dav.collection_type` | string | manual | `addressbook` / `calendar` / `tasks` / `dossier` / `root` |
 | `dav.operation` | string | manual | `propfind` / `report` / `get` / `put` / `delete` / `sync_collection` |
 | `dav.dossier_id` | string | manual | Per-dossier collection ID |
