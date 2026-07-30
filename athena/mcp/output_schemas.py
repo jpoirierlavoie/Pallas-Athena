@@ -150,6 +150,19 @@ def _model_summary(description: str) -> dict:
 
 # ── Shared row schemas ──────────────────────────────────────────────────
 
+def _stamps() -> dict[str, Any]:
+    """The created_at/updated_at pair every row carries (PA-G05) — true
+    instants (iso_mtl), nullable on pre-Rule-7 legacy docs. updated_at is
+    NOISY: DAV round-trips, protocol-step syncs and bulk folder moves all
+    re-stamp it without visible content changing."""
+    return {
+        "created_at": _nstr("ISO-8601 Montréal."),
+        "updated_at": _nstr(
+            "ISO-8601 Montréal. Noisy: phone syncs and internal "
+            "bookkeeping re-stamp it without visible changes."),
+    }
+
+
 def _hearing_row() -> dict:
     return _obj({
         "id": _str(),
@@ -170,6 +183,7 @@ def _hearing_row() -> dict:
         "dossier_id": _str("Empty string for a « Général » (standalone) event."),
         "dossier_file_number": _str(),
         "dossier_title": _str(),
+        **_stamps(),
     })
 
 
@@ -187,6 +201,7 @@ def _task_row(extra: Optional[dict[str, Any]] = None) -> dict:
         "dossier_file_number": _str(),
         "dossier_title": _str(),
         "related_note_id": _nstr("Linked parent note (RFC 5545 RELATED-TO)."),
+        **_stamps(),
     }
     if extra:
         properties.update(extra)
@@ -210,6 +225,7 @@ def _step_row(extra: Optional[dict[str, Any]] = None) -> dict:
         "linked_hearing_id": _nstr(),
         "notes": _str(),
         "is_overdue": _bool("Derived by date comparison — a step due today is not overdue."),
+        **_stamps(),
     }
     if extra:
         properties.update(extra)
@@ -231,6 +247,7 @@ def _dossier_list_row() -> dict:
         "prescription_date": _nstr("The computed « date pour agir », YYYY-MM-DD."),
         "clients": _arr(_str(), "Client NAMES (strings) in this summary row."),
         "opposing_parties": _arr(_str()),
+        **_stamps(),
     })
 
 
@@ -526,7 +543,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "created_at is only the upload instant."),
             "description": _str(),
             "tags": _arr(_str()),
-            "created_at": _nstr(),
+            **_stamps(),
         }),
         # Present ONLY when the request carried folder_id — typed, never
         # required (kept for compatibility; the per-row folder_path is the
@@ -543,6 +560,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "contact_role": _str(),
         "is_organization": _bool(),
         "city": _str(),
+        **_stamps(),
     })),
 
     "get_partie": _found_or_not(
@@ -718,6 +736,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "end_date": _nstr(),
             "notes": _str(),
             "steps": _arr(_step_row()),
+            **_stamps(),
         })),
     }),
 

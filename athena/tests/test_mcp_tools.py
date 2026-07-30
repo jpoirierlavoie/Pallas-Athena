@@ -635,6 +635,36 @@ def test_list_dossiers_query_matches_the_sommaire(monkeypatch):
     assert [i["id"] for i in payload["items"]] == ["d2"]
 
 
+def test_rows_carry_timestamps_and_updated_since_filters(monkeypatch):
+    """PA-G05: every row emits created_at/updated_at (already stored — the
+    gap was emission-only), and the materialized tools take updated_since.
+    A bare YYYY-MM-DD reads as a Montréal calendar day."""
+    old = {"id": "t-old", "title": "Vieille", "status": "à_faire",
+           "created_at": datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+           "updated_at": datetime(2026, 6, 1, 12, 0, tzinfo=UTC)}
+    fresh = {"id": "t-new", "title": "Récente", "status": "à_faire",
+             "created_at": datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+             "updated_at": datetime(2026, 7, 29, 12, 0, tzinfo=UTC)}
+    monkeypatch.setattr(handlers.task_model, "list_tasks",
+                        lambda **kw: [old, fresh])
+    everything = handlers.list_tasks({})
+    assert everything["items"][0]["updated_at"] is not None
+    assert everything["items"][0]["created_at"] is not None
+
+    recent = handlers.list_tasks({"updated_since": "2026-07-01"})
+    assert [i["id"] for i in recent["items"]] == ["t-new"]
+
+    # A legacy row with no updated_at never matches a cutoff (can't claim
+    # freshness it cannot prove).
+    legacy = {"id": "t-legacy", "title": "Héritée", "status": "à_faire"}
+    monkeypatch.setattr(handlers.task_model, "list_tasks",
+                        lambda **kw: [legacy])
+    assert handlers.list_tasks({"updated_since": "2020-01-01"})["items"] == []
+    # …but still lists fine without the filter, with null stamps.
+    row = handlers.list_tasks({})["items"][0]
+    assert row["created_at"] is None and row["updated_at"] is None
+
+
 def test_get_note_found_and_not_found(monkeypatch):
     monkeypatch.setattr(handlers.note_model, "get_note", lambda i: None)
     assert handlers.get_note({"note_id": "n9"})["found"] is False

@@ -275,6 +275,26 @@ def _date(description: str) -> dict:
     """A YYYY-MM-DD date argument with a per-usage description."""
     return {"type": "string", "maxLength": 10, "description": description}
 
+
+def _updated_since() -> dict:
+    """The change-window argument of the fully-materialized list tools.
+
+    Deliberately absent from the windowed tools (list_dossiers,
+    list_hearings): a filter inside a 200-doc window would silently miss
+    older rows touched recently.
+    """
+    return {
+        "type": "string",
+        "maxLength": 35,
+        "description": (
+            "Only rows modified on/after this moment — YYYY-MM-DD "
+            "(Montréal calendar day) or a full ISO-8601 timestamp. "
+            "Beware: updated_at is noisy (phone syncs and internal "
+            "bookkeeping re-stamp it without visible changes), so treat "
+            "matches as candidates, not confirmed edits."
+        ),
+    }
+
 _READ_ONLY_ANNOTATIONS = {"readOnlyHint": True, "openWorldHint": False}
 # Per the MCP spec, destructiveHint defaults to TRUE and idempotentHint to
 # FALSE once readOnlyHint is false — both must be stated explicitly or the
@@ -463,6 +483,7 @@ TOOLS: dict[str, dict] = {
                     "description": ("true also returns terminée and annulée "
                                     "tasks in the default (no-status) view."),
                 },
+                "updated_since": _updated_since(),
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -544,6 +565,7 @@ TOOLS: dict[str, dict] = {
                     "Latest creation date (Montréal calendar), "
                     "YYYY-MM-DD inclusive."
                 ),
+                "updated_since": _updated_since(),
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -607,6 +629,7 @@ TOOLS: dict[str, dict] = {
                 "date_to": _date(
                     "Latest effective date, YYYY-MM-DD inclusive."
                 ),
+                "updated_since": _updated_since(),
                 "limit": _limit(25),
             },
             "required": ["dossier_id"],
@@ -641,6 +664,7 @@ TOOLS: dict[str, dict] = {
                     "maxLength": 120,
                     "description": "Free-text match on name, email and phone.",
                 },
+                "updated_since": _updated_since(),
                 "limit": _limit(20),
             },
             "additionalProperties": False,

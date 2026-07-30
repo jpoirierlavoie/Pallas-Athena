@@ -101,8 +101,50 @@ def _limit_arg(args: dict, default: int) -> int:
     return int(args.get("limit", default))
 
 
+def _filter_updated_since(rows: list[dict], args: dict) -> list[dict]:
+    """Keep rows whose updated_at is on/after the caller's cutoff.
+
+    Offered ONLY on the fully-materialized tools (tasks, notes, documents,
+    parties) — on the 200-doc windowed tools (dossiers, hearings) a filter
+    inside the window would silently miss older rows touched recently, so
+    they deliberately do not take the argument. Accepts YYYY-MM-DD (a
+    Montréal calendar day) or a full ISO-8601 timestamp; a naive value is
+    read as Montréal local time.
+    """
+    raw = args.get("updated_since")
+    if not raw:
+        return rows
+    try:
+        cutoff = datetime.fromisoformat(str(raw).strip())
+    except ValueError:
+        raise ToolArgumentError(
+            "`updated_since` must be YYYY-MM-DD or an ISO-8601 timestamp"
+        )
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=MTL)
+    cutoff = cutoff.astimezone(timezone.utc)
+    return [
+        r
+        for r in rows
+        if (ts := _as_utc(r.get("updated_at"))) is not None and ts >= cutoff
+    ]
+
+
 def _list_payload(items: list, truncated: bool) -> dict:
     return {"items": items, "count": len(items), "truncated": truncated}
+
+
+def _stamps(doc: dict) -> dict:
+    """The created_at/updated_at pair every row now carries (PA-G05).
+
+    Both are stored on every entity (Architecture Rule 7) — the gap was
+    emission-only. True instants → iso_mtl, nullable for pre-Rule-7 legacy
+    docs. Note updated_at is NOISY: DAV round-trips, protocol-step syncs
+    and bulk folder moves all re-stamp it without content changing."""
+    return {
+        "created_at": iso_mtl(_as_utc(doc.get("created_at"))),
+        "updated_at": iso_mtl(_as_utc(doc.get("updated_at"))),
+    }
 
 
 def _hearing_row(h: dict) -> dict:
@@ -131,6 +173,7 @@ def _hearing_row(h: dict) -> dict:
         "dossier_id": h.get("dossier_id", "") or "",
         "dossier_file_number": h.get("dossier_file_number", ""),
         "dossier_title": h.get("dossier_title", ""),
+        **_stamps(h),
     }
 
 
@@ -148,6 +191,7 @@ def _task_row(t: dict) -> dict:
         "dossier_file_number": t.get("dossier_file_number", ""),
         "dossier_title": t.get("dossier_title", ""),
         "related_note_id": t.get("related_note_id"),
+        **_stamps(t),
     }
 
 
@@ -176,6 +220,7 @@ def _step_row(s: dict, now: datetime) -> dict:
         "linked_hearing_id": s.get("linked_hearing_id"),
         "notes": s.get("notes", ""),
         "is_overdue": is_overdue,
+        **_stamps(s),
     }
 
 
@@ -194,6 +239,7 @@ def _dossier_row(d: dict) -> dict:
         "prescription_date": date_str(_as_utc(d.get("prescription_date"))),
         "clients": [c.get("name", "") for c in d.get("clients", [])],
         "opposing_parties": [p.get("name", "") for p in d.get("opposing_parties", [])],
+        **_stamps(d),
     }
 
 
@@ -523,6 +569,7 @@ def list_tasks(args: dict) -> dict:
     )
     if not status and not include_completed:
         tasks = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
+    tasks = _filter_updated_since(tasks, args)
 
     truncated = len(tasks) > limit
     return _list_payload([_task_row(t) for t in tasks[:limit]], truncated)
@@ -638,6 +685,7 @@ def list_notes(args: dict) -> dict:
             return (lo is None or d >= lo) and (hi is None or d <= hi)
 
         notes = [n for n in notes if _in_window(n)]
+    notes = _filter_updated_since(notes, args)
     truncated = len(notes) > limit
     items = [
         {
@@ -749,6 +797,7 @@ def list_documents(args: dict) -> dict:
             return (lo is None or d >= lo) and (hi is None or d <= hi)
 
         docs = [d for d in docs if _in_window(d)]
+    docs = _filter_updated_since(docs, args)
 
     paths = _folder_paths(dossier_id)
     truncated = len(docs) > limit
@@ -771,7 +820,7 @@ def list_documents(args: dict) -> dict:
                 "document_date": date_str(_as_utc(doc.get("document_date"))),
                 "description": doc.get("description", ""),
                 "tags": doc.get("tags", []),
-                "created_at": iso_mtl(_as_utc(doc.get("created_at"))),
+                **_stamps(doc),
             }
         )
     payload = _list_payload(items, truncated)
@@ -790,6 +839,7 @@ def list_parties(args: dict) -> dict:
         role_filter=args.get("contact_role"),
         search=args.get("query"),
     )
+    parties = _filter_updated_since(parties, args)
     truncated = len(parties) > limit
     items = [
         {
@@ -799,6 +849,7 @@ def list_parties(args: dict) -> dict:
             "contact_role": p.get("contact_role", ""),
             "is_organization": p.get("type") == "organization",
             "city": p.get("address_city", ""),
+            **_stamps(p),
         }
         for p in parties[:limit]
     ]
@@ -1200,6 +1251,7 @@ def _protocol_payload(p: dict, now: datetime, dossier: Optional[dict]) -> dict:
         "end_date": date_str(_as_utc(p.get("end_date"))),
         "notes": p.get("notes", ""),
         "steps": [_step_row(s, now) for s in p.get("steps", [])],
+        **_stamps(p),
     }
 
 
