@@ -351,6 +351,25 @@ def test_aucun_mot_cle_est_signale_fort_et_ne_synchronise_rien(
     assert appele == []          # Graph n'est même pas interrogé
 
 
+def test_evenement_miroir_ni_cree_ni_detecte(monkeypatch, spy):
+    """LE test de boucle (miroir Outlook, 2026-07-29), de bout en bout.
+
+    Le miroir écrit les audiences d'Athéna dans le calendrier que CETTE
+    synchro interroge. Un événement miroir a le bon organisateur et peut
+    porter un sujet qui satisfait l'ancrage (« X — RDV ») : sans le marqueur,
+    il serait ré-importé comme une fausse réservation à confirmer — que le
+    prochain cycle du miroir ne verrait pas, et dont un refus en Réception
+    annulerait l'événement réel."""
+    from utils import graph_calendrier as gc
+    ev = _ev("ical-m")  # sujet « X — RDV » : satisfait l'ancrage
+    ev["singleValueExtendedProperties"] = [
+        {"id": gc.MIROIR_PROP_ID, "value": "h-42|etag-1"}
+    ]
+    counters = _run(monkeypatch, [ev], [])
+    assert counters["detectes"] == 0 and counters["crees"] == 0
+    assert spy.creates == [] and spy.updates == []
+
+
 def test_un_refus_du_modele_est_journalise(client, monkeypatch, caplog):
     """Un échec de création était avalé : la réservation n'apparaissait jamais
     en Réception et rien n'en disait la cause, dix minutes après dix minutes."""

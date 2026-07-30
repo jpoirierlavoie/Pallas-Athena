@@ -246,3 +246,55 @@ def test_l_organisateur_reste_exige(monkeypatch):
         subject="Jean - Réunion",
         organizer={"emailAddress": {"address": "autre@example.com"}},
     ))
+
+
+# ── Garde anti-boucle du miroir Outlook (2026-07-29) ─────────────────────
+# Le miroir écrit les audiences d'Athéna dans le calendrier MÊME que ce
+# module interroge. Un événement miroir a le juriste pour organisateur (tout
+# événement créé par l'application l'a) et peut porter un sujet qui satisfait
+# l'ancrage — le marqueur est donc la SEULE chose qui le tient hors du
+# pipeline d'import, où un refus annulerait l'événement réel.
+
+
+def _prop_miroir(valeur="h-123|etag-1"):
+    return [{"id": gc.MIROIR_PROP_ID, "value": valeur}]
+
+
+def test_predicat_rejette_evenement_marque_par_propriete():
+    """Organisateur correct, sujet qui matche — la propriété seule refuse."""
+    ev = _ev(singleValueExtendedProperties=_prop_miroir())
+    assert gc.mot_cle_correspondant(ev) == ""
+    assert gc.est_reservation(ev) is False
+
+
+def test_predicat_rejette_evenement_marque_par_categorie():
+    """Garde LARGE : la catégorie suffit, même sans la propriété (un $expand
+    perdu dans une retouche future ne rouvrirait pas la boucle à lui seul)."""
+    ev = _ev(categories=[gc.MIROIR_CATEGORIE])
+    assert gc.mot_cle_correspondant(ev) == ""
+
+
+def test_marqueur_id_compare_casse_pliee():
+    """Graph renvoie le GUID de la propriété dans une casse non garantie."""
+    ev = _ev(singleValueExtendedProperties=[
+        {"id": gc.MIROIR_PROP_ID.upper(), "value": "h-1|e-1"}
+    ])
+    assert gc.porte_marqueur_miroir(ev) is True
+
+
+def test_une_autre_categorie_ne_declenche_pas_le_garde():
+    ev = _ev(categories=["Important"])
+    assert gc.est_reservation(ev) is True
+
+
+def test_lister_reservations_expand_et_categories():
+    """Sans le $expand et « categories » dans le $select, le garde est
+    aveugle : la synchro recevrait des événements sans leur marqueur."""
+    with mock.patch.object(gc.graph, "graph_get",
+                           return_value={"value": []}) as g:
+        gc.lister_reservations(
+            datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 10, 1, tzinfo=UTC)
+        )
+    params = g.call_args.kwargs["params"]
+    assert params["$expand"] == gc.EXPAND_MIROIR
+    assert "categories" in params["$select"]

@@ -192,7 +192,7 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 
 ### `log_bookings_event(event, outcome='success', *, hearing_id=None, reason=None, **extra)` — logger `pallas.bookings`
 
-Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confirmer pipeline. `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR**. Same PII discipline as `pallas.portail`: **IDs, opaque Graph identifiers and counts only** — a client's name or a meeting subject must NEVER appear (the `RedactionFilter` scrubs full email addresses but not names/subjects). Counters travel in `**extra`.
+Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confirmer pipeline — plus the **miroir Outlook** (2026-07-29, same mailbox, same 10-min cron cadence). `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR**. Same PII discipline as `pallas.portail`: **IDs, opaque Graph identifiers and counts only** — a client's name or a meeting subject must NEVER appear (the `RedactionFilter` scrubs full email addresses but not names/subjects). Counters travel in `**extra`.
 
 | `event` | Typical outcome | Notes |
 |---|---|---|
@@ -201,6 +201,8 @@ Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confir
 | `reception_rdv_confirme` | success | A rendez-vous was confirmed in Réception; `hearing_id`, `partie_liee: bool` — the event now enters DAV/Calendar (CTag bumped) |
 | `reception_rdv_refuse` | success ou refused | A rendez-vous was refused; `hearing_id`, `graph_annule: bool`. `refused` + `reason="graph_error"` when the Outlook cancellation failed (the Athéna refusal still stands — the juriste is told to cancel manually) |
 | `reception_rdv_divergence_traitee` | success | A `bookings_divergence` alert was applied/ignored/cancelled; `hearing_id`, `action` |
+| `miroir_outlook_execute` | success | Outlook-mirror cron sweep done; counters `vus`, `miroirs`, `crees`, `corriges`, `supprimes`, `ignores`, `erreurs` (per-event Graph failures — the sweep continues) |
+| `miroir_outlook_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (fail-open, no-op); `failure` + `reason="graph_error"` (Graph outage, cycle missed) or `reason="fenetre_pleine"` (the 500-hearing fetch window is full: the desired set is truncated, so the DELETE phase is disarmed until `_LIMITE_FENETRE` is raised — loud, never silent) |
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 

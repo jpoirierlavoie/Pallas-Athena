@@ -23,9 +23,31 @@ from utils import graph
 logger = logging.getLogger(__name__)
 
 # The fields the reconciliation needs; nothing more (spec §4.3).
+# « categories » feeds porte_marqueur_miroir — half of the mirror loop guard.
 _SELECT = (
     "id,iCalUId,subject,start,end,location,isOnlineMeeting,onlineMeeting,"
-    "attendees,organizer,isCancelled,lastModifiedDateTime"
+    "attendees,organizer,isCancelled,lastModifiedDateTime,categories"
+)
+
+# ── Marqueur anti-boucle du miroir Outlook ───────────────────────────────
+# Le miroir (utils/graph_miroir.py) écrit les audiences d'Athéna dans le
+# calendrier PRINCIPAL du juriste — celui-là même que lister_reservations
+# interroge toutes les 10 minutes. Sans marqueur, un événement miroir dont le
+# sujet se termine par « - Consultation » satisferait le prédicat (le juriste
+# est l'organisateur de tout événement créé par l'application) et serait
+# ré-importé comme une fausse réservation à confirmer. Chaque miroir porte
+# donc une propriété étendue Graph + la catégorie « Pallas Athéna », et le
+# prédicat écarte tout événement marqué AVANT la logique de mot-clé.
+#
+# Le GUID est GELÉ POUR TOUJOURS : le changer rendrait chaque événement déjà
+# miroité invisible au diff (orphelins jamais corrigés ni supprimés) ET
+# transparent au garde (ré-import). Les constantes vivent ici, pas dans
+# graph_miroir, pour que le sens d'import reste unique (miroir → calendrier).
+MIROIR_PROP_GUID = "d7f98e8c-55fc-4a0a-ab1a-faf71da29838"
+MIROIR_PROP_ID = f"String {{{MIROIR_PROP_GUID}}} Name PallasAthenaHearingId"
+MIROIR_CATEGORIE = "Pallas Athéna"
+EXPAND_MIROIR = (
+    f"singleValueExtendedProperties($filter=id eq '{MIROIR_PROP_ID}')"
 )
 
 # Graph emits 7 fractional-second digits ("…:00.0000000"); trim to ≤6 so
@@ -82,6 +104,22 @@ def _plier(texte: str) -> str:
     ).casefold()
 
 
+def porte_marqueur_miroir(ev: dict) -> bool:
+    """True si *ev* porte le marqueur du miroir Outlook.
+
+    Garde LARGE : la propriété étendue OU la catégorie suffit à refuser
+    l'import (le miroir, lui, n'agit destructivement que sur la propriété
+    seule — un vrai événement catégorisé à la main ne doit jamais être
+    supprimé). L'id de propriété est comparé casse pliée : Graph renvoie le
+    GUID dans une casse qui n'est pas garantie être celle de la requête.
+    """
+    prop_id = MIROIR_PROP_ID.casefold()
+    for prop in ev.get("singleValueExtendedProperties") or []:
+        if (prop.get("id") or "").casefold() == prop_id:
+            return True
+    return MIROIR_CATEGORIE in (ev.get("categories") or [])
+
+
 def mot_cle_correspondant(ev: dict) -> str:
     """Le mot-clé Bookings détecté dans *ev*, ou « » (spec §4.4).
 
@@ -101,6 +139,11 @@ def mot_cle_correspondant(ev: dict) -> str:
     Rend le mot-clé plutôt qu'un booléen : l'appelant en dérive le type
     d'audience (``Config.BOOKINGS_TYPE_PAR_MOT_CLE``).
     """
+    # Un événement miroir (écrit par Athéna elle-même) n'est JAMAIS une
+    # réservation — évalué avant tout le reste, ce refus couvre d'un coup
+    # est_reservation, extraire et _debug_payload.
+    if porte_marqueur_miroir(ev):
+        return ""
     org = (
         ((ev.get("organizer") or {}).get("emailAddress") or {}).get("address")
         or ""
@@ -170,6 +213,9 @@ def lister_reservations(debut: datetime, fin: datetime) -> list[dict]:
         "startDateTime": debut.astimezone(timezone.utc).isoformat(),
         "endDateTime": fin.astimezone(timezone.utc).isoformat(),
         "$select": _SELECT,
+        # Sans cet $expand, porte_marqueur_miroir ne voit jamais la propriété
+        # étendue et le garde anti-boucle repose sur la seule catégorie.
+        "$expand": EXPAND_MIROIR,
         "$top": 100,
     }
     data = graph.graph_get(

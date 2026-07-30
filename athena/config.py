@@ -191,6 +191,26 @@ class Config:
         """True when Bookings sync can run (Graph creds + a mailbox to poll)."""
         return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
 
+    # Miroir Outlook (2026-07-29). Pushes confirmed Athéna hearings into the
+    # juriste's DEFAULT Outlook calendar every 10 min (they then count toward
+    # Exchange free/busy, so « Bookings with me » stops offering slots over a
+    # court date). One-way, Firestore-read-only; loop-proof against the
+    # Bookings sync via the extended-property marker (utils/graph_calendrier).
+    # Same mailbox and credentials as the Bookings sync (bookings_configured).
+    MIROIR_OUTLOOK_ACTIF: bool = (
+        os.environ.get("MIROIR_OUTLOOK_ACTIF", "true").lower() == "true"
+    )
+    # Lookahead 365 (court dates are set well beyond the Bookings sync's 90
+    # days; calendarView caps at 1825 days — 4× margin). Lookback 30: cleans
+    # up mirrors of hearings deleted/postponed up to a month after the fact;
+    # beyond that a past mirror stays in Outlook as history (documented).
+    MIROIR_OUTLOOK_LOOKAHEAD_DAYS: int = int(
+        os.environ.get("MIROIR_OUTLOOK_LOOKAHEAD_DAYS", "365")
+    )
+    MIROIR_OUTLOOK_LOOKBACK_DAYS: int = int(
+        os.environ.get("MIROIR_OUTLOOK_LOOKBACK_DAYS", "30")
+    )
+
     # Intake trigger (phase L3). False in L2: the confirmation screen shows the
     # « envoyer le formulaire d'ouverture » checkbox DISABLED with a tooltip,
     # and the confirm route never emits an intake invitation.

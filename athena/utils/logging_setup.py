@@ -586,6 +586,10 @@ BookingsEvent = Literal[
     "reception_rdv_confirme",
     "reception_rdv_refuse",
     "reception_rdv_divergence_traitee",
+    # Miroir Outlook (même boîte, même cron 10 min, même discipline PII —
+    # un sujet d'événement embarque le nom d'un client, JAMAIS journalisé).
+    "miroir_outlook_execute",
+    "miroir_outlook_erreur_graph",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
 

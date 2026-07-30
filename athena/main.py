@@ -192,6 +192,12 @@ def create_app() -> Flask:
     # its own machine blueprint like taches_portail (never a browser one).
     csrf.exempt(taches_bookings_bp)
 
+    # ── Miroir Outlook : cron-driven push of confirmed hearings to the
+    # juriste's Outlook calendar (Graph). Same machine-blueprint discipline.
+    from routes.taches_outlook import taches_outlook_bp
+    app.register_blueprint(taches_outlook_bp)
+    csrf.exempt(taches_outlook_bp)
+
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
     from mcp import mcp_bp, register_mcp
     register_mcp(app)

@@ -69,6 +69,12 @@ env_variables:
   BOOKINGS_JURISTE_UPN: "jason@poirierlavoie.ca"
   BOOKINGS_SUBJECT_KEYWORDS: "Consultation,Rencontre"
   BOOKINGS_SYNC_ACTIVE: "true"
+  # Miroir Outlook — pousse les audiences confirmées d'Athéna dans le
+  # calendrier PRINCIPAL du juriste (elles bloquent alors les créneaux
+  # « Bookings with me »). Unidirectionnel, Athéna fait autorité ; anti-boucle
+  # par propriété étendue + catégorie « Pallas Athéna » (utils/graph_miroir).
+  # "false" gèle les miroirs en place (aucun nettoyage automatique).
+  MIROIR_OUTLOOK_ACTIF: "true"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
