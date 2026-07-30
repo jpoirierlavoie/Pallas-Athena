@@ -738,16 +738,52 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "name": _str(),
             "institution": _str(),
             "account_type": _str(),
+            "last_reconciliation_date": _nstr(
+                "YYYY-MM-DD period_end of THIS account's last completed "
+                "reconciliation; null = never reconciled."),
+            "never_reconciled": _bool(),
+            "reconciliation_overdue": _bool(
+                "Per-account: a month-end past its 30-day grace has no "
+                "completed reconciliation covering it (accounts younger "
+                "than their first due month-end are exempt)."),
             **_money("book_balance"),
             **_money("bank_balance"),
         }, description="Never includes the transit or account number.")),
         **_money("total_held"),
         "outstanding_count": _int(),
-        "outstanding_total_cents": _int(),
+        **_money("outstanding_total"),
+        "outstanding_cheques": _arr(_obj({
+            "id": _str(),
+            "account_id": _str(),
+            "date": _nstr("YYYY-MM-DD — issue date; stale-cheque "
+                          "monitoring reads this."),
+            "reference": _str("Cheque number or reference."),
+            "counterparty": _str(),
+            "dossier_file_number": _str(),
+            **_money("amount"),
+        }), "Outstanding (en_circulation) cheques with their dates."),
+        "outstanding_cheques_truncated": _bool(),
         "in_transit_count": _int(),
-        "in_transit_total_cents": _int(),
-        "last_reconciliation_date": _nstr(),
-        "reconciliation_overdue": _bool(),
+        **_money("in_transit_total"),
+        "by_dossier": _arr(_obj({
+            "dossier_id": _str(),
+            "file_number": _str(),
+            "title": _str(),
+            "status": _str(),
+            **_money("book_balance"),
+            **_money("cleared_balance"),
+        }), "Dossiers whose per-client trust map has entries — which "
+            "files hold (or held) trust money."),
+        "by_dossier_truncated": _bool(),
+        "last_reconciliation_date": _nstr(
+            "Most recent completed period_end across ALL accounts — see "
+            "the per-account rows for the honest picture."),
+        "reconciliation_overdue": _bool(
+            "OR of the per-account flags — one compliant account no "
+            "longer masks a never-reconciled sibling."),
+        "reconciliation_never_performed": _bool(
+            "Accounts exist and NO reconciliation has ever been "
+            "completed, firm-wide."),
     }),
 
     "create_note": _write_result("created"),

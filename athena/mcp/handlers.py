@@ -1083,7 +1083,13 @@ def list_trust_transactions(args: dict) -> dict:
 
 def get_trust_snapshot(args: dict) -> dict:
     """Firm-wide trust picture (mirrors get_billing_snapshot). Emits account
-    name + institution but NEVER the transit or account number (spec §9.4)."""
+    name + institution but NEVER the transit or account number (spec §9.4).
+
+    Reconciliation state is per account (a reconciled account no longer
+    masks a never-reconciled sibling), outstanding cheques are LISTED with
+    their dates (stale-cheque monitoring sits in the same regulation as the
+    monthly reconciliation), and by_dossier answers « which files hold
+    trust money » without one get_trust_balance call per dossier."""
     snap = trust_model.get_firm_trust_snapshot()
     accounts = []
     for a in snap.get("accounts", []):
@@ -1092,18 +1098,60 @@ def get_trust_snapshot(args: dict) -> dict:
             "name": a.get("name", ""),
             "institution": a.get("institution", ""),
             "account_type": a.get("account_type", ""),
+            "last_reconciliation_date": date_str(
+                a.get("last_reconciliation_date")
+            ),
+            "never_reconciled": bool(a.get("never_reconciled")),
+            "reconciliation_overdue": bool(a.get("reconciliation_overdue")),
         }
         _money(row, "book_balance", a.get("book_balance", 0))
         _money(row, "bank_balance", a.get("bank_balance", 0))
         accounts.append(row)
+
+    cheques = []
+    outstanding_rows = snap.get("outstanding_rows", [])
+    for e in outstanding_rows[:_UNBILLED_ROW_CAP]:
+        cheque = {
+            "id": e.get("id", ""),
+            "account_id": e.get("account_id", ""),
+            "date": date_str(_as_utc(e.get("date"))),
+            "reference": e.get("reference", ""),
+            "counterparty": e.get("counterparty", ""),
+            "dossier_file_number": e.get("dossier_file_number", ""),
+        }
+        _money(cheque, "amount", e.get("amount", 0))
+        cheques.append(cheque)
+
+    dossier_rows = trust_model.list_dossiers_with_trust()
+    by_dossier = []
+    for d in dossier_rows[:_UNBILLED_ROW_CAP]:
+        row = {
+            "dossier_id": d.get("dossier_id", ""),
+            "file_number": d.get("file_number", ""),
+            "title": d.get("title", ""),
+            "status": d.get("status", ""),
+        }
+        _money(row, "book_balance", d.get("book_cents", 0))
+        _money(row, "cleared_balance", d.get("cleared_cents", 0))
+        by_dossier.append(row)
+
     payload: dict[str, Any] = {"accounts": accounts}
     _money(payload, "total_held", snap.get("total_held_cents", 0))
     payload["outstanding_count"] = snap.get("outstanding_count", 0)
-    payload["outstanding_total_cents"] = snap.get("outstanding_total_cents", 0)
+    _money(payload, "outstanding_total", snap.get("outstanding_total_cents", 0))
+    payload["outstanding_cheques"] = cheques
+    payload["outstanding_cheques_truncated"] = (
+        len(outstanding_rows) > _UNBILLED_ROW_CAP
+    )
     payload["in_transit_count"] = snap.get("in_transit_count", 0)
-    payload["in_transit_total_cents"] = snap.get("in_transit_total_cents", 0)
+    _money(payload, "in_transit_total", snap.get("in_transit_total_cents", 0))
+    payload["by_dossier"] = by_dossier
+    payload["by_dossier_truncated"] = len(dossier_rows) > _UNBILLED_ROW_CAP
     payload["last_reconciliation_date"] = date_str(snap.get("last_reconciliation_date"))
     payload["reconciliation_overdue"] = bool(snap.get("reconciliation_overdue"))
+    payload["reconciliation_never_performed"] = bool(
+        snap.get("reconciliation_never_performed")
+    )
     return payload
 
 

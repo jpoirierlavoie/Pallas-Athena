@@ -791,9 +791,16 @@ TOOLS: dict[str, dict] = {
     "get_trust_snapshot": {
         "title": "Aperçu des fonds en fidéicommis",
         "description": (
-            "Firm-wide trust picture: each account's book and bank balance, "
-            "total held, outstanding cheques, deposits in transit, and whether a "
-            "bank reconciliation is overdue. Amounts in cents + fr-CA display. "
+            "Firm-wide trust picture: each account's book and bank balance "
+            "with its OWN reconciliation state (last completed period, "
+            "never_reconciled, overdue), total held, the outstanding cheques "
+            "LISTED with their issue dates (stale-cheque monitoring), "
+            "deposits in transit, and by_dossier — which files hold trust "
+            "money (book vs cleared per dossier; per-client detail via "
+            "get_trust_balance). reconciliation_overdue means a month-end "
+            "past its 30-day grace has no completed reconciliation covering "
+            "it; reconciliation_never_performed flags a firm that has never "
+            "reconciled at all. Amounts in cents + fr-CA display. "
             "Read-only; never exposes the transit or account number."
         ),
         "input_schema": {

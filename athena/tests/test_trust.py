@@ -1057,6 +1057,107 @@ def test_delete_reconciliation_completee_refused(store):
     assert rec["id"] in store["trust_reconciliations"]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# _reconciliation_overdue — pinned-clock tests (PA-D06)
+#
+# The original predicate hid a grace-window early-return ABOVE the
+# never-reconciled branch: « jamais conciliée » could only read True on the
+# few days each month past `last_month_end + 30 j` — at most ~21 days a
+# year, and NEVER in February (Jan 31 + 30 j lands in March). It also
+# compared only against LAST month's end, so arrears older than one month
+# were invisible while the newest month sat in grace. Every test here pins
+# the clock (the injectable `now`) — a mid-month clock made the old and new
+# predicates agree, which is exactly how the defect survived.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _dt(y, m, d):
+    return datetime(y, m, d, 12, 0, tzinfo=timezone.utc)
+
+
+def test_never_reconciled_is_overdue_mid_month():
+    """The audit's observation: {last_reconciliation_date: null,
+    reconciliation_overdue: false} on a mid-month clock."""
+    assert trust._reconciliation_overdue(None, now=_dt(2026, 7, 15)) is True
+
+
+def test_never_reconciled_is_overdue_in_february():
+    """February was unreachable outright for the old predicate."""
+    assert trust._reconciliation_overdue(None, now=_dt(2026, 2, 15)) is True
+
+
+def test_fresh_account_is_not_overdue():
+    """An account younger than its first due month-end is exempt — nothing
+    existed to reconcile."""
+    assert trust._reconciliation_overdue(
+        None, now=_dt(2026, 7, 15), account_floor=_dt(2026, 7, 2)
+    ) is False
+
+
+def test_account_older_than_due_month_end_is_overdue():
+    assert trust._reconciliation_overdue(
+        None, now=_dt(2026, 7, 30), account_floor=_dt(2026, 1, 10)
+    ) is True
+
+
+def test_last_month_still_in_grace_is_not_overdue():
+    """Reconciled through June, asked July 15: July's month-end has not
+    happened and June is covered — not overdue."""
+    assert trust._reconciliation_overdue(
+        _dt(2026, 6, 30), now=_dt(2026, 7, 15)
+    ) is False
+
+
+def test_newest_month_in_grace_does_not_mask_older_arrears():
+    """Last reconciled Nov 30, asked Feb 15: January is within grace but
+    DECEMBER's reconciliation was due end of January — overdue. The old
+    early-return reported False here."""
+    assert trust._reconciliation_overdue(
+        _dt(2025, 11, 30), now=_dt(2026, 2, 15)
+    ) is True
+
+
+def test_reconciled_through_due_month_is_fine():
+    """Last reconciled Dec 31, asked Feb 15: December is covered and
+    January is still in its 30-day grace."""
+    assert trust._reconciliation_overdue(
+        _dt(2025, 12, 31), now=_dt(2026, 2, 15)
+    ) is False
+
+
+def test_overdue_once_grace_expires():
+    """Last reconciled May 31, asked July 31: June's grace (30 j) has just
+    expired — overdue."""
+    assert trust._reconciliation_overdue(
+        _dt(2026, 5, 31), now=_dt(2026, 7, 31)
+    ) is True
+
+
+def test_firm_snapshot_or_of_accounts_and_never_flag(store, monkeypatch):
+    """One reconciled account must not mask a never-reconciled sibling, and
+    reconciliation_never_performed only fires when NO account has ever
+    completed one."""
+    acc2, _ = trust.create_account({
+        "name": "Compte 2", "institution": "BN", "transit": "12345",
+        "account_number_last4": "9999",
+    })
+    rec, _ = trust.create_reconciliation("acc1", _day(45), 0)
+    _, errs = trust.complete_reconciliation(rec["id"], [])
+    assert errs == []
+
+    snap = trust.get_firm_trust_snapshot()
+    by_id = {a["id"]: a for a in snap["accounts"]}
+    assert by_id["acc1"]["never_reconciled"] is False
+    assert by_id[acc2["id"]]["never_reconciled"] is True
+    assert snap["reconciliation_never_performed"] is False
+    # acc2 was just created → young-account exemption applies to ITS flag,
+    # but the never_reconciled marker still tells the truth.
+    assert snap["reconciliation_overdue"] == (
+        by_id["acc1"]["reconciliation_overdue"]
+        or by_id[acc2["id"]]["reconciliation_overdue"]
+    )
+
+
 def test_delete_reconciliation_missing(store):
     ok, errs = trust.delete_reconciliation("nope")
     assert ok is False and errs == ["Conciliation introuvable."]

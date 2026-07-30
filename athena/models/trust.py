@@ -1862,42 +1862,146 @@ def get_trust_summary(dossier_id: str) -> dict:
     }
 
 
-def _reconciliation_overdue(last_period_end, now: Optional[datetime] = None) -> bool:
-    """True when the account is more than 30 days past a month-end that has not
-    been reconciled (dashboard/§7 warning heuristic)."""
+# Grace after a month-end before its unreconciled state counts as overdue —
+# the monthly-reconciliation heuristic (Règlement, comptabilité en
+# fidéicommis). The predicate reasons on the latest month-end whose grace
+# has EXPIRED, never merely on last month's.
+RECONCILIATION_GRACE_DAYS = 30
+
+
+def _month_end_on_or_before(d: date) -> date:
+    """Latest calendar month-end on or before *d* (a date)."""
+    next_month_first = (d.replace(day=1) + timedelta(days=32)).replace(day=1)
+    this_month_end = next_month_first - timedelta(days=1)
+    if d == this_month_end:
+        return d
+    return d.replace(day=1) - timedelta(days=1)
+
+
+def _reconciliation_overdue(
+    last_period_end,
+    now: Optional[datetime] = None,
+    account_floor: Optional[datetime] = None,
+) -> bool:
+    """True when some month-end whose grace has expired is unreconciled.
+
+    The original predicate compared only against LAST month's end, behind a
+    grace early-return. Two silent failure modes followed (PA-D06): a
+    NEVER-reconciled account could read False on ~344 days of the year
+    (the None branch sat below the early-return — and in February it was
+    unreachable outright, Jan 31 + 30 d landing in March); and arrears older
+    than one month were invisible (last reconciled Nov 30, asked on Feb 15:
+    January was still in grace, so December's overdue reconciliation
+    reported False).
+
+    Now: ``due_through`` = the latest month-end at least
+    RECONCILIATION_GRACE_DAYS in the past — the most recent period whose
+    reconciliation is DUE. Overdue ⇔ the last completed reconciliation ends
+    before it (or none exists). *account_floor* (account created_at)
+    exempts an account younger than its first due month-end.
+    """
     now = now or datetime.now(timezone.utc)
-    first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_month_end = first_of_month - timedelta(days=1)
-    if now < last_month_end + timedelta(days=30):
+    due_through = _month_end_on_or_before(
+        (now - timedelta(days=RECONCILIATION_GRACE_DAYS)).date()
+    )
+    if account_floor is not None and _as_utc(account_floor).date() > due_through:
         return False
     if last_period_end is None:
         return True
-    return _as_utc(last_period_end).date() < last_month_end.date()
+    return _as_utc(last_period_end).date() < due_through
 
 
 def get_firm_trust_snapshot() -> dict:
     """Firm-wide trust picture for the dashboard + MCP. Totals are summed in
-    Python over bounded lists — no SUM aggregation (spec §6.2)."""
-    accounts = list_accounts()
+    Python over bounded lists — no SUM aggregation (spec §6.2).
+
+    Reconciliation state is PER ACCOUNT (each account row gains
+    last_reconciliation_date / never_reconciled / reconciliation_overdue) and
+    the firm flag is their OR — a single reconciled account used to mask
+    every never-reconciled sibling. The outstanding/in-transit rows, already
+    fetched for the totals, are returned instead of discarded so stale
+    cheques become visible (each row annotated with its account_id).
+    """
+    now = datetime.now(timezone.utc)
+    accounts = [dict(a) for a in list_accounts()]
     total_held = sum(int(a.get("book_balance", 0)) for a in accounts)
-    outstanding_count = outstanding_total = 0
+    recs = list_reconciliations()
+    completed = [r for r in recs if r.get("status") == "complétée"]
+
+    outstanding_rows: list[dict] = []
     in_transit_count = in_transit_total = 0
+    any_overdue = False
     for a in accounts:
         out = list_outstanding(a["id"])
         itr = list_in_transit(a["id"])
-        outstanding_count += len(out)
-        outstanding_total += sum(int(e.get("amount", 0)) for e in out)
+        for e in out:
+            outstanding_rows.append({**e, "account_id": a["id"]})
         in_transit_count += len(itr)
         in_transit_total += sum(int(e.get("amount", 0)) for e in itr)
-    completed = [r for r in list_reconciliations() if r.get("status") == "complétée"]
-    last_date = max((_as_utc(r.get("period_end")) for r in completed), default=None)
+
+        mine = [
+            _as_utc(r.get("period_end"))
+            for r in completed
+            if r.get("account_id") == a["id"]
+        ]
+        a_last = max(mine, default=None)
+        a["last_reconciliation_date"] = a_last
+        a["never_reconciled"] = a_last is None
+        a["reconciliation_overdue"] = _reconciliation_overdue(
+            a_last, now, account_floor=a.get("created_at")
+        )
+        any_overdue = any_overdue or a["reconciliation_overdue"]
+
+    last_date = max(
+        (_as_utc(r.get("period_end")) for r in completed), default=None
+    )
     return {
         "accounts": accounts,
         "total_held_cents": total_held,
-        "outstanding_count": outstanding_count,
-        "outstanding_total_cents": outstanding_total,
+        "outstanding_count": len(outstanding_rows),
+        "outstanding_total_cents": sum(
+            int(e.get("amount", 0)) for e in outstanding_rows
+        ),
+        "outstanding_rows": outstanding_rows,
         "in_transit_count": in_transit_count,
         "in_transit_total_cents": in_transit_total,
         "last_reconciliation_date": last_date,
-        "reconciliation_overdue": _reconciliation_overdue(last_date),
+        "reconciliation_overdue": any_overdue,
+        "reconciliation_never_performed": bool(accounts) and not completed,
     }
+
+
+def list_dossiers_with_trust(limit: int = 200) -> list[dict]:
+    """Dossiers currently or previously holding trust funds, for the firm
+    snapshot's by_dossier view.
+
+    Streams the dossiers collection (the web list view already does — no
+    index, no inequality query: an inequality on trust_balance would miss
+    legacy docs where the field is ABSENT and net-zero dossiers whose
+    per-client maps are non-empty). A dossier qualifies when its
+    trust_balance_by_client map has any entry. Fails OPEN to [] — this is a
+    display aid, never the register.
+    """
+    rows: list[dict] = []
+    try:
+        for snap in db.collection("dossiers").stream():
+            d = snap.to_dict() or {}
+            by_client = d.get("trust_balance_by_client") or {}
+            if not by_client:
+                continue
+            cleared = d.get("trust_cleared_by_client") or {}
+            rows.append({
+                "dossier_id": d.get("id", snap.id),
+                "file_number": d.get("file_number", ""),
+                "title": d.get("title", ""),
+                "status": d.get("status", ""),
+                "book_cents": int(d.get("trust_balance", 0)),
+                "cleared_cents": sum(int(v) for v in cleared.values()),
+            })
+            if len(rows) >= limit:
+                break
+    except Exception as exc:
+        logger.warning("list_dossiers_with_trust failed: %s", type(exc).__name__)
+        return []
+    rows.sort(key=lambda r: r.get("file_number", ""), reverse=True)
+    return rows

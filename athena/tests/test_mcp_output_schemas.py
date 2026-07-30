@@ -517,13 +517,34 @@ def test_get_trust_snapshot_conforms(monkeypatch):
                                "institution": "Desjardins",
                                "account_type": "général",
                                "book_balance": 500000,
-                               "bank_balance": 400000}],
+                               "bank_balance": 400000,
+                               "last_reconciliation_date": DATE_ONLY,
+                               "never_reconciled": False,
+                               "reconciliation_overdue": False}],
                  "total_held_cents": 500000, "outstanding_count": 1,
-                 "outstanding_total_cents": 100000, "in_transit_count": 1,
+                 "outstanding_total_cents": 100000,
+                 "outstanding_rows": [
+                     {"id": "t9", "account_id": "a1", "date": DATE_ONLY,
+                      "reference": "chq 42", "counterparty": "Huissiers QC",
+                      "dossier_file_number": "2026-001", "amount": 100000},
+                 ],
+                 "in_transit_count": 1,
                  "in_transit_total_cents": 100000,
                  "last_reconciliation_date": DATE_ONLY,
-                 "reconciliation_overdue": False})
-    _conforms("get_trust_snapshot", handlers.get_trust_snapshot({}))
+                 "reconciliation_overdue": False,
+                 "reconciliation_never_performed": False})
+    monkeypatch.setattr(
+        handlers.trust_model, "list_dossiers_with_trust",
+        lambda: [{"dossier_id": "d1", "file_number": "2026-001",
+                  "title": "Tremblay c. Lavoie", "status": "actif",
+                  "book_cents": 500000, "cleared_cents": 400000}])
+    payload = handlers.get_trust_snapshot({})
+    _conforms("get_trust_snapshot", payload)
+    # The two totals carry their fr-CA twins now (constraint-5 cleanup).
+    assert payload["outstanding_total_display"]
+    assert payload["in_transit_total_display"]
+    assert payload["outstanding_cheques"][0]["reference"] == "chq 42"
+    assert payload["by_dossier"][0]["book_balance_cents"] == 500000
 
 
 @pytest.fixture()
