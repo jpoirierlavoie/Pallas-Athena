@@ -134,6 +134,50 @@ def _list_payload(items: list, truncated: bool) -> dict:
     return {"items": items, "count": len(items), "truncated": truncated}
 
 
+def _freshen_dossier_labels(rows: list[dict], live: dict[str, dict]) -> list[dict]:
+    """Overwrite stale creation-time dossier labels with live values.
+
+    dossier_file_number/dossier_title are snapshots frozen at each row's
+    last full write — they survived a renumbering migration and every
+    intitulé correction, so the audit saw file numbers that no longer
+    exist and one dossier under three different titles (PA-D04). The
+    STORED snapshot stays the fallback: *live* fails open to {} on a read
+    blip, and a deleted dossier's rows keep the only label they have.
+    """
+    if not live:
+        return rows
+    out = []
+    for r in rows:
+        d = live.get(r.get("dossier_id") or "")
+        if d:
+            r = {
+                **r,
+                "dossier_file_number": (
+                    d.get("file_number") or r.get("dossier_file_number", "")
+                ),
+                "dossier_title": d.get("title") or r.get("dossier_title", ""),
+            }
+        out.append(r)
+    return out
+
+
+def _live_dossiers(*row_lists: list[dict]) -> dict[str, dict]:
+    """ONE batched get_all over the distinct dossier ids of every list.
+
+    Document-ID lookups need no index; the read cost is the number of
+    DISTINCT dossiers on the page. get_dossiers_bulk fails open to {}.
+    """
+    ids = sorted({
+        r.get("dossier_id")
+        for rows in row_lists
+        for r in rows
+        if r.get("dossier_id")
+    })
+    if not ids:
+        return {}
+    return dossier_model.get_dossiers_bulk(ids)
+
+
 def _stamps(doc: dict) -> dict:
     """The created_at/updated_at pair every row now carries (PA-G05).
 
@@ -296,10 +340,24 @@ def get_agenda(args: dict) -> dict:
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(days=days_ahead)
 
-    hearings = [
-        _hearing_row(h)
+    raw_hearings = [
+        h
         for h in hearing_model.list_hearings_in_range(now, cutoff, limit=100)
         if h.get("status") != "annulée"
+    ]
+    raw_tasks = task_model.list_urgent_tasks(cutoff, limit=50)
+    raw_steps = protocol_model.list_urgent_steps(cutoff, limit=50)
+
+    # PA-D04: one batched join over every distinct dossier on the page so
+    # the briefing never cites a renumbered file or an inverted intitulé.
+    # Steps join through their parent protocol's dossier id.
+    live = _live_dossiers(
+        raw_hearings, raw_tasks,
+        [{"dossier_id": s.get("_dossier_id", "")} for s in raw_steps],
+    )
+
+    hearings = [
+        _hearing_row(h) for h in _freshen_dossier_labels(raw_hearings, live)
     ]
     urgent_tasks = [
         {
@@ -311,16 +369,21 @@ def get_agenda(args: dict) -> dict:
                 < now.date()
             ),
         }
-        for t in task_model.list_urgent_tasks(cutoff, limit=50)
+        for t in _freshen_dossier_labels(raw_tasks, live)
     ]
     urgent_steps = [
         {
             **_step_row(s, now),
             "protocol_id": s.get("_protocol_id", ""),
             "protocol_title": s.get("_protocol_title", ""),
-            "dossier_file_number": s.get("_dossier_file_number", ""),
+            # The protocol doc's own snapshot is DOUBLY stale (copied from
+            # the dossier at protocol creation) — prefer the live label.
+            "dossier_file_number": (
+                (live.get(s.get("_dossier_id") or "") or {}).get("file_number")
+                or s.get("_dossier_file_number", "")
+            ),
         }
-        for s in protocol_model.list_urgent_steps(cutoff, limit=50)
+        for s in raw_steps
     ]
     alerts = [
         _prescription_row(d, now)
@@ -572,7 +635,9 @@ def list_tasks(args: dict) -> dict:
     tasks = _filter_updated_since(tasks, args)
 
     truncated = len(tasks) > limit
-    return _list_payload([_task_row(t) for t in tasks[:limit]], truncated)
+    page = tasks[:limit]
+    page = _freshen_dossier_labels(page, _live_dossiers(page))
+    return _list_payload([_task_row(t) for t in page], truncated)
 
 
 # ── 5. list_hearings ────────────────────────────────────────────────────
@@ -624,7 +689,9 @@ def list_hearings(args: dict) -> dict:
         rows = [h for h in rows if h.get("dossier_id") == dossier_id]
 
     truncated = window_full or len(rows) > limit
-    payload = _list_payload([_hearing_row(h) for h in rows[:limit]], truncated)
+    page = rows[:limit]
+    page = _freshen_dossier_labels(page, _live_dossiers(page))
+    payload = _list_payload([_hearing_row(h) for h in page], truncated)
     payload["window"] = {"from": date_from.isoformat(), "to": date_to.isoformat()}
     return payload
 
@@ -709,6 +776,9 @@ def get_note(args: dict) -> dict:
     note = note_model.get_note(args["note_id"])
     if note is None:
         return {"found": False, "note_id": args["note_id"]}
+    # PA-D04: freshen the stale creation-time dossier labels (one keyed
+    # read; the stored snapshot survives a failed lookup).
+    (note,) = _freshen_dossier_labels([note], _live_dossiers([note]))
     return {
         "found": True,
         "note": {

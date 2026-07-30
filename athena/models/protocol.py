@@ -1037,6 +1037,9 @@ def list_urgent_steps(cutoff: datetime, limit: int = 50) -> list[dict]:
         step["_protocol_title"] = proto.get("title", "")
         step["_protocol_id"] = proto.get("id", protocol_id)
         step["_dossier_file_number"] = proto.get("dossier_file_number", "")
+        # The live dossier id, so consumers can refresh the (possibly
+        # stale) denormalized label above with a batched join (PA-D04).
+        step["_dossier_id"] = proto.get("dossier_id", "")
         urgent_steps.append(step)
         if len(urgent_steps) >= limit:
             break

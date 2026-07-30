@@ -635,6 +635,39 @@ def test_list_dossiers_query_matches_the_sommaire(monkeypatch):
     assert [i["id"] for i in payload["items"]] == ["d2"]
 
 
+def test_dossier_labels_are_freshened_from_the_live_dossier(monkeypatch):
+    """PA-D04: dossier_file_number/dossier_title are creation-time
+    snapshots — they survived a renumbering (the audit saw « 250701 », a
+    number that no longer exists) and intitulé corrections. Rows now join
+    the live dossier in ONE batched read; the stored snapshot remains the
+    fallback (bulk fails open to {}, deleted dossiers keep their label)."""
+    stale = {"id": "t1", "title": "Produire la proposition",
+             "status": "à_faire", "dossier_id": "d-old",
+             "dossier_file_number": "250701",
+             "dossier_title": "Dolores Pepin c. 9313-5630 Québec Inc."}
+    monkeypatch.setattr(handlers.task_model, "list_tasks",
+                        lambda **kw: [dict(stale)])
+    captured_ids = {}
+
+    def _bulk(ids):
+        captured_ids["ids"] = list(ids)
+        return {"d-old": {"id": "d-old", "file_number": "2026-012",
+                          "title": "9313-5630 Québec Inc. c. Dolores Pepin"}}
+
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", _bulk)
+    row = handlers.list_tasks({})["items"][0]
+    assert captured_ids["ids"] == ["d-old"]
+    assert row["dossier_file_number"] == "2026-012"
+    assert row["dossier_title"] == "9313-5630 Québec Inc. c. Dolores Pepin"
+
+    # Fail-open: an empty bulk return keeps the stored snapshot — a read
+    # blip must never blank every label on the page.
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk",
+                        lambda ids: {})
+    row = handlers.list_tasks({})["items"][0]
+    assert row["dossier_file_number"] == "250701"
+
+
 def test_rows_carry_timestamps_and_updated_since_filters(monkeypatch):
     """PA-G05: every row emits created_at/updated_at (already stored — the
     gap was emission-only), and the materialized tools take updated_since.
