@@ -359,8 +359,9 @@ def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):
 
 def test_list_dossiers_query_and_truncation(monkeypatch):
     rows = [_dossier(f"d{i}", f"2026-{i:03d}") for i in range(30)]
-    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
-                        lambda status_filter=None, limit=200: (rows, None))
+    monkeypatch.setattr(
+        handlers.dossier_model, "list_dossiers_page",
+        lambda status_filter=None, limit=200, cursor=None: (rows, None))
     payload = handlers.list_dossiers({"query": "2026-0", "limit": 10})
     assert payload["count"] == 10
     assert payload["truncated"] is True
@@ -633,6 +634,89 @@ def test_list_dossiers_query_matches_the_sommaire(monkeypatch):
                         lambda **kw: (rows, None))
     payload = handlers.list_dossiers({"query": "successoral"})
     assert [i["id"] for i in payload["items"]] == ["d2"]
+
+
+def test_list_dossiers_pagination_cursor_round_trip(monkeypatch):
+    """G07: the model cursor was in hand and thrown away. The emitted
+    next_cursor is minted from the LAST RETURNED row, so a continuation
+    resumes right after it — nothing between limit and the 200-doc window
+    is ever skipped."""
+    from pagination import decode_cursor
+    captured = {}
+
+    def _page(status_filter=None, limit=200, cursor=None):
+        captured["cursor_in"] = cursor
+        return ([_dossier(did=f"d{i}", fn=f"2026-{i:03d}")
+                 | {"opened_date": datetime(2026, 7, i + 1, tzinfo=UTC)}
+                 for i in range(3)], None)
+
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page", _page)
+    payload = handlers.list_dossiers({"limit": 2})
+    assert captured["cursor_in"] is None
+    assert payload["count"] == 2
+    assert payload["truncated"] is True
+    # The token decodes to the SECOND row's [opened_date, id] — the last
+    # one we actually returned.
+    values = decode_cursor(payload["next_cursor"])
+    assert values[1] == "d1"
+
+    handlers.list_dossiers({"limit": 2, "cursor": payload["next_cursor"]})
+    assert captured["cursor_in"] == payload["next_cursor"]
+
+    # Last page: no more rows, no cursor.
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
+                        lambda **kw: ([_dossier()], None))
+    final = handlers.list_dossiers({"limit": 2})
+    assert final["next_cursor"] is None
+    assert final["truncated"] is False
+
+
+def test_offset_pages_the_materialized_tools(monkeypatch):
+    tasks = [{"id": f"t{i}", "title": f"T{i}", "status": "à_faire"}
+             for i in range(5)]
+    monkeypatch.setattr(handlers.task_model, "list_tasks",
+                        lambda **kw: list(tasks))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk",
+                        lambda ids: {})
+    first = handlers.list_tasks({"limit": 2})
+    assert [i["id"] for i in first["items"]] == ["t0", "t1"]
+    assert first["next_offset"] == 2
+    second = handlers.list_tasks({"limit": 2, "offset": first["next_offset"]})
+    assert [i["id"] for i in second["items"]] == ["t2", "t3"]
+    last = handlers.list_tasks({"limit": 2, "offset": 4})
+    assert [i["id"] for i in last["items"]] == ["t4"]
+    assert last["truncated"] is False
+    assert "next_offset" not in last
+
+
+def test_list_trust_transactions_newest_first(monkeypatch):
+    """G07 companion the audit missed: the register was returned OLDEST
+    first — the default call showed the 25 oldest movements of the
+    account. A bare account_id rides the DESC index; the other shapes
+    re-sort the bounded window in Python."""
+    # Bare account_id → the indexed DESC page function.
+    monkeypatch.setattr(
+        handlers.trust_model, "list_transactions_page",
+        lambda account_id, limit=25: (
+            [{"id": "t3", "sequence": 3, "amount": 100},
+             {"id": "t2", "sequence": 2, "amount": 100}], "cur"),
+    )
+    payload = handlers.list_trust_transactions({"account_id": "a1", "limit": 2})
+    assert [t["sequence"] for t in payload["transactions"]] == [3, 2]
+    assert payload["truncated"] is True
+
+    # Filtered shape → bounded fetch re-sorted DESC in Python.
+    monkeypatch.setattr(
+        handlers.trust_model, "list_transactions",
+        lambda **kw: [{"id": "t1", "sequence": 1, "amount": 100,
+                       "account_id": "a1", "status": "compensée"},
+                      {"id": "t2", "sequence": 2, "amount": 100,
+                       "account_id": "a1", "status": "compensée"}],
+    )
+    payload = handlers.list_trust_transactions(
+        {"account_id": "a1", "status": "compensée", "limit": 25}
+    )
+    assert [t["sequence"] for t in payload["transactions"]] == [2, 1]
 
 
 def test_dossier_labels_are_freshened_from_the_live_dossier(monkeypatch):

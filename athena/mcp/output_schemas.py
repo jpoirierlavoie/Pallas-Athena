@@ -119,6 +119,14 @@ def _list_envelope(item_schema: dict, extra: Optional[dict] = None,
     return {"type": "object", "properties": properties, "required": required}
 
 
+def _next_offset() -> dict[str, Any]:
+    """G07 paging key of the materialized list tools — present ONLY when a
+    next page exists (typed, never required)."""
+    return {"next_offset": _int(
+        "Pass as `offset` to fetch the next page. Absent on the last page."
+    )}
+
+
 def _found_or_not(found_schema: dict, notfound_props: dict[str, Any]) -> dict:
     """anyOf(found=true shape, found=false shape), enum-discriminated.
 
@@ -378,7 +386,15 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         }),
     }),
 
-    "list_dossiers": _list_envelope(_dossier_list_row()),
+    "list_dossiers": _list_envelope(
+        _dossier_list_row(),
+        extra={"next_cursor": _nstr(
+            "Opaque continuation token — pass back as `cursor` for the "
+            "next page; null on the last page. Minted from the last "
+            "returned row, so a continuation never skips matches."
+        )},
+        extra_required=["next_cursor"],
+    ),
 
     "get_dossier": _found_or_not(
         _obj({
@@ -477,7 +493,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
          "file_number": _nstr()},
     ),
 
-    "list_tasks": _list_envelope(_task_row()),
+    "list_tasks": _list_envelope(_task_row(), extra=_next_offset()),
 
     "list_hearings": _list_envelope(
         _hearing_row(),
@@ -498,7 +514,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "created_at": _nstr(),
         "updated_at": _nstr(),
         "content_preview": _str("First 280 characters, plain text."),
-    })),
+    }), extra=_next_offset()),
 
     "get_note": _found_or_not(
         _obj({
@@ -548,9 +564,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         # Present ONLY when the request carried folder_id — typed, never
         # required (kept for compatibility; the per-row folder_path is the
         # general resolver).
-        extra={"folder_path": _str("Breadcrumb of the REQUESTED folder. "
-                                   "Only present when folder_id was "
-                                   "given.")},
+        extra={
+            "folder_path": _str("Breadcrumb of the REQUESTED folder. "
+                                "Only present when folder_id was given."),
+            **_next_offset(),
+        },
     ),
 
     "list_parties": _list_envelope(_obj({
@@ -561,7 +579,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "is_organization": _bool(),
         "city": _str(),
         **_stamps(),
-    })),
+    }), extra=_next_offset()),
 
     "get_partie": _found_or_not(
         _obj({

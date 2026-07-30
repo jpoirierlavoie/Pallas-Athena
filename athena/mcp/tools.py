@@ -276,6 +276,21 @@ def _date(description: str) -> dict:
     return {"type": "string", "maxLength": 10, "description": description}
 
 
+def _offset() -> dict:
+    """Offset paging for the fully-materialized list tools (G07)."""
+    return {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5000,
+        "description": (
+            "Skip this many rows before returning `limit` rows (default "
+            "0). Follow next_offset from the previous response. Not "
+            "snapshot-stable: the list is re-derived per call, so a row "
+            "changed between pages shifts the following ones."
+        ),
+    }
+
+
 def _updated_since() -> dict:
     """The change-window argument of the fully-materialized list tools.
 
@@ -376,8 +391,11 @@ TOOLS: dict[str, dict] = {
         "title": "Liste des dossiers",
         "description": (
             "List case files (dossiers), optionally filtered by status or a "
-            "free-text query matching title, file number, or court file number. "
-            "Returns summary rows; use get_dossier for full detail."
+            "free-text query matching title, file number, court file number "
+            "and the sommaire (case summary). Returns summary rows, newest "
+            "opened first; use get_dossier for full detail. Paginate with "
+            "next_cursor: pass it back as `cursor` until it comes back "
+            "null."
         ),
         "input_schema": {
             "type": "object",
@@ -390,8 +408,18 @@ TOOLS: dict[str, dict] = {
                 "query": {
                     "type": "string",
                     "maxLength": 120,
-                    "description": ("Free-text match on title, file number "
-                                    "and court file number."),
+                    "description": ("Free-text match on title, file number, "
+                                    "court file number and sommaire."),
+                },
+                "cursor": {
+                    "type": "string",
+                    "maxLength": 400,
+                    "description": (
+                        "Opaque next_cursor from the previous response — "
+                        "resumes right after the last returned row. Omit "
+                        "for the first page; a malformed value restarts "
+                        "at page 1."
+                    ),
                 },
                 "limit": _limit(20),
             },
@@ -484,6 +512,7 @@ TOOLS: dict[str, dict] = {
                                     "tasks in the default (no-status) view."),
                 },
                 "updated_since": _updated_since(),
+                "offset": _offset(),
                 "limit": _limit(25),
             },
             "additionalProperties": False,
@@ -566,6 +595,7 @@ TOOLS: dict[str, dict] = {
                     "YYYY-MM-DD inclusive."
                 ),
                 "updated_since": _updated_since(),
+                "offset": _offset(),
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -630,6 +660,7 @@ TOOLS: dict[str, dict] = {
                     "Latest effective date, YYYY-MM-DD inclusive."
                 ),
                 "updated_since": _updated_since(),
+                "offset": _offset(),
                 "limit": _limit(25),
             },
             "required": ["dossier_id"],
@@ -665,6 +696,7 @@ TOOLS: dict[str, dict] = {
                     "description": "Free-text match on name, email and phone.",
                 },
                 "updated_since": _updated_since(),
+                "offset": _offset(),
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -900,9 +932,12 @@ TOOLS: dict[str, dict] = {
     "list_trust_transactions": {
         "title": "Registre des opérations en fidéicommis",
         "description": (
-            "The trust register (journal de caisse). Pass dossier_id AND "
+            "The trust register (journal de caisse), NEWEST movements "
+            "first. Pass dossier_id AND "
             "client_id together for a carte-client (one beneficiary); pass "
             "neither for the full journal. Optional date range and status. "
+            "A bare account_id is exact at any register size; the other "
+            "shapes read a bounded window (truncated flags it). "
             "Amounts in cents; date and cleared_date are date-only (YYYY-MM-DD). "
             "Read-only; never exposes the bank transit or account number."
         ),

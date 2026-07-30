@@ -37,6 +37,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
+from pagination import encode_cursor
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -132,6 +133,25 @@ def _filter_updated_since(rows: list[dict], args: dict) -> list[dict]:
 
 def _list_payload(items: list, truncated: bool) -> dict:
     return {"items": items, "count": len(items), "truncated": truncated}
+
+
+def _offset_arg(args: dict) -> int:
+    return max(0, int(args.get("offset", 0)))
+
+
+def _offset_page(rows: list, args: dict, limit: int) -> tuple[list, bool, Optional[int]]:
+    """Slice a fully-materialized result by offset (G07).
+
+    Correct ONLY because these tools receive the complete, deterministically
+    sorted list before slicing — the windowed tools (dossiers, hearings)
+    page by cursor instead. NOT snapshot-stable: the list is re-derived per
+    request, so a row completed between two pages shifts the following ones.
+    Returns (page, truncated, next_offset — None on the last page).
+    """
+    offset = _offset_arg(args)
+    page = rows[offset:offset + limit]
+    truncated = len(rows) > offset + limit
+    return page, truncated, (offset + limit) if truncated else None
 
 
 def _freshen_dossier_labels(rows: list[dict], live: dict[str, dict]) -> list[dict]:
@@ -430,8 +450,13 @@ def list_dossiers(args: dict) -> dict:
     query = (args.get("query") or "").strip().lower()
     limit = _limit_arg(args, 20)
 
-    rows, next_cursor = dossier_model.list_dossiers_page(
-        status_filter=status, limit=_FETCH_CAP
+    # G07: the model cursor was already in hand and thrown away. The
+    # request's `cursor` resumes the server scan; the emitted next_cursor
+    # is minted from the LAST ROW WE RETURN, so nothing between `limit` and
+    # the 200-doc fetch window is ever skipped — a continuation re-scans
+    # (over-fetches, never loses) the remainder of the window.
+    rows, window_cursor = dossier_model.list_dossiers_page(
+        status_filter=status, limit=_FETCH_CAP, cursor=args.get("cursor")
     )
     if query:
         # The sommaire is where the SUBSTANCE lives (« litige successoral »,
@@ -450,8 +475,20 @@ def list_dossiers(args: dict) -> dict:
                 ]
             ).lower()
         ]
-    truncated = next_cursor is not None or len(rows) > limit
-    return _list_payload([_dossier_row(d) for d in rows[:limit]], truncated)
+    page = rows[:limit]
+    next_cursor: Optional[str] = None
+    if len(rows) > limit or window_cursor:
+        last = page[-1] if page else None
+        if last and last.get("opened_date") and last.get("id"):
+            next_cursor = encode_cursor(
+                [last.get("opened_date"), last.get("id")]
+            )
+        else:
+            next_cursor = window_cursor
+    payload = _list_payload([_dossier_row(d) for d in page],
+                            next_cursor is not None)
+    payload["next_cursor"] = next_cursor
+    return payload
 
 
 # ── 3. get_dossier ──────────────────────────────────────────────────────
@@ -634,10 +671,12 @@ def list_tasks(args: dict) -> dict:
         tasks = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
     tasks = _filter_updated_since(tasks, args)
 
-    truncated = len(tasks) > limit
-    page = tasks[:limit]
+    page, truncated, next_offset = _offset_page(tasks, args, limit)
     page = _freshen_dossier_labels(page, _live_dossiers(page))
-    return _list_payload([_task_row(t) for t in page], truncated)
+    payload = _list_payload([_task_row(t) for t in page], truncated)
+    if next_offset is not None:
+        payload["next_offset"] = next_offset
+    return payload
 
 
 # ── 5. list_hearings ────────────────────────────────────────────────────
@@ -753,7 +792,7 @@ def list_notes(args: dict) -> dict:
 
         notes = [n for n in notes if _in_window(n)]
     notes = _filter_updated_since(notes, args)
-    truncated = len(notes) > limit
+    page, truncated, next_offset = _offset_page(notes, args, limit)
     items = [
         {
             "id": n.get("id", ""),
@@ -765,9 +804,12 @@ def list_notes(args: dict) -> dict:
             "updated_at": iso_mtl(_as_utc(n.get("updated_at"))),
             "content_preview": (n.get("content", "") or "")[:_NOTE_PREVIEW_CHARS],
         }
-        for n in notes[:limit]
+        for n in page
     ]
-    return _list_payload(items, truncated)
+    payload = _list_payload(items, truncated)
+    if next_offset is not None:
+        payload["next_offset"] = next_offset
+    return payload
 
 
 # ── 7. get_note ─────────────────────────────────────────────────────────
@@ -870,9 +912,9 @@ def list_documents(args: dict) -> dict:
     docs = _filter_updated_since(docs, args)
 
     paths = _folder_paths(dossier_id)
-    truncated = len(docs) > limit
+    page, truncated, next_offset = _offset_page(docs, args, limit)
     items = []
-    for doc in docs[:limit]:
+    for doc in page:
         size = int(doc.get("file_size", 0) or 0)
         items.append(
             {
@@ -894,6 +936,8 @@ def list_documents(args: dict) -> dict:
             }
         )
     payload = _list_payload(items, truncated)
+    if next_offset is not None:
+        payload["next_offset"] = next_offset
     if folder_id:
         crumbs = folder_model.get_folder_breadcrumb(dossier_id, folder_id)
         payload["folder_path"] = " / ".join(c["name"] for c in crumbs)
@@ -910,7 +954,7 @@ def list_parties(args: dict) -> dict:
         search=args.get("query"),
     )
     parties = _filter_updated_since(parties, args)
-    truncated = len(parties) > limit
+    page, truncated, next_offset = _offset_page(parties, args, limit)
     items = [
         {
             "id": p.get("id", ""),
@@ -921,9 +965,12 @@ def list_parties(args: dict) -> dict:
             "city": p.get("address_city", ""),
             **_stamps(p),
         }
-        for p in parties[:limit]
+        for p in page
     ]
-    return _list_payload(items, truncated)
+    payload = _list_payload(items, truncated)
+    if next_offset is not None:
+        payload["next_offset"] = next_offset
+    return payload
 
 
 # ── 10. get_partie ──────────────────────────────────────────────────────
@@ -1464,16 +1511,41 @@ def list_trust_transactions(args: dict) -> dict:
     journal. date / cleared_date are date-only via date_str; never emits the
     bank transit or account number (spec §9.4)."""
     limit = _limit_arg(args, 25)
-    rows = trust_model.list_transactions(
-        account_id=args.get("account_id"),
-        dossier_id=args.get("dossier_id"),
-        client_id=args.get("client_id"),
-        date_from=_parse_ymd(args.get("date_from")),
-        date_to=_parse_ymd(args.get("date_to")),
-        status=args.get("status"),
-        limit=limit + 1,
+    # NEWEST FIRST (G07 companion): the model orders by sequence ASCENDING,
+    # so `limit=limit+1` used to return the 25 OLDEST register movements —
+    # the exact opposite of « what's the current trust posture ». A bare
+    # account_id rides the DESC composite index (list_transactions_page,
+    # correct at any register size); every other shape has ASC-only indexes,
+    # so it fetches a bounded window and re-sorts in Python — honest only
+    # up to the window, hence the widened fetch + truncation flag.
+    plain_account = bool(
+        args.get("account_id")
+        and not args.get("dossier_id")
+        and not args.get("client_id")
+        and not args.get("status")
+        and not args.get("date_from")
+        and not args.get("date_to")
     )
-    truncated = len(rows) > limit
+    if plain_account:
+        rows, next_cursor = trust_model.list_transactions_page(
+            args["account_id"], limit=limit
+        )
+        truncated = next_cursor is not None
+    else:
+        rows = trust_model.list_transactions(
+            account_id=args.get("account_id"),
+            dossier_id=args.get("dossier_id"),
+            client_id=args.get("client_id"),
+            date_from=_parse_ymd(args.get("date_from")),
+            date_to=_parse_ymd(args.get("date_to")),
+            status=args.get("status"),
+            limit=_FETCH_CAP,
+        )
+        truncated = len(rows) > limit
+        rows.sort(
+            key=lambda r: (r.get("account_id", ""), r.get("sequence") or 0),
+            reverse=True,
+        )
     out = []
     for r in rows[:limit]:
         item = {
