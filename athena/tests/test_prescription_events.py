@@ -208,6 +208,79 @@ def test_events_only_push_dates_later():
         assert derived["date_effective"] >= doc["prescription_date"]
 
 
+# ── Significations (WP14) ────────────────────────────────────────────────
+
+
+def _doc_with_parties(**over):
+    base = _doc(
+        clients=[{"id": "c1", "name": "Jean Tremblay"}],
+        opposing_parties=[{"id": "adv1", "name": "Solo inc."},
+                          {"id": "adv2", "name": "M. Olivares"}],
+    )
+    base.update(over)
+    return base
+
+
+def test_significations_normalize_and_sort():
+    doc = _doc_with_parties(significations=[
+        {"partie_id": "adv2", "date": "2026-07-15", "mode": "huissier"},
+        {"partie_id": "adv1", "date": "2026-07-10", "mode": "personnelle",
+         "confirmee": True},
+        {"partie_id": "", "date": ""},                 # rangée vide
+    ])
+    assert dmod._normalize_significations(doc) == []
+    sigs = doc["significations"]
+    assert [s["partie_id"] for s in sigs] == ["adv1", "adv2"]  # tri par date
+    assert sigs[0]["confirmee"] is True
+    assert all(s["id"] for s in sigs)
+
+
+def test_signification_refuses_a_stranger():
+    """Les délais des art. 145/147 courent PAR PARTIE — signifier un tiers
+    au dossier n'a pas de sens et cacherait une erreur de saisie."""
+    doc = _doc_with_parties(significations=[
+        {"partie_id": "inconnu", "date": "2026-07-15", "mode": "huissier"},
+    ])
+    errors = dmod._normalize_significations(doc)
+    assert any("partie au dossier" in e for e in errors)
+
+
+def test_signification_supersede_chain_must_reference_a_sibling():
+    """Le cas fondateur (2026-027) : un second PV Solo remplace le premier.
+    superseded_by doit viser une entrée SŒUR, pas un id fantôme."""
+    doc = _doc_with_parties(significations=[
+        {"id": "s1", "partie_id": "adv1", "date": "2026-07-15",
+         "mode": "huissier"},
+        {"id": "s2", "partie_id": "adv1", "date": "2026-07-21",
+         "mode": "huissier"},
+    ])
+    assert dmod._normalize_significations(doc) == []
+    # Le premier PV remplacé par le second : chaîne valide.
+    doc2 = _doc_with_parties(significations=[
+        {"id": "s1", "partie_id": "adv1", "date": "2026-07-15",
+         "mode": "huissier", "superseded_by": "s2"},
+        {"id": "s2", "partie_id": "adv1", "date": "2026-07-21",
+         "mode": "huissier"},
+    ])
+    assert dmod._normalize_significations(doc2) == []
+    # Un id fantôme est refusé.
+    doc3 = _doc_with_parties(significations=[
+        {"id": "s1", "partie_id": "adv1", "date": "2026-07-15",
+         "mode": "huissier", "superseded_by": "fantome"},
+    ])
+    errors = dmod._normalize_significations(doc3)
+    assert any("référencer" in e for e in errors)
+
+
+def test_signification_refuses_bad_mode_and_date():
+    doc = _doc_with_parties(significations=[
+        {"partie_id": "adv1", "date": "2026-07-15", "mode": "telepathie"},
+        {"partie_id": "adv1", "date": "hier", "mode": "huissier"},
+    ])
+    errors = dmod._normalize_significations(doc)
+    assert len(errors) == 2
+
+
 # ── La couture des alertes ───────────────────────────────────────────────
 
 

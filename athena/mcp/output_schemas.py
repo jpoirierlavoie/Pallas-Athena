@@ -500,6 +500,32 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "prescription_date_effective on the base row; the raw "
                     "prescription_date is NEVER recomputed from them."),
                 "prescription_notes": _str(),
+                "significations": _arr(_obj({
+                    "id": _str(),
+                    "partie_id": _str(
+                        "A party ON this dossier — arts. 145/147 C.p.c. "
+                        "delays run PER PARTY."),
+                    "date": _nstr("YYYY-MM-DD — the service date."),
+                    "mode": _str(
+                        "personnelle | domicile | huissier | notification "
+                        "| avocat | publication."),
+                    "mode_label": _str("French display label."),
+                    "huissier_id": _str(
+                        "Optional contact id of the bailiff; empty when "
+                        "none."),
+                    "pv_document_id": _str(
+                        "Optional link to the procès-verbal document; "
+                        "empty when none."),
+                    "superseded_by": _str(
+                        "Id of the SIBLING signification that replaces "
+                        "this one (a corrected second PV). The OPERATIVE "
+                        "service for a party is the one nothing "
+                        "supersedes."),
+                    "confirmee": _bool(
+                        "True once the procès-verbal is in hand."),
+                }), "Service of process, chronological. Deadline "
+                    "derivation (réponse per defendant) is not computed "
+                    "yet — read the dates and modes as recorded."),
                 "created_at": _nstr(),
                 "updated_at": _nstr(),
                 **_money("hourly_rate"),

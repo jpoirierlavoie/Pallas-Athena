@@ -286,6 +286,19 @@ def _default_doc() -> dict:
         # événement.
         "prescription_events": [],
         "prescription_notes": "",
+        # Significations (juillet 2026, PA-G01 — le manque le plus coûteux
+        # de l'audit : « quand chaque défendeur a-t-il été signifié » était
+        # sans réponse, la seule trace vivant dans des NOMS de fichiers).
+        # Tableau sur le document (précédent mandataires — pas de
+        # collection, pas d'index) ; saisi MANUELLEMENT (formulaire +
+        # record_signification). Chaque entrée : {id, partie_id (une partie
+        # AU dossier — les délais des art. 145/147 courent PAR partie),
+        # date (date seule à minuit UTC), mode ∈ VALID_SIGNIFICATION_MODES,
+        # huissier_id, pv_document_id, superseded_by (l'entrée que celle-ci
+        # remplace — le cas du second PV Solo), confirmee}. La dérivation
+        # des échéances de réponse est une phase ULTÉRIEURE — le tableau
+        # est la couture.
+        "significations": [],
         # Metadata
         "created_at": None,
         "updated_at": None,
@@ -574,6 +587,95 @@ def _normalize_prescription_events(doc: dict) -> list[str]:
     return errors
 
 
+# Modes de signification — art. 110 s. C.p.c. Vocabulaire fermé.
+VALID_SIGNIFICATION_MODES = (
+    "personnelle",      # à la personne même
+    "domicile",         # à domicile / personne raisonnable
+    "huissier",         # par huissier (le mode usuel)
+    "notification",     # notification (courriel, poste…)
+    "avocat",           # à l'avocat de la partie
+    "publication",      # par avis public (art. 136 C.p.c.)
+)
+SIGNIFICATION_MODE_LABELS = {
+    "personnelle": "Personnelle",
+    "domicile": "À domicile",
+    "huissier": "Par huissier",
+    "notification": "Notification",
+    "avocat": "À l'avocat",
+    "publication": "Par avis public",
+}
+
+
+def _normalize_significations(doc: dict) -> list[str]:
+    """Coerce + clean ``significations`` in place; return errors.
+
+    Same discipline as ``_normalize_prescription_events``: never injects a
+    key, drops blank repeater rows silently, errors loudly on junk.
+    ``partie_id`` must reference a party ON the dossier (arts. 145/147
+    delays run per party — a signification on a stranger is meaningless);
+    ``superseded_by`` must reference a SIBLING entry (the second-PV case).
+    """
+    raw = doc.get("significations")
+    if raw is None:
+        doc["significations"] = []
+        return []
+    if not isinstance(raw, list):
+        doc["significations"] = []
+        return ["Significations invalides."]
+    party_ids = {
+        str(p.get("id"))
+        for p in list(doc.get("clients") or []) + list(
+            doc.get("opposing_parties") or []
+        )
+        if isinstance(p, dict) and p.get("id")
+    }
+    errors: list[str] = []
+    cleaned: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        partie_id = str(entry.get("partie_id") or "").strip()
+        if not partie_id and not entry.get("date"):
+            continue  # blank repeater row
+        mode = str(entry.get("mode") or "").strip()
+        if mode not in VALID_SIGNIFICATION_MODES:
+            errors.append("Mode de signification invalide.")
+            continue
+        when = _coerce_event_date(entry.get("date"))
+        if when is None:
+            errors.append(
+                "Chaque signification requiert une date valide (AAAA-MM-JJ)."
+            )
+            continue
+        if partie_id not in party_ids:
+            errors.append(
+                "La partie signifiée doit être une partie au dossier."
+            )
+            continue
+        cleaned.append({
+            "id": str(entry.get("id") or "").strip() or str(uuid.uuid4()),
+            "partie_id": partie_id,
+            "date": when,
+            "mode": mode,
+            "huissier_id": str(entry.get("huissier_id") or "").strip(),
+            "pv_document_id": str(entry.get("pv_document_id") or "").strip(),
+            "superseded_by": str(entry.get("superseded_by") or "").strip(),
+            "confirmee": bool(entry.get("confirmee")),
+        })
+    ids = {e["id"] for e in cleaned}
+    for e in cleaned:
+        if e["superseded_by"] and e["superseded_by"] not in ids:
+            errors.append(
+                "Une signification remplacée doit référencer une autre "
+                "signification du dossier."
+            )
+    if errors:
+        return errors
+    cleaned.sort(key=lambda e: e["date"])
+    doc["significations"] = cleaned
+    return []
+
+
 def derive_prescription(doc: dict) -> dict:
     """The ONE derivation seam: {status, date_effective} from the raw fields.
 
@@ -726,7 +828,11 @@ def _suggest_next_file_number() -> str:
 def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
-    errors = _normalize_prescription_events(merged) + _validate(merged)
+    errors = (
+        _normalize_prescription_events(merged)
+        + _normalize_significations(merged)
+        + _validate(merged)
+    )
     if errors:
         return None, errors
 
@@ -1078,7 +1184,11 @@ def update_dossier(
         return None, ["Dossier introuvable."]
 
     merged = {**existing, **_sanitize_data(data)}
-    errors = _normalize_prescription_events(merged) + _validate(merged)
+    errors = (
+        _normalize_prescription_events(merged)
+        + _normalize_significations(merged)
+        + _validate(merged)
+    )
     if errors:
         return None, errors
 

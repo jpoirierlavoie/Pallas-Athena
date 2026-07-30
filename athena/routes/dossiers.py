@@ -77,6 +77,7 @@ from models.dossier import (
     ROLE_LABELS,
     STATUS_LABELS,
     PRESCRIPTION_EVENT_LABELS,
+    SIGNIFICATION_MODE_LABELS,
     create_dossier,
     delete_dossier,
     derive_prescription,
@@ -224,10 +225,41 @@ def _form_data() -> dict:
         "prescription_events": _parse_prescription_events_json(
             f.get("prescription_events_json", "")
         ),
+        # Significations (WP14) — même mécanique de répéteur JSON.
+        "significations": _parse_significations_json(
+            f.get("significations_json", "")
+        ),
         "prescription_notes": f.get("prescription_notes", "").strip(),
     }
     normalize_forum(data)
     return data
+
+
+def _parse_significations_json(raw: str) -> list[dict]:
+    """Parse the form's signification repeater into whitelisted dicts."""
+    if not raw or not raw.strip():
+        return []
+    try:
+        items = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for e in items:
+        if not isinstance(e, dict):
+            continue
+        out.append({
+            "id": str(e.get("id") or ""),
+            "partie_id": str(e.get("partie_id") or ""),
+            "date": str(e.get("date") or ""),
+            "mode": str(e.get("mode") or ""),
+            "huissier_id": str(e.get("huissier_id") or ""),
+            "pv_document_id": str(e.get("pv_document_id") or ""),
+            "superseded_by": str(e.get("superseded_by") or ""),
+            "confirmee": bool(e.get("confirmee")),
+        })
+    return out
 
 
 def _parse_prescription_events_json(raw: str) -> list[dict]:
@@ -290,6 +322,7 @@ def _template_context() -> dict:
         "fee_type_labels": FEE_TYPE_LABELS,
         "prescription_labels": PRESCRIPTION_LABELS,
         "prescription_event_labels": PRESCRIPTION_EVENT_LABELS,
+        "signification_mode_labels": SIGNIFICATION_MODE_LABELS,
     }
 
 

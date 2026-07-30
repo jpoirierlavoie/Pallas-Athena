@@ -627,6 +627,27 @@ def get_dossier(args: dict) -> dict:
                 if isinstance(ev, dict)
             ],
             "prescription_notes": d.get("prescription_notes", ""),
+            # WP14: service of process, one entry PER PARTY (arts. 145/147
+            # delays run per party). superseded_by handles the second-PV
+            # case — the OPERATIVE service is the one no sibling
+            # supersedes. Réponse-deadline derivation is a later phase.
+            "significations": [
+                {
+                    "id": sig.get("id", ""),
+                    "partie_id": sig.get("partie_id", ""),
+                    "date": date_str(_as_utc(sig.get("date"))),
+                    "mode": sig.get("mode", ""),
+                    "mode_label": dossier_model.SIGNIFICATION_MODE_LABELS.get(
+                        sig.get("mode", ""), sig.get("mode", "")
+                    ),
+                    "huissier_id": sig.get("huissier_id", ""),
+                    "pv_document_id": sig.get("pv_document_id", ""),
+                    "superseded_by": sig.get("superseded_by", ""),
+                    "confirmee": bool(sig.get("confirmee")),
+                }
+                for sig in (d.get("significations") or [])
+                if isinstance(sig, dict)
+            ],
             "created_at": iso_mtl(_as_utc(d.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(d.get("updated_at"))),
         }
