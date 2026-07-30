@@ -131,7 +131,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 26  # 20 read-only + 6 writes
+    assert len(tools.TOOLS) == 29  # 20 read-only + 9 writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -148,13 +148,15 @@ def test_write_tools_set_is_pinned():
         "create_note", "append_to_note",
         "create_task", "create_hearing",
         "create_time_entry", "create_expense",
+        "complete_dossier", "record_signification",
+        "record_prescription_event",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 26
+    assert len(descriptors) == 29
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -1616,6 +1618,245 @@ def test_wp16_enums_track_the_models():
             ["hearing_type"]["enum"] == list(hearing_model.VALID_HEARING_TYPES))
     assert (tools.TOOLS["create_expense"]["input_schema"]["properties"]
             ["category"]["enum"] == list(expense_model.VALID_CATEGORIES))
+
+
+# ── WP17 dossier mutators: fill-only + append-only recorders ────────────
+
+
+def _wdossier_parties(**over):
+    doc = {
+        **_wdossier(),
+        "clients": [{"id": "p1", "name": "Jean Tremblay"}],
+        "opposing_parties": [{"id": "p2", "name": "Paul Lavoie"}],
+    }
+    doc.update(over)
+    return doc
+
+
+def test_complete_dossier_fills_only_the_empty_fields(monkeypatch):
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(domaine="", action="", sommaire=""),
+    )
+    written = {}
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: (written.update(data)
+                           or ({**_wdossier_parties(), **data}, [])),
+    )
+    payload = handlers.complete_dossier({
+        "dossier_id": "d1", "domaine": "REC", "action": "REC-01",
+        "sommaire": "Réclamation sur compte.",
+    })
+    assert set(written) == {"domaine", "action", "sommaire"}
+    assert payload["fields_set"] == ["action", "domaine", "sommaire"]
+    assert "prescription_status" in payload
+
+
+def test_complete_dossier_conflict_is_atomic(monkeypatch):
+    """One conflicting field poisons the WHOLE call: the empty sommaire
+    must not be filled either — a partial fill leaves the caller guessing
+    which half happened."""
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(domaine="REC", sommaire=""),
+    )
+
+    def _must_not_run(_did, _data):
+        raise AssertionError("conflict must refuse BEFORE update_dossier")
+
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="jamais écrasés"):
+        handlers.complete_dossier({
+            "dossier_id": "d1", "domaine": "CON",       # conflicts
+            "sommaire": "Nouveau résumé.",              # would fill
+        })
+
+
+def test_complete_dossier_default_value_counts_as_empty(monkeypatch):
+    """« Empty » ≡ still equal to the model default — the untouched
+    hourly_rate 30000 is fillable, not a conflict."""
+    defaults = handlers.dossier_model.field_defaults()
+    assert defaults["hourly_rate"] == 30000
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(hourly_rate=30000),
+    )
+    written = {}
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: (written.update(data)
+                           or ({**_wdossier_parties(), **data}, [])),
+    )
+    handlers.complete_dossier({"dossier_id": "d1", "hourly_rate": 35000})
+    assert written == {"hourly_rate": 35000}
+
+
+def test_complete_dossier_identical_values_are_a_quiet_skip(monkeypatch):
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(domaine="REC", sommaire=""),
+    )
+    written = {}
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: (written.update(data)
+                           or ({**_wdossier_parties(), **data}, [])),
+    )
+    payload = handlers.complete_dossier({
+        "dossier_id": "d1", "domaine": "REC",           # identical → skip
+        "sommaire": "Résumé.",                          # fills
+    })
+    assert written == {"sommaire": "Résumé."}
+    assert payload["fields_already_identical"] == ["domaine"]
+    # ALL identical → nothing to do, said plainly, never a silent success.
+    with pytest.raises(tools.ToolArgumentError, match="déjà ces valeurs"):
+        handlers.complete_dossier({"dossier_id": "d1", "domaine": "REC"})
+
+
+def test_complete_dossier_court_file_number_derives_fill_only(monkeypatch):
+    """Filling the number mirrors the web form's parse step — but the
+    derived fields obey the same fill-only rule (tribunal already set
+    stays untouched)."""
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(
+            court_file_number="", tribunal="Cour d'appel",
+        ),
+    )
+    written = {}
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: (written.update(data)
+                           or ({**_wdossier_parties(), **data}, [])),
+    )
+    handlers.complete_dossier({
+        "dossier_id": "d1", "court_file_number": "500-05-123456-241",
+    })
+    assert written["court_file_number"] == "500-05-123456-241"
+    assert written["district_judiciaire"] == "Montréal"
+    assert written["greffe_number"] == "500"
+    assert "tribunal" not in written               # pre-filled → untouched
+
+
+def test_complete_dossier_dry_run_never_reaches_the_model(monkeypatch):
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(domaine=""),
+    )
+
+    def _must_not_run(_did, _data):
+        raise AssertionError("dry_run reached update_dossier")
+
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
+    payload = handlers.complete_dossier(
+        {"dossier_id": "d1", "domaine": "REC", "dry_run": True}
+    )
+    assert payload["fields_set"] == ["domaine"]
+    assert any("Simulation" in w for w in payload["warnings"])
+
+
+def test_record_signification_refuses_a_stranger_partie(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier_parties())
+
+    def _must_not_run(_did, _data):
+        raise AssertionError("stranger partie reached update_dossier")
+
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="partie au dossier"):
+        handlers.record_signification({
+            "dossier_id": "d1", "partie_id": "p9",
+            "date": "2026-07-15", "mode": "huissier",
+        })
+
+
+def test_record_signification_supersedes_marks_the_old_entry(monkeypatch):
+    old = {
+        "id": "sig-old", "partie_id": "p2",
+        "date": datetime(2026, 7, 1, tzinfo=timezone.utc),
+        "mode": "huissier", "huissier_id": "", "pv_document_id": "",
+        "superseded_by": "", "confirmee": True,
+    }
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(significations=[dict(old)]),
+    )
+    written = {}
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: (written.update(data)
+                           or ({**_wdossier_parties(), **data}, [])),
+    )
+    payload = handlers.record_signification({
+        "dossier_id": "d1", "partie_id": "p2", "date": "2026-07-15",
+        "mode": "huissier", "supersedes": "sig-old", "confirmee": True,
+    })
+    stored = {s["id"]: s for s in written["significations"]}
+    new_id = payload["entity"]["id"]
+    assert stored["sig-old"]["superseded_by"] == new_id
+    assert stored[new_id]["superseded_by"] == ""
+    # An unknown supersedes id is refused, never silently dropped.
+    with pytest.raises(tools.ToolArgumentError, match="introuvable"):
+        handlers.record_signification({
+            "dossier_id": "d1", "partie_id": "p2", "date": "2026-07-20",
+            "mode": "huissier", "supersedes": "nope",
+        })
+
+
+def test_record_prescription_event_validates_through_the_model(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier_parties())
+
+    def _must_not_run(_did, _data):
+        raise AssertionError("invalid event reached update_dossier")
+
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError, match="invalide"):
+        handlers.record_prescription_event({
+            "dossier_id": "d1", "type": "bogus", "date": "2026-05-15",
+        })
+    with pytest.raises(tools.ToolArgumentError, match="date de fin"):
+        handlers.record_prescription_event({
+            "dossier_id": "d1", "type": "suspension", "date": "2026-05-15",
+        })
+
+
+def test_record_prescription_event_dry_run_still_answers_the_question(
+    monkeypatch,
+):
+    """dry_run writes nothing but STILL derives the post-event status —
+    that derivation is the whole reason to call the tool."""
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _wdossier_parties(prescription_events=[],
+                                    prise_action_date=None),
+    )
+
+    def _must_not_run(_did, _data):
+        raise AssertionError("dry_run reached update_dossier")
+
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
+    payload = handlers.record_prescription_event({
+        "dossier_id": "d1", "type": "interruption_depot",
+        "date": "2026-05-15", "dry_run": True,
+    })
+    assert payload["dry_run"] is True
+    assert payload["prescription_status"] == "interrompue"
+    assert payload["prescription_date_effective"] is None
+
+
+def test_wp17_tools_refuse_an_unknown_dossier(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
+    for call in (
+        lambda: handlers.complete_dossier({"dossier_id": "x", "domaine": "REC"}),
+        lambda: handlers.record_signification(
+            {"dossier_id": "x", "partie_id": "p1", "date": "2026-07-15"}),
+        lambda: handlers.record_prescription_event(
+            {"dossier_id": "x", "type": "renonciation", "date": "2026-07-15"}),
+    ):
+        with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
+            call()
 
 
 # ── Markdown survival ───────────────────────────────────────────────────

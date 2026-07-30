@@ -691,6 +691,63 @@ def test_create_time_entry_conforms_live_and_dry(write_world, monkeypatch):
     _conforms("create_time_entry", dry)
 
 
+def test_complete_dossier_conforms_live_and_dry(write_world, monkeypatch):
+    monkeypatch.setattr(
+        handlers.dossier_model, "get_dossier",
+        lambda i: _dossier_doc(domaine="", action="", valeur=None),
+    )
+    monkeypatch.setattr(handlers.dossier_model, "field_defaults",
+                        lambda: {"domaine": "", "action": "", "valeur": None})
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: ({**_dossier_doc(), **data}, []),
+    )
+    args = {"dossier_id": "d1", "domaine": "REC", "action": "REC-01",
+            "valeur": 1190000}
+    payload = handlers.complete_dossier(dict(args))
+    _conforms("complete_dossier", payload)
+    assert set(payload["fields_set"]) == {"domaine", "action", "valeur"}
+    dry = handlers.complete_dossier({**args, "dry_run": True})
+    _conforms("complete_dossier", dry)
+
+
+def test_record_signification_conforms(write_world, monkeypatch):
+    dossier = _dossier_doc()
+    dossier["significations"] = []
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: dict(dossier))
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: ({**dossier, **data}, []),
+    )
+    payload = handlers.record_signification({
+        "dossier_id": "d1", "partie_id": "p2", "date": "2026-07-15",
+        "mode": "huissier", "confirmee": True,
+    })
+    _conforms("record_signification", payload)
+    assert payload["entity"]["partie_id"] == "p2"
+
+
+def test_record_prescription_event_conforms_and_derives(write_world, monkeypatch):
+    dossier = _dossier_doc()
+    dossier["prescription_events"] = []
+    dossier["prise_action_date"] = None
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: dict(dossier))
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: ({**dossier, **data}, []),
+    )
+    payload = handlers.record_prescription_event({
+        "dossier_id": "d1", "type": "interruption_depot",
+        "date": "2026-05-15", "reference": "signification DII",
+    })
+    _conforms("record_prescription_event", payload)
+    # The answer that motivated the call: the delay no longer runs.
+    assert payload["prescription_status"] == "interrompue"
+    assert payload["prescription_date_effective"] is None
+
+
 def test_create_expense_conforms_live_and_dry(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.expense_model, "create_expense",

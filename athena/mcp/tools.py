@@ -359,6 +359,8 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     "create_note", "append_to_note",
     # WP16 — the entity creators (create-only; no delete, no modify).
     "create_task", "create_hearing", "create_time_entry", "create_expense",
+    # WP17 — dossier mutators: fill-only-if-empty + append-only recorders.
+    "complete_dossier", "record_signification", "record_prescription_event",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -1433,6 +1435,201 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "create_expense",
+        "scope": SCOPE_WRITE,
+    },
+    "complete_dossier": {
+        "title": "Compléter les champs vides d'un dossier",
+        "description": (
+            "WRITE, fill-only-if-empty. Fill dossier fields that are EMPTY "
+            "or still at their model default — a computed classification, "
+            "value in dispute, prescription starting point… A field that "
+            "already carries a different value is NEVER overwritten: the "
+            "whole call is refused listing the conflicting fields, and "
+            "nothing is written (changing a set value is the lawyer's act, "
+            "in the app). Filling court_file_number also derives the "
+            "judicial metadata exactly as the web form does. Money in "
+            "integer cents; contingency_percent in basis points "
+            "(2500 = 25 %); dates YYYY-MM-DD. Confirm with the user "
+            "before calling; dry_run shows the resulting prescription "
+            "picture first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier to complete (UUIDv4). Required."),
+                "domaine": {
+                    "type": "string", "maxLength": 10,
+                    "description": ("Taxonomy family code (e.g. REC) — "
+                                    "validated by the model."),
+                },
+                "action": {
+                    "type": "string", "maxLength": 10,
+                    "description": ("Taxonomy action code (e.g. REC-01); "
+                                    "must belong to the domaine."),
+                },
+                "action_precision": {
+                    "type": "string", "maxLength": 500,
+                    "description": "Free-text precision (the -99 rows require it).",
+                },
+                "sommaire": {
+                    "type": "string", "maxLength": 2000,
+                    "description": "Case summary, French — only when empty.",
+                },
+                "mandate_type": {
+                    "type": "string",
+                    "enum": ["judiciaire", "service_conseils", "general", "special"],
+                    "description": "Nature of the engagement.",
+                },
+                "court_file_number": {
+                    "type": "string", "maxLength": 40,
+                    "description": ("Court file number; judicial metadata "
+                                    "derives from it when parseable."),
+                },
+                "prescription_type": {
+                    "type": "string", "maxLength": 40,
+                    "description": ("Confirmed delay key (e.g. 3_ans) — "
+                                    "validated against the model "
+                                    "vocabulary; drives the computed date "
+                                    "pour agir."),
+                },
+                "fee_type": {
+                    "type": "string",
+                    "enum": ["hourly", "flat", "contingency", "mixed",
+                             "pro_bono", "aide_juridique"],
+                    "description": "Fee arrangement.",
+                },
+                "fee_notes": {
+                    "type": "string", "maxLength": 1000,
+                    "description": "Free text on the fee arrangement.",
+                },
+                "valeur": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Amount in dispute, integer cents.",
+                },
+                "hourly_rate": {
+                    "type": "integer", "minimum": 1,
+                    "description": ("Hourly rate in cents — fills only if "
+                                    "still at the 30000 default."),
+                },
+                "flat_fee": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Flat fee in cents.",
+                },
+                "contingency_percent": {
+                    "type": "integer", "minimum": 1, "maximum": 10000,
+                    "description": "Basis points (2500 = 25,00 %).",
+                },
+                "droit_action_date": _date(
+                    "Start of the prescription period, YYYY-MM-DD."),
+                "date_avis": _date(
+                    "Confirmed avis préalable date, YYYY-MM-DD."),
+                "prise_action_date": _date(
+                    "Date the recourse was filed (art. 2892) — silences "
+                    "the prescription alert. Prefer "
+                    "record_prescription_event for new entries."),
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "complete_dossier",
+        "scope": SCOPE_WRITE,
+    },
+    "record_signification": {
+        "title": "Consigner une signification",
+        "description": (
+            "WRITE, append-only. Record service of process on a party OF "
+            "the dossier — one entry per party served (arts. 145/147 "
+            "C.p.c. delays run per party). A party not on the dossier is "
+            "refused. Use `supersedes` when a corrected procès-verbal "
+            "replaces an earlier one (the prior entry is marked "
+            "superseded, never deleted). This connector can never edit or "
+            "remove a recorded signification. Confirm with the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier (UUIDv4). Required."),
+                "partie_id": _id(
+                    "The served party's contact id — must be a party ON "
+                    "the dossier (see get_dossier clients/opposing_parties)."
+                ),
+                "date": _date("Service date, YYYY-MM-DD. Required."),
+                "mode": {
+                    "type": "string",
+                    "enum": ["personnelle", "domicile", "huissier",
+                             "notification", "avocat", "publication"],
+                    "description": "Mode of service. Defaults to 'huissier'.",
+                },
+                "huissier_id": _id(
+                    "Optional contact id of the bailiff."
+                ),
+                "pv_document_id": _id(
+                    "Optional documents record of the procès-verbal."
+                ),
+                "supersedes": _id(
+                    "Id of the EARLIER signification this one replaces "
+                    "(from get_dossier.significations) — the corrected-"
+                    "second-PV case."
+                ),
+                "confirmee": {
+                    "type": "boolean",
+                    "description": "true once the procès-verbal is in hand.",
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "partie_id", "date"],
+            "additionalProperties": False,
+        },
+        "handler": "record_signification",
+        "scope": SCOPE_WRITE,
+    },
+    "record_prescription_event": {
+        "title": "Consigner un événement de prescription",
+        "description": (
+            "WRITE, append-only. Record a C.c.Q. prescription event on the "
+            "dossier: interruption_depot (art. 2892 — a demande filed; "
+            "silences the alert, effective date becomes null per art. "
+            "2896), interruption_reconnaissance (art. 2898 — restarts the "
+            "confirmed period from the event date), suspension (art. 2904 "
+            "— requires end_date, shifts the effective deadline), "
+            "renonciation (art. 2883). The RAW prescription_date is never "
+            "recomputed — the derived prescription_status and "
+            "prescription_date_effective returned by this call (and by "
+            "get_dossier) carry the picture. This connector can never "
+            "edit or remove a recorded event. Confirm with the user; "
+            "dry_run previews the resulting status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier (UUIDv4). Required."),
+                "type": {
+                    "type": "string",
+                    "enum": ["interruption_depot",
+                             "interruption_reconnaissance",
+                             "suspension", "renonciation"],
+                    "description": "The C.c.Q. event kind.",
+                },
+                "date": _date("Event date, YYYY-MM-DD. Required."),
+                "end_date": _date(
+                    "Suspension end, YYYY-MM-DD — required for (and only "
+                    "meaningful on) type=suspension."
+                ),
+                "reference": {
+                    "type": "string", "maxLength": 300,
+                    "description": ("Free text: article, document, "
+                                    "circumstance (French)."),
+                },
+                "document_id": _id(
+                    "Optional documents record supporting the event."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "type", "date"],
+            "additionalProperties": False,
+        },
+        "handler": "record_prescription_event",
         "scope": SCOPE_WRITE,
     },
 }

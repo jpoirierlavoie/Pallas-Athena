@@ -2156,15 +2156,17 @@ def _entity_write_result(
     dossier: Optional[dict],
     dav_exposed: bool,
     dry_run: bool,
+    verb: str = "created",
 ) -> dict:
-    """Success payload for the WP16 creators.
+    """Success payload for the WP16 creators and WP17 recorders.
 
     DAV-exposed entities (task, hearing) carry ctag_bumped/dav_synced with
-    the exact semantics of the note tools; time entries and expenses are
-    not DAV-exposed and deliberately do NOT fake those keys.
+    the exact semantics of the note tools; time entries, expenses and
+    dossier-array additions are not DAV-exposed and deliberately do NOT
+    fake those keys.
     """
     payload: dict[str, Any] = {
-        "created": True,
+        verb: True,
         "entity_type": entity_type,
         "entity": entity,
         "warnings": [],
@@ -2502,3 +2504,315 @@ def _create_expense_impl(args: dict, dry_run: bool) -> dict:
         "expense", _entity(expense), dossier=dossier, dav_exposed=False,
         dry_run=False,
     )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# WP17 — dossier mutators: fill-only-if-empty + append-only recorders.
+# Dossiers are NOT DAV-exposed — no CTag anywhere below.
+# ════════════════════════════════════════════════════════════════════════
+
+# The complete_dossier whitelist with each field's coercion kind.
+# NOTHING else is addressable — not status, not parties, not labels.
+_COMPLETABLE_FIELDS: dict[str, str] = {
+    "domaine": "str",
+    "action": "str",
+    "action_precision": "str",
+    "sommaire": "str",
+    "mandate_type": "str",
+    "court_file_number": "str",
+    "prescription_type": "str",
+    "fee_type": "str",
+    "fee_notes": "str",
+    "valeur": "cents",
+    "hourly_rate": "cents",
+    "flat_fee": "cents",
+    "contingency_percent": "basis_points",
+    "droit_action_date": "date",
+    "date_avis": "date",
+    "prise_action_date": "date",
+}
+
+
+def _coerce_completable(field: str, kind: str, raw: Any):
+    if kind == "date":
+        d = _parse_iso_date(str(raw), field)
+        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    if kind in ("cents", "basis_points"):
+        value = int(raw)
+        if value <= 0:
+            raise ToolArgumentError(f"`{field}` doit être un entier positif.")
+        return value
+    return _clean_entity_text(str(raw), field)
+
+
+def _is_unset(current: Any, default: Any) -> bool:
+    """« Empty » ≡ absent, empty, or still equal to the model default."""
+    if current is None or current == "":
+        return True
+    return current == default
+
+
+# ── 27. complete_dossier (WRITE, fill-only-if-empty) ────────────────────
+
+def complete_dossier(args: dict) -> dict:
+    return run_write(
+        "complete_dossier", args, lambda dry: _complete_dossier_impl(args, dry)
+    )
+
+
+def _complete_dossier_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    defaults = dossier_model.field_defaults()
+
+    updates: dict[str, Any] = {}
+    conflicts: list[str] = []
+    identical: list[str] = []
+    for field, kind in _COMPLETABLE_FIELDS.items():
+        if field not in args or args[field] in (None, ""):
+            continue
+        supplied = _coerce_completable(field, kind, args[field])
+        current = dossier.get(field, defaults.get(field))
+        if not _is_unset(current, defaults.get(field)):
+            if current == supplied:
+                identical.append(field)     # harmless no-op — skip quietly
+            else:
+                conflicts.append(field)
+            continue
+        updates[field] = supplied
+
+    if conflicts:
+        # ATOMIC refusal: a partial fill would leave the caller guessing
+        # which half happened. « Add missing fields » never overwrites —
+        # changing a non-empty value is the lawyer's act, in the app.
+        raise ToolArgumentError(
+            "Champs déjà renseignés (jamais écrasés par le connecteur) : "
+            + ", ".join(sorted(conflicts))
+            + ". Rien n'a été écrit. Retirez-les de l'appel, ou modifiez-les "
+            "dans l'application."
+        )
+    if not updates:
+        raise ToolArgumentError(
+            "Aucun champ à compléter : "
+            + (
+                "les champs fournis portent déjà ces valeurs."
+                if identical
+                else "fournissez au moins un champ du dictionnaire "
+                "complete_dossier."
+            )
+        )
+
+    # Filling the court file number mirrors the web form's parse step: the
+    # judicial metadata derives from the number, and filling one without
+    # the other would leave a dossier citing a number its own cards cannot
+    # explain. Derived fields obey the same fill-only rule.
+    if "court_file_number" in updates and (
+        dossier.get("forum_type", "judiciaire") == "judiciaire"
+    ):
+        parsed = reference.parse_court_file_number(updates["court_file_number"])
+        greffe = parsed.get("greffe") or {}
+        juridiction = parsed.get("juridiction") or {}
+        forum = parsed.get("forum") or {}
+        derived = {
+            "greffe_number": parsed.get("greffe_number") or "",
+            "juridiction_number": parsed.get("juridiction_number") or "",
+            "tribunal": juridiction.get("tribunal") or forum.get("name") or "",
+            "competence": juridiction.get("competence") or "",
+            "palais_de_justice": greffe.get("palais_de_justice") or "",
+            "district_judiciaire": greffe.get("district_judiciaire") or "",
+            "is_administrative_tribunal": bool(parsed.get("is_administrative")),
+        }
+        for key, value in derived.items():
+            if value in ("", None, False):
+                continue
+            if _is_unset(dossier.get(key, defaults.get(key)), defaults.get(key)):
+                updates[key] = value
+
+    def _payload(doc: dict) -> dict:
+        derived_p = dossier_model.derive_prescription(doc)
+        return {
+            "completed": True,
+            "entity_type": "dossier",
+            "dossier_id": dossier_id,
+            "file_number": doc.get("file_number", ""),
+            "title": doc.get("title", ""),
+            "fields_set": sorted(updates),
+            "fields_already_identical": sorted(identical),
+            "prescription_date": date_str(_as_utc(doc.get("prescription_date"))),
+            "prescription_status": derived_p["status"],
+            "warnings": [],
+        }
+
+    if dry_run:
+        preview = {**dossier, **updates}
+        dossier_model._apply_prescription_deadline(preview)
+        result = _payload(preview)
+        result["warnings"].append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+        return result
+
+    updated, errors = dossier_model.update_dossier(dossier_id, updates)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _payload(updated)
+
+
+# ── 28. record_signification (WRITE, append-only) ───────────────────────
+
+def record_signification(args: dict) -> dict:
+    return run_write(
+        "record_signification", args,
+        lambda dry: _record_signification_impl(args, dry),
+    )
+
+
+def _record_signification_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    # EXPLICIT whitelist entry; the model's _normalize_significations
+    # validates partie-on-dossier / mode / date and the supersede chain.
+    entry = {
+        "partie_id": (args.get("partie_id") or "").strip(),
+        "date": (args.get("date") or "").strip(),
+        "mode": args.get("mode") or "huissier",
+        "huissier_id": (args.get("huissier_id") or "").strip(),
+        "pv_document_id": (args.get("pv_document_id") or "").strip(),
+        "superseded_by": "",
+        "confirmee": bool(args.get("confirmee")),
+    }
+    existing = [
+        dict(s) for s in (dossier.get("significations") or [])
+        if isinstance(s, dict)
+    ]
+    superseded_id = (args.get("supersedes") or "").strip()
+
+    scratch = {**dossier, "significations": existing + [entry]}
+    errors = dossier_model._normalize_significations(scratch)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    cleaned = scratch["significations"]
+    # The freshly-appended entry is the one whose id none of the EXISTING
+    # entries carried.
+    known = {s.get("id") for s in existing}
+    new_entry = next(s for s in cleaned if s.get("id") not in known)
+    if superseded_id:
+        # « supersedes » points at the PRIOR signification this one
+        # replaces (the corrected-second-PV case) — recorded on the OLD
+        # entry as superseded_by, per the model's chain direction.
+        target = next(
+            (s for s in cleaned if s.get("id") == superseded_id), None
+        )
+        if target is None:
+            raise ToolArgumentError(
+                f"Signification à remplacer introuvable : {superseded_id}. "
+                "Lisez get_dossier pour les ids des significations."
+            )
+        target["superseded_by"] = new_entry["id"]
+
+    def _payload(entry_doc: dict) -> dict:
+        return _entity_write_result(
+            "signification",
+            {
+                "id": entry_doc.get("id", ""),
+                "dossier_id": dossier_id,
+                "dossier_file_number": dossier.get("file_number", ""),
+                "dossier_title": dossier.get("title", ""),
+                "label": dossier_model.SIGNIFICATION_MODE_LABELS.get(
+                    entry_doc.get("mode", ""), entry_doc.get("mode", "")
+                ),
+                "date": date_str(_as_utc(entry_doc.get("date"))),
+                "partie_id": entry_doc.get("partie_id", ""),
+                "mode": entry_doc.get("mode", ""),
+                "confirmee": bool(entry_doc.get("confirmee")),
+            },
+            dossier=dossier, dav_exposed=False, dry_run=dry_run,
+            verb="recorded",
+        )
+
+    if dry_run:
+        return _payload(new_entry)
+    updated, errors = dossier_model.update_dossier(
+        dossier_id, {"significations": cleaned}
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    stored = next(
+        (s for s in updated.get("significations", [])
+         if s.get("id") == new_entry["id"]),
+        new_entry,
+    )
+    return _payload(stored)
+
+
+# ── 29. record_prescription_event (WRITE, append-only) ──────────────────
+
+def record_prescription_event(args: dict) -> dict:
+    return run_write(
+        "record_prescription_event", args,
+        lambda dry: _record_prescription_event_impl(args, dry),
+    )
+
+
+def _record_prescription_event_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    entry = {
+        "type": args.get("type") or "",
+        "date": (args.get("date") or "").strip(),
+        "end_date": (args.get("end_date") or "").strip(),
+        "reference": (args.get("reference") or "").strip(),
+        "document_id": (args.get("document_id") or "").strip(),
+    }
+    existing = [
+        dict(e) for e in (dossier.get("prescription_events") or [])
+        if isinstance(e, dict)
+    ]
+    scratch = {
+        **dossier,
+        "prescription_events": existing + [entry],
+    }
+    errors = dossier_model._normalize_prescription_events(scratch)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    cleaned = scratch["prescription_events"]
+    known = {e.get("id") for e in existing}
+    new_entry = next(e for e in cleaned if e.get("id") not in known)
+
+    def _payload(entry_doc: dict, doc_for_derivation: dict) -> dict:
+        derived = dossier_model.derive_prescription(doc_for_derivation)
+        result = _entity_write_result(
+            "prescription_event",
+            {
+                "id": entry_doc.get("id", ""),
+                "dossier_id": dossier_id,
+                "dossier_file_number": dossier.get("file_number", ""),
+                "dossier_title": dossier.get("title", ""),
+                "label": dossier_model.PRESCRIPTION_EVENT_LABELS.get(
+                    entry_doc.get("type", ""), entry_doc.get("type", "")
+                ),
+                "date": date_str(_as_utc(entry_doc.get("date"))),
+                "type": entry_doc.get("type", ""),
+                "reference": entry_doc.get("reference", ""),
+            },
+            dossier=dossier, dav_exposed=False, dry_run=dry_run,
+            verb="recorded",
+        )
+        # The point of recording the event: what the delay looks like NOW.
+        result["prescription_status"] = derived["status"]
+        result["prescription_date_effective"] = date_str(
+            _as_utc(derived["date_effective"])
+        )
+        return result
+
+    if dry_run:
+        return _payload(new_entry, {**dossier, "prescription_events": cleaned})
+    updated, errors = dossier_model.update_dossier(
+        dossier_id, {"prescription_events": cleaned}
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    stored = next(
+        (e for e in updated.get("prescription_events", [])
+         if e.get("id") == new_entry["id"]),
+        new_entry,
+    )
+    return _payload(stored, updated)

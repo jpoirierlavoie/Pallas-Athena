@@ -197,6 +197,17 @@ FEE_TYPE_LABELS = {
 }
 
 
+def field_defaults() -> dict:
+    """Public view of the default document — the definition of « unset ».
+
+    The MCP complete_dossier tool fills ONLY fields whose current value is
+    empty or still equal to this default (a dossier whose hourly_rate is
+    the 30000 default counts as « never set »). Exposed as a function so
+    the tool cannot drift from the real defaults.
+    """
+    return _default_doc()
+
+
 def _default_doc() -> dict:
     """Return a dict with every dossier field set to its default value."""
     return {

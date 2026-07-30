@@ -362,16 +362,16 @@ def _written_entity(extra: dict[str, Any]) -> dict:
 
 
 def _entity_write_result(
-    entity_extra: dict[str, Any], *, dav: bool
+    entity_extra: dict[str, Any], *, dav: bool, verb: str = "created"
 ) -> dict:
-    """Result contract of a WP16 creator.
+    """Result contract of a WP16 creator / WP17 recorder.
 
     DAV-exposed entities (task, hearing) carry ctag_bumped/dav_synced;
-    time entries and expenses are not DAV-exposed and deliberately do NOT
-    declare those keys — faking them would claim a sync that does not
-    exist."""
+    time entries, expenses and dossier-array additions are not DAV-exposed
+    and deliberately do NOT declare those keys — faking them would claim a
+    sync that does not exist."""
     props: dict[str, Any] = {
-        "created": {"type": "boolean", "enum": [True]},
+        verb: {"type": "boolean", "enum": [True]},
         "entity_type": _str(),
         "entity": _written_entity(entity_extra),
         "warnings": _arr(_str(), "French, human-readable; empty when clean."),
@@ -386,6 +386,25 @@ def _entity_write_result(
             "ctag_bumped AND the collection is visible to DavX5 (a "
             "fermé/archivé dossier's is not).")
     return _obj(props)
+
+
+def _record_prescription_event_result() -> dict:
+    """record_prescription_event's contract: the recorder result PLUS the
+    answer that motivated the call — what the delay looks like NOW."""
+    base = _entity_write_result({
+        "type": _str(),
+        "reference": _str(),
+    }, dav=False, verb="recorded")
+    base["properties"]["prescription_status"] = _str(
+        "courante | interrompue | echue | imprescriptible | a_verifier — "
+        "derived after the event.")
+    base["properties"]["prescription_date_effective"] = _nstr(
+        "YYYY-MM-DD; null when interrupted (until judgment) or not "
+        "computable.")
+    base["required"].extend(
+        ["prescription_status", "prescription_date_effective"]
+    )
+    return base
 
 
 def _write_result(verb: str, extra: Optional[dict[str, Any]] = None) -> dict:
@@ -1054,4 +1073,29 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "taxable": _bool(),
         **_money("amount"),
     }, dav=False),
+
+    "complete_dossier": _obj({
+        "completed": {"type": "boolean", "enum": [True]},
+        "entity_type": _str(),
+        "dossier_id": _str(),
+        "file_number": _str(),
+        "title": _str(),
+        "fields_set": _arr(_str(), "The fields actually filled."),
+        "fields_already_identical": _arr(_str(),
+            "Fields supplied with the value they already carry — "
+            "skipped as harmless no-ops."),
+        "prescription_date": _nstr(
+            "The recomputed raw date pour agir after the fill."),
+        "prescription_status": _str(),
+        "warnings": _arr(_str()),
+        **_write_protocol_keys(),
+    }),
+
+    "record_signification": _entity_write_result({
+        "partie_id": _str(),
+        "mode": _str(),
+        "confirmee": _bool(),
+    }, dav=False, verb="recorded"),
+
+    "record_prescription_event": _record_prescription_event_result(),
 }
