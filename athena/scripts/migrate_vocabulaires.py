@@ -113,6 +113,8 @@ def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
+        # Older/wrapped stdout has no reconfigure — the console encoding stays
+        # as-is. Deliberately ignored: cosmetic output only, never data.
         pass
 
     mode = "APPLY (writing)" if apply else "DRY-RUN (no writes)"

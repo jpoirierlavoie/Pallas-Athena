@@ -25,7 +25,8 @@ from flask import Flask  # noqa: E402
 with mock.patch("google.cloud.firestore.Client"):
     import routes.reception as reception
 
-from config import Config  # noqa: E402
+# NB: Config is reached through `reception.Config` (monkeypatched there), so a
+# direct import would be unused.
 from utils.graph import GraphError  # noqa: E402
 
 UTC = timezone.utc

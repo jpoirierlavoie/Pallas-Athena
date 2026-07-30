@@ -1152,7 +1152,7 @@ def test_mcp_list_notes_includes_the_analyse_note(monkeypatch):
     assert seen["include_analyse"] is True
     assert payload["items"][0]["is_analyse"] is True
 
-    payload = handlers.list_notes({})  # « Général » branch
+    handlers.list_notes({})  # « Général » branch — only the flag is asserted
     assert seen["include_analyse"] is True
 
 

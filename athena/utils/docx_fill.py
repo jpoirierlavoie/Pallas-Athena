@@ -100,34 +100,73 @@ _TABLE_SEPARATOR = (
 # {{dossier.defendeur}}, where the two halves get a different proofing/lang
 # rPr). A fragmented {{champ}} then can't be matched. We heal it BEFORE
 # matching with a byte-level pass (no python-docx round-trip): strip the
-# empty proofing markers, then merge ADJACENT text runs (each holding one
-# <w:t>) when either they carry identical formatting — Word's own save-time
-# optimization — OR joining them bridges a placeholder (see
-# _bridges_placeholder), in which case formatting differences are ignored
-# and the first run's rPr wins, because the whole {{name}} is replaced by a
-# single value anyway. Runs holding anything else (<w:br/>, <w:tab/>,
-# <w:drawing>, field codes…) never match the pattern, so they are left
-# untouched; a bookmark or comment marker between two runs also blocks the
-# merge (they are no longer adjacent) — a genuinely STRUCTURAL split thus
-# stays unmerged and is still reported as a suspect. The output still opens
-# without repair (merging adjacent text runs is a valid OOXML operation).
-_PROOF_ERR_RE = re.compile(r"<w:proofErr\b[^>]*/>|<w:proofErr\b[^>]*>.*?</w:proofErr>",
-                           re.DOTALL)
-# t1/t2 are `[^<]*` — a <w:t> text node never contains a raw '<' (it is
-# escaped as &lt;). This is load-bearing: `.*?` with DOTALL could swallow
-# markup and match ACROSS run/paragraph boundaries, wrongly coalescing
-# unrelated runs. The rPr body stays `.*?` (bounded by the first
-# </w:rPr>; rPr never nests another rPr). The run open tag is `<w:r(?:\s…)?>`
-# so runs carrying revision attributes (`<w:r w:rsidR="…">`, common in real
-# Word output) are matched too; those attributes are pure save-tracking
-# metadata and are dropped on merge (Word reopens fine without them). The
-# alternation `<w:r`-then-`\s`-or-`>` never matches <w:rPr>/<w:rFonts>/… (a
-# letter, not whitespace or '>', follows `<w:r`).
-_ADJACENT_TEXT_RUNS_RE = re.compile(
-    r"<w:r(?:\s[^>]*)?>(?P<rpr1>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t1>[^<]*)</w:t></w:r>"
-    r"<w:r(?:\s[^>]*)?>(?P<rpr2>(?:<w:rPr>.*?</w:rPr>)?)<w:t(?:\s[^>]*)?>(?P<t2>[^<]*)</w:t></w:r>",
-    re.DOTALL,
+# proofing markers, then fold each maximal CHAIN of adjacent text runs (each
+# holding one <w:t>), merging a neighbour into the accumulator when either
+# they carry identical formatting — Word's own save-time optimization — OR
+# joining them bridges a placeholder (see _bridges_placeholder), in which
+# case formatting differences are ignored and the accumulator's rPr wins,
+# because the whole {{name}} is replaced by a single value anyway. Runs
+# holding anything else (<w:br/>, <w:tab/>, <w:drawing>, field codes…) never
+# match the chain unit, so they end the chain and are left untouched; a
+# bookmark or comment marker between two runs does the same (they are no
+# longer adjacent) — a genuinely STRUCTURAL split thus stays unmerged and is
+# still reported as a suspect. The output still opens without repair (merging
+# adjacent text runs is a valid OOXML operation), and a run that is NOT
+# merged is re-emitted byte-for-byte.
+#
+# LINEARITY INVARIANT (CWE-1333) — none of the three patterns below contains
+# a `.`, and none carries re.DOTALL. That is what keeps normalization linear,
+# and it is not a style preference: a `.*?` body under DOTALL rescans to
+# end-of-string once per unmatched opening tag, which is quadratic. Measured
+# before this was fixed: a 1.2 KB .docx whose document.xml held 465 KB of
+# unclosed `<w:proofErr …>` cost 45 SECONDS inside validate_template
+# (repetitive XML deflates ~350:1, so MAX_COMPRESSED_BYTES never bounded the
+# CPU — MAX_SINGLE_XML_BYTES is the real ceiling), and the unclosed-`<w:rPr>`
+# variant multiplied with the old fixpoint loop into O(n³). Two tests pin the
+# invariant by asserting `"." not in pattern` and `not flags & re.DOTALL`.
+
+# `w:proofErr` is an EMPTY element per OOXML (CT_ProofErr carries only a
+# `w:type` attribute, no children) and Word always writes it self-closing, so
+# alternative 1 is the only shape real output has. Alternative 2 is defensive,
+# for a producer that serializes the empty element as an open/close pair. Its
+# body is `[^<]*` — deliberately NOT `.*?` — for BOTH linearity (above) and
+# correctness: `.*?` under DOTALL DELETED everything between an opening marker
+# and the next `</w:proofErr>`, including intervening <w:r> runs and the
+# placeholder text they carried, which then vanished from the document AND
+# from the placeholder inventory. `[^<]*` can never cross markup.
+_PROOF_ERR_RE = re.compile(
+    r"<w:proofErr\b[^>]*/>|<w:proofErr\b[^>]*>[^<]*</w:proofErr>"
 )
+# The optional run-properties block, tempered so the body cannot cross another
+# <w:rPr>/</w:rPr>. Deliberate narrowing: an rPr that NESTS another one (only
+# <w:rPrChange>, i.e. a tracked FORMATTING change) no longer matches, so such a
+# run simply ends the chain — it keeps its own formatting and, if it fragments
+# a placeholder, is reported as a suspect. That is the conservative direction.
+# (The previous comment claimed "rPr never nests another rPr", which is false;
+# `.*?` handled the nesting only by accident, via the very backtracking that
+# made it quadratic.)
+_RUN_RPR = r"(?:<w:rPr>(?:(?!</?w:rPr[\s/>])[\s\S])*</w:rPr>)?"
+# One text run: `<w:r [attrs]>[rPr]<w:t [attrs]>text</w:t></w:r>`. The text
+# body is `[^<]*` — a <w:t> node never contains a raw '<' (it is escaped as
+# &lt;) — which also stops a body from swallowing markup and coalescing runs
+# across paragraph boundaries. The run open tag is `<w:r(?:\s…)?>` so runs
+# carrying revision attributes (`<w:r w:rsidR="…">`, common in real Word
+# output) match too; those are pure save-tracking metadata and are dropped
+# when a run is merged (Word reopens fine without them). The alternation
+# `<w:r`-then-`\s`-or-`>` never matches <w:rPr>/<w:rFonts>/… (a letter, not
+# whitespace or '>', follows `<w:r`).
+_TEXT_RUN = (
+    r"<w:r(?:\s[^>]*)?>(?P<rpr>" + _RUN_RPR + r")"
+    r"<w:t(?:\s[^>]*)?>(?P<t>[^<]*)</w:t></w:r>"
+)
+_TEXT_RUN_RE = re.compile(_TEXT_RUN)
+# A maximal chain of two or more adjacent text runs. Each unit is delimited
+# and deterministic (it starts at `<w:r` and ends at `</w:r>`), so `(?:…){2,}`
+# scans linearly with no inter-iteration ambiguity. The named groups inside
+# repeat harmlessly (each iteration overwrites them and we ignore them here —
+# _fold_run_chain re-scans the matched chain with _TEXT_RUN_RE to get every
+# run). `{2,}` rather than `+` so a lone run is never even visited.
+_RUN_CHAIN_RE = re.compile("(?:" + _TEXT_RUN + "){2,}")
 
 
 def _bridges_placeholder(t1: str, t2: str) -> bool:
@@ -139,6 +178,9 @@ def _bridges_placeholder(t1: str, t2: str) -> bool:
     fragments a namespaced name at the dot (``{{dossier.`` | ``defendeur}}``)
     with a different language/proofing ``rPr`` on each half — which a
     formatting-only merge would refuse forever, so retyping never fixes it.
+
+    It also stops on its own: once the accumulated text has swallowed its
+    closing ``}}``, this returns False and the chain fold moves on.
     """
     last_open = t1.rfind("{{")
     if last_open != -1 and last_open > t1.rfind("}}"):
@@ -146,38 +188,60 @@ def _bridges_placeholder(t1: str, t2: str) -> bool:
     return t1.endswith("{") and t2.startswith("{")
 
 
-def _merge_adjacent_runs(match: re.Match) -> str:
-    # Merge when the two runs share identical run-properties (Word's own
-    # save-time optimization — output still opens without repair) OR when
-    # joining them bridges a placeholder Word fragmented across differently
-    # formatted runs. In the bridge case we keep the FIRST run's rPr: the
-    # whole {{name}} is replaced by one value, so collapsing its fragments to
-    # a single format is correct — and far better than shipping an
-    # unfillable literal {{…}}. Runs holding a <w:br/>, <w:drawing>, field
-    # code, or a bookmark/comment between them still never match this
-    # pattern, so a genuinely structural split stays unmerged (and flagged).
-    t1, t2 = match.group("t1"), match.group("t2")
-    if match.group("rpr1") != match.group("rpr2") and not _bridges_placeholder(t1, t2):
-        return match.group(0)
-    text = t1 + t2
-    # xml:space="preserve" so no boundary whitespace is lost on merge.
-    return (
-        f'<w:r>{match.group("rpr1")}'
-        f'<w:t xml:space="preserve">{text}</w:t></w:r>'
+def _fold_run_chain(match: re.Match) -> str:
+    """Fold one maximal chain of adjacent text runs, left to right.
+
+    A neighbour is absorbed into the accumulator when their rPr are identical
+    (Word's own save-time optimization) or when joining them bridges a
+    placeholder; otherwise the accumulator is flushed and the neighbour
+    becomes the new accumulator. Folding — rather than the pairwise
+    substitution this replaces — fixes a real defect: ``re.sub`` consumed BOTH
+    runs of a REFUSED pair, so the second was never offered to its right
+    neighbour, and a placeholder split across differently-formatted runs
+    healed or not depending on the PARITY of its alignment. That is the
+    « fragmenté persists even after retyping » symptom. It is also one pass
+    instead of a fixpoint loop: O(n), with no iteration cap to tune.
+
+    A run that is never merged into is re-emitted VERBATIM (its original
+    bytes), so normalization is a no-op on documents with nothing to heal.
+    """
+    runs = [
+        (m.group("rpr"), m.group("t"), m.group(0))
+        for m in _TEXT_RUN_RE.finditer(match.group(0))
+    ]
+    out: list[str] = []
+    rpr, text, source = runs[0]
+    merged = False
+    for next_rpr, next_text, next_source in runs[1:]:
+        if rpr == next_rpr or _bridges_placeholder(text, next_text):
+            text += next_text
+            merged = True
+            continue
+        out.append(
+            # xml:space="preserve" so no boundary whitespace is lost on merge.
+            f'<w:r>{rpr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+            if merged
+            else source
+        )
+        rpr, text, source, merged = next_rpr, next_text, next_source, False
+    out.append(
+        f'<w:r>{rpr}<w:t xml:space="preserve">{text}</w:t></w:r>'
+        if merged
+        else source
     )
+    return "".join(out)
 
 
 def _normalize_runs(xml: str) -> str:
-    """Strip proofing markers and coalesce same-format adjacent text runs."""
+    """Strip proofing markers and coalesce same-format adjacent text runs.
+
+    One linear pass: every chain is folded in a single visit (see
+    _fold_run_chain), so there is no fixpoint loop and no pass budget. The
+    previous implementation looped `re.sub` until stable, which needed one
+    pass per fragment in the bridge regime — quadratic, and unbounded.
+    """
     xml = _PROOF_ERR_RE.sub("", xml)
-    # Repeat until stable: each sub pass merges at most one boundary per
-    # run pair (the merged run sits behind the scan cursor), so a run split
-    # into N pieces needs up to N-1 passes.
-    while True:
-        merged = _ADJACENT_TEXT_RUNS_RE.sub(_merge_adjacent_runs, xml)
-        if merged == xml:
-            return merged
-        xml = merged
+    return _RUN_CHAIN_RE.sub(_fold_run_chain, xml)
 
 # ── Safety caps (§7.3 — zip-bomb defense) ──────────────────────────────
 MAX_COMPRESSED_BYTES = 10 * 1024 * 1024
@@ -289,15 +353,6 @@ def _names_in_text(text: str) -> list[str]:
         if name not in seen:
             seen.append(name)
     return seen
-
-
-def _name_counts(text: str) -> dict[str, int]:
-    """Count every placeholder occurrence (not distinct) by name."""
-    counts: dict[str, int] = {}
-    for match in PLACEHOLDER_RE.finditer(text):
-        name = match.group(1)
-        counts[name] = counts.get(name, 0) + 1
-    return counts
 
 
 def _all_tokens_in_text(text: str) -> list[str]:

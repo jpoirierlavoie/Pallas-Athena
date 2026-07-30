@@ -736,3 +736,170 @@ def test_xml_tag_re_is_redos_safe_and_equivalent():
     elapsed = time.perf_counter() - start
     assert result == pathological  # no ``>`` present → nothing is stripped
     assert elapsed < 2.0, f"tag strip took {elapsed:.2f}s — regex may be quadratic again"
+
+
+# ── Run normalization: linearity + the chain fold (2026-07-30) ────────────
+# The same CWE-1333 lesson _XML_TAG_RE learned, applied to the two patterns
+# that had not received it. Measured BEFORE: a 1.2 KB .docx whose
+# document.xml held 465 KB of unclosed <w:proofErr …> cost 45 SECONDS inside
+# validate_template (repetitive XML deflates ~350:1, so the 10 MB compressed
+# cap never bounded the CPU), and the unclosed-<w:rPr> variant multiplied with
+# the old fixpoint loop into O(n³). Thresholds are deliberately loose.
+
+
+def test_proof_err_re_is_redos_safe_and_equivalent():
+    """The paired-marker body is ``[^<]*``, not ``.*?`` under DOTALL — for
+    linearity AND correctness (the old pattern deleted runs between the
+    tags)."""
+    import re as _re
+    import time
+
+    from utils.docx_fill import _PROOF_ERR_RE
+
+    # Real Word output: self-closing markers, removed exactly as before.
+    assert _PROOF_ERR_RE.sub("", '<w:proofErr w:type="spellStart"/>x') == "x"
+    # A legitimate EMPTY paired marker is still removed.
+    assert _PROOF_ERR_RE.sub("", '<w:proofErr w:type="x"></w:proofErr>y') == "y"
+    # Plain text between the tags is still removed with them.
+    assert _PROOF_ERR_RE.sub("", "<w:proofErr a>bruit</w:proofErr>z") == "z"
+
+    # THE correctness pin: MARKUP between the tags is left alone. The old
+    # `.*?` + DOTALL deleted the run and its placeholder — they vanished from
+    # the document AND from the inventory. This fails the instant it returns.
+    inner = "<w:proofErr a><w:r><w:t>{{tribunal}}</w:t></w:r></w:proofErr>"
+    assert _PROOF_ERR_RE.sub("", inner) == inner
+    # An unclosed opening is left in place (and costs O(1) to reject).
+    assert _PROOF_ERR_RE.sub("", "<w:proofErr a>") == "<w:proofErr a>"
+
+    # The invariant itself — no `.`, no DOTALL. Checking BOTH matters: a bare
+    # `.` without DOTALL still rescans to the next newline, and Word XML is
+    # minified into very long lines.
+    assert "." not in _PROOF_ERR_RE.pattern
+    assert not _PROOF_ERR_RE.flags & _re.DOTALL
+
+    # Linearity: ~150 s with the old pattern at this size.
+    pathological = "<w:proofErr x>" * 40_000
+    start = time.perf_counter()
+    assert _PROOF_ERR_RE.sub("", pathological) == pathological
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"proofErr strip took {elapsed:.2f}s — quadratic again?"
+
+
+def test_proof_err_paired_marker_preserves_inner_runs_and_fills():
+    """End-to-end for the correctness half: a run between paired markers keeps
+    its placeholder. Under the old pattern ``placeholders`` was ``[]`` — the
+    run was deleted before anything could see it."""
+    import xml.etree.ElementTree as ET
+
+    body = ('<w:p><w:proofErr w:type="spellStart">'
+            '<w:r><w:t>{{tribunal}}</w:t></w:r>'
+            '</w:proofErr></w:p>')
+    docx = _make_docx(_doc(body))
+    result = validate_template(docx)
+    assert result.errors == []
+    assert result.placeholders == ["tribunal"]
+    assert result.split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"tribunal": "CS"}))
+    assert "CS" in out and "{{" not in out
+    ET.fromstring(out)
+
+
+def test_run_chain_unit_is_redos_safe_and_equivalent():
+    """The rPr body is tempered, so an unclosed ``<w:rPr>`` cannot rescan to
+    end-of-string once per run position."""
+    import re as _re
+    import time
+
+    from utils.docx_fill import _RUN_CHAIN_RE, _TEXT_RUN_RE
+
+    # Equivalence: a multi-child rPr (the {{dossier.defendeur}} lang-split
+    # shape) still matches, with the same groups.
+    run = ('<w:r w:rsidR="00A"><w:rPr><w:rFonts w:ascii="Arial"/>'
+           '<w:lang w:val="fr-CA"/></w:rPr><w:t>{{a</w:t></w:r>')
+    m = _TEXT_RUN_RE.match(run)
+    assert m is not None
+    assert m.group("t") == "{{a"
+    assert "<w:lang" in m.group("rpr")
+    # <w:rPr> is never confused with <w:rFonts>/<w:rStyle>.
+    assert _TEXT_RUN_RE.match("<w:r><w:rFonts/><w:t>x</w:t></w:r>") is None
+    # A single run is not a chain (`{2,}`), so it is never even visited.
+    assert _RUN_CHAIN_RE.search("<w:r><w:t>x</w:t></w:r>") is None
+
+    assert "." not in _TEXT_RUN_RE.pattern
+    assert not _TEXT_RUN_RE.flags & _re.DOTALL
+    assert not _RUN_CHAIN_RE.flags & _re.DOTALL
+
+    # Linearity: ~70 s with the old `.*?` rPr body at this size.
+    pathological = "<w:r><w:rPr>" * 40_000
+    start = time.perf_counter()
+    _RUN_CHAIN_RE.sub("", pathological)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"chain scan took {elapsed:.2f}s — quadratic again?"
+
+
+def test_odd_aligned_split_heals():
+    """« fragmenté persists even after retyping », fixed.
+
+    ``re.sub`` consumed BOTH runs of a REFUSED pair, so the second was never
+    offered to its right neighbour: whether a split healed depended on the
+    PARITY of its alignment. Here the bold run refuses first, which used to
+    strand ``{{trib`` │ ``unal}}`` forever. The fold flushes the bold run and
+    makes ``{{trib`` the new accumulator instead."""
+    import xml.etree.ElementTree as ET
+
+    body = ('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Devant le </w:t></w:r>'
+            '<w:r><w:t>{{trib</w:t></w:r>'
+            '<w:r><w:rPr><w:i/></w:rPr><w:t>unal}}</w:t></w:r></w:p>')
+    docx = _make_docx(_doc(body))
+    result = validate_template(docx)
+    assert result.placeholders == ["tribunal"]
+    assert result.split_run_suspects == []
+    out = _document_xml(fill_docx(docx, {"tribunal": "CS"}))
+    assert "CS" in out and "{{" not in out
+    # The refused bold run is untouched — byte-for-byte.
+    assert "<w:rPr><w:b/></w:rPr><w:t>Devant le </w:t>" in out
+    ET.fromstring(out)
+
+
+def test_unmerged_runs_are_byte_identical():
+    """A run the fold declines to merge is re-emitted VERBATIM — no stray
+    ``xml:space="preserve"``, no dropped ``w:rsidR``. This is the mechanism
+    that keeps normalization a no-op on a template with nothing to heal (and
+    what protects the exact-XML assertion in
+    test_bridge_does_not_merge_unrelated_formatted_runs)."""
+    from utils.docx_fill import _normalize_runs
+
+    chain = ('<w:r w:rsidR="00A"><w:rPr><w:b/></w:rPr><w:t>Gras</w:t></w:r>'
+             '<w:r><w:rPr><w:i/></w:rPr><w:t>Italique</w:t></w:r>')
+    assert _normalize_runs(f"<w:p>{chain}</w:p>") == f"<w:p>{chain}</w:p>"
+
+
+def test_normalize_runs_single_pass_on_deep_chains():
+    """No fixpoint loop, no pass budget: both regimes fold in ONE visit.
+
+    The old loop needed one pass per fragment in the bridge regime (N+1
+    passes, quadratic and unbounded — 25 MB of crafted XML projected to ~34
+    HOURS). Two shapes here: a uniform 4096-run chain, and the longest catalog
+    token split one run per character with a DISTINCT rPr on each — the worst
+    split real Word could inflict."""
+    import time
+
+    from utils.docx_fill import _XML_TAG_RE, _normalize_runs
+
+    uniform = '<w:r><w:rPr><w:b/></w:rPr><w:t>x</w:t></w:r>' * 4096
+    name = "destinataire.nom_complet_avec_civilite"
+    token = f"{{{{{name}}}}}"
+    per_char = "".join(
+        f'<w:r><w:rPr><w:lang w:val="fr-{i:03d}"/></w:rPr><w:t>{c}</w:t></w:r>'
+        for i, c in enumerate(token)
+    )
+    start = time.perf_counter()
+    out_uniform = _normalize_runs(f"<w:p>{uniform}</w:p>")
+    out_split = _normalize_runs(f"<w:p>{per_char}</w:p>")
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"normalization took {elapsed:.2f}s — loop regression?"
+    # The uniform chain collapses to a single run.
+    assert out_uniform.count("<w:r>") == 1
+    assert "x" * 4096 in out_uniform
+    # The 42-way split heals into one matchable placeholder.
+    assert token in _XML_TAG_RE.sub("", out_split)

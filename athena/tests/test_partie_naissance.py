@@ -19,8 +19,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-import pytest
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
