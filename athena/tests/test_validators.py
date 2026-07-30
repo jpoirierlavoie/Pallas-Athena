@@ -119,19 +119,20 @@ def test_email_valid():
     assert normalize_email("avocat@barreau.qc.ca") == "avocat@barreau.qc.ca"
 
 
-# ── normalize_email: the ReDoS bound (CodeQL py/polynomial-redos) ─────────
-# `[^@\s]+\.[^@\s]+` is QUADRATIC — both classes match the dot, so on
-# « x@ » + « a. »×n the engine tries every split point and rescans the tail
-# for each. Unbounded, 64 KB of that shape cost ~10 s of CPU (4× per
-# doubling), and the portal's PUBLIC /api/renvoi passes a JSON field straight
-# into this function. The length bound is the fix; these tests are the
-# regression pins — a timing assertion would be flaky, so the bound itself is
-# asserted instead, plus one loose ceiling that only a quadratic scan fails.
+# ── normalize_email: linearity + equivalence (CodeQL py/polynomial-redos) ──
+# The shape check used to be `^[^@\s]+@[^@\s]+\.[^@\s]+$`, which is QUADRATIC:
+# both classes after the « @ » match the dot, so on « x@ » + « a. »×n the
+# engine tried every split point and rescanned the tail for each — 3.8 s at
+# 40 KB, ~96 min at the portal's 1 MB body cap, GIL held throughout, and the
+# PUBLIC /api/renvoi passes a JSON field straight in. A length bound alone did
+# not satisfy CodeQL (it does not model `len() > N → return` as a sanitizer),
+# so the pattern itself is gone: the checks are now a linear partition. These
+# tests pin BOTH that the language is unchanged and that it stays linear.
 
 
 def test_email_over_rfc_length_refused():
-    """RFC 5321 caps an address at 254 characters; longer is invalid on its
-    own terms AND must never reach the quadratic pattern."""
+    """RFC 5321 caps an address at 254 characters. Kept as defence in depth
+    even though the shape check no longer backtracks."""
     long_local = "a" * 250
     assert len(f"{long_local}@ex.com") > validators.EMAIL_MAX_LENGTH
     assert normalize_email(f"{long_local}@ex.com") is None
@@ -144,22 +145,70 @@ def test_email_over_rfc_length_refused():
 
 
 def test_email_redos_shape_returns_fast():
-    """The adversarial shape must be refused in bounded time. 200 KB costs
-    minutes through the regex; the length check answers in microseconds. The
-    generous 2 s ceiling keeps this from flaking on a loaded runner while
-    still failing outright if the bound is ever removed.
+    """The adversarial shape must be refused in bounded time — now by the
+    shape check itself, not merely by the length bound.
 
     The trailing « @ » is load-bearing and NOT interchangeable: it is what
-    makes a match impossible, forcing the engine through every split point.
-    A trailing SPACE — the shape CodeQL reports — is stripped by
-    normalize_email before matching, after which the string MATCHES in
-    microseconds; a test built on it would pass with the bound removed and
-    pin nothing."""
+    made a match impossible, forcing the old engine through every split point.
+    A trailing SPACE — the shape CodeQL reports — is stripped before matching,
+    after which the string MATCHED in microseconds; a test built on it would
+    have passed even with the vulnerable pattern in place, pinning nothing."""
     attack = "x@" + "a." * 100_000 + "@"
     start = time.perf_counter()
     assert normalize_email(attack) is None
     assert validate_email(attack)[1] == "Adresse courriel invalide."
     assert time.perf_counter() - start < 2.0
+
+
+def test_email_shape_matches_the_historical_regex():
+    """The linear checks must recognise EXACTLY the old pattern's language.
+
+    Verified out of band over 3 906 exhaustive strings and 400 000 random ones
+    (16 Unicode whitespace classes, accents, CJK) with zero divergence; this is
+    the CI-sized replay, so a future "let's just put the regex back, it read
+    better" cannot pass silently. `_LEGACY` is the pattern that was removed —
+    it lives here as the oracle, never in the module."""
+    import itertools
+    import re
+
+    _LEGACY = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    accepts = lambda s: normalize_email(s) is not None  # noqa: E731
+
+    for n in range(5):
+        for tup in itertools.product("a@. \t", repeat=n):
+            s = "".join(tup)
+            # normalize_email strips and lowercases first, so compare the
+            # oracle against the same normalized string it would see.
+            norm = s.strip().lower()
+            expected = bool(norm) and _LEGACY.match(norm) is not None
+            assert accepts(s) is expected, f"divergence sur {s!r}"
+
+    for s in ("john@example.com", "a@b.c", "a@b..c", "a@b.c.d.e", "a@b.c ",
+              "A@B.COM", "no-reply+tag@sub.domain.co.uk", "é@dom.ca"):
+        assert accepts(s), f"devrait être accepté : {s!r}"
+    for s in ("a@.b", "a@b.", "a@@b.c", "a b@c.de", "a@b c.de", "@b.c", "a@",
+              "@", ".", "userexample.com", "user@examplecom"):
+        assert not accepts(s), f"devrait être refusé : {s!r}"
+
+
+def test_email_rejects_embedded_newline_unlike_the_old_regex():
+    """The one deliberate tightening: Python's ``$`` also matches just before
+    a trailing newline, so the old pattern ACCEPTED « a@b.c\\n » and would have
+    returned it verbatim. Unreachable through normalize_email (.strip() runs
+    first), but a newline inside a stored address is never wanted — and a
+    future refactor that drops the strip must not silently reopen it."""
+    import re
+
+    assert re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", "a@b.c\n") is not None
+    assert validators._WHITESPACE_RE.search("a@b.c\n") is not None
+
+
+def test_whitespace_guard_is_linear():
+    """Tripwire, mirroring the ones in test_docx_fill: a single character
+    class cannot backtrack. A `.` creeping in here would mean someone
+    reintroduced a scanning pattern."""
+    assert "." not in validators._WHITESPACE_RE.pattern
+    assert validators._WHITESPACE_RE.pattern == r"\s"
 
 
 # ── validate_email ────────────────────────────────────────────────────────

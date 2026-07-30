@@ -34,11 +34,22 @@
 # (83.0.0) is therefore blocked by that pin, which exists because
 # opentelemetry-instrumentation 0.48b0 imports `pkg_resources` at runtime
 # (setuptools removed it in 81+) and tracing would silently disable.
-# Re-evaluate when the OTel stack moves to >=0.50b0 — that bump must move the
-# flask/requests/jinja2 instrumentation packages in lockstep (0.48b0 hard-pins
-# its siblings at ==0.48b0), lift api/sdk off 1.27.0, and delete the
+#
+# The remediation is NOT "upgrade setuptools" — it is the OTel bump, after
+# which **setuptools leaves the dependency graph entirely** (its only two
+# `# via` sources, this file's constraint and opentelemetry-instrumentation,
+# disappear together), so the advisory stops being reported on all three
+# surfaces at once and these IgnoredVulns blocks become dead. Verified
+# 2026-07-30: `setuptools` drops out of opentelemetry-instrumentation's
+# requires_dist at **0.49b0** (upstream announces it under the 0.48b0 heading,
+# the removal lands in 0.49b0 — an earlier note here said 0.50b0). The bump
+# must move flask/requests/jinja2 instrumentation in lockstep (each release
+# hard-pins its siblings at `==`), lift api/sdk off 1.27.0, and delete the
 # `setuptools<81` line in the SAME commit, or the resolver keeps 80.10.2 and
-# nothing changes.
+# nothing changes. Target set checked 2026-07-30: api/sdk 1.44.0 +
+# instrumentation 0.65b0 + exporter/propagator-gcp 1.12.0 resolve cleanly
+# (the GCP exporter's `~=1.30` admits 1.44). Deferred deliberately: it lands
+# on the observability component, which fails SILENTLY.
 #
 # THIS FILE ONLY SILENCES OSV-SCANNER. Two other surfaces report the same
 # advisory independently and must be dismissed by hand, per surface:

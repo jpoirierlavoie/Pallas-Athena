@@ -202,7 +202,7 @@ def test_live_partie_used_when_provided():
 
 import io
 import zipfile
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 
 from utils.docx_fill import extract_placeholders, fill_docx
 from utils.template_fields import (

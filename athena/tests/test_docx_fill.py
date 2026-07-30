@@ -187,7 +187,7 @@ def test_textbox_inner_block_placeholder_stays_well_formed():
     # <w:p> nests inside <w:txbxContent> (text boxes — common in
     # letterheads). Cloning must land on the INNERMOST paragraph so the
     # output stays balanced XML (Word refuses unbalanced documents).
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     outer = (
         "<w:p><w:r><w:drawing><w:txbxContent>"
@@ -205,7 +205,7 @@ def test_block_outside_matchable_paragraph_falls_back_inline():
     # A block placeholder in a host paragraph that also embeds a text box
     # cannot be paragraph-cloned safely — it must still be substituted
     # (inline, space-joined), never shipped as a literal {{name}}.
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     outer = (
         "<w:p><w:r><w:drawing><w:txbxContent>"
@@ -527,7 +527,7 @@ def test_repeating_rows_clone_tr_preserving_cell_formatting():
         {"h.date": "3 mai 2026", "h.description": "Appel", "h.temps": "0,50"},
     ]}
     out = _document_xml(fill_docx(docx, {}, rows_by_region=rows))
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
     ET.fromstring(out)
     assert out.count("<w:tr>") == 4  # header + 3 data rows
     assert "1er mai 2026" in out and "Rédaction" in out and "0,50" in out
@@ -573,7 +573,7 @@ def test_row_scoped_field_escaping_and_backslash():
 # ── Phase H.2: conditional regions ──────────────────────────────────────
 
 def test_conditional_true_keeps_content_strips_markers():
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
     docx = _make_docx(_doc(
         _para("{{?si_honoraires}}"),
         _tbl(_tr(_tc("Honoraires professionnels"))),
@@ -588,7 +588,7 @@ def test_conditional_true_keeps_content_strips_markers():
 def test_conditional_true_removes_empty_marker_paragraphs_no_blank_line():
     # A kept section must not leave a blank line: the marker-only paragraphs
     # are removed entirely, not merely emptied.
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
     docx = _make_docx(_doc(
         _para("Avant"),
         _para("{{?si_honoraires}}"),
@@ -624,7 +624,7 @@ def test_adjacent_tables_after_conditional_get_minimal_separator():
     # Two kept conditional tables would end up directly adjacent (which Word
     # merges) — a minimal (~1pt) separator paragraph keeps them distinct with
     # no visible gap.
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
     docx = _make_docx(_doc(
         _para("{{?si_honoraires}}"), _tbl(_tr(_tc("HON"))), _para("{{/si_honoraires}}"),
         _para("{{?si_debours_tx}}"), _tbl(_tr(_tc("TX"))), _para("{{/si_debours_tx}}"),
@@ -638,7 +638,7 @@ def test_adjacent_tables_after_conditional_get_minimal_separator():
 
 
 def test_conditional_false_removes_whole_span():
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
     docx = _make_docx(_doc(
         _para("Avant"),
         _para("{{?si_debours_ntx}}"),
@@ -662,7 +662,7 @@ def test_conditional_false_does_not_swallow_preceding_blank_paragraph():
     blank paragraph into the deleted span. Same defect `_PARAGRAPH_RE` and
     test_self_closing_empty_paragraph_not_swallowed guard against; span_re had
     never received the guard."""
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     docx = _make_docx(_doc(
         _para("Avant"),
@@ -707,7 +707,7 @@ def test_unbalanced_condition_raises():
 def test_false_conditional_wrapping_table_skips_row_expansion():
     # Conditionals run BEFORE rows (§4.3): a removed table's repeating rows
     # are never expanded and no orphan marker survives.
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
     docx = _make_docx(_doc(
         _para("{{?si_debours_tx}}"),
         _tbl(_tr(_tc("{{#ligne_debours_tx}}{{d.description}}"))),
@@ -834,7 +834,7 @@ def test_proof_err_paired_marker_preserves_inner_runs_and_fills():
     """End-to-end for the correctness half: a run between paired markers keeps
     its placeholder. Under the old pattern ``placeholders`` was ``[]`` — the
     run was deleted before anything could see it."""
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     body = ('<w:p><w:proofErr w:type="spellStart">'
             '<w:r><w:t>{{tribunal}}</w:t></w:r>'
@@ -890,7 +890,7 @@ def test_odd_aligned_split_heals():
     PARITY of its alignment. Here the bold run refuses first, which used to
     strand ``{{trib`` │ ``unal}}`` forever. The fold flushes the bold run and
     makes ``{{trib`` the new accumulator instead."""
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     body = ('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Devant le </w:t></w:r>'
             '<w:r><w:t>{{trib</w:t></w:r>'

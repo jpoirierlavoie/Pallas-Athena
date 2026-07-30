@@ -95,22 +95,20 @@ def validate_phone(raw: str) -> tuple[Optional[str], Optional[str]]:
 # ── Email ────────────────────────────────────────────────────────────────
 
 # RFC 5321 §4.5.3.1.3 caps a forward-path (the whole address) at 256 octets
-# including the angle brackets — 254 usable characters. NOTHING legitimate
-# exceeds it, and the bound is load-bearing rather than cosmetic: the pattern
-# below is POLYNOMIAL (quadratic) on an adversarial shape, so it must never
-# see an unbounded string. See _EMAIL_RE.
+# including the angle brackets — 254 usable characters. Nothing legitimate
+# exceeds it. Kept as defence in depth: the shape check below is now linear,
+# so this bound is no longer the only thing standing between a public JSON
+# body and a quadratic scan — but an unbounded address is invalid anyway, and
+# the portal's /api/renvoi feeds this function straight from an unauthenticated
+# request. Never "fix" an over-long value by truncating (that would turn a
+# 300-character string into a plausible-looking address).
 EMAIL_MAX_LENGTH = 254
 
-
-# `[^@\s]+\.[^@\s]+` after the « @ » makes this quadratic: both classes match
-# the dot, so on input like « x@ » + « a. »×n the engine tries every split
-# point and rescans the tail for each one. Measured: 64 KB of that shape costs
-# ~10 s of CPU, quadrupling per doubling — i.e. a single request could pin a
-# worker thread past the gunicorn timeout. normalize_email therefore rejects
-# anything longer than EMAIL_MAX_LENGTH *before* matching. Do NOT drop that
-# length check, and do not "simplify" it away by pre-truncating instead
-# (truncation would turn a 300-char address into a plausible-looking one).
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# A single character class with no quantifier — it cannot backtrack, and it
+# keeps the EXACT `\s` semantics of the pattern this replaced (str.isspace()
+# is not identical). The tripwire in tests/test_validators.py asserts it stays
+# free of `.`.
+_WHITESPACE_RE = re.compile(r"\s")
 
 
 def normalize_email(raw: str) -> Optional[str]:
@@ -120,11 +118,24 @@ def normalize_email(raw: str) -> Optional[str]:
     - Strip whitespace
     - Convert to lowercase
     - Reject anything longer than EMAIL_MAX_LENGTH (RFC 5321)
-    - Basic pattern validation: must match [^@]+@[^@]+\\.[^@]+
+    - Basic shape validation: ``local@domain`` where the domain carries a dot
+      that is neither its first nor its last character, and no whitespace or
+      second « @ » appears anywhere
     - Return None if invalid
 
-    Do NOT attempt full RFC 5322 validation. The pattern check catches
-    obvious errors (missing @, missing domain, spaces).
+    Do NOT attempt full RFC 5322 validation. The shape check catches obvious
+    errors (missing @, missing domain, spaces).
+
+    This used to be the regex ``^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$``, which was
+    POLYNOMIAL (CodeQL py/polynomial-redos, high): both classes after the
+    « @ » match the dot, so on « x@ » + « a. »×n the engine tried every split
+    point and rescanned the tail for each — 3.8 s at 40 KB, ~96 min at the
+    portal's 1 MB body cap, with the GIL held the whole time. The checks below
+    recognise the IDENTICAL language in one linear pass (equivalence pinned by
+    test_email_shape_matches_the_historical_regex), with one deliberate
+    tightening: Python's ``$`` also matches just before a trailing newline, so
+    the old pattern accepted « a@b.c\\n ». Unreachable here because .strip()
+    runs first, but a newline in a stored address is never wanted.
     """
     if not raw:
         return None
@@ -132,13 +143,17 @@ def normalize_email(raw: str) -> Optional[str]:
     if not normalized:
         return None
     if len(normalized) > EMAIL_MAX_LENGTH:
-        # Over-long input is invalid on its own terms AND would feed the
-        # quadratic pattern below an unbounded string (ReDoS) — the portal's
-        # /api/renvoi takes this value straight from a public JSON body.
         return None
-    if _EMAIL_RE.match(normalized):
-        return normalized
-    return None
+    if _WHITESPACE_RE.search(normalized):
+        return None
+    local, at, domain = normalized.partition("@")
+    if not at or not local or "@" in domain:
+        return None
+    # `domain[1:-1]` is exactly `[^@\s]+\.[^@\s]+`: a dot with at least one
+    # character before it and at least one after.
+    if "." not in domain[1:-1]:
+        return None
+    return normalized
 
 
 def validate_email(raw: str) -> tuple[Optional[str], Optional[str]]:
