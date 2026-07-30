@@ -67,7 +67,7 @@ env_variables:
   # ⚠️ An EMPTY value disables the predicate entirely — the sync then imports
   # nothing and the absence loop flags existing reservations as cancelled.
   BOOKINGS_JURISTE_UPN: "jason@poirierlavoie.ca"
-  BOOKINGS_SUBJECT_KEYWORDS: "Consultation,Réunion"
+  BOOKINGS_SUBJECT_KEYWORDS: "Consultation,Rencontre"
   BOOKINGS_SYNC_ACTIVE: "true"
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"

@@ -284,12 +284,12 @@ def test_le_type_est_derive_du_mot_cle(client, monkeypatch, spy):
     """Le juriste publie plusieurs services ; les couler tous dans
     « consultation » perdrait l'information que Bookings donne gratuitement."""
     monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS",
-                        ("Consultation", "Réunion"))
+                        ("Consultation", "Rencontre"))
     monkeypatch.setattr(h, "list_bookings_all", lambda: [])
     monkeypatch.setattr(
         tb.graph_calendrier, "lister_reservations",
         lambda debut, fin: [_ev("ical-c", subject="Jean - Consultation"),
-                            _ev("ical-r", subject="Jean - Réunion")],
+                            _ev("ical-r", subject="Jean - Rencontre")],
     )
     tb._synchroniser()
     types = sorted(d["hearing_type"] for d in spy.creates)

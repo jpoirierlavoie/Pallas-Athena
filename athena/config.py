@@ -164,7 +164,11 @@ class Config:
     # be silent.
     BOOKINGS_TYPE_PAR_MOT_CLE: dict[str, str] = {
         "consultation": "consultation",
-        "reunion": "rencontre",
+        # Le service Bookings « Rencontre » (renommé de « Réunion » le
+        # 2026-07-30, bascule nette — aucun rendez-vous ne portait l'ancien
+        # nom). Le mot-clé plié coïncide avec le type d'audience : le libellé
+        # Bookings et le type Athéna disent le même mot.
+        "rencontre": "rencontre",
     }
     BOOKINGS_TYPE_DEFAUT: str = "consultation"
     BOOKINGS_SYNC_LOOKAHEAD_DAYS: int = int(
