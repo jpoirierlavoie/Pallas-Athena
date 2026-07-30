@@ -290,6 +290,10 @@ def _step_row(s: dict, now: datetime) -> dict:
 
 
 def _dossier_row(d: dict) -> dict:
+    # WP13: the list-level status fixes the interrompue-vs-échue blindness
+    # (a past prescription_date used to be indistinguishable from a blown
+    # deadline without one get_dossier call per row).
+    derived = dossier_model.derive_prescription(d)
     return {
         "id": d.get("id", ""),
         "file_number": d.get("file_number", ""),
@@ -302,6 +306,10 @@ def _dossier_row(d: dict) -> dict:
         "court_file_number": d.get("court_file_number", ""),
         "opened_date": date_str(_as_utc(d.get("opened_date"))),
         "prescription_date": date_str(_as_utc(d.get("prescription_date"))),
+        "prescription_status": derived["status"],
+        "prescription_date_effective": date_str(
+            _as_utc(derived["date_effective"])
+        ),
         "clients": [c.get("name", "") for c in d.get("clients", [])],
         "opposing_parties": [p.get("name", "") for p in d.get("opposing_parties", [])],
         **_stamps(d),
@@ -325,27 +333,38 @@ def _invoice_row(inv: dict) -> dict:
 
 
 def _prescription_row(d: dict, now: datetime) -> dict:
-    pdate = _as_utc(d.get("prescription_date"))
+    # WP13: the countdown runs on the EFFECTIVE date (a reconnaissance or
+    # suspension event may have pushed it later); the raw prescription_date
+    # stays emitted beside it as provenance. list_prescription_alerts
+    # attaches the derived pair; a row reaching this builder without them
+    # (unit tests, direct calls) falls back to the raw date.
+    effective = _as_utc(
+        d.get("prescription_date_effective") or d.get("prescription_date")
+    )
     days_remaining: Optional[int] = None
     last_action: Optional[str] = None
     # last_action_day is INCLUSIVE (on-or-before): when the deadline already
-    # falls on a juridical day, last_action_date EQUALS prescription_date and
+    # falls on a juridical day, last_action_date EQUALS the deadline and
     # differs is False. The web dashboard only shows the date in the differs
     # case; the MCP emits both plus the boolean so a client can do the same
     # instead of reading the duplicate as a data bug (PA-D02).
     last_action_differs = False
-    if pdate:
+    if effective:
         # Countdown against the user's (Montreal) calendar date — UTC
         # "today" runs ahead of the user's evening by up to 5 hours.
         today = now.astimezone(MTL).date()
-        days_remaining = max(0, (pdate.date() - today).days)
-        last_day, last_action_differs = deadlines.last_action_day(pdate.date())
+        days_remaining = max(0, (effective.date() - today).days)
+        last_day, last_action_differs = deadlines.last_action_day(
+            effective.date()
+        )
         last_action = last_day.isoformat()
     return {
         "dossier_id": d.get("id", ""),
         "file_number": d.get("file_number", ""),
         "title": d.get("title", ""),
-        "prescription_date": date_str(pdate),
+        "prescription_date": date_str(_as_utc(d.get("prescription_date"))),
+        "prescription_date_effective": date_str(effective),
+        "prescription_status": d.get("prescription_status", ""),
         "days_remaining": days_remaining,
         "last_action_date": last_action,
         "last_action_differs": last_action_differs,
@@ -588,6 +607,25 @@ def get_dossier(args: dict) -> dict:
             # sans quoi l'assistant continuerait d'avertir d'un délai qui ne
             # court plus. Date seule : date_str, jamais iso_mtl.
             "prise_action_date": date_str(_as_utc(d.get("prise_action_date"))),
+            # WP13: the event register + its derived projection. The RAW
+            # prescription_date (base row) is never recomputed — provenance;
+            # prescription_status/date_effective already computed by
+            # _dossier_row via the one derivation seam.
+            "prescription_events": [
+                {
+                    "id": ev.get("id", ""),
+                    "type": ev.get("type", ""),
+                    "type_label": dossier_model.PRESCRIPTION_EVENT_LABELS.get(
+                        ev.get("type", ""), ev.get("type", "")
+                    ),
+                    "date": date_str(_as_utc(ev.get("date"))),
+                    "end_date": date_str(_as_utc(ev.get("end_date"))),
+                    "reference": ev.get("reference", ""),
+                    "document_id": ev.get("document_id", ""),
+                }
+                for ev in (d.get("prescription_events") or [])
+                if isinstance(ev, dict)
+            ],
             "prescription_notes": d.get("prescription_notes", ""),
             "created_at": iso_mtl(_as_utc(d.get("created_at"))),
             "updated_at": iso_mtl(_as_utc(d.get("updated_at"))),

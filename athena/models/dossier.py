@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import icalendar
@@ -13,6 +13,7 @@ from models import aggregation_values, db, reference
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import taxonomie
+from utils.deadlines import next_juridical_day
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.recours import (
     VALID_PRESCRIPTION_TYPES,
@@ -272,6 +273,18 @@ def _default_doc() -> dict:
         # juillet 2026 ; absente sur un dossier hérité = aucune action prise,
         # ce qui est le bon défaut.
         "prise_action_date": None,
+        # Événements de prescription (juillet 2026, PA-G02 — décision
+        # utilisateur 2026-07-30 : modèle d'événements complet). Saisis
+        # MANUELLEMENT (formulaire + outil MCP record_prescription_event),
+        # jamais dérivés. Le prescription_date BRUT ci-dessus n'est JAMAIS
+        # recalculé à partir d'eux (provenance — le test épinglé
+        # test_deadline_never_touches_prise_action_date survit) ; la
+        # projection dérivée vit dans derive_prescription(). Chaque entrée :
+        # {id, type ∈ VALID_PRESCRIPTION_EVENT_TYPES, date (date seule à
+        # minuit UTC), end_date (suspension seulement), reference,
+        # document_id}. Additif — absent sur un dossier hérité = aucun
+        # événement.
+        "prescription_events": [],
         "prescription_notes": "",
         # Metadata
         "created_at": None,
@@ -466,6 +479,174 @@ def _validate(data: dict) -> list[str]:
     return errors
 
 
+# Les quatre événements du C.c.Q. que le modèle sait porter. Vocabulaire
+# FERMÉ — un cinquième type est une décision de contenu juridique, pas un
+# ajout de code.
+VALID_PRESCRIPTION_EVENT_TYPES = (
+    "interruption_depot",           # art. 2892/2896 — demande en justice
+    "interruption_reconnaissance",  # art. 2898 — reconnaissance du droit
+    "suspension",                   # art. 2904 s. — impossibilité d'agir
+    "renonciation",                 # art. 2883 s. — renonciation à la
+                                    # prescription acquise/écoulée
+)
+PRESCRIPTION_EVENT_LABELS = {
+    "interruption_depot": "Interruption — demande en justice (art. 2892)",
+    "interruption_reconnaissance": "Interruption — reconnaissance (art. 2898)",
+    "suspension": "Suspension (art. 2904)",
+    "renonciation": "Renonciation (art. 2883)",
+}
+
+
+def _coerce_event_date(raw) -> Optional[datetime]:
+    """Coerce an event date to date-only midnight UTC (house convention)."""
+    if isinstance(raw, datetime):
+        return datetime(raw.year, raw.month, raw.day, tzinfo=timezone.utc)
+    if isinstance(raw, date):
+        return datetime(raw.year, raw.month, raw.day, tzinfo=timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.strptime(raw.strip(), "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_prescription_events(doc: dict) -> list[str]:
+    """Coerce + clean ``prescription_events`` in place; return errors.
+
+    Never INJECTS: callers always operate on a merged doc that already
+    carries the key (from ``_default_doc`` or the stored document), so a
+    partial update that does not touch the events cannot erase them (the
+    ``_normalize``-injection lesson from models/partie). Blank rows from
+    the form repeater are dropped silently; malformed ones error loudly.
+    """
+    raw = doc.get("prescription_events")
+    if raw is None:
+        doc["prescription_events"] = []
+        return []
+    if not isinstance(raw, list):
+        doc["prescription_events"] = []
+        return ["Événements de prescription invalides."]
+    errors: list[str] = []
+    cleaned: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        etype = str(entry.get("type") or "").strip()
+        if not etype and not entry.get("date"):
+            continue  # blank repeater row
+        if etype not in VALID_PRESCRIPTION_EVENT_TYPES:
+            errors.append("Type d'événement de prescription invalide.")
+            continue
+        when = _coerce_event_date(entry.get("date"))
+        if when is None:
+            errors.append(
+                "Chaque événement de prescription requiert une date valide "
+                "(AAAA-MM-JJ)."
+            )
+            continue
+        end = _coerce_event_date(entry.get("end_date"))
+        if etype == "suspension":
+            if end is None:
+                errors.append("Une suspension requiert une date de fin.")
+                continue
+            if end < when:
+                errors.append(
+                    "La fin d'une suspension ne peut précéder son début."
+                )
+                continue
+        else:
+            end = None
+        cleaned.append({
+            "id": str(entry.get("id") or "").strip() or str(uuid.uuid4()),
+            "type": etype,
+            "date": when,
+            "end_date": end,
+            "reference": sanitize(
+                str(entry.get("reference") or ""), max_length=300
+            ),
+            "document_id": str(entry.get("document_id") or "").strip(),
+        })
+    cleaned.sort(key=lambda e: e["date"])
+    doc["prescription_events"] = cleaned
+    return errors
+
+
+def derive_prescription(doc: dict) -> dict:
+    """The ONE derivation seam: {status, date_effective} from the raw fields.
+
+    Consumed by ``list_prescription_alerts`` (dashboard + MCP get_agenda),
+    ``routes/dossiers._attach_prescription_warnings`` (list pastille + card
+    colour) and the MCP ``get_dossier`` — the three-surface parity rule: a
+    dossier silenced on one surface must be silenced on all.
+
+    The RAW ``prescription_date`` is never touched (provenance; the pinned
+    test) — this projects an EFFECTIVE picture beside it:
+
+    - ``interruption_depot`` (art. 2892) → status « interrompue »,
+      effective None: per art. 2896 the interruption lasts until judgment,
+      so computing a date would be inventing one. The legacy
+      ``prise_action_date`` folds in as an implicit depot event at READ
+      time — no storage migration, silencing semantics unchanged.
+    - ``interruption_reconnaissance`` / ``renonciation`` → a NEW period of
+      the same confirmed duration runs from the event date
+      (``compute_date_pour_agir`` — the house arithmetic, art. 52 forward
+      report included). No confirmed period → effective None, « a_verifier ».
+    - ``suspension`` → shifts the current effective deadline by the
+      suspension's length, then forward to the next juridical day.
+    - Statuses: courante | interrompue | echue | imprescriptible |
+      a_verifier. « interrompue » means DECLARED by the lawyer — whether
+      the demande was served within 60 days (art. 2892 al. 1) is not
+      recorded and not asserted.
+    """
+    p_type = doc.get("prescription_type", "")
+    if p_type == "imprescriptible":
+        return {"status": "imprescriptible", "date_effective": None}
+
+    events = [
+        e for e in (doc.get("prescription_events") or [])
+        if isinstance(e, dict) and e.get("date")
+    ]
+    if doc.get("prise_action_date"):
+        events = events + [{
+            "type": "interruption_depot",
+            "date": doc["prise_action_date"],
+            "end_date": None,
+        }]
+    events.sort(key=lambda e: _coerce_event_date(e.get("date")) or datetime.min.replace(tzinfo=timezone.utc))
+
+    effective = doc.get("prescription_date")
+    period = prescription_period(p_type)
+    for ev in events:
+        etype = ev.get("type")
+        when = _coerce_event_date(ev.get("date"))
+        if etype == "interruption_depot":
+            # Interruption continues until judgment (art. 2896) — nothing
+            # after it changes the picture until the instance ends.
+            return {"status": "interrompue", "date_effective": None}
+        if etype in ("interruption_reconnaissance", "renonciation"):
+            effective = (
+                compute_date_pour_agir(when, p_type) if period else None
+            )
+        elif etype == "suspension" and effective is not None:
+            end = _coerce_event_date(ev.get("end_date"))
+            if end and when:
+                shifted = (effective + (end - when)).date()
+                adjusted = next_juridical_day(shifted)
+                effective = datetime(
+                    adjusted.year, adjusted.month, adjusted.day,
+                    tzinfo=timezone.utc,
+                )
+
+    if effective is None:
+        return {"status": "a_verifier", "date_effective": None}
+    today = datetime.now(timezone.utc).date()
+    status = "echue" if effective.date() < today else "courante"
+    return {"status": status, "date_effective": effective}
+
+
 def _apply_prescription_deadline(doc: dict) -> None:
     """Recompute ``prescription_date`` (the "date pour agir") in place.
 
@@ -545,7 +726,7 @@ def _suggest_next_file_number() -> str:
 def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
-    errors = _validate(merged)
+    errors = _normalize_prescription_events(merged) + _validate(merged)
     if errors:
         return None, errors
 
@@ -897,7 +1078,7 @@ def update_dossier(
         return None, ["Dossier introuvable."]
 
     merged = {**existing, **_sanitize_data(data)}
-    errors = _validate(merged)
+    errors = _normalize_prescription_events(merged) + _validate(merged)
     if errors:
         return None, errors
 
@@ -1127,14 +1308,33 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
         alerts = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
         if len(alerts) >= limit:
             # Prescription deadlines must never be silently truncated. Checked
-            # on the RAW count, before the prise-d'action filter: a silenced
+            # on the RAW count, before the silencing filter: a silenced
             # dossier still consumes a slot, so a full window means real alerts
             # are hidden beyond it — which must still be said.
             logger.warning(
                 "list_prescription_alerts: result window full (limit=%d) — "
                 "some alerts may be hidden", limit,
             )
-        return [d for d in alerts if not d.get("prise_action_date")]
+        # Silencing + the effective window run through derive_prescription
+        # (WP13): a depot event — or the legacy prise_action_date it folds
+        # in — silences (art. 2896: interrupted until judgment); a
+        # reconnaissance/suspension pushes the EFFECTIVE date, possibly past
+        # the cutoff. Events only push dates LATER, so the raw-date server
+        # query over-fetches, never under-fetches — no new index. Rows kept
+        # with no effective date are « a_verifier »: alerted, flagged
+        # unverified, never silently dropped.
+        out = []
+        for d in alerts:
+            derived = derive_prescription(d)
+            if derived["status"] in ("interrompue", "imprescriptible"):
+                continue
+            eff = derived["date_effective"]
+            if eff is not None and eff > cutoff:
+                continue
+            d["prescription_status"] = derived["status"]
+            d["prescription_date_effective"] = eff
+            out.append(d)
+        return out
     except Exception as exc:
         logger.warning("list_prescription_alerts: query failed: %s", exc)
         return []

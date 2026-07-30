@@ -252,7 +252,20 @@ def _dossier_list_row() -> dict:
         "tribunal": _str(),
         "court_file_number": _str(),
         "opened_date": _nstr("YYYY-MM-DD."),
-        "prescription_date": _nstr("The computed « date pour agir », YYYY-MM-DD."),
+        "prescription_date": _nstr(
+            "The RAW computed « date pour agir », YYYY-MM-DD — provenance, "
+            "never recomputed after an interruption/suspension event."),
+        "prescription_status": _str(
+            "courante | interrompue | echue | imprescriptible | "
+            "a_verifier. « interrompue » = DECLARED by the lawyer (a "
+            "demande filed / prise d'action) — art. 2892 signification is "
+            "not recorded, so treat it as declared, not verified. A past "
+            "prescription_date with status interrompue is NOT a blown "
+            "deadline."),
+        "prescription_date_effective": _nstr(
+            "YYYY-MM-DD — the date the delay actually runs to, after "
+            "events; null when interrupted (art. 2896: until judgment) "
+            "or not computable."),
         "clients": _arr(_str(), "Client NAMES (strings) in this summary row."),
         "opposing_parties": _arr(_str()),
         **_stamps(),
@@ -356,7 +369,19 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "dossier_id": _str(),
             "file_number": _str(),
             "title": _str(),
-            "prescription_date": _nstr("YYYY-MM-DD."),
+            "prescription_date": _nstr(
+                "YYYY-MM-DD — the RAW computed date pour agir (provenance; "
+                "never recomputed after an event)."),
+            "prescription_date_effective": _nstr(
+                "YYYY-MM-DD — the date the countdown actually runs on: "
+                "the raw date, pushed later by any "
+                "reconnaissance/suspension events. Null on an a_verifier "
+                "row."),
+            "prescription_status": _str(
+                "courante | echue | a_verifier here (interrompue and "
+                "imprescriptible rows are silenced out of the alerts). "
+                "a_verifier = alerted but the delay could not be "
+                "computed — verify at the source."),
             "days_remaining": _nint(),
             "last_action_date": _nstr(
                 "Last juridical day ON OR BEFORE the prescription date — "
@@ -449,10 +474,31 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "date_avis": _nstr("Confirmed avis préalable date — manual."),
                 "prise_action_date": _nstr(
                     "Date the recourse was filed / the limitation period "
-                    "interrupted (art. 2892 C.c.Q.) — manual. When set, this "
+                    "interrupted (art. 2892 C.c.Q.) — manual, LEGACY: reads "
+                    "as an implicit interruption_depot event. When set, this "
                     "dossier is also dropped from get_agenda's "
                     "prescription_alerts: the deadline no longer looms."
                 ),
+                "prescription_events": _arr(_obj({
+                    "id": _str(),
+                    "type": _str(
+                        "interruption_depot (art. 2892/2896) | "
+                        "interruption_reconnaissance (art. 2898) | "
+                        "suspension (art. 2904) | renonciation "
+                        "(art. 2883)."),
+                    "type_label": _str("French display label."),
+                    "date": _nstr("YYYY-MM-DD."),
+                    "end_date": _nstr(
+                        "YYYY-MM-DD — suspensions only; null otherwise."),
+                    "reference": _str(
+                        "Free text: article, document, circumstance."),
+                    "document_id": _str(
+                        "Optional link to a documents record; empty when "
+                        "none."),
+                }), "The manually-recorded prescription events, "
+                    "chronological. They drive prescription_status and "
+                    "prescription_date_effective on the base row; the raw "
+                    "prescription_date is NEVER recomputed from them."),
                 "prescription_notes": _str(),
                 "created_at": _nstr(),
                 "updated_at": _nstr(),

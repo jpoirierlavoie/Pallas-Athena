@@ -76,8 +76,10 @@ from models.dossier import (
     PREJUDICIAIRE_FILE_NUMBER,
     ROLE_LABELS,
     STATUS_LABELS,
+    PRESCRIPTION_EVENT_LABELS,
     create_dossier,
     delete_dossier,
+    derive_prescription,
     get_dossier,
     list_dossiers,
     list_dossiers_page,
@@ -216,10 +218,47 @@ def _form_data() -> dict:
         # Acte interruptif posé — manuelle, jamais dérivée ; sa présence tait
         # l'alerte de prescription.
         "prise_action_date": _parse_date(f.get("prise_action_date", "")),
+        # Événements de prescription (WP13) — répéteur JSON, même mécanique
+        # que clients_json/mandataires_json ; le modèle normalise et valide
+        # chaque entrée (_normalize_prescription_events).
+        "prescription_events": _parse_prescription_events_json(
+            f.get("prescription_events_json", "")
+        ),
         "prescription_notes": f.get("prescription_notes", "").strip(),
     }
     normalize_forum(data)
     return data
+
+
+def _parse_prescription_events_json(raw: str) -> list[dict]:
+    """Parse the form's event repeater into whitelisted dicts.
+
+    Explicit whitelist, never ``**entry`` — the Alpine state round-trips
+    through the browser. Type/date validation and coercion belong to the
+    model (`_normalize_prescription_events`); this only surfaces what the
+    form sent.
+    """
+    if not raw or not raw.strip():
+        return []
+    try:
+        items = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for e in items:
+        if not isinstance(e, dict):
+            continue
+        out.append({
+            "id": str(e.get("id") or ""),
+            "type": str(e.get("type") or ""),
+            "date": str(e.get("date") or ""),
+            "end_date": str(e.get("end_date") or ""),
+            "reference": str(e.get("reference") or ""),
+            "document_id": str(e.get("document_id") or ""),
+        })
+    return out
 
 
 def _template_context() -> dict:
@@ -250,6 +289,7 @@ def _template_context() -> dict:
         "party_role_labels": PARTY_ROLE_LABELS,
         "fee_type_labels": FEE_TYPE_LABELS,
         "prescription_labels": PRESCRIPTION_LABELS,
+        "prescription_event_labels": PRESCRIPTION_EVENT_LABELS,
     }
 
 
@@ -263,18 +303,22 @@ def _template_context() -> dict:
 def _attach_prescription_warnings(dossiers: list[dict]) -> None:
     """Attach _prescription_warning ('red', 'orange', or '') to each dossier.
 
-    A ``prise_action_date`` silences it: the recourse has been filed, so the
-    deadline no longer looms. Without this the dossier would leave the
-    dashboard alerts while keeping its red dot in the list and a red « Date
-    pour agir » on its own card — a contradiction that would teach the lawyer
-    to distrust the colour.
+    The silencing and the deadline both come from the ONE derivation seam
+    (``models.dossier.derive_prescription``, WP13) — a depot event or the
+    legacy ``prise_action_date`` silences (the recourse has been filed, the
+    deadline no longer looms), and a reconnaissance/suspension pushes the
+    EFFECTIVE date the colour is computed from. Diverging from the seam
+    would leave a dossier out of the dashboard alerts while keeping its
+    red dot in the list — a contradiction that would teach the lawyer to
+    distrust the colour.
     """
     now = datetime.now(timezone.utc)
     for d in dossiers:
-        pd = d.get("prescription_date")
-        if d.get("prise_action_date"):
+        derived = derive_prescription(d)
+        pd = derived["date_effective"]
+        if derived["status"] in ("interrompue", "imprescriptible") or not pd:
             d["_prescription_warning"] = ""
-        elif pd and hasattr(pd, "date"):
+        else:
             delta = (pd - now).days
             if delta <= 30:
                 d["_prescription_warning"] = "red"
@@ -282,8 +326,6 @@ def _attach_prescription_warnings(dossiers: list[dict]) -> None:
                 d["_prescription_warning"] = "orange"
             else:
                 d["_prescription_warning"] = ""
-        else:
-            d["_prescription_warning"] = ""
 
 
 # ── List ──────────────────────────────────────────────────────────────────

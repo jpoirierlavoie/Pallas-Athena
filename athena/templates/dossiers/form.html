@@ -819,6 +819,68 @@
           </div>
         </div>
 
+        {# ── Événements de prescription (WP13) ─────────────────────
+           Registre manuel des interruptions/suspensions (C.c.Q.). Le
+           prescription_date BRUT n'est jamais recalculé ; la projection
+           dérivée (statut, date effective) vit dans
+           models.dossier.derive_prescription. Données initiales dans un
+           bloc JSON non exécutable (le motif maison), état Alpine,
+           sérialisé dans un champ caché à la soumission. #}
+        <script type="application/json" id="prescription-events-initial">[
+          {%- for ev in (dossier.prescription_events if dossier and dossier.prescription_events else []) -%}
+          {"id": {{ (ev.id or '') | tojson }},
+           "type": {{ (ev.type or '') | tojson }},
+           "date": {{ (ev.date.strftime('%Y-%m-%d') if ev.date and ev.date.strftime is defined else (ev.date or '')) | tojson }},
+           "end_date": {{ (ev.end_date.strftime('%Y-%m-%d') if ev.end_date and ev.end_date.strftime is defined else (ev.end_date or '')) | tojson }},
+           "reference": {{ (ev.reference or '') | tojson }},
+           "document_id": {{ (ev.document_id or '') | tojson }}}{{ "," if not loop.last }}
+          {%- endfor -%}
+        ]</script>
+        <div x-data="{
+               events: JSON.parse(document.getElementById('prescription-events-initial').textContent || '[]'),
+               add() { this.events.push({id: '', type: 'interruption_depot', date: '', end_date: '', reference: '', document_id: ''}); },
+               remove(i) { this.events.splice(i, 1); },
+             }"
+             class="pt-2">
+          <input type="hidden" name="prescription_events_json" :value="JSON.stringify(events)">
+          <label class="block text-sm font-medium text-gray-700 mb-1">Événements de prescription</label>
+          <p class="text-xs text-gray-400 mb-2">Interruptions, suspensions et renonciations (C.c.Q.). La date pour agir affichée reste la date brute — le statut et la date effective en tiennent compte partout (tableau de bord, liste, connecteur).</p>
+          <template x-for="(ev, i) in events" :key="i">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Type</label>
+                <select x-model="ev.type"
+                        class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  {% for key, label in prescription_event_labels.items() %}
+                  <option value="{{ key }}">{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Date</label>
+                <input type="date" x-model="ev.date"
+                       class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div x-show="ev.type === 'suspension'">
+                <label class="block text-xs text-gray-500 mb-1">Fin de la suspension</label>
+                <input type="date" x-model="ev.end_date"
+                       class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Référence</label>
+                <div class="flex items-center gap-2">
+                  <input type="text" x-model="ev.reference" placeholder="Article, document, circonstance…"
+                         class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                  <button type="button" @click="remove(i)"
+                          class="text-sm text-red-600 hover:text-red-700 flex-shrink-0">Retirer</button>
+                </div>
+              </div>
+            </div>
+          </template>
+          <button type="button" @click="add()"
+                  class="text-sm font-medium text-indigo-600 hover:text-indigo-700">+ Ajouter un événement</button>
+        </div>
+
         <p class="text-xs text-gray-400">La « date pour agir » est calculée automatiquement à partir de la prescription et du droit d'action. Elle reste affichée après une prise d'action, comme trace de l'échéance respectée.</p>
       </div>
     </div>

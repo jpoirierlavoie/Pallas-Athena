@@ -131,16 +131,24 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
         cutoff = now + timedelta(days=60)
         alerts = []
         for d in list_prescription_alerts(cutoff):
-            pdate = d.get("prescription_date")
+            # The EFFECTIVE date (WP13: events may have pushed it past the
+            # raw one); falls back to the raw date for event-less dossiers.
+            pdate = d.get("prescription_date_effective") or d.get(
+                "prescription_date"
+            )
             if not pdate:
-                continue  # defensive — the range filter excludes these
+                continue  # a_verifier row with no computable date
             d["_days_remaining"] = max(0, (pdate - now).days)
             pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
             last_action, differs = last_action_day(pdate_as_date)
             d["_last_action_date"] = last_action
             d["_last_action_differs"] = differs
             alerts.append(d)
-        alerts.sort(key=lambda d: d.get("prescription_date") or now)
+        alerts.sort(
+            key=lambda d: d.get("prescription_date_effective")
+            or d.get("prescription_date")
+            or now
+        )
         return alerts
     except Exception:
         return []
