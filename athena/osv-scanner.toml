@@ -38,10 +38,17 @@
 # flask/requests/jinja2 instrumentation packages in lockstep (0.48b0 hard-pins
 # its siblings at ==0.48b0), lift api/sdk off 1.27.0, and delete the
 # `setuptools<81` line in the SAME commit, or the resolver keeps 80.10.2 and
-# nothing changes. NB: Dependabot does NOT read this file — the corresponding
-# Dependabot alert needs a UI dismissal ("Vulnerable code is not actually
-# used"). Trivy does not report it either (its workflow filters to
-# CRITICAL,HIGH and this advisory is medium).
+# nothing changes.
+#
+# THIS FILE ONLY SILENCES OSV-SCANNER. Two other surfaces report the same
+# advisory independently and must be dismissed by hand, per surface:
+#   • Dependabot — does not read this file at all (dismiss in the UI:
+#     "Vulnerable code is not actually used").
+#   • Trivy — observed filing it as a code-scanning alert even though
+#     .github/workflows/trivy.yml sets severity: 'CRITICAL,HIGH' and the
+#     advisory is MEDIUM (the filter does not reliably prune the SARIF
+#     output). Dismiss that alert directly if it is noise.
+# Keep all three in sync; a dismissal on one surface does nothing to the rest.
 
 [[IgnoredVulns]]
 id = "PYSEC-2026-3447"
