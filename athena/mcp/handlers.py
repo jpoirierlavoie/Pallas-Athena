@@ -217,12 +217,19 @@ def _prescription_row(d: dict, now: datetime) -> dict:
     pdate = _as_utc(d.get("prescription_date"))
     days_remaining: Optional[int] = None
     last_action: Optional[str] = None
+    # last_action_day is INCLUSIVE (on-or-before): when the deadline already
+    # falls on a juridical day, last_action_date EQUALS prescription_date and
+    # differs is False. The web dashboard only shows the date in the differs
+    # case; the MCP emits both plus the boolean so a client can do the same
+    # instead of reading the duplicate as a data bug (PA-D02).
+    last_action_differs = False
     if pdate:
         # Countdown against the user's (Montreal) calendar date — UTC
         # "today" runs ahead of the user's evening by up to 5 hours.
         today = now.astimezone(MTL).date()
         days_remaining = max(0, (pdate.date() - today).days)
-        last_action = deadlines.prev_juridical_day(pdate.date()).isoformat()
+        last_day, last_action_differs = deadlines.last_action_day(pdate.date())
+        last_action = last_day.isoformat()
     return {
         "dossier_id": d.get("id", ""),
         "file_number": d.get("file_number", ""),
@@ -230,6 +237,8 @@ def _prescription_row(d: dict, now: datetime) -> dict:
         "prescription_date": date_str(pdate),
         "days_remaining": days_remaining,
         "last_action_date": last_action,
+        "last_action_differs": last_action_differs,
+        "droit_action_date": date_str(_as_utc(d.get("droit_action_date"))),
         "prescription_notes": d.get("prescription_notes", ""),
     }
 

@@ -332,7 +332,11 @@ TOOLS: dict[str, dict] = {
             "Daily briefing: upcoming hearings, urgent tasks, urgent protocol "
             "steps, prescription alerts within 60 days, and practice-wide stats "
             "(open dossiers, unbilled work, outstanding invoices). Prefer this "
-            "as the first call for any \"what's coming up\" question."
+            "as the first call for any \"what's coming up\" question. In "
+            "prescription alerts, last_action_date is the last juridical day "
+            "ON OR BEFORE the deadline (inclusive — it equals "
+            "prescription_date on a business-day deadline; check "
+            "last_action_differs), never the date an action was taken."
         ),
         "input_schema": {
             "type": "object",

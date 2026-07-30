@@ -293,6 +293,46 @@ def test_get_agenda_marks_overdue_tasks(monkeypatch):
     assert step["protocol_title"] == "Protocole"
 
 
+def test_get_agenda_prescription_alert_last_action_semantics(monkeypatch):
+    """PA-D02: last_action_day is INCLUSIVE — a business-day deadline keeps
+    its own date (differs False); a weekend deadline pulls it earlier
+    (differs True). The alert also carries droit_action_date so the delay
+    can be sanity-checked without a second get_dossier call."""
+    monday = datetime(2026, 9, 21, tzinfo=UTC)      # a juridical Monday
+    saturday = datetime(2026, 9, 26, tzinfo=UTC)    # pulls back to Friday
+    droit = datetime(2023, 9, 21, tzinfo=UTC)
+    alerts = [
+        {"id": "d1", "file_number": "2026-030", "title": "Marchand c. Gélinas",
+         "prescription_date": monday, "droit_action_date": droit,
+         "prescription_notes": ""},
+        {"id": "d2", "file_number": "2026-031", "title": "X c. Y",
+         "prescription_date": saturday, "prescription_notes": ""},
+    ]
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
+                        lambda a, b, limit=100: [])
+    monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.protocol_model, "list_urgent_steps",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.dossier_model, "list_prescription_alerts",
+                        lambda cutoff, limit=50: alerts)
+    monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 0)
+    monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
+                        lambda: {"hours": 0.0, "amount": 0})
+    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
+
+    rows = handlers.get_agenda({})["prescription_alerts"]
+    on_business_day, on_weekend = rows[0], rows[1]
+
+    assert on_business_day["last_action_date"] == "2026-09-21"
+    assert on_business_day["last_action_differs"] is False
+    assert on_business_day["droit_action_date"] == "2023-09-21"
+
+    assert on_weekend["last_action_date"] == "2026-09-25"  # the Friday
+    assert on_weekend["last_action_differs"] is True
+    assert on_weekend["droit_action_date"] is None
+
+
 # ── list_dossiers / get_dossier ─────────────────────────────────────────
 
 def _dossier(did="d1", fn="2026-001", title="Tremblay c. Lavoie"):

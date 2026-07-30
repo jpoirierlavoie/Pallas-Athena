@@ -70,6 +70,20 @@ def prev_juridical_day(d: date) -> date:
     return current
 
 
+def last_action_day(deadline: date) -> tuple[date, bool]:
+    """The real last day to act before *deadline*, and whether it differs.
+
+    ``prev_juridical_day`` is INCLUSIVE (on-or-before), so on a deadline that
+    already falls on a juridical day the last action day IS the deadline and
+    the boolean is False. Consumers that surface the date should show it only
+    when it differs — otherwise it reads as a duplicated (buggy-looking)
+    date. Shared by the dashboard and the MCP get_agenda alert row so the
+    two surfaces can never drift.
+    """
+    last = prev_juridical_day(deadline)
+    return last, last != deadline
+
+
 def add_jours_ouvrables(start: date, n: int) -> date:
     """Add *n* business days: each counted day skips Saturdays, Sundays and
     Québec statutory holidays (the same table ``next_juridical_day`` uses via

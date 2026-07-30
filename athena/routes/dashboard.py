@@ -122,7 +122,7 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
     """
     try:
         from models.dossier import list_prescription_alerts
-        from utils.deadlines import prev_juridical_day
+        from utils.deadlines import last_action_day
         cutoff = now + timedelta(days=60)
         alerts = []
         for d in list_prescription_alerts(cutoff):
@@ -131,9 +131,9 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
                 continue  # defensive — the range filter excludes these
             d["_days_remaining"] = max(0, (pdate - now).days)
             pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
-            last_action = prev_juridical_day(pdate_as_date)
+            last_action, differs = last_action_day(pdate_as_date)
             d["_last_action_date"] = last_action
-            d["_last_action_differs"] = last_action != pdate_as_date
+            d["_last_action_differs"] = differs
             alerts.append(d)
         alerts.sort(key=lambda d: d.get("prescription_date") or now)
         return alerts

@@ -333,8 +333,23 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "title": _str(),
             "prescription_date": _nstr("YYYY-MM-DD."),
             "days_remaining": _nint(),
-            "last_action_date": _nstr("Previous juridical day — the real "
-                                      "last day to act."),
+            "last_action_date": _nstr(
+                "Last juridical day ON OR BEFORE the prescription date — "
+                "the real last day to act. INCLUSIVE: when the deadline "
+                "already falls on a juridical day this EQUALS "
+                "prescription_date (see last_action_differs); it is NOT "
+                "the date an action was taken."
+            ),
+            "last_action_differs": _bool(
+                "True only when a weekend/holiday pulls the last action "
+                "day EARLIER than the prescription date — the only case "
+                "worth surfacing to the reader."
+            ),
+            "droit_action_date": _nstr(
+                "YYYY-MM-DD — start of the prescription period (the "
+                "« droit d'action »), so the alert can be sanity-checked "
+                "against the delay."
+            ),
             "prescription_notes": _str(),
         })),
         "stats": _obj({
