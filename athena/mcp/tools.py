@@ -649,6 +649,81 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "get_billing_snapshot",
     },
+    "list_time_entries": {
+        "title": "Entrées de temps",
+        "description": (
+            "Time entries firm-wide or per dossier — billed AND unbilled "
+            "(the billing snapshot lists unbilled rows only; this is the "
+            "work-history view, and the only way to see invoiced time). "
+            "Sorted newest date first. billable_filter='non_facture' means "
+            "NOT YET INVOICED — it includes non-billable rows, whose amount "
+            "is always 0; 'billable' filters to billable time regardless of "
+            "invoicing. Combine dossier_id + date range to answer « what "
+            "was done on this file in July »."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "Restrict to one dossier (UUIDv4). Omit for firm-wide."
+                ),
+                "date_from": _date(
+                    "Earliest entry date, YYYY-MM-DD inclusive."
+                ),
+                "date_to": _date(
+                    "Latest entry date, YYYY-MM-DD inclusive."
+                ),
+                "billable_filter": {
+                    "type": "string",
+                    "enum": ["billable", "non_facture"],
+                    "description": (
+                        "'billable' = billable time only; 'non_facture' = "
+                        "not yet invoiced (includes non-billable rows). "
+                        "Omit for everything."
+                    ),
+                },
+                "limit": _limit(25),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "list_time_entries",
+    },
+    "list_expenses": {
+        "title": "Déboursés",
+        "description": (
+            "Disbursements (débours) firm-wide or per dossier — billed AND "
+            "unbilled, sorted newest date first. "
+            "billable_filter='non_facture' keeps only those not yet "
+            "invoiced. Categories are French keys (signification, "
+            "expertise, transcription, deplacement, photocopie, "
+            "timbre_judiciaire, autre)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "Restrict to one dossier (UUIDv4). Omit for firm-wide."
+                ),
+                "date_from": _date(
+                    "Earliest expense date, YYYY-MM-DD inclusive."
+                ),
+                "date_to": _date(
+                    "Latest expense date, YYYY-MM-DD inclusive."
+                ),
+                "billable_filter": {
+                    "type": "string",
+                    "enum": ["non_facture"],
+                    "description": (
+                        "'non_facture' = not yet invoiced. Omit for "
+                        "everything."
+                    ),
+                },
+                "limit": _limit(25),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "list_expenses",
+    },
     "list_protocol_steps": {
         "title": "Étapes du protocole",
         "description": (

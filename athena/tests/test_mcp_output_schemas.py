@@ -464,6 +464,31 @@ def test_get_billing_snapshot_three_branches_conform(monkeypatch):
               handlers.get_billing_snapshot({"dossier_id": "absent"}))
 
 
+def test_list_time_entries_conforms(monkeypatch):
+    monkeypatch.setattr(
+        handlers.time_entry_model, "list_time_entries_page",
+        lambda **kw: ([{"id": "e1", "dossier_id": "d1",
+                        "dossier_file_number": "2026-001",
+                        "dossier_title": "Tremblay c. Lavoie",
+                        "date": DATE_ONLY, "description": "Rédaction",
+                        "hours": 1.5, "rate": 30000, "amount": 45000,
+                        "billable": True, "invoiced": True,
+                        "invoice_id": "inv-1"}], None))
+    _conforms("list_time_entries", handlers.list_time_entries({}))
+
+
+def test_list_expenses_conforms(monkeypatch):
+    monkeypatch.setattr(
+        handlers.expense_model, "list_expenses_page",
+        lambda **kw: ([{"id": "x1", "dossier_id": "d1",
+                        "dossier_file_number": "2026-001",
+                        "dossier_title": "Tremblay c. Lavoie",
+                        "date": DATE_ONLY, "description": "Huissier",
+                        "category": "signification", "taxable": True,
+                        "invoiced": False, "amount": 9500}], None))
+    _conforms("list_expenses", handlers.list_expenses({}))
+
+
 def test_list_protocol_steps_conforms(monkeypatch):
     protocol = {"id": "pr1", "title": "Protocole de l'instance",
                 "protocol_type": "cs_ordinaire", "status": "actif",

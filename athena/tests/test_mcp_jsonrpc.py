@@ -205,7 +205,7 @@ def test_tools_list_hides_write_tools_from_a_read_only_token(client):
     failure brake, so that is an unthrottled refusal loop."""
     resp = _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools_list = resp.get_json()["result"]["tools"]
-    assert len(tools_list) == 17
+    assert len(tools_list) == 19
     names = {t["name"] for t in tools_list}
     assert not (names & {"create_note", "append_to_note"})
     for tool in tools_list:
@@ -251,7 +251,7 @@ def test_tools_list_advertises_write_tools_to_a_write_token(write_client):
     tools_list = _rpc(
         write_client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     ).get_json()["result"]["tools"]
-    assert len(tools_list) == 19
+    assert len(tools_list) == 21
     by_name = {t["name"]: t for t in tools_list}
     for name in ("create_note", "append_to_note"):
         assert by_name[name]["annotations"]["readOnlyHint"] is False
@@ -332,7 +332,7 @@ def test_write_kill_switch_refuses_the_call(monkeypatch):
     monkeypatch.setattr(store, "stamp_token_last_used", lambda h: None)
     cl = _make_app(MCP_WRITE_ENABLED=False).test_client()
     listed = _rpc(cl, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-    assert len(listed.get_json()["result"]["tools"]) == 17
+    assert len(listed.get_json()["result"]["tools"]) == 19
     body = _call_write(cl, rid=2).get_json()
     assert body["error"]["code"] == -32602
     assert "MCP_WRITE_ENABLED" in body["error"]["message"]

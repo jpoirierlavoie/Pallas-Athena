@@ -131,7 +131,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 19  # 17 read-only + 2 note writes
+    assert len(tools.TOOLS) == 21  # 19 read-only + 2 note writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -150,7 +150,7 @@ def test_write_tools_set_is_pinned():
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 19
+    assert len(descriptors) == 21
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -176,7 +176,7 @@ def test_required_scope_defaults_to_read_never_write():
 def test_list_tool_descriptors_filters_by_scope():
     read_only = tools.list_tool_descriptors(frozenset({"athena:read"}))
     names = {d["name"] for d in read_only}
-    assert len(read_only) == 17
+    assert len(read_only) == 19
     assert not (names & tools.WRITE_TOOLS)
 
     both = tools.list_tool_descriptors(
@@ -686,6 +686,76 @@ def test_billing_snapshot_global(monkeypatch):
     assert d1["unbilled_fees_cents"] == 50000
     assert d1["unbilled_expenses_cents"] == 57495
     assert payload["by_dossier_truncated"] is False
+
+
+def test_list_time_entries_shows_invoiced_rows(monkeypatch):
+    """PA-G04: an invoiced entry used to be unreachable through the
+    connector — this is the work-history view."""
+    rows = [
+        {"id": "e1", "dossier_id": "d1", "dossier_file_number": "2026-027",
+         "dossier_title": "Hraki c. Solo",
+         "date": datetime(2026, 7, 20, tzinfo=UTC),
+         "description": "Rédaction de la demande", "hours": 3.5,
+         "rate": 30000, "amount": 105000, "billable": True,
+         "invoiced": True, "invoice_id": "inv-9"},
+        {"id": "e2", "dossier_id": "d1", "dossier_file_number": "2026-027",
+         "dossier_title": "Hraki c. Solo",
+         "date": datetime(2026, 7, 22, tzinfo=UTC),
+         "description": "Appel du client", "hours": 0.5,
+         "rate": 30000, "amount": 15000, "billable": True,
+         "invoiced": False},
+    ]
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        lambda **kw: (rows, None))
+    payload = handlers.list_time_entries({"dossier_id": "d1"})
+    assert payload["count"] == 2
+    assert payload["items"][0]["invoiced"] is True
+    assert payload["items"][0]["invoice_id"] == "inv-9"
+    assert payload["items"][0]["date"] == "2026-07-20"
+    assert payload["items"][0]["amount_display"] == f"1{NBSP}050,00{NBSP}$"
+    assert payload["items"][1]["invoice_id"] is None
+    assert payload["truncated"] is False
+
+
+def test_list_time_entries_routes_the_unsupported_combo_in_python(monkeypatch):
+    """dossier_id + billable_filter TOGETHER is unindexed server-side and
+    the page function swallows the FAILED_PRECONDITION into [] — passing
+    both through would silently return nothing. The handler must fetch by
+    dossier+dates and filter the flag in Python."""
+    captured = {}
+
+    def _page(**kw):
+        captured.update(kw)
+        return ([
+            {"id": "e1", "dossier_id": "d1", "billable": True,
+             "invoiced": False, "hours": 1.0, "amount": 25000,
+             "date": datetime(2026, 7, 1, tzinfo=UTC)},
+            {"id": "e2", "dossier_id": "d1", "billable": True,
+             "invoiced": True, "hours": 2.0, "amount": 50000,
+             "date": datetime(2026, 7, 2, tzinfo=UTC)},
+        ], None)
+
+    monkeypatch.setattr(handlers.time_entry_model,
+                        "list_time_entries_page", _page)
+    payload = handlers.list_time_entries(
+        {"dossier_id": "d1", "billable_filter": "non_facture"}
+    )
+    assert "billable_filter" not in captured          # never sent server-side
+    assert captured["dossier_id"] == "d1"
+    assert [i["id"] for i in payload["items"]] == ["e1"]
+
+
+def test_list_expenses_truncation_reflects_the_window(monkeypatch):
+    """A non-None cursor from the model means the ≤200 window itself was
+    full — truncated must say so even when fewer than `limit` rows return."""
+    rows = [{"id": "x1", "dossier_id": "d1", "amount": 5000, "taxable": True,
+             "invoiced": False, "category": "expertise",
+             "date": datetime(2026, 7, 1, tzinfo=UTC)}]
+    monkeypatch.setattr(handlers.expense_model, "list_expenses_page",
+                        lambda **kw: (rows, "curseur-opaque"))
+    payload = handlers.list_expenses({})
+    assert payload["count"] == 1
+    assert payload["truncated"] is True
 
 
 def test_billing_snapshot_unknown_dossier_is_found_false(monkeypatch):

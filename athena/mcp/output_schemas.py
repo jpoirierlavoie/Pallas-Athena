@@ -660,6 +660,35 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         }, description="Unknown dossier — absence is data, never zeros."),
     ]},
 
+    "list_time_entries": _list_envelope(_obj({
+        "id": _str(),
+        "dossier_id": _str(),
+        "dossier_file_number": _str(),
+        "dossier_title": _str(),
+        "date": _nstr("YYYY-MM-DD."),
+        "description": _str(),
+        "hours": _num(),
+        "billable": _bool("Non-billable time always carries amount 0."),
+        "invoiced": _bool(),
+        "invoice_id": _nstr("null until invoiced."),
+        **_money("rate"),
+        **_money("amount"),
+    })),
+
+    "list_expenses": _list_envelope(_obj({
+        "id": _str(),
+        "dossier_id": _str(),
+        "dossier_file_number": _str(),
+        "dossier_title": _str(),
+        "date": _nstr("YYYY-MM-DD."),
+        "description": _str(),
+        "category": _str(),
+        "taxable": _bool(),
+        "invoiced": _bool(),
+        "invoice_id": _nstr("null until invoiced."),
+        **_money("amount"),
+    })),
+
     "list_protocol_steps": _obj({
         "dossier_id": _str(),
         "has_active_protocol": _bool(),

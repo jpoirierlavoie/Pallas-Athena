@@ -1,4 +1,4 @@
-"""The 19 MCP tool handlers — 17 read-only, plus 2 note writes.
+"""The 21 MCP tool handlers — 19 read-only, plus 2 note writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
@@ -972,6 +972,119 @@ def get_billing_snapshot(args: dict) -> dict:
     payload["unbilled_expenses_list"] = expense_rows
     payload["unbilled_expenses_list_truncated"] = len(expenses) > _UNBILLED_ROW_CAP
     return payload
+
+
+# ── 11b. list_time_entries / list_expenses ─────────────────────────────
+
+def _billing_window(args: dict) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Parse the optional date_from/date_to arguments into UTC midnights.
+
+    `date` on timeentries/expenses is date-only midnight UTC, so plain UTC
+    calendar boundaries are exact — the Montréal widened-window treatment
+    (list_hearings) applies to true instants only, not here.
+    """
+    out: list[Optional[datetime]] = []
+    for key in ("date_from", "date_to"):
+        raw = args.get(key)
+        if raw:
+            d = _parse_iso_date(raw, key)
+            out.append(datetime(d.year, d.month, d.day, tzinfo=timezone.utc))
+        else:
+            out.append(None)
+    return out[0], out[1]
+
+
+def _billing_rows(
+    page_fn, dossier_id: Optional[str], billable_filter: Optional[str],
+    date_from: Optional[datetime], date_to: Optional[datetime],
+) -> tuple[list[dict], bool]:
+    """Fetch a bounded window of time entries/expenses, routing around the
+    one combination the server-side indexes don't cover.
+
+    dossier_id + billable_filter TOGETHER is explicitly unsupported by
+    `_filtered_query` (each pairing would need its own composite index) —
+    and the page functions swallow the FAILED_PRECONDITION into an empty
+    list, so passing both through would silently return nothing. That
+    combination fetches by dossier_id + dates and applies the flag filter
+    in Python over the ≤200-row window instead.
+    """
+    if dossier_id and billable_filter:
+        rows, cursor = page_fn(
+            dossier_id=dossier_id, date_from=date_from, date_to=date_to,
+            limit=_FETCH_CAP,
+        )
+        if billable_filter == "billable":
+            rows = [e for e in rows if e.get("billable")]
+        elif billable_filter == "non_facture":
+            rows = [e for e in rows if not e.get("invoiced")]
+    else:
+        rows, cursor = page_fn(
+            dossier_id=dossier_id, billable_filter=billable_filter,
+            date_from=date_from, date_to=date_to, limit=_FETCH_CAP,
+        )
+    return rows, cursor is not None
+
+
+def list_time_entries(args: dict) -> dict:
+    """Firm-wide or dossier-scoped time entries — billed AND unbilled.
+
+    The gap this closes (PA-G04): an invoiced entry used to vanish from the
+    connector permanently, and reconstructing a week firm-wide cost one
+    get_billing_snapshot call per dossier.
+    """
+    limit = _limit_arg(args, 25)
+    date_from, date_to = _billing_window(args)
+    rows, window_full = _billing_rows(
+        time_entry_model.list_time_entries_page,
+        args.get("dossier_id"), args.get("billable_filter"),
+        date_from, date_to,
+    )
+    items = []
+    for e in rows[:limit]:
+        row = {
+            "id": e.get("id", ""),
+            "dossier_id": e.get("dossier_id", ""),
+            "dossier_file_number": e.get("dossier_file_number", ""),
+            "dossier_title": e.get("dossier_title", ""),
+            "date": date_str(_as_utc(e.get("date"))),
+            "description": e.get("description", ""),
+            "hours": float(e.get("hours") or 0),
+            "billable": bool(e.get("billable")),
+            "invoiced": bool(e.get("invoiced")),
+            "invoice_id": e.get("invoice_id") or None,
+        }
+        _money(row, "rate", e.get("rate", 0))
+        _money(row, "amount", e.get("amount", 0))
+        items.append(row)
+    return _list_payload(items, len(rows) > limit or window_full)
+
+
+def list_expenses(args: dict) -> dict:
+    """Firm-wide or dossier-scoped disbursements — billed AND unbilled."""
+    limit = _limit_arg(args, 25)
+    date_from, date_to = _billing_window(args)
+    rows, window_full = _billing_rows(
+        expense_model.list_expenses_page,
+        args.get("dossier_id"), args.get("billable_filter"),
+        date_from, date_to,
+    )
+    items = []
+    for e in rows[:limit]:
+        row = {
+            "id": e.get("id", ""),
+            "dossier_id": e.get("dossier_id", ""),
+            "dossier_file_number": e.get("dossier_file_number", ""),
+            "dossier_title": e.get("dossier_title", ""),
+            "date": date_str(_as_utc(e.get("date"))),
+            "description": e.get("description", ""),
+            "category": e.get("category", ""),
+            "taxable": bool(e.get("taxable")),
+            "invoiced": bool(e.get("invoiced")),
+            "invoice_id": e.get("invoice_id") or None,
+        }
+        _money(row, "amount", e.get("amount", 0))
+        items.append(row)
+    return _list_payload(items, len(rows) > limit or window_full)
 
 
 # ── 12. list_protocol_steps ─────────────────────────────────────────────
