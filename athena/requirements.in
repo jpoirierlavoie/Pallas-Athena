@@ -21,7 +21,7 @@ google-cloud-tasks==2.23.0
 # imports it directly, so it is promoted to a direct pin — Dependabot and
 # OSV-Scanner track direct deps only.
 requests==2.33.1
-# OpenTelemetry — distributed tracing → Cloud Trace.
+# OpenTelemetry — distributed tracing → Cloud Trace via the OTLP endpoint.
 # Versions are PAIRED and must move together: the stable line (api/sdk 1.44.0)
 # ships alongside the beta contrib line (instrumentation 0.65b0), and each
 # instrumentation package hard-pins its siblings at `==0.65b0`. Bumping one
@@ -29,17 +29,36 @@ requests==2.33.1
 # automate it (majors are not grouped; each per-package PR would conflict).
 opentelemetry-api==1.44.0
 opentelemetry-sdk==1.44.0
-opentelemetry-exporter-gcp-trace==1.13.0
+# Export goes to telemetry.googleapis.com over OTLP/gRPC (2026-07-30, replacing
+# the deprecated opentelemetry-exporter-gcp-trace). gRPC and not HTTP because
+# only the gRPC exporter takes `credentials=`, which is the ONLY auth path that
+# refreshes the token per RPC — `headers=` is frozen at construction, so a
+# Bearer token there would expire in ~1 h and UNAUTHENTICATED is not a
+# retryable code: traces would stop while the app kept serving. grpcio is
+# already required by ten other packages (Firestore, Logging, Secret Manager,
+# Cloud Tasks…), so this adds no native weight.
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+# Three upstream-maintained lines producing exactly MIGRATION.md's
+# composite_channel_credentials(ssl, metadata_call_credentials(AuthMetadataPlugin))
+# pattern. Beta, but trivially inlinable into tracing_setup.py if it ever
+# stalls. All of its deps (grpcio, google-auth, requests) are already locked.
+opentelemetry-exporter-credential-provider-gcp==0.65b0
+# NOT deprecated and NOT part of the exporter family — this is the
+# X-Cloud-Trace-Context propagator, which the OTLP migration leaves untouched.
 opentelemetry-propagator-gcp==1.12.0
 opentelemetry-instrumentation-flask==0.65b0
 opentelemetry-instrumentation-requests==0.65b0
 opentelemetry-instrumentation-jinja2==0.65b0
-# Transitive via the GCP exporter, pinned explicitly because the version
+# Was transitive via the (now removed) GCP exporter; kept as a direct pin
+# because it supplies the GCP resource labels, and because the version
 # immediately below is a trap: 1.13.0 is YANKED upstream ("breaks imports" —
 # the package moved from opentelemetry-operations-python to
 # opentelemetry-python-contrib with a wrong namespace; 1.14.0 restored it).
 # An import failure here is swallowed by tracing_setup's `except Exception`,
 # so landing on 1.13.0 would disable trace export SILENTLY.
+# NB: it does NOT provide `gcp.project_id` — only `cloud.account.id`. The
+# routing attribute is set by hand in _build_resource(); MIGRATION.md's claim
+# to the contrary is wrong.
 opentelemetry-resourcedetector-gcp==1.14.0
 icalendar==7.0.3
 vobject==0.9.9

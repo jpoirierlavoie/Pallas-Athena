@@ -408,7 +408,6 @@ google-api-core==2.30.3 \
     #   google-cloud-secret-manager
     #   google-cloud-storage
     #   google-cloud-tasks
-    #   google-cloud-trace
 google-auth==2.49.2 \
     --hash=sha256:c1ae38500e73065dcae57355adb6278cf8b5c8e391994ae9cbadbcb9631ab409 \
     --hash=sha256:c2720924dfc82dedb962c9f52cabb2ab16714fd0a6a707e40561d217574ed6d5
@@ -421,7 +420,7 @@ google-auth==2.49.2 \
     #   google-cloud-secret-manager
     #   google-cloud-storage
     #   google-cloud-tasks
-    #   google-cloud-trace
+    #   opentelemetry-exporter-credential-provider-gcp
 google-cloud-appengine-logging==1.9.0 \
     --hash=sha256:bbf3a7e4dc171678f7f481259d1f68c3ae7d337530f1f2361f8a0b214dbcfe36 \
     --hash=sha256:ff397f0bbc1485f979ab45767c38e0f676c9598c97c384f7412216e6ea22f805
@@ -461,10 +460,6 @@ google-cloud-tasks==2.23.0 \
     --hash=sha256:2a3e35c22b37947f829d62c50276a6f47c9ac1a789ec8ba0b646f31131b3c894 \
     --hash=sha256:a6da2c114a4db5a59593eba64987a4bf6973a0f48b1a31a3d4acffb6f4c7beb9
     # via -r requirements.in
-google-cloud-trace==1.19.0 \
-    --hash=sha256:58293c6efcee6c74bb854ff01b008823bef66845c14f15ffa5209d545098a65d \
-    --hash=sha256:59604c4c775c40af31b367df6bada0af34518cc35ac8cfedecd43898a120c51d
-    # via opentelemetry-exporter-gcp-trace
 google-crc32c==1.8.0 \
     --hash=sha256:014a7e68d623e9a4222d663931febc3033c5c7c9730785727de2a81f87d5bab8 \
     --hash=sha256:01f126a5cfddc378290de52095e2c7052be2ba7656a9f0caf4bcd1bfb1833f8a \
@@ -514,6 +509,7 @@ googleapis-common-protos==1.74.0 \
     #   google-cloud-audit-log
     #   grpc-google-iam-v1
     #   grpcio-status
+    #   opentelemetry-exporter-otlp-proto-grpc
 grpc-google-iam-v1==0.14.4 \
     --hash=sha256:392b3796947ed6334e61171d9ab06bf7eb357f554e5fc7556ad7aab6d0e17038 \
     --hash=sha256:412facc320fcbd94034b4df3d557662051d4d8adfa86e0ddb4dca70a3f739964
@@ -590,10 +586,11 @@ grpcio==1.80.0 \
     #   google-cloud-logging
     #   google-cloud-secret-manager
     #   google-cloud-tasks
-    #   google-cloud-trace
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpcio-status
+    #   opentelemetry-exporter-credential-provider-gcp
+    #   opentelemetry-exporter-otlp-proto-grpc
 grpcio-status==1.80.0 \
     --hash=sha256:4b56990363af50dbf2c2ebb80f1967185c07d87aa25aa2bea45ddb75fc181dbe \
     --hash=sha256:df73802a4c89a3ea88aa2aff971e886fccce162bc2e6511408b3d67a144381cd
@@ -826,7 +823,7 @@ opentelemetry-api==1.44.0 \
     # via
     #   -r requirements.in
     #   google-cloud-logging
-    #   opentelemetry-exporter-gcp-trace
+    #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-flask
     #   opentelemetry-instrumentation-jinja2
@@ -836,9 +833,17 @@ opentelemetry-api==1.44.0 \
     #   opentelemetry-resourcedetector-gcp
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-opentelemetry-exporter-gcp-trace==1.13.0 \
-    --hash=sha256:8b2572235b4683563c21caa8bc97071df11f766f477274a5547751d74eae0643 \
-    --hash=sha256:f0b797272f9c237f5086159c63db500a8736029e1ed4fbade3c4edcb89c5bc5a
+opentelemetry-exporter-credential-provider-gcp==0.65b0 \
+    --hash=sha256:44c6d62b4cc4ca700fd371cd94a2af0359607b612bd759fd5c809b1a644afcd3 \
+    --hash=sha256:4715920a33e816ddcff1d086cf8f679e43fa1ef0611c0eb951168077dc49db38
+    # via -r requirements.in
+opentelemetry-exporter-otlp-proto-common==1.44.0 \
+    --hash=sha256:9a9fe61bba73d802904bc989f1d6b4a7b1ee40f06c40e98d6f85af65aaebb694 \
+    --hash=sha256:dc87a5a5bc58f149a56d1547e4691588fa12994cdc3bc039a694ccb3375862ac
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.44.0 \
+    --hash=sha256:40d1ae9e03fcc36de3cbac610cc99f35894938bff9cfd90fc4ec68bd85448463 \
+    --hash=sha256:6a1a645ea182a2f59440c51fa8301d309f3324a8f9d65f8395584b064b67ee4e
     # via -r requirements.in
 opentelemetry-instrumentation==0.65b0 \
     --hash=sha256:071d9d9eced9bd6460444ec3b0c77229870ed05a881c22c84fdede58e4eed09b \
@@ -868,18 +873,22 @@ opentelemetry-propagator-gcp==1.12.0 \
     --hash=sha256:5495b891e7c816688d4e12fda7b365572dc8cb7ea8027a4390c5d2d868db1b98 \
     --hash=sha256:8b7d6b5a2b21cdc8ae6d546c01f38335db44c03125b6248e92a4aa8fbbfdd36f
     # via -r requirements.in
+opentelemetry-proto==1.44.0 \
+    --hash=sha256:898b155a0e1557afd867478fb6158e8122a46329ca0bb8dc53cc55e98f017f56 \
+    --hash=sha256:c547a79c2f8c0c515d31509154682e5921c7cfd5ca67b70e1f9266e2c3e103f3
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-grpc
 opentelemetry-resourcedetector-gcp==1.14.0 \
     --hash=sha256:10b41802acf815838a85c9fe1dae02f5d27ebc17527b77441111c010bead95bc \
     --hash=sha256:cc4818570933b5c651aef80fbf6e8fbe26d63fe6fbc24ce22ae37e78744d30eb
-    # via
-    #   -r requirements.in
-    #   opentelemetry-exporter-gcp-trace
+    # via -r requirements.in
 opentelemetry-sdk==1.44.0 \
     --hash=sha256:cebe7f65dc12f26ead75c6064de12fd2a9052e5060c0272d402cfa203aae123b \
     --hash=sha256:df081c4c6bcfdb1211e3e86140376792643128a25f8d72d1d27675936e7e96ad
     # via
     #   -r requirements.in
-    #   opentelemetry-exporter-gcp-trace
+    #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-resourcedetector-gcp
 opentelemetry-semantic-conventions==0.65b0 \
     --hash=sha256:1cacde7b0ad306f84c5ef08c3dbe1bbaf20165bba6f8bff43b670e555a086bcb \
@@ -1010,7 +1019,6 @@ proto-plus==1.27.2 \
     #   google-cloud-logging
     #   google-cloud-secret-manager
     #   google-cloud-tasks
-    #   google-cloud-trace
 protobuf==6.33.6 \
     --hash=sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326 \
     --hash=sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901 \
@@ -1030,10 +1038,10 @@ protobuf==6.33.6 \
     #   google-cloud-logging
     #   google-cloud-secret-manager
     #   google-cloud-tasks
-    #   google-cloud-trace
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpcio-status
+    #   opentelemetry-proto
     #   proto-plus
 pyasn1==0.6.4 \
     --hash=sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81 \
@@ -1077,6 +1085,7 @@ requests==2.33.1 \
     #   cachecontrol
     #   google-api-core
     #   google-cloud-storage
+    #   opentelemetry-exporter-credential-provider-gcp
     #   opentelemetry-resourcedetector-gcp
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
@@ -1092,7 +1101,7 @@ typing-extensions==4.15.0 \
     #   grpcio
     #   limits
     #   opentelemetry-api
-    #   opentelemetry-exporter-gcp-trace
+    #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
 tzdata==2026.2 \

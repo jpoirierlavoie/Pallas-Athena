@@ -217,11 +217,23 @@ Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(E
 
 ## Tracing
 
-Distributed tracing is configured by `athena/utils/tracing_setup.py`. It runs OpenTelemetry, exports to **Cloud Trace** in production, and emits spans to the console in dev. Auto-instrumentation covers Flask, `requests` (so `firebase-admin` outbound calls are captured), and Jinja2.
+Distributed tracing is configured by `athena/utils/tracing_setup.py`. It runs OpenTelemetry, exports over **OTLP/gRPC to `telemetry.googleapis.com`** in production, and emits spans to the console in dev. Auto-instrumentation covers Flask, `requests` (so `firebase-admin` outbound calls are captured), and Jinja2.
 
 **Versions (2026-07-30):** api/sdk **1.44.0** with contrib instrumentation **0.65b0** — the stable and beta lines are paired and each instrumentation package hard-pins its siblings at `==`, so they move as one atomic edit. The claims in this section are pinned by `tests/test_tracing_setup.py`, which was written against the *previous* versions (1.27.0/0.48b0) and re-run against these — a deliberate order, so the tests measure a bump rather than record its outcome.
 
-**`CloudTraceSpanExporter` is deprecated upstream** (exporter 1.13.0): Google deprecated all its exporters in favour of OTLP → `telemetry.googleapis.com`. It still works; it emits one `DeprecationWarning` per instance boot, which is expected, not a regression. The OTLP migration is the next chantier for this component and will rewrite the production export path — the characterization tests exist so that can be done without fear.
+### OTLP export (2026-07-30 — replaced `CloudTraceSpanExporter`)
+
+Google deprecated **all** its exporters on 2026-07-29, but deprecation was not the motive: no end date is published, and `cloudtrace.googleapis.com` cannot disappear since the OTLP path requires it to stay enabled. The motive is **silent data loss, today** — the legacy API caps a span at **32 attributes and 256 bytes per value**, and truncates without an error ("the Cloud Trace API uses a non-deterministic algorithm to select 32 attributes to ingest. The remaining attributes are discarded"). Between the Flask auto-instrumentation (12 attributes measured), `requests`, `firestore_span` and `add_attributes`, a loaded span plausibly crosses that line. OTLP allows **1024 attributes / 64 KiB per value** with unrestricted daily ingestion, at the same price.
+
+**PII corollary, easy to miss:** values that the legacy API truncated at 256 bytes server-side now survive intact up to 64 KiB. The scrubber below became *more* load-bearing with this migration, not less.
+
+Three things about this path are load-bearing:
+
+- **Auth goes through `credentials=`, never `headers=`.** `headers=` is frozen at construction (`self._headers = tuple(...)`, reused verbatim on every `Export`), so a Bearer token placed there expires in ~1 h — and `UNAUTHENTICATED` is **not** in the exporter's retryable codes, so export would stop dead while the app kept serving. `create_google_grpc_credentials()` (from `opentelemetry-exporter-credential-provider-gcp`) builds `composite_channel_credentials(ssl, metadata_call_credentials(AuthMetadataPlugin(...)))`, whose `__call__` gRPC invokes on **every** RPC, re-minting the token. This is also why the transport is **gRPC and not HTTP**: `credentials=` does not exist on the HTTP exporter.
+- **`gcp.project_id` is the routing key**, set by hand in `_build_resource()` from `FIREBASE_PROJECT_ID`. The GCP resource detector does **not** supply it (it emits `cloud.account.id`, `cloud.platform`, `faas.*`, `cloud.region`); Google's `MIGRATION.md` claims otherwise and is wrong. What happens when it is absent is documented nowhere, so it is not a bet worth taking — `tests/test_tracing_setup.py::test_otlp_export_reaches_a_grpc_server` asserts it on the payload a real gRPC server receives.
+- **Attribute keys keep their OTel names.** The legacy exporter remapped them (`http.method` → `/http/method`); OTLP passes them verbatim. **Any saved Cloud Trace filter targeting `/http/*` stops matching** after this migration — rewrite it against the bare key.
+
+`OTEL_EXPORTER_OTLP_TIMEOUT: "5"` (seconds) is set in both `app.yaml` and `portail.yaml`: the default is 10 s and the exporter retries up to 6 times with exponential backoff, which could hold the batch thread past gunicorn's 30 s `--graceful-timeout` during a shutdown. `OTEL_EXPORTER_OTLP_PROTOCOL` is deliberately **not** set (the SDK reads it only under `opentelemetry-instrument`), and no `x-goog-user-project` header is sent (Google forbids it — duplicate values fail the request).
 
 **Resource detectors need an env var.** Since SDK 1.42 they are loaded **only** when `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` is set (`gcp` in `app.yaml` and `portail.yaml`). Google's migration guide still claims the GCP detector is automatic — that is false on 1.42+, and the failure is silent: no GCP resource labels, no error.
 
@@ -237,7 +249,7 @@ Distributed tracing is configured by `athena/utils/tracing_setup.py`. It runs Op
 Three layers in `utils/tracing_setup.py` keep PII out of exported spans:
 
 1. **Instrumentation hooks.** The Flask request/response hooks overwrite `http.target` (and `http.url` when present) with the request path only, so query strings (e.g. client-name searches like `/parties/?q=Tremblay`) never persist on request spans. The `requests` hook rewrites outbound `http.url` to `scheme://host/path` — and for `*storage.googleapis.com` hosts keeps `scheme://host` only, because both the object path and the `name=` query param embed uid / dossier / filename.
-2. **Sanitizing exporter.** `_SanitizingSpanExporter` wraps the Cloud Trace exporter (and the dev console exporter). Before delegating, it strips query strings from URL-like attribute keys (`http.target`, `http.url`, `http.route`, `url.full`, `url.path`, `url.query`) and applies the same email / phone / postal regex scrub as the logging `RedactionFilter` (the patterns are imported from `logging_setup`, not duplicated) to every string attribute value. This is the defense-in-depth backstop for anything the hooks miss. **It works by replacing the private `ReadableSpan._attributes` slot** — the SDK exposes no public setter — so a failure there is caught and logged at **ERROR** (it was DEBUG until 2026-07-30, i.e. invisible under the production INFO root level, which is precisely how a leak would have gone unnoticed). The export proceeds regardless: tracing must never break the app.
+2. **Sanitizing exporter.** `_SanitizingSpanExporter` wraps the OTLP exporter (and the dev console exporter). Before delegating, it strips query strings from URL-like attribute keys (`http.target`, `http.url`, `http.route`, `url.full`, `url.path`, `url.query`) and applies the same email / phone / postal regex scrub as the logging `RedactionFilter` (the patterns are imported from `logging_setup`, not duplicated) to every string attribute value. This is the defense-in-depth backstop for anything the hooks miss. **It works by replacing the private `ReadableSpan._attributes` slot** — the SDK exposes no public setter — so a failure there is caught and logged at **ERROR** (it was DEBUG until 2026-07-30, i.e. invisible under the production INFO root level, which is precisely how a leak would have gone unnoticed). The export proceeds regardless: tracing must never break the app.
 3. **Manual-span guard.** `span()`, `add_attributes()` and `firestore_span()` drop any attribute whose key is in the logging layer's `SENSITIVE_KEYS` and scrub string values before setting them.
 
 These layers are a safety net, not an invitation: as with logs, never attach raw vCard / iCalendar bodies, client names, or signed URLs as span attributes.
@@ -323,7 +335,9 @@ gcloud app deploy app.yaml --set-env-vars=TRACE_SAMPLE_RATIO=1.0
 The App Engine default service account (`athena-pallas@appspot.gserviceaccount.com`) needs:
 
 - **`roles/logging.logWriter`** — push records to Cloud Logging.
-- **`roles/cloudtrace.agent`** — push spans to Cloud Trace.
+- **`roles/cloudtrace.agent`** — push spans. The OTLP migration (2026-07-30) needed **no IAM change**: `roles/telemetry.tracesWriter` grants only `telemetry.traces.write`, which `cloudtrace.agent` already contains. The same holds for the portail service account (`portail-svc`). If spans stop arriving with `PERMISSION_DENIED`, this is the first assumption to re-verify.
+
+Both APIs must stay enabled — `telemetry.googleapis.com` receives the spans, and disabling `cloudtrace.googleapis.com` makes Observability **discard** them silently (it is also what serves trace reads and the log-entry « View trace » link).
 
 Verify with:
 

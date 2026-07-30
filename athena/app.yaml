@@ -45,6 +45,14 @@ env_variables:
   # GCP labels, no error). Unset here until 2026-07-30, so traces carried
   # no GCP resource attributes at all.
   OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
+  # OTLP export deadline, in SECONDS (the SDK reads this one directly, unlike
+  # OTEL_EXPORTER_OTLP_PROTOCOL which only applies under `opentelemetry-
+  # instrument`). The default is 10 s and the exporter retries up to 6 times
+  # with exponential backoff, so a telemetry.googleapis.com outage could hold
+  # the batch thread well past gunicorn's 30 s --graceful-timeout during a
+  # shutdown — App Engine would SIGKILL the instance mid-flush. Tracing is
+  # best-effort; serving is not.
+  OTEL_EXPORTER_OTLP_TIMEOUT: "5"
   # Microsoft Graph — outbound email (portail client L1; reused by phase J).
   # Non-secret identifiers; GRAPH_CLIENT_SECRET comes from Secret Manager
   # (graph-client-secret). MAIN SERVICE ONLY — never in portail.yaml.

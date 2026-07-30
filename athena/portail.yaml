@@ -38,6 +38,10 @@ env_variables:
   # variable est définie. Le portail exécute le même utils/tracing_setup.py
   # dans son propre processus, donc il lui faut sa propre déclaration.
   OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
+  # Délai d'export OTLP, en SECONDES — voir le commentaire d'app.yaml. Même
+  # raison ici, et elle pèse davantage : le portail est en F1, une seule
+  # instance, et un arrêt qui traîne y est plus visible.
+  OTEL_EXPORTER_OTLP_TIMEOUT: "5"
   # PORTAIL_SECRET_KEY et FIREBASE_API_KEY viennent de Secret Manager à
   # l'exécution (client/config.py — résolution paresseuse). AUCUNE variable
   # GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler Graph).

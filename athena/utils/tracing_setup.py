@@ -68,6 +68,13 @@ _REDACTION = RedactionFilter()
 
 DEFAULT_SAMPLE_RATIO: float = 0.1
 
+# Google's OTLP ingestion endpoint (the successor to the deprecated Cloud
+# Trace exporter). The gRPC exporter parses this URL and keeps only the
+# netloc — the `/v1/traces` path is HTTP semantics and is discarded — but the
+# `https://` scheme is load-bearing: it is what forces `insecure=False`.
+# Traces only; the endpoint accepts no metrics or logs.
+OTLP_TRACES_ENDPOINT: str = "https://telemetry.googleapis.com:443/v1/traces"
+
 # Flask paths excluded from auto-instrumentation — purely static / no-logic
 # requests that would create span noise without informational value.
 EXCLUDED_URLS: str = ",".join(
@@ -116,6 +123,16 @@ def _build_resource() -> Resource:
     ``deployment.environment.name`` is the STABLE semantic-convention key;
     the bare ``deployment.environment`` it replaced is deprecated upstream.
 
+    ``gcp.project_id`` is the ROUTING key for the OTLP endpoint — it is what
+    tells telemetry.googleapis.com which project the spans belong to. It is
+    set here by hand and NOT by the GCP resource detector: the detector emits
+    ``cloud.account.id``, ``cloud.platform``, ``faas.*`` and
+    ``cloud.availability_zone``, but never ``gcp.project_id`` (Google's
+    MIGRATION.md claims otherwise; reading the detector's source disproves
+    it). What happens when the attribute is ABSENT is documented nowhere —
+    rejected? dropped? inferred from the credentials? — so it is not a bet
+    worth taking.
+
     ``Resource.create`` also merges any *detected* resource attributes — but
     since SDK 1.42 (PR #5145) detectors are only loaded when
     ``OTEL_EXPERIMENTAL_RESOURCE_DETECTORS`` is set, which app.yaml /
@@ -128,6 +145,7 @@ def _build_resource() -> Resource:
             "service.name": "pallas-athena",
             "service.version": os.getenv("GAE_VERSION", "local"),
             "deployment.environment.name": os.getenv("ENV", "development"),
+            "gcp.project_id": os.getenv("FIREBASE_PROJECT_ID", ""),
         }
     )
 
@@ -356,8 +374,21 @@ class _SanitizingSpanExporter(SpanExporter):
                 )
         return self._delegate.export(spans)
 
-    def shutdown(self) -> None:
-        self._delegate.shutdown()
+    def shutdown(self, timeout_millis: float = 30_000, **kwargs) -> None:
+        # The signature accepts (and forwards) a timeout because
+        # ``BatchProcessor.shutdown`` decides BY INTROSPECTION
+        # (``inspect.getfullargspec``) whether to hand the exporter its
+        # remaining time budget — a bare ``shutdown(self)`` silently opts out
+        # of it. Harmless while the OTLP gRPC exporter ignores the value, but
+        # this wrapper must stay transparent: shutdown can already block up
+        # to 30 s draining the queue against an unreachable endpoint, which
+        # is the gunicorn --graceful-timeout boundary.
+        try:
+            self._delegate.shutdown(timeout_millis=timeout_millis, **kwargs)
+        except TypeError:
+            # Delegates that take no timeout (ConsoleSpanExporter, the test
+            # doubles) — call the plain form rather than failing shutdown.
+            self._delegate.shutdown()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return self._delegate.force_flush(timeout_millis)
@@ -384,18 +415,36 @@ def init_app(flask_app: Flask) -> None:
 
     if production:
         try:
-            from opentelemetry.exporter.cloud_trace import (
-                CloudTraceSpanExporter,
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.gcp_credential_provider import (
+                create_google_grpc_credentials,
             )
 
             provider.add_span_processor(
                 BatchSpanProcessor(
-                    _SanitizingSpanExporter(CloudTraceSpanExporter())
+                    _SanitizingSpanExporter(
+                        OTLPSpanExporter(
+                            endpoint=OTLP_TRACES_ENDPOINT,
+                            # `credentials=` is the ONLY auth path that
+                            # refreshes. NEVER move this to `headers=`: the
+                            # exporter freezes headers into a tuple at
+                            # construction and reuses it for every RPC, so a
+                            # Bearer token there expires after ~1 h — and
+                            # UNAUTHENTICATED is not a retryable code, so
+                            # export dies permanently while the app keeps
+                            # serving. This helper builds the composite
+                            # channel credentials whose AuthMetadataPlugin
+                            # gRPC invokes per RPC, re-minting the token.
+                            credentials=create_google_grpc_credentials(),
+                        )
+                    )
                 )
             )
         except Exception as exc:
             logger.warning(
-                "Cloud Trace exporter unavailable (%s); spans will not "
+                "OTLP trace exporter unavailable (%s); spans will not "
                 "be exported.  Tracing is non-fatal — continuing.",
                 exc,
             )

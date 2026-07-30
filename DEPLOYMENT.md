@@ -201,9 +201,24 @@ gcloud services enable \
   firebaseappcheck.googleapis.com identitytoolkit.googleapis.com \
   secretmanager.googleapis.com cloudbuild.googleapis.com \
   logging.googleapis.com cloudtrace.googleapis.com \
+  telemetry.googleapis.com \
   recaptchaenterprise.googleapis.com iam.googleapis.com \
   --project=$PROJECT
 ```
+
+**`telemetry.googleapis.com` is where spans are now sent** (OTLP, since
+2026-07-30 — see `athena/OBSERVABILITY.md`). **`cloudtrace.googleapis.com` must
+stay enabled alongside it**, and that is not redundancy: Google's own migration
+note is explicit that "if you disable the Cloud Trace API, then Google Cloud
+Observability discards trace data you send to the Telemetry API" — silently.
+Trace *reading* (the console, the log-entry « View trace » link) is also still
+served by the Cloud Trace API.
+
+No IAM change accompanied the migration: `roles/telemetry.tracesWriter` grants
+only `telemetry.traces.write`, which `roles/cloudtrace.agent` already carries —
+and both service accounts (`$PROJECT@appspot` and `portail-svc`) hold it. If
+spans stop arriving with `PERMISSION_DENIED`, that assumption is the first
+thing to re-verify.
 
 ### 6.2 App Engine app — choose the region carefully (permanent)
 

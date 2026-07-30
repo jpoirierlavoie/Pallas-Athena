@@ -2,6 +2,7 @@
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -536,26 +537,32 @@ def test_is_production_from_config_or_env(monkeypatch: pytest.MonkeyPatch) -> No
     assert tracing_setup._is_production(app) is True
 
 
-def test_production_branch_wires_batch_processor_with_sanitizer(
+def test_production_branch_wires_otlp_through_the_sanitizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The ENTIRE production export path had zero coverage — it is never
     executed by any test, in any process, because ENV is never 'production'
-    in CI. This drives it with a fake Cloud Trace exporter."""
+    in CI. This drives it with a fake OTLP exporter.
+
+    It also pins what the OTLP migration must never lose: the exporter is
+    reached THROUGH `_SanitizingSpanExporter`, and it is constructed with
+    `credentials=` (the only auth path that refreshes the token per RPC) and
+    never with `headers=` (frozen at construction → a ~1 h cliff after which
+    UNAUTHENTICATED, which is not retryable, kills export silently)."""
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    created: list = []
+    built: list = []
 
-    class _FakeCloudTraceExporter:
+    class _FakeOTLPExporter:
         def __init__(self, *a, **kw):
-            created.append(self)
+            built.append(kw)
 
         def export(self, spans):
             from opentelemetry.sdk.trace.export import SpanExportResult
 
             return SpanExportResult.SUCCESS
 
-        def shutdown(self):
+        def shutdown(self, timeout_millis: float = 30_000, **kw):
             pass
 
         def force_flush(self, timeout_millis: int = 30000):
@@ -563,10 +570,19 @@ def test_production_branch_wires_batch_processor_with_sanitizer(
 
     import types
 
-    fake_mod = types.ModuleType("opentelemetry.exporter.cloud_trace")
-    fake_mod.CloudTraceSpanExporter = _FakeCloudTraceExporter
+    fake_exp = types.ModuleType(
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
+    )
+    fake_exp.OTLPSpanExporter = _FakeOTLPExporter
     monkeypatch.setitem(
-        sys.modules, "opentelemetry.exporter.cloud_trace", fake_mod
+        sys.modules,
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
+        fake_exp,
+    )
+    fake_creds = types.ModuleType("opentelemetry.gcp_credential_provider")
+    fake_creds.create_google_grpc_credentials = lambda: "CHANNEL-CREDS"
+    monkeypatch.setitem(
+        sys.modules, "opentelemetry.gcp_credential_provider", fake_creds
     )
 
     processors: list = []
@@ -580,8 +596,25 @@ def test_production_branch_wires_batch_processor_with_sanitizer(
     app.config["ENV"] = "production"
     tracing_setup.init_app(app)
 
-    assert created, "the production branch never built the Cloud Trace exporter"
-    assert any(isinstance(p, BatchSpanProcessor) for p in processors)
+    assert built, "the production branch never built the OTLP exporter"
+    kwargs = built[0]
+    assert kwargs["credentials"] == "CHANNEL-CREDS"
+    assert "headers" not in kwargs, (
+        "auth must go through credentials= (refreshed per RPC), never "
+        "headers= (frozen at construction — a ~1 h expiry cliff)"
+    )
+    assert kwargs["endpoint"] == tracing_setup.OTLP_TRACES_ENDPOINT
+    assert kwargs["endpoint"].startswith("https://"), (
+        "the https scheme is what forces insecure=False in the gRPC exporter"
+    )
+
+    batch = [p for p in processors if isinstance(p, BatchSpanProcessor)]
+    assert batch, "production must use BatchSpanProcessor, not Simple"
+    # The name of this test is a promise: assert the sanitizer is actually in
+    # the chain, not merely that a batch processor exists.
+    wrapped = batch[0].span_exporter
+    assert isinstance(wrapped, tracing_setup._SanitizingSpanExporter)
+    assert isinstance(wrapped._delegate, _FakeOTLPExporter)
 
 
 def test_production_exporter_failure_is_non_fatal(
@@ -591,21 +624,25 @@ def test_production_exporter_failure_is_non_fatal(
     booting. It must however SAY so — this pins the warning."""
     import types
 
-    fake_mod = types.ModuleType("opentelemetry.exporter.cloud_trace")
+    fake_exp = types.ModuleType(
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
+    )
 
     def _boom(*a, **kw):
         raise RuntimeError("no credentials")
 
-    fake_mod.CloudTraceSpanExporter = _boom
+    fake_exp.OTLPSpanExporter = _boom
     monkeypatch.setitem(
-        sys.modules, "opentelemetry.exporter.cloud_trace", fake_mod
+        sys.modules,
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
+        fake_exp,
     )
 
     app = Flask(__name__)
     app.config["ENV"] = "production"
     with caplog.at_level("WARNING", logger=tracing_setup.logger.name):
         tracing_setup.init_app(app)  # must not raise
-    assert any("Cloud Trace" in r.message for r in caplog.records)
+    assert any("OTLP" in r.message for r in caplog.records)
 
 
 def test_install_propagator_sets_composite_with_cloud_trace() -> None:
@@ -670,6 +707,86 @@ def test_no_query_string_reaches_an_exported_span() -> None:
     rendered = repr(attrs)
     assert "Tremblay" not in rendered, f"query string leaked: {rendered}"
     assert "q=" not in rendered, f"query string leaked: {rendered}"
+
+
+def test_otlp_export_reaches_a_grpc_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FIRST test of the real export path — end to end over gRPC.
+
+    Until the OTLP migration (2026-07-30) nothing in the suite had ever
+    exercised an actual exporter: the production branch was never executed,
+    so protobuf encoding, the resource, and the scrubber were verified only
+    by a human squinting at Cloud Trace after a deploy. This stands up a real
+    gRPC server implementing TraceService/Export, points a real
+    OTLPSpanExporter at it, and asserts on the payload that ARRIVES.
+
+    What it covers that nothing else does:
+      • `gcp.project_id` is present on the RESOURCE — the routing key for
+        telemetry.googleapis.com. The GCP resource detector does NOT supply
+        it, and Google documents no behaviour for its absence.
+      • the scrubber's rewrite survives protobuf encoding (it mutates a
+        private slot on the span; nothing guaranteed the encoder reads it).
+      • no query string reaches the wire.
+    """
+    import grpc
+    from opentelemetry.proto.collector.trace.v1 import (
+        trace_service_pb2,
+        trace_service_pb2_grpc,
+    )
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+        OTLPSpanExporter,
+    )
+
+    # FIREBASE_PROJECT_ID is unset in CI, so without this the routing-key
+    # assertion would compare "" to "" — present, but vacuous on the value.
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "athena-pallas")
+
+    received: list = []
+
+    class _Service(trace_service_pb2_grpc.TraceServiceServicer):
+        def Export(self, request, context):
+            received.append(request)
+            return trace_service_pb2.ExportTraceServiceResponse()
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=1))
+    trace_service_pb2_grpc.add_TraceServiceServicer_to_server(_Service(), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        exporter = tracing_setup._SanitizingSpanExporter(
+            OTLPSpanExporter(endpoint=f"127.0.0.1:{port}", insecure=True)
+        )
+        provider = TracerProvider(resource=tracing_setup._build_resource())
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracer = provider.get_tracer("otlp-e2e")
+        with tracer.start_as_current_span("GET /parties/") as sp:
+            sp.set_attribute(
+                "http.url", "https://athena.example/parties/?q=Tremblay"
+            )
+            sp.set_attribute("note", "écrire à jean.tremblay@example.com")
+        provider.shutdown()
+    finally:
+        server.stop(None)
+
+    assert received, "no OTLP payload reached the server"
+    payload = str(received[0])
+
+    # The resource carries the routing key.
+    resource_attrs = {
+        kv.key: kv.value.string_value
+        for kv in received[0].resource_spans[0].resource.attributes
+    }
+    assert resource_attrs.get("gcp.project_id") == "athena-pallas"
+    assert resource_attrs["service.name"] == "pallas-athena"
+
+    # The scrub survived encoding — neither the query string nor the address
+    # is anywhere in the serialized payload.
+    assert "Tremblay" not in payload, payload[:400]
+    assert "q=" not in payload, payload[:400]
+    assert "jean.tremblay@example.com" not in payload, payload[:400]
+    # …and the span itself did arrive (guards against a vacuous pass).
+    assert "GET /parties/" in payload
 
 
 def test_init_app_passes_our_hooks_to_the_instrumentors(
