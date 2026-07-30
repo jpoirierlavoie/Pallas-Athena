@@ -363,6 +363,12 @@
       "fieldPath": "expire_at",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "mcp_idempotency",
+      "fieldPath": "expire_at",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

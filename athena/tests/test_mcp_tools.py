@@ -194,7 +194,11 @@ def test_write_schemas_are_bounded_and_track_the_model():
         tools.TOOLS["create_note"]["input_schema"]["properties"]["category"]["enum"]
         == list(note_model.VALID_CATEGORIES)
     )
-    for name in tools.WRITE_TOOLS:
+    # NOTE tools only — other write tools have no `content` property (the
+    # old loop over WRITE_TOOLS KeyError'd the moment a third write tool
+    # shipped, which was the single hardest-to-notice blocker of the
+    # write-surface extension).
+    for name in ("create_note", "append_to_note"):
         content = tools.TOOLS[name]["input_schema"]["properties"]["content"]
         # Strictly below the model ceiling: an oversized write must be
         # refused loudly here, never silently truncated by security.sanitize,
@@ -206,6 +210,31 @@ def test_write_schemas_are_bounded_and_track_the_model():
     create_props = tools.TOOLS["create_note"]["input_schema"]["properties"]
     for forbidden in ("id", "vjournal_uid", "created_at", "etag"):
         assert forbidden not in create_props
+
+
+def test_every_write_tool_carries_the_write_protocol():
+    """Generic invariants over WRITE_TOOLS — they hold for any FUTURE write
+    tool without naming it: SCOPE_WRITE + the dry_run/idempotency_key
+    protocol properties, and no identity-injection fields addressable."""
+    for name in tools.WRITE_TOOLS:
+        props = tools.TOOLS[name]["input_schema"]["properties"]
+        assert tools.TOOLS[name].get("scope") == "athena:write", name
+        assert "dry_run" in props, name
+        assert "idempotency_key" in props, name
+        assert props["idempotency_key"]["minLength"] >= 8, name
+        for forbidden in ("id", "etag", "created_at", "updated_at"):
+            assert forbidden not in props, (name, forbidden)
+
+
+def test_kill_switch_covers_every_write_tool(monkeypatch):
+    """MCP_WRITE_ENABLED=false must hide/refuse the WHOLE write surface —
+    derived from WRITE_TOOLS membership, so a new tool is covered by
+    construction; this pins that derivation."""
+    monkeypatch.setattr(tools, "write_enabled", lambda: False)
+    for name in tools.WRITE_TOOLS:
+        assert tools.tool_available(name) is False, name
+    for name in set(tools.TOOLS) - tools.WRITE_TOOLS:
+        assert tools.tool_available(name) is True, name
 
 
 def test_min_length_rejects_whitespace_only():

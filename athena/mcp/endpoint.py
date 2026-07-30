@@ -267,24 +267,38 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
 
     duration_ms = round((time.perf_counter() - started) * 1000, 1)
     if name in tools.WRITE_TOOLS:
-        # append_to_note is called with only a note_id, so its audit record
-        # would otherwise carry no dossier — the one call that mutates an
-        # existing client record would be the least traceable. IDs and
-        # counts only; never the title or the content.
-        note = (payload or {}).get("note") or {}
-        log_mcp_event(
-            "mcp_note_written",
-            "success",
-            tool=name,
-            dossier_id=note.get("dossier_id") or None,
-            note_id=note.get("id") or None,
-            content_chars=note.get("content_length"),
+        # Generalized write audit (WP15): entity ids and counts only, never
+        # a title or content. `entity` is the WP16+ shape; the two note
+        # tools keep their historical `note` key and ALSO keep emitting the
+        # original mcp_note_written event for log-metric continuity.
+        entity = (payload or {}).get("entity") or (payload or {}).get("note") or {}
+        common = {
+            "tool": name,
+            "dossier_id": entity.get("dossier_id") or None,
+            "entity_id": entity.get("id") or None,
+            # A dry run and a replay both mean « nothing new was written » —
+            # the audit line must say which kind of nothing.
+            "dry_run": bool((payload or {}).get("dry_run")),
+            "idempotent_replay": bool((payload or {}).get("idempotent_replay")),
             # The bump itself, NOT dav_synced — a closed dossier bumps
             # correctly but is never advertised to DavX5, and conflating the
             # two would make a healthy write look like a sync failure.
-            ctag_bumped=bool((payload or {}).get("ctag_bumped")),
-            dav_synced=bool((payload or {}).get("dav_synced")),
-        )
+            "ctag_bumped": bool((payload or {}).get("ctag_bumped")),
+            "dav_synced": bool((payload or {}).get("dav_synced")),
+        }
+        log_mcp_event("mcp_write", "success", **common)
+        if (payload or {}).get("note"):
+            note = (payload or {}).get("note") or {}
+            log_mcp_event(
+                "mcp_note_written",
+                "success",
+                tool=name,
+                dossier_id=note.get("dossier_id") or None,
+                note_id=note.get("id") or None,
+                content_chars=note.get("content_length"),
+                ctag_bumped=common["ctag_bumped"],
+                dav_synced=common["dav_synced"],
+            )
     log_mcp_event(
         "mcp_tool_call",
         "success",

@@ -276,6 +276,37 @@ def _date(description: str) -> dict:
     return {"type": "string", "maxLength": 10, "description": description}
 
 
+def _write_protocol_props() -> dict:
+    """dry_run + idempotency_key — the shared write protocol (WP15).
+
+    Fresh dicts per usage (module rule). Every write tool splats these
+    into its input schema; enforcement lives in mcp/write_support.run_write.
+    """
+    return {
+        "dry_run": {
+            "type": "boolean",
+            "description": (
+                "true = full validation and the computed effect returned, "
+                "but NOTHING is written (no note, no sync, no idempotency "
+                "record). Use to propose an entry for approval before "
+                "committing it."
+            ),
+        },
+        "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "description": (
+                "Caller-chosen key identifying THIS write. Retrying with "
+                "the same key returns the first call's stored result "
+                "instead of writing twice (kept 24 h); the same key with "
+                "different arguments is refused. Recommended on every "
+                "unattended/scheduled write."
+            ),
+        },
+    }
+
+
 def _offset() -> dict:
     """Offset paging for the fully-materialized list tools (G07)."""
     return {
@@ -1082,6 +1113,7 @@ TOOLS: dict[str, dict] = {
                     "enum": _NOTE_CATEGORIES,
                     "description": "Defaults to 'recherche'.",
                 },
+                **_write_protocol_props(),
             },
             "required": ["title", "content"],
             "additionalProperties": False,
@@ -1118,6 +1150,7 @@ TOOLS: dict[str, dict] = {
                         f"{CONTENT_MAX_CHARS} characters)."
                     ),
                 },
+                **_write_protocol_props(),
             },
             "required": ["note_id", "content"],
             "additionalProperties": False,

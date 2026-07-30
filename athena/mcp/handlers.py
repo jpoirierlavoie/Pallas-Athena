@@ -37,6 +37,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
+from mcp.write_support import run_write
 from pagination import encode_cursor
 from models import audit_event as audit_event_model
 from models import dossier as dossier_model
@@ -1860,7 +1861,8 @@ def _bump_note_ctag(dossier_id: str, note_id: str, *, created: bool) -> bool:
 
 
 def _write_result(
-    note: dict, *, created: bool, dossier: Optional[dict]
+    note: dict, *, created: bool, dossier: Optional[dict],
+    dry_run: bool = False,
 ) -> dict:
     """Shared success payload for both write tools.
 
@@ -1869,9 +1871,17 @@ def _write_result(
     the same as a closed dossier and must not be reported as one: the note
     exists and carries a dossier_id, so the collection almost certainly
     exists too. Claim nothing about visibility in that case.
+
+    ``dry_run`` skips the CTag bump (nothing was written, nothing must
+    sync) and replaces the outcome warnings with the simulation notice.
     """
     dossier_id = note.get("dossier_id", "")
-    bumped = _bump_note_ctag(dossier_id, note.get("id", ""), created=created)
+    if dry_run:
+        bumped = False
+    else:
+        bumped = _bump_note_ctag(
+            dossier_id, note.get("id", ""), created=created
+        )
     status = dossier.get("status", "") if dossier is not None else None
     # The per-dossier DAV collection only exposes live resources for
     # actif/en_attente dossiers, so a note on a closed file is stored and
@@ -1898,6 +1908,12 @@ def _write_result(
         "dav_synced": bumped and dav_visible,
         "warnings": [],
     }
+    if dry_run:
+        payload["warnings"].append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+        return payload
     if not bumped:
         payload["warnings"].append(
             "La note est enregistrée, mais la synchronisation DavX5 n'a pas pu "
@@ -1916,6 +1932,10 @@ def _write_result(
 # ── 18. create_note (WRITE) ─────────────────────────────────────────────
 
 def create_note(args: dict) -> dict:
+    return run_write("create_note", args, lambda dry: _create_note_impl(args, dry))
+
+
+def _create_note_impl(args: dict, dry_run: bool) -> dict:
     dossier_id = (args.get("dossier_id") or "").strip()
     # An ABSENT dossier_id means « Général ». A SUPPLIED one must resolve:
     # models/note._validate no longer requires a dossier, so a hallucinated
@@ -1963,6 +1983,14 @@ def create_note(args: dict) -> dict:
         "category": category,
         "pinned": False,
     }
+    if dry_run:
+        # Everything above ran — resolution, chevron checks, assembly. The
+        # preview carries the exact would-be content length; no id exists
+        # because nothing was written.
+        preview = {**data, "id": "", "created_at": None, "updated_at": None}
+        return _write_result(
+            preview, created=True, dossier=dossier, dry_run=True
+        )
     note, errors = note_model.create_note(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
@@ -1972,6 +2000,12 @@ def create_note(args: dict) -> dict:
 # ── 19. append_to_note (WRITE) ──────────────────────────────────────────
 
 def append_to_note(args: dict) -> dict:
+    return run_write(
+        "append_to_note", args, lambda dry: _append_to_note_impl(args, dry)
+    )
+
+
+def _append_to_note_impl(args: dict, dry_run: bool) -> dict:
     note_id = (args.get("note_id") or "").strip()
     existing = note_model.get_note(note_id)
     if existing is None:
@@ -2036,6 +2070,13 @@ def append_to_note(args: dict) -> dict:
     dossier = (
         dossier_model.get_dossier(dossier_id) if dossier_id else _general_scope()
     )
+    if dry_run:
+        preview = {**existing, "content": combined}
+        result = _write_result(
+            preview, created=False, dossier=dossier, dry_run=True
+        )
+        result["appended_chars"] = len(block)
+        return result
     # Whitelist of exactly one field: a stray dossier_id in the update would
     # move the note between dossiers — and between DAV collections, leaving
     # the origin collection un-bumped.

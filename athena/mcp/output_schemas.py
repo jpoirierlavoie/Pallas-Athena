@@ -333,16 +333,31 @@ def _written_note() -> dict:
     })
 
 
+def _write_protocol_keys() -> dict[str, Any]:
+    """dry_run + idempotent_replay — emitted by EVERY write result (WP15)."""
+    return {
+        "dry_run": _bool(
+            "true = this was a SIMULATION: full validation ran and the "
+            "computed effect is shown, but nothing was written and no "
+            "sync fired."),
+        "idempotent_replay": _bool(
+            "true = this call replayed a previous write's stored result "
+            "(same idempotency_key) — nothing was written twice."),
+    }
+
+
 def _write_result(verb: str, extra: Optional[dict[str, Any]] = None) -> dict:
     properties: dict[str, Any] = {
         verb: {"type": "boolean", "enum": [True]},
         "note": _written_note(),
         "ctag_bumped": _bool("Whether the DavX5 sync trigger fired. false = "
                              "the write COMMITTED but the phone will only "
-                             "catch up on the next change; do not retry."),
+                             "catch up on the next change; do not retry. "
+                             "Always false on a dry run."),
         "dav_synced": _bool("ctag_bumped AND the collection is visible to "
                             "DavX5 (a fermé/archivé dossier's is not)."),
         "warnings": _arr(_str(), "French, human-readable; empty when clean."),
+        **_write_protocol_keys(),
     }
     if extra:
         properties.update(extra)
