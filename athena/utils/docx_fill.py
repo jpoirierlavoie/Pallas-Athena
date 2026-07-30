@@ -466,13 +466,28 @@ def _apply_conditions(xml: str, conditions: dict[str, bool]) -> str:
             xml = _remove_marker_paragraph(xml, close_pat)
             continue
         # False → remove the whole marker-paragraph → marker-paragraph span.
+        # Every body is tempered against the PARAGRAPH boundary (`</?w:p[\s/>]`,
+        # so an OPENING <w:p> stops it too) and the middle one against a second
+        # opening marker. Two reasons, both verified:
+        #   • linearity (CWE-1333): the old leading `(?:(?!</w:p>).)*?` was
+        #     tempered only against the CLOSING tag, so it could run across
+        #     arbitrarily many `<w:p` opens, and each extension re-triggered the
+        #     unbounded middle `.*?`. Measured on `"<w:p>{{?c}}"*1600` (17.6 KB):
+        #     43.3 s before, 0.45 ms after — it grew ~8x per doubling.
+        #   • correctness: because the leading body could cross a paragraph
+        #     open, a self-closing `<w:p w:rsidR="…"/>` (Word's ordinary blank
+        #     paragraph) sitting BEFORE the region was swallowed into the span
+        #     and deleted with it. That is exactly what _PARAGRAPH_RE's comment
+        #     and test_self_closing_empty_paragraph_not_swallowed guard against;
+        #     span_re had never received the guard.
+        # `[\s\S]` rather than `.` so no re.DOTALL is needed (same invariant as
+        # the run-normalization patterns).
         span_re = re.compile(
-            r"<w:p(?:\s[^>]*)?>(?:(?!</w:p>).)*?"
+            r"<w:p(?:\s[^>]*)?>(?:(?!</?w:p[\s/>])[\s\S])*?"
             + open_pat.pattern
-            + r".*?"
+            + r"(?:(?!" + open_pat.pattern + r")[\s\S])*?"
             + close_pat.pattern
-            + r"(?:(?!</w:p>).)*?</w:p>",
-            re.DOTALL,
+            + r"(?:(?!</?w:p[\s/>])[\s\S])*?</w:p>"
         )
         new_xml, n = span_re.subn("", xml)
         if n:

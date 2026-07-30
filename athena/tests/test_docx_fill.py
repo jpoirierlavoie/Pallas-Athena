@@ -653,6 +653,51 @@ def test_conditional_false_removes_whole_span():
     assert "{{?" not in out and "{{/" not in out
 
 
+def test_conditional_false_does_not_swallow_preceding_blank_paragraph():
+    """A self-closing `<w:p …/>` — Word's ordinary blank paragraph — sitting
+    BEFORE the region must survive its removal.
+
+    The old `span_re` tempered its leading body only against the CLOSING
+    `</w:p>`, so it could run across a paragraph OPEN and pull the preceding
+    blank paragraph into the deleted span. Same defect `_PARAGRAPH_RE` and
+    test_self_closing_empty_paragraph_not_swallowed guard against; span_re had
+    never received the guard."""
+    import xml.etree.ElementTree as ET
+
+    docx = _make_docx(_doc(
+        _para("Avant"),
+        '<w:p w:rsidR="00A1B2"/>',          # blank spacer paragraph
+        _para("{{?si_debours_ntx}}"),
+        _tbl(_tr(_tc("Débours non assujettis"))),
+        _para("{{/si_debours_ntx}}"),
+        _para("Après"),
+    ))
+    out = _document_xml(fill_docx(docx, {}, conditions={"si_debours_ntx": False}))
+    ET.fromstring(out)
+    assert "Débours non assujettis" not in out          # the region went
+    assert 'w:rsidR="00A1B2"' in out                    # the spacer stayed
+    assert "Avant" in out and "Après" in out
+
+
+def test_conditional_span_re_is_redos_safe():
+    """Linearity guard for the false-condition span (CWE-1333).
+
+    The old pattern's leading body could cross a `<w:p` open, and each
+    extension re-triggered its unbounded middle `.*?` — measured ~8x per
+    doubling: 43.3 SECONDS on `"<w:p>{{?c}}" * 1600` (17.6 KB). Reached on
+    every note-d'honoraires generation with an empty conditional table."""
+    import time
+
+    docx = _make_docx(_doc(
+        "<w:p>{{?si_debours_ntx}}</w:p>" * 20_000,
+        _para("{{/si_debours_ntx}}"),
+    ))
+    start = time.perf_counter()
+    fill_docx(docx, {}, conditions={"si_debours_ntx": False})
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"condition span took {elapsed:.2f}s — quadratic again?"
+
+
 def test_unbalanced_condition_raises():
     docx = _make_docx(_doc(_para("{{?si_honoraires}}"), _tbl(_tr(_tc("x")))))
     with pytest.raises(DocxFillError):

@@ -21,12 +21,11 @@ import re
 import sys
 import zipfile
 
-from utils.docx_fill import _normalize_runs, validate_template
+from utils.docx_fill import _XML_TAG_RE, _normalize_runs, validate_template
 from utils.template_fields import classify_placeholders
 
 # The XML parts a placeholder can live in.
 _TARGET_RE = re.compile(r"^word/(document|header\d*|footer\d*)\.xml$")
-_TAG_RE = re.compile(r"<[^>]+>")
 
 # Non-text markup that, sitting inside a {{...}}, blocks the run merge and
 # leaves the field genuinely fragmented (mapped to a plain-French cause).
@@ -59,7 +58,7 @@ def _structural_causes(xml: str, name: str) -> list[str]:
     causes: set[str] = set()
     for match in re.finditer(r"\{\{.*?\}\}", xml, re.DOTALL):
         span = match.group(0)
-        if _TAG_RE.sub("", span)[2:-2].strip() != name:
+        if _XML_TAG_RE.sub("", span)[2:-2].strip() != name:
             continue
         for marker, label in _STRUCTURAL.items():
             if marker in span:
