@@ -16,15 +16,36 @@
 # exclude / prune directives without Unicode normalization, so on APFS/HFS+ an
 # NFD file name can slip past an NFC exclude rule when building a *source
 # distribution*. This project never builds an sdist — it is an App Engine app
-# that Cloud Build only pip-installs and deploys (no setup.py / MANIFEST.in) —
-# so the vulnerable path is unreachable at build and at runtime. setuptools is
-# a transitive dependency only. The fix (83.0.0) is additionally blocked by the
-# deliberate `setuptools<81` pin required by opentelemetry-instrumentation
-# 0.48b0 (pkg_resources). Re-evaluate when the OTel stack moves to >=0.50b0.
+# that Cloud Build only pip-installs and deploys (no setup.py, no pyproject,
+# no MANIFEST.in anywhere) — so the vulnerable path is unreachable at build,
+# at test and at runtime. Note the load-bearing reason is the ABSENT packaging
+# step, not the advisory's macOS framing: HFS+/APFS is merely where the
+# NFC/NFD collision arises silently, and an NFD-named file authored anywhere
+# would evade an NFC exclude rule just the same. Note also that consuming an
+# sdist (pip building a wheel at install time) exercises the build backend,
+# NOT the sdist-creation/MANIFEST.in filtering path. The harm direction is
+# over-INCLUSION of files an author meant to exclude, which matters to whoever
+# PUBLISHES a distribution; this repo publishes none.
+#
+# setuptools is BOTH a direct constraint (requirements.in `setuptools<81` —
+# the file's one deliberately non-exact pin, which makes it self-enforcing:
+# uv resolves it to the highest allowed and Dependabot cannot cross 81 without
+# a human edit) AND transitive via opentelemetry-instrumentation. The fix
+# (83.0.0) is therefore blocked by that pin, which exists because
+# opentelemetry-instrumentation 0.48b0 imports `pkg_resources` at runtime
+# (setuptools removed it in 81+) and tracing would silently disable.
+# Re-evaluate when the OTel stack moves to >=0.50b0 — that bump must move the
+# flask/requests/jinja2 instrumentation packages in lockstep (0.48b0 hard-pins
+# its siblings at ==0.48b0), lift api/sdk off 1.27.0, and delete the
+# `setuptools<81` line in the SAME commit, or the resolver keeps 80.10.2 and
+# nothing changes. NB: Dependabot does NOT read this file — the corresponding
+# Dependabot alert needs a UI dismissal ("Vulnerable code is not actually
+# used"). Trivy does not report it either (its workflow filters to
+# CRITICAL,HIGH and this advisory is medium).
 
 [[IgnoredVulns]]
 id = "PYSEC-2026-3447"
-reason = "setuptools sdist build-only bug (MANIFEST.in exclude bypass); this app never builds a source distribution, so unreachable. Transitive dep; fix 83.0.0 blocked by the setuptools<81 pin (OTel pkg_resources)."
+reason = "setuptools sdist build-only bug (MANIFEST.in exclude bypass); this app never builds a source distribution (no setup.py/pyproject/MANIFEST.in), so unreachable at build, test and runtime. Direct constraint in requirements.in AND transitive via opentelemetry-instrumentation; fix 83.0.0 blocked by the setuptools<81 pin (OTel 0.48b0 needs pkg_resources)."
 
 [[IgnoredVulns]]
 id = "CVE-2026-59890"

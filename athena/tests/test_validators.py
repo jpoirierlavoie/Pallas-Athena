@@ -2,9 +2,11 @@
 
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from utils import validators
 from utils.validators import (
     normalize_phone,
     format_phone_display,
@@ -115,6 +117,49 @@ def test_email_empty():
 
 def test_email_valid():
     assert normalize_email("avocat@barreau.qc.ca") == "avocat@barreau.qc.ca"
+
+
+# ── normalize_email: the ReDoS bound (CodeQL py/polynomial-redos) ─────────
+# `[^@\s]+\.[^@\s]+` is QUADRATIC — both classes match the dot, so on
+# « x@ » + « a. »×n the engine tries every split point and rescans the tail
+# for each. Unbounded, 64 KB of that shape cost ~10 s of CPU (4× per
+# doubling), and the portal's PUBLIC /api/renvoi passes a JSON field straight
+# into this function. The length bound is the fix; these tests are the
+# regression pins — a timing assertion would be flaky, so the bound itself is
+# asserted instead, plus one loose ceiling that only a quadratic scan fails.
+
+
+def test_email_over_rfc_length_refused():
+    """RFC 5321 caps an address at 254 characters; longer is invalid on its
+    own terms AND must never reach the quadratic pattern."""
+    long_local = "a" * 250
+    assert len(f"{long_local}@ex.com") > validators.EMAIL_MAX_LENGTH
+    assert normalize_email(f"{long_local}@ex.com") is None
+    # A 254-character address is still accepted (the bound is not stricter
+    # than the RFC — a real long address must keep working).
+    local = "a" * (validators.EMAIL_MAX_LENGTH - len("@example.com"))
+    ok = f"{local}@example.com"
+    assert len(ok) == validators.EMAIL_MAX_LENGTH
+    assert normalize_email(ok) == ok
+
+
+def test_email_redos_shape_returns_fast():
+    """The adversarial shape must be refused in bounded time. 200 KB costs
+    minutes through the regex; the length check answers in microseconds. The
+    generous 2 s ceiling keeps this from flaking on a loaded runner while
+    still failing outright if the bound is ever removed.
+
+    The trailing « @ » is load-bearing and NOT interchangeable: it is what
+    makes a match impossible, forcing the engine through every split point.
+    A trailing SPACE — the shape CodeQL reports — is stripped by
+    normalize_email before matching, after which the string MATCHES in
+    microseconds; a test built on it would pass with the bound removed and
+    pin nothing."""
+    attack = "x@" + "a." * 100_000 + "@"
+    start = time.perf_counter()
+    assert normalize_email(attack) is None
+    assert validate_email(attack)[1] == "Adresse courriel invalide."
+    assert time.perf_counter() - start < 2.0
 
 
 # ── validate_email ────────────────────────────────────────────────────────

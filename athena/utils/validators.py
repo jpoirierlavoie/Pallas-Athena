@@ -94,12 +94,32 @@ def validate_phone(raw: str) -> tuple[Optional[str], Optional[str]]:
 
 # ── Email ────────────────────────────────────────────────────────────────
 
+# RFC 5321 §4.5.3.1.3 caps a forward-path (the whole address) at 256 octets
+# including the angle brackets — 254 usable characters. NOTHING legitimate
+# exceeds it, and the bound is load-bearing rather than cosmetic: the pattern
+# below is POLYNOMIAL (quadratic) on an adversarial shape, so it must never
+# see an unbounded string. See _EMAIL_RE.
+EMAIL_MAX_LENGTH = 254
+
+
+# `[^@\s]+\.[^@\s]+` after the « @ » makes this quadratic: both classes match
+# the dot, so on input like « x@ » + « a. »×n the engine tries every split
+# point and rescans the tail for each one. Measured: 64 KB of that shape costs
+# ~10 s of CPU, quadrupling per doubling — i.e. a single request could pin a
+# worker thread past the gunicorn timeout. normalize_email therefore rejects
+# anything longer than EMAIL_MAX_LENGTH *before* matching. Do NOT drop that
+# length check, and do not "simplify" it away by pre-truncating instead
+# (truncation would turn a 300-char address into a plausible-looking one).
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 def normalize_email(raw: str) -> Optional[str]:
     """Normalize an email address.
 
     Rules:
     - Strip whitespace
     - Convert to lowercase
+    - Reject anything longer than EMAIL_MAX_LENGTH (RFC 5321)
     - Basic pattern validation: must match [^@]+@[^@]+\\.[^@]+
     - Return None if invalid
 
@@ -111,7 +131,12 @@ def normalize_email(raw: str) -> Optional[str]:
     normalized = raw.strip().lower()
     if not normalized:
         return None
-    if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized):
+    if len(normalized) > EMAIL_MAX_LENGTH:
+        # Over-long input is invalid on its own terms AND would feed the
+        # quadratic pattern below an unbounded string (ReDoS) — the portal's
+        # /api/renvoi takes this value straight from a public JSON body.
+        return None
+    if _EMAIL_RE.match(normalized):
         return normalized
     return None
 
