@@ -45,6 +45,41 @@ def web(app):
     return app.test_client()
 
 
+def test_portail_factory_initializes_tracing_for_real():
+    """The portal runs the SAME utils/tracing_setup module as the main
+    service, in its own App Engine process — but every portal test mocks
+    `init_app` away, so an OTel breakage would hit both services and be
+    caught by neither. This one builds the app WITHOUT that mock.
+
+    It only asserts the factory survives real tracing init: every failure
+    inside `init_app` is swallowed into a logger.warning, so the assertion
+    that matters is the absence of a WARNING, not the absence of a raise."""
+    import logging
+
+    from utils import tracing_setup
+
+    records: list = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=logging.WARNING)
+    tracing_setup.logger.addHandler(handler)
+    try:
+        with mock.patch.object(client_app, "_init_firebase"):
+            application = client_app.create_portail_app()
+    finally:
+        tracing_setup.logger.removeHandler(handler)
+
+    assert application is not None
+    assert getattr(application, "_pallas_tracing_initialized", False) is True
+    assert not records, (
+        "tracing init degraded on the portal service: "
+        + "; ".join(r.getMessage() for r in records)
+    )
+
+
 def _invitation(**over) -> dict:
     now = datetime.now(timezone.utc)
     base = {

@@ -262,3 +262,427 @@ def test_excluded_urls_includes_static_assets() -> None:
     assert "/sw.js" in excluded
     assert "/manifest.json" in excluded
     assert "/.well-known/.*" in excluded
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHARACTERIZATION TESTS (2026-07-30)
+#
+# Written against api/sdk 1.27.0 + instrumentation 0.48b0, GREEN, *before*
+# the bump to 1.44.0/0.65b0 — so they are an instrument that measures what
+# the bump changes, not a recording of whatever it produced.
+#
+# They exist because an audit found that the parts of tracing_setup.py most
+# likely to break were the parts with ZERO coverage: the PII scrubber, the
+# three instrumentation hooks, the propagator, the sampler, and the entire
+# production branch. Every failure in that module is swallowed into a
+# logger.warning (init) or logger.debug (the scrubber), so a break produces
+# a log line and an app that boots with tracing silently off — or, worse, a
+# scrubber that no longer scrubs while spans keep flowing to Cloud Trace.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _CapturingExporter:
+    """Stands in for the wrapped delegate (Cloud Trace / console)."""
+
+    def __init__(self) -> None:
+        self.batches: list = []
+        self.shutdown_calls = 0
+        self.flush_calls: list = []
+
+    def export(self, spans):
+        self.batches.append(list(spans))
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        self.flush_calls.append(timeout_millis)
+        return True
+
+
+def _finished_span(**attributes):
+    """A real, ENDED ReadableSpan carrying *attributes*.
+
+    Built through a real TracerProvider so it is the genuine SDK object the
+    exporter sees in production — not a stub that would hide a change in
+    ReadableSpan itself.
+    """
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("characterization")
+    with tracer.start_as_current_span("s") as sp:
+        for k, v in attributes.items():
+            sp.set_attribute(k, v)
+    return exporter.get_finished_spans()[0]
+
+
+# ── Layer 2: the PII scrubber. The highest-value test in this file. ───────
+
+
+def test_sanitizing_exporter_actually_rewrites_attributes() -> None:
+    """The scrubber must be proven to have REWRITTEN the attributes.
+
+    Asserting only that ``export()`` does not raise would pass even if the
+    ``span._attributes`` assignment silently stopped taking effect — and
+    that failure mode is caught by an ``except Exception`` that logs at
+    DEBUG, i.e. invisible in production. This test asserts on what the
+    DELEGATE RECEIVED, which is what actually reaches Cloud Trace."""
+    span_obj = _finished_span(
+        **{
+            "http.url": "https://athena.example/parties/?q=Tremblay",
+            "note": "écrire à jean.tremblay@example.com",
+        }
+    )
+    delegate = _CapturingExporter()
+
+    tracing_setup._SanitizingSpanExporter(delegate).export([span_obj])
+
+    assert len(delegate.batches) == 1
+    exported = delegate.batches[0][0]
+    # The query string is gone — this is the client-name leak the layer exists for.
+    assert exported.attributes["http.url"] == "https://athena.example/parties/"
+    assert "Tremblay" not in str(dict(exported.attributes))
+    # And the email was scrubbed by the shared RedactionFilter.
+    assert "jean.tremblay@example.com" not in exported.attributes["note"]
+
+
+def test_sanitizing_exporter_covers_every_url_key() -> None:
+    """Each key in _URL_ATTRIBUTE_KEYS loses its query; url.query is BLANKED
+    (it is nothing but the query, so stripping cannot help)."""
+    attrs = {k: "https://h/p?q=secret" for k in tracing_setup._URL_ATTRIBUTE_KEYS}
+    span_obj = _finished_span(**attrs)
+    delegate = _CapturingExporter()
+
+    tracing_setup._SanitizingSpanExporter(delegate).export([span_obj])
+
+    exported = delegate.batches[0][0].attributes
+    for key in tracing_setup._URL_ATTRIBUTE_KEYS:
+        if key == "url.query":
+            assert exported[key] == "", f"{key} must be blanked entirely"
+        else:
+            assert exported[key] == "https://h/p", f"{key} kept its query"
+        assert "secret" not in exported[key]
+
+
+def test_sanitizing_exporter_scrubs_sequence_values() -> None:
+    span_obj = _finished_span(**{"tags": ("a@b.com", "plain")})
+    delegate = _CapturingExporter()
+    tracing_setup._SanitizingSpanExporter(delegate).export([span_obj])
+    values = delegate.batches[0][0].attributes["tags"]
+    assert "a@b.com" not in values
+    assert "plain" in values
+
+
+def test_sanitizing_exporter_delegates_lifecycle() -> None:
+    """Pins the SpanExporter ABC contract — a signature drift in
+    force_flush/shutdown would otherwise surface only in production."""
+    delegate = _CapturingExporter()
+    exporter = tracing_setup._SanitizingSpanExporter(delegate)
+    exporter.shutdown()
+    assert exporter.force_flush(1234) is True
+    assert delegate.shutdown_calls == 1
+    assert delegate.flush_calls == [1234]
+
+
+def test_sanitizing_exporter_never_blocks_export_on_failure(caplog) -> None:
+    """A span whose attributes cannot be rewritten must still be exported —
+    tracing must never break the app — but the failure MUST be logged.
+
+    ``__slots__`` is not an arbitrary choice of hostile object: it is the
+    exact upstream change that would break the ``span._attributes``
+    assignment (verified absent from ReadableSpan at v1.44.0, but it is the
+    hypothesised future breakage). With slots the assignment raises, which
+    is the *detectable* failure mode.
+
+    Note the mode this test canNOT cover: if a future ReadableSpan kept
+    ``_attributes`` writable but computed ``attributes`` from something
+    else, the assignment would succeed while the scrub silently stopped
+    taking effect — no exception, no log. That is why
+    test_sanitizing_exporter_actually_rewrites_attributes asserts on what
+    the DELEGATE RECEIVED; it is the only guard against that variant."""
+
+    class _Hostile:
+        __slots__ = ()  # no _attributes slot → assignment raises
+        name = "hostile"
+
+        @property
+        def attributes(self):
+            return {"k": "v"}
+
+    delegate = _CapturingExporter()
+    with caplog.at_level("DEBUG", logger=tracing_setup.logger.name):
+        tracing_setup._SanitizingSpanExporter(delegate).export([_Hostile()])
+    assert len(delegate.batches) == 1  # exported anyway
+    assert caplog.records, "a failed sanitization must be logged, not silent"
+
+
+# ── Layer 1: the three instrumentation hooks ─────────────────────────────
+
+
+def test_flask_request_hook_strips_query_from_url_attributes() -> None:
+    """FlaskInstrumentor captures http.target (and sometimes http.url) WITH
+    the query string — `/parties/?q=Tremblay` leaks a client-name search."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("hooks")
+    with tracer.start_as_current_span("http") as sp:
+        sp.set_attribute("http.url", "https://athena.example/parties/?q=Tremblay")
+        sp.set_attribute("http.target", "/parties/?q=Tremblay")
+        tracing_setup._flask_request_hook(sp, {"PATH_INFO": "/parties/"})
+    attrs = exporter.get_finished_spans()[0].attributes
+    assert attrs["http.target"] == "/parties/"
+    assert attrs["http.url"] == "https://athena.example/parties/"
+    assert "Tremblay" not in str(dict(attrs))
+
+
+def test_flask_response_hook_reapplies_the_override() -> None:
+    """The installed instrumentation re-applies its collected attributes
+    after the request hook, so the response hook repeats the override."""
+    app = Flask(__name__)
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("hooks")
+    with app.test_request_context("/dossiers/?q=Secret"):
+        with tracer.start_as_current_span("http") as sp:
+            sp.set_attribute("http.target", "/dossiers/?q=Secret")
+            tracing_setup._flask_response_hook(sp, "200 OK", [])
+    assert exporter.get_finished_spans()[0].attributes["http.target"] == "/dossiers/"
+
+
+def test_requests_hook_rewrites_outbound_urls() -> None:
+    """Storage URLs embed uid/dossier/filename in the path AND the name=
+    query param, so for storage hosts only scheme+host survive."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("hooks")
+
+    class _Req:
+        def __init__(self, url):
+            self.url = url
+
+    cases = {
+        "https://api.example.com/v1/x?token=abc": "https://api.example.com/v1/x",
+        "https://storage.googleapis.com/b/o?name=users%2Fu1%2Fdossiers%2Fd1":
+            "https://storage.googleapis.com",
+        "https://user:pass@api.example.com/v1": "https://api.example.com/v1",
+    }
+    for url, expected in cases.items():
+        with tracer.start_as_current_span("out") as sp:
+            tracing_setup._requests_request_hook(sp, _Req(url))
+        got = exporter.get_finished_spans()[-1].attributes["http.url"]
+        assert got == expected, f"{url} -> {got}"
+        assert "pass@" not in got
+
+
+# ── Sampler / resource / production gate ─────────────────────────────────
+
+
+def test_build_sampler_dev_vs_production() -> None:
+    from opentelemetry.sdk.trace.sampling import ParentBased
+
+    assert tracing_setup._build_sampler(False, 1.0) is tracing_setup.ALWAYS_ON
+    prod = tracing_setup._build_sampler(True, 0.1)
+    assert isinstance(prod, ParentBased)
+
+
+def test_build_resource_carries_service_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GAE_VERSION", "v42")
+    attrs = tracing_setup._build_resource().attributes
+    assert attrs["service.name"] == "pallas-athena"
+    assert attrs["service.version"] == "v42"
+
+
+def test_is_production_from_config_or_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = Flask(__name__)
+    monkeypatch.delenv("ENV", raising=False)
+    app.config["ENV"] = "development"
+    assert tracing_setup._is_production(app) is False
+    app.config["ENV"] = "production"
+    assert tracing_setup._is_production(app) is True
+    app.config["ENV"] = "development"
+    monkeypatch.setenv("ENV", "production")
+    assert tracing_setup._is_production(app) is True
+
+
+def test_production_branch_wires_batch_processor_with_sanitizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ENTIRE production export path had zero coverage — it is never
+    executed by any test, in any process, because ENV is never 'production'
+    in CI. This drives it with a fake Cloud Trace exporter."""
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    created: list = []
+
+    class _FakeCloudTraceExporter:
+        def __init__(self, *a, **kw):
+            created.append(self)
+
+        def export(self, spans):
+            from opentelemetry.sdk.trace.export import SpanExportResult
+
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            pass
+
+        def force_flush(self, timeout_millis: int = 30000):
+            return True
+
+    import types
+
+    fake_mod = types.ModuleType("opentelemetry.exporter.cloud_trace")
+    fake_mod.CloudTraceSpanExporter = _FakeCloudTraceExporter
+    monkeypatch.setitem(
+        sys.modules, "opentelemetry.exporter.cloud_trace", fake_mod
+    )
+
+    processors: list = []
+    monkeypatch.setattr(
+        TracerProvider,
+        "add_span_processor",
+        lambda self, p: processors.append(p),
+    )
+
+    app = Flask(__name__)
+    app.config["ENV"] = "production"
+    tracing_setup.init_app(app)
+
+    assert created, "the production branch never built the Cloud Trace exporter"
+    assert any(isinstance(p, BatchSpanProcessor) for p in processors)
+
+
+def test_production_exporter_failure_is_non_fatal(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """Tracing is best-effort: a broken exporter must not stop the app from
+    booting. It must however SAY so — this pins the warning."""
+    import types
+
+    fake_mod = types.ModuleType("opentelemetry.exporter.cloud_trace")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("no credentials")
+
+    fake_mod.CloudTraceSpanExporter = _boom
+    monkeypatch.setitem(
+        sys.modules, "opentelemetry.exporter.cloud_trace", fake_mod
+    )
+
+    app = Flask(__name__)
+    app.config["ENV"] = "production"
+    with caplog.at_level("WARNING", logger=tracing_setup.logger.name):
+        tracing_setup.init_app(app)  # must not raise
+    assert any("Cloud Trace" in r.message for r in caplog.records)
+
+
+def test_install_propagator_sets_composite_with_cloud_trace() -> None:
+    """X-Cloud-Trace-Context correlation dies quietly if the composite
+    propagator is not installed (the whole helper sits in a try/except)."""
+    from opentelemetry.propagate import get_global_textmap
+
+    tracing_setup._install_propagator()
+    fields = get_global_textmap().fields
+    assert "traceparent" in fields
+    assert any("cloud-trace" in f.lower() for f in fields), fields
+
+
+# ── The end-to-end guard: no query string may reach an exported span ──────
+
+
+def test_no_query_string_reaches_an_exported_span() -> None:
+    """THE integration test: a real request, real Flask instrumentation, the
+    real hooks and the real sanitizing exporter — asserting on the span that
+    would actually be shipped to Cloud Trace.
+
+    One test covers three independent ways a bump could reopen the leak:
+      • the HTTP semantic-convention migration renaming http.url/http.target
+        to url.full/url.path (the hooks write only the OLD keys, so a flip
+        would make them no-ops);
+      • the WSGI change of URL source (contrib 0.63b0 / PR #4551 —
+        PATH_INFO+QUERY_STRING instead of RAW_URI), which alters the exact
+        string the hooks receive;
+      • any drift in the request/response hook signatures.
+    None of the three would raise; each would silently ship
+    `/parties/?q=Tremblay` — a client-name search — to Cloud Trace."""
+    from opentelemetry.instrumentation.flask import FlaskInstrumentor
+
+    delegate = _CapturingExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(
+        SimpleSpanProcessor(tracing_setup._SanitizingSpanExporter(delegate))
+    )
+
+    app = Flask(__name__)
+
+    @app.route("/parties/")
+    def parties():
+        return "ok"
+
+    # Exactly the wiring init_app performs (see test below, which pins that
+    # these are the kwargs it passes).
+    FlaskInstrumentor().instrument_app(
+        app,
+        excluded_urls=tracing_setup.EXCLUDED_URLS,
+        tracer_provider=provider,
+        request_hook=tracing_setup._flask_request_hook,
+        response_hook=tracing_setup._flask_response_hook,
+    )
+    try:
+        assert app.test_client().get("/parties/?q=Tremblay").status_code == 200
+    finally:
+        FlaskInstrumentor().uninstrument_app(app)
+
+    assert delegate.batches, "instrumentation produced no span at all"
+    attrs = dict(delegate.batches[0][0].attributes)
+    rendered = repr(attrs)
+    assert "Tremblay" not in rendered, f"query string leaked: {rendered}"
+    assert "q=" not in rendered, f"query string leaked: {rendered}"
+
+
+def test_init_app_passes_our_hooks_to_the_instrumentors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the exact kwargs init_app relies on. If a bump renames or drops
+    one, instrument_app raises TypeError — which init_app swallows into a
+    single WARNING, leaving BOTH services with tracing silently degraded."""
+    captured: dict = {}
+
+    class _FakeFlaskInstrumentor:
+        def instrument_app(self, app, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeOther:
+        def instrument(self, **kwargs):
+            captured.setdefault("_others", []).append(kwargs)
+
+    import types
+
+    for mod_name, attr, fake in (
+        ("opentelemetry.instrumentation.flask", "FlaskInstrumentor", _FakeFlaskInstrumentor),
+        ("opentelemetry.instrumentation.jinja2", "Jinja2Instrumentor", _FakeOther),
+        ("opentelemetry.instrumentation.requests", "RequestsInstrumentor", _FakeOther),
+    ):
+        mod = types.ModuleType(mod_name)
+        setattr(mod, attr, fake)
+        monkeypatch.setitem(sys.modules, mod_name, mod)
+
+    app = Flask(__name__)
+    app.config["ENV"] = "development"
+    tracing_setup.init_app(app)
+
+    assert captured["excluded_urls"] == tracing_setup.EXCLUDED_URLS
+    assert captured["request_hook"] is tracing_setup._flask_request_hook
+    assert captured["response_hook"] is tracing_setup._flask_response_hook
+    assert captured["tracer_provider"] is not None
+    # requests + jinja2 both instrumented in the same block.
+    assert len(captured.get("_others", [])) == 2
