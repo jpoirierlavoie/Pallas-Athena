@@ -82,6 +82,14 @@ def _default_doc() -> dict:
         "total": 0,
         "retainer_applied": 0,
         "amount_due": 0,
+        # Payment received (lot P, July 2026). Until this existed, payment
+        # was representable ONLY as status == "payée": no amount, no date,
+        # and a partial payment could not be expressed at all. `amount_due`
+        # is frozen at issuance and stays non-zero on a paid invoice, so it
+        # is NOT a balance — the live balance is amount_due − amount_paid,
+        # DERIVED (see `balance_of`), never stored.
+        "amount_paid": 0,          # cents, 0 ≤ amount_paid ≤ total
+        "paid_date": None,         # date-only at midnight UTC; None = unpaid
         # Tax numbers (from config, snapshotted at creation)
         "gst_number": "",
         "qst_number": "",
@@ -619,6 +627,112 @@ def list_invoices_page(
         # PII-free: log only the exception type, never document contents.
         logger.warning("list_invoices_page failed: %s", type(exc).__name__)
         return [], None
+
+
+def balance_of(invoice: dict) -> int:
+    """The live balance in cents: what was due at issuance, less what came in.
+
+    DERIVED, never stored — a stored balance drifts the moment either side
+    of the subtraction is written without it. Note the trap it replaces:
+    ``amount_due`` is frozen at issuance and stays non-zero on a fully paid
+    invoice, so it has never been a balance despite reading like one.
+    """
+    return int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0))
+
+
+def record_payment(
+    invoice_id: str,
+    amount_paid: int,
+    paid_date: Optional[datetime] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Record (or correct) the amount received on an invoice.
+
+    Owns BOTH payment fields and the status flip in one transaction:
+
+    * balance reaches zero → the invoice flips to ``payée``;
+    * a CORRECTION that reopens a balance undoes that flip, back to
+      ``envoyée``.
+
+    That second half is not a nicety. ``payée`` is terminal in
+    ``STATUS_TRANSITIONS`` — ``update_status`` refuses to leave it — so
+    without an undo a mistyped amount would strand the invoice permanently
+    and need console surgery. The undo is deliberately NARROW: it only
+    reverses a flip this function could have made (status ``payée`` with a
+    recorded payment that no longer covers the invoice). A ``payée`` set by
+    hand, with no payment recorded, is never touched — that status is the
+    lawyer's statement, not an inference of ours.
+
+    ``amount_paid = 0`` clears the payment entirely (the full correction).
+    Returns ``(updated_invoice, errors)``; fails CLOSED on any read error.
+    """
+    errors: list[str] = []
+    try:
+        amount = int(amount_paid)
+    except (TypeError, ValueError):
+        return None, ["Le montant encaissé doit être un nombre entier de cents."]
+    if amount < 0:
+        return None, ["Le montant encaissé ne peut pas être négatif."]
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _PaymentRefused("Facture introuvable.")
+        invoice = snap.to_dict() or {}
+
+        status = invoice.get("status", "")
+        if status == "annulée":
+            raise _PaymentRefused(
+                "Cette facture est annulée : aucun encaissement ne peut y "
+                "être porté."
+            )
+        if status == "brouillon":
+            raise _PaymentRefused(
+                "Cette facture est encore un brouillon : envoyez-la avant "
+                "d'y porter un encaissement."
+            )
+
+        total = int(invoice.get("total", 0))
+        if amount > total:
+            raise _PaymentRefused(
+                "Le montant encaissé ne peut pas dépasser le total de la "
+                "facture."
+            )
+
+        now = datetime.now(timezone.utc)
+        updates: dict = {
+            "amount_paid": amount,
+            # A cleared payment has no date; keeping a stale one would read
+            # as « paid on that day » for an invoice carrying no payment.
+            "paid_date": paid_date if amount > 0 else None,
+            "updated_at": now,
+            "etag": str(uuid.uuid4()),
+        }
+
+        due = int(invoice.get("amount_due", 0))
+        had_recorded_payment = int(invoice.get("amount_paid", 0)) > 0
+        if amount >= due and status in ("envoyée", "en_retard"):
+            updates["status"] = "payée"
+        elif amount < due and status == "payée" and had_recorded_payment:
+            # Undo OUR OWN flip only — see the docstring.
+            updates["status"] = "envoyée"
+
+        transaction.update(ref, updates)
+        return {**invoice, **updates}
+
+    try:
+        return _apply(db.transaction()), errors
+    except _PaymentRefused as refusal:
+        return None, [str(refusal)]
+    except Exception:
+        log_unexpected("invoice operation failed")
+        return None, ["Erreur. Veuillez réessayer."]
+
+
+class _PaymentRefused(Exception):
+    """Refusal raised inside the payment transaction (aborts, never writes)."""
 
 
 def update_status(invoice_id: str, new_status: str) -> tuple[bool, str]:

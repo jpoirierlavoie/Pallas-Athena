@@ -6,7 +6,10 @@ from datetime import date, datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
 from utils.format_fr import (
+    parse_cents_fr,
     format_cents_fr,
     format_cents_fr_parens,
     format_date_fr,
@@ -78,3 +81,35 @@ def test_date_accepts_datetime_uses_utc_calendar_date():
     # Midnight-UTC storage → the UTC calendar date, no Montréal shift.
     dt = datetime(2025, 12, 11, 0, 0, tzinfo=timezone.utc)
     assert format_date_fr(dt) == "11 décembre 2025"
+
+
+# ── parse_cents_fr: the inverse, for money the lawyer types ─────────────
+
+
+def test_parse_cents_fr_accepts_what_a_french_keyboard_produces():
+    assert parse_cents_fr("1 150,00") == 115000          # ordinary space
+    assert parse_cents_fr("1 150,00") == 115000     # NBSP (our own output)
+    assert parse_cents_fr("1 150,00") == 115000     # narrow NBSP
+    assert parse_cents_fr("1 150,00 $") == 115000        # pasted back with $
+    assert parse_cents_fr("2874.37") == 287437           # period, tolerated
+    assert parse_cents_fr("15") == 1500                  # whole dollars
+    assert parse_cents_fr("0,00") == 0
+    assert parse_cents_fr("  42,50  ") == 4250
+
+
+def test_parse_cents_fr_round_trips_our_own_formatting():
+    for cents in (0, 1, 99, 100, 115000, 287437, 1234567):
+        assert parse_cents_fr(format_cents_fr(cents)) == cents
+
+
+def test_parse_cents_fr_rounds_half_up_to_the_cent():
+    assert parse_cents_fr("1,005") == 101
+    assert parse_cents_fr("1,004") == 100
+
+
+def test_parse_cents_fr_raises_rather_than_returning_zero():
+    """A silent 0 would record an invoice as unpaid while telling the lawyer
+    the payment was saved — the worst possible outcome for this field."""
+    for bad in ("", "   ", "beaucoup", "--", "12,34,56", "$"):
+        with pytest.raises(ValueError):
+            parse_cents_fr(bad)

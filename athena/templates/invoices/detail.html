@@ -265,9 +265,76 @@
             <dd class="text-gray-900 font-bold text-lg">{{ invoice.amount_due | cents_fr }}</dd>
           </div>
           {% endif %}
+          {# Encaissement (lot P). « Montant dû » ci-dessus est FIGÉ à
+             l'émission — le solde vivant est la ligne ci-dessous. #}
+          {% if invoice.amount_paid %}
+          <div class="flex justify-between">
+            <dt class="text-gray-500">Encaissé{% if invoice.paid_date %}
+              <span class="text-gray-400">({{ invoice.paid_date.strftime('%Y-%m-%d') }})</span>{% endif %}</dt>
+            <dd class="text-green-700 font-medium">-{{ invoice.amount_paid | cents_fr }}</dd>
+          </div>
+          <div class="flex justify-between border-t border-gray-200 pt-2">
+            <dt class="text-gray-900 font-bold">Solde</dt>
+            <dd class="text-gray-900 font-bold text-lg">{{ balance | cents_fr }}</dd>
+          </div>
+          {% endif %}
         </dl>
       </div>
     </div>
+
+    {# Enregistrer un paiement — l'émission d'une facture et la constatation
+       d'un paiement restent des actes de l'avocat, posés ici. Aucun outil du
+       connecteur MCP n'écrit un encaissement. #}
+    {% if invoice.status not in ('brouillon', 'annulée') %}
+    <div class="border-t border-gray-200 mt-6 pt-6">
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+        Encaissement
+      </p>
+      {% if request.args.get('erreur') == 'montant' %}
+      <p class="text-sm text-red-600 mb-2">Montant invalide.</p>
+      {% elif request.args.get('erreur') == 'date' %}
+      <p class="text-sm text-red-600 mb-2">Date invalide.</p>
+      {% elif request.args.get('erreur') == 'paiement' %}
+      <p class="text-sm text-red-600 mb-2">
+        Encaissement refusé (montant supérieur au total, ou facture non
+        éligible).
+      </p>
+      {% elif request.args.get('message') == 'paiement' %}
+      <p class="text-sm text-green-700 mb-2">Encaissement enregistré.</p>
+      {% endif %}
+      <form method="post"
+            action="{{ url_for('invoices.invoice_record_payment', invoice_id=invoice.id) }}"
+            class="flex flex-wrap items-end gap-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div>
+          <label for="amount_paid" class="block text-xs text-gray-500 mb-1">
+            Montant encaissé ($)
+          </label>
+          <input type="text" inputmode="decimal" id="amount_paid" name="amount_paid"
+                 value="{{ '%.2f'|format(invoice.amount_paid / 100) if invoice.amount_paid else '' }}"
+                 placeholder="0,00"
+                 class="w-24 px-3 py-2 text-sm border border-gray-300 rounded-lg">
+        </div>
+        <div>
+          <label for="paid_date" class="block text-xs text-gray-500 mb-1">
+            Date du paiement
+          </label>
+          <input type="date" id="paid_date" name="paid_date"
+                 value="{{ invoice.paid_date.strftime('%Y-%m-%d') if invoice.paid_date else '' }}"
+                 class="px-3 py-2 text-sm border border-gray-300 rounded-lg">
+        </div>
+        <button type="submit"
+                class="px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Enregistrer
+        </button>
+      </form>
+      <p class="text-xs text-gray-500 mt-2">
+        Un solde ramené à zéro fait passer la facture à « payée ». Corriger le
+        montant à la baisse annule cette bascule ; saisir 0 efface
+        l'encaissement.
+      </p>
+    </div>
+    {% endif %}
 
     {# Notes & payment terms #}
     {% if invoice.notes or invoice.payment_terms %}

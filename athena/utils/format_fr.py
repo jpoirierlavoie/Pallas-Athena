@@ -12,7 +12,7 @@ Conventions (Québec / fr-CA):
 """
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 _NBSP = " "
 
@@ -52,6 +52,30 @@ def format_cents_fr_parens(cents: int) -> str:
     # Drop the trailing NBSP + "$" from the magnitude, wrap in parens, re-add.
     amount = format_cents_fr(abs(int(cents)))[:-2]
     return f"({amount}){_NBSP}$"
+
+
+def parse_cents_fr(raw: str) -> int:
+    """``"1 150,00"`` → ``115000``. The inverse of :func:`format_cents_fr`.
+
+    Accepts what a fr-CA keyboard actually produces: a comma decimal, a
+    non-breaking OR ordinary space as thousands grouping, an optional ``$``,
+    and (tolerantly) a period decimal. Rounds ROUND_HALF_UP to the cent —
+    never a float in between, per the house money rule.
+
+    Raises ``ValueError`` on anything else, deliberately: a silent 0 would
+    record an invoice as unpaid while telling the lawyer it was saved.
+    """
+    text = (raw or "").strip()
+    for junk in ("$", _NBSP, " ", " "):      # narrow NBSP too
+        text = text.replace(junk, "")
+    text = text.replace(",", ".")
+    if not text:
+        raise ValueError("empty amount")
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ArithmeticError) as exc:
+        raise ValueError(f"invalid amount: {raw!r}") from exc
+    return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def format_rate_fr(rate: int, scale: int) -> str:

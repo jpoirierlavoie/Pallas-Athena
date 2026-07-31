@@ -20,15 +20,18 @@ from auth import login_required
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import safe_internal_redirect
 from config import Config
+from utils.format_fr import parse_cents_fr
 from models.invoice import (
     STATUS_LABELS,
     STATUS_TRANSITIONS,
     VALID_STATUSES,
+    balance_of,
     create_invoice,
     delete_invoice,
     get_invoice_with_items,
     list_invoices,
     list_invoices_page,
+    record_payment,
     update_status,
     void_invoice,
 )
@@ -402,6 +405,8 @@ def invoice_detail(invoice_id: str) -> str:
         fee_items=fee_items,
         expense_items=expense_items,
         transitions=transitions,
+        # amount_due is frozen at issuance; the live balance is derived.
+        balance=balance_of(invoice),
         return_to=request.args.get("return_to", ""),
     )
     return render_template("invoices/detail.html", **ctx)
@@ -591,6 +596,40 @@ def invoice_update_status(invoice_id: str) -> str:
         resp.headers["HX-Redirect"] = target
         return resp
     return redirect(target)
+
+
+@invoices_bp.route("/<invoice_id>/paiement", methods=["POST"])
+@login_required
+def invoice_record_payment(invoice_id: str) -> str:
+    """Record (or correct) the amount received on an invoice.
+
+    Issuing an invoice and acknowledging a payment are the lawyer's own
+    acts, posed here in the application — no MCP tool writes a payment.
+    """
+    raw_amount = (request.form.get("amount_paid") or "").strip()
+    raw_date = (request.form.get("paid_date") or "").strip()
+    target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
+
+    # Entered in dollars fr-CA, stored in cents — never a float in between.
+    try:
+        cents = parse_cents_fr(raw_amount)
+    except ValueError:
+        return redirect(f"{target}?erreur=montant")
+
+    paid_date = None
+    if raw_date:
+        try:
+            parsed = datetime.strptime(raw_date, "%Y-%m-%d")
+            # Date-only at midnight UTC — the house convention for a day
+            # the user typed, so it is never shifted by a timezone.
+            paid_date = parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return redirect(f"{target}?erreur=date")
+
+    _, errors = record_payment(invoice_id, cents, paid_date)
+    if errors:
+        return redirect(f"{target}?erreur=paiement")
+    return redirect(f"{target}?message=paiement")
 
 
 @invoices_bp.route("/<invoice_id>/void", methods=["POST"])
