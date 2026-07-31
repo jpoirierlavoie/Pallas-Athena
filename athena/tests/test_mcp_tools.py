@@ -18,6 +18,8 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
 
+from tz import MTL
+
 UTC = timezone.utc
 NBSP = " "
 
@@ -421,7 +423,8 @@ def test_get_dossier_composes_summaries(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "get_dossier",
                         lambda i: _dossier())
     monkeypatch.setattr(handlers.task_model, "get_task_summary",
-                        lambda d: {"total": 3, "active": 2, "completed": 1, "overdue": 0})
+                        lambda d, today=None: {"total": 3, "active": 2,
+                                               "completed": 1, "overdue": 0})
     monkeypatch.setattr(handlers.hearing_model, "get_hearing_summary",
                         lambda d: {"total": 1, "upcoming": 1, "past": 0})
     monkeypatch.setattr(handlers.note_model, "get_notes_summary", lambda d: {"total": 4})
@@ -436,8 +439,10 @@ def test_get_dossier_composes_summaries(monkeypatch):
                         lambda d: {"count": 1, "total_invoiced": 150000,
                                    "total_paid": 0, "total_outstanding": 150000})
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_summary",
-                        lambda d: {"has_protocol": False, "has_history": False,
-                                   "total": 0, "completed": 0, "overdue": 0, "upcoming": 0})
+                        lambda d, today=None: {"has_protocol": False,
+                                               "has_history": False, "total": 0,
+                                               "completed": 0, "overdue": 0,
+                                               "upcoming": 0})
 
     payload = handlers.get_dossier({"dossier_id": "d1"})
     assert payload["found"] is True
@@ -492,15 +497,16 @@ def test_get_dossier_by_file_number(monkeypatch):
                         lambda status_filter=None, limit=200: ([_dossier()], None))
     monkeypatch.setattr(handlers.dossier_model, "get_dossier",
                         lambda i: _dossier() if i == "d1" else None)
-    for name in ("get_task_summary",):
-        monkeypatch.setattr(handlers.task_model, name, lambda d: {})
+    monkeypatch.setattr(handlers.task_model, "get_task_summary",
+                        lambda d, today=None: {})
     monkeypatch.setattr(handlers.hearing_model, "get_hearing_summary", lambda d: {})
     monkeypatch.setattr(handlers.note_model, "get_notes_summary", lambda d: {})
     monkeypatch.setattr(handlers.document_model, "get_document_summary", lambda d: {})
     monkeypatch.setattr(handlers.time_entry_model, "get_time_summary", lambda d: {})
     monkeypatch.setattr(handlers.expense_model, "get_expense_summary", lambda d: {})
     monkeypatch.setattr(handlers.invoice_model, "get_invoice_summary", lambda d: {})
-    monkeypatch.setattr(handlers.protocol_model, "get_protocol_summary", lambda d: {})
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_summary",
+                        lambda d, today=None: {})
 
     payload = handlers.get_dossier({"file_number": "2026-001"})
     assert payload["found"] is True
@@ -2145,3 +2151,205 @@ def test_create_note_schema_no_longer_requires_a_dossier():
     assert "dossier_id" not in tools.TOOLS["list_notes"]["input_schema"].get(
         "required", []
     )
+
+
+# ── Lot 6: one definition of "today", one derived step status ────────────
+
+
+def _step(status="à_venir", deadline=None, **over):
+    doc = {
+        "id": "s1", "order": 1, "title": "Réponse",
+        "description": "", "cpc_reference": "art. 145(2) C.p.c.",
+        "deadline_date": deadline, "status": status,
+        "mandatory": True, "deadline_locked": False, "date_confirmed": True,
+        "completed_date": None, "linked_task_id": None,
+        "linked_hearing_id": None, "notes": "",
+    }
+    doc.update(over)
+    return doc
+
+
+def test_step_status_is_derived_not_the_stored_fossil():
+    """THE audit case (step 209f0c54): the document carries a latched
+    « en_retard » written by the pre-fix wall-clock rule, on a step whose
+    deadline is TODAY. Nothing ever clears that word, and a read handler is
+    forbidden from writing — so the connector must derive instead."""
+    row = handlers._step_row(
+        _step("en_retard", datetime(2026, 7, 30, tzinfo=UTC)),
+        date(2026, 7, 30),
+    )
+    assert row["status"] == "à_venir"          # derived, and it governs
+    assert row["status_stored"] == "en_retard"  # provenance kept
+    assert row["status_differs"] is True        # the fossil is made visible
+    assert row["is_overdue"] is False
+
+
+def test_step_status_and_is_overdue_can_never_contradict():
+    """The pair the audit found impossible to trust. Both come from ONE
+    predicate now, so the invariant holds over the whole grid rather than
+    by convention."""
+    today = date(2026, 7, 31)
+    offsets = [-10, -1, 0, 1, 10, None]
+    for stored in ("à_venir", "en_cours", "en_retard", "complété", ""):
+        for offset in offsets:
+            deadline = (
+                None if offset is None
+                else datetime(2026, 7, 31, tzinfo=UTC) + timedelta(days=offset)
+            )
+            row = handlers._step_row(_step(stored, deadline), today)
+            assert (row["status"] == "en_retard") == row["is_overdue"], (
+                stored, offset, row["status"], row["is_overdue"]
+            )
+            # A completed step is never overdue, however old its deadline.
+            if stored == "complété":
+                assert row["status"] == "complété"
+                assert row["is_overdue"] is False
+
+
+def test_completion_is_a_fact_never_re_derived():
+    row = handlers._step_row(
+        _step("complété", datetime(2020, 1, 1, tzinfo=UTC)), date(2026, 7, 31)
+    )
+    assert row["status"] == "complété"
+    assert row["status_differs"] is False
+
+
+def test_undated_step_keeps_en_cours_but_falls_back_to_a_venir():
+    today = date(2026, 7, 31)
+    assert handlers._step_row(_step("en_cours", None), today)["status"] == "en_cours"
+    assert handlers._step_row(_step("en_retard", None), today)["status"] == "à_venir"
+
+
+def test_task_row_carries_is_overdue_on_every_surface():
+    """list_tasks emitted no is_overdue at all, so no client could derive
+    lateness. It is now an unconditional row key."""
+    today = date(2026, 7, 31)
+    late = handlers._task_row(
+        {"id": "t", "status": "à_faire",
+         "due_date": datetime(2026, 7, 30, tzinfo=UTC)}, today=today)
+    assert late["is_overdue"] is True
+    due_today = handlers._task_row(
+        {"id": "t", "status": "à_faire",
+         "due_date": datetime(2026, 7, 31, tzinfo=UTC)}, today=today)
+    assert due_today["is_overdue"] is False
+    undated = handlers._task_row({"id": "t", "status": "à_faire"}, today=today)
+    assert undated["is_overdue"] is False
+
+
+def test_a_closed_task_is_never_overdue():
+    """Whatever its due date says — otherwise every completed task in the
+    history reads as late."""
+    today = date(2026, 7, 31)
+    for status in ("terminée", "annulée"):
+        row = handlers._task_row(
+            {"id": "t", "status": status,
+             "due_date": datetime(2020, 1, 1, tzinfo=UTC)}, today=today)
+        assert row["is_overdue"] is False, status
+
+
+def _agenda_world(monkeypatch, *, hearings=(), tasks=(), steps=()):
+    """Minimal get_agenda world: only the reads it performs."""
+    captured = {}
+
+    def _range(start, end, limit=100):
+        captured["hearing_start"] = start
+        captured["hearing_end"] = end
+        return list(hearings)
+
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range", _range)
+    monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
+                        lambda cutoff, limit=50: list(tasks))
+    monkeypatch.setattr(handlers.protocol_model, "list_urgent_steps",
+                        lambda cutoff, limit=50: list(steps))
+    monkeypatch.setattr(handlers.dossier_model, "list_prescription_alerts",
+                        lambda cutoff, limit=50: [])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 3)
+    monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
+                        lambda: {"hours": 1.0, "amount": 1000})
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda **kw: {"amount": 0})
+    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total", lambda: 0)
+    return captured
+
+
+def _freeze_mtl_today(monkeypatch, value: date):
+    monkeypatch.setattr(handlers.deadlines, "today_mtl", lambda: value)
+
+
+def test_get_agenda_window_opens_at_midnight_montreal(monkeypatch):
+    """The lower bound was the INSTANT now, so a 09:00 hearing vanished at
+    09:01 from a window whose own `from` claimed today was included."""
+    captured = _agenda_world(monkeypatch)
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 31))
+    payload = handlers.get_agenda({})
+    assert payload["window"]["from"] == "2026-07-31"
+    start = captured["hearing_start"]
+    # Midnight Montréal on the 31st = 04:00 UTC (EDT). The query must reach
+    # back to it, never start mid-morning.
+    assert start.astimezone(MTL).date() == date(2026, 7, 31)
+    assert start.astimezone(MTL).hour == 0
+
+
+def test_get_agenda_is_stable_across_the_utc_day_boundary(monkeypatch):
+    """The audit's « window started 2026-07-30 on a 31 July call ». The
+    window was always Montréal-correct; what contradicted it was is_overdue
+    being computed on the UTC date. Same Montréal day in, same answer out."""
+    step = {"id": "s", "status": "à_venir",
+            "deadline_date": datetime(2026, 7, 30, tzinfo=UTC),
+            "_dossier_id": "", "_protocol_id": "p", "_protocol_title": "P",
+            "_dossier_file_number": ""}
+    seen = []
+    for _ in range(2):
+        # Two calls that a UTC clock would place on different days but a
+        # Montréal clock places on the same one.
+        _agenda_world(monkeypatch, steps=[step])
+        _freeze_mtl_today(monkeypatch, date(2026, 7, 30))
+        payload = handlers.get_agenda({})
+        seen.append((payload["window"]["from"],
+                     payload["urgent_protocol_steps"][0]["is_overdue"],
+                     payload["urgent_protocol_steps"][0]["status"]))
+    assert seen[0] == seen[1]
+    window_from, overdue, status = seen[0]
+    assert window_from == "2026-07-30"
+    # The window says the 30th is included, so the 30th is NOT yet past.
+    assert overdue is False and status == "à_venir"
+
+
+def test_get_agenda_urgent_tasks_use_the_montreal_day(monkeypatch):
+    task = {"id": "t", "status": "à_faire", "title": "Produire",
+            "due_date": datetime(2026, 7, 31, tzinfo=UTC)}
+    _agenda_world(monkeypatch, tasks=[task])
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 31))
+    payload = handlers.get_agenda({})
+    assert payload["urgent_tasks"][0]["is_overdue"] is False
+    _agenda_world(monkeypatch, tasks=[task])
+    _freeze_mtl_today(monkeypatch, date(2026, 8, 1))
+    assert handlers.get_agenda({})["urgent_tasks"][0]["is_overdue"] is True
+
+
+def test_list_protocol_steps_never_writes_and_derives(monkeypatch):
+    """The read path is forbidden from repairing the stored word — pinned
+    here beside the derivation that replaces the repair."""
+    def forbidden(*_a, **_k):
+        raise AssertionError("check_overdue_steps writes to Firestore")
+
+    monkeypatch.setattr(handlers.protocol_model, "check_overdue_steps", forbidden)
+    monkeypatch.setattr(
+        handlers.protocol_model, "get_protocol_for_dossier",
+        lambda did, active_only=True: {
+            "id": "p1", "dossier_id": "d1", "title": "Protocole",
+            "protocol_type": "cs_ordinaire", "status": "actif",
+            "start_date": None, "end_date": None, "court": "Cour supérieure",
+            "notes": "",
+            "steps": [_step("en_retard", datetime(2026, 8, 5, tzinfo=UTC))],
+        },
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": "d1", "tribunal": "Cour supérieure"})
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 31))
+    payload = handlers.list_protocol_steps({"dossier_id": "d1"})
+    step = payload["protocols"][0]["steps"][0]
+    assert step["status"] == "à_venir"
+    assert step["status_stored"] == "en_retard"
+    assert step["is_overdue"] is False

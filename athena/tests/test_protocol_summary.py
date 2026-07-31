@@ -110,3 +110,44 @@ def test_branche_sans_protocole_porte_les_memes_cles(monkeypatch):
     assert s["has_protocol"] is False
     assert s["upcoming_window_days"] == pmod.UPCOMING_WINDOW_DAYS
     assert s["next_deadline_date"] is None
+
+
+# ── Lot 6 : le paramètre « today » optionnel qui laisse le web intact ────
+#
+# L'avocat a choisi de corriger le connecteur SANS déplacer le tableau de
+# bord web. Le mécanisme est un paramètre facultatif dont le défaut
+# reproduit exactement la règle historique. Les deux moitiés sont épinglées
+# ici : une dérive du défaut est une régression web silencieuse, et une
+# dérive de la branche datée remet le connecteur en contradiction avec ses
+# propres rangées d'étapes.
+
+
+def _patch(monkeypatch, steps: list[dict]) -> None:
+    proto = {"id": "p1", "protocol_type": "cq_simplifié", "status": "actif",
+             "steps": steps}
+    monkeypatch.setattr(pmod, "get_protocol_for_dossier",
+                        lambda did, active_only=True: proto)
+    monkeypatch.setattr(pmod, "list_protocols_for_dossier", lambda did: [proto])
+
+
+def test_sommaire_defaut_reste_la_regle_utc_historique(monkeypatch):
+    """Argument omis = date de calendrier UTC, ce que la page web rendait
+    avant ce mandat. C'est cette ligne qui garantit que le web n'a pas bougé."""
+    _patch(monkeypatch, [_step(0)])          # une étape échéant AUJOURD'HUI
+    s = pmod.get_protocol_summary("d1")
+    assert s["overdue"] == 0                 # échéant aujourd'hui ≠ en retard
+    assert s["upcoming"] == 1
+
+
+def test_sommaire_accepte_un_jour_montrealais_injecte(monkeypatch):
+    """Pendant la bande du soir, le jour montréalais n'a pas encore tourné :
+    une étape échue « hier » en UTC n'est pas encore en retard pour l'avocat."""
+    _patch(monkeypatch, [_step(-1)])         # échéance d'hier (UTC)
+    utc_today = datetime.now(timezone.utc).date()
+    # Sous la règle UTC, elle est déjà en retard…
+    assert pmod.get_protocol_summary("d1")["overdue"] == 1
+    # …sous un jour montréalais qui n'a pas encore tourné, non.
+    montreal_hier = utc_today - timedelta(days=1)
+    s = pmod.get_protocol_summary("d1", montreal_hier)
+    assert s["overdue"] == 0
+    assert s["upcoming"] == 1

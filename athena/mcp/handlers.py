@@ -248,15 +248,23 @@ def _hearing_row(h: dict) -> dict:
     }
 
 
-def _task_row(t: dict) -> dict:
+def _task_row(t: dict, *, today: Optional[date] = None) -> dict:
+    # A closed task is never overdue, whatever its due date says, and an
+    # undated one cannot be late. `today` is threaded from the handler so
+    # every row of one response shares a single clock read.
+    status = t.get("status", "")
+    is_overdue = status not in ("terminée", "annulée") and deadlines.is_past_due(
+        t.get("due_date"), today=today or deadlines.today_mtl()
+    )
     return {
         "id": t.get("id", ""),
         "title": t.get("title", ""),
         "description": t.get("description", ""),
         "priority": t.get("priority", ""),
-        "status": t.get("status", ""),
+        "status": status,
         "category": t.get("category", ""),
         "due_date": date_str(t.get("due_date")),
+        "is_overdue": is_overdue,
         "completed_date": iso_mtl(_as_utc(t.get("completed_date"))),
         "dossier_id": t.get("dossier_id") or None,
         "dossier_file_number": t.get("dossier_file_number", ""),
@@ -266,15 +274,37 @@ def _task_row(t: dict) -> dict:
     }
 
 
-def _step_row(s: dict, now: datetime) -> dict:
+def derive_step_status(stored: str, deadline, *, today: date) -> str:
+    """The step status a fresh read of the deadline implies.
+
+    The STORED status is a fossil: ``check_overdue_steps`` is its only writer
+    of ``en_retard``, it has no branch that ever CLEARS one, and it runs only
+    when a browser loads the protocol page. A step stamped by the pre-2026-07-30
+    wall-clock rule (which fired at 00:00 UTC — 20:00 the previous evening in
+    Montréal) therefore carries ``en_retard`` for ever, and no read handler may
+    repair it (writing from a read path is forbidden and pinned by a test).
+
+    So the connector derives instead. ``complété`` is authoritative and never
+    re-derived — completion is a fact, not a computation. Everything else
+    follows the deadline against the Montréal calendar day.
+    """
+    if stored == "complété":
+        return "complété"
+    if deadlines.is_past_due(deadline, today=today):
+        return "en_retard"
+    if stored == "en_cours":
+        return "en_cours"
+    return "à_venir"
+
+
+def _step_row(s: dict, today: date) -> dict:
     deadline = _as_utc(s.get("deadline_date"))
-    # Calendar-date comparison (spec §10.12): a step due TODAY is not
-    # overdue yet — deadline_date is a UTC calendar date.
-    is_overdue = bool(
-        deadline
-        and deadline.astimezone(timezone.utc).date() < now.date()
-        and s.get("status") != "complété"
-    )
+    stored = s.get("status", "")
+    status = derive_step_status(stored, deadline, today=today)
+    # Consistent BY CONSTRUCTION: both come from the same predicate, so the
+    # « status: en_retard + is_overdue: false » pair the audit found can no
+    # longer be emitted.
+    is_overdue = status == "en_retard"
     return {
         "id": s.get("id", ""),
         "order": s.get("order", 0),
@@ -282,7 +312,9 @@ def _step_row(s: dict, now: datetime) -> dict:
         "description": s.get("description", ""),
         "cpc_reference": s.get("cpc_reference", ""),
         "deadline_date": date_str(deadline),
-        "status": s.get("status", ""),
+        "status": status,
+        "status_stored": stored,
+        "status_differs": status != stored,
         "mandatory": bool(s.get("mandatory")),
         "deadline_locked": bool(s.get("deadline_locked")),
         "date_confirmed": bool(s.get("date_confirmed")),
@@ -338,7 +370,7 @@ def _invoice_row(inv: dict) -> dict:
     return row
 
 
-def _prescription_row(d: dict, now: datetime) -> dict:
+def _prescription_row(d: dict, today: date) -> dict:
     # WP13: the countdown runs on the EFFECTIVE date (a reconnaissance or
     # suspension event may have pushed it later); the raw prescription_date
     # stays emitted beside it as provenance. list_prescription_alerts
@@ -356,10 +388,11 @@ def _prescription_row(d: dict, now: datetime) -> dict:
     # instead of reading the duplicate as a data bug (PA-D02).
     last_action_differs = False
     if effective:
-        # Countdown against the user's (Montreal) calendar date — UTC
-        # "today" runs ahead of the user's evening by up to 5 hours.
-        today = now.astimezone(MTL).date()
-        days_remaining = max(0, (effective.date() - today).days)
+        # Countdown against the user's (Montréal) calendar date — UTC
+        # "today" runs ahead of the user's evening by up to 5 hours. Floored
+        # at 0: an already-blown deadline reads 0, and prescription_status
+        # carries the distinction.
+        days_remaining = max(0, deadlines.days_until(effective, today=today) or 0)
         last_day, last_action_differs = deadlines.last_action_day(
             effective.date()
         )
@@ -385,10 +418,21 @@ def get_agenda(args: dict) -> dict:
     days_ahead = int(args.get("days_ahead", 14))
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(days=days_ahead)
+    # ONE clock read per request: every derived flag below shares it, so a
+    # response can never straddle two calendar days.
+    today = deadlines.today_mtl()
 
+    # The window OPENS at midnight Montréal, not at the instant `now`.
+    # Anchoring on the instant dropped a 09:00 hearing at 09:01 from a
+    # window whose own `from` claimed the day was included.
+    window_start = datetime.combine(today, dtime.min, tzinfo=MTL).astimezone(
+        timezone.utc
+    )
     raw_hearings = [
         h
-        for h in hearing_model.list_hearings_in_range(now, cutoff, limit=100)
+        for h in hearing_model.list_hearings_in_range(
+            min(window_start, now), cutoff, limit=100
+        )
         if h.get("status") != "annulée"
     ]
     raw_tasks = task_model.list_urgent_tasks(cutoff, limit=50)
@@ -406,20 +450,12 @@ def get_agenda(args: dict) -> dict:
         _hearing_row(h) for h in _freshen_dossier_labels(raw_hearings, live)
     ]
     urgent_tasks = [
-        {
-            **_task_row(t),
-            # due_date is a UTC calendar date — due today is not overdue.
-            "is_overdue": bool(
-                t.get("due_date")
-                and _as_utc(t["due_date"]).astimezone(timezone.utc).date()
-                < now.date()
-            ),
-        }
+        _task_row(t, today=today)
         for t in _freshen_dossier_labels(raw_tasks, live)
     ]
     urgent_steps = [
         {
-            **_step_row(s, now),
+            **_step_row(s, today),
             "protocol_id": s.get("_protocol_id", ""),
             "protocol_title": s.get("_protocol_title", ""),
             # The protocol doc's own snapshot is DOUBLY stale (copied from
@@ -432,7 +468,7 @@ def get_agenda(args: dict) -> dict:
         for s in raw_steps
     ]
     alerts = [
-        _prescription_row(d, now)
+        _prescription_row(d, today)
         for d in dossier_model.list_prescription_alerts(
             now + timedelta(days=60), limit=50
         )
@@ -457,7 +493,7 @@ def get_agenda(args: dict) -> dict:
 
     return {
         "window": {
-            "from": now.astimezone(MTL).date().isoformat(),
+            "from": today.isoformat(),
             "to": cutoff.astimezone(MTL).date().isoformat(),
             "days_ahead": days_ahead,
         },
@@ -707,18 +743,23 @@ def get_dossier(args: dict) -> dict:
         invoice_out, "total_outstanding", invoice_summary.get("total_outstanding", 0)
     )
 
+    # Both summaries take the Montréal day so their overdue counts agree
+    # with the derived rows this connector emits elsewhere. Their DEFAULTS
+    # (omitted argument) are the historical rules, which is what keeps the
+    # web dashboard byte-identical.
+    today = deadlines.today_mtl()
     return {
         "found": True,
         "dossier": record,
         "summaries": {
-            "tasks": task_model.get_task_summary(did),
+            "tasks": task_model.get_task_summary(did, today),
             "hearings": hearing_model.get_hearing_summary(did),
             "notes": note_model.get_notes_summary(did),
             "documents": document_model.get_document_summary(did),
             "time": time_out,
             "expenses": expense_out,
             "invoices": invoice_out,
-            "protocol": protocol_model.get_protocol_summary(did),
+            "protocol": protocol_model.get_protocol_summary(did, today),
         },
     }
 
@@ -729,6 +770,7 @@ def list_tasks(args: dict) -> dict:
     status = args.get("status")
     include_completed = bool(args.get("include_completed", False))
     limit = _limit_arg(args, 25)
+    today = deadlines.today_mtl()
 
     tasks = task_model.list_tasks(
         dossier_id=args.get("dossier_id"), status_filter=status
@@ -739,7 +781,9 @@ def list_tasks(args: dict) -> dict:
 
     page, truncated, next_offset = _offset_page(tasks, args, limit)
     page = _freshen_dossier_labels(page, _live_dossiers(page))
-    payload = _list_payload([_task_row(t) for t in page], truncated)
+    payload = _list_payload(
+        [_task_row(t, today=today) for t in page], truncated
+    )
     if next_offset is not None:
         payload["next_offset"] = next_offset
     return payload
@@ -1458,7 +1502,7 @@ def list_deletions(args: dict) -> dict:
 
 # ── 12. list_protocol_steps ─────────────────────────────────────────────
 
-def _protocol_payload(p: dict, now: datetime, dossier: Optional[dict]) -> dict:
+def _protocol_payload(p: dict, today: date, dossier: Optional[dict]) -> dict:
     return {
         "id": p.get("id", ""),
         "title": p.get("title", ""),
@@ -1475,7 +1519,7 @@ def _protocol_payload(p: dict, now: datetime, dossier: Optional[dict]) -> dict:
         "start_date": date_str(_as_utc(p.get("start_date"))),
         "end_date": date_str(_as_utc(p.get("end_date"))),
         "notes": p.get("notes", ""),
-        "steps": [_step_row(s, now) for s in p.get("steps", [])],
+        "steps": [_step_row(s, today) for s in p.get("steps", [])],
         **_stamps(p),
     }
 
@@ -1483,7 +1527,7 @@ def _protocol_payload(p: dict, now: datetime, dossier: Optional[dict]) -> dict:
 def list_protocol_steps(args: dict) -> dict:
     dossier_id = args["dossier_id"]
     include_history = bool(args.get("include_history", False))
-    now = datetime.now(timezone.utc)
+    today = deadlines.today_mtl()
 
     # Derived-only overdue status (never calls check_overdue_steps, which
     # writes to Firestore — see Phase I non-goals).
@@ -1502,7 +1546,7 @@ def list_protocol_steps(args: dict) -> dict:
     return {
         "dossier_id": dossier_id,
         "has_active_protocol": active is not None,
-        "protocols": [_protocol_payload(p, now, dossier) for p in protocols],
+        "protocols": [_protocol_payload(p, today, dossier) for p in protocols],
     }
 
 

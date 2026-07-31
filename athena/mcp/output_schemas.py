@@ -204,6 +204,11 @@ def _task_row(extra: Optional[dict[str, Any]] = None) -> dict:
         "status": _str(),
         "category": _str(),
         "due_date": _nstr("YYYY-MM-DD; null for an undated task."),
+        "is_overdue": _bool(
+            "Due strictly BEFORE today (Montréal calendar). A task due TODAY "
+            "is not overdue, an undated one never is, and a terminée/annulée "
+            "one never is whatever its due date says."
+        ),
         "completed_date": _nstr(),
         "dossier_id": _nstr("null for a « Général » (standalone) task."),
         "dossier_file_number": _str(),
@@ -224,7 +229,20 @@ def _step_row(extra: Optional[dict[str, Any]] = None) -> dict:
         "description": _str(),
         "cpc_reference": _str("E.g. « art. 246 C.p.c. »."),
         "deadline_date": _nstr("YYYY-MM-DD."),
-        "status": _str(),
+        "status": _str(
+            "DERIVED from the deadline against today (Montréal) — this is the "
+            "value that governs. à_venir | en_cours | en_retard | complété."
+        ),
+        "status_stored": _str(
+            "The word stored on the document, for provenance only. It is "
+            "written solely when the lawyer opens the protocol page in the "
+            "browser, and an « en_retard » there is never cleared — so it can "
+            "lag reality indefinitely. Prefer `status`."
+        ),
+        "status_differs": _bool(
+            "true when the stored word no longer matches the derived one — "
+            "the document is stale, not the reading."
+        ),
         "mandatory": _bool(),
         "deadline_locked": _bool(),
         "date_confirmed": _bool(),
@@ -232,7 +250,10 @@ def _step_row(extra: Optional[dict[str, Any]] = None) -> dict:
         "linked_task_id": _nstr(),
         "linked_hearing_id": _nstr(),
         "notes": _str(),
-        "is_overdue": _bool("Derived by date comparison — a step due today is not overdue."),
+        "is_overdue": _bool(
+            "Equivalent to `status == \"en_retard\"` — both come from one "
+            "predicate, so they can never contradict each other."
+        ),
         **_stamps(),
     }
     if extra:
@@ -435,7 +456,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "days_ahead": _int(),
         }),
         "hearings": _arr(_hearing_row(), "Upcoming, annulée excluded here."),
-        "urgent_tasks": _arr(_task_row({"is_overdue": _bool()})),
+        "urgent_tasks": _arr(_task_row()),
         "urgent_protocol_steps": _arr(_step_row({
             "protocol_id": _str(),
             "protocol_title": _str(),

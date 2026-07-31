@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -417,16 +417,34 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
 # ── Summary ──────────────────────────────────────────────────────────────
 
 
-def get_task_summary(dossier_id: str) -> dict:
-    """Return task counts for a dossier."""
+def get_task_summary(dossier_id: str, today: Optional[date] = None) -> dict:
+    """Return task counts for a dossier.
+
+    ``today`` selects the overdue rule, and the DEFAULT reproduces the
+    historical behaviour byte for byte so the web dashboard is untouched:
+    a wall-clock comparison, under which a task due today counts as overdue
+    from 00:00 UTC (20:00 the previous evening in Montréal).
+
+    Pass a date — ``utils.deadlines.today_mtl()`` — for the calendar rule
+    every other surface uses: due TODAY is not overdue. The MCP connector
+    passes it; the web does not, deliberately (the lawyer chose to leave the
+    dashboard's counts alone in this mandate).
+    """
     tasks = list_tasks(dossier_id=dossier_id)
     active = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
     completed = [t for t in tasks if t.get("status") == "terminée"]
-    now = datetime.now(timezone.utc)
-    overdue = [
-        t for t in active
-        if t.get("due_date") and t["due_date"] < now
-    ]
+    if today is None:
+        now = datetime.now(timezone.utc)
+        overdue = [
+            t for t in active
+            if t.get("due_date") and t["due_date"] < now
+        ]
+    else:
+        overdue = [
+            t for t in active
+            if t.get("due_date")
+            and t["due_date"].astimezone(timezone.utc).date() < today
+        ]
     return {
         "total": len(tasks),
         "active": len(active),

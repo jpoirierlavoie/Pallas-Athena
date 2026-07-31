@@ -1,7 +1,29 @@
-"""Quebec judicial deadline computation (art. 83 C.p.c.)."""
+"""Quebec judicial deadline computation (art. 83 C.p.c.).
 
-from datetime import date, timedelta
-from typing import Literal
+Two distinct families live here, and conflating them is the bug this module
+exists to prevent:
+
+* **Computation** (``compute_deadline``, ``is_juridical_day``,
+  ``next_juridical_day``, ``prev_juridical_day``, ``add_jours_ouvrables``) —
+  pure calendar arithmetic implementing art. 83: every day counts, and a raw
+  deadline landing on a non-juridical day is pushed further in the direction
+  of computation. **No clock is ever read here.** These functions are pinned
+  by a frozen reference table in ``tests/test_deadlines.py``.
+* **Lateness** (``today_mtl``, ``is_past_due``, ``days_until``) — the single
+  answer to « is this deadline in the past? », on the **Montréal** calendar.
+  Juridical days play NO part: art. 83 governs how a deadline is computed,
+  never whether you are late for one.
+
+``today_mtl`` is the one place a clock is read. Every surface that needs
+"today" must go through it, or two surfaces drift by up to a day: UTC runs
+ahead of Montréal by 4-5 hours, so a UTC-based comparison declares a deadline
+past from 20:00 (EDT) / 19:00 (EST) the evening BEFORE.
+"""
+
+from datetime import date, datetime, timedelta, timezone
+from typing import Literal, Optional
+
+from tz import MTL
 
 
 def compute_deadline(
@@ -82,6 +104,64 @@ def last_action_day(deadline: date) -> tuple[date, bool]:
     """
     last = prev_juridical_day(deadline)
     return last, last != deadline
+
+
+def today_mtl() -> date:
+    """The current calendar date in Montréal — the ONE clock read.
+
+    Not ``date.today()`` (server-local, undefined on App Engine) and not
+    ``datetime.now(timezone.utc).date()``: UTC crosses midnight 4-5 hours
+    before Montréal does, so a UTC "today" declares a deadline past during
+    the whole evening preceding it.
+    """
+    return datetime.now(timezone.utc).astimezone(MTL).date()
+
+
+def _as_date(value) -> Optional[date]:
+    """Coerce a stored value to its own calendar date, or None.
+
+    Date-only fields are stored at midnight UTC, so their UTC calendar date
+    IS the intended day — never convert them to Montréal (that would shift
+    them to the previous day). Only ``today`` is Montréal-based; the
+    deadline keeps its own calendar date. Same rule as ``mcp.tools.date_str``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def is_past_due(deadline, *, today: Optional[date] = None) -> bool:
+    """True when *deadline* fell strictly BEFORE today (Montréal).
+
+    A deadline falling ON today is NOT past due — the day is not over and
+    the act can still be posed. That is the rule the whole application
+    states and the one every surface must share.
+
+    A missing deadline is never past due (an undated task cannot be late).
+    ``today`` is injectable so the rule is testable without a clock.
+    """
+    when = _as_date(deadline)
+    if when is None:
+        return False
+    return when < (today or today_mtl())
+
+
+def days_until(deadline, *, today: Optional[date] = None) -> Optional[int]:
+    """Whole days from today (Montréal) to *deadline*; None when undated.
+
+    Negative once the deadline has passed — callers that display a countdown
+    floor it themselves rather than losing the distinction here.
+    """
+    when = _as_date(deadline)
+    if when is None:
+        return None
+    return (when - (today or today_mtl())).days
 
 
 def add_jours_ouvrables(start: date, n: int) -> date:

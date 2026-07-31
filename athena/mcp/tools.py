@@ -423,7 +423,11 @@ TOOLS: dict[str, dict] = {
             "Daily briefing: upcoming hearings, urgent tasks, urgent protocol "
             "steps, prescription alerts within 60 days, and practice-wide stats "
             "(open dossiers, unbilled work, outstanding invoices). Prefer this "
-            "as the first call for any \"what's coming up\" question. In "
+            "as the first call for any \"what's coming up\" question. The "
+            "window opens at MIDNIGHT, Montréal time, so a hearing earlier "
+            "today is still listed; every overdue flag in the response uses "
+            "that same Montréal day, so window.from and is_overdue can never "
+            "disagree. In "
             "prescription alerts, last_action_date is the last juridical day "
             "ON OR BEFORE the deadline (inclusive — it equals "
             "prescription_date on a business-day deadline; check "
@@ -547,7 +551,10 @@ TOOLS: dict[str, dict] = {
         "description": (
             "List tasks ordered by due date (undated last). By default only "
             "active tasks (à_faire, en_cours) are returned; pass an explicit "
-            "status or include_completed=true to see the rest."
+            "status or include_completed=true to see the rest. Every row "
+            "carries is_overdue, computed against the MONTRÉAL calendar day: "
+            "a task due TODAY is not overdue, an undated one never is, and a "
+            "terminée/annulée one never is whatever its due date says."
         ),
         "input_schema": {
             "type": "object",
@@ -921,7 +928,15 @@ TOOLS: dict[str, dict] = {
         "title": "Étapes du protocole",
         "description": (
             "Case-protocol timeline for a dossier: the active protocol's "
-            "ordered steps with deadlines and a derived is_overdue flag. Set "
+            "ordered steps with deadlines. A step's `status` is DERIVED here "
+            "from its deadline against today (Montréal) and is the value that "
+            "governs; `status_stored` is the word on the document, kept for "
+            "provenance only. The stored word is written solely when the "
+            "lawyer opens the protocol page in a browser and an « en_retard » "
+            "there is never cleared, so it can lag reality indefinitely — "
+            "`status_differs: true` marks exactly that. `is_overdue` is "
+            "equivalent to `status == \"en_retard\"`; both come from one "
+            "predicate and can never contradict each other. Set "
             "include_history=true to also include prior (completed/suspended) "
             "protocols. Check regime_mismatch on every protocol: true means "
             "the template's C.p.c. regime does not govern the dossier's "

@@ -248,13 +248,17 @@ def test_list_dossiers_conforms(monkeypatch):
 
 def test_get_dossier_both_branches_conform(monkeypatch):
     for model, summary in (
-        (handlers.task_model, "get_task_summary"),
         (handlers.hearing_model, "get_hearing_summary"),
         (handlers.note_model, "get_notes_summary"),
         (handlers.document_model, "get_document_summary"),
-        (handlers.protocol_model, "get_protocol_summary"),
     ):
         monkeypatch.setattr(model, summary, lambda d: {"total": 1})
+    # These two take the Montréal day (lot 6) — the fake must accept it, or
+    # it would mask a signature drift the deploy gate is meant to catch.
+    monkeypatch.setattr(handlers.task_model, "get_task_summary",
+                        lambda d, today=None: {"total": 1})
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_summary",
+                        lambda d, today=None: {"total": 1})
     monkeypatch.setattr(handlers.time_entry_model, "get_time_summary",
                         lambda d: dict(_TIME_SUMMARY))
     monkeypatch.setattr(handlers.expense_model, "get_expense_summary",

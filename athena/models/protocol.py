@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from utils.deadlines import compute_deadline as _judicial_deadline
@@ -1052,8 +1052,16 @@ def list_urgent_steps(cutoff: datetime, limit: int = 50) -> list[dict]:
 # ── Summary ─────────────────────────────────────────────────────────────
 
 
-def get_protocol_summary(dossier_id: str) -> dict:
-    """Return protocol summary for a dossier (active protocol only)."""
+def get_protocol_summary(
+    dossier_id: str, today: Optional[date] = None
+) -> dict:
+    """Return protocol summary for a dossier (active protocol only).
+
+    ``today`` defaults to the UTC calendar date — the historical behaviour,
+    kept so the web dossier tab is untouched. The MCP connector passes
+    ``utils.deadlines.today_mtl()`` so its counts agree with the derived
+    step rows it emits in the same response.
+    """
     protocol = get_protocol_for_dossier(dossier_id, active_only=True)
     if not protocol:
         all_protos = list_protocols_for_dossier(dossier_id)
@@ -1074,7 +1082,7 @@ def get_protocol_summary(dossier_id: str) -> dict:
     # a step due TODAY is upcoming, never overdue (the old wall-clock
     # comparison flipped it to overdue at 00:00 UTC while the MCP row said
     # is_overdue: false, a cross-tool contradiction on the same document).
-    today = datetime.now(timezone.utc).date()
+    today = today or datetime.now(timezone.utc).date()
     window_end = today + timedelta(days=UPCOMING_WINDOW_DAYS)
     completed = [s for s in steps if s.get("status") == "complété"]
     open_dated = [
