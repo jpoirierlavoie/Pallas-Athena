@@ -322,6 +322,24 @@ def _offset() -> dict:
     }
 
 
+def _cursor(note: str = "") -> dict:
+    """Keyset paging — the recoverable alternative to `offset`.
+
+    Unlike an offset, a cursor names a POSITION IN THE ORDERING, so a row
+    inserted between two pages neither skips nor repeats anything.
+    """
+    return {
+        "type": "string",
+        "maxLength": 400,
+        "description": (
+            "Opaque next_cursor from the previous response — resumes right "
+            "after the last returned row. Omit for the first page; a "
+            "malformed value restarts at page 1. Unlike `offset`, a cursor "
+            "is stable across insertions between pages." + (" " + note if note else "")
+        ),
+    }
+
+
 def _updated_since() -> dict:
     """The change-window argument of the fully-materialized list tools.
 
@@ -605,6 +623,10 @@ TOOLS: dict[str, dict] = {
                     "Only hearings of this dossier (UUIDv4). Omit for all."
                 ),
                 "limit": _limit(25),
+                "cursor": _cursor(
+                    "Hearings page OLDEST-first (agenda order), so the "
+                    "cursor advances forward in time."
+                ),
             },
             "additionalProperties": False,
         },
@@ -844,6 +866,10 @@ TOOLS: dict[str, dict] = {
                     ),
                 },
                 "limit": _limit(25),
+                "cursor": _cursor(
+                    "Required to walk a full month or exercise: `truncated` "
+                    "warns there is more, and only this resumes it."
+                ),
             },
             "additionalProperties": False,
         },
@@ -880,6 +906,10 @@ TOOLS: dict[str, dict] = {
                     ),
                 },
                 "limit": _limit(25),
+                "cursor": _cursor(
+                    "Required to walk a full month or exercise: `truncated` "
+                    "warns there is more, and only this resumes it."
+                ),
             },
             "additionalProperties": False,
         },
@@ -1046,8 +1076,16 @@ TOOLS: dict[str, dict] = {
             "first. Pass dossier_id AND "
             "client_id together for a carte-client (one beneficiary); pass "
             "neither for the full journal. Optional date range and status. "
-            "A bare account_id is exact at any register size; the other "
-            "shapes read a bounded window (truncated flags it). "
+            "PAGING IS ASYMMETRIC, and the difference matters. A bare "
+            "account_id (no dossier_id/client_id/status/date filter) rides "
+            "the newest-first index: it is exact at any register size and "
+            "`cursor` walks the whole register. EVERY OTHER SHAPE reads a "
+            "bounded window ordered OLDEST-first and re-sorts it here, and "
+            "returns next_cursor: null — so on a register longer than that "
+            "window the rows shown are NOT the most recent ones, even though "
+            "they are displayed newest-first. When `truncated` is true on a "
+            "filtered call, narrow with date_from/date_to, or drop the "
+            "filters and pass account_id alone. "
             "Amounts in cents; date and cleared_date are date-only (YYYY-MM-DD). "
             "Read-only; never exposes the bank transit or account number."
         ),
@@ -1077,6 +1115,10 @@ TOOLS: dict[str, dict] = {
                                     "reversed."),
                 },
                 "limit": _limit(25),
+                "cursor": _cursor(
+                    "Honoured ONLY with a bare account_id; every other "
+                    "shape returns next_cursor: null (see the description)."
+                ),
             },
             "additionalProperties": False,
         },

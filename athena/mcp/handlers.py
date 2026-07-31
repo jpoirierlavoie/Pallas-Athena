@@ -43,7 +43,7 @@ from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
 from mcp.write_support import run_write
-from pagination import encode_cursor
+from pagination import decode_cursor, encode_cursor, keyset_page
 from models import audit_event as audit_event_model
 from models import dossier as dossier_model
 from models import document as document_model
@@ -818,6 +818,20 @@ def list_hearings(args: dict) -> dict:
     end_dt = datetime.combine(date_to, dtime.min, tzinfo=timezone.utc) + timedelta(
         hours=30
     )
+
+    # Cursor without an index. `hearings` carries ZERO composite indexes, so
+    # there is no server-side (start_datetime, id) ordering to resume from.
+    # Instead the cursor RAISES THE LOWER BOUND on start_datetime — a range
+    # filter on the very field the query already orders by, which the
+    # automatic single-field index serves — and the exact position inside
+    # that instant's tie group is then resolved in Python. Re-reading one
+    # tie group per page is the whole cost.
+    resume = decode_cursor(args.get("cursor"))
+    resume_key: Optional[tuple] = None
+    if resume and len(resume) == 2 and isinstance(resume[0], datetime):
+        resume_key = (resume[0], str(resume[1]))
+        start_dt = max(start_dt, resume[0])
+
     rows = hearing_model.list_hearings_in_range(start_dt, end_dt, limit=_FETCH_CAP)
     window_full = len(rows) >= _FETCH_CAP
 
@@ -837,11 +851,26 @@ def list_hearings(args: dict) -> dict:
     if dossier_id:
         rows = [h for h in rows if h.get("dossier_id") == dossier_id]
 
+    # Hearings read ASCENDING (the agenda order) — the only ascending cursor
+    # in the connector, matching list_hearings_in_range's own order_by.
+    def _key(h: dict) -> tuple:
+        return (_as_utc(h.get("start_datetime")), str(h.get("id") or ""))
+
+    if resume_key is not None:
+        rows = [h for h in rows if _key(h) > resume_key]
+    rows.sort(key=_key)
+
     truncated = window_full or len(rows) > limit
     page = rows[:limit]
+    next_cursor = None
+    if truncated and page:
+        last_start, last_id = _key(page[-1])
+        if last_start and last_id:
+            next_cursor = encode_cursor([last_start, last_id])
     page = _freshen_dossier_labels(page, _live_dossiers(page))
     payload = _list_payload([_hearing_row(h) for h in page], truncated)
     payload["window"] = {"from": date_from.isoformat(), "to": date_to.isoformat()}
+    payload["next_cursor"] = next_cursor
     return payload
 
 
@@ -1368,6 +1397,7 @@ def _billing_window(args: dict) -> tuple[Optional[datetime], Optional[datetime]]
 def _billing_rows(
     page_fn, dossier_id: Optional[str], billable_filter: Optional[str],
     date_from: Optional[datetime], date_to: Optional[datetime],
+    cursor: Optional[str] = None,
 ) -> tuple[list[dict], bool]:
     """Fetch a bounded window of time entries/expenses, routing around the
     one combination the server-side indexes don't cover.
@@ -1378,22 +1408,51 @@ def _billing_rows(
     list, so passing both through would silently return nothing. That
     combination fetches by dossier_id + dates and applies the flag filter
     in Python over the ≤200-row window instead.
+
+    The incoming `cursor` resumes the SERVER scan. The window cursor the
+    model hands back is deliberately NOT returned: in the Python-filtered
+    branch it points past rows this function dropped, so minting the next
+    page from it would skip them silently. Callers mint from the last row
+    they actually return instead (see `_billing_page`).
     """
     if dossier_id and billable_filter:
-        rows, cursor = page_fn(
+        rows, window_cursor = page_fn(
             dossier_id=dossier_id, date_from=date_from, date_to=date_to,
-            limit=_FETCH_CAP,
+            limit=_FETCH_CAP, cursor=cursor,
         )
         if billable_filter == "billable":
             rows = [e for e in rows if e.get("billable")]
         elif billable_filter == "non_facture":
             rows = [e for e in rows if not e.get("invoiced")]
     else:
-        rows, cursor = page_fn(
+        rows, window_cursor = page_fn(
             dossier_id=dossier_id, billable_filter=billable_filter,
             date_from=date_from, date_to=date_to, limit=_FETCH_CAP,
+            cursor=cursor,
         )
-    return rows, cursor is not None
+    return rows, window_cursor is not None
+
+
+def _billing_page(
+    rows: list[dict], limit: int, window_full: bool
+) -> tuple[list[dict], Optional[str], bool]:
+    """Slice a billing window to `limit` and mint the next cursor.
+
+    The key is (date, id) — the model's own server-side ordering, so a
+    resumed scan lands exactly where this page stopped. A legacy row missing
+    either component cannot mint a handle: rather than emit a cursor that
+    would mis-position the reader, we return None and let `truncated` say
+    there is more. Silent mis-positioning in a billing statement is worse
+    than an honest dead end.
+    """
+    page = rows[:limit]
+    has_more = len(rows) > limit or window_full
+    next_cursor = None
+    if has_more and page:
+        last = page[-1]
+        if last.get("date") and last.get("id"):
+            next_cursor = encode_cursor([last["date"], last["id"]])
+    return page, next_cursor, has_more
 
 
 def list_time_entries(args: dict) -> dict:
@@ -1408,10 +1467,11 @@ def list_time_entries(args: dict) -> dict:
     rows, window_full = _billing_rows(
         time_entry_model.list_time_entries_page,
         args.get("dossier_id"), args.get("billable_filter"),
-        date_from, date_to,
+        date_from, date_to, args.get("cursor"),
     )
+    page, next_cursor, truncated = _billing_page(rows, limit, window_full)
     items = []
-    for e in rows[:limit]:
+    for e in page:
         row = {
             "id": e.get("id", ""),
             "dossier_id": e.get("dossier_id", ""),
@@ -1427,7 +1487,9 @@ def list_time_entries(args: dict) -> dict:
         _money(row, "rate", e.get("rate", 0))
         _money(row, "amount", e.get("amount", 0))
         items.append(row)
-    return _list_payload(items, len(rows) > limit or window_full)
+    payload = _list_payload(items, truncated)
+    payload["next_cursor"] = next_cursor
+    return payload
 
 
 def list_expenses(args: dict) -> dict:
@@ -1437,10 +1499,11 @@ def list_expenses(args: dict) -> dict:
     rows, window_full = _billing_rows(
         expense_model.list_expenses_page,
         args.get("dossier_id"), args.get("billable_filter"),
-        date_from, date_to,
+        date_from, date_to, args.get("cursor"),
     )
+    page, next_cursor, truncated = _billing_page(rows, limit, window_full)
     items = []
-    for e in rows[:limit]:
+    for e in page:
         row = {
             "id": e.get("id", ""),
             "dossier_id": e.get("dossier_id", ""),
@@ -1455,7 +1518,9 @@ def list_expenses(args: dict) -> dict:
         }
         _money(row, "amount", e.get("amount", 0))
         items.append(row)
-    return _list_payload(items, len(rows) > limit or window_full)
+    payload = _list_payload(items, truncated)
+    payload["next_cursor"] = next_cursor
+    return payload
 
 
 # ── 11c. list_deletions ─────────────────────────────────────────────────
@@ -1680,10 +1745,16 @@ def list_trust_transactions(args: dict) -> dict:
     )
     if plain_account:
         rows, next_cursor = trust_model.list_transactions_page(
-            args["account_id"], limit=limit
+            args["account_id"], cursor=args.get("cursor"), limit=limit
         )
         truncated = next_cursor is not None
     else:
+        # No cursor on the filtered shapes, deliberately: their indexes are
+        # ASC-only, so resuming newest-first would need a new composite one
+        # — forbidden for an MCP-only query. Emitting a cursor that silently
+        # walked the register the wrong way round would be worse than
+        # admitting the window is all there is. The description says so.
+        next_cursor = None
         rows = trust_model.list_transactions(
             account_id=args.get("account_id"),
             dossier_id=args.get("dossier_id"),
@@ -1718,7 +1789,12 @@ def list_trust_transactions(args: dict) -> dict:
         }
         _money(item, "amount", r.get("amount", 0))
         out.append(item)
-    return {"transactions": out, "count": len(out), "truncated": truncated}
+    return {
+        "transactions": out,
+        "count": len(out),
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+    }
 
 
 # ── 17. get_trust_snapshot ───────────────────────────────────────────────

@@ -18,6 +18,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
 
+from pagination import decode_cursor, encode_cursor
 from tz import MTL
 
 UTC = timezone.utc
@@ -738,7 +739,7 @@ def test_list_trust_transactions_newest_first(monkeypatch):
     # Bare account_id → the indexed DESC page function.
     monkeypatch.setattr(
         handlers.trust_model, "list_transactions_page",
-        lambda account_id, limit=25: (
+        lambda account_id, cursor=None, limit=25: (
             [{"id": "t3", "sequence": 3, "amount": 100},
              {"id": "t2", "sequence": 2, "amount": 100}], "cur"),
     )
@@ -2353,3 +2354,277 @@ def test_list_protocol_steps_never_writes_and_derives(monkeypatch):
     assert step["status"] == "à_venir"
     assert step["status_stored"] == "en_retard"
     assert step["is_overdue"] is False
+
+
+# ── Lot 2: cursor pagination on the four windowed tools ─────────────────
+#
+# The defect: `truncated` warned there was more and NOTHING could fetch it.
+# On a billing statement that is a false statement by omission.
+
+
+def _entries(n, *, day_start=1):
+    """n time entries, one per day, newest first as the model returns them."""
+    return [
+        {"id": f"e{i:03d}",
+         "date": datetime(2026, 7, day_start + i, tzinfo=UTC),
+         "description": f"Rédaction {i}", "hours": 1.0, "rate": 30000,
+         "amount": 30000, "billable": True, "invoiced": False,
+         "dossier_id": "d1", "dossier_file_number": "2026-001",
+         "dossier_title": "T"}
+        for i in range(n)
+    ][::-1]
+
+
+def _paged_model(rows):
+    """A fake list_*_page honouring cursor + limit over `rows`, exactly as
+    the Firestore-backed one does (date DESC, id DESC)."""
+    ordered = sorted(rows, key=lambda r: (r["date"], r["id"]), reverse=True)
+
+    def _page(dossier_id=None, billable_filter=None, date_from=None,
+              date_to=None, limit=200, cursor=None):
+        remaining = ordered
+        values = decode_cursor(cursor)
+        if values and len(values) == 2:
+            marker = (values[0], values[1])
+            remaining = [r for r in ordered if (r["date"], r["id"]) < marker]
+        window = remaining[:limit]
+        nxt = encode_cursor(
+            [window[-1]["date"], window[-1]["id"]]
+        ) if len(remaining) > limit else None
+        return window, nxt
+
+    return _page
+
+
+def _walk_tool(fn, base_args, key="items"):
+    """Page a tool to exhaustion; return the ids served in order."""
+    served, cursor, guard = [], None, 0
+    while True:
+        guard += 1
+        assert guard < 60, "tool pagination did not terminate"
+        args = dict(base_args)
+        if cursor:
+            args["cursor"] = cursor
+        payload = fn(args)
+        served.extend(r["id"] for r in payload[key])
+        cursor = payload.get("next_cursor")
+        if not cursor:
+            assert payload["truncated"] is False or not payload[key], (
+                "a last page must not claim there is more without a cursor"
+            )
+            return served
+
+
+def test_list_time_entries_walks_a_full_month_without_loss(monkeypatch):
+    """The mandate's acceptance criterion: a paged walk of a whole period
+    equals the direct count, no duplicate, no omission."""
+    rows = _entries(31)
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        _paged_model(rows))
+    served = _walk_tool(handlers.list_time_entries, {"limit": 7})
+    assert len(served) == 31
+    assert len(set(served)) == 31
+    assert set(served) == {r["id"] for r in rows}
+
+
+def test_list_time_entries_pages_newest_first(monkeypatch):
+    rows = _entries(5)
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        _paged_model(rows))
+    first = handlers.list_time_entries({"limit": 2})
+    assert [r["date"] for r in first["items"]] == ["2026-07-05", "2026-07-04"]
+    assert first["truncated"] is True
+    assert first["next_cursor"]
+    second = handlers.list_time_entries(
+        {"limit": 2, "cursor": first["next_cursor"]})
+    assert [r["date"] for r in second["items"]] == ["2026-07-03", "2026-07-02"]
+
+
+def test_next_cursor_is_always_present_never_omitted(monkeypatch):
+    """Null on the last page, not absent — an omitted key is one a client
+    forgets to check."""
+    rows = _entries(2)
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        _paged_model(rows))
+    payload = handlers.list_time_entries({"limit": 25})
+    assert "next_cursor" in payload
+    assert payload["next_cursor"] is None
+    assert payload["truncated"] is False
+
+
+def test_cursor_is_minted_from_the_last_ROW_not_the_model_window(monkeypatch):
+    """The dossier_id + billable_filter branch re-filters in Python, so the
+    model's window cursor points PAST rows this handler dropped. Minting
+    from it would skip them silently — the exact class of defect this lot
+    exists to remove."""
+    rows = _entries(6)
+    # Half the window is non-billable and gets dropped in Python.
+    for r in rows[:3]:
+        r["billable"] = False
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        _paged_model(rows))
+    served = _walk_tool(
+        handlers.list_time_entries,
+        {"limit": 2, "dossier_id": "d1", "billable_filter": "billable"},
+    )
+    billable_ids = {r["id"] for r in rows if r["billable"]}
+    assert set(served) == billable_ids
+    assert len(served) == len(billable_ids)
+
+
+def test_a_malformed_cursor_restarts_at_page_one(monkeypatch):
+    """The documented contract of every cursor in this connector."""
+    rows = _entries(3)
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        _paged_model(rows))
+    clean = handlers.list_time_entries({"limit": 25})
+    junk = handlers.list_time_entries({"limit": 25, "cursor": "!!not-base64!!"})
+    assert [r["id"] for r in junk["items"]] == [r["id"] for r in clean["items"]]
+
+
+def test_list_expenses_paginates_too(monkeypatch):
+    rows = [
+        {"id": f"x{i}", "date": datetime(2026, 7, i + 1, tzinfo=UTC),
+         "description": "Huissier", "category": "signification",
+         "taxable": True, "invoiced": False, "amount": 5000,
+         "dossier_id": "d1", "dossier_file_number": "2026-001",
+         "dossier_title": "T"}
+        for i in range(9)
+    ]
+    monkeypatch.setattr(handlers.expense_model, "list_expenses_page",
+                        _paged_model(rows))
+    served = _walk_tool(handlers.list_expenses, {"limit": 4})
+    assert len(served) == 9 and len(set(served)) == 9
+
+
+def test_a_row_without_a_key_yields_no_cursor_but_still_says_truncated(
+    monkeypatch,
+):
+    """A legacy row missing date/id cannot mint a handle. An honest dead end
+    beats a cursor that would mis-position the reader."""
+    rows = _entries(4)
+    # Rows come back newest-first, so rows[0] is the one page 1 returns and
+    # therefore the one that would mint the cursor.
+    rows[0]["id"] = ""
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        _paged_model(rows))
+    payload = handlers.list_time_entries({"limit": 1})
+    assert payload["truncated"] is True
+    assert payload["next_cursor"] is None
+
+
+def _hearings(n):
+    return [
+        {"id": f"h{i:02d}",
+         "start_datetime": datetime(2026, 7, 1 + i, 14, 0, tzinfo=UTC),
+         "end_datetime": datetime(2026, 7, 1 + i, 15, 0, tzinfo=UTC),
+         "title": f"Audience {i}", "hearing_type": "audience",
+         "status": "confirmée", "all_day": False, "dossier_id": "d1",
+         "dossier_file_number": "2026-001", "dossier_title": "T",
+         "location": "", "court": "", "judge": "", "modalite": "présentiel",
+         "conference_uri": "", "notes": ""}
+        for i in range(n)
+    ]
+
+
+def test_list_hearings_paginates_without_a_composite_index(monkeypatch):
+    """`hearings` carries ZERO composite indexes, so the cursor raises the
+    lower bound on start_datetime — a range filter on the very field the
+    query orders by — and resolves the tie group in Python."""
+    rows = _hearings(12)
+    seen_bounds = []
+
+    def _range(start, end, limit=200):
+        seen_bounds.append(start)
+        return [h for h in rows if start <= h["start_datetime"] <= end]
+
+    monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range", _range)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    served = _walk_tool(
+        handlers.list_hearings,
+        {"limit": 5, "date_from": "2026-07-01", "date_to": "2026-07-20"},
+    )
+    assert len(served) == 12 and len(set(served)) == 12
+    # The bound actually moved forward — otherwise every page re-reads all.
+    assert seen_bounds[-1] > seen_bounds[0]
+
+
+def test_list_hearings_pages_oldest_first(monkeypatch):
+    """The one ascending cursor in the connector: an agenda reads forward."""
+    rows = _hearings(4)
+    monkeypatch.setattr(
+        handlers.hearing_model, "list_hearings_in_range",
+        lambda start, end, limit=200: [
+            h for h in rows if start <= h["start_datetime"] <= end
+        ],
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    first = handlers.list_hearings(
+        {"limit": 2, "date_from": "2026-07-01", "date_to": "2026-07-20"})
+    assert [h["id"] for h in first["items"]] == ["h00", "h01"]
+    second = handlers.list_hearings(
+        {"limit": 2, "date_from": "2026-07-01", "date_to": "2026-07-20",
+         "cursor": first["next_cursor"]})
+    assert [h["id"] for h in second["items"]] == ["h02", "h03"]
+
+
+def test_hearings_sharing_one_instant_are_not_lost_at_a_page_boundary(
+    monkeypatch,
+):
+    """Raising the lower bound alone would re-serve the whole tie group; the
+    Python (start, id) comparison resolves the exact position inside it."""
+    same = datetime(2026, 7, 10, 9, 0, tzinfo=UTC)
+    rows = [
+        {**_hearings(1)[0], "id": f"tie{i}", "start_datetime": same}
+        for i in range(4)
+    ]
+    monkeypatch.setattr(
+        handlers.hearing_model, "list_hearings_in_range",
+        lambda start, end, limit=200: [
+            h for h in rows if start <= h["start_datetime"] <= end
+        ],
+    )
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    served = _walk_tool(
+        handlers.list_hearings,
+        {"limit": 2, "date_from": "2026-07-01", "date_to": "2026-07-20"},
+    )
+    assert sorted(served) == ["tie0", "tie1", "tie2", "tie3"]
+
+
+def test_trust_cursor_only_on_the_exact_path(monkeypatch):
+    """A bare account_id walks the whole register; every filtered shape
+    returns next_cursor: null rather than a handle that would silently walk
+    a bounded, oldest-first window."""
+    monkeypatch.setattr(
+        handlers.trust_model, "list_transactions_page",
+        lambda account_id, cursor=None, limit=25: (
+            [{"id": "t9", "sequence": 9, "amount": 100}], "more"),
+    )
+    exact = handlers.list_trust_transactions({"account_id": "a1", "limit": 1})
+    assert exact["next_cursor"] == "more"
+    assert exact["truncated"] is True
+
+    monkeypatch.setattr(
+        handlers.trust_model, "list_transactions",
+        lambda **kw: [
+            {"id": f"t{i}", "sequence": i, "amount": 100, "account_id": "a1"}
+            for i in range(5)
+        ],
+    )
+    filtered = handlers.list_trust_transactions(
+        {"account_id": "a1", "status": "compensée", "limit": 2})
+    assert filtered["next_cursor"] is None      # honest: no handle exists
+    assert filtered["truncated"] is True
+    # Still newest-first within the window it did read.
+    assert [t["sequence"] for t in filtered["transactions"]] == [4, 3]
+
+
+def test_every_paged_tool_declares_a_cursor_input():
+    """The schema is the contract a client reads; a handler that honours a
+    cursor the schema does not advertise is unreachable."""
+    for name in ("list_time_entries", "list_expenses", "list_hearings",
+                 "list_trust_transactions", "list_dossiers"):
+        props = tools.TOOLS[name]["input_schema"]["properties"]
+        assert "cursor" in props, name
+        assert props["cursor"]["type"] == "string"

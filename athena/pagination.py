@@ -89,6 +89,72 @@ def decode_cursor(token: Optional[str]) -> Optional[list[Any]]:
         return None
 
 
+def keyset_page(
+    rows: list[Any],
+    key_of,
+    cursor_values: Optional[list[Any]],
+    limit: int,
+    *,
+    descending: bool = True,
+) -> tuple[list[Any], Optional[list[Any]], bool]:
+    """Page a Python-materialized list by ORDER KEY, never by offset.
+
+    Returns ``(page, next_cursor_values, has_more)``; ``next_cursor_values``
+    is None on the last page.
+
+    Why not an offset: the lists this serves are re-derived on every call
+    (Firestore cannot filter or order them server-side), so one row inserted
+    between two requests shifts every subsequent page — an offset walk then
+    silently skips or repeats rows. A keyset resumes from a POSITION IN THE
+    ORDERING instead, so an insertion before the cursor changes nothing and
+    an insertion after it simply appears where it belongs.
+
+    Two rules make it sound, and both are load-bearing:
+
+    * ``key_of(row)`` must be a TOTAL order over IMMUTABLE fields. A key
+      that can change between pages (a `pinned` toggle, an `updated_at`)
+      can move one row across the boundary and cost a skip or a duplicate —
+      bounded to the rows whose key actually changed, where an offset's
+      failure is unbounded. Always end the key with the document id: it is
+      unique and never rewritten, so ties are broken deterministically
+      rather than by stream order.
+    * The next cursor is minted FROM THE LAST RETURNED ROW, so nothing
+      between ``limit`` and the end of the materialized window is skipped
+      when the caller resumes (the ``list_dossiers`` rule).
+
+    ``descending`` matches the display order: True keeps the largest key
+    first and advances toward smaller keys.
+    """
+    if limit <= 0:
+        return [], None, bool(rows)
+
+    ordered = sorted(rows, key=key_of, reverse=descending)
+    if cursor_values is not None:
+        marker = tuple(cursor_values)
+
+        def _after(row: Any) -> bool:
+            key = tuple(_as_key_tuple(key_of(row)))
+            try:
+                return key < marker if descending else key > marker
+            except TypeError:
+                # A foreign cursor (wrong arity or wrong types) must degrade
+                # to "keep everything" — the documented page-1 behaviour —
+                # never crash and never silently mis-position the reader.
+                return True
+
+        ordered = [r for r in ordered if _after(r)]
+
+    page = ordered[:limit]
+    has_more = len(ordered) > limit
+    next_values = _as_key_tuple(key_of(page[-1])) if (has_more and page) else None
+    return page, (list(next_values) if next_values is not None else None), has_more
+
+
+def _as_key_tuple(key: Any) -> tuple:
+    """Normalize a sort key to a tuple so scalars and tuples compare alike."""
+    return tuple(key) if isinstance(key, (tuple, list)) else (key,)
+
+
 def parse_trail(raw: Optional[str]) -> list[str]:
     """Parse the comma-separated cursor trail from the query string."""
     if not raw:

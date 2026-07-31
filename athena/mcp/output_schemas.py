@@ -127,6 +127,20 @@ def _next_offset() -> dict[str, Any]:
     )}
 
 
+def _next_cursor(note: str = "") -> dict[str, Any]:
+    """Keyset paging key — ALWAYS present, null on the last page.
+
+    Deliberately unlike ``_next_offset`` (typed but optional): an absent key
+    is one a client forgets to test for, and « no more pages » must be an
+    explicit null rather than an omission. Callers pass it through
+    ``extra_required`` so the contract enforces the presence.
+    """
+    return {"next_cursor": _nstr(
+        "Pass as `cursor` for the next page; null when this is the last "
+        "page." + (" " + note if note else "")
+    )}
+
+
 def _found_or_not(found_schema: dict, notfound_props: dict[str, Any]) -> dict:
     """anyOf(found=true shape, found=false shape), enum-discriminated.
 
@@ -666,8 +680,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "list_hearings": _list_envelope(
         _hearing_row(),
-        extra={"window": _obj({"from": _str(), "to": _str()})},
-        extra_required=["window"],
+        extra={
+            "window": _obj({"from": _str(), "to": _str()}),
+            **_next_cursor("Hearings page oldest-first, so it advances "
+                           "forward in time."),
+        },
+        extra_required=["window", "next_cursor"],
     ),
 
     "list_notes": _list_envelope(_obj({
@@ -887,7 +905,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "invoice_id": _nstr("null until invoiced."),
         **_money("rate"),
         **_money("amount"),
-    })),
+    }), extra=_next_cursor(), extra_required=["next_cursor"]),
 
     "list_expenses": _list_envelope(_obj({
         "id": _str(),
@@ -901,7 +919,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "invoiced": _bool(),
         "invoice_id": _nstr("null until invoiced."),
         **_money("amount"),
-    })),
+    }), extra=_next_cursor(), extra_required=["next_cursor"]),
 
     "list_deletions": _list_envelope(_obj({
         "id": _str(),
@@ -1005,6 +1023,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         })),
         "count": _int(),
         "truncated": _bool(),
+        **_next_cursor(
+            "NULL on every filtered shape — only a bare account_id can be "
+            "walked to the end (see the tool description)."
+        ),
     }),
 
     "get_trust_snapshot": _obj({
