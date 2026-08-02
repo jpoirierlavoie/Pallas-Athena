@@ -876,3 +876,43 @@ def test_list_documents_conforms_on_both_scopes(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
     _conforms("list_documents", handlers.list_documents({"dossier_id": "d1"}))
     _conforms("list_documents", handlers.list_documents({"scope": "cabinet"}))
+
+
+# ── Lot 5: the coverage report conforms, including its guard branches ───
+
+
+def test_get_coverage_report_conforms(monkeypatch):
+    dossier = {
+        "id": "d1", "file_number": "2026-001", "title": "T", "status": "actif",
+        "forum_type": "judiciaire", "tribunal": "Cour supérieure",
+        "court_file_number": "", "action": "REC-01", "valeur": None,
+        "opposing_parties": [{"id": "a1"}], "significations": [],
+        "client_ids": ["p1"], "prescription_type": "3_ans",
+        "prescription_date": None, "prescription_events": [],
+        "prise_action_date": None,
+    }
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers",
+                        lambda status_filter=None, **kw: [dossier])
+    monkeypatch.setattr(handlers.protocol_model, "list_protocols",
+                        lambda **kw: [{"dossier_id": "dX",
+                                       "protocol_type": "cs_ordinaire"}])
+    monkeypatch.setattr(handlers.protocol_model, "regime_mismatch",
+                        lambda t, d: False)
+    monkeypatch.setattr(
+        handlers.partie_model, "get_parties_bulk",
+        lambda ids: {"p1": {"identity_verified": "non_vérifié",
+                            "conflict_check": "non_vérifié"}})
+    monkeypatch.setattr(handlers.task_model, "list_tasks_by_status",
+                        lambda st, **kw: [])
+    payload = handlers.get_coverage_report({})
+    _conforms("get_coverage_report", payload)
+    assert payload["summary"]["manquements"] >= 1
+
+    # The suppressed-checks branch has its own shape to satisfy.
+    monkeypatch.setattr(handlers.protocol_model, "list_protocols",
+                        lambda **kw: [])
+    monkeypatch.setattr(handlers.partie_model, "get_parties_bulk",
+                        lambda ids: {})
+    guarded = handlers.get_coverage_report({})
+    _conforms("get_coverage_report", guarded)
+    assert guarded["data_completeness"]["kyc_checked"] is False

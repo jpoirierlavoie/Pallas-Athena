@@ -1,4 +1,4 @@
-"""The 31 MCP tool handlers — 22 read-only, plus 9 create-only writes.
+"""The 32 MCP tool handlers — 23 read-only, plus 9 create-only writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
@@ -42,6 +42,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
+from mcp import coverage
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor, keyset_page
 from models import audit_event as audit_event_model
@@ -991,7 +992,7 @@ def _dossier_status_filter(args: dict) -> Optional[set]:
 
 
 def _cabinet_page(
-    rows: list[dict], args: dict, limit: int
+    rows: list[dict], args: dict, limit: int, key=None
 ) -> tuple[list[dict], Optional[str], bool]:
     """Page a cabinet-wide result set by KEYSET on (created_at, id).
 
@@ -1004,15 +1005,22 @@ def _cabinet_page(
     UNCHANGED — the two scheduled jobs read those, and a reordered page is a
     behaviour change however harmless it looks.
     """
-    def _key(row: dict) -> tuple:
+    def _default_key(row: dict) -> tuple:
         return (_as_utc(row.get("created_at")) or _UTC_MIN,
                 str(row.get("id") or ""))
 
+    _key = key or _default_key
     ordered = sorted(rows, key=_key, reverse=True)
     marker = decode_cursor(args.get("cursor"))
-    if marker and len(marker) == 2 and isinstance(marker[0], datetime):
-        cut = (marker[0], str(marker[1]))
-        ordered = [r for r in ordered if _key(r) < cut]
+    if marker and len(marker) == 2:
+        cut = tuple(marker)
+        try:
+            ordered = [r for r in ordered if tuple(_key(r)) < cut]
+        except TypeError:
+            # A foreign cursor (another tool's key types) must degrade to
+            # page 1 — the documented contract — never crash and never
+            # position the reader somewhere arbitrary.
+            pass
     page = ordered[:limit]
     truncated = len(ordered) > limit
     next_cursor = None
@@ -2461,6 +2469,216 @@ def _write_result(
             "pas exposés à DavX5, donc elle n'apparaîtra pas sur le téléphone."
         )
     return payload
+
+
+# ── 24. get_coverage_report ─────────────────────────────────────────────
+
+
+def _coverage_dossier_view(d: dict) -> dict:
+    """The projection the pure checks consume — plain data, no model calls.
+
+    Derived values (prescription status, the taxonomy flag, valeur) are
+    resolved HERE, once, so ``mcp/coverage.py`` stays importable without a
+    Firestore client.
+    """
+    action = taxonomie.get_action(d.get("action", "") or "")
+    return {
+        "id": d.get("id", ""),
+        "file_number": d.get("file_number", ""),
+        "title": d.get("title", ""),
+        "status": d.get("status", ""),
+        "forum_type": d.get("forum_type") or "judiciaire",
+        "tribunal": d.get("tribunal", ""),
+        "court_file_number": d.get("court_file_number", ""),
+        "action": d.get("action", ""),
+        "action_a_valider": bool(action.a_valider) if action else False,
+        "valeur_cents": d.get("valeur"),
+        "prescription_status": dossier_model.derive_prescription(d)["status"],
+        "opposing_parties": d.get("opposing_parties") or [],
+        "significations": d.get("significations") or [],
+        "client_ids": [c for c in (d.get("client_ids") or []) if c],
+    }
+
+
+def get_coverage_report(args: dict) -> dict:
+    """Firm-wide hygiene sweep — which open files are missing something.
+
+    Six round-trips for the whole firm, instead of one get_dossier per
+    dossier. Every finding is an OBSERVATION: the connector cannot create a
+    protocol, verify an identity or file a signification, and each detail
+    string points at the application.
+    """
+    status = args.get("status", "actif")
+    limit = _limit_arg(args, 25)
+    requested = args.get("checks")
+
+    scoped = dossier_model.list_dossiers(status_filter=status)
+    views = [_coverage_dossier_view(d) for d in scoped]
+
+    # ── Context, and the two guards that matter more than any check ─────
+    skip: set = set()
+    protocols = protocol_model.list_protocols(status_filter="actif")
+    by_dossier: dict = {}
+    for p in protocols:
+        did = p.get("dossier_id", "")
+        if did:
+            by_dossier[did] = {
+                "protocol_type": p.get("protocol_type", ""),
+                "regime_mismatch": protocol_model.regime_mismatch(
+                    p.get("protocol_type", ""),
+                    next((d for d in scoped if d.get("id") == did), None),
+                ),
+            }
+    # list_protocols swallows a read failure into []. Left unguarded,
+    # PROTO_ABSENT would then fire on EVERY dossier in scope — a
+    # false-manquement storm on a compliance report, which is worse than
+    # reporting nothing.
+    protocol_index_complete = bool(protocols) or not views
+    if not protocol_index_complete:
+        skip.update({"PROTO_ABSENT", "PROTO_REGIME"})
+
+    client_ids = [cid for v in views for cid in v["client_ids"]]
+    parties = partie_model.get_parties_bulk(client_ids) if client_ids else {}
+    # Same reasoning, and the stake is higher: never report a client as
+    # unverified because a read failed. That is a regulatory accusation.
+    kyc_checked = bool(parties) or not client_ids
+    kyc_reason = ""
+    if not kyc_checked:
+        skip.update({"CONFLIT_NON_VERIFIE", "IDENTITE_NON_VERIFIEE",
+                     "CLIENT_INTROUVABLE"})
+        kyc_reason = (
+            "Les fiches des clients n'ont pas pu être lues ; les contrôles "
+            "déontologiques sont écartés de ce rapport."
+        )
+
+    if requested:
+        skip.update(set(coverage.ALL_CODES) - set(requested))
+
+    ctx = {
+        "active_protocol_dossiers": set(by_dossier),
+        "active_protocols_by_dossier": by_dossier,
+        "clients_of": lambda v: [
+            parties[cid] for cid in v["client_ids"] if cid in parties
+        ],
+        "missing_clients_of": lambda v: [
+            cid for cid in v["client_ids"] if cid not in parties
+        ],
+    }
+
+    items = []
+    by_code: dict = {}
+    manquements = signalements = 0
+    for view in views:
+        findings = coverage.run_checks(view, ctx, skip=frozenset(skip))
+        if not findings:
+            continue
+        for f in findings:
+            by_code[f["code"]] = by_code.get(f["code"], 0) + 1
+            if f["severity"] == coverage.MANQUEMENT:
+                manquements += 1
+            else:
+                signalements += 1
+        items.append({
+            "dossier_id": view["id"],
+            "file_number": view["file_number"],
+            "title": view["title"],
+            "status": view["status"],
+            "manquements": sum(
+                1 for f in findings if f["severity"] == coverage.MANQUEMENT
+            ),
+            "signalements": sum(
+                1 for f in findings if f["severity"] == coverage.SIGNALEMENT
+            ),
+            "findings": findings,
+        })
+
+    # ── Cross-scope: the ghost task on a closed file ────────────────────
+    # These fire on CLOSED dossiers, so under the default « actif » filter
+    # they could never appear. One unfiltered dossier read classifies them.
+    cross: list[dict] = []
+    if "TACHE_OUVERTE_DOSSIER_FERME" not in skip or \
+            "PROTO_ACTIF_DOSSIER_FERME" not in skip:
+        closed = {
+            d.get("id", ""): d for d in dossier_model.list_dossiers()
+            if d.get("status") in coverage.CLOSED_STATUSES
+        }
+        if closed:
+            if "TACHE_OUVERTE_DOSSIER_FERME" not in skip:
+                open_tasks: list[dict] = []
+                for st in ("à_faire", "en_cours"):
+                    open_tasks.extend(task_model.list_tasks_by_status(st))
+                stale: dict = {}
+                for t in open_tasks:
+                    did = t.get("dossier_id") or ""
+                    if did in closed:
+                        stale[did] = stale.get(did, 0) + 1
+                for did, count in stale.items():
+                    cross.append(_cross_finding(
+                        "TACHE_OUVERTE_DOSSIER_FERME", closed[did],
+                        f"{count} tâche(s) encore active(s) sur un dossier "
+                        f"« {closed[did].get('status', '')} ». Fermez-les ou "
+                        "rouvrez le dossier dans l'application.",
+                    ))
+            if "PROTO_ACTIF_DOSSIER_FERME" not in skip and protocol_index_complete:
+                for did in by_dossier:
+                    if did in closed:
+                        cross.append(_cross_finding(
+                            "PROTO_ACTIF_DOSSIER_FERME", closed[did],
+                            "Protocole encore actif sur un dossier "
+                            f"« {closed[did].get('status', '')} ».",
+                        ))
+    for f in cross:
+        by_code[f["code"]] = by_code.get(f["code"], 0) + 1
+
+    page, next_cursor, truncated = _cabinet_page(
+        items, args, limit, key=lambda r: (r["file_number"], r["dossier_id"])
+    )
+    ran = [c for c in coverage.ALL_CODES if c not in skip]
+    return {
+        "scope": {
+            "status": status,
+            "dossiers_examined": len(views),
+            "checks_run": ran,
+            "checks_skipped": sorted(skip),
+        },
+        "summary": {
+            "dossiers_with_findings": len(items),
+            "manquements": manquements,
+            "signalements": signalements,
+            "by_code": [
+                {
+                    "code": code,
+                    "label": coverage.LABEL_BY_CODE.get(code, code),
+                    "severity": coverage.SEVERITY_BY_CODE.get(code, ""),
+                    "count": count,
+                }
+                for code, count in sorted(by_code.items())
+            ],
+        },
+        "items": page,
+        "count": len(page),
+        "truncated": truncated,
+        "next_cursor": next_cursor,
+        "cross_scope_findings": cross,
+        "data_completeness": {
+            "protocol_index_complete": protocol_index_complete,
+            "kyc_checked": kyc_checked,
+            "kyc_reason": kyc_reason,
+        },
+    }
+
+
+def _cross_finding(code: str, dossier: dict, detail: str) -> dict:
+    return {
+        "code": code,
+        "severity": coverage.SEVERITY_BY_CODE.get(code, coverage.SIGNALEMENT),
+        "label": coverage.LABEL_BY_CODE.get(code, code),
+        "dossier_id": dossier.get("id", ""),
+        "file_number": dossier.get("file_number", ""),
+        "title": dossier.get("title", ""),
+        "status": dossier.get("status", ""),
+        "detail": detail,
+    }
 
 
 # ── 18. create_note (WRITE) ─────────────────────────────────────────────

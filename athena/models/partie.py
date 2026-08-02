@@ -443,6 +443,37 @@ def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def get_parties_bulk(partie_ids: list[str]) -> dict[str, dict]:
+    """Fetch many contacts in ONE round-trip. Returns {id: doc} for ids that
+    exist — a missing id is simply absent, which is itself information.
+
+    Mirrors ``models.dossier.get_dossiers_bulk``. Document-ID lookups need no
+    index. Added for the MCP coverage report, whose two deontological checks
+    (conflict of interest, identity verification) read a dossier's clients:
+    the alternative — ``list_parties(role_filter="client")`` — SILENTLY
+    UNDER-REPORTS, because ``contact_role`` belongs to the CONTACT, not to
+    the dossier link, so a client recorded under any other role vanishes from
+    the check. Under-reporting in silence on a regulatory obligation is the
+    worst failure available here.
+
+    Fails open to ``{}`` like its dossier twin; callers must treat an empty
+    result as « could not read », never as « none of them exist ».
+    """
+    unique_ids = [p for p in dict.fromkeys(partie_ids) if p]
+    if not unique_ids:
+        return {}
+    try:
+        refs = [db.collection(COLLECTION).document(pid) for pid in unique_ids]
+        result: dict[str, dict] = {}
+        for snap in db.get_all(refs):
+            if snap.exists:
+                result[snap.id] = _migrate_mandataires(snap.to_dict())
+        return result
+    except Exception as exc:
+        logger.warning("get_parties_bulk failed: %s", exc)
+        return {}
+
+
 def get_partie(partie_id: str) -> Optional[dict]:
     """Fetch a single partie by ID."""
     try:

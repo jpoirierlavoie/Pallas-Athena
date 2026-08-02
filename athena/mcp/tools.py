@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
 from mcp import SCOPE_READ, SCOPE_WRITE, write_enabled
+from mcp import coverage
 from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
 
@@ -400,6 +401,10 @@ _NOTE_CATEGORIES = [
 
 # Enum values copied exactly from the data model (they are French).
 _DOSSIER_STATUSES = ["actif", "en_attente", "fermé", "archivé"]
+# Derived, not hand-copied: mcp.coverage is pure (it imports no model), so
+# importing it here costs nothing and the enum can never drift from the
+# checks that actually run.
+_COVERAGE_CODES = coverage.ALL_CODES
 _INVOICE_STATUSES = ["brouillon", "envoyée", "payée", "en_retard", "annulée"]
 _TASK_STATUSES = ["à_faire", "en_cours", "terminée", "annulée"]
 _DOCUMENT_CATEGORIES = [
@@ -1070,6 +1075,56 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "get_invoice",
+    },
+    "get_coverage_report": {
+        "title": "Rapport de couverture",
+        "description": (
+            "Hygiene sweep across the open files, in ONE call instead of one "
+            "get_dossier per dossier: which files are missing a protocol, a "
+            "signification, a court file number, a conflict check. "
+            "Two severities: `manquement` = something the file is REQUIRED "
+            "to have (the conflict-of-interest and identity checks are "
+            "regulatory obligations, not data-entry preferences); "
+            "`signalement` = worth a look, not a breach. Codes are stable "
+            "across runs, so a file can be tracked from one sweep to the "
+            "next. "
+            "EVERY FINDING IS AN OBSERVATION, never an instruction: this "
+            "connector cannot create a protocol, verify an identity or file "
+            "a signification, and each `detail` says what to do in the "
+            "application. "
+            "ALWAYS read `scope.checks_skipped` and `data_completeness` "
+            "before reporting a file as clean: when the protocol index or "
+            "the client contacts cannot be read, those checks are SUPPRESSED "
+            "rather than fired — a client is never called unverified because "
+            "a read failed, and a shortened report is not a clean one. "
+            "`cross_scope_findings` carries findings on CLOSED dossiers "
+            "(a task still open on a closed file), which the status filter "
+            "could never surface."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": _DOSSIER_STATUSES,
+                    "description": (
+                        "Dossier status to sweep; default \"actif\"."
+                    ),
+                },
+                "checks": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": list(_COVERAGE_CODES)},
+                    "description": (
+                        "Restrict the sweep to these codes. Omit for all — "
+                        "anything left out is listed in checks_skipped."
+                    ),
+                },
+                "limit": _limit(25),
+                "cursor": _cursor("Items page by file number."),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "get_coverage_report",
     },
     "list_deletions": {
         "title": "Journal des suppressions",

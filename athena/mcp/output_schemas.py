@@ -1042,6 +1042,75 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         {"invoice_id": _str("Echo of the id that was not found.")},
     ),
 
+    "get_coverage_report": _obj({
+        "scope": _obj({
+            "status": _str("Dossier status the sweep covered."),
+            "dossiers_examined": _int(),
+            "checks_run": _arr(_str()),
+            "checks_skipped": _arr(_str(
+                "Codes NOT run — because their context could not be read, or "
+                "because `checks` narrowed the sweep. A shortened report must "
+                "never pass for a clean one."
+            )),
+        }),
+        "summary": _obj({
+            "dossiers_with_findings": _int(),
+            "manquements": _int("Things the file is REQUIRED to have."),
+            "signalements": _int("Worth a look; not a breach."),
+            "by_code": _arr(_obj({
+                "code": _str(),
+                "label": _str(),
+                "severity": _str("manquement | signalement."),
+                "count": _int(),
+            })),
+        }),
+        "items": _arr(_obj({
+            "dossier_id": _str(),
+            "file_number": _str(),
+            "title": _str(),
+            "status": _str(),
+            "manquements": _int(),
+            "signalements": _int(),
+            "findings": _arr(_obj({
+                "code": _str("Stable across runs — track a file by it."),
+                "severity": _str(),
+                "label": _str(),
+                "detail": _str(
+                    "French. Says what to do IN THE APPLICATION: this "
+                    "connector cannot create a protocol, verify an identity "
+                    "or file a signification."
+                ),
+            })),
+        }), "One entry per dossier WITH findings; clean files are omitted."),
+        "count": _int(),
+        "truncated": _bool(),
+        **_next_cursor("Items are paged by file number."),
+        "cross_scope_findings": _arr(_obj({
+            "code": _str(),
+            "severity": _str(),
+            "label": _str(),
+            "dossier_id": _str(),
+            "file_number": _str(),
+            "title": _str(),
+            "status": _str(),
+            "detail": _str(),
+        }), "Findings on CLOSED dossiers, which the status filter could "
+            "never surface — the ghost task on a closed file."),
+        "data_completeness": _obj({
+            "protocol_index_complete": _bool(
+                "false = the protocol index could not be read, so the two "
+                "protocol checks were SUPPRESSED rather than fired on every "
+                "dossier at once."
+            ),
+            "kyc_checked": _bool(
+                "false = the client contacts could not be read, so the "
+                "deontological checks were suppressed. A client is NEVER "
+                "reported unverified because a read failed."
+            ),
+            "kyc_reason": _str("French; empty when kyc_checked is true."),
+        }),
+    }),
+
     "list_deletions": _list_envelope(_obj({
         "id": _str(),
         "at": _nstr("ISO-8601 Montréal — the deletion instant."),

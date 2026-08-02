@@ -134,7 +134,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 31  # 22 read-only + 9 writes
+    assert len(tools.TOOLS) == 32  # 23 read-only + 9 writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -159,7 +159,7 @@ def test_write_tools_set_is_pinned():
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 31
+    assert len(descriptors) == 32
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -185,7 +185,7 @@ def test_required_scope_defaults_to_read_never_write():
 def test_list_tool_descriptors_filters_by_scope():
     read_only = tools.list_tool_descriptors(frozenset({"athena:read"}))
     names = {d["name"] for d in read_only}
-    assert len(read_only) == 22
+    assert len(read_only) == 23
     assert not (names & tools.WRITE_TOOLS)
 
     both = tools.list_tool_descriptors(
@@ -3209,3 +3209,167 @@ def test_tool_titles_do_not_claim_a_single_dossier():
     before the description is ever read."""
     for name in ("list_notes", "list_documents"):
         assert "d'un dossier" not in tools.TOOLS[name]["title"], name
+
+
+# ── Lot 5: get_coverage_report — the sweep and its two guards ────────────
+
+
+def _cov_dossier(did="d1", **over):
+    doc = {
+        "id": did, "file_number": f"2026-{did[-1]}01", "title": "T",
+        "status": "actif", "forum_type": "judiciaire",
+        "tribunal": "Cour supérieure",
+        "court_file_number": "500-05-123456-241",
+        "action": "REC-01", "valeur": 100000,
+        "opposing_parties": [], "significations": [], "client_ids": [],
+        # A dated, running limitation period — otherwise derive_prescription
+        # legitimately reports « a_verifier » and the fixture is not clean.
+        "prescription_type": "3_ans",
+        "prescription_date": datetime(2030, 1, 1, tzinfo=UTC),
+        "prescription_events": [], "prise_action_date": None,
+    }
+    doc.update(over)
+    return doc
+
+
+@pytest.fixture()
+def cov(monkeypatch):
+    """Only the reads get_coverage_report performs."""
+    state = {
+        "dossiers": [_cov_dossier()],
+        "protocols": [{"dossier_id": "d1", "protocol_type": "cs_ordinaire",
+                       "status": "actif"}],
+        "parties": {},
+        "tasks": [],
+    }
+    monkeypatch.setattr(
+        handlers.dossier_model, "list_dossiers",
+        lambda status_filter=None, **kw: [
+            d for d in state["dossiers"]
+            if not status_filter or d.get("status") == status_filter
+        ],
+    )
+    monkeypatch.setattr(handlers.protocol_model, "list_protocols",
+                        lambda **kw: list(state["protocols"]))
+    monkeypatch.setattr(handlers.protocol_model, "regime_mismatch",
+                        lambda ptype, d: False)
+    monkeypatch.setattr(handlers.partie_model, "get_parties_bulk",
+                        lambda ids: dict(state["parties"]))
+    monkeypatch.setattr(handlers.task_model, "list_tasks_by_status",
+                        lambda st, **kw: [t for t in state["tasks"]
+                                          if t.get("status") == st])
+    return state
+
+
+def test_a_clean_firm_reports_nothing(cov):
+    payload = handlers.get_coverage_report({})
+    assert payload["items"] == []
+    assert payload["summary"]["manquements"] == 0
+    assert payload["scope"]["dossiers_examined"] == 1
+    assert payload["data_completeness"]["protocol_index_complete"] is True
+
+
+def test_the_2026_007_case_a_linked_instance_without_a_protocol(cov):
+    cov["dossiers"] = [_cov_dossier("d7")]
+    cov["protocols"] = [{"dossier_id": "dX", "protocol_type": "cs_ordinaire",
+                         "status": "actif"}]
+    payload = handlers.get_coverage_report({})
+    codes = {f["code"] for i in payload["items"] for f in i["findings"]}
+    assert "PROTO_ABSENT" in codes
+    assert payload["summary"]["manquements"] >= 1
+
+
+def test_the_2026_027_case_two_defendants_and_an_empty_register(cov):
+    cov["dossiers"] = [_cov_dossier(
+        "d2", opposing_parties=[{"id": "a1"}, {"id": "a2"}], significations=[])]
+    payload = handlers.get_coverage_report({})
+    codes = {f["code"] for i in payload["items"] for f in i["findings"]}
+    assert "SIGN_ABSENTE" in codes
+
+
+def test_a_failed_protocol_read_suppresses_the_protocol_checks(cov):
+    """list_protocols swallows a read failure into []. Unguarded,
+    PROTO_ABSENT would fire on EVERY dossier — a false-manquement storm on a
+    compliance report, worse than reporting nothing."""
+    cov["dossiers"] = [_cov_dossier("d1"), _cov_dossier("d2")]
+    cov["protocols"] = []                    # indistinguishable from failure
+    payload = handlers.get_coverage_report({})
+    codes = {f["code"] for i in payload["items"] for f in i["findings"]}
+    assert "PROTO_ABSENT" not in codes
+    assert "PROTO_REGIME" not in codes
+    assert set(payload["scope"]["checks_skipped"]) >= {"PROTO_ABSENT", "PROTO_REGIME"}
+    assert payload["data_completeness"]["protocol_index_complete"] is False
+
+
+def test_a_failed_contact_read_never_accuses_a_client(cov):
+    """Reporting a client as unverified because a read failed is a
+    regulatory accusation built on an error."""
+    cov["dossiers"] = [_cov_dossier("d1", client_ids=["p1"])]
+    cov["parties"] = {}                      # read failed
+    payload = handlers.get_coverage_report({})
+    codes = {f["code"] for i in payload["items"] for f in i["findings"]}
+    assert not ({"CONFLIT_NON_VERIFIE", "IDENTITE_NON_VERIFIEE",
+                 "CLIENT_INTROUVABLE"} & codes)
+    assert payload["data_completeness"]["kyc_checked"] is False
+    assert payload["data_completeness"]["kyc_reason"]
+
+
+def test_the_deontological_checks_fire_when_the_contacts_read(cov):
+    cov["dossiers"] = [_cov_dossier("d1", client_ids=["p1"])]
+    cov["parties"] = {"p1": {"identity_verified": "non_vérifié",
+                             "conflict_check": "non_vérifié"}}
+    payload = handlers.get_coverage_report({})
+    codes = {f["code"] for i in payload["items"] for f in i["findings"]}
+    assert {"CONFLIT_NON_VERIFIE", "IDENTITE_NON_VERIFIEE"} <= codes
+    assert payload["data_completeness"]["kyc_checked"] is True
+
+
+def test_the_ghost_task_on_a_closed_dossier_surfaces_cross_scope(cov):
+    """Under the default « actif » filter these could never appear — yet the
+    ghost task on the closed 2026-012 is one of the audit's own examples."""
+    cov["dossiers"] = [_cov_dossier("d1"),
+                       _cov_dossier("d12", status="fermé")]
+    cov["tasks"] = [{"id": "t1", "status": "à_faire", "dossier_id": "d12"}]
+    payload = handlers.get_coverage_report({})
+    # The closed dossier is NOT in items (the scope filter holds)…
+    assert all(i["dossier_id"] != "d12" for i in payload["items"])
+    # …but its ghost task is reported.
+    cross = {f["code"]: f for f in payload["cross_scope_findings"]}
+    assert "TACHE_OUVERTE_DOSSIER_FERME" in cross
+    assert cross["TACHE_OUVERTE_DOSSIER_FERME"]["dossier_id"] == "d12"
+
+
+def test_no_false_positive_on_a_closed_dossier_under_the_active_filter(cov):
+    cov["dossiers"] = [_cov_dossier("d12", status="fermé",
+                                    court_file_number="", valeur=None)]
+    payload = handlers.get_coverage_report({})
+    assert payload["items"] == []
+    assert payload["scope"]["dossiers_examined"] == 0
+
+
+def test_checks_narrowing_is_declared_not_silent(cov):
+    cov["dossiers"] = [_cov_dossier("d1", valeur=None, court_file_number="")]
+    payload = handlers.get_coverage_report({"checks": ["VALEUR_ABSENTE"]})
+    codes = {f["code"] for i in payload["items"] for f in i["findings"]}
+    assert codes == {"VALEUR_ABSENTE"}
+    assert "NO_COUR_ABSENT" in payload["scope"]["checks_skipped"]
+    assert payload["scope"]["checks_run"] == ["VALEUR_ABSENTE"]
+
+
+def test_the_report_never_promises_the_connector_will_fix_it(cov):
+    """The report creates a call to action the connector must not answer."""
+    cov["dossiers"] = [_cov_dossier("d1", valeur=None, court_file_number="")]
+    payload = handlers.get_coverage_report({})
+    details = [f["detail"] for i in payload["items"] for f in i["findings"]]
+    assert details
+    description = tools.TOOLS["get_coverage_report"]["description"]
+    assert "cannot create a protocol" in description
+
+
+def test_the_codes_enum_is_derived_from_the_running_checks():
+    """Not a hand-copied literal: mcp.coverage imports no model, so the enum
+    is the registry itself and cannot drift from what actually runs."""
+    from mcp import coverage as cov_mod
+
+    enum = tools.TOOLS["get_coverage_report"]["input_schema"]["properties"]["checks"]["items"]["enum"]
+    assert enum == list(cov_mod.ALL_CODES)
