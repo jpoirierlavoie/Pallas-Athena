@@ -400,6 +400,7 @@ _NOTE_CATEGORIES = [
 
 # Enum values copied exactly from the data model (they are French).
 _DOSSIER_STATUSES = ["actif", "en_attente", "fermé", "archivé"]
+_INVOICE_STATUSES = ["brouillon", "envoyée", "payée", "en_retard", "annulée"]
 _TASK_STATUSES = ["à_faire", "en_cours", "terminée", "annulée"]
 _DOCUMENT_CATEGORIES = [
     "procédure", "pièce", "jugement", "correspondance",
@@ -914,6 +915,95 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "list_expenses",
+    },
+    "list_invoices": {
+        "title": "Registre des factures",
+        "description": (
+            "The invoice register, newest date first. "
+            "WITHOUT a status filter this returns EVERY status, including "
+            "`brouillon` (drafted, never sent to the client) and `annulée` "
+            "(void) — neither is money owed, and neither may be presented as "
+            "an issued invoice. Filter with `status`, or with "
+            "`status_group=\"impayée\"` for what is actually outstanding. "
+            "Resolves the invoice_id carried by list_time_entries and "
+            "list_expenses rows. "
+            "PAYMENT IS ONLY AS RECORDED: `amount_paid` is what the lawyer "
+            "entered in the application, `balance` is amount_due − "
+            "amount_paid, and `payment_basis: \"none\"` means nothing was "
+            "recorded — NOT that nothing was paid. Older invoices predate "
+            "the payment field and read that way. "
+            "`amount_due` is the balance AT ISSUANCE and is never updated: "
+            "it stays non-zero on a paid invoice, so never read it as what "
+            "is still owed. "
+            "Reconciliation: summing `amount_due` over status envoyée + "
+            "en_retard (i.e. status_group=\"impayée\") equals "
+            "get_billing_snapshot's outstanding_cents to the cent — the two "
+            "share one definition — but only ACROSS ALL PAGES. While "
+            "`truncated` is true the sum you hold is partial; page to the "
+            "end with `cursor`, or quote get_billing_snapshot's figure "
+            "instead of adding these up.Beware the DIFFERENT one in "
+            "get_dossier.summaries.invoices.total_outstanding, which sums "
+            "`total`, counts brouillons and treats payée as settled; the two "
+            "figures will not agree, by design. "
+            "Exact at any size firm-wide and for any single dossier; page "
+            "with `cursor`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "Restrict to one dossier (UUIDv4). Omit for firm-wide."
+                ),
+                "status": {
+                    "type": "string",
+                    "enum": _INVOICE_STATUSES,
+                    "description": (
+                        "One exact status. Mutually exclusive with "
+                        "status_group."
+                    ),
+                },
+                "status_group": {
+                    "type": "string",
+                    "enum": ["impayée"],
+                    "description": (
+                        "\"impayée\" = envoyée + en_retard, the same pair "
+                        "get_billing_snapshot sums. Mutually exclusive with "
+                        "status."
+                    ),
+                },
+                "date_from": _date("Earliest invoice date, YYYY-MM-DD inclusive."),
+                "date_to": _date("Latest invoice date, YYYY-MM-DD inclusive."),
+                "limit": _limit(25),
+                "cursor": _cursor(),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "list_invoices",
+    },
+    "get_invoice": {
+        "title": "Facture",
+        "description": (
+            "One invoice: its parties, its full money block (fees, "
+            "disbursements, GST, QST, retainer, total, recorded payment and "
+            "live balance) and its line items. "
+            "Line descriptions are what PRINTED on the client's invoice — "
+            "quote them verbatim, never paraphrase. "
+            "`subtotal_matches_line_items: false` means the stored subtotal "
+            "and the sum of the lines disagree: raise it, never silently "
+            "re-add. A non-empty `warnings` array means the line items could "
+            "not be read — the invoice is not empty, the read failed. "
+            "Line items are readable ONE INVOICE AT A TIME; there is no way "
+            "to search them across invoices."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_id": _id("The invoice to read (UUIDv4)."),
+            },
+            "required": ["invoice_id"],
+            "additionalProperties": False,
+        },
+        "handler": "get_invoice",
     },
     "list_deletions": {
         "title": "Journal des suppressions",

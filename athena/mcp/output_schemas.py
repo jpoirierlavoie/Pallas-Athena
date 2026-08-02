@@ -97,10 +97,18 @@ def _bool(description: str = "") -> dict:
     }
 
 
-def _money(key: str) -> dict[str, Any]:
-    """The §10.1 money pair, to splat into a properties dict."""
+def _money(key: str, description: str = "") -> dict[str, Any]:
+    """The §10.1 money pair, to splat into a properties dict.
+
+    The optional description lands on the ``_cents`` field — the figure a
+    reader computes with. Use it whenever the amount means something less
+    obvious than its name suggests (a frozen figure, a derived one).
+    """
+    cents: dict[str, Any] = {"type": "integer"}
+    if description:
+        cents["description"] = description
     return {
-        f"{key}_cents": {"type": "integer"},
+        f"{key}_cents": cents,
         f"{key}_display": {"type": "string"},
     }
 
@@ -307,19 +315,43 @@ def _dossier_list_row() -> dict:
     })
 
 
-def _invoice_row() -> dict:
-    return _obj({
+def _invoice_row(extra: Optional[dict[str, Any]] = None) -> dict:
+    """SHARED by list_invoices, get_invoice and
+    get_billing_snapshot.outstanding_invoices — one row shape, no drift."""
+    properties: dict[str, Any] = {
         "id": _str(),
         "invoice_number": _str(),
         "dossier_id": _str(),
-        "dossier_file_number": _str(),
-        "client_name": _str(),
+        "dossier_file_number": _str("Snapshot taken at issuance, not the "
+                                    "file's current number — an invoice must "
+                                    "read as what was sent to the client."),
+        "client_name": _str("Snapshot at issuance."),
         "date": _nstr("YYYY-MM-DD."),
         "due_date": _nstr("YYYY-MM-DD."),
-        "status": _str(),
+        "status": _str("brouillon | envoyée | payée | en_retard | annulée."),
+        "status_label": _str("French label of `status`."),
+        "paid_date": _nstr("YYYY-MM-DD; null when no payment is recorded."),
+        "payment_basis": {
+            "type": "string",
+            "enum": ["recorded", "none"],
+            "description": (
+                "\"recorded\" = an amount was entered in the application; "
+                "\"none\" = nothing recorded. With \"none\", a balance equal "
+                "to the total means nothing has been RECORDED — NOT that "
+                "nothing was paid. Status alone may still say « payée »."
+            ),
+        },
         **_money("total"),
-        **_money("amount_due"),
-    })
+        **_money("amount_due",
+                 "The balance AT ISSUANCE (total − retainer applied). Frozen: "
+                 "it is never updated and stays non-zero on a paid invoice. "
+                 "Use `balance` for what is still owed."),
+        **_money("amount_paid", "Recorded payment; 0 when none was entered."),
+        **_money("balance", "amount_due − amount_paid — the live balance."),
+    }
+    if extra:
+        properties.update(extra)
+    return _obj(properties)
 
 
 def _partie_ref() -> dict:
@@ -920,6 +952,53 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "invoice_id": _nstr("null until invoiced."),
         **_money("amount"),
     }), extra=_next_cursor(), extra_required=["next_cursor"]),
+
+    "list_invoices": _list_envelope(
+        _invoice_row(), extra=_next_cursor(), extra_required=["next_cursor"]
+    ),
+
+    "get_invoice": _found_or_not(
+        _obj({
+            "found": _found(True),
+            "invoice": _invoice_row({
+            "dossier_title": _str("Snapshot at issuance."),
+            "client_id": _str(),
+            "notes": _str(),
+            "payment_terms": _str(),
+            "gst_rate_display": _str("e.g. « 5 % »."),
+            "qst_rate_display": _str("e.g. « 9,975 % »."),
+            **_money("subtotal_fees"),
+            **_money("subtotal_expenses"),
+            **_money("subtotal", "Fees + disbursements, before taxes."),
+            **_money("gst_amount"),
+            **_money("qst_amount"),
+            **_money("retainer_applied"),
+            **_money("line_items_total",
+                     "Sum of the line amounts, recomputed here."),
+            "subtotal_matches_line_items": _bool(
+                "false = the stored subtotal and the sum of the lines "
+                "disagree. Raise it; never silently re-add."),
+            "line_items": _arr(_obj({
+                "id": _str(),
+                "type": _str("fee | expense."),
+                "source_id": _nstr("The time entry or expense it came from."),
+                "date": _nstr("YYYY-MM-DD."),
+                "description": _str(
+                    "VERBATIM as printed on the client's invoice — never "
+                    "paraphrase it back."),
+                "hours": {"type": ["number", "null"],
+                          "description": "Fee lines only; null on a disbursement."},
+                "rate_cents": {"type": ["integer", "null"],
+                               "description": "Hourly rate; null on a disbursement."},
+                "rate_display": _nstr(),
+                "taxable": _bool(),
+                **_money("amount"),
+            })),
+            "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+            }),
+        }),
+        {"invoice_id": _str("Echo of the id that was not found.")},
+    ),
 
     "list_deletions": _list_envelope(_obj({
         "id": _str(),

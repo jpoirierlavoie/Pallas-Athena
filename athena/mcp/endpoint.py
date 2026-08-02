@@ -32,7 +32,7 @@ from utils.tracing_setup import span
 # Verbatim §9.3 instructions surfaced to the client model at initialize.
 INSTRUCTIONS = (
     "Pallas Athena is a single-user Quebec civil litigation practice "
-    "manager. 20 tools read; 9 write, and every write is CREATE-ONLY: "
+    "manager. 22 tools read; 9 write, and every write is CREATE-ONLY: "
     "notes (`create_note`, `append_to_note`), tasks (`create_task`), "
     "calendar events (`create_hearing`), billable time "
     "(`create_time_entry`), expenses (`create_expense`), plus three "

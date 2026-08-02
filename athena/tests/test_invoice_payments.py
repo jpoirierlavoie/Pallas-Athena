@@ -198,9 +198,34 @@ def _refused(store, *args, **kwargs):
     return errors[0]
 
 
-def test_a_payment_larger_than_the_total_is_refused(store):
+def test_a_payment_larger_than_the_balance_due_is_refused(store):
     store["doc"] = _invoice()
-    assert "dépasser le total" in _refused(store, "inv1", 400000)
+    assert "dépasser le solde dû" in _refused(store, "inv1", 400000)
+
+
+def test_the_cap_is_the_balance_due_not_the_invoice_total(store):
+    """With a retainer applied, amount_due < total. Capping on `total` let a
+    payment land between the two and produced a NEGATIVE balance with
+    nothing to explain it — found by the lot-4 review."""
+    store["doc"] = _invoice(total=287437, retainer_applied=100000,
+                            amount_due=187437)
+    # Between the balance due and the total: refused, nothing written.
+    assert "dépasser le solde dû" in _refused(store, "inv1", 250000)
+    # Exactly the balance due: accepted, and it settles the invoice.
+    updated, errors = imod.record_payment("inv1", 187437)
+    assert errors == []
+    assert imod.balance_of(updated) == 0
+    assert updated["status"] == "payée"
+
+
+def test_the_balance_can_never_go_negative(store):
+    """The property the cap exists to guarantee."""
+    store["doc"] = _invoice(total=287437, retainer_applied=50000,
+                            amount_due=237437)
+    for amount in (0, 1, 100000, 237437):
+        updated, errors = imod.record_payment("inv1", amount)
+        assert errors == [], amount
+        assert imod.balance_of(updated) >= 0, amount
 
 
 def test_a_negative_payment_is_refused(store):

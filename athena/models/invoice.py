@@ -694,11 +694,17 @@ def record_payment(
                 "d'y porter un encaissement."
             )
 
-        total = int(invoice.get("total", 0))
-        if amount > total:
+        # Cap on what is OWED, not on the invoice total. With a retainer
+        # applied, amount_due < total, and capping on `total` let a payment
+        # land between the two — producing a NEGATIVE balance with nothing
+        # to explain it. An overpayment is a real event, but recording it
+        # here would silently corrupt the balance rather than report it.
+        due = int(invoice.get("amount_due", 0))
+        if amount > due:
             raise _PaymentRefused(
-                "Le montant encaissé ne peut pas dépasser le total de la "
-                "facture."
+                "Le montant encaissé ne peut pas dépasser le solde dû "
+                f"({due / 100:.2f} $). Pour un trop-perçu, portez-le au "
+                "fidéicommis plutôt qu'à la facture."
             )
 
         now = datetime.now(timezone.utc)

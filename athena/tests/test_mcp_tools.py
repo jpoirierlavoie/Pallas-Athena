@@ -134,7 +134,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 29  # 20 read-only + 9 writes
+    assert len(tools.TOOLS) == 31  # 22 read-only + 9 writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -159,7 +159,7 @@ def test_write_tools_set_is_pinned():
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 29
+    assert len(descriptors) == 31
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -185,7 +185,7 @@ def test_required_scope_defaults_to_read_never_write():
 def test_list_tool_descriptors_filters_by_scope():
     read_only = tools.list_tool_descriptors(frozenset({"athena:read"}))
     names = {d["name"] for d in read_only}
-    assert len(read_only) == 20
+    assert len(read_only) == 22
     assert not (names & tools.WRITE_TOOLS)
 
     both = tools.list_tool_descriptors(
@@ -2623,8 +2623,275 @@ def test_trust_cursor_only_on_the_exact_path(monkeypatch):
 def test_every_paged_tool_declares_a_cursor_input():
     """The schema is the contract a client reads; a handler that honours a
     cursor the schema does not advertise is unreachable."""
-    for name in ("list_time_entries", "list_expenses", "list_hearings",
-                 "list_trust_transactions", "list_dossiers"):
+    # DERIVED, never a hand-kept list: a frozen tuple is a test that stops
+    # proving anything about the next tool added (lot 4 was missed exactly
+    # that way). Every tool whose OUTPUT declares next_cursor must accept a
+    # cursor on the way in — otherwise the paging handle is unreachable.
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+
+    paged = [
+        name for name, schema in OUTPUT_SCHEMAS.items()
+        if "next_cursor" in (schema.get("properties") or {})
+    ]
+    assert len(paged) >= 6, paged           # guard against an empty sweep
+    for name in paged:
         props = tools.TOOLS[name]["input_schema"]["properties"]
-        assert "cursor" in props, name
-        assert props["cursor"]["type"] == "string"
+        assert "cursor" in props, f"{name} emits next_cursor but takes no cursor"
+        assert props["cursor"]["type"] == "string", name
+
+
+# ── Lot 4: the invoice register ─────────────────────────────────────────
+
+
+def _inv(n, day, status="envoyée", **over):
+    doc = {
+        "id": f"inv{n:03d}", "invoice_number": f"2026-001-{n:02d}",
+        "dossier_id": "d1", "dossier_file_number": "2026-001",
+        "dossier_title": "Tremblay c. Lavoie", "client_id": "p1",
+        "client_name": "Jean Tremblay",
+        "date": datetime(2026, 7, day, tzinfo=UTC),
+        "due_date": datetime(2026, 8, day, tzinfo=UTC),
+        "status": status,
+        "subtotal_fees": 100000, "subtotal_expenses": 0, "subtotal": 100000,
+        "gst_rate": 500, "gst_amount": 5000,
+        "qst_rate": 9975, "qst_amount": 9975,
+        "total": 114975, "retainer_applied": 0, "amount_due": 114975,
+        "amount_paid": 0, "paid_date": None,
+        "notes": "", "payment_terms": "Payable dans les 30 jours.",
+    }
+    doc.update(over)
+    return doc
+
+
+def _paged_invoices(rows):
+    """A fake list_invoices_page honouring the model's REAL ordering:
+    date DESC, id ASC — the mixed directions this lot had to respect."""
+    def _page(status_filter=None, date_from=None, date_to=None,
+              limit=200, cursor=None):
+        sel = [r for r in rows if not status_filter
+               or r.get("status") == status_filter]
+        sel = sorted(sel, key=lambda r: r["id"])
+        sel = sorted(sel, key=lambda r: r["date"], reverse=True)
+        values = decode_cursor(cursor)
+        if values and len(values) == 2:
+            md, mi = values[0], values[1]
+            sel = [r for r in sel
+                   if r["date"] < md or (r["date"] == md and r["id"] > mi)]
+        window = sel[:limit]
+        nxt = encode_cursor([window[-1]["date"], window[-1]["id"]]) \
+            if len(sel) > limit else None
+        return window, nxt
+    return _page
+
+
+def test_list_invoices_pages_newest_first_without_loss(monkeypatch):
+    rows = [_inv(i, i + 1) for i in range(12)]
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices_page",
+                        _paged_invoices(rows))
+    served = _walk_tool(handlers.list_invoices, {"limit": 5})
+    assert len(served) == 12 and len(set(served)) == 12
+    first = handlers.list_invoices({"limit": 3})
+    assert [r["date"] for r in first["items"]] == [
+        "2026-07-12", "2026-07-11", "2026-07-10"]
+
+
+def test_invoices_sharing_a_date_survive_a_page_boundary(monkeypatch):
+    """Month-end: several invoices on one date. The server orders
+    date DESC, id ASC — MIXED directions — so a uniform-descending keyset
+    would skip or repeat inside the tie group."""
+    rows = [_inv(i, 15) for i in range(5)]          # all the same date
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices_page",
+                        _paged_invoices(rows))
+    served = _walk_tool(handlers.list_invoices, {"limit": 2})
+    assert served == ["inv000", "inv001", "inv002", "inv003", "inv004"]
+
+
+def test_dossier_scoped_branch_pages_in_python(monkeypatch):
+    """With a dossier_id there is no composite index for date ordering, so
+    the model's single-equality read is paged here — and must mint the SAME
+    cursor shape as the server branch."""
+    rows = [_inv(i, i + 1) for i in range(7)]
+
+    def _must_not_run(**kw):
+        raise AssertionError("dossier branch must not hit list_invoices_page")
+
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices_page", _must_not_run)
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: list(rows))
+    served = _walk_tool(handlers.list_invoices, {"dossier_id": "d1", "limit": 3})
+    assert len(served) == 7 and len(set(served)) == 7
+
+
+def test_status_group_impayee_runs_two_queries_never_an_in_filter(monkeypatch):
+    """A Firestore `in` + order_by + start_after raises FAILED_PRECONDITION,
+    which the model swallows into [] — a silently blank billing statement.
+    Two small queries cannot fail that way."""
+    calls = []
+    rows = [_inv(0, 1, "envoyée"), _inv(1, 2, "en_retard"),
+            _inv(2, 3, "payée"), _inv(3, 4, "brouillon")]
+
+    def _page(status_filter=None, **kw):
+        calls.append(status_filter)
+        sel = [r for r in rows if r["status"] == status_filter]
+        return sel, None
+
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices_page", _page)
+    payload = handlers.list_invoices({"status_group": "impayée"})
+    assert sorted(calls) == ["en_retard", "envoyée"]      # two, never one `in`
+    assert {r["status"] for r in payload["items"]} == {"envoyée", "en_retard"}
+
+
+def test_status_and_status_group_are_mutually_exclusive(monkeypatch):
+    with pytest.raises(tools.ToolArgumentError, match="mutually exclusive"):
+        handlers.list_invoices({"status": "payée", "status_group": "impayée"})
+
+
+def test_the_unpaid_pair_matches_the_billing_snapshot_definition():
+    """The mandate's reconciliation criterion, enforced structurally: the
+    register and get_outstanding_total must sum the SAME statuses, or the
+    two surfaces disagree about money."""
+    import inspect
+    from models import invoice as imod
+
+    source = inspect.getsource(imod.get_outstanding_total)
+    assert '"envoyée", "en_retard"' in source
+    assert handlers._INVOICE_UNPAID == ("envoyée", "en_retard")
+
+
+def test_outstanding_reconciles_to_the_cent(monkeypatch):
+    """Σ amount_due over the impayée group == get_billing_snapshot's
+    outstanding_cents, by construction."""
+    rows = [_inv(0, 1, "envoyée", amount_due=114975),
+            _inv(1, 2, "en_retard", amount_due=200000),
+            _inv(2, 3, "payée", amount_due=50000)]      # excluded both sides
+    monkeypatch.setattr(
+        handlers.invoice_model, "list_invoices_page",
+        lambda status_filter=None, **kw: (
+            [r for r in rows if r["status"] == status_filter], None),
+    )
+    register = handlers.list_invoices({"status_group": "impayée", "limit": 50})
+    total = sum(r["amount_due_cents"] for r in register["items"])
+
+    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
+                        lambda: 114975 + 200000)
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: list(rows))
+    monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
+                        lambda: {"hours": 0.0, "amount": 0})
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda **kw: {"amount": 0})
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
+                        lambda **kw: ([], None))
+    snapshot = handlers.get_billing_snapshot({})
+    assert total == snapshot["outstanding_cents"] == 314975
+
+
+def test_payment_basis_never_reads_silence_as_payment(monkeypatch):
+    """A balance equal to the total means « nothing RECORDED », not
+    « nothing paid » — the whole reason the field exists."""
+    unrecorded = _inv(0, 1, "payée", amount_paid=0)     # legacy: status only
+    recorded = _inv(1, 2, "envoyée", amount_paid=50000)
+    monkeypatch.setattr(
+        handlers.invoice_model, "list_invoices_page",
+        lambda **kw: ([unrecorded, recorded], None))
+    items = {r["id"]: r for r in handlers.list_invoices({})["items"]}
+    assert items["inv000"]["payment_basis"] == "none"
+    assert items["inv000"]["balance_cents"] == 114975   # NOT 0
+    assert items["inv001"]["payment_basis"] == "recorded"
+    assert items["inv001"]["balance_cents"] == 114975 - 50000
+
+
+def test_amount_due_stays_the_frozen_issuance_figure(monkeypatch):
+    """amount_due is never updated. Emitting it beside `balance` is the
+    point: one is provenance, the other is what is owed."""
+    paid = _inv(0, 1, "payée", amount_paid=114975)
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices_page",
+                        lambda **kw: ([paid], None))
+    row = handlers.list_invoices({})["items"][0]
+    assert row["amount_due_cents"] == 114975       # frozen
+    assert row["balance_cents"] == 0               # the truth
+
+
+def test_get_invoice_returns_lines_and_checks_the_subtotal(monkeypatch):
+    items = [
+        {"id": "l1", "type": "fee", "source_id": "t1",
+         "date": datetime(2026, 7, 2, tzinfo=UTC),
+         "description": "Rédaction de la mise en demeure", "hours": 2.0,
+         "rate": 30000, "amount": 60000, "taxable": True},
+        {"id": "l2", "type": "expense", "source_id": "x1",
+         "date": datetime(2026, 7, 3, tzinfo=UTC),
+         "description": "Frais d'huissier", "hours": None,
+         "rate": None, "amount": 40000, "taxable": True},
+    ]
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (_inv(0, 1), items))
+    payload = handlers.get_invoice({"invoice_id": "inv000"})
+    assert payload["found"] is True
+    inv = payload["invoice"]
+    assert inv["subtotal_matches_line_items"] is True
+    assert inv["line_items_total_cents"] == 100000
+    assert inv["warnings"] == []
+    # Descriptions verbatim — they printed on the client's invoice.
+    assert inv["line_items"][0]["description"] == "Rédaction de la mise en demeure"
+    # A disbursement has no hourly rate: explicit null, never 0.
+    assert inv["line_items"][1]["rate_cents"] is None
+    assert inv["line_items"][1]["hours"] is None
+    assert inv["gst_rate_display"].startswith("5")
+
+
+def test_get_invoice_flags_a_subtotal_that_does_not_add_up(monkeypatch):
+    items = [{"id": "l1", "type": "fee", "source_id": "", "date": None,
+              "description": "X", "hours": None, "rate": None,
+              "amount": 999, "taxable": True}]
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (_inv(0, 1), items))
+    inv = handlers.get_invoice({"invoice_id": "inv000"})["invoice"]
+    assert inv["subtotal_matches_line_items"] is False
+
+
+def test_empty_lines_on_a_non_zero_invoice_is_reported_as_a_read_failure(
+    monkeypatch,
+):
+    """get_invoice_with_items swallows a subcollection failure into [], and
+    create_invoice refuses an invoice with no line — so this is ALWAYS a
+    failed read, never data. Rendering a plausible empty invoice would be
+    the worst outcome."""
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (_inv(0, 1), []))
+    inv = handlers.get_invoice({"invoice_id": "inv000"})["invoice"]
+    assert inv["warnings"] and "n'ont pas pu être lus" in inv["warnings"][0]
+
+
+def test_get_invoice_unknown_id_is_found_false(monkeypatch):
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (None, []))
+    payload = handlers.get_invoice({"invoice_id": "nope"})
+    assert payload == {"found": False, "invoice_id": "nope"}
+
+
+def test_invoice_status_enum_tracks_the_model():
+    """tools.py literals are hand-copied (importing models at load builds a
+    Firestore client) — pin them so they cannot drift."""
+    from models import invoice as imod
+
+    assert (tools.TOOLS["list_invoices"]["input_schema"]["properties"]
+            ["status"]["enum"] == list(imod.VALID_STATUSES))
+
+
+def test_the_two_outstanding_definitions_deliberately_disagree():
+    """get_dossier.summaries.invoices.total_outstanding sums `total`,
+    counts brouillons and treats payée as settled; the firm-wide figure sums
+    `amount_due` over envoyée+en_retard. They will NOT reconcile.
+
+    Pinned ON PURPOSE: « fixing » get_invoice_summary would change a money
+    value the 07:00 briefing already reads. Both definitions are stated in
+    the tool descriptions instead."""
+    import inspect
+    from models import invoice as imod
+
+    summary_src = inspect.getsource(imod.get_invoice_summary)
+    assert 'inv.get("total", 0)' in summary_src        # sums total…
+    assert "amount_due" not in summary_src             # …never amount_due
+    assert '"annulée"' in summary_src                  # only annulée excluded
+    description = tools.TOOLS["list_invoices"]["description"]
+    assert "will not agree" in description             # said out loud

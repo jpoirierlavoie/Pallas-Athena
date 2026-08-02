@@ -764,3 +764,74 @@ def test_create_expense_conforms_live_and_dry(write_world, monkeypatch):
     assert "ctag_bumped" not in payload
     dry = handlers.create_expense({**args, "dry_run": True})
     _conforms("create_expense", dry)
+
+
+# ── Lot 4: the invoice register conforms ────────────────────────────────
+
+
+def _invoice_doc(**over):
+    doc = {
+        "id": "inv1", "invoice_number": "2026-001-01", "dossier_id": "d1",
+        "dossier_file_number": "2026-001", "dossier_title": "Tremblay",
+        "client_id": "p1", "client_name": "Jean Tremblay",
+        "date": DT, "due_date": DT, "status": "envoyée",
+        "subtotal_fees": 100000, "subtotal_expenses": 0, "subtotal": 100000,
+        "gst_rate": 500, "gst_amount": 5000,
+        "qst_rate": 9975, "qst_amount": 9975,
+        "total": 114975, "retainer_applied": 0, "amount_due": 114975,
+        "amount_paid": 0, "paid_date": None,
+        "notes": "", "payment_terms": "Payable dans les 30 jours.",
+    }
+    doc.update(over)
+    return doc
+
+
+def test_list_invoices_conforms_both_branches(monkeypatch):
+    monkeypatch.setattr(
+        handlers.invoice_model, "list_invoices_page",
+        lambda **kw: ([_invoice_doc()], None))
+    _conforms("list_invoices", handlers.list_invoices({}))
+    # The dossier-scoped branch takes the other code path entirely.
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: [_invoice_doc(amount_paid=50000)])
+    _conforms("list_invoices", handlers.list_invoices({"dossier_id": "d1"}))
+
+
+def test_get_invoice_conforms_found_and_not_found(monkeypatch):
+    items = [
+        {"id": "l1", "type": "fee", "source_id": "t1", "date": DT,
+         "description": "Rédaction", "hours": 2.0, "rate": 30000,
+         "amount": 100000, "taxable": True},
+        {"id": "l2", "type": "expense", "source_id": "x1", "date": DT,
+         "description": "Huissier", "hours": None, "rate": None,
+         "amount": 0, "taxable": False},
+    ]
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (_invoice_doc(), items))
+    _conforms("get_invoice", handlers.get_invoice({"invoice_id": "inv1"}))
+    # The warning branch has its own shape to satisfy.
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (_invoice_doc(), []))
+    _conforms("get_invoice", handlers.get_invoice({"invoice_id": "inv1"}))
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_with_items",
+                        lambda i: (None, []))
+    _conforms("get_invoice", handlers.get_invoice({"invoice_id": "nope"}))
+
+
+def test_billing_snapshot_still_conforms_after_the_shared_row_grew(monkeypatch):
+    """_invoice_row is SHARED — every key lot 4 added to it also lands in
+    get_billing_snapshot.outstanding_invoices[]. Deliberate (one row shape,
+    no drift), and pinned here so the blast radius stays visible."""
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: [_invoice_doc()])
+    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
+                        lambda: 114975)
+    monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
+                        lambda: {"hours": 1.0, "amount": 1000})
+    monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
+                        lambda **kw: {"amount": 0})
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
+                        lambda **kw: ([], None))
+    payload = handlers.get_billing_snapshot({})
+    _conforms("get_billing_snapshot", payload)
+    assert payload["outstanding_invoices"][0]["payment_basis"] == "none"

@@ -1,4 +1,4 @@
-"""The 29 MCP tool handlers — 20 read-only, plus 9 create-only writes.
+"""The 31 MCP tool handlers — 22 read-only, plus 9 create-only writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
@@ -355,6 +355,14 @@ def _dossier_row(d: dict) -> dict:
 
 
 def _invoice_row(inv: dict) -> dict:
+    """One invoice line. SHARED with get_billing_snapshot.outstanding_invoices
+    — one row shape must not drift between the register and the snapshot, so
+    every key added here appears in both.
+
+    The dossier/client labels are the SNAPSHOT taken at issuance, deliberately
+    not freshened: an invoice is an accounting artifact, and it must read as
+    what was actually sent to the client, not as the file's current title.
+    """
     row = {
         "id": inv.get("id", ""),
         "invoice_number": inv.get("invoice_number", ""),
@@ -364,9 +372,20 @@ def _invoice_row(inv: dict) -> dict:
         "date": date_str(_as_utc(inv.get("date"))),
         "due_date": date_str(_as_utc(inv.get("due_date"))),
         "status": inv.get("status", ""),
+        "status_label": invoice_model.STATUS_LABELS.get(
+            inv.get("status", ""), inv.get("status", "")
+        ),
+        "paid_date": date_str(_as_utc(inv.get("paid_date"))),
+        # « recorded » only once an amount was actually entered. A balance
+        # equal to the total must never be read as « nothing was paid » when
+        # it means « nothing was RECORDED » — the distinction the payment
+        # field was added to make sayable.
+        "payment_basis": "recorded" if int(inv.get("amount_paid", 0)) else "none",
     }
     _money(row, "total", inv.get("total", 0))
     _money(row, "amount_due", inv.get("amount_due", 0))
+    _money(row, "amount_paid", inv.get("amount_paid", 0))
+    _money(row, "balance", invoice_model.balance_of(inv))
     return row
 
 
@@ -1563,6 +1582,197 @@ def list_deletions(args: dict) -> dict:
             "status": snap.get("status", ""),
         })
     return _list_payload(items, truncated)
+
+
+# ── Invoice register (lot 4) ────────────────────────────────────────────
+#
+# « Impayé » is EXACTLY what get_outstanding_total sums server-side. The two
+# definitions must stay identical, or the register and the billing snapshot
+# disagree about money — the one contradiction a billing tool may never ship.
+_INVOICE_UNPAID = ("envoyée", "en_retard")
+
+_UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _order_invoices(rows: list[dict]) -> list[dict]:
+    """Sort exactly as the model does server-side: date DESC, then id ASC.
+
+    The MIXED directions are why this cannot use ``pagination.keyset_page``,
+    whose single ``descending`` flag would order id DESC: a resumed page
+    would then skip or repeat rows INSIDE a same-date group, and several
+    invoices sharing one date is the normal case at month end. Two stable
+    passes reproduce the server order — id ascending first, then date
+    descending, which preserves the id order within each date.
+    """
+    by_id = sorted(rows, key=lambda r: str(r.get("id") or ""))
+    return sorted(by_id, key=lambda r: _as_utc(r.get("date")) or _UTC_MIN,
+                  reverse=True)
+
+
+def _invoice_after_cursor(inv: dict, marker: Optional[tuple]) -> bool:
+    """True when *inv* falls strictly after *marker* under date DESC, id ASC.
+
+    Mirrors Firestore's ``start_after({"date": …, "id": …})`` on the same
+    ordering, so the dossier-scoped (Python-paged) branch and the firm-wide
+    (server-paged) branch consume and mint the SAME cursor token.
+    """
+    if marker is None:
+        return True
+    marker_date, marker_id = marker
+    when = _as_utc(inv.get("date"))
+    if when is None or marker_date is None:
+        return True
+    if when != marker_date:
+        return when < marker_date
+    return str(inv.get("id") or "") > str(marker_id)
+
+
+def _invoice_cursor(inv: dict) -> Optional[str]:
+    """Mint the resume token from a row, or None when it cannot key one."""
+    when = _as_utc(inv.get("date"))
+    if when and inv.get("id"):
+        return encode_cursor([when, inv["id"]])
+    return None
+
+
+def list_invoices(args: dict) -> dict:
+    """The invoice register — issued invoices, newest first.
+
+    Routing is by argument, and the asymmetry is deliberate:
+
+    * ``dossier_id`` given → the model's single-equality read (served by the
+      automatic index) plus Python paging. Complete for any one file.
+    * no ``dossier_id`` → ``list_invoices_page``, whose ``(date DESC, id ASC)``
+      and ``(status, date DESC, id ASC)`` composite indexes are already
+      deployed. Exact at any register size.
+
+    ``status_group="impayée"`` runs TWO status-filtered queries and merges
+    them, never a Firestore ``in`` + ``order_by`` + ``start_after``: that
+    combination raises FAILED_PRECONDITION, which the model swallows into an
+    empty list — a silently blank billing statement.
+    """
+    limit = _limit_arg(args, 25)
+    dossier_id = (args.get("dossier_id") or "").strip()
+    status = args.get("status")
+    status_group = args.get("status_group")
+    if status and status_group:
+        raise ToolArgumentError(
+            "`status` and `status_group` are mutually exclusive — pass one "
+            "status, or the group, not both."
+        )
+    date_from, date_to = _billing_window(args)
+
+    raw_cursor = args.get("cursor")
+    decoded = decode_cursor(raw_cursor)
+    marker: Optional[tuple] = None
+    if decoded and len(decoded) == 2 and isinstance(decoded[0], datetime):
+        marker = (decoded[0], str(decoded[1]))
+
+    if status:
+        statuses: tuple = (status,)
+    elif status_group == "impayée":
+        statuses = _INVOICE_UNPAID
+    else:
+        statuses = ()
+
+    window_full = False
+    if dossier_id:
+        rows = invoice_model.list_invoices(
+            dossier_id=dossier_id, date_from=date_from, date_to=date_to
+        )
+        if statuses:
+            rows = [r for r in rows if r.get("status") in statuses]
+    else:
+        rows = []
+        for one in (statuses or (None,)):
+            window, nxt = invoice_model.list_invoices_page(
+                status_filter=one, date_from=date_from, date_to=date_to,
+                limit=_FETCH_CAP, cursor=raw_cursor,
+            )
+            rows.extend(window)
+            window_full = window_full or nxt is not None
+
+    rows = _order_invoices([r for r in rows if _invoice_after_cursor(r, marker)])
+    page = rows[:limit]
+    truncated = len(rows) > limit or window_full
+    next_cursor = _invoice_cursor(page[-1]) if (truncated and page) else None
+
+    payload = _list_payload([_invoice_row(inv) for inv in page], truncated)
+    payload["next_cursor"] = next_cursor
+    return payload
+
+
+def _line_item_row(item: dict) -> dict:
+    """One invoice line. Descriptions are rendered VERBATIM — they are what
+    printed on the client's invoice, and paraphrasing one would misquote an
+    accounting document."""
+    row = {
+        "id": item.get("id", ""),
+        "type": item.get("type", ""),
+        "source_id": item.get("source_id") or None,
+        "date": date_str(_as_utc(item.get("date"))),
+        "description": item.get("description", ""),
+        "hours": float(item["hours"]) if item.get("hours") is not None else None,
+        # The model's _default_line_item sets taxable=True; a missing key
+        # must NOT read as « not taxable » — that is a tax error, silently.
+        "taxable": bool(item.get("taxable", True)),
+    }
+    # Fee lines carry an hourly rate; expense lines have none. Emitted as
+    # an explicit null rather than 0 — a zero rate is a rate.
+    rate = item.get("rate")
+    if rate is None:
+        row["rate_cents"] = None
+        row["rate_display"] = None
+    else:
+        _money(row, "rate", rate)
+    _money(row, "amount", item.get("amount", 0))
+    return row
+
+
+def get_invoice(args: dict) -> dict:
+    """One invoice with its totals and its line items."""
+    invoice_id = args["invoice_id"]
+    invoice, items = invoice_model.get_invoice_with_items(invoice_id)
+    if invoice is None:
+        return {"found": False, "invoice_id": invoice_id}
+
+    record = _invoice_row(invoice)
+    record.update({
+        "dossier_title": invoice.get("dossier_title", ""),
+        "client_id": invoice.get("client_id", ""),
+        "notes": invoice.get("notes", ""),
+        "payment_terms": invoice.get("payment_terms", ""),
+        "gst_rate_display": format_rate_fr(invoice.get("gst_rate", 0), 100),
+        "qst_rate_display": format_rate_fr(invoice.get("qst_rate", 0), 1000),
+    })
+    for key in ("subtotal_fees", "subtotal_expenses", "subtotal",
+                "gst_amount", "qst_amount", "retainer_applied"):
+        _money(record, key, invoice.get(key, 0))
+
+    line_items = [_line_item_row(i) for i in items]
+    # The mandate's « la somme des postes égale son total » really concerns
+    # the SUBTOTAL — `total` carries the taxes on top. Emitted as a flag so a
+    # drift is visible to the reader instead of being silently re-added.
+    lines_total = sum(int(i.get("amount") or 0) for i in items)
+    record["line_items"] = line_items
+    _money(record, "line_items_total", lines_total)
+    record["subtotal_matches_line_items"] = (
+        lines_total == int(invoice.get("subtotal", 0))
+    )
+
+    warnings: list[str] = []
+    if not items and int(invoice.get("subtotal", 0)) != 0:
+        # get_invoice_with_items swallows a subcollection read failure into
+        # [], and create_invoice refuses to mint an invoice with no line —
+        # so an empty list on a non-zero invoice is ALWAYS a read failure,
+        # never data. Saying so beats rendering a plausible empty invoice.
+        warnings.append(
+            "Les postes de cette facture n'ont pas pu être lus : le total "
+            "n'est pas nul mais aucun poste n'est revenu. Vérifiez la "
+            "facture dans l'application avant de vous fier à ce détail."
+        )
+    record["warnings"] = warnings
+    return {"found": True, "invoice": record}
 
 
 # ── 12. list_protocol_steps ─────────────────────────────────────────────
