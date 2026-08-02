@@ -634,12 +634,17 @@ TOOLS: dict[str, dict] = {
         "handler": "list_hearings",
     },
     "list_notes": {
-        "title": "Notes d'un dossier",
+        "title": "Notes (dossier ou cabinet)",
         "description": (
-            "List notes (pinned first, then newest) with a 280-character "
-            "plain-text preview. With dossier_id: that dossier's notes. "
-            "WITHOUT dossier_id: the « Général » notes — free journal entries "
-            "attached to no file. `query` searches the FULL title and "
+            "List notes with a 280-character plain-text preview. "
+            "CHOOSE THE CORPUS FIRST — the default is NARROW: with no "
+            "dossier_id and no scope you get ONLY the « Général » notes "
+            "(entries attached to no file), NOT the firm. To search every "
+            "dossier — the way to find a note whose file you have forgotten "
+            "— pass scope=\"cabinet\". With dossier_id you get that one "
+            "file. Every row carries its dossier_id/file number/title, so a "
+            "cabinet hit is attributable without a second call. "
+            "`query` searches the FULL title and "
             "content, so a match may sit past the preview — fetch the note "
             "before concluding it is irrelevant. Use get_note for the full "
             "Markdown. A note flagged is_analyse is the dossier's « Théorie "
@@ -649,9 +654,30 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["general", "dossier", "cabinet"],
+                    "description": (
+                        "WHICH CORPUS to search. \"general\" (default) = only "
+                        "notes attached to NO dossier. \"dossier\" = one file "
+                        "(implicit whenever dossier_id is given). "
+                        "\"cabinet\" = EVERY note in the firm. Contradictory "
+                        "combinations are refused, never silently resolved."
+                    ),
+                },
                 "dossier_id": _id(
-                    "The dossier whose notes to list (UUIDv4). OMIT to list the « Général » notes — journal entries attached to no dossier."
+                    "The dossier whose notes to list (UUIDv4). Implies "
+                    "scope=\"dossier\". Omit for the « Général » notes, or "
+                    "pass scope=\"cabinet\" to search every dossier."
                 ),
+                "dossier_status": {
+                    "type": "string",
+                    "enum": _DOSSIER_STATUSES,
+                    "description": (
+                        "Cabinet scope ONLY: keep notes whose dossier carries "
+                        "this status (research usually targets open files)."
+                    ),
+                },
                 "query": {
                     "type": "string",
                     "maxLength": 120,
@@ -682,6 +708,11 @@ TOOLS: dict[str, dict] = {
                 ),
                 "updated_since": _updated_since(),
                 "offset": _offset(),
+                "cursor": _cursor(
+                    "Cabinet scope ONLY (other scopes page with offset). "
+                    "Cabinet orders by creation date + id — immutable fields, "
+                    "so pinning a note between pages cannot shift it."
+                ),
                 "limit": _limit(20),
             },
             "additionalProperties": False,
@@ -706,10 +737,19 @@ TOOLS: dict[str, dict] = {
         "handler": "get_note",
     },
     "list_documents": {
-        "title": "Documents d'un dossier",
+        "title": "Documents (dossier ou cabinet)",
         "description": (
-            "List document metadata for a dossier — names, categories, sizes, "
-            "versions; never file contents or download links. Optionally filter "
+            "List document METADATA — names, categories, sizes, versions; "
+            "never file contents or download links. `query` matches METADATA "
+            "ONLY (display name, filename, description, tags) and NEVER the "
+            "text inside the file; searching document contents is not "
+            "available through this connector. "
+            "Scope: one dossier by default (dossier_id required), or "
+            "scope=\"cabinet\" to search document metadata across every "
+            "dossier — each row then carries its dossier_id/file "
+            "number/title, and folder_path is \"\" (resolving folder "
+            "breadcrumbs firm-wide would cost one query per dossier). "
+            "Optionally filter "
             "by folder, category, a free-text query over names, description "
             "and tags, or a date window. Each row carries folder_path "
             "(resolved; \"\" = dossier root) and document_date — the "
@@ -720,9 +760,27 @@ TOOLS: dict[str, dict] = {
         "input_schema": {
             "type": "object",
             "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["dossier", "cabinet"],
+                    "description": (
+                        "\"dossier\" (default) = one file, and dossier_id is "
+                        "REQUIRED. \"cabinet\" = every dossier; dossier_id "
+                        "and folder_id are then refused as contradictory."
+                    ),
+                },
                 "dossier_id": _id(
-                    "The dossier whose document metadata to list (UUIDv4)."
+                    "The dossier whose document metadata to list (UUIDv4). "
+                    "Required unless scope=\"cabinet\"."
                 ),
+                "dossier_status": {
+                    "type": "string",
+                    "enum": _DOSSIER_STATUSES,
+                    "description": (
+                        "Cabinet scope ONLY: keep documents whose dossier "
+                        "carries this status."
+                    ),
+                },
                 "folder_id": _id(
                     "Restrict to one folder (UUIDv4). Omit to span every folder."
                 ),
@@ -747,9 +805,17 @@ TOOLS: dict[str, dict] = {
                 ),
                 "updated_since": _updated_since(),
                 "offset": _offset(),
+                "cursor": _cursor(
+                    "Cabinet scope ONLY (dossier scope pages with offset)."
+                ),
                 "limit": _limit(25),
             },
-            "required": ["dossier_id"],
+            # `dossier_id` is deliberately NOT in `required` any more: cabinet
+            # scope has no dossier. Relaxing `required` is additive on the
+            # wire (a schema that demands less accepts strictly more), and the
+            # HANDLER re-imposes it outside cabinet scope — so an omitted
+            # dossier_id still fails loudly instead of silently becoming a
+            # firm-wide scan.
             "additionalProperties": False,
         },
         "handler": "list_documents",

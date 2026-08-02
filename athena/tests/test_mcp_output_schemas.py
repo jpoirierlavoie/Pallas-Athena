@@ -835,3 +835,44 @@ def test_billing_snapshot_still_conforms_after_the_shared_row_grew(monkeypatch):
     payload = handlers.get_billing_snapshot({})
     _conforms("get_billing_snapshot", payload)
     assert payload["outstanding_invoices"][0]["payment_basis"] == "none"
+
+
+# ── Lot 1: the scoped search conforms on every branch ───────────────────
+
+
+def _scoped_note(nid, dossier_id=""):
+    return {
+        "id": nid, "dossier_id": dossier_id,
+        "dossier_file_number": "2026-001" if dossier_id else "",
+        "dossier_title": "Tremblay" if dossier_id else "",
+        "title": "Recherche", "content": "Corps", "category": "recherche",
+        "pinned": False, "is_analyse": False,
+        "created_at": DT, "updated_at": DT,
+    }
+
+
+def test_list_notes_conforms_on_all_three_scopes(monkeypatch):
+    corpus = [_scoped_note("n1"), _scoped_note("n2", "d1")]
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(corpus))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    for args in ({}, {"dossier_id": "d1"}, {"scope": "cabinet"},
+                 {"scope": "cabinet", "limit": 1}):
+        _conforms("list_notes", handlers.list_notes(args))
+
+
+def test_list_documents_conforms_on_both_scopes(monkeypatch):
+    docs = [{
+        "id": "x1", "dossier_id": "d1", "dossier_file_number": "2026-001",
+        "dossier_title": "Tremblay", "display_name": "Jugement.pdf",
+        "category": "jugement", "file_type": "application/pdf",
+        "file_size": 2048, "version": 1, "folder_id": None,
+        "document_date": None, "description": "", "tags": [],
+        "created_at": DT, "updated_at": DT,
+    }]
+    monkeypatch.setattr(handlers.document_model, "list_documents",
+                        lambda **kw: list(docs))
+    monkeypatch.setattr(handlers.folder_model, "get_folder_tree", lambda d: [])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    _conforms("list_documents", handlers.list_documents({"dossier_id": "d1"}))
+    _conforms("list_documents", handlers.list_documents({"scope": "cabinet"}))

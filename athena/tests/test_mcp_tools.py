@@ -2895,3 +2895,317 @@ def test_the_two_outstanding_definitions_deliberately_disagree():
     assert '"annulée"' in summary_src                  # only annulée excluded
     description = tools.TOOLS["list_invoices"]["description"]
     assert "will not agree" in description             # said out loud
+
+
+# ── Lot 1: cabinet-wide search ──────────────────────────────────────────
+#
+# The defect: `list_notes(query="Olivares")` with no dossier_id searched ONLY
+# the « Général » notes and returned nothing, while the note sat in a
+# dossier. The caller read that as « no such note exists » — the worst
+# possible answer from the firm's memory.
+
+
+def _note(nid, *, dossier_id="", title="Note", content="", pinned=False,
+          created_day=1, **over):
+    doc = {
+        "id": nid, "dossier_id": dossier_id,
+        "dossier_file_number": "2026-001" if dossier_id else "",
+        "dossier_title": "Tremblay" if dossier_id else "",
+        "title": title, "content": content, "category": "recherche",
+        "pinned": pinned, "is_analyse": False,
+        "created_at": datetime(2026, 7, created_day, tzinfo=UTC),
+        "updated_at": datetime(2026, 7, created_day, tzinfo=UTC),
+    }
+    doc.update(over)
+    return doc
+
+
+@pytest.fixture()
+def notes_world(monkeypatch):
+    """Every note in the firm — the model streams the whole collection on
+    the no-dossier_id path, which is what makes cabinet scope free."""
+    corpus = [
+        _note("n-gen", title="Veille", created_day=1),
+        _note("n-oliv", dossier_id="d27", created_day=2,
+              title="Recherche — Éléments constitutifs de la faute de Solo "
+                    "inc. et d'Olivares"),
+        _note("n-other", dossier_id="d9", created_day=3, title="Appel"),
+    ]
+
+    def _list(dossier_id=None, category=None, search=None,
+              include_analyse=False, **kw):
+        rows = list(corpus)
+        if dossier_id:
+            rows = [n for n in rows if n["dossier_id"] == dossier_id]
+        if search:
+            q = search.lower()
+            rows = [n for n in rows
+                    if q in n["title"].lower() or q in n["content"].lower()]
+        return rows
+
+    monkeypatch.setattr(handlers.note_model, "list_notes", _list)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    return corpus
+
+
+def test_the_olivares_criterion(notes_world):
+    """The mandate's acceptance test, verbatim: the note must come back."""
+    payload = handlers.list_notes({"query": "Olivares", "scope": "cabinet"})
+    assert [n["id"] for n in payload["items"]] == ["n-oliv"]
+    assert payload["scope"] == "cabinet"
+    # And it is attributable without a second call — the row gap the mandate
+    # flagged as independent of scope.
+    assert payload["items"][0]["dossier_id"] == "d27"
+    assert payload["items"][0]["dossier_file_number"] == "2026-001"
+
+
+def test_the_default_call_is_unchanged(notes_world):
+    """The two scheduled jobs read this. Same corpus, same order, same
+    paging key — only the additive keys are new."""
+    payload = handlers.list_notes({})
+    assert [n["id"] for n in payload["items"]] == ["n-gen"]   # Général only
+    assert payload["scope"] == "general"
+    assert payload["next_cursor"] is None       # general pages with offset
+    assert payload["truncated"] is False
+
+
+def test_a_dossier_id_still_means_that_dossier(notes_world):
+    payload = handlers.list_notes({"dossier_id": "d27"})
+    assert [n["id"] for n in payload["items"]] == ["n-oliv"]
+    assert payload["scope"] == "dossier"        # implicit, no scope passed
+
+
+def test_cabinet_returns_every_note_including_general(notes_world):
+    payload = handlers.list_notes({"scope": "cabinet"})
+    assert {n["id"] for n in payload["items"]} == {"n-gen", "n-oliv", "n-other"}
+
+
+def test_every_contradiction_is_refused_never_resolved(notes_world):
+    """Silently preferring one of two contradictory arguments is how a
+    caller ends up believing it searched the firm."""
+    cases = [
+        ({"scope": "cabinet", "dossier_id": "d1"}, "contradicts"),
+        ({"scope": "general", "dossier_id": "d1"}, "contradicts"),
+        ({"scope": "dossier"}, "is required to search one dossier"),
+        ({"scope": "bogus"}, "must be one of"),
+        ({"scope": "cabinet", "cursor": "x", "offset": 5}, "never both"),
+        ({"cursor": "x"}, "only available"),
+        ({"dossier_status": "actif"}, "only applies"),
+    ]
+    for args, fragment in cases:
+        with pytest.raises(tools.ToolArgumentError, match=fragment):
+            handlers.list_notes(args)
+
+
+def test_cabinet_paging_walks_everything_once(monkeypatch):
+    corpus = [_note(f"n{i:02d}", dossier_id="d1", created_day=(i % 28) + 1)
+              for i in range(14)]
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(corpus))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    served, cursor, guard = [], None, 0
+    while True:
+        guard += 1
+        assert guard < 30
+        args = {"scope": "cabinet", "limit": 5}
+        if cursor:
+            args["cursor"] = cursor
+        payload = handlers.list_notes(args)
+        served.extend(n["id"] for n in payload["items"])
+        cursor = payload["next_cursor"]
+        if not cursor:
+            break
+    assert len(served) == 14 and len(set(served)) == 14
+
+
+def test_pinning_a_note_between_pages_cannot_shift_the_page(monkeypatch):
+    """Cabinet orders on (created_at, id) — IMMUTABLE fields. The model's own
+    order puts pinned notes first, and `pinned` is a one-click toggle: a
+    mutable component in a cursor key moves rows across the boundary."""
+    corpus = [_note(f"n{i:02d}", dossier_id="d1", created_day=i + 1)
+              for i in range(6)]
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(corpus))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    first = handlers.list_notes({"scope": "cabinet", "limit": 3})
+    corpus[-1]["pinned"] = True                  # toggled between pages
+    second = handlers.list_notes(
+        {"scope": "cabinet", "limit": 3, "cursor": first["next_cursor"]})
+    served = [n["id"] for n in first["items"]] + [n["id"] for n in second["items"]]
+    assert len(served) == 6 and len(set(served)) == 6
+
+
+def test_dossier_status_costs_one_query_never_one_per_row(monkeypatch):
+    corpus = [_note(f"n{i}", dossier_id=f"d{i}", created_day=i + 1)
+              for i in range(5)]
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(corpus))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    calls = []
+
+    def _all(status_filter=None, **kw):
+        calls.append(status_filter)
+        return [{"id": "d1"}, {"id": "d3"}]
+
+    def _paged_must_not_run(**kw):
+        raise AssertionError(
+            "the dossier universe must be read COMPLETE, not one page deep: "
+            "a discarded next_cursor drops every row past the 200th dossier"
+        )
+
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers", _all)
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
+                        _paged_must_not_run)
+    payload = handlers.list_notes({"scope": "cabinet", "dossier_status": "actif"})
+    assert calls == ["actif"]                    # exactly one, not one per row
+    assert {n["id"] for n in payload["items"]} == {"n1", "n3"}
+    assert payload["dossier_status_matched"] == 2
+
+
+def test_the_analyse_note_stays_visible_on_every_scope(monkeypatch):
+    """include_analyse=True is a per-CALLER decision; a scope branch that
+    dropped it would make the « Théorie de la cause » vanish silently."""
+    seen = []
+
+    def _list(dossier_id=None, include_analyse=False, **kw):
+        seen.append(include_analyse)
+        return []
+
+    monkeypatch.setattr(handlers.note_model, "list_notes", _list)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    handlers.list_notes({})
+    handlers.list_notes({"dossier_id": "d1"})
+    handlers.list_notes({"scope": "cabinet"})
+    assert seen == [True, True, True]
+
+
+# ── list_documents: the relaxed `required`, re-imposed in the handler ────
+
+
+def _doc(did, dossier_id="d1", **over):
+    doc = {
+        "id": did, "dossier_id": dossier_id,
+        "dossier_file_number": "2026-001", "dossier_title": "Tremblay",
+        "display_name": "Jugement.pdf", "category": "jugement",
+        "file_type": "application/pdf", "file_size": 1024, "version": 1,
+        "folder_id": None, "document_date": None, "description": "",
+        "tags": [], "created_at": datetime(2026, 7, 1, tzinfo=UTC),
+        "updated_at": datetime(2026, 7, 1, tzinfo=UTC),
+    }
+    doc.update(over)
+    return doc
+
+
+def test_documents_still_demand_a_dossier_id_outside_cabinet(monkeypatch):
+    """The schema no longer marks it required (cabinet has no dossier), so
+    the HANDLER must — otherwise an omitted dossier_id turns a loud error
+    into a silent firm-wide scan."""
+    monkeypatch.setattr(handlers.document_model, "list_documents",
+                        lambda **kw: [])
+    with pytest.raises(tools.ToolArgumentError, match="required"):
+        handlers.list_documents({})
+    # The schema really did relax — otherwise the handler guard is dead code.
+    assert "required" not in tools.TOOLS["list_documents"]["input_schema"]
+
+
+def test_documents_cabinet_scope_spans_dossiers(monkeypatch):
+    corpus = [_doc("x1", "d1"), _doc("x2", "d2")]
+    monkeypatch.setattr(handlers.document_model, "list_documents",
+                        lambda **kw: list(corpus))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    payload = handlers.list_documents({"scope": "cabinet"})
+    assert {d["id"] for d in payload["items"]} == {"x1", "x2"}
+    assert payload["scope"] == "cabinet"
+    # folder_path is "" firm-wide: resolving breadcrumbs would be one query
+    # per dossier. The key stays present — the contract requires it.
+    assert all(d["folder_path"] == "" for d in payload["items"])
+    assert payload["items"][0]["dossier_id"] in {"d1", "d2"}
+
+
+def test_documents_refuse_a_folder_across_the_firm(monkeypatch):
+    with pytest.raises(tools.ToolArgumentError, match="no meaning across"):
+        handlers.list_documents({"scope": "cabinet", "folder_id": "f1"})
+
+
+def test_document_query_is_metadata_only_and_says_so():
+    """Reserving the meaning of `query` now is what keeps a future
+    content-search tool from having to contradict it."""
+    description = tools.TOOLS["list_documents"]["description"]
+    assert "METADATA" in description
+    assert "NEVER the text inside the file" in description
+
+
+def test_offset_is_refused_in_cabinet_scope_not_silently_dropped():
+    """Cabinet pages by cursor. Accepting an `offset`, validating it, then
+    dropping it served page 1 forever — a caller keeping its offset habit
+    would walk the firm, see the same rows, and conclude the corpus is that
+    small. That is the very failure this lot exists to remove, reproduced by
+    its own new path. Found by the lot-1 review."""
+    for tool in (handlers.list_notes, handlers.list_documents):
+        with pytest.raises(tools.ToolArgumentError, match="does not page"):
+            tool({"scope": "cabinet", "offset": 3})
+        # offset: 0 is a no-op, not an error — same truthiness rule the
+        # cursor+offset guard already uses.
+        tool({"scope": "cabinet", "offset": 0})
+
+
+def test_an_undated_row_does_not_strand_the_tail(monkeypatch):
+    """A row with no created_at keys to the sort floor. Refusing to mint a
+    cursor from it left truncated: true with next_cursor: null — the rest of
+    the corpus unreachable. Found by the lot-1 review."""
+    corpus = [_note(f"u{i:02d}", dossier_id="d1") for i in range(8)]
+    for n in corpus:
+        n["created_at"] = None
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: list(corpus))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    served, cursor, guard = [], None, 0
+    while True:
+        guard += 1
+        assert guard < 20
+        args = {"scope": "cabinet", "limit": 3}
+        if cursor:
+            args["cursor"] = cursor
+        payload = handlers.list_notes(args)
+        served.extend(n["id"] for n in payload["items"])
+        cursor = payload["next_cursor"]
+        if not cursor:
+            assert payload["truncated"] is False, (
+                "truncated with no cursor = a tail nobody can reach")
+            break
+    assert len(served) == 8 and len(set(served)) == 8
+
+
+def test_an_empty_dossier_filter_is_explained_not_asserted(monkeypatch):
+    """The dossier index fails open to []. Without the count, a zero-row
+    answer built from a READ ERROR would read as « the firm holds no such
+    note » — the exact wrong answer this lot removes elsewhere."""
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: [_note("n1", dossier_id="d1")])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers", lambda **kw: [])
+    payload = handlers.list_notes({"scope": "cabinet", "dossier_status": "actif"})
+    assert payload["items"] == []
+    assert payload["dossier_status_matched"] == 0     # says WHY it is empty
+    # And null when no filter was asked for — the two cases stay distinct.
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers",
+                        lambda **kw: [{"id": "d1"}])
+    assert handlers.list_notes({"scope": "cabinet"})["dossier_status_matched"] is None
+
+
+def test_dossier_status_enum_tracks_the_model():
+    """Hand-copied literal (importing models at tools.py load builds a
+    Firestore client). This lot added two consumers, and the model DROPS an
+    out-of-vocabulary status silently — drift would widen a search without
+    a word."""
+    from models import dossier as dmod
+
+    assert tools._DOSSIER_STATUSES == list(dmod.VALID_STATUSES)
+
+
+def test_tool_titles_do_not_claim_a_single_dossier():
+    """The titles are mirrored into annotations.title, which 2025-03-26
+    clients display — « Notes d'un dossier » on a firm-wide search misleads
+    before the description is ever read."""
+    for name in ("list_notes", "list_documents"):
+        assert "d'un dossier" not in tools.TOOLS[name]["title"], name

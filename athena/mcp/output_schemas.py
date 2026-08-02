@@ -722,6 +722,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "list_notes": _list_envelope(_obj({
         "id": _str(),
+        "dossier_id": _str("Empty string for a « Général » note."),
+        "dossier_file_number": _str("Live label, freshened from the dossier."),
+        "dossier_title": _str("Live label, freshened from the dossier."),
         "title": _str(),
         "category": _str(),
         "pinned": _bool(),
@@ -733,7 +736,26 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "created_at": _nstr(),
         "updated_at": _nstr(),
         "content_preview": _str("First 280 characters, plain text."),
-    }), extra=_next_offset()),
+    }), extra={
+        "scope": {
+            "type": "string",
+            "enum": ["general", "dossier", "cabinet"],
+            "description": (
+                "The EFFECTIVE scope searched — echoed so a reader never has "
+                "to infer which corpus produced these rows."
+            ),
+        },
+        **_next_cursor("Cabinet scope only; null in the other scopes, which "
+                       "page with offset."),
+        "dossier_status_matched": _nint(
+            "How many dossiers the `dossier_status` filter matched; null "
+            "when no such filter was asked for. Zero here explains an empty "
+            "result — the filter selected nothing (or the dossier index "
+            "could not be read) — rather than letting it read as « the firm "
+            "holds no such record »."
+        ),
+        **_next_offset(),
+    }, extra_required=["scope", "next_cursor", "dossier_status_matched"]),
 
     "get_note": _found_or_not(
         _obj({
@@ -762,6 +784,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "list_documents": _list_envelope(
         _obj({
             "id": _str(),
+            "dossier_id": _str(),
+            "dossier_file_number": _str("Live label, freshened."),
+            "dossier_title": _str("Live label, freshened."),
             "display_name": _str(),
             "category": _str(),
             "file_type": _str("MIME type."),
@@ -770,8 +795,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "version": _int(),
             "folder_id": _nstr("null = dossier root."),
             "folder_path": _str(
-                "« Parent / Enfant » resolved per row; \"\" = dossier "
-                "root."),
+                "« Parent / Enfant » resolved per row. \"\" means dossier "
+                "root — OR cabinet scope, where breadcrumbs are not resolved "
+                "at all (it would cost one query per dossier). Check "
+                "`folder_id` to tell the two apart."),
             "document_date": _nstr(
                 "YYYY-MM-DD — the document's OWN date (PV, jugement…), "
                 "manually entered; null on documents not yet dated. "
@@ -786,8 +813,23 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         extra={
             "folder_path": _str("Breadcrumb of the REQUESTED folder. "
                                 "Only present when folder_id was given."),
+            "scope": {
+                "type": "string",
+                "enum": ["dossier", "cabinet"],
+                "description": "The EFFECTIVE scope searched.",
+            },
+            **_next_cursor("Cabinet scope only; null in dossier scope, which "
+                           "pages with offset."),
+            "dossier_status_matched": _nint(
+                "How many dossiers the `dossier_status` filter matched; null "
+                "when no such filter was asked for. Zero here explains an empty "
+                "result — the filter selected nothing (or the dossier index "
+                "could not be read) — rather than letting it read as « the firm "
+                "holds no such record »."
+            ),
             **_next_offset(),
         },
+        extra_required=["scope", "next_cursor", "dossier_status_matched"],
     ),
 
     "list_parties": _list_envelope(_obj({

@@ -71,6 +71,8 @@ from mcp.tools import ToolArgumentError, date_str, format_cents, iso_mtl
 # Bounded superset size for Python-side post-filtering (§10.1): never more
 # than 200 docs fetched per tool call, never a new composite index.
 _FETCH_CAP = 200
+# Sort floor for rows whose date is missing — they order LAST, never first.
+_UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
 _NOTE_PREVIEW_CHARS = 280
 _UNBILLED_ROW_CAP = 50
 
@@ -893,10 +895,147 @@ def list_hearings(args: dict) -> dict:
     return payload
 
 
+def _resolve_scope(args: dict, *, default: str, allowed: tuple) -> str:
+    """Resolve and VALIDATE the search scope; refuse every contradiction.
+
+    ``dossier`` is implicit as soon as ``dossier_id`` is present, so the
+    common call needs no scope at all and the historical behaviour is the
+    default. Every incoherent combination is refused loudly rather than
+    resolved by precedence: silently preferring one of two contradictory
+    arguments is how a caller ends up believing it searched the whole firm
+    when it searched one file (the defect this lot exists to remove).
+    """
+    scope = args.get("scope")
+    dossier_id = (args.get("dossier_id") or "").strip()
+
+    if scope is None:
+        scope = "dossier" if dossier_id else default
+    if scope not in allowed:
+        raise ToolArgumentError(
+            f"`scope` must be one of: {', '.join(allowed)}."
+        )
+
+    if scope == "cabinet" and dossier_id:
+        raise ToolArgumentError(
+            "`scope=\"cabinet\"` searches every dossier, so it contradicts "
+            "`dossier_id`. Drop one: omit dossier_id to search the firm, or "
+            "drop scope to search that one file."
+        )
+    if scope == "general" and dossier_id:
+        raise ToolArgumentError(
+            "`scope=\"general\"` means the notes attached to NO dossier, so "
+            "it contradicts `dossier_id`. Omit one."
+        )
+    if scope == "dossier" and not dossier_id:
+        raise ToolArgumentError(
+            "`dossier_id` is required to search one dossier. To search every "
+            "dossier instead, ask for it by name: `scope=\"cabinet\"`."
+        )
+    if scope == "cabinet" and args.get("folder_id"):
+        raise ToolArgumentError(
+            "`folder_id` identifies a folder INSIDE one dossier and has no "
+            "meaning across the firm. Drop it, or pass a dossier_id."
+        )
+    # Two paging mechanisms with two different orderings: preferring one in
+    # silence would serve a page the caller cannot reason about.
+    if args.get("cursor") and args.get("offset"):
+        raise ToolArgumentError(
+            "Pass `cursor` OR `offset`, never both — they page different "
+            "orderings."
+        )
+    if args.get("cursor") and scope != "cabinet":
+        raise ToolArgumentError(
+            "`cursor` is only available with `scope=\"cabinet\"`; the other "
+            "scopes page with `offset`."
+        )
+    # The mirror image, and the one that actually bites: cabinet scope pages
+    # by cursor, so an `offset` here would be accepted, validated, and then
+    # silently dropped — every page identical to the first. A caller keeping
+    # its offset habit would walk the firm, see the same rows, and conclude
+    # the corpus is that small: the very failure this lot exists to remove.
+    # Truthiness, so offset: 0 stays a harmless no-op.
+    if args.get("offset") and scope == "cabinet":
+        raise ToolArgumentError(
+            "`offset` does not page `scope=\"cabinet\"` — follow "
+            "`next_cursor` from the response instead."
+        )
+    if args.get("dossier_status") and scope != "cabinet":
+        raise ToolArgumentError(
+            "`dossier_status` filters ACROSS dossiers and only applies to "
+            "`scope=\"cabinet\"`."
+        )
+    return scope
+
+
+def _dossier_status_filter(args: dict) -> Optional[set]:
+    """Ids of the dossiers matching `dossier_status`, or None for no filter.
+
+    ONE query — a single-field equality, served by the automatic index, so
+    no composite index is introduced. Deliberately NOT the paged variant:
+    that reads one page (200) and hands back a cursor, and discarding it
+    would silently drop every row filed past the 200th matching dossier
+    while `truncated` still read false. The id set is one string per
+    dossier; completeness costs nothing worth saving here.
+
+    The set can also come back empty because the READ FAILED — the model
+    swallows a Firestore error into ``[]`` — which is why callers publish
+    the match count rather than letting a zero-row answer pass for fact.
+    """
+    wanted = args.get("dossier_status")
+    if not wanted:
+        return None
+    return {
+        d.get("id", "")
+        for d in dossier_model.list_dossiers(status_filter=wanted)
+    }
+
+
+def _cabinet_page(
+    rows: list[dict], args: dict, limit: int
+) -> tuple[list[dict], Optional[str], bool]:
+    """Page a cabinet-wide result set by KEYSET on (created_at, id).
+
+    Cabinet scope is a NEW mode, so it gets a sound ordering rather than
+    inheriting the model's (pinned first, created_at DESC): `pinned` is a
+    one-click toggle, and a mutable component in a cursor key can move a row
+    across the page boundary. `created_at` and `id` are never rewritten.
+
+    The other scopes keep the model's ordering and their `offset` paging
+    UNCHANGED — the two scheduled jobs read those, and a reordered page is a
+    behaviour change however harmless it looks.
+    """
+    def _key(row: dict) -> tuple:
+        return (_as_utc(row.get("created_at")) or _UTC_MIN,
+                str(row.get("id") or ""))
+
+    ordered = sorted(rows, key=_key, reverse=True)
+    marker = decode_cursor(args.get("cursor"))
+    if marker and len(marker) == 2 and isinstance(marker[0], datetime):
+        cut = (marker[0], str(marker[1]))
+        ordered = [r for r in ordered if _key(r) < cut]
+    page = ordered[:limit]
+    truncated = len(ordered) > limit
+    next_cursor = None
+    if truncated and page:
+        when, ident = _key(page[-1])
+        # Mint it even when `when` is the _UTC_MIN floor (a legacy row with
+        # no created_at): datetime.min round-trips through the codec, and
+        # `id` already orders the undated block, so the resume lands inside
+        # it. Refusing to mint here stranded the whole tail behind
+        # truncated: true with no handle to reach it.
+        if ident:
+            next_cursor = encode_cursor([when, ident])
+    return page, next_cursor, truncated
+
+
 # ── 6. list_notes ───────────────────────────────────────────────────────
 
 def list_notes(args: dict) -> dict:
     limit = _limit_arg(args, 20)
+    scope = _resolve_scope(
+        args, default="general", allowed=("general", "dossier", "cabinet")
+    )
+    matched_dossiers: Optional[int] = None
     dossier_id = args.get("dossier_id")
     # category + query are pure model passthrough (models/note.py already
     # filters both, Python-side over its fetch — PA-G08); the enum at the
@@ -907,22 +1046,27 @@ def list_notes(args: dict) -> dict:
     # include_analyse=True: the MCP read paths EXPOSE the « Théorie de la
     # cause » note (read-only — append_to_note refuses it). The model's
     # default would silently hide it from Claude.
-    if dossier_id:
+    if scope == "dossier":
         notes = note_model.list_notes(
             dossier_id=dossier_id, category=category, search=search,
             include_analyse=True,
         )
     else:
-        # « Général »: notes attached to no dossier. Filtered in Python —
-        # the model has no "no dossier" query (see dav/dossier_collections
-        # ._collection_members for the same constraint).
-        notes = [
-            n
-            for n in note_model.list_notes(
-                category=category, search=search, include_analyse=True
-            )
-            if not n.get("dossier_id")
-        ]
+        # The model has no "no dossier" query, so BOTH remaining scopes read
+        # the same firm-wide set and differ only in the Python filter after
+        # it — « général » keeps the notes attached to nothing, « cabinet »
+        # keeps them all. The read cost was already being paid on the
+        # général path; cabinet simply stops throwing the rest away.
+        notes = note_model.list_notes(
+            category=category, search=search, include_analyse=True
+        )
+        if scope == "general":
+            notes = [n for n in notes if not n.get("dossier_id")]
+        else:
+            keep = _dossier_status_filter(args)
+            if keep is not None:
+                matched_dossiers = len(keep)
+                notes = [n for n in notes if n.get("dossier_id") in keep]
     if args.get("pinned") is not None:
         # A SELECT filter — deliberately not the model's `pinned_first`,
         # which only reorders (the obvious mis-wiring).
@@ -950,10 +1094,27 @@ def list_notes(args: dict) -> dict:
 
         notes = [n for n in notes if _in_window(n)]
     notes = _filter_updated_since(notes, args)
-    page, truncated, next_offset = _offset_page(notes, args, limit)
+
+    next_cursor = None
+    next_offset = None
+    if scope == "cabinet":
+        page, next_cursor, truncated = _cabinet_page(notes, args, limit)
+    else:
+        # Untouched: same ordering, same offset paging the two scheduled
+        # jobs already read.
+        page, truncated, next_offset = _offset_page(notes, args, limit)
+
+    # PA: the row carried NONE of the three dossier fields, so a note found
+    # firm-wide could not be attributed to a file without one get_note call
+    # each. Added in EVERY scope (the gap was never scope-specific), and
+    # freshened from the live dossier the way get_note already does.
+    page = _freshen_dossier_labels(page, _live_dossiers(page))
     items = [
         {
             "id": n.get("id", ""),
+            "dossier_id": n.get("dossier_id") or "",
+            "dossier_file_number": n.get("dossier_file_number", ""),
+            "dossier_title": n.get("dossier_title", ""),
             "title": n.get("title", ""),
             "category": n.get("category", ""),
             "pinned": bool(n.get("pinned")),
@@ -965,6 +1126,14 @@ def list_notes(args: dict) -> dict:
         for n in page
     ]
     payload = _list_payload(items, truncated)
+    payload["scope"] = scope
+    payload["next_cursor"] = next_cursor
+    # How many dossiers the dossier_status filter matched (null when no
+    # filter was asked for). Zero rows with zero matched dossiers is a
+    # filter that selected nothing — or a swallowed read error; either way
+    # the caller can see WHY the answer is empty instead of reading it as
+    # « the firm holds no such note ».
+    payload["dossier_status_matched"] = matched_dossiers
     if next_offset is not None:
         payload["next_offset"] = next_offset
     return payload
@@ -1020,10 +1189,18 @@ def _folder_paths(dossier_id: str) -> dict[str, str]:
 
 def list_documents(args: dict) -> dict:
     limit = _limit_arg(args, 25)
-    dossier_id = args["dossier_id"]
+    # Every document belongs to a dossier, so there is no « général » scope
+    # here — only one file or the whole firm.
+    scope = _resolve_scope(args, default="dossier", allowed=("dossier", "cabinet"))
+    # The schema no longer marks dossier_id required (relaxing `required` is
+    # additive on the wire), but _resolve_scope above still demands it
+    # outside cabinet scope — so an omitted dossier_id stays a loud refusal
+    # instead of silently becoming a firm-wide scan. Re-checking it here
+    # would be dead code: the scope resolver has already raised.
+    dossier_id = (args.get("dossier_id") or "").strip()
 
     kwargs: dict[str, Any] = {
-        "dossier_id": dossier_id,
+        "dossier_id": dossier_id or None,
         "category": args.get("category"),
         "search": args.get("query"),
     }
@@ -1068,15 +1245,35 @@ def list_documents(args: dict) -> dict:
 
         docs = [d for d in docs if _in_window(d)]
     docs = _filter_updated_since(docs, args)
+    matched_dossiers: Optional[int] = None
+    if scope == "cabinet":
+        keep = _dossier_status_filter(args)
+        if keep is not None:
+            matched_dossiers = len(keep)
+            docs = [d for d in docs if d.get("dossier_id") in keep]
 
-    paths = _folder_paths(dossier_id)
-    page, truncated, next_offset = _offset_page(docs, args, limit)
+    # _folder_paths is ONE query per dossier — resolving it firm-wide would
+    # be a query per row. In cabinet scope folder_path is "" (the key stays
+    # required; the description says so).
+    paths = _folder_paths(dossier_id) if scope != "cabinet" else {}
+    next_cursor = None
+    next_offset = None
+    if scope == "cabinet":
+        page, next_cursor, truncated = _cabinet_page(docs, args, limit)
+    else:
+        page, truncated, next_offset = _offset_page(docs, args, limit)
+    page = _freshen_dossier_labels(page, _live_dossiers(page))
     items = []
     for doc in page:
         size = int(doc.get("file_size", 0) or 0)
         items.append(
             {
                 "id": doc.get("id", ""),
+                # Present in EVERY scope: a cabinet hit must be attributable
+                # without a second call, and the gap was never scope-specific.
+                "dossier_id": doc.get("dossier_id") or "",
+                "dossier_file_number": doc.get("dossier_file_number", ""),
+                "dossier_title": doc.get("dossier_title", ""),
                 "display_name": doc.get("display_name", ""),
                 "category": doc.get("category", ""),
                 "file_type": doc.get("file_type", ""),
@@ -1094,6 +1291,9 @@ def list_documents(args: dict) -> dict:
             }
         )
     payload = _list_payload(items, truncated)
+    payload["scope"] = scope
+    payload["next_cursor"] = next_cursor
+    payload["dossier_status_matched"] = matched_dossiers
     if next_offset is not None:
         payload["next_offset"] = next_offset
     if folder_id:
@@ -1591,7 +1791,6 @@ def list_deletions(args: dict) -> dict:
 # disagree about money — the one contradiction a billing tool may never ship.
 _INVOICE_UNPAID = ("envoyée", "en_retard")
 
-_UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _order_invoices(rows: list[dict]) -> list[dict]:
