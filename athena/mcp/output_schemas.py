@@ -429,7 +429,8 @@ def _written_entity(extra: dict[str, Any]) -> dict:
 
 
 def _entity_write_result(
-    entity_extra: dict[str, Any], *, dav: bool, verb: str = "created"
+    entity_extra: dict[str, Any], *, dav: bool, verb: str = "created",
+    extra: Optional[dict[str, Any]] = None,
 ) -> dict:
     """Result contract of a WP16 creator / WP17 recorder.
 
@@ -452,6 +453,8 @@ def _entity_write_result(
         props["dav_synced"] = _bool(
             "ctag_bumped AND the collection is visible to DavX5 (a "
             "fermé/archivé dossier's is not).")
+    if extra:
+        props.update(extra)
     return _obj(props)
 
 
@@ -1279,6 +1282,47 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "appended", {"appended_chars": _int(
             "Length of the appended block, separator and provenance "
             "stamp included.")},
+    ),
+
+    "complete_task": _entity_write_result(
+        {
+            "status": _str("The status now stored."),
+            "previous_status": _str("What it was before this call."),
+            "completed_date": _nstr("ISO-8601 Montréal; null unless closed."),
+            "is_overdue": _bool(),
+        },
+        dav=True,
+        verb="completed",
+        extra={
+            "already_completed": _bool(
+                "true = the task ALREADY carried the requested status and "
+                "NOTHING was written (no cascade, no CTag). A scheduled job "
+                "can replay safely on this."
+            ),
+            "protocol_step_effect": _obj({
+                "checked": _bool(
+                    "false = no lookup ran (a « Général » task has no "
+                    "protocol). An absent cascade is never confused with an "
+                    "unexamined one."
+                ),
+                "linked_step_found": _bool(),
+                "protocol_id": _str(),
+                "step_id": _str(),
+                "step_title": _str(),
+                "step_status_before": _str(),
+                "step_status_after": _str(
+                    "RE-READ from the document after the write, never "
+                    "predicted: the model's sync swallows its own errors, so "
+                    "a predicted value could be a lie."
+                ),
+                "protocol_closed": _bool(
+                    "true = that was the last open step and the WHOLE "
+                    "protocol closed. Its deadlines stop appearing in "
+                    "get_agenda — see `warnings`."
+                ),
+                "note": _str("French; empty when there is nothing to add."),
+            }),
+        },
     ),
 
     "create_task": _entity_write_result({

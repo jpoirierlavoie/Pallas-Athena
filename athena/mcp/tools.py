@@ -378,6 +378,9 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     "create_note", "append_to_note",
     # WP16 — the entity creators (create-only; no delete, no modify).
     "create_task", "create_hearing", "create_time_entry", "create_expense",
+    # Lot 3 — the ONLY status change in the connector. Still no delete and
+    # no free-form edit: it closes a task, and that is all.
+    "complete_task",
     # WP17 — dossier mutators: fill-only-if-empty + append-only recorders.
     "complete_dossier", "record_signification", "record_prescription_event",
 })
@@ -1451,6 +1454,66 @@ TOOLS: dict[str, dict] = {
         "handler": "append_to_note",
         "scope": SCOPE_WRITE,
     },
+    "complete_task": {
+        "title": "Clore une tâche",
+        "annotations": {
+            # A second call with the same status writes nothing at all.
+            "idempotentHint": True,
+        },
+        "description": (
+            "Close a task: « terminée », « annulée », or move it to "
+            "« en_cours ». The ONLY status change this connector can make — "
+            "it cannot reopen a task to « à_faire », edit its title or "
+            "delete it; those are done in the application. "
+            "CASCADE, and read this before calling: completing a task that "
+            "a protocol step is linked to ALSO completes that step, exactly "
+            "as ticking the box in the application does — and if it was the "
+            "last open step, THE WHOLE PROTOCOL closes and its deadlines "
+            "stop appearing in get_agenda. `protocol_step_effect` reports "
+            "what actually happened, re-read from the document after the "
+            "write, never predicted. Preview it with `dry_run: true` first "
+            "whenever the task belongs to a dossier under an active "
+            "protocol. "
+            "Two asymmetries worth knowing: « annulée » triggers NO cascade, "
+            "so the linked step stays open and keeps appearing in the "
+            "briefing; and « en_cours » on an already-completed task "
+            "RE-OPENS the linked step. "
+            "Calling it on a task that already carries the requested status "
+            "is a safe no-op (`already_completed: true`, nothing written) — "
+            "which is what makes a scheduled job replayable. Asking for the "
+            "other terminal status on an already-closed task is REFUSED "
+            "rather than silently rewriting the lawyer's decision."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": _id("The task to close (UUIDv4)."),
+                "status": {
+                    "type": "string",
+                    "enum": ["terminée", "annulée", "en_cours"],
+                    "description": (
+                        "Default « terminée ». « à_faire » is deliberately "
+                        "absent: reopening is done in the application."
+                    ),
+                },
+                "completion_note": {
+                    "type": "string",
+                    "maxLength": 1000,
+                    "description": (
+                        "Optional French note appended to the task's "
+                        "description under a dated « par Claude » stamp. "
+                        "Refused rather than truncated if the combined text "
+                        "would pass the 2000-character field ceiling."
+                    ),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "scope": SCOPE_WRITE,
+        "handler": "complete_task",
+    },
     "create_task": {
         "title": "Créer une tâche",
         "description": (
@@ -1460,7 +1523,8 @@ TOOLS: dict[str, dict] = {
             "filed on that dossier (an unresolvable id is refused, never "
             "downgraded); omit it only for practice-wide to-dos "
             "(« Général »). The task is created à_faire — this connector "
-            "can never complete, edit or delete it, and it syncs to the "
+            "can close it with complete_task but can never edit or delete "
+            "it, and it syncs to the "
             "lawyer's phone. Confirm with the user before calling; use "
             "dry_run to propose first, and an idempotency_key on every "
             "scheduled call."
@@ -1928,9 +1992,14 @@ def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict
             continue
         if scopes is not None and required_scope(name) not in scopes:
             continue
-        annotations = (
+        annotations = dict(
             _WRITE_ANNOTATIONS if name in WRITE_TOOLS else _READ_ONLY_ANNOTATIONS
         )
+        # A tool may correct a hint the family default gets wrong for it.
+        # complete_task is genuinely idempotent — a second call with the
+        # same status is a no-op that writes nothing — while every creator
+        # would append again.
+        annotations.update(spec.get("annotations") or {})
         out.append(
             {
                 "name": name,

@@ -256,7 +256,7 @@ def test_tools_list_advertises_write_tools_to_a_write_token(write_client):
     tools_list = _rpc(
         write_client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     ).get_json()["result"]["tools"]
-    assert len(tools_list) == 32
+    assert len(tools_list) == 33
     by_name = {t["name"]: t for t in tools_list}
     for name in ("create_note", "append_to_note"):
         assert by_name[name]["annotations"]["readOnlyHint"] is False

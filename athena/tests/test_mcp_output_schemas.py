@@ -916,3 +916,47 @@ def test_get_coverage_report_conforms(monkeypatch):
     guarded = handlers.get_coverage_report({})
     _conforms("get_coverage_report", guarded)
     assert guarded["data_completeness"]["kyc_checked"] is False
+
+
+# ── Lot 3: complete_task conforms on every branch ───────────────────────
+
+
+def test_complete_task_conforms(write_world, monkeypatch):
+    task = {
+        "id": "t1", "title": "Produire", "description": "", "status": "à_faire",
+        "priority": "normale", "category": "rédaction", "dossier_id": "d1",
+        "dossier_file_number": "2026-001", "dossier_title": "T",
+        "due_date": None, "completed_date": None, "related_note_id": None,
+    }
+    monkeypatch.setattr(handlers.task_model, "get_task", lambda i: dict(task))
+    monkeypatch.setattr(handlers.task_model, "update_task",
+                        lambda tid, data: ({**task, **data}, []))
+    monkeypatch.setattr(handlers.task_model, "_validate", lambda d: [])
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
+                        lambda did, active_only=True: None)
+    _conforms("complete_task", handlers.complete_task({"task_id": "t1"}))
+    _conforms("complete_task",
+              handlers.complete_task({"task_id": "t1", "dry_run": True}))
+
+    # The already-closed branch writes nothing and has its own shape.
+    task["status"] = "terminée"
+    payload = handlers.complete_task({"task_id": "t1"})
+    _conforms("complete_task", payload)
+    assert payload["already_completed"] is True
+
+    # And the cascade branch, where every protocol_step_effect key is filled.
+    task["status"] = "à_faire"
+    monkeypatch.setattr(
+        handlers.protocol_model, "get_protocol_for_dossier",
+        lambda did, active_only=True: {
+            "id": "p1", "status": "actif",
+            "steps": [{"id": "s1", "title": "Réponse", "status": "à_venir",
+                       "linked_task_id": "t1"}]})
+    monkeypatch.setattr(
+        handlers.protocol_model, "get_protocol",
+        lambda pid: {"id": "p1", "status": "complété",
+                     "steps": [{"id": "s1", "title": "Réponse",
+                                "status": "complété", "linked_task_id": "t1"}]})
+    cascaded = handlers.complete_task({"task_id": "t1"})
+    _conforms("complete_task", cascaded)
+    assert cascaded["protocol_step_effect"]["protocol_closed"] is True

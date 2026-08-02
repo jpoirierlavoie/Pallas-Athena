@@ -1,4 +1,4 @@
-"""The 32 MCP tool handlers — 23 read-only, plus 9 create-only writes.
+"""The 33 MCP tool handlers — 23 read-only, plus 10 writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
@@ -2909,6 +2909,7 @@ def _entity_write_result(
     dav_exposed: bool,
     dry_run: bool,
     verb: str = "created",
+    created: bool = True,
 ) -> dict:
     """Success payload for the WP16 creators and WP17 recorders.
 
@@ -2927,9 +2928,12 @@ def _entity_write_result(
         if dry_run:
             bumped = False
         else:
+            # created=False for a status change: the row never left its
+            # collection, so clearing a tombstone would be meaningless work
+            # on a resource that was never deleted.
             bumped = _bump_note_ctag(
                 entity.get("dossier_id") or "", entity.get("id", ""),
-                created=True,
+                created=created,
             )
         status = dossier.get("status", "") if dossier is not None else None
         dav_visible = status is None or status in ("actif", "en_attente")
@@ -3568,3 +3572,269 @@ def _record_prescription_event_impl(args: dict, dry_run: bool) -> dict:
         new_entry,
     )
     return _payload(stored, updated)
+
+
+# ── 33. complete_task (WRITE — the only status change in the connector) ──
+
+# Terminal states plus « en_cours ». `à_faire` is refused: it is a full
+# reopen, and update_task clears completed_date on it.
+_COMPLETABLE_STATUSES = ("terminée", "annulée", "en_cours")
+_TERMINAL_STATUSES = ("terminée", "annulée")
+
+
+def _linked_step(task: dict) -> Optional[dict]:
+    """Best-effort lookup of the protocol step this task is linked from.
+
+    A linked task and its step ALWAYS share a dossier
+    (``_auto_create_tasks_for_steps`` copies dossier_id), so one indexed
+    query finds it — no unbounded scan, and zero cost for a « Général »
+    task. Best-effort by construction: a task moved between dossiers by
+    hand would evade it, which is why the result is DISCLOSED as an
+    observation and never presented as a guarantee.
+    """
+    dossier_id = task.get("dossier_id") or ""
+    if not dossier_id:
+        return None
+    try:
+        protocol = protocol_model.get_protocol_for_dossier(
+            dossier_id, active_only=True
+        )
+    except Exception:
+        return None
+    if not protocol:
+        return None
+    for step in protocol.get("steps", []) or []:
+        if step.get("linked_task_id") == task.get("id"):
+            return {"protocol": protocol, "step": step}
+    return None
+
+
+def _reread_step(protocol_id: str, step_id: str) -> tuple[str, bool]:
+    """Re-read the step and its protocol AFTER the write; report reality.
+
+    ``_sync_protocol_step`` swallows every exception, so a PREDICTED
+    « complété » could be a lie. One keyed read is the difference between
+    reporting what happened and reporting what should have happened.
+    Returns (step_status, protocol_closed).
+    """
+    try:
+        protocol = protocol_model.get_protocol(protocol_id)
+    except Exception:
+        return "", False
+    if not protocol:
+        return "", False
+    closed = protocol.get("status") == "complété"
+    for step in protocol.get("steps", []) or []:
+        if step.get("id") == step_id:
+            return step.get("status", ""), closed
+    return "", closed
+
+
+def complete_task(args: dict) -> dict:
+    return run_write(
+        "complete_task", args, lambda dry: _complete_task_impl(args, dry)
+    )
+
+
+def _complete_task_impl(args: dict, dry_run: bool) -> dict:
+    task_id = (args.get("task_id") or "").strip()
+    if not task_id:
+        raise ToolArgumentError("`task_id` is required.")
+    new_status = args.get("status") or "terminée"
+    if new_status not in _COMPLETABLE_STATUSES:
+        raise ToolArgumentError(
+            "`status` must be one of: "
+            + ", ".join(_COMPLETABLE_STATUSES)
+            + ". Reopening a task to « à_faire » is done in the application."
+        )
+
+    task = task_model.get_task(task_id)
+    if not task:
+        raise ToolArgumentError(
+            f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
+            "list_tasks — aucune tâche n'a été modifiée."
+        )
+    current = task.get("status", "")
+
+    # Already in the requested state: report it and write NOTHING. No model
+    # call, so no cascade, no CTag churn — which is what makes a scheduled
+    # job safe to replay.
+    if current == new_status:
+        return _complete_task_payload(
+            task, task, new_status, current,
+            already=True, dry_run=dry_run, effect=_no_effect(),
+        )
+
+    # Already in the OTHER terminal state: refuse. Silently converting a
+    # cancellation into a completion rewrites what the lawyer decided.
+    if current in _TERMINAL_STATUSES and new_status in _TERMINAL_STATUSES:
+        raise ToolArgumentError(
+            f"Cette tâche est déjà « {current} ». La faire passer à "
+            f"« {new_status} » réécrirait une décision : faites-le dans "
+            "l'application si c'est voulu. Rien n'a été modifié."
+        )
+
+    data: dict[str, Any] = {"status": new_status}
+    note = (args.get("completion_note") or "").strip()
+    if note:
+        stamp = f"\n\n*{_STATUS_STAMP[new_status]} par Claude le {_today_mtl()}*\n"
+        combined = (task.get("description", "") or "") + stamp + note
+        # Checked on the COMBINED string, not on the note alone: the model's
+        # _sanitize_data truncates at the 2000-char task ceiling with no
+        # exception and no flag, so a silent cut would land on the lawyer's
+        # own earlier text.
+        data["description"] = _clean_entity_text(combined, "completion_note")
+
+    # A dry run must never announce a success the real call would refuse:
+    # update_task re-validates the WHOLE merged document, so a legacy task
+    # carrying an out-of-vocabulary category fails for a reason invisible
+    # in the application.
+    preview = {**task, **data}
+    errors = task_model._validate(preview)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    before = _linked_step(task)
+    if dry_run:
+        return _complete_task_payload(
+            task, preview, new_status, current,
+            already=False, dry_run=True,
+            effect=_predicted_effect(before, new_status),
+        )
+
+    updated, errors = task_model.update_task(task_id, data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    effect = _no_effect()
+    if before is not None:
+        effect.update({
+            "checked": True,
+            "linked_step_found": True,
+            "protocol_id": before["protocol"].get("id", ""),
+            "step_id": before["step"].get("id", ""),
+            "step_title": before["step"].get("title", ""),
+            "step_status_before": before["step"].get("status", ""),
+        })
+        after, closed = _reread_step(
+            before["protocol"].get("id", ""), before["step"].get("id", "")
+        )
+        effect["step_status_after"] = after
+        effect["protocol_closed"] = closed
+        if after == effect["step_status_before"]:
+            effect["note"] = (
+                "L'étape liée n'a pas changé d'état — la synchronisation du "
+                "modèle avale ses erreurs. Vérifiez le protocole dans "
+                "l'application."
+            )
+    elif task.get("dossier_id"):
+        effect["checked"] = True
+
+    return _complete_task_payload(
+        task, updated, new_status, current,
+        already=False, dry_run=False, effect=effect,
+    )
+
+
+_STATUS_STAMP = {
+    "terminée": "Complétée",
+    "annulée": "Annulée",
+    "en_cours": "Mise en cours",
+}
+
+
+def _no_effect() -> dict:
+    """The protocol_step_effect object, ALWAYS present.
+
+    Every key is emitted unconditionally (the schema auto-requires them),
+    and `checked` says whether the lookup even ran — so an absent cascade
+    is never confused with an unexamined one.
+    """
+    return {
+        "checked": False,
+        "linked_step_found": False,
+        "protocol_id": "",
+        "step_id": "",
+        "step_title": "",
+        "step_status_before": "",
+        "step_status_after": "",
+        "protocol_closed": False,
+        "note": "",
+    }
+
+
+def _predicted_effect(before: Optional[dict], new_status: str) -> dict:
+    """What the cascade WOULD do — dry run only, and labelled as such."""
+    effect = _no_effect()
+    if before is None:
+        effect["checked"] = True
+        return effect
+    step = before["step"]
+    effect.update({
+        "checked": True,
+        "linked_step_found": True,
+        "protocol_id": before["protocol"].get("id", ""),
+        "step_id": step.get("id", ""),
+        "step_title": step.get("title", ""),
+        "step_status_before": step.get("status", ""),
+        "step_status_after": step.get("status", ""),
+        "note": (
+            "Simulation : « terminée » complèterait cette étape, et si "
+            "c'était la dernière ouverte, le protocole entier passerait à "
+            "« complété »."
+            if new_status == "terminée"
+            else "Simulation : ce statut ne complète pas l'étape liée."
+        ),
+    })
+    return effect
+
+
+def _complete_task_payload(
+    original: dict,
+    result: dict,
+    new_status: str,
+    previous: str,
+    *,
+    already: bool,
+    dry_run: bool,
+    effect: dict,
+) -> dict:
+    dossier = None
+    dossier_id = result.get("dossier_id") or ""
+    if dossier_id:
+        dossier = dossier_model.get_dossier(dossier_id)
+    # The SAME entity shape every creator emits (_written_entity's core),
+    # not a full task row: one contract for every write result.
+    entity = {
+        "id": result.get("id", ""),
+        "dossier_id": result.get("dossier_id") or "",
+        "dossier_file_number": result.get("dossier_file_number", ""),
+        "dossier_title": result.get("dossier_title", ""),
+        "label": result.get("title", ""),
+        "date": date_str(result.get("due_date")),
+        "status": result.get("status", ""),
+        "previous_status": previous,
+        "completed_date": iso_mtl(_as_utc(result.get("completed_date"))),
+        "is_overdue": _task_row(result).get("is_overdue", False),
+    }
+    payload = _entity_write_result(
+        "task", entity, dossier=dossier, dav_exposed=True,
+        # An unchanged task is not a write: no CTag, no cascade, replayable.
+        dry_run=dry_run or already,
+        verb="completed", created=False,
+    )
+    payload["already_completed"] = already
+    payload["protocol_step_effect"] = effect
+    if already:
+        payload["warnings"].append(
+            f"La tâche portait déjà le statut « {new_status} » : rien n'a "
+            "été modifié."
+        )
+    if effect.get("protocol_closed"):
+        payload["warnings"].append(
+            "C'était la dernière étape ouverte : le PROTOCOLE ENTIER est "
+            "passé à « complété ». Ses étapes n'apparaîtront plus dans "
+            "get_agenda. Rouvrez-le dans l'application si ce n'était pas "
+            "voulu."
+        )
+    return payload

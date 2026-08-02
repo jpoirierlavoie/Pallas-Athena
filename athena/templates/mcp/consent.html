@@ -34,7 +34,7 @@
 
     {% if params.write_offered %}
     <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-      <p class="font-medium">Écritures — création seulement (facultatif)</p>
+      <p class="font-medium">Écritures (facultatif)</p>
       <p class="mt-1">
         Si vous cochez la case ci-dessous, ce connecteur pourra également,
         et <strong>uniquement</strong>, créer&nbsp;:
@@ -51,13 +51,25 @@
           significations et des événements de prescription.</li>
       </ul>
       <p class="mt-2">
-        Rien ne peut être <strong>modifié</strong> ni
-        <strong>supprimé</strong>. Les factures, le fidéicommis, les
-        documents, les protocoles et les contacts restent
-        <strong>intouchables</strong>. Chaque écriture est horodatée et
-        signée «&nbsp;Claude&nbsp;». Les éléments créés se synchronisent
-        vers votre téléphone via DavX5, et <strong>rien ne peut être
-        annulé depuis le connecteur</strong>.
+        Et <strong>une seule modification</strong>&nbsp;: <strong>clore une
+        tâche</strong> (terminée, annulée, ou remise en cours). C'est le seul
+        changement d'état que le connecteur puisse faire.
+      </p>
+      <p class="mt-2">
+        <strong>Conséquence à connaître avant de cocher.</strong> Clore une
+        tâche rattachée à une étape de protocole complète aussi cette
+        étape — exactement comme le ferait la case à cocher dans
+        l'application. Si c'était la dernière étape ouverte, <strong>le
+        protocole entier se referme</strong> et ses échéances cessent de
+        paraître au relevé quotidien.
+      </p>
+      <p class="mt-2">
+        <strong>Rien ne peut être supprimé</strong>, et rien d'autre ne peut
+        être modifié. Les factures, le fidéicommis, les documents et les
+        contacts restent <strong>intouchables</strong>. Chaque écriture est
+        horodatée et signée «&nbsp;Claude&nbsp;». Les éléments créés se
+        synchronisent vers votre téléphone via DavX5, et <strong>rien ne
+        peut être annulé depuis le connecteur</strong>.
       </p>
     </div>
     {% endif %}
@@ -80,11 +92,11 @@
         <input type="checkbox" name="grant_write" value="on"
                class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
         <span class="text-sm text-gray-700">
-          <span class="font-medium">Autoriser les écritures (création
-            seulement)</span>
+          <span class="font-medium">Autoriser les écritures</span>
           <span class="block text-gray-500 mt-1">
-            Notes, tâches, événements, temps et déboursés, compléments de
-            dossier — jamais de modification ni de
+            Créer des notes, tâches, événements, temps et déboursés,
+            compléter des champs vides — et clore une tâche, seule
+            modification permise. Jamais de
             suppression.{% if params.write_requested %} Le client a demandé
             cet accès.{% endif %}
           </span>

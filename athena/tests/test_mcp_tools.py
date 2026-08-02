@@ -134,7 +134,7 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 32  # 23 read-only + 9 writes
+    assert len(tools.TOOLS) == 33  # 23 read-only + 10 writes
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -153,23 +153,30 @@ def test_write_tools_set_is_pinned():
         "create_time_entry", "create_expense",
         "complete_dossier", "record_signification",
         "record_prescription_event",
+        "complete_task",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 32
+    assert len(descriptors) == 33
+    # idempotentHint is PER TOOL, not per family: every creator appends
+    # again on a second call, while complete_task with the same status
+    # writes nothing at all. A single family value would misdescribe one of
+    # them, and the hint is what a client uses to decide whether a retry is
+    # safe.
+    idempotent = {"complete_task"}
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
         if name in tools.WRITE_TOOLS:
             assert ann["readOnlyHint"] is False
-            # Both must be explicit: the MCP spec defaults destructiveHint to
+            # destructiveHint must be explicit: the MCP spec defaults it to
             # True once readOnlyHint is false, which would over-warn on a
-            # purely additive call.
+            # call that never deletes and never overwrites.
             assert ann["destructiveHint"] is False
-            assert ann["idempotentHint"] is False
+            assert ann["idempotentHint"] is (name in idempotent), name
         else:
             assert ann["readOnlyHint"] is True
             assert "destructiveHint" not in ann
@@ -3373,3 +3380,206 @@ def test_the_codes_enum_is_derived_from_the_running_checks():
 
     enum = tools.TOOLS["get_coverage_report"]["input_schema"]["properties"]["checks"]["items"]["enum"]
     assert enum == list(cov_mod.ALL_CODES)
+
+
+# ── Lot 3: complete_task — the only status change in the connector ───────
+
+
+def _ct_task(status="à_faire", **over):
+    doc = {
+        "id": "t1", "title": "Produire la réponse", "description": "Corps",
+        "status": status, "priority": "normale", "category": "rédaction",
+        "dossier_id": "d1", "dossier_file_number": "2026-001",
+        "dossier_title": "Tremblay", "due_date": None, "completed_date": None,
+        "related_note_id": None,
+    }
+    doc.update(over)
+    return doc
+
+
+@pytest.fixture()
+def ct(monkeypatch, bumps):
+    """complete_task's world: the model, the dossier, and no protocol."""
+    state = {"task": _ct_task(), "updated": None, "protocol": None}
+
+    def _update(task_id, data):
+        state["updated"] = dict(data)
+        return {**state["task"], **data}, []
+
+    monkeypatch.setattr(handlers.task_model, "get_task",
+                        lambda i: dict(state["task"]) if state["task"] else None)
+    monkeypatch.setattr(handlers.task_model, "update_task", _update)
+    monkeypatch.setattr(handlers.task_model, "_validate", lambda d: [])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": "d1", "status": "actif",
+                                   "file_number": "2026-001", "title": "T"})
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
+                        lambda did, active_only=True: state["protocol"])
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol",
+                        lambda pid: state["protocol"])
+
+    def _forbidden(*a, **k):
+        raise AssertionError(
+            "toggle_task_complete is a FOUR-state toggle: it sends annulee "
+            "back to a_faire, silently un-cancelling a cancelled task"
+        )
+
+    monkeypatch.setattr(handlers.task_model, "toggle_task_complete", _forbidden)
+    return state
+
+
+def test_complete_task_closes_and_bumps_once(ct, bumps):
+    payload = handlers.complete_task({"task_id": "t1"})
+    assert payload["completed"] is True
+    assert ct["updated"] == {"status": "terminée"}
+    assert payload["entity"]["status"] == "terminée"
+    assert payload["entity"]["previous_status"] == "à_faire"
+    assert bumps["bump"] == ["dossier:d1"]
+    # A status change is NOT a creation: no tombstone work on a resource
+    # that was never deleted.
+    assert bumps["tombstone"] == []
+    assert payload["already_completed"] is False
+
+
+def test_toggle_task_complete_is_never_called(ct):
+    """It flips annulée AND terminée back to à_faire — calling it would
+    silently un-cancel a cancelled task."""
+    handlers.complete_task({"task_id": "t1", "status": "annulée"})
+    assert ct["updated"] == {"status": "annulée"}
+
+
+def test_a_task_already_in_that_state_writes_nothing(ct, bumps):
+    """What makes a scheduled job replayable: no model call, no cascade,
+    no CTag."""
+    ct["task"] = _ct_task("terminée")
+    payload = handlers.complete_task({"task_id": "t1"})
+    assert payload["already_completed"] is True
+    assert ct["updated"] is None            # update_task never reached
+    assert bumps["bump"] == []
+    assert any("déjà le statut" in w for w in payload["warnings"])
+
+
+def test_the_other_terminal_state_is_refused_not_rewritten(ct):
+    """Silently converting a cancellation into a completion rewrites what
+    the lawyer decided."""
+    ct["task"] = _ct_task("annulée")
+    with pytest.raises(tools.ToolArgumentError, match="annulée"):
+        handlers.complete_task({"task_id": "t1", "status": "terminée"})
+    assert ct["updated"] is None
+
+
+def test_a_faire_is_refused(ct):
+    """Reopening clears completed_date and DE-completes the linked step —
+    an edit shaped like a destruction. It stays in the application."""
+    with pytest.raises(tools.ToolArgumentError, match="status"):
+        handlers.complete_task({"task_id": "t1", "status": "à_faire"})
+    assert ct["updated"] is None
+
+
+def test_an_unknown_task_is_refused_explicitly(ct):
+    ct["task"] = None
+    with pytest.raises(tools.ToolArgumentError, match="introuvable"):
+        handlers.complete_task({"task_id": "nope"})
+
+
+def test_dry_run_writes_nothing_but_shows_the_cascade(ct, bumps):
+    ct["protocol"] = {
+        "id": "p1", "status": "actif",
+        "steps": [{"id": "s1", "title": "Réponse", "status": "à_venir",
+                   "linked_task_id": "t1"}],
+    }
+    payload = handlers.complete_task({"task_id": "t1", "dry_run": True})
+    assert ct["updated"] is None
+    assert bumps["bump"] == []
+    effect = payload["protocol_step_effect"]
+    assert effect["linked_step_found"] is True
+    assert effect["step_id"] == "s1"
+    assert "protocole entier" in effect["note"]
+
+
+def test_the_cascade_is_verified_not_predicted(ct, bumps):
+    """_sync_protocol_step swallows every exception, so a PREDICTED
+    « complété » could be a lie. The step is re-read after the write."""
+    ct["protocol"] = {
+        "id": "p1", "status": "actif",
+        "steps": [{"id": "s1", "title": "Réponse", "status": "à_venir",
+                   "linked_task_id": "t1"}],
+    }
+    payload = handlers.complete_task({"task_id": "t1"})
+    effect = payload["protocol_step_effect"]
+    assert effect["step_status_before"] == "à_venir"
+    # The fake protocol never changed, so the handler must report that —
+    # not the completion it hoped for.
+    assert effect["step_status_after"] == "à_venir"
+    assert "changé d'état" in effect["note"]
+
+
+def test_closing_the_whole_protocol_is_warned_about_by_name(ct):
+    """The cascade the lawyer accepted: list_urgent_steps keeps only actif
+    protocols, so a closure silently empties the dossier's deadline feed."""
+    ct["protocol"] = {
+        "id": "p1", "status": "complété",
+        "steps": [{"id": "s1", "title": "Réponse", "status": "complété",
+                   "linked_task_id": "t1"}],
+    }
+    payload = handlers.complete_task({"task_id": "t1"})
+    assert payload["protocol_step_effect"]["protocol_closed"] is True
+    assert any("PROTOCOLE ENTIER" in w for w in payload["warnings"])
+
+
+def test_a_general_task_never_looks_for_a_protocol(ct, bumps):
+    ct["task"] = _ct_task(dossier_id="")
+    payload = handlers.complete_task({"task_id": "t1"})
+    effect = payload["protocol_step_effect"]
+    assert effect["checked"] is False       # no lookup ran at all
+    assert effect["linked_step_found"] is False
+    assert bumps["bump"] == ["general"]
+
+
+def test_a_completion_note_is_stamped_and_appended(ct):
+    handlers.complete_task(
+        {"task_id": "t1", "completion_note": "Déposée au greffe."})
+    desc = ct["updated"]["description"]
+    assert desc.startswith("Corps")          # the lawyer's text survives
+    assert "Complétée par Claude le" in desc
+    assert "Déposée au greffe." in desc
+
+
+def test_a_note_that_would_truncate_is_refused(ct):
+    """_sanitize_data cuts at 2000 with no exception and no flag — a silent
+    cut would land on the lawyer's OWN earlier text, not on ours."""
+    with pytest.raises(tools.ToolArgumentError, match="2000"):
+        handlers.complete_task({"task_id": "t1", "completion_note": "x" * 2100})
+    assert ct["updated"] is None
+
+
+def test_dry_run_never_announces_a_success_the_write_would_refuse(ct, monkeypatch):
+    """update_task re-validates the WHOLE merged document: a legacy task
+    with an out-of-vocabulary category fails for a reason invisible in the
+    application. The dry run must surface it, not promise success."""
+    monkeypatch.setattr(handlers.task_model, "_validate",
+                        lambda d: ["Catégorie invalide."])
+    with pytest.raises(tools.ToolArgumentError, match="Catégorie invalide"):
+        handlers.complete_task({"task_id": "t1", "dry_run": True})
+
+
+def test_a_ctag_failure_still_reports_the_write_as_committed(ct, monkeypatch):
+    """The task is ALREADY written; letting the bump raise would report a
+    committed write as a failure and invite a retry."""
+    def _boom(_name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(handlers, "bump_ctag", _boom)
+    payload = handlers.complete_task({"task_id": "t1"})
+    assert payload["completed"] is True
+    assert payload["ctag_bumped"] is False
+    assert any("Ne pas réessayer" in w for w in payload["warnings"])
+
+
+def test_complete_task_is_the_only_idempotent_write():
+    """The hint is what a client uses to decide whether a retry is safe:
+    every creator appends again, complete_task writes nothing."""
+    descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
+    for name in tools.WRITE_TOOLS:
+        expected = name == "complete_task"
+        assert descriptors[name]["annotations"]["idempotentHint"] is expected, name

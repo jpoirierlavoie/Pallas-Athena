@@ -516,20 +516,30 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "Aucune modification de vos données n'est possible" not in body
     assert "demande un accès <strong>en lecture seule</strong>" not in body
     assert "Autoriser l'écriture des notes" not in body
-    # The grant control and what it grants must both be named — every
-    # write family, and the create-only ceiling.
+    # « création seulement » became false the day complete_task landed:
+    # closing a task IS a modification, and a screen that denied it would
+    # grant one thing while describing another. Whitespace-normalized so a
+    # Jinja line break inside a sentence cannot break the assertion.
+    flat = " ".join(body.split())
+    assert "création seulement" not in flat
+    assert "et <strong>uniquement</strong>, créer" in flat   # ceiling kept
+    # The grant control, every write family, the ONE modification, and the
+    # cascade the lawyer is consenting to.
     assert 'name="grant_write"' in body
-    assert "Autoriser les écritures (création" in body
-    assert "des notes dans un dossier" in body
-    assert "des tâches" in body
-    assert "des événements au calendrier" in body
-    assert "des entrées de temps et des déboursés" in body
-    assert "remplir des champs encore" in body
-    assert "jamais écraser une valeur existante" in body
-    assert "significations et des événements de prescription" in body
+    assert "Autoriser les écritures" in flat
+    assert "clore une <strong>tâche</strong>" in flat or "clore une tâche" in flat
+    assert "le protocole entier se referme" in flat
+    assert "des notes dans un dossier" in flat
+    assert "des tâches" in flat
+    assert "des événements au calendrier" in flat
+    assert "des entrées de temps et des déboursés" in flat
+    assert "remplir des champs encore vides" in flat
+    assert "jamais écraser une valeur existante" in flat
+    assert "significations et des événements de prescription" in flat
     # And what stays impossible must be said as plainly.
-    assert "jamais de modification ni de" in body
-    assert "intouchables" in body
+    assert "<strong>Rien ne peut être supprimé</strong>" in flat
+    assert "rien d'autre ne peut être modifié" in flat
+    assert "intouchables" in flat
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)
