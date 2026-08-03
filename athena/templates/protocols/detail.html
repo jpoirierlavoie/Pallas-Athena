@@ -161,7 +161,9 @@
       <div class="space-y-0">
         {% for step in steps %}
         {% set is_completed = step.status == 'complété' %}
-        {% set is_overdue = step.status == 'en_retard' or (step._days_remaining is not none and step._days_remaining < 0 and not is_completed) %}
+        {# _days_remaining alone decides — the stored « en_retard » word is a
+           fossil only a browser page load writes and nothing ever clears. #}
+        {% set is_overdue = step._days_remaining is not none and step._days_remaining < 0 and not is_completed %}
         {% set is_upcoming = step._days_remaining is not none and step._days_remaining >= 0 and step._days_remaining <= 7 and not is_completed %}
 
         <div class="relative flex gap-4 pb-6 last:pb-0">

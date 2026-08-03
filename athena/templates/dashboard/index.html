@@ -147,10 +147,9 @@
               <span class="flex-shrink-0 text-xs
                 {% if t._overdue %}text-red-600 font-medium{% else %}text-gray-500{% endif %}">
                 {% if t._overdue %}En retard{% else %}
-                  {% set days_left = ((t.due_date - now).days) %}
-                  {% if days_left == 0 %}Aujourd'hui
-                  {% elif days_left == 1 %}Demain
-                  {% else %}{{ days_left }}j{% endif %}
+                  {% if t._days_left == 0 %}Aujourd'hui
+                  {% elif t._days_left == 1 %}Demain
+                  {% else %}{{ t._days_left }}j{% endif %}
                 {% endif %}
               </span>
             </a>
@@ -173,10 +172,9 @@
               <span class="flex-shrink-0 text-xs
                 {% if s._overdue %}text-red-600 font-medium{% else %}text-gray-500{% endif %}">
                 {% if s._overdue %}En retard{% else %}
-                  {% set days_left = ((s.deadline_date - now).days) %}
-                  {% if days_left == 0 %}Aujourd'hui
-                  {% elif days_left == 1 %}Demain
-                  {% else %}{{ days_left }}j{% endif %}
+                  {% if s._days_left == 0 %}Aujourd'hui
+                  {% elif s._days_left == 1 %}Demain
+                  {% else %}{{ s._days_left }}j{% endif %}
                 {% endif %}
               </span>
             </a>

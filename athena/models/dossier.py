@@ -15,6 +15,7 @@ from security import sanitize
 from utils import taxonomie
 from utils.deadlines import next_juridical_day
 from utils.logging_setup import log_unexpected, sanitize_log_value
+from utils import deadlines
 from utils.recours import (
     VALID_PRESCRIPTION_TYPES,
     compute_date_pour_agir,
@@ -755,8 +756,13 @@ def derive_prescription(doc: dict) -> dict:
 
     if effective is None:
         return {"status": "a_verifier", "date_effective": None}
-    today = datetime.now(timezone.utc).date()
-    status = "echue" if effective.date() < today else "courante"
+    # Montréal day + prorogation (2026-08-02) — prescription dates are
+    # already prorogued at computation, so this only fixes the clock: the
+    # old UTC date flipped « echue » up to five hours before the lawyer's
+    # own midnight.
+    status = (
+        "echue" if deadlines.is_past_due(effective) else "courante"
+    )
     return {"status": status, "date_effective": effective}
 
 

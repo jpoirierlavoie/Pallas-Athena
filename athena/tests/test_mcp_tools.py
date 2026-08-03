@@ -1109,7 +1109,12 @@ def test_billing_snapshot_dossier_caps_rows_at_50(monkeypatch):
 # ── protocol steps ──────────────────────────────────────────────────────
 
 def test_list_protocol_steps_derives_overdue_without_writes(monkeypatch):
-    past = datetime.now(UTC) - timedelta(days=2)
+    # 7 days back, not 2: lateness now evaluates on the PROROGUED deadline
+    # (2026-08-02 decision), and now-2d lands on a weekend whenever the test
+    # runs on a Sunday/Monday — prorogued to Monday, hence not yet late. A
+    # 7-day margin stays past due under any prorogation (the worst cluster,
+    # Dec 31 → Jan 4, adds four days).
+    past = datetime.now(UTC) - timedelta(days=7)
     future = datetime.now(UTC) + timedelta(days=30)
     protocol = {"id": "p1", "title": "Protocole de l'instance",
                 "protocol_type": "cq_simplifié", "status": "actif",
@@ -3583,3 +3588,23 @@ def test_complete_task_is_the_only_idempotent_write():
     for name in tools.WRITE_TOOLS:
         expected = name == "complete_task"
         assert descriptors[name]["annotations"]["idempotentHint"] is expected, name
+
+
+def test_task_row_prorogue_une_echeance_de_fin_de_semaine():
+    """Décision 2026-08-02 (D-B) : due samedi → agissable lundi → en retard
+    mardi, sur la surface MCP comme sur le web (le briefing de 7 h lit ceci)."""
+    saturday = {"id": "t", "status": "à_faire",
+                "due_date": datetime(2026, 7, 18, tzinfo=UTC)}  # samedi
+    assert handlers._task_row(saturday, today=date(2026, 7, 19))["is_overdue"] is False
+    assert handlers._task_row(saturday, today=date(2026, 7, 20))["is_overdue"] is False  # lundi agissable
+    assert handlers._task_row(saturday, today=date(2026, 7, 21))["is_overdue"] is True
+
+
+def test_derive_step_status_prorogue_une_echeance_de_fin_de_semaine():
+    """Même règle sur les étapes : le statut dérivé ne bascule à en_retard
+    qu'après le jour juridique suivant l'échéance non juridique."""
+    saturday = datetime(2026, 7, 18, tzinfo=UTC)
+    assert handlers.derive_step_status(
+        "à_venir", saturday, today=date(2026, 7, 20)) != "en_retard"
+    assert handlers.derive_step_status(
+        "à_venir", saturday, today=date(2026, 7, 21)) == "en_retard"

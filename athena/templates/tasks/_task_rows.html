@@ -61,7 +61,8 @@
           {{ category_labels.get(task.category, task.category) }}
         </span>
         {% if task.due_date and task.due_date.strftime is defined %}
-        {% set is_overdue = task.due_date < now and task.status not in ('terminée', 'annulée') %}
+        {# Route-computed (Montréal day, prorogued) — never compare datetimes here. #}
+        {% set is_overdue = task._overdue %}
         <span class="text-xs {{ 'text-red-600 font-semibold' if is_overdue else 'text-gray-500' }}">
           {% set month_short = ['', 'janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'] %}
           {{ task.due_date.strftime('%d') }} {{ month_short[task.due_date.month] }}

@@ -16,6 +16,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
+from utils import deadlines
 from models.audit_event import record_deletion
 from dav.sync import (
     bump_ctag,
@@ -345,14 +346,15 @@ def _attach_prescription_warnings(dossiers: list[dict]) -> None:
     red dot in the list — a contradiction that would teach the lawyer to
     distrust the colour.
     """
-    now = datetime.now(timezone.utc)
     for d in dossiers:
         derived = derive_prescription(d)
         pd = derived["date_effective"]
         if derived["status"] in ("interrompue", "imprescriptible") or not pd:
             d["_prescription_warning"] = ""
         else:
-            delta = (pd - now).days
+            # Montréal-day countdown (utils.deadlines) — the wall-clock UTC
+            # delta turned the dot red an evening early (2026-08-02 fix).
+            delta = deadlines.days_until(pd)
             if delta <= 30:
                 d["_prescription_warning"] = "red"
             elif delta <= 60:
@@ -599,12 +601,22 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
             if p.get("status") in ("complété", "suspendu")
         ]
 
+        # Route-computed lateness (Montréal day, prorogued) — the template
+        # used to compare datetimes against a wall-clock « now » injection.
+        if active_protocol:
+            today = deadlines.today_mtl()
+            for s in active_protocol.get("steps", []):
+                s["_overdue"] = s.get(
+                    "status"
+                ) != "complété" and deadlines.is_past_due(
+                    s.get("deadline_date"), today=today
+                )
+
         ctx["protocol"] = active_protocol
         ctx["historical_protocols"] = historical_protocols
         ctx["protocol_summary"] = get_protocol_summary(dossier_id)
         ctx["protocol_type_colors"] = PROTOCOL_TYPE_COLORS
         ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS
-        ctx["now"] = datetime.now(timezone.utc)
 
     # Load file/folder data for the documents (Fichiers) tab (counters removed
     # July 2026 — no summary aggregation, no per-folder _count_items N+1)

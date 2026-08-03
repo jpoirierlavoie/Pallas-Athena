@@ -12,6 +12,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
+from utils import deadlines
 from models.audit_event import record_deletion
 from models.dossier import get_dossier
 from models.protocol import (
@@ -69,7 +70,6 @@ def _template_context() -> dict:
         "step_status_colors": STEP_STATUS_COLORS,
         "valid_protocol_types": VALID_PROTOCOL_TYPES,
         "valid_statuses": VALID_STATUSES,
-        "now": datetime.now(timezone.utc),
     }
 
 
@@ -213,16 +213,15 @@ def protocol_detail(protocol_id: str) -> str:
     ctx["steps_completed"] = completed
     ctx["steps_total"] = total
 
-    # Days remaining per step, on CALENDAR dates (deadline_date is midnight
-    # UTC, so a wall-clock delta read « due today » as -1) — due today = 0,
-    # aligned with get_protocol_summary and the MCP is_overdue rule.
-    today = datetime.now(timezone.utc).date()
+    # Days remaining per step — Montréal day, prorogued deadline
+    # (utils.deadlines.days_until): due today = 0, and the count goes
+    # negative only once the step is truly late. Aligned with
+    # get_protocol_summary and the MCP is_overdue rule (2026-08-02).
+    today = deadlines.today_mtl()
     for step in steps:
         deadline = step.get("deadline_date")
         if deadline and step.get("status") != "complété":
-            step["_days_remaining"] = (
-                deadline.astimezone(timezone.utc).date() - today
-            ).days
+            step["_days_remaining"] = deadlines.days_until(deadline, today=today)
         else:
             step["_days_remaining"] = None
 

@@ -14,6 +14,7 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from utils import deadlines
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -420,31 +421,22 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
 def get_task_summary(dossier_id: str, today: Optional[date] = None) -> dict:
     """Return task counts for a dossier.
 
-    ``today`` selects the overdue rule, and the DEFAULT reproduces the
-    historical behaviour byte for byte so the web dashboard is untouched:
-    a wall-clock comparison, under which a task due today counts as overdue
-    from 00:00 UTC (20:00 the previous evening in Montréal).
-
-    Pass a date — ``utils.deadlines.today_mtl()`` — for the calendar rule
-    every other surface uses: due TODAY is not overdue. The MCP connector
-    passes it; the web does not, deliberately (the lawyer chose to leave the
-    dashboard's counts alone in this mandate).
+    One rule on every surface since 2026-08-02 (the lawyer reversed his
+    earlier « leave the web alone » decision after seeing tomorrow's tasks
+    flagged overdue on a Sunday evening): the Montréal calendar day, with
+    the deadline PROROGUED to the next juridical day first. The historical
+    wall-clock default died here — it flipped a task to overdue at
+    00:00 UTC, i.e. 20:00 the previous evening in Montréal, and no caller
+    was left relying on it.
     """
     tasks = list_tasks(dossier_id=dossier_id)
     active = [t for t in tasks if t.get("status") in ("à_faire", "en_cours")]
     completed = [t for t in tasks if t.get("status") == "terminée"]
-    if today is None:
-        now = datetime.now(timezone.utc)
-        overdue = [
-            t for t in active
-            if t.get("due_date") and t["due_date"] < now
-        ]
-    else:
-        overdue = [
-            t for t in active
-            if t.get("due_date")
-            and t["due_date"].astimezone(timezone.utc).date() < today
-        ]
+    today = today or deadlines.today_mtl()
+    overdue = [
+        t for t in active
+        if deadlines.is_past_due(t.get("due_date"), today=today)
+    ]
     return {
         "total": len(tasks),
         "active": len(active),

@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, render_template
 
 from auth import login_required
+from utils import deadlines
+from tz import MTL
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +81,14 @@ def _get_urgent_tasks(now: datetime) -> list[dict]:
         from models.task import list_urgent_tasks
         cutoff = now + timedelta(days=14)
         urgent = list_urgent_tasks(cutoff)
+        # ONE rule on every surface (2026-08-02): Montréal day, prorogued
+        # deadline. The old wall-clock compare flipped a task to overdue at
+        # 00:00 UTC — 20:00 the previous evening here — which is how three
+        # tasks due Monday read « en retard » on a Sunday night.
+        today = now.astimezone(MTL).date()
         for t in urgent:
-            due = t.get("due_date")
-            t["_overdue"] = bool(due and due < now)
+            t["_overdue"] = deadlines.is_past_due(t.get("due_date"), today=today)
+            t["_days_left"] = deadlines.days_until(t.get("due_date"), today=today)
         # Overdue first, then by due_date ascending
         urgent.sort(key=lambda t: (not t.get("_overdue", False), t.get("due_date") or now))
         return urgent
@@ -101,14 +108,12 @@ def _get_urgent_protocol_steps(now: datetime) -> list[dict]:
         from models.protocol import list_urgent_steps
         cutoff = now + timedelta(days=14)
         urgent_steps = list_urgent_steps(cutoff)
-        # Calendar-date rule (shared with the model summary and the MCP
-        # step row): a step due TODAY is not overdue.
-        today = now.date()
+        # Montréal day + prorogation — the same predicate as everywhere.
+        today = now.astimezone(MTL).date()
         for step in urgent_steps:
             deadline = step.get("deadline_date")
-            step["_overdue"] = bool(
-                deadline and deadline.astimezone(timezone.utc).date() < today
-            )
+            step["_overdue"] = deadlines.is_past_due(deadline, today=today)
+            step["_days_left"] = deadlines.days_until(deadline, today=today)
 
         urgent_steps.sort(
             key=lambda s: (not s.get("_overdue", False), s.get("deadline_date") or now)
@@ -128,6 +133,7 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
     try:
         from models.dossier import list_prescription_alerts
         from utils.deadlines import last_action_day
+
         cutoff = now + timedelta(days=60)
         alerts = []
         for d in list_prescription_alerts(cutoff):
@@ -138,7 +144,15 @@ def _get_prescription_alerts(now: datetime) -> list[dict]:
             )
             if not pdate:
                 continue  # a_verifier row with no computable date
-            d["_days_remaining"] = max(0, (pdate - now).days)
+            # Calendar days on the Montréal day — the wall-clock delta
+            # under-counted by one for most of each day.
+            d["_days_remaining"] = max(
+                0,
+                deadlines.days_until(
+                    pdate, today=now.astimezone(MTL).date()
+                )
+                or 0,
+            )
             pdate_as_date = pdate.date() if hasattr(pdate, "date") else pdate
             last_action, differs = last_action_day(pdate_as_date)
             d["_last_action_date"] = last_action

@@ -9,10 +9,15 @@ exists to prevent:
   deadline landing on a non-juridical day is pushed further in the direction
   of computation. **No clock is ever read here.** These functions are pinned
   by a frozen reference table in ``tests/test_deadlines.py``.
-* **Lateness** (``today_mtl``, ``is_past_due``, ``days_until``) — the single
-  answer to « is this deadline in the past? », on the **Montréal** calendar.
-  Juridical days play NO part: art. 83 governs how a deadline is computed,
-  never whether you are late for one.
+* **Lateness** (``today_mtl``, ``effective_due``, ``is_past_due``,
+  ``days_until``) — the single answer to « is this deadline in the past? »,
+  on the **Montréal** calendar, evaluated against the PROROGUED deadline
+  (lawyer's decision, 2026-08-02): a due date landing on a non-juridical day
+  is actionable until the next juridical day, so it is not « late » until
+  the day after that. Due Saturday → actionable Monday → late Tuesday.
+  Prorogation can only make lateness start LATER, never earlier — and it is
+  a no-op on the computed deadlines (steps, prescription), which already
+  land on juridical days by construction.
 
 ``today_mtl`` is the one place a clock is read. Every surface that needs
 "today" must go through it, or two surfaces drift by up to a day: UTC runs
@@ -136,29 +141,50 @@ def _as_date(value) -> Optional[date]:
     return None
 
 
-def is_past_due(deadline, *, today: Optional[date] = None) -> bool:
-    """True when *deadline* fell strictly BEFORE today (Montréal).
+def effective_due(deadline) -> Optional[date]:
+    """The day a deadline is actionable UNTIL: itself, prorogued if needed.
 
-    A deadline falling ON today is NOT past due — the day is not over and
-    the act can still be posed. That is the rule the whole application
-    states and the one every surface must share.
+    ``next_juridical_day`` is inclusive, so a deadline already landing on a
+    juridical day is returned unchanged — which makes this a NO-OP for every
+    computed deadline in the system (protocol steps, prescription dates all
+    go through art. 83 at computation time). It only moves hand-typed dates
+    that landed on a weekend or a Québec statutory holiday.
+    """
+    when = _as_date(deadline)
+    if when is None:
+        return None
+    return next_juridical_day(when)
+
+
+def is_past_due(deadline, *, today: Optional[date] = None) -> bool:
+    """True when the PROROGUED deadline fell strictly BEFORE today (Montréal).
+
+    Two rules compose here, both the lawyer's:
+    * a deadline falling ON its (effective) day is NOT past due — the day is
+      not over and the act can still be posed;
+    * a deadline landing on a non-juridical day prorogues to the next
+      juridical day before lateness is evaluated (decision 2026-08-02).
+      Due Saturday → actionable Monday → past due Tuesday.
 
     A missing deadline is never past due (an undated task cannot be late).
     ``today`` is injectable so the rule is testable without a clock.
     """
-    when = _as_date(deadline)
+    when = effective_due(deadline)
     if when is None:
         return False
     return when < (today or today_mtl())
 
 
 def days_until(deadline, *, today: Optional[date] = None) -> Optional[int]:
-    """Whole days from today (Montréal) to *deadline*; None when undated.
+    """Whole days from today (Montréal) to the PROROGUED deadline.
 
-    Negative once the deadline has passed — callers that display a countdown
-    floor it themselves rather than losing the distinction here.
+    None when undated. Evaluated on ``effective_due`` so the countdown and
+    ``is_past_due`` can never disagree: the count reaches zero on the last
+    actionable day and goes negative only once the deadline is truly past —
+    never « -1 » on something that is not yet late (the dashboard's old
+    evening artifact).
     """
-    when = _as_date(deadline)
+    when = effective_due(deadline)
     if when is None:
         return None
     return (when - (today or today_mtl())).days

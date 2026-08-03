@@ -11,6 +11,7 @@ from utils.deadlines import (
     add_jours_ouvrables,
     compute_deadline,
     days_until,
+    effective_due,
     is_juridical_day,
     is_past_due,
     next_juridical_day,
@@ -342,18 +343,49 @@ def test_is_past_due_accepts_a_midnight_utc_datetime():
     assert is_past_due(datetime(2026, 7, 30, 0, 0), today=date(2026, 7, 31)) is True
 
 
-def test_lateness_ignores_juridical_days_entirely():
-    """A deadline on a Saturday is late on the following Monday, and NOT
-    late on the Friday before. Art. 83 governs computation, not lateness."""
+def test_lateness_prorogues_to_the_next_juridical_day():
+    """THE RULE REVERSED (lawyer's decision, 2026-08-02): a deadline landing
+    on a non-juridical day prorogues before lateness is evaluated. Due
+    Saturday → actionable Monday → past due Tuesday. The earlier pin (« art.
+    83 governs computation, not lateness ») died with that decision, in the
+    same commit as the code that reverses it."""
     saturday = date(2026, 7, 18)
     assert not is_juridical_day(saturday)            # guard
+    assert effective_due(saturday) == date(2026, 7, 20)   # → Monday
     assert is_past_due(saturday, today=date(2026, 7, 17)) is False
-    assert is_past_due(saturday, today=date(2026, 7, 20)) is True
-    # Same for a Québec statutory holiday (Fête du Canada 2026 = Wed Jul 1).
+    assert is_past_due(saturday, today=date(2026, 7, 19)) is False  # Sunday
+    assert is_past_due(saturday, today=date(2026, 7, 20)) is False  # actionable
+    assert is_past_due(saturday, today=date(2026, 7, 21)) is True   # Tuesday
+    # A Québec statutory holiday (Fête du Canada 2026 = Wed Jul 1): due on
+    # the holiday → actionable Thursday → past due Friday.
     holiday = date(2026, 7, 1)
     assert not is_juridical_day(holiday)             # guard
-    assert is_past_due(holiday, today=date(2026, 7, 1)) is False
-    assert is_past_due(holiday, today=date(2026, 7, 2)) is True
+    assert effective_due(holiday) == date(2026, 7, 2)
+    assert is_past_due(holiday, today=date(2026, 7, 2)) is False
+    assert is_past_due(holiday, today=date(2026, 7, 3)) is True
+    # A JURIDICAL deadline is untouched by prorogation: due Friday, past due
+    # Saturday — it WAS actionable Friday.
+    friday = date(2026, 7, 17)
+    assert effective_due(friday) == friday
+    assert is_past_due(friday, today=date(2026, 7, 18)) is True
+
+
+def test_days_until_and_is_past_due_can_never_disagree():
+    """The countdown reaches zero on the last ACTIONABLE day and goes
+    negative only once truly late — never « -1 » on something not yet late
+    (the dashboard's old evening artifact)."""
+    saturday = date(2026, 7, 18)
+    for today, expected_days, expected_late in (
+        (date(2026, 7, 17), 3, False),   # Friday: 3 days to the Monday
+        (date(2026, 7, 19), 1, False),   # Sunday
+        (date(2026, 7, 20), 0, False),   # the actionable Monday itself
+        (date(2026, 7, 21), -1, True),   # Tuesday: late, and only now < 0
+    ):
+        assert days_until(saturday, today=today) == expected_days, today
+        assert is_past_due(saturday, today=today) is expected_late, today
+        assert (days_until(saturday, today=today) < 0) == is_past_due(
+            saturday, today=today
+        )
 
 
 def test_days_until_is_signed():
@@ -485,3 +517,35 @@ def test_compute_deadline_frozen_reference_table():
             f"compute_deadline({start}, {delay}, {direction!r}) "
             f"= {got}, expected {date(*expected)}"
         )
+
+
+class _FrozenDatetime(datetime):
+    """datetime whose now() is pinned — freezes today_mtl without touching
+    the injectable ``today`` path (this test exercises the DEFAULT)."""
+
+    _instant = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._instant.astimezone(tz) if tz else cls._instant
+
+
+def test_bande_du_soir_une_tache_due_demain_n_est_pas_en_retard(monkeypatch):
+    """Le bogue du 2026-08-02 : dimanche 21 h 24 à Montréal = lundi 01 h 24
+    UTC. Une tâche due lundi (minuit UTC) satisfaisait « due < now » sur le
+    web toute la soirée. Sous today_mtl + le prédicat, elle n'est ni en
+    retard ni « -1j » — l'horloge est GELÉE au moment exact du diagnostic."""
+    from utils import deadlines as dl
+
+    _FrozenDatetime._instant = datetime(
+        2026, 8, 3, 1, 24, tzinfo=timezone.utc
+    )
+    monkeypatch.setattr(dl, "datetime", _FrozenDatetime)
+
+    assert dl.today_mtl() == date(2026, 8, 2)  # encore dimanche à Montréal
+    # Une instance du datetime PATCHÉ, sinon l'isinstance de _as_date ne la
+    # reconnaît pas (une vraie datetime n'est pas une instance de la
+    # sous-classe qui remplace le nom du module).
+    due_monday = _FrozenDatetime(2026, 8, 3, tzinfo=timezone.utc)
+    assert dl.is_past_due(due_monday) is False
+    assert dl.days_until(due_monday) == 1  # « Demain », jamais « -1j »

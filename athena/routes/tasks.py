@@ -18,6 +18,7 @@ from flask import (
 from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
 from models.audit_event import record_deletion
+from utils import deadlines
 from security import safe_internal_redirect
 from models.task import (
     CATEGORY_LABELS,
@@ -55,6 +56,22 @@ def _model_dossier(value: str):
     query, so the caller filters in Python afterwards.
     """
     return None if (not value or value == GENERAL_FILTER) else value
+
+
+def _stamp_overdue(*task_lists: list[dict]) -> None:
+    """Set ``_overdue`` on every task, route-side, with ONE clock read.
+
+    The templates used to compare ``task.due_date < now`` inline — the
+    wall-clock rule that marked tomorrow's tasks overdue every evening from
+    20:00 (the 2026-08-02 report). Templates now read the flag; the rule
+    (Montréal day, prorogued deadline) lives in utils.deadlines alone.
+    """
+    today = deadlines.today_mtl()
+    for tasks in task_lists:
+        for t in tasks:
+            t["_overdue"] = t.get("status") not in (
+                "terminée", "annulée"
+            ) and deadlines.is_past_due(t.get("due_date"), today=today)
 
 
 def _is_htmx() -> bool:
@@ -252,12 +269,12 @@ def task_list() -> str:
         dossier_filter, status_filter, priority_filter, category_filter
     )
 
+    _stamp_overdue(active_tasks, completed_tasks, cancelled_tasks)
     ctx = _template_context()
     ctx.update(
         active_tasks=active_tasks,
         completed_tasks=completed_tasks,
         cancelled_tasks=cancelled_tasks,
-        now=datetime.now(timezone.utc),
         dossier_filter=dossier_filter,
         status_filter=status_filter,
         priority_filter=priority_filter,
@@ -347,9 +364,9 @@ def task_detail(task_id: str) -> str:
     if not task:
         return redirect(url_for("tasks.task_list"))
 
+    _stamp_overdue([task])
     ctx = _template_context()
     ctx["task"] = task
-    ctx["now"] = datetime.now(timezone.utc)
     ctx["return_to"] = request.args.get("return_to", "")
 
     # Resolve related note for display
@@ -485,12 +502,12 @@ def task_toggle(task_id: str) -> str:
             dossier_filter, status_filter, priority_filter, category_filter
         )
 
+        _stamp_overdue(active_tasks, completed_tasks, cancelled_tasks)
         ctx = _template_context()
         ctx.update(
             active_tasks=active_tasks,
             completed_tasks=completed_tasks,
             cancelled_tasks=cancelled_tasks,
-            now=datetime.now(timezone.utc),
             dossier_filter=dossier_filter,
             status_filter=status_filter,
             priority_filter=priority_filter,

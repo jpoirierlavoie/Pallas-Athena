@@ -5,6 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
+from utils import deadlines
 from utils.deadlines import compute_deadline as _judicial_deadline
 
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -937,14 +938,18 @@ def check_overdue_steps(protocol_id: str) -> int:
         return 0
 
     now = datetime.now(timezone.utc)
-    today = now.date()
+    # The Montréal calendar day, against the PROROGUED deadline — the same
+    # rule every read surface applies since 2026-08-02. The old UTC-date
+    # compare stamped « en_retard » from 20:00 EDT the evening before, and
+    # nothing ever clears the stamp.
+    today = deadlines.today_mtl()
     count = 0
 
     for step in protocol.get("steps", []):
         deadline = step.get("deadline_date")
         if (
             deadline
-            and deadline.astimezone(timezone.utc).date() < today
+            and deadlines.is_past_due(deadline, today=today)
             and step.get("status") not in ("complété",)
         ):
             if step.get("status") != "en_retard":
@@ -1057,10 +1062,10 @@ def get_protocol_summary(
 ) -> dict:
     """Return protocol summary for a dossier (active protocol only).
 
-    ``today`` defaults to the UTC calendar date — the historical behaviour,
-    kept so the web dossier tab is untouched. The MCP connector passes
-    ``utils.deadlines.today_mtl()`` so its counts agree with the derived
-    step rows it emits in the same response.
+    One rule on every surface since 2026-08-02: the Montréal calendar day,
+    against the PROROGUED deadline. The web caller (the dossier's Protocole
+    tab tiles) aligns through the default; the MCP passes the same value
+    explicitly so one response shares one clock read.
     """
     protocol = get_protocol_for_dossier(dossier_id, active_only=True)
     if not protocol:
@@ -1082,7 +1087,7 @@ def get_protocol_summary(
     # a step due TODAY is upcoming, never overdue (the old wall-clock
     # comparison flipped it to overdue at 00:00 UTC while the MCP row said
     # is_overdue: false, a cross-tool contradiction on the same document).
-    today = today or datetime.now(timezone.utc).date()
+    today = today or deadlines.today_mtl()
     window_end = today + timedelta(days=UPCOMING_WINDOW_DAYS)
     completed = [s for s in steps if s.get("status") == "complété"]
     open_dated = [
@@ -1090,7 +1095,10 @@ def get_protocol_summary(
         for s in steps
         if s.get("deadline_date") and s.get("status") not in ("complété",)
     ]
-    overdue = [s for s, d in open_dated if d < today]
+    overdue = [
+        s for s, d in open_dated
+        if deadlines.is_past_due(d, today=today)
+    ]
     upcoming = [s for s, d in open_dated if today <= d <= window_end]
     next_deadline = min((d for _, d in open_dated), default=None)
 

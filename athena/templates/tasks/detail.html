@@ -110,7 +110,8 @@
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Dates</h2>
       <dl class="space-y-2 text-sm">
         {% if task.due_date and task.due_date.strftime is defined %}
-        {% set is_overdue = task.due_date < now and task.status not in ('terminée', 'annulée') %}
+        {# Route-computed (Montréal day, prorogued) — never compare datetimes here. #}
+        {% set is_overdue = task._overdue %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Échéance</dt>
           <dd class="{{ 'text-red-600 font-semibold' if is_overdue else 'text-gray-900 font-medium' }}">

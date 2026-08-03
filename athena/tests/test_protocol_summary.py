@@ -23,7 +23,7 @@ list_protocols_for_dossier sont interceptés.
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -73,7 +73,20 @@ def test_upcoming_compte_la_fenetre_et_la_nomme(monkeypatch):
 
 
 def test_frontiere_de_fenetre_inclusive_a_sept_jours(monkeypatch):
-    s = _summary(monkeypatch, [_step(7, sid="j7"), _step(8, sid="j8")])
+    """Dates FIXES sur jours juridiques + today injecté : le test ne dépend
+    ni de l'horloge ni de la prorogation (no-op sur un jour juridique)."""
+    today = date(2026, 8, 5)                       # mercredi
+    proto = {"id": "p1", "protocol_type": "cq_simplifié", "status": "actif",
+             "steps": [
+                 {"id": "j7", "title": "É", "status": "à_venir",
+                  "deadline_date": _midnight_utc(date(2026, 8, 12))},  # mer J+7
+                 {"id": "j8", "title": "É", "status": "à_venir",
+                  "deadline_date": _midnight_utc(date(2026, 8, 13))},  # jeu J+8
+             ]}
+    monkeypatch.setattr(pmod, "get_protocol_for_dossier",
+                        lambda did, active_only=True: proto)
+    monkeypatch.setattr(pmod, "list_protocols_for_dossier", lambda did: [proto])
+    s = pmod.get_protocol_summary("d1", today)
     assert s["upcoming"] == 1  # J+7 inclus, J+8 exclu
 
 
@@ -86,7 +99,16 @@ def test_due_aujourdhui_est_upcoming_jamais_overdue(monkeypatch):
 
 
 def test_hier_est_overdue_meme_si_statut_pas_encore_bascule(monkeypatch):
-    s = _summary(monkeypatch, [_step(-1, sid="late", status="à_venir")])
+    """Échue un jour juridique, lue le jour juridique suivant : en retard,
+    même si check_overdue_steps n'a pas encore estampillé le mot."""
+    today = date(2026, 8, 5)                       # mercredi
+    proto = {"id": "p1", "protocol_type": "cq_simplifié", "status": "actif",
+             "steps": [{"id": "late", "title": "É", "status": "à_venir",
+                        "deadline_date": _midnight_utc(date(2026, 8, 4))}]}  # mardi
+    monkeypatch.setattr(pmod, "get_protocol_for_dossier",
+                        lambda did, active_only=True: proto)
+    monkeypatch.setattr(pmod, "list_protocols_for_dossier", lambda did: [proto])
+    s = pmod.get_protocol_summary("d1", today)
     assert s["overdue"] == 1
     assert s["upcoming"] == 0
 
@@ -130,24 +152,39 @@ def _patch(monkeypatch, steps: list[dict]) -> None:
     monkeypatch.setattr(pmod, "list_protocols_for_dossier", lambda did: [proto])
 
 
-def test_sommaire_defaut_reste_la_regle_utc_historique(monkeypatch):
-    """Argument omis = date de calendrier UTC, ce que la page web rendait
-    avant ce mandat. C'est cette ligne qui garantit que le web n'a pas bougé."""
-    _patch(monkeypatch, [_step(0)])          # une étape échéant AUJOURD'HUI
-    s = pmod.get_protocol_summary("d1")
+def test_sommaire_defaut_est_le_jour_montrealais(monkeypatch):
+    """Le défaut UTC historique est MORT (décision 2026-08-02, renversant
+    D3) : argument omis = jour de Montréal. Épinglé par le cas qui séparait
+    les deux règles — la bande du soir, où le jour UTC a déjà tourné. Une
+    étape échéant « aujourd'hui Montréal » ne doit jamais être en retard,
+    quelle que soit l'heure UTC du serveur."""
+    from utils import deadlines as dl
+
+    monkeypatch.setattr(pmod.deadlines, "today_mtl",
+                        lambda: date(2026, 8, 5))          # mercredi
+    proto = {"id": "p1", "protocol_type": "cq_simplifié", "status": "actif",
+             "steps": [{"id": "s", "title": "É", "status": "à_venir",
+                        "deadline_date": _midnight_utc(date(2026, 8, 5))}]}
+    monkeypatch.setattr(pmod, "get_protocol_for_dossier",
+                        lambda did, active_only=True: proto)
+    monkeypatch.setattr(pmod, "list_protocols_for_dossier", lambda did: [proto])
+    s = pmod.get_protocol_summary("d1")      # argument OMIS : le défaut
     assert s["overdue"] == 0                 # échéant aujourd'hui ≠ en retard
     assert s["upcoming"] == 1
 
 
-def test_sommaire_accepte_un_jour_montrealais_injecte(monkeypatch):
-    """Pendant la bande du soir, le jour montréalais n'a pas encore tourné :
-    une étape échue « hier » en UTC n'est pas encore en retard pour l'avocat."""
-    _patch(monkeypatch, [_step(-1)])         # échéance d'hier (UTC)
-    utc_today = datetime.now(timezone.utc).date()
-    # Sous la règle UTC, elle est déjà en retard…
-    assert pmod.get_protocol_summary("d1")["overdue"] == 1
-    # …sous un jour montréalais qui n'a pas encore tourné, non.
-    montreal_hier = utc_today - timedelta(days=1)
-    s = pmod.get_protocol_summary("d1", montreal_hier)
-    assert s["overdue"] == 0
-    assert s["upcoming"] == 1
+def test_sommaire_proroge_une_echeance_de_fin_de_semaine(monkeypatch):
+    """Décision 2026-08-02 : une échéance tombant un jour non juridique
+    n'est en retard qu'après le jour juridique suivant. Due samedi →
+    agissable lundi → en retard mardi."""
+    proto = {"id": "p1", "protocol_type": "cq_simplifié", "status": "actif",
+             "steps": [{"id": "s", "title": "É", "status": "à_venir",
+                        "deadline_date": _midnight_utc(date(2026, 7, 18))}]}  # samedi
+    monkeypatch.setattr(pmod, "get_protocol_for_dossier",
+                        lambda did, active_only=True: proto)
+    monkeypatch.setattr(pmod, "list_protocols_for_dossier", lambda did: [proto])
+    # Dimanche 19 : pas en retard. Lundi 20 (jour agissable) : toujours pas.
+    assert pmod.get_protocol_summary("d1", date(2026, 7, 19))["overdue"] == 0
+    assert pmod.get_protocol_summary("d1", date(2026, 7, 20))["overdue"] == 0
+    # Mardi 21 : en retard.
+    assert pmod.get_protocol_summary("d1", date(2026, 7, 21))["overdue"] == 1
