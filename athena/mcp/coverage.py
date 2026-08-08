@@ -25,7 +25,7 @@ protocol, verify an identity or file a signification, and a report that
 implied otherwise would invite a write this connector must never make.
 """
 
-from typing import Any, Callable, Optional
+from typing import Optional
 
 MANQUEMENT = "manquement"
 SIGNALEMENT = "signalement"

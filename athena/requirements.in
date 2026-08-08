@@ -83,11 +83,21 @@ Markdown==3.10.2
 bleach==6.4.0
 defusedxml==0.7.1
 # Transitive deps pinned explicitly for CVE hygiene (same rationale as Pillow):
-# both arrive via the google/firebase client stack. cryptography 48.0.1 ships a
-# patched bundled OpenSSL (GHSA-537c-gmf6-5ccf); msgpack 1.2.1 fixes an Unpacker
-# out-of-bounds read after a caught error (GHSA-6v7p-g79w-8964).
-cryptography==48.0.1
+# all arrive via the google/firebase client stack. cryptography 50.0.0 clears
+# the 2026-08 batch — CVE-2026-69247 (PKCS#7 EnvelopedData Bleichenbacher
+# oracle, fixed 50.0.0), CVE-2026-69249 (exponential X.509 path-building) and
+# CVE-2026-69248 (wildcard-SAN escape from permittedSubtrees), both fixed
+# 49.0.0 — on top of the earlier bundled-OpenSSL patch (GHSA-537c-gmf6-5ccf).
+# None was reachable here (the app never decrypts PKCS#7 nor builds X.509
+# chains with cryptography's verifier — it only verifies Firebase JWT
+# signatures), so these are hygiene bumps. msgpack 1.2.1 fixes an Unpacker
+# out-of-bounds read after a caught error (GHSA-6v7p-g79w-8964). h2 4.4.1
+# fixes CVE-2026-71554 (duplicate Host header forwarded on HTTP/2→1.1
+# downgrade — a request-smuggling primitive for SERVERS; here h2 is only
+# httpx's outbound HTTP/2 client via firebase-admin, so equally unreachable).
+cryptography==50.0.0
 msgpack==1.2.1
+h2==4.4.1
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its
 # pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the

@@ -44,7 +44,7 @@ from typing import Any, Optional
 from dav.sync import bump_ctag, collection_for, remove_tombstone
 from mcp import coverage
 from mcp.write_support import run_write
-from pagination import decode_cursor, encode_cursor, keyset_page
+from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import dossier as dossier_model
 from models import document as document_model

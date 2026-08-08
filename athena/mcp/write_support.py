@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from models import db
 from mcp.tools import ToolArgumentError

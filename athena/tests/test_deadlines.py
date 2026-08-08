@@ -399,7 +399,7 @@ def test_days_until_is_signed():
 
 def _freeze_utc(monkeypatch, iso: str) -> None:
     """Pin datetime.now(timezone.utc) inside utils.deadlines."""
-    import utils.deadlines as dl
+    from utils import deadlines as dl
 
     frozen = datetime.fromisoformat(iso)
 
