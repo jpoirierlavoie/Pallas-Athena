@@ -22,15 +22,20 @@ reportlab only and are not publicly served.
 
 Variable-weight (100–900) latin-subset woff2, referenced by `@font-face` in
 `static/src/app.input.css`. Downloaded 2026-08-07 from the Google Fonts CSS API
-(`family=Noto+Serif:ital,wght@0,100..900;1,100..900`), gstatic version **v33**:
+(`family=Noto+Serif…` gstatic **v33**; `family=Noto+Sans…` gstatic **v42**).
+Noto Sans is the UI font; Noto Serif renders note content (and these TTFs
+render the PDFs):
 
 | File | SHA-256 |
 |---|---|
+| `noto-sans-v42-latin-wght.woff2` | `51ca196f49a33e79e7870ff88ebd2829a3f627a51e7d690986618f0e7ad2b52d` |
+| `noto-sans-v42-latin-wght-italic.woff2` | `b21ff49befe2af5b88a3b622b3446e83199229f15ea7571a9313b15ed706298b` |
 | `noto-serif-v33-latin-wght.woff2` | `46281456234014ceb2a79bff447245de0f76b8d803be0738972ed374c3206c5b` |
 | `noto-serif-v33-latin-wght-italic.woff2` | `a1a6ebee6d69b2628ac102f55cb447135643a5401ae92eb77f4e2c6888dfce22` |
 
 The `unicode-range` in `app.input.css` is copied verbatim from the Google CSS
-response (latin block — covers French incl. œ/Œ, « », ’, —).
+responses (latin blocks — cover French incl. œ/Œ, « », ’, —; identical range
+for both families).
 
 ## License
 

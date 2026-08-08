@@ -126,7 +126,7 @@
     <div class="flex gap-3 pt-2">
       {% if expense and expense.invoiced %}
       <a href="{{ return_to or url_for('time_expenses.time_list', tab='depenses') }}"
-         class="font-sans flex-1 px-4 py-2.5 text-sm font-medium text-center text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+         class="flex-1 px-4 py-2.5 text-sm font-medium text-center text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Retour
       </a>
       {% else %}
@@ -135,7 +135,7 @@
         {{ 'Enregistrer' if expense and expense.id else 'Créer' }}
       </button>
       <a href="{{ return_to or url_for('time_expenses.time_list', tab='depenses') }}"
-         class="font-sans px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
       {% endif %}

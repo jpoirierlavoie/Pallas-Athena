@@ -182,11 +182,11 @@ def test_link_header_on_full_page_html():
     app = _make_app()
     resp = app.test_client().get("/")
     link = resp.headers.get("Link", "")
-    assert "</static/vendor/app.8f79acf6.css>; rel=preload; as=style" in link
+    assert "</static/vendor/app.cb2d3da2.css>; rel=preload; as=style" in link
     # The font preload MUST keep `crossorigin` + its type — losing either
     # makes the browser fetch the woff2 twice (fonts are CORS-mode fetches).
     assert (
-        'noto-serif-v33-latin-wght.woff2>; rel=preload; as=font;'
+        'noto-sans-v42-latin-wght.woff2>; rel=preload; as=font;'
         ' type="font/woff2"; crossorigin' in link
     )
     assert "htmx-2.0.4.min.js>; rel=preload; as=script" in link
@@ -216,7 +216,7 @@ def test_login_page_gets_its_own_hint_set():
     link = resp.headers.get("Link", "")
     assert "firebase-auth-compat-10.12.2.js>; rel=preload; as=script" in link
     assert (
-        'noto-serif-v33-latin-wght.woff2>; rel=preload; as=font;'
+        'noto-sans-v42-latin-wght.woff2>; rel=preload; as=font;'
         ' type="font/woff2"; crossorigin' in link
     )
     assert "<https://www.gstatic.com>; rel=preconnect" in link

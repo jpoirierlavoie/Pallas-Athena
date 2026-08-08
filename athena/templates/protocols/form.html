@@ -203,12 +203,12 @@
       </button>
       {% if edit_mode is defined and edit_mode and protocol and protocol.id %}
       <a href="{{ url_for('protocols.protocol_detail', protocol_id=protocol.id) }}"
-         class="font-sans px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
       {% elif dossier %}
       <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) }}"
-         class="font-sans px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
       {% endif %}

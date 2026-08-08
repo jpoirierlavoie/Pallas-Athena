@@ -91,7 +91,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 7. **Every Firestore doc has `created_at`, `updated_at`, `etag`** (etag = UUIDv4 regenerated on every write, used for DAV `If-Match` conditional requests). Folders, the three OAuth collections, `audit_events` and `mcp_idempotency` are exceptions: no `etag` (and the last two are write-once — never updated after creation).
 8. **HTMX first.** Dynamic interactions use HTMX. Flask endpoints check `request.headers.get("HX-Request")`/`HX-Target` and return HTML fragments for HTMX requests, full pages otherwise.
 9. **Mobile-first.** Design for 375px viewport first. Breakpoints at 768px (tablet) and 1024px+ (desktop). Touch targets minimum 44px.
-10. **Minimalist visual language.** Near-white `#FAFAFA` backgrounds, near-black `gray-900` text, `indigo-600` accent. Generous white-space. **Typography (August 2026): Noto Serif for content, system sans for UI chrome.** The boundary is a CSS-layer rule in `static/src/app.input.css` (body serif; `button/input/select/textarea/optgroup/label/nav/[role="tablist"]/#toast-container` sans) plus the `font-sans` utility hand-added to styled-as-button `<a>` tags; `font-sans`/`font-serif` (via the `@theme` block) are the per-element escape hatch. The fonts are vendored (SIL OFL — no CDN): variable woff2 ×2 in `static/vendor/` for the web, static TTF ×2 in `utils/fonts/` for reportlab (provenance + sha256 in `utils/fonts/README.md`). The `.woff2` MIME type needs the dedicated `static_files` handler ABOVE `/static/vendor` in BOTH yaml files (nosniff would reject the default octet-stream). Emails keep their client-safe stacks (webfonts don't load in mail clients); generated `.docx` take their fonts from the user's own gabarit templates (the fill engine never writes `rFonts`).
+10. **Minimalist visual language.** Near-white `#FAFAFA` backgrounds, near-black `gray-900` text, `indigo-600` accent. Generous white-space. **Typography (August 2026, revised 2026-08-07): Noto Sans for the ENTIRE UI; Noto Serif ONLY for document-reading surfaces** — the rendered note content (`.note-content` — note detail + the Analyse tab) and the reportlab PDF exports. The boundary is pure CSS in `static/src/app.input.css`: `body { font-family: var(--font-sans) }` + a single `.note-content { font-family: var(--font-serif) }` rule — no per-template font classes (an earlier serif-body design needed ~70 `font-sans` chrome edits; all removed when the boundary inverted). `font-sans`/`font-serif` via the `@theme` block remain the per-element escape hatch (first use needs a recompile). The fonts are vendored (SIL OFL — no CDN): variable woff2 ×4 in `static/vendor/` (Noto Sans v42 + Noto Serif v33, roman + italic, latin subset) for the web, static Noto Serif TTF ×2 in `utils/fonts/` for reportlab (provenance + sha256 in `utils/fonts/README.md`). The `.woff2` MIME type needs the dedicated `static_files` handler ABOVE `/static/vendor` in BOTH yaml files (nosniff would reject the default octet-stream). Early Hints/portal preload the SANS roman only (serif loads on demand on note pages). Emails keep their client-safe stacks (webfonts don't load in mail clients); generated `.docx` take their fonts from the user's own gabarit templates (the fill engine never writes `rFonts`).
 11. **DAV-ready schemas.** Parties, hearings, tasks, notes carry stable DAV UIDs (`vcard_uid`, `vevent_uid`, `vtodo_uid`, `vjournal_uid`) set at creation and never changed.
 
 ---
@@ -415,10 +415,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │       │                           # app.<hash>.css (compiled Tailwind), htmx-2.0.4.min.js,
 │       │                           # alpinejs-3.15.12.min.js, firebase-{app,auth,app-check}-compat-10.12.2.js,
 │       │                           # appcheck-boot.<hash>.js (App Check bootstrap, was inline),
-│       │                           # noto-serif-v33-latin-wght[-italic].woff2 + noto-serif-v33-OFL.txt
-│       │                           # (content font, August 2026 — .woff2 has its own mime_type
-│       │                           # handler in both yaml files; preloaded via Early Hints with
-│       │                           # `crossorigin` + a <link rel=preload> in the portal base)
+│       │                           # noto-sans-v42-latin-wght[-italic].woff2 (UI font) +
+│       │                           # noto-serif-v33-latin-wght[-italic].woff2 (note content) +
+│       │                           # the two *-OFL.txt licenses (August 2026 — .woff2 has its own
+│       │                           # mime_type handler in both yaml files; the SANS roman is
+│       │                           # preloaded via Early Hints with `crossorigin` + a
+│       │                           # <link rel=preload> in the portal base)
 │       ├── icons/                  # PWA + favicon assets
 │       └── legal/                  # privacy.html, terms.html (served at /privacy, /terms)
 │

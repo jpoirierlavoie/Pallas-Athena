@@ -23,7 +23,7 @@
      sans ce chemin, la seule issue serait un appel téléphonique. #}
   {% if invitation.statut not in ('traitée', 'refusée', 'révoquée') %}
   <a href="{{ url_for('portail.page_ouverture') }}"
-     class="mt-4 inline-flex items-center justify-center px-4 py-2 text-sm font-medium font-sans text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+     class="mt-4 inline-flex items-center justify-center px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
     Corriger mes réponses
   </a>
   {% endif %}

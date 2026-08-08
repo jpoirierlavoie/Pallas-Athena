@@ -29,7 +29,7 @@
       <input type="text" name="statement_balance" inputmode="decimal" required placeholder="0,00" value="{{ form.get('statement_balance', '') }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
     </div>
     <div class="flex justify-end gap-2">
-      <a href="{{ url_for('trust.reconciliations_list') }}" class="font-sans px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
+      <a href="{{ url_for('trust.reconciliations_list') }}" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
       <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Créer</button>
     </div>
   </form>

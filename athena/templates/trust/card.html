@@ -11,8 +11,8 @@
       </div>
     </div>
     <div class="flex gap-2">
-      <a href="{{ url_for('trust.card_export', dossier_id=dossier.id, client_id=client_id, fmt='csv') }}" class="font-sans px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
-      <a href="{{ url_for('trust.card_export', dossier_id=dossier.id, client_id=client_id, fmt='pdf') }}" class="font-sans px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
+      <a href="{{ url_for('trust.card_export', dossier_id=dossier.id, client_id=client_id, fmt='csv') }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+      <a href="{{ url_for('trust.card_export', dossier_id=dossier.id, client_id=client_id, fmt='pdf') }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
     </div>
   </div>
 

@@ -8,10 +8,10 @@
       <p class="text-sm text-gray-500">Journal de caisse — recettes et déboursés</p>
     </div>
     <div class="flex items-center gap-2">
-      <a href="{{ url_for('trust.accounts_list') }}" class="font-sans hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
-      <a href="{{ url_for('trust.reconciliations_list') }}" class="font-sans hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
+      <a href="{{ url_for('trust.accounts_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
+      <a href="{{ url_for('trust.reconciliations_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
       {% if account %}
-      <a href="{{ url_for('trust.entry_new') }}" class="font-sans inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      <a href="{{ url_for('trust.entry_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         Nouvelle écriture
       </a>
@@ -22,7 +22,7 @@
   {% if not accounts %}
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
     <p class="text-gray-600 mb-4">Aucun compte en fidéicommis n'est encore configuré.</p>
-    <a href="{{ url_for('trust.account_new') }}" class="font-sans inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Créer un premier compte</a>
+    <a href="{{ url_for('trust.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Créer un premier compte</a>
   </div>
   {% else %}
 
@@ -96,8 +96,8 @@
                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
       </div>
       <div class="ml-auto flex gap-2">
-        <a href="{{ url_for('trust.journal_export', fmt='csv', account_id=account.id) }}" class="font-sans px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
-        <a href="{{ url_for('trust.journal_export', fmt='pdf', account_id=account.id) }}" class="font-sans px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
+        <a href="{{ url_for('trust.journal_export', fmt='csv', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+        <a href="{{ url_for('trust.journal_export', fmt='pdf', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
       </div>
     </div>
   </div>

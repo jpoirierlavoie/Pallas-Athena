@@ -27,7 +27,7 @@
       <textarea name="reason" rows="3" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white" placeholder="Ex. : chèque sans provision, erreur de saisie…"></textarea>
     </div>
     <div class="flex justify-end gap-2">
-      <a href="{{ url_for('trust.entry_detail', tx_id=entry.id) }}" class="font-sans px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
+      <a href="{{ url_for('trust.entry_detail', tx_id=entry.id) }}" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
       <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-xl hover:bg-red-700">Contre-passer</button>
     </div>
   </form>

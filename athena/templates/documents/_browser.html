@@ -287,7 +287,7 @@
   {% endif %}
   {% if dossier_id %}
   <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
-     class="font-sans inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+     class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
     Téléverser un document
   </a>
   {% endif %}
