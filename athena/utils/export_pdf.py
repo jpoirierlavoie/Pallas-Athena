@@ -3,6 +3,7 @@
 import io
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -12,6 +13,9 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.pdfmetrics import registerFontFamily
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     SimpleDocTemplate,
     Table,
@@ -23,6 +27,27 @@ from reportlab.platypus import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Vendored Noto Serif static instances (utils/fonts/ — outside static/, never
+# publicly served; provenance + sha256 pins in utils/fonts/README.md).
+# Registered at MODULE IMPORT on purpose: doc.build() below swallows every
+# exception into a generic French 500, so a missing/corrupt font file must
+# fail loudly here instead — the test suite imports this module, making a
+# broken registration a CI deploy-gate failure, never a silent Helvetica
+# fallback in production.
+_FONT_DIR = Path(__file__).parent / "fonts"
+pdfmetrics.registerFont(TTFont("NotoSerif", str(_FONT_DIR / "NotoSerif-Regular.ttf")))
+pdfmetrics.registerFont(TTFont("NotoSerif-Bold", str(_FONT_DIR / "NotoSerif-Bold.ttf")))
+# No italic face is used anywhere in these reports; map the italic variants
+# onto the uprights so a stray <b>/<i> in a Paragraph can never fall back to
+# an unregistered font name.
+registerFontFamily(
+    "NotoSerif",
+    normal="NotoSerif",
+    bold="NotoSerif-Bold",
+    italic="NotoSerif",
+    boldItalic="NotoSerif-Bold",
+)
 
 
 def export_pdf(
@@ -63,9 +88,19 @@ def export_pdf(
         leftMargin=15 * mm,
         rightMargin=15 * mm,
         title=title,
+        # Without this, every page's preamble selects
+        # rl_config.canvas_basefontname (Helvetica), dragging a Helvetica
+        # reference into each PDF even when no text uses it — the tests pin
+        # the output as Helvetica-free. (A canvasmaker partial does NOT work:
+        # _makeCanvas passes initialFontName explicitly, overriding it.)
+        initialFontName="NotoSerif",
     )
 
     styles = getSampleStyleSheet()
+    # Rebase the two inherited stock styles onto Noto Serif BEFORE any derived
+    # ParagraphStyle is built (children copy parent attrs at construction).
+    styles["Normal"].fontName = "NotoSerif"
+    styles["Heading1"].fontName = "NotoSerif-Bold"
     elements = []
 
     # ── Title ──────────────────────────────────────────────────
@@ -122,7 +157,7 @@ def export_pdf(
         fontSize=8,
         leading=10,
         textColor=colors.HexColor("#374151"),
-        fontName="Helvetica-Bold",
+        fontName="NotoSerif-Bold",
     )
 
     table_data = [[Paragraph(h, header_style) for h in header_cells]]
@@ -152,11 +187,15 @@ def export_pdf(
                 # Header
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F9FAFB")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#374151")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, 0), "NotoSerif-Bold"),
                 ("FONTSIZE", (0, 0), (-1, 0), 8),
                 ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
                 ("TOPPADDING", (0, 0), (-1, 0), 8),
-                # Data rows
+                # Data rows. The FONTNAME matters even though cells are
+                # Paragraphs: without it the CellStyle default makes the
+                # canvas select Helvetica before each cell draws, dragging
+                # an unused Helvetica reference into every PDF.
+                ("FONTNAME", (0, 1), (-1, -1), "NotoSerif"),
                 ("FONTSIZE", (0, 1), (-1, -1), 8),
                 ("TOPPADDING", (0, 1), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
@@ -242,9 +281,19 @@ def export_pdf_grouped(
         leftMargin=15 * mm,
         rightMargin=15 * mm,
         title=title,
+        # Without this, every page's preamble selects
+        # rl_config.canvas_basefontname (Helvetica), dragging a Helvetica
+        # reference into each PDF even when no text uses it — the tests pin
+        # the output as Helvetica-free. (A canvasmaker partial does NOT work:
+        # _makeCanvas passes initialFontName explicitly, overriding it.)
+        initialFontName="NotoSerif",
     )
 
     styles = getSampleStyleSheet()
+    # Rebase the two inherited stock styles onto Noto Serif BEFORE any derived
+    # ParagraphStyle is built (children copy parent attrs at construction).
+    styles["Normal"].fontName = "NotoSerif"
+    styles["Heading1"].fontName = "NotoSerif-Bold"
     elements: list[Any] = []
 
     # ── Title / subtitle / timestamp (matches export_pdf) ──────
@@ -298,7 +347,7 @@ def export_pdf_grouped(
         fontSize=8,
         leading=10,
         textColor=colors.HexColor("#374151"),
-        fontName="Helvetica-Bold",
+        fontName="NotoSerif-Bold",
     )
     group_header_style = ParagraphStyle(
         "GroupHeader",
@@ -306,7 +355,7 @@ def export_pdf_grouped(
         fontSize=10,
         leading=12,
         textColor=colors.HexColor("#111827"),
-        fontName="Helvetica-Bold",
+        fontName="NotoSerif-Bold",
     )
 
     # ── Single column-header band at top of report ────────────
@@ -316,7 +365,7 @@ def export_pdf_grouped(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F9FAFB")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, 0), "NotoSerif-Bold"),
                 ("FONTSIZE", (0, 0), (-1, 0), 8),
                 ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
                 ("TOPPADDING", (0, 0), (-1, 0), 8),
@@ -344,6 +393,9 @@ def export_pdf_grouped(
         empty_table.setStyle(
             TableStyle(
                 [
+                    # See the FONTNAME comment in export_pdf: prevents the
+                    # CellStyle default from selecting Helvetica.
+                    ("FONTNAME", (0, 0), (-1, -1), "NotoSerif"),
                     ("FONTSIZE", (0, 0), (-1, -1), 8),
                     ("TOPPADDING", (0, 0), (-1, -1), 4),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
@@ -373,6 +425,9 @@ def export_pdf_grouped(
             group_table.setStyle(
                 TableStyle(
                     [
+                        # See the FONTNAME comment in export_pdf: prevents the
+                        # CellStyle default from selecting Helvetica.
+                        ("FONTNAME", (0, 0), (-1, -1), "NotoSerif"),
                         ("FONTSIZE", (0, 0), (-1, -1), 8),
                         ("TOPPADDING", (0, 0), (-1, -1), 4),
                         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),

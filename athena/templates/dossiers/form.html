@@ -962,7 +962,7 @@
     {# ═══ Submit ═════════════════════════════════════════════════ #}
     <div class="flex gap-3 justify-end pb-6">
       <a href="{{ url_for('dossiers.dossier_detail', dossier_id=dossier.id) if dossier and dossier.id else url_for('dossiers.dossier_list') }}"
-         class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="font-sans px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Annuler
       </a>
       <button type="submit"

@@ -503,7 +503,7 @@
     {# ═══ Submit ═════════════════════════════════════════════════ #}
     <div class="flex gap-3 justify-end pb-6">
       <a href="{{ url_for('parties.partie_detail', partie_id=partie.id) if partie and partie.id else url_for('parties.partie_list') }}"
-         class="px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+         class="font-sans px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
         Annuler
       </a>
       <button type="submit"

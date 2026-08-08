@@ -8,8 +8,8 @@
       <h1 class="text-xl font-semibold text-gray-900">{{ account.name }}</h1>
     </div>
     <div class="flex gap-2">
-      <a href="{{ url_for('trust.journal', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
-      <a href="{{ url_for('trust.account_edit', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Modifier</a>
+      <a href="{{ url_for('trust.journal', account_id=account.id) }}" class="font-sans px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
+      <a href="{{ url_for('trust.account_edit', account_id=account.id) }}" class="font-sans px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Modifier</a>
     </div>
   </div>
 

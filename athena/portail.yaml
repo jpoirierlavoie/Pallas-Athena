@@ -57,6 +57,21 @@ handlers:
     upload: robots.txt
     mime_type: text/plain
 
+  # Les polices vendues exigent un mime_type explicite : .woff2 est absent de
+  # la table MIME du runtime (servi application/octet-stream sinon) et chaque
+  # gestionnaire statique pose nosniff — le navigateur refuserait la police.
+  # Ce gestionnaire DOIT rester AU-DESSUS de /static/vendor (premier arrivé,
+  # premier servi).
+  - url: /static/vendor/(.*\.woff2)$
+    static_files: static/vendor/\1
+    upload: static/vendor/.*\.woff2$
+    mime_type: font/woff2
+    secure: always
+    http_headers:
+      Cache-Control: "public, max-age=31536000, immutable"
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+
   # Actifs vendus (mêmes fichiers hachés que le service principal) —
   # immuables un an ; un actif modifié DOIT changer de nom de fichier.
   - url: /static/vendor

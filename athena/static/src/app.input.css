@@ -22,12 +22,73 @@
    template tree; without this line their classes silently never compile. */
 @source "../../client/templates";
 
+/* ── Fonts — Noto Serif, vendored (SIL OFL; static/vendor/noto-serif-v33-OFL.txt;
+   provenance + sha256 pins in utils/fonts/README.md) ─────────────────────────
+   Variable-weight latin subset, gstatic v33. The relative url() resolves
+   against the compiled CSS's own directory (/static/vendor/), so it works on
+   both services and survives future stylesheet re-hashes unedited. The
+   unicode-range is copied VERBATIM from the Google Fonts CSS response (latin
+   block — covers French incl. œ/Œ, « », ’, —). */
+@font-face {
+  font-family: "Noto Serif";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("noto-serif-v33-latin-wght.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Serif";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("noto-serif-v33-latin-wght-italic.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Override Tailwind's stock --font-sans (which had silently diverged from the
+   body stack below — an element carrying the `font-sans` utility resolved to
+   ui-sans-serif, not the body font) and define --font-serif. This also makes
+   the `font-sans`/`font-serif` utilities the per-element escape hatch for the
+   serif/sans boundary — note a `font-serif` first-use still needs a recompile
+   (normal Tailwind rule: a class absent from the scan set never compiles). */
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: "Noto Serif", Georgia, 'Times New Roman', serif;
+}
+
 /* ── Hand-written styles formerly inlined in base.html ─────────────────── */
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-serif);
   line-height: 1.6;
   background-color: #FAFAFA;
+}
+
+/* ── Serif/sans boundary ────────────────────────────────────────────────────
+   RULE: interactive controls, navigation and system signals (toasts, offline
+   banner) are SANS; anything that reads like a document — headings, tables,
+   cards, dt/dd, note content, badges — is SERIF (inherited from body).
+   Tailwind preflight sets form controls to `font: inherit`, which is exactly
+   why the explicit element rules are needed once body goes serif. The one
+   category element selectors cannot reach is styled-as-button <a> tags — those
+   carry the `font-sans` utility in the template. FOUR signatures to grep when
+   sweeping (each was missed once): text-white bg-gray-900 · bg-white border
+   border-gray-300 + font-medium · text-sm font-medium text-indigo-600
+   hover:text-indigo-700 (empty-state/action CTAs) · text-white bg-indigo-600
+   (minus rounded-full icon FABs) · bg-gray-100 rounded-lg hover:bg-gray-200
+   (pill buttons). Content links (breadcrumbs, back links, inline text links)
+   stay serif on purpose. */
+button, input, select, textarea, optgroup,
+label,
+nav,
+[role="tablist"],
+#toast-container {
+  font-family: var(--font-sans);
 }
 
 [x-cloak] { display: none !important; }

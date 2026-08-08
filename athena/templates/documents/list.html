@@ -8,7 +8,7 @@
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-xl font-semibold text-gray-900">Documents</h1>
     <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
-       class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+       class="font-sans hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>
       </svg>

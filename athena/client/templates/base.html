@@ -12,7 +12,12 @@
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}Portail sécurisé{% endblock %}</title>
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='icons/favicon.ico') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.0821ad87.css') }}">
+  {# Préchargement de la police de contenu (Noto Serif). Le portail n'a pas
+     d'émetteur Early Hints (voir client/security.py), donc le preload vit ici.
+     `crossorigin` est OBLIGATOIRE (les polices sont des requêtes CORS) — sans
+     lui le navigateur télécharge le fichier DEUX fois. #}
+  <link rel="preload" href="{{ url_for('static', filename='vendor/noto-serif-v33-latin-wght.woff2') }}" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.8f79acf6.css') }}">
 </head>
 <body class="min-h-screen bg-[#FAFAFA] text-gray-900 flex flex-col">
   <main class="w-full max-w-lg mx-auto px-4 py-10 flex-1">

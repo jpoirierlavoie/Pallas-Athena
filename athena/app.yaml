@@ -153,6 +153,22 @@ handlers:
       Referrer-Policy: strict-origin-when-cross-origin
       Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
+  # Vendored fonts need an explicit MIME type: .woff2 is absent from the
+  # runtime's default map (it would serve as application/octet-stream) and
+  # every static handler sets nosniff, so the browser would refuse the font.
+  # mime_type cannot go on the static_dir handler below (it would force ONE
+  # type onto the CSS/JS too) — hence this handler, which MUST stay ABOVE
+  # /static/vendor (first match wins).
+  - url: /static/vendor/(.*\.woff2)$
+    static_files: static/vendor/\1
+    upload: static/vendor/.*\.woff2$
+    mime_type: font/woff2
+    secure: always
+    http_headers:
+      Cache-Control: "public, max-age=31536000, immutable"
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+
   # Vendored assets carry their version/hash in the filename and are therefore
   # immutable: cache for a year. HARD RULE — a changed asset MUST get a new
   # filename; never edit a vendor file in place.

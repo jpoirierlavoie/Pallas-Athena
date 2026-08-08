@@ -102,3 +102,47 @@ def test_export_pdf_grouped_dangling_angle_bracket_does_not_raise():
     assert resp.status_code == 200
     assert resp.mimetype == "application/pdf"
     assert resp.data.startswith(b"%PDF")
+
+
+# ── PDF font — Noto Serif, vendored TTFs (utils/fonts/) ──────────────────
+#
+# Registration happens at export_pdf module import, so a missing/corrupt TTF
+# fails THESE imports loudly instead of degrading to the swallowed-exception
+# French 500 in doc.build(). The b"NotoSerif" assertions guard the subtler
+# failure: a style regression silently falling back to Helvetica.
+
+
+def test_pdf_font_files_exist():
+    from utils.export_pdf import _FONT_DIR
+
+    assert (_FONT_DIR / "NotoSerif-Regular.ttf").is_file()
+    assert (_FONT_DIR / "NotoSerif-Bold.ttf").is_file()
+
+
+def test_export_pdf_embeds_noto_serif():
+    rows = [{"title": "Tremblay c. Lavoie"}]
+    columns = [("title", "Titre", 1.0)]
+    resp = export_pdf(rows, columns, title="Rapport", filename="test.pdf")
+    assert resp.status_code == 200
+    # reportlab writes the (subset-prefixed) BaseFont name uncompressed.
+    assert b"NotoSerif" in resp.data
+    assert b"Helvetica" not in resp.data
+
+
+def test_export_pdf_grouped_embeds_noto_serif():
+    groups = [("Dossier 2025-001", [{"title": "Tremblay c. Lavoie"}])]
+    columns = [("title", "Titre", 1.0)]
+    resp = export_pdf_grouped(groups, columns, title="Rapport", filename="test.pdf")
+    assert resp.status_code == 200
+    assert b"NotoSerif" in resp.data
+    assert b"Helvetica" not in resp.data
+
+
+def test_export_pdf_french_typography_does_not_raise():
+    # Characters outside ASCII that real dossier data carries: accents,
+    # guillemets, curly apostrophe, ellipsis, em dash, œ ligature, NBSP.
+    rows = [{"title": "Éché ance — « Mtre Cœur d’Alène… » àçûï"}]
+    columns = [("title", "Titre", 1.0)]
+    resp = export_pdf(rows, columns, title="Rapport", filename="test.pdf")
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF")

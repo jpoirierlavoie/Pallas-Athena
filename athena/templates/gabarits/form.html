@@ -92,7 +92,7 @@
         {{ 'Enregistrer' if edit_mode is defined and edit_mode else 'Téléverser le gabarit' }}
       </button>
       <a href="{{ url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_list') }}"
-         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+         class="font-sans px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Annuler
       </a>
     </div>

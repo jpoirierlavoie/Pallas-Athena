@@ -13,7 +13,7 @@
   <p class="text-gray-500 text-sm mb-4">{{ message|default('Aucun élément.') }}</p>
   {% if action_url is defined %}
     <a href="{{ action_url }}"
-       class="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700">
+       class="inline-flex items-center gap-1.5 text-sm font-medium font-sans text-indigo-600 hover:text-indigo-700">
       {{ action_label|default('Ajouter') }}
     </a>
   {% endif %}

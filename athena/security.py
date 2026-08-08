@@ -175,7 +175,11 @@ def _add_security_headers(response: Response) -> Response:
 # base.html / auth/login.html and the PRECACHE list in static/sw.js — the
 # CSS regeneration recipe in CLAUDE.md lists every touch point.
 _EARLY_HINTS_BASE = (
-    "</static/vendor/app.0821ad87.css>; rel=preload; as=style",
+    "</static/vendor/app.8f79acf6.css>; rel=preload; as=style",
+    # Font preloads MUST carry `crossorigin` (fonts are always fetched in CORS
+    # mode) — without it the browser fetches the file TWICE. Roman only: the
+    # italic face is too rare to spend preload bytes on.
+    '</static/vendor/noto-serif-v33-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/htmx-2.0.4.min.js>; rel=preload; as=script",
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
 )
@@ -190,7 +194,8 @@ _EARLY_HINTS_APPCHECK = (
 # the auth SDK — the heaviest script on the cold-start path this feature
 # exists for) and uses reCAPTCHA for phone MFA regardless of App Check.
 _EARLY_HINTS_LOGIN = (
-    "</static/vendor/app.0821ad87.css>; rel=preload; as=style",
+    "</static/vendor/app.8f79acf6.css>; rel=preload; as=style",
+    '</static/vendor/noto-serif-v33-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
     "</static/vendor/firebase-app-compat-10.12.2.js>; rel=preload; as=script",
     "</static/vendor/firebase-auth-compat-10.12.2.js>; rel=preload; as=script",
