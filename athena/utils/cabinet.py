@@ -20,6 +20,12 @@ def cabinet_dict() -> dict:
         )
     except Exception:
         telephone = Config.FIRM_PHONE or ""
+    try:
+        telecopieur = (
+            format_phone_display(Config.FIRM_FAX) if Config.FIRM_FAX else ""
+        )
+    except Exception:
+        telecopieur = Config.FIRM_FAX or ""
     return {
         "nom": Config.FIRM_NAME,
         "adresse_civique": street,
@@ -27,5 +33,6 @@ def cabinet_dict() -> dict:
         "province": Config.FIRM_PROVINCE,
         "code_postal": Config.FIRM_POSTAL_CODE,
         "telephone": telephone,
+        "telecopieur": telecopieur,
         "courriel": Config.FIRM_EMAIL,
     }

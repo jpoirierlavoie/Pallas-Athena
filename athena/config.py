@@ -226,6 +226,7 @@ class Config:
     FIRM_PROVINCE: str = os.environ.get("FIRM_PROVINCE", "QC")
     FIRM_POSTAL_CODE: str = os.environ.get("FIRM_POSTAL_CODE", "")
     FIRM_PHONE: str = os.environ.get("FIRM_PHONE", "")
+    FIRM_FAX: str = os.environ.get("FIRM_FAX", "")
     FIRM_EMAIL: str = os.environ.get("FIRM_EMAIL", "")
     GST_NUMBER: str = os.environ.get("GST_NUMBER", "")
     QST_NUMBER: str = os.environ.get("QST_NUMBER", "")

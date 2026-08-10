@@ -438,6 +438,7 @@ _VALID_TABS = (
     "temps",
     "facturation",
     "fideicommis",
+    "budget",
     "audiences",
     "taches",
     "protocole",
@@ -460,6 +461,7 @@ _LEAF_GROUP = {
     "temps": "finances",
     "facturation": "finances",
     "fideicommis": "finances",
+    "budget": "finances",
     "audiences": "agenda",
     "taches": "agenda",
     "protocole": "agenda",
@@ -545,6 +547,7 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         "documents": "dossiers/_tab_documents.html",
         "notes": "dossiers/_tab_notes.html",
         "fideicommis": "dossiers/_tab_fideicommis.html",
+        "budget": "dossiers/_tab_budget.html",
     }
 
     # Load time/expense data for the temps tab
@@ -659,6 +662,21 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["trust_summary"] = trust.get_trust_summary(dossier_id)
         ctx["trust_entries"] = trust.list_dossier_transactions(dossier_id, limit=10)
         ctx["purpose_labels"] = trust.PURPOSE_LABELS
+
+    # Load budget-vs-actuals data for the budget tab (Phase O sequel).
+    # ONE pass over each dossier-bounded collection, reused for hours and
+    # amounts alike — never a second scan.
+    if tab_name == "budget":
+        from models import budget as budget_model
+        versions = budget_model.list_budget_versions(dossier_id)
+        b = versions[0] if versions else None
+        actuals = budget_model.aggregate_actuals(
+            list_time_entries(dossier_id=dossier_id),
+            list_expenses(dossier_id=dossier_id),
+        )
+        ctx["budget"] = b
+        ctx["budget_view"] = budget_model.build_budget_view(b, actuals)
+        ctx["budget_version_count"] = len(versions)
 
     template = templates.get(tab_name, "dossiers/_tab_placeholder.html")
     ctx["tab_name"] = tab_name

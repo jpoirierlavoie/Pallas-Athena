@@ -479,6 +479,8 @@ DossierEvent = Literal[
     "viewed",
     "deleted",
     "court_file_parsed",
+    "budget_saved",
+    "budget_exported",
 ]
 DavOperation = Literal[
     "propfind",

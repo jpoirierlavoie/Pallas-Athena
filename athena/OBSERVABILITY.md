@@ -68,6 +68,8 @@ All emitted at INFO.
 | `viewed` | Detail page loaded (use sparingly — high-volume) |
 | `deleted` | Hard delete |
 | `court_file_parsed` | `/dossiers/parse-court-file` returned a successful parse |
+| `budget_saved` | A NEW budget version was minted (append-only — never an overwrite). Fields: `budget_id`, `version`, `line_count` — never amounts (the trust « never amounts » rule) |
+| `budget_exported` | A budget PDF was generated. Fields: `budget_id`, `version`, `variant` ∈ `estimation`\|`suivi` — never amounts |
 
 ### `log_dav_operation(operation, collection_type, *, dossier_id=None, object_count=None, duration_ms=None, status_code=None, ctag_bumped=None, **extra)` — logger `pallas.dav`
 

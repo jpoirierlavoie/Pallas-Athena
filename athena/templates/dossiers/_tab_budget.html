@@ -1,0 +1,143 @@
+{# Budget tab fragment (Phase O sequel — protocol ↔ budget ↔ time join).
+   Rendered by dossiers.dossier_tab; context: budget (latest version or
+   None), budget_view (build_budget_view rows), budget_version_count,
+   tab_return_to. Progress bars use INLINE style widths (style-src keeps
+   'unsafe-inline') — never a dynamic Tailwind class. #}
+<div class="space-y-4">
+
+  {% if not budget %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
+    <p class="text-gray-500 text-sm mb-4">Aucun budget pour ce dossier.</p>
+    <a href="{{ url_for('budgets.budget_form', dossier_id=dossier.id, return_to=tab_return_to) }}"
+       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ ms('add', 16) }}
+      Créer un budget
+    </a>
+  </div>
+  {% else %}
+
+  <div class="flex items-center justify-between">
+    <h2 class="text-sm font-semibold text-gray-900">Budget</h2>
+    <a href="{{ url_for('budgets.budget_form', dossier_id=dossier.id, return_to=tab_return_to) }}"
+       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+      {{ ms('edit', 16) }}
+      Modifier le budget
+    </a>
+  </div>
+
+  {# Totals cards #}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Budget total</p>
+      <p class="text-lg font-semibold text-gray-900">{{ budget_view.budget_total_cents | cents_fr }}</p>
+    </div>
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Consommé</p>
+      <p class="text-lg font-semibold text-gray-900">{{ budget_view.actual_total_cents | cents_fr }}</p>
+    </div>
+    <div class="p-3 bg-gray-50 rounded-lg text-center">
+      <p class="text-xs text-gray-500 mb-1">Écart restant</p>
+      <p class="text-lg font-semibold {{ 'text-red-600' if budget_view.ecart_total_cents < 0 else 'text-gray-900' }}">{{ budget_view.ecart_total_cents | cents_fr }}</p>
+    </div>
+    <div class="p-3 rounded-lg text-center {{ 'bg-red-50' if budget_view.level == 'over' else ('bg-amber-50' if budget_view.level == 'warn' else 'bg-gray-50') }}">
+      <p class="text-xs mb-1 {{ 'text-red-600' if budget_view.level == 'over' else ('text-amber-600' if budget_view.level == 'warn' else 'text-gray-500') }}">Consommation</p>
+      <p class="text-lg font-semibold {{ 'text-red-700' if budget_view.level == 'over' else ('text-amber-700' if budget_view.level == 'warn' else 'text-gray-900') }}">
+        {{ ('%.1f'|format(budget_view.pct)|replace('.', ',') ~ ' %') if budget_view.pct is not none else '—' }}
+      </p>
+    </div>
+  </div>
+
+  <p class="text-xs text-gray-500">
+    Version {{ budget.version }} — enregistrée le
+    {{ (budget.created_at | to_mtl).strftime('%Y-%m-%d') if budget.created_at else '—' }}
+    · Taux horaire : {{ budget.hourly_rate | cents_fr }} / h
+    {% if budget_version_count > 1 %}
+    · <a href="{{ url_for('budgets.budget_history', dossier_id=dossier.id, return_to=tab_return_to) }}"
+         class="text-indigo-600 hover:underline">Historique ({{ budget_version_count }} versions)</a>
+    {% endif %}
+  </p>
+
+  {# Per-phase table #}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Phase</th>
+          <th class="px-3 py-2 font-medium text-right">Budget (h)</th>
+          <th class="px-3 py-2 font-medium text-right">Budget</th>
+          <th class="px-3 py-2 font-medium text-right">Réalisé (h)</th>
+          <th class="px-3 py-2 font-medium text-right">Réalisé</th>
+          <th class="px-3 py-2 font-medium text-right">Écart</th>
+          <th class="px-3 py-2 font-medium">Consommation</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for r in budget_view.rows %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap text-gray-900">{{ r.libelle }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ '%.2f'|format(r.budget_hours)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ r.budget_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ '%.2f'|format(r.actual_hours)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ r.actual_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap {{ 'text-red-600' if r.ecart_cents < 0 else 'text-gray-700' }}">{{ r.ecart_cents | cents_fr }}</td>
+          <td class="px-3 py-2 whitespace-nowrap">
+            {% if r.pct is not none %}
+            <div class="flex items-center gap-2">
+              <div class="w-24 h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div class="h-2 rounded-full {{ 'bg-red-600' if r.level == 'over' else 'bg-indigo-600' }}"
+                     style="width: {{ [r.pct, 100.0] | min }}%"></div>
+              </div>
+              {% if r.level == 'over' %}
+              <span class="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">Dépassé</span>
+              {% elif r.level == 'warn' %}
+              <span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">≥ 80 %</span>
+              {% else %}
+              <span class="text-xs text-gray-500">{{ '%.0f'|format(r.pct) }} %</span>
+              {% endif %}
+            </div>
+            {% else %}
+            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Sans enveloppe</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if budget_view.has_unphased %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap text-gray-500">Non renseignée</td>
+          <td class="px-3 py-2 text-right text-gray-400">—</td>
+          <td class="px-3 py-2 text-right text-gray-400">—</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ '%.2f'|format(budget_view.unphased.hours)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ budget_view.unphased.total_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right text-gray-400">—</td>
+          <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-500">Temps hérité sans phase</td>
+        </tr>
+        {% endif %}
+        <tr class="font-semibold border-t border-gray-200">
+          <td class="px-3 py-2 text-gray-900">Total</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">{{ '%.2f'|format(budget_view.budget_total_hours)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">{{ budget_view.budget_total_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">{{ '%.2f'|format(budget_view.actual_total_hours)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">{{ budget_view.actual_total_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap {{ 'text-red-600' if budget_view.ecart_total_cents < 0 else '' }}">{{ budget_view.ecart_total_cents | cents_fr }}</td>
+          <td class="px-3 py-2"></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  {# Exports #}
+  <div class="flex flex-wrap gap-4">
+    <a href="{{ url_for('budgets.budget_export', budget_id=budget.id, variante='estimation') }}"
+       class="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700">
+      {{ ms('picture_as_pdf', 16) }}
+      Estimation des frais et honoraires (PDF)
+    </a>
+    <a href="{{ url_for('budgets.budget_export', budget_id=budget.id, variante='suivi') }}"
+       class="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700">
+      {{ ms('picture_as_pdf', 16) }}
+      Suivi budgétaire (PDF)
+    </a>
+  </div>
+
+  {% endif %}
+</div>

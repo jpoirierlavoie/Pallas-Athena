@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Historique du budget — {{ dossier.file_number or dossier.title }} — Pallas Athena{% endblock %}
+
+{% block content %}
+{# Version history — the deontological trail (spec Phase O §10): every
+   version is immutable and timestamped; its Estimation PDF IS its readable
+   rendering, always reproducible. #}
+<div class="max-w-3xl mx-auto px-4 py-6">
+  <a href="{{ return_to or url_for('dossiers.dossier_detail', dossier_id=dossier.id, tab='budget') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    {{ ms('chevron_left', 16) }}
+    Retour au dossier
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Historique du budget</h1>
+  <p class="text-sm text-gray-500 mb-6">{{ dossier.file_number }} — {{ dossier.title }}</p>
+
+  {% if versions %}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Version</th>
+          <th class="px-3 py-2 font-medium">Enregistrée le</th>
+          <th class="px-3 py-2 font-medium text-right">Heures</th>
+          <th class="px-3 py-2 font-medium text-right">Taux</th>
+          <th class="px-3 py-2 font-medium text-right">Total</th>
+          <th class="px-3 py-2 font-medium"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for b in versions %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap {{ 'font-semibold text-gray-900' if loop.first else 'text-gray-700' }}">
+            v{{ b.version }}{% if loop.first %} <span class="text-xs font-medium text-indigo-600">courante</span>{% endif %}
+          </td>
+          <td class="px-3 py-2 whitespace-nowrap text-gray-700">{{ (b.created_at | to_mtl).strftime('%Y-%m-%d %H:%M') if b.created_at else '—' }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ '%.2f'|format(b.totals.hours)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-700">{{ b.hourly_rate | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ b.totals.total_cents | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap">
+            <a href="{{ url_for('budgets.budget_export', budget_id=b.id, variante='estimation') }}"
+               class="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700">
+              {{ ms('picture_as_pdf', 16) }} Estimation
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+    Aucun budget pour ce dossier.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

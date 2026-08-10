@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Budget — {{ dossier.file_number or dossier.title }} — Pallas Athena{% endblock %}
+
+{% block content %}
+{# Budget form — versioned repeater (the prescription_events pattern):
+   seed in a NON-EXECUTABLE JSON block, Alpine state, ONE hidden JSON field.
+   Every save mints a NEW immutable version (models/budget.py — the
+   deontological proof of WHEN the client was informed). Live totals are
+   DISPLAY ONLY — the server reparses and stays the authority. #}
+<script type="application/json" id="budget-initial">{{ seed | tojson }}</script>
+
+<div class="max-w-3xl mx-auto px-4 py-6"
+     x-data="{
+       seed: JSON.parse(document.getElementById('budget-initial').textContent),
+       groups: [],
+       modules: [],
+       rate: '',
+       init() {
+         this.groups = this.seed.groups;
+         this.modules = this.seed.modules_disponibles;
+         this.rate = this.seed.rate_display;
+       },
+       rateCents() {
+         let r = parseFloat(String(this.rate).replace(/\s/g, '').replace(',', '.')) || 0;
+         return Math.round(r * 100);
+       },
+       fraisCents(row) {
+         let f = parseFloat(String(row.frais).replace(/\s/g, '').replace(',', '.')) || 0;
+         return Math.round(f * 100);
+       },
+       feesCents(row) {
+         return Math.round((parseFloat(row.hours) || 0) * this.rateCents());
+       },
+       money(cents) {
+         return (cents / 100).toFixed(2).replace('.', ',') + ' $';
+       },
+       groupHours(g) { return g.lines.reduce((s, r) => s + (parseFloat(r.hours) || 0), 0); },
+       groupFees(g) { return g.lines.reduce((s, r) => s + this.feesCents(r), 0); },
+       groupFrais(g) { return g.lines.reduce((s, r) => s + this.fraisCents(r), 0); },
+       totalFees() { return this.groups.reduce((s, g) => s + this.groupFees(g), 0); },
+       totalFrais() { return this.groups.reduce((s, g) => s + this.groupFrais(g), 0); },
+       totalHours() { return this.groups.reduce((s, g) => s + this.groupHours(g), 0); },
+       addModule(i) { this.groups.push(this.modules.splice(i, 1)[0]); },
+       removeGroup(i) {
+         /* Modules only — a removed group goes back to the picker; its
+            values are discarded (zero rows never persist anyway). */
+         let g = this.groups[i];
+         if (g.categorie !== 'module') return;
+         g.lines.forEach(r => { r.hours = 0; r.frais = ''; });
+         this.groups.splice(i, 1);
+         this.modules.push(g);
+       },
+       payload() {
+         return JSON.stringify(this.groups.flatMap(g => g.lines.map(r => ({
+           sous_phase: r.sous_phase, hours: r.hours, frais: r.frais
+         }))));
+       }
+     }">
+
+  <a href="{{ return_to or url_for('dossiers.dossier_detail', dossier_id=dossier.id, tab='budget') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    {{ ms('chevron_left', 16) }}
+    Retour au dossier
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-1">Budget du dossier</h1>
+  <p class="text-sm text-gray-500 mb-6">
+    {{ dossier.file_number }} — {{ dossier.title }}
+    {% if latest %}· la version {{ latest.version }} sera conservée : l'enregistrement crée la version {{ latest.version + 1 }}{% endif %}
+  </p>
+
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('budgets.budget_create') }}" class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="dossier_id" value="{{ dossier.id }}">
+    <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+    <input type="hidden" name="lines_json" :value="payload()">
+
+    {# Rate + note #}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div>
+        <label for="hourly_rate" class="block text-sm font-medium text-gray-700 mb-1">Taux horaire ($) *</label>
+        <input type="text" id="hourly_rate" name="hourly_rate" x-model="rate"
+               placeholder="300,00" autocomplete="off"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+        <p class="text-xs text-gray-400 mt-1">Figé dans la version — les honoraires de chaque ligne en découlent.</p>
+      </div>
+      <div>
+        <label for="note" class="block text-sm font-medium text-gray-700 mb-1">Note (hypothèses)</label>
+        <textarea id="note" name="note" rows="2"
+                  class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ note_value or '' }}</textarea>
+      </div>
+    </div>
+
+    {# Phase groups #}
+    <template x-for="(g, gi) in groups" :key="g.phase">
+      <div class="bg-white rounded-xl border border-gray-200 p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-semibold text-gray-900">
+            <span x-text="g.libelle"></span>
+            <span class="text-xs font-medium text-gray-400" x-text="'[' + g.phase + ']'"></span>
+          </h3>
+          <button type="button" x-show="g.categorie === 'module'" @click="removeGroup(gi)"
+                  class="text-sm text-red-600 hover:text-red-700">Retirer</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="min-w-full text-sm">
+            <thead>
+              <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+                <th class="px-3 py-2 font-medium">Tâche</th>
+                <th class="px-3 py-2 font-medium text-right">Heures</th>
+                <th class="px-3 py-2 font-medium text-right">Honoraires</th>
+                <th class="px-3 py-2 font-medium text-right">Frais ($)</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              <template x-for="row in g.lines" :key="row.sous_phase">
+                <tr>
+                  <td class="px-3 py-2">
+                    <span x-text="row.label"></span>
+                    <span class="text-xs text-gray-400" x-text="row.sous_phase"></span>
+                  </td>
+                  <td class="px-3 py-2 text-right">
+                    <input type="number" step="0.25" min="0" x-model="row.hours"
+                           class="w-20 px-3 py-2 text-sm text-right border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                  </td>
+                  <td class="px-3 py-2 text-right text-gray-900" x-text="money(feesCents(row))"></td>
+                  <td class="px-3 py-2 text-right">
+                    <input type="text" x-model="row.frais" placeholder="0,00" autocomplete="off"
+                           class="w-24 px-3 py-2 text-sm text-right border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                  </td>
+                </tr>
+              </template>
+              <tr class="font-semibold">
+                <td class="px-3 py-2 text-gray-700">Sous-total</td>
+                <td class="px-3 py-2 text-right" x-text="groupHours(g).toFixed(2).replace('.', ',')"></td>
+                <td class="px-3 py-2 text-right" x-text="money(groupFees(g))"></td>
+                <td class="px-3 py-2 text-right" x-text="money(groupFrais(g))"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    {# Module picker #}
+    <div x-show="modules.length" x-cloak>
+      <span class="block text-xs text-gray-400 mb-1">Procédures spéciales — ajouter un module</span>
+      <div class="flex flex-wrap gap-1.5">
+        <template x-for="(m, mi) in modules" :key="m.phase">
+          <button type="button" @click="addModule(mi)"
+                  class="px-2.5 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors">
+            + <span x-text="m.libelle"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+
+    {# Grand total #}
+    <div class="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+      <span class="text-sm font-medium text-gray-700">
+        Total — <span x-text="totalHours().toFixed(2).replace('.', ',')"></span> h
+      </span>
+      <div class="flex items-center gap-4">
+        <span class="text-sm text-gray-600">Honoraires <span x-text="money(totalFees())"></span></span>
+        <span class="text-sm text-gray-600">Frais <span x-text="money(totalFrais())"></span></span>
+        <span class="text-lg font-semibold text-gray-900" x-text="money(totalFees() + totalFrais())"></span>
+      </div>
+    </div>
+
+    <div class="flex gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        {{ 'Enregistrer la version ' + (latest.version + 1)|string if latest else 'Créer le budget' }}
+      </button>
+      <a href="{{ return_to or url_for('dossiers.dossier_detail', dossier_id=dossier.id, tab='budget') }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+    </div>
+  </form>
+</div>
+{% endblock %}
