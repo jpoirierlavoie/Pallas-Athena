@@ -14,7 +14,7 @@ import icalendar
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
-from utils import deadlines
+from utils import deadlines, phases
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,14 @@ PRIORITY_COLORS = {
     "basse": "gray",
 }
 
+# Phase-of-litigation vocabulary (Phase O, axis 1) — lives in utils/phases.py,
+# NOT here. ORTHOGONAL to `category` above (D-11: nature of work ≠ phase of
+# litigation — never overload one with the other).
+VALID_PHASES = phases.VALID_PHASES
+VALID_SOUS_PHASES = phases.VALID_SOUS_PHASES
+PHASE_LABELS = phases.PHASE_LABELS
+SOUS_PHASE_LABELS = phases.SOUS_PHASE_LABELS
+
 
 def _to_utc(dt: datetime) -> datetime:
     """Coerce a datetime to timezone-aware UTC (for iCalendar UTC stamps)."""
@@ -88,6 +96,9 @@ def _default_doc() -> dict:
         "due_date": None,
         "completed_date": None,
         "category": "autre",
+        # Phase O — "" = non renseignée (legacy docs are never backfilled)
+        "phase": "",
+        "sous_phase": "",
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -129,6 +140,8 @@ def _validate(data: dict) -> list[str]:
     if category and category not in VALID_CATEGORIES:
         errors.append("Catégorie invalide.")
 
+    errors.extend(phases.validate_pair(data))
+
     return errors
 
 
@@ -138,6 +151,7 @@ def _validate(data: dict) -> list[str]:
 def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
+    phases.apply_sous_phase_default(merged)
 
     errors = _validate(merged)
     if errors:
@@ -299,6 +313,18 @@ def update_task(
         return None, ["Tâche introuvable."]
 
     merged = {**existing, **_sanitize_data(data)}
+    phases.apply_sous_phase_default(merged)
+
+    # Phase O coherence repair: a caller that supplies a phase WITHOUT a
+    # sub-code (a DAV client that kept CATEGORIES but stripped the X- props)
+    # means « this phase » — when the stored sub-code now contradicts it, the
+    # sub-code follows the phase (the cascade's own semantics) instead of
+    # 422-ing the phone's PUT, which DavX5 would swallow silently.
+    if "phase" in data and "sous_phase" not in data:
+        ph = merged.get("phase", "")
+        sp = merged.get("sous_phase", "")
+        if ph and sp and phases.phase_of(sp) != ph:
+            merged["sous_phase"] = phases.default_sous_phase(ph)
 
     errors = _validate(merged)
     if errors:
@@ -515,10 +541,17 @@ def task_to_vtodo(task: dict) -> str:
                 completed = completed.replace(tzinfo=timezone.utc).astimezone(mtl)
         todo.add("completed", completed)
 
-    # CATEGORIES
+    # CATEGORIES — the category's French label, plus (Phase O, D-7) the
+    # litigation-phase CODE, never its label: the code is ASCII and stable,
+    # so renaming a phase touches no VTODO and jtx Board still gets its
+    # colored tile. One multi-value property (the dossier-VJOURNAL pattern).
+    categories: list[str] = []
     if task.get("category"):
-        label = CATEGORY_LABELS.get(task["category"], task["category"])
-        todo.add("categories", [label])
+        categories.append(CATEGORY_LABELS.get(task["category"], task["category"]))
+    if task.get("phase"):
+        categories.append(task["phase"])
+    if categories:
+        todo.add("categories", categories)
 
     # LAST-MODIFIED
     updated = task.get("updated_at")
@@ -532,6 +565,10 @@ def task_to_vtodo(task: dict) -> str:
         todo.add("x-pallas-dossier-id", task["dossier_id"])
     if task.get("category"):
         todo.add("x-pallas-category", task["category"])
+    if task.get("phase"):
+        todo.add("x-pallas-phase", task["phase"])
+    if task.get("sous_phase"):
+        todo.add("x-pallas-sous-phase", task["sous_phase"])
 
     # RELATED-TO: link to parent note's VJOURNAL UID
     related_note_uid = None
@@ -552,6 +589,27 @@ def task_to_vtodo(task: dict) -> str:
         ical_str = ical_str.replace("END:VTODO", f"{line}\r\nEND:VTODO")
 
     return ical_str
+
+
+def _category_values(component) -> list[str]:
+    """Flatten a component's CATEGORIES into plain strings.
+
+    icalendar hands back a vCategory (with a ``cats`` list) for one
+    CATEGORIES line, or a list of them when the client emitted several lines
+    — both shapes occur in the wild, so normalize before scanning.
+    """
+    raw = component.get("categories")
+    if not raw:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    values: list[str] = []
+    for item in items:
+        cats = getattr(item, "cats", None)
+        if cats is not None:
+            values.extend(str(c) for c in cats)
+        else:
+            values.append(str(item))
+    return values
 
 
 def vtodo_to_task(ical_str: str) -> dict:
@@ -641,6 +699,38 @@ def vtodo_to_task(ical_str: str) -> dict:
             cat = str(category)
             if cat in VALID_CATEGORIES:
                 data["category"] = cat
+
+        # Phase O — NON-EFFACEMENT rule (the hearing CONFERENCE pattern):
+        # OMIT the key when the property is absent from the incoming VTODO,
+        # never return "" — update_task merges {**existing, **data}, so a
+        # present-but-empty key overwrites while an absent key survives, and
+        # a client that drops these on a plain edit must not wipe the stored
+        # phase. An unknown value is IGNORED (key omitted), never propagated.
+        # Fallback (spec §6): without the X- prop, the phase CODE may ride in
+        # CATEGORIES beside the category label — accept only a member of the
+        # phase vocabulary, ignore every other category. The ASCII constraint
+        # (D-3) is what makes that comparison safe across the Android
+        # round-trip (no NFC/NFD guarantee).
+        if "X-PALLAS-PHASE" in component:
+            ph = str(component.get("x-pallas-phase"))
+            if ph in phases.PHASES:
+                data["phase"] = ph
+        else:
+            for cat_value in _category_values(component):
+                if cat_value in phases.PHASES:
+                    data["phase"] = cat_value
+                    break
+
+        if "X-PALLAS-SOUS-PHASE" in component:
+            sp = str(component.get("x-pallas-sous-phase"))
+            if sp in phases.SOUS_CODES:
+                parent = phases.phase_of(sp)
+                if "phase" not in data:
+                    data["phase"] = parent  # the prefix IS the relationship
+                if data.get("phase") == parent:
+                    data["sous_phase"] = sp
+                # A sub-code contradicting the accepted phase is ignored —
+                # update_task's coherence repair re-imputes to the -00.
 
         # RELATED-TO → resolve parent note link
         related_tos = component.get("related-to")

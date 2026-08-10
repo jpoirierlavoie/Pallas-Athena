@@ -114,6 +114,12 @@
       </div>
     </div>
 
+    {# Phase du litige (Phase O) — cascading picker, shared partial #}
+    {% set phase_value = expense.phase if expense and expense.phase else (phase_default or '') %}
+    {% set sous_phase_value = expense.sous_phase if expense and expense.sous_phase else (sous_phase_default or '') %}
+    {% set is_edit = expense and expense.id %}
+    {% include "components/_phase_selector.html" %}
+
     {# Taxable toggle #}
     <div class="flex items-center gap-3">
       <input type="checkbox" id="taxable" name="taxable"

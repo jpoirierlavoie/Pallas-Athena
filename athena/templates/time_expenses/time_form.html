@@ -11,6 +11,11 @@
        hours: '{{ entry.hours if entry and entry.hours else '' }}',
        rate: '{{ '%.2f'|format(entry.rate / 100) if entry and entry.rate else '' }}',
        billable: {{ 'true' if (not entry or entry.billable is not defined or entry.billable) else 'false' }},
+       onPhaseChanged(detail) {
+         /* D-8: ADM/HOR default to non-billable — uncheck on a real phase
+            pick, never force-check back (the lawyer's manual choice wins). */
+         if (!detail.facturable) { this.billable = false; }
+       },
        get computedAmount() {
          // Unbillable time has no calculated cost — mirrors the server, which
          // stores amount = 0 when 'Facturable' is off.
@@ -53,6 +58,7 @@
   {# ── Form ──────────────────────────────────────────────────── #}
   <form method="post"
         action="{{ url_for('time_expenses.time_entry_update', entry_id=entry.id) if entry and entry.id else url_for('time_expenses.time_entry_create') }}"
+        @phase-changed="onPhaseChanged($event.detail)"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
@@ -115,6 +121,12 @@
                 placeholder="Décrivez le travail effectué…"
                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none">{{ entry.description if entry and entry.description else '' }}</textarea>
     </div>
+
+    {# Phase du litige (Phase O) — cascading picker, shared partial #}
+    {% set phase_value = entry.phase if entry and entry.phase else (phase_default or '') %}
+    {% set sous_phase_value = entry.sous_phase if entry and entry.sous_phase else (sous_phase_default or '') %}
+    {% set is_edit = entry and entry.id %}
+    {% include "components/_phase_selector.html" %}
 
     {# Hours + Rate row #}
     <div class="grid grid-cols-2 gap-4">

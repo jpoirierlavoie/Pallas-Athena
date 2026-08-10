@@ -42,6 +42,8 @@ from models.dossier import (
     get_dossiers_bulk,
     list_dossiers,
 )
+from models.protocol import get_current_phase_for_dossier
+from utils import phases
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/taches")
 
@@ -100,6 +102,10 @@ def _template_context() -> dict:
         "valid_priorities": VALID_PRIORITIES,
         "valid_statuses": VALID_STATUSES,
         "valid_categories": VALID_CATEGORIES,
+        # Phase O cascading picker (components/_phase_selector.html).
+        "phases_payload": phases.form_payload(),
+        "phase_labels": phases.PHASE_LABELS,
+        "sous_phase_labels": phases.SOUS_PHASE_LABELS,
         "today": datetime.now(MTL).strftime("%Y-%m-%d"),
     }
 
@@ -134,6 +140,8 @@ def _form_data() -> dict:
         "priority": f.get("priority", "normale"),
         "status": f.get("status", "à_faire"),
         "category": f.get("category", "autre"),
+        "phase": f.get("phase", ""),
+        "sous_phase": f.get("sous_phase", ""),
         "due_date": _parse_date(f.get("due_date", "")),
         "related_note_id": f.get("related_note_id", "").strip() or None,
     }
@@ -320,6 +328,14 @@ def task_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
+
+    if prefilled and prefilled.get("dossier_id"):
+        # Phase O: suggest the protocol's current phase (D-6) — paid only
+        # when the form opens with a dossier already known.
+        phase_default, sous_default = get_current_phase_for_dossier(
+            prefilled["dossier_id"]
+        )
+        ctx.update(phase_default=phase_default, sous_phase_default=sous_default)
 
     ctx.update(task=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("tasks/form.html", **ctx)
@@ -527,6 +543,7 @@ _EXPORT_COLUMNS_CSV = [
     ("dossier_file_number", "Dossier"),
     ("priority", "Priorité"),
     ("category", "Catégorie"),
+    ("sous_phase", "Phase"),
     ("status", "Statut"),
     ("due_date", "Échéance"),
 ]
@@ -535,9 +552,16 @@ _EXPORT_COLUMNS_PDF = [
     ("title", "Titre", 3.0),
     ("priority", "Priorité", 0.8),
     ("category", "Catégorie", 1.0),
+    ("sous_phase", "Phase", 1.2),
     ("status", "Statut", 0.8),
     ("due_date", "Échéance", 1.0),
 ]
+
+# Phase O — exports show the LABEL, never the bare code (D-13); the ""
+# entry is excluded so legacy rows export an empty cell.
+_PHASE_EXPORT_LABELS = {
+    code: label for code, label in phases.SOUS_PHASE_LABELS.items() if code
+}
 
 _PRIORITY_RANK = {"haute": 0, "normale": 1, "basse": 2}
 
@@ -562,6 +586,7 @@ def _get_export_tasks() -> list[dict]:
             "priority": PRIORITY_LABELS,
             "category": CATEGORY_LABELS,
             "status": STATUS_LABELS,
+            "sous_phase": _PHASE_EXPORT_LABELS,
         },
     )
 
@@ -631,6 +656,7 @@ def _get_export_task_groups() -> list[tuple[str, list[dict]]]:
                 "priority": PRIORITY_LABELS,
                 "category": CATEGORY_LABELS,
                 "status": STATUS_LABELS,
+                "sous_phase": _PHASE_EXPORT_LABELS,
             },
         )
         groups.append((group_label_for(dossier_id, group_tasks[0]), labelled))

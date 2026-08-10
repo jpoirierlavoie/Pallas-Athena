@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from utils import deadlines
+from utils import deadlines, phases
 from utils.deadlines import compute_deadline as _judicial_deadline
 
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -86,6 +86,13 @@ STEP_STATUS_COLORS = {
 }
 
 # ── Protocol Templates ──────────────────────────────────────────────────
+#
+# Phase O: every template step carries a litigation-phase annotation
+# (`phase`/`sous_phase`, utils/phases.py). This mapping is LEGAL CONTENT,
+# approved with the Phase O plan (2026-08-10) — change it only on the
+# practitioner's say-so. It is what makes the protocol→budget→time join
+# possible, and it drives the phase default suggested on new time/expense/
+# task entries (get_current_phase_for_dossier below).
 
 CQ_TEMPLATE_STEPS = [
     {
@@ -96,6 +103,8 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 0,
         "mandatory": True,
         "deadline_locked": True,
+        "phase": "INT",
+        "sous_phase": "INT-02",
     },
     {
         "order": 2,
@@ -105,6 +114,9 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 20,
         "mandatory": True,
         "deadline_locked": True,
+        # The plaintiff's avis is her evidence disclosure → mise en état.
+        "phase": "MEE",
+        "sous_phase": "MEE-01",
     },
     {
         "order": 3,
@@ -114,6 +126,8 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 45,
         "mandatory": True,
         "deadline_locked": True,
+        "phase": "PRL",
+        "sous_phase": "PRL-00",
     },
     {
         "order": 4,
@@ -123,6 +137,9 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 95,
         "mandatory": True,
         "deadline_locked": True,
+        # The defendant's avis is its contestation-side disclosure → défense.
+        "phase": "CTS",
+        "sous_phase": "CTS-01",
     },
     {
         "order": 5,
@@ -132,6 +149,8 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 110,
         "mandatory": True,
         "deadline_locked": True,
+        "phase": "MEE",
+        "sous_phase": "MEE-03",
     },
     {
         "order": 6,
@@ -141,6 +160,8 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 145,
         "mandatory": True,
         "deadline_locked": True,
+        "phase": "PRD",
+        "sous_phase": "PRD-03",
     },
     {
         "order": 7,
@@ -150,6 +171,8 @@ CQ_TEMPLATE_STEPS = [
         "deadline_offset_days": 180,
         "mandatory": True,
         "deadline_locked": True,
+        "phase": "INS",
+        "sous_phase": "INS-01",
     },
 ]
 
@@ -162,6 +185,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 0,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "INT",
+        "sous_phase": "INT-02",
     },
     {
         "order": 2,
@@ -171,6 +196,10 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 15,
         "mandatory": True,
         "deadline_locked": False,
+        # The réponse is the defendant's first act — contestation begins,
+        # but it is not yet a written defence → the phase's -00.
+        "phase": "CTS",
+        "sous_phase": "CTS-00",
     },
     {
         "order": 3,
@@ -180,6 +209,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 45,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "INT",
+        "sous_phase": "INT-03",
     },
     {
         "order": 4,
@@ -189,6 +220,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 120,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "INR",
+        "sous_phase": "INR-00",
     },
     {
         "order": 5,
@@ -198,6 +231,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 150,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "EXP",
+        "sous_phase": "EXP-02",
     },
     {
         "order": 6,
@@ -207,6 +242,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 180,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "PRD",
+        "sous_phase": "PRD-03",
     },
     {
         "order": 7,
@@ -216,6 +253,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 180,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "MEE",
+        "sous_phase": "MEE-03",
     },
     {
         "order": 8,
@@ -225,6 +264,8 @@ CS_TEMPLATE_STEPS = [
         "deadline_offset_days": 180,
         "mandatory": True,
         "deadline_locked": False,
+        "phase": "INS",
+        "sous_phase": "INS-01",
     },
 ]
 
@@ -279,6 +320,10 @@ def _default_step() -> dict:
         "linked_hearing_id": None,
         "notes": "",
         "date_confirmed": False,
+        # Phase O — litigation-phase annotation ("" = unannotated, e.g. a
+        # custom step the user did not classify, or a conventionnel protocol)
+        "phase": "",
+        "sous_phase": "",
         "created_at": None,
         "updated_at": None,
     }
@@ -388,6 +433,8 @@ def _validate_step(data: dict) -> list[str]:
     status = data.get("status", "")
     if status and status not in VALID_STEP_STATUSES:
         errors.append("Statut d'étape invalide.")
+
+    errors.extend(phases.validate_pair(data))
 
     return errors
 
@@ -584,6 +631,34 @@ def get_protocol_for_dossier(
         return None
 
 
+def get_current_phase_for_dossier(dossier_id: str) -> tuple[str, str]:
+    """The dossier's current litigation phase, derived from its protocol.
+
+    « L'étape courante » = the first step, in ``order``, whose status is not
+    « complété » (the implicit logic of ``_check_protocol_completion``). Its
+    ``(phase, sous_phase)`` annotation is the suggested default for a new
+    time/expense/task entry (D-6 §10). Returns ``("", "")`` when there is no
+    active protocol, no annotated open step (conventionnel), or no dossier.
+
+    COST: ~10 Firestore reads (protocol query + steps subcollection). Callers
+    pay it ONLY on a form GET that already knows its dossier — never on the
+    DAV path, never on a blank form (the ``_linked_step`` short-circuit rule).
+    """
+    if not dossier_id:
+        return "", ""
+    try:
+        protocol = get_protocol_for_dossier(dossier_id, active_only=True)
+        if not protocol:
+            return "", ""
+        for step in protocol.get("steps", []):  # already sorted by order
+            if step.get("status") != "complété":
+                return step.get("phase", "") or "", step.get("sous_phase", "") or ""
+        return "", ""
+    except Exception:
+        # A suggestion must never break a form render.
+        return "", ""
+
+
 def list_protocols_for_dossier(dossier_id: str) -> list[dict]:
     """Return all protocols for a dossier, newest first. Steps are NOT loaded."""
     try:
@@ -701,6 +776,7 @@ def add_step(
         return None, ["Protocole introuvable."]
 
     merged = {**_default_step(), **_sanitize_data(step_data)}
+    phases.apply_sous_phase_default(merged)
 
     errors = _validate_step(merged)
     if errors:
@@ -1149,6 +1225,10 @@ def _auto_create_tasks_for_steps(
                 "priority": "normale",
                 "status": "à_faire",
                 "category": "suivi",
+                # Phase O: the linked task inherits its step's annotation, so
+                # time logged against the task's phase matches the protocol.
+                "phase": step.get("phase", ""),
+                "sous_phase": step.get("sous_phase", ""),
             }
             task, errors = create_task(task_data)
             if task:

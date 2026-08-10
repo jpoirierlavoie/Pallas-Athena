@@ -12,7 +12,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
-from utils import deadlines
+from utils import deadlines, phases
 from models.audit_event import record_deletion
 from models.dossier import get_dossier
 from models.protocol import (
@@ -70,6 +70,9 @@ def _template_context() -> dict:
         "step_status_colors": STEP_STATUS_COLORS,
         "valid_protocol_types": VALID_PROTOCOL_TYPES,
         "valid_statuses": VALID_STATUSES,
+        # Phase O — the custom-step phase select + the step-row phase chip.
+        "phase_labels": phases.PHASE_LABELS,
+        "sous_phase_labels": phases.SOUS_PHASE_LABELS,
     }
 
 
@@ -341,6 +344,9 @@ def step_add(protocol_id: str) -> str:
         "description": f.get("description", "").strip(),
         "cpc_reference": f.get("cpc_reference", "").strip(),
         "deadline_date": _parse_date(f.get("deadline_date", "")),
+        # Phase O — optional on a custom step; the model imputes the -00
+        # sub-code when a phase is chosen (D-4/D-15).
+        "phase": f.get("phase", ""),
         "mandatory": False,
         "deadline_locked": False,
     }

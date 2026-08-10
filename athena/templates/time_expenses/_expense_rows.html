@@ -38,6 +38,10 @@
           {% if e.invoiced %}
           <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-green-100 text-green-700">Facturé</span>
           {% endif %}
+          {% if e.phase %}
+          {# Phase O — the label, never the bare code (D-13) #}
+          <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-indigo-50 text-indigo-600 truncate">{{ sous_phase_labels.get(e.sous_phase) or phase_labels.get(e.phase, e.phase) }}</span>
+          {% endif %}
         </div>
         <p class="text-sm text-gray-900 truncate">{{ e.description }}</p>
       </div>

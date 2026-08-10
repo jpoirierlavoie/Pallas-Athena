@@ -159,6 +159,12 @@
           <dt class="text-gray-500">Catégorie</dt>
           <dd class="text-gray-900">{{ category_labels.get(task.category, task.category) }}</dd>
         </div>
+        {% if task.phase %}
+        <div class="flex justify-between">
+          <dt class="text-gray-500">Phase du litige</dt>
+          <dd class="text-gray-900">{{ sous_phase_labels.get(task.sous_phase) or phase_labels.get(task.phase, task.phase) }}</dd>
+        </div>
+        {% endif %}
         <div class="flex justify-between">
           <dt class="text-gray-500">Statut</dt>
           <dd class="text-gray-900">{{ status_labels.get(task.status, task.status) }}</dd>

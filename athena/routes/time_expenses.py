@@ -45,6 +45,8 @@ from models.dossier import (
     get_dossier,
     list_dossiers,
 )
+from models.protocol import get_current_phase_for_dossier
+from utils import phases
 
 time_expenses_bp = Blueprint(
     "time_expenses", __name__, url_prefix="/temps"
@@ -101,8 +103,34 @@ def _template_context() -> dict:
         "category_labels": CATEGORY_LABELS,
         "valid_categories": VALID_CATEGORIES,
         "quick_descriptions": QUICK_DESCRIPTIONS,
+        # Phase O cascading picker (components/_phase_selector.html). Cached
+        # in utils.phases, so handing it to every view costs a dict reference;
+        # only the forms actually serialize it.
+        "phases_payload": phases.form_payload(),
+        "phase_labels": phases.PHASE_LABELS,
+        "sous_phase_labels": phases.SOUS_PHASE_LABELS,
         "today": datetime.now(MTL).strftime("%Y-%m-%d"),
     }
+
+
+def _phase_prefill(dossier_id: str, recent_rows: list[dict]) -> dict:
+    """Suggested phase + recent codes for a form opened WITH a dossier.
+
+    The protocol derivation costs ~10 reads — paid only when the dossier is
+    already known at GET (the dossier-tab entry point, the dominant case);
+    a blank form pays nothing and the DAV/MCP paths never come here.
+    """
+    if not dossier_id:
+        return {"phase_default": "", "sous_phase_default": "",
+                "phase_recents": []}
+    phase, sous = get_current_phase_for_dossier(dossier_id)
+    recents: list[str] = []
+    for row in recent_rows:
+        code = row.get("sous_phase") or ""
+        if code and code not in recents:
+            recents.append(code)
+    return {"phase_default": phase, "sous_phase_default": sous,
+            "phase_recents": recents[:8]}
 
 
 def _enrich_dossier_info(data: dict) -> dict:
@@ -272,6 +300,10 @@ def time_entry_new() -> str:
                 "dossier_title": dossier.get("title", ""),
                 "rate": dossier.get("hourly_rate", 0),
             }
+            recent_rows, _ = list_time_entries_page(
+                dossier_id=dossier_id, limit=10
+            )
+            ctx.update(_phase_prefill(dossier_id, recent_rows))
     ctx.update(entry=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("time_expenses/time_form.html", **ctx)
 
@@ -288,6 +320,8 @@ def time_entry_create() -> str:
         "hours": _parse_hours(f.get("hours", "")),
         "rate": _parse_cents(f.get("rate", "")),
         "billable": f.get("billable") == "on",
+        "phase": f.get("phase", ""),
+        "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
     return_to = f.get("return_to", "")
@@ -336,6 +370,8 @@ def time_entry_update(entry_id: str) -> str:
         "hours": _parse_hours(f.get("hours", "")),
         "rate": _parse_cents(f.get("rate", "")),
         "billable": f.get("billable") == "on",
+        "phase": f.get("phase", ""),
+        "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
     return_to = f.get("return_to", "")
@@ -405,6 +441,10 @@ def expense_new() -> str:
                 "dossier_file_number": dossier.get("file_number", ""),
                 "dossier_title": dossier.get("title", ""),
             }
+            recent_rows, _ = list_expenses_page(
+                dossier_id=dossier_id, limit=10
+            )
+            ctx.update(_phase_prefill(dossier_id, recent_rows))
     ctx.update(expense=prefilled, errors=[], return_to=request.args.get("return_to", ""))
     return render_template("time_expenses/expense_form.html", **ctx)
 
@@ -421,6 +461,8 @@ def expense_create() -> str:
         "category": f.get("category", "autre"),
         "amount": _parse_cents(f.get("amount", "")),
         "taxable": f.get("taxable") == "on",
+        "phase": f.get("phase", ""),
+        "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
     return_to = f.get("return_to", "")
@@ -469,6 +511,8 @@ def expense_update(expense_id: str) -> str:
         "category": f.get("category", "autre"),
         "amount": _parse_cents(f.get("amount", "")),
         "taxable": f.get("taxable") == "on",
+        "phase": f.get("phase", ""),
+        "sous_phase": f.get("sous_phase", ""),
     }
     data = _enrich_dossier_info(data)
     return_to = f.get("return_to", "")
@@ -528,6 +572,7 @@ _TIME_EXPORT_COLUMNS_CSV = [
     ("date", "Date"),
     ("dossier_file_number", "Dossier"),
     ("description", "Description"),
+    ("sous_phase", "Phase"),
     ("hours", "Heures"),
     ("rate", "Taux"),
     ("amount", "Montant"),
@@ -538,7 +583,8 @@ _TIME_EXPORT_COLUMNS_CSV = [
 _TIME_EXPORT_COLUMNS_PDF = [
     ("date", "Date", 1.0),
     ("dossier_file_number", "Dossier", 1.0),
-    ("description", "Description", 2.5),
+    ("description", "Description", 2.2),
+    ("sous_phase", "Phase", 1.2),
     ("hours", "Heures", 0.6),
     ("rate", "Taux", 0.8),
     ("amount", "Montant", 0.8),
@@ -551,6 +597,7 @@ _EXPENSE_EXPORT_COLUMNS_CSV = [
     ("dossier_file_number", "Dossier"),
     ("description", "Description"),
     ("category", "Catégorie"),
+    ("sous_phase", "Phase"),
     ("amount", "Montant"),
     ("taxable", "Taxable"),
     ("invoiced", "Facturé"),
@@ -559,12 +606,21 @@ _EXPENSE_EXPORT_COLUMNS_CSV = [
 _EXPENSE_EXPORT_COLUMNS_PDF = [
     ("date", "Date", 1.0),
     ("dossier_file_number", "Dossier", 1.0),
-    ("description", "Description", 2.5),
+    ("description", "Description", 2.2),
     ("category", "Catégorie", 1.0),
+    ("sous_phase", "Phase", 1.2),
     ("amount", "Montant", 0.8),
     ("taxable", "Taxable", 0.6),
     ("invoiced", "Facturé", 0.6),
 ]
+
+# Phase O — exports show the LABEL, never the bare code (D-13: « CTS » is a
+# visual anagram of the action domaine « CST » in a CSV). The "" entry is
+# deliberately excluded so a legacy row exports an empty cell, not
+# « Non renseignée » on every pre-Phase-O line.
+_PHASE_EXPORT_LABELS = {
+    code: label for code, label in phases.SOUS_PHASE_LABELS.items() if code
+}
 
 
 def _get_export_filters() -> tuple:
@@ -580,7 +636,7 @@ def _get_export_filters() -> tuple:
 @login_required
 def export_time_csv_route() -> Response:
     """Export time entries as CSV."""
-    from utils.export_csv import export_csv
+    from utils.export_csv import export_csv, prepare_export_rows
 
     dossier_id, billable_filter, date_from, date_to = _get_export_filters()
     entries = list_time_entries(
@@ -588,6 +644,9 @@ def export_time_csv_route() -> Response:
         billable_filter=billable_filter or None,
         date_from=date_from,
         date_to=date_to,
+    )
+    entries = prepare_export_rows(
+        entries, label_maps={"sous_phase": _PHASE_EXPORT_LABELS}
     )
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return export_csv(
@@ -604,6 +663,7 @@ def export_time_csv_route() -> Response:
 def export_time_pdf_route() -> Response:
     """Export time entries as PDF report."""
     from utils.export_pdf import export_pdf
+    from utils.export_csv import prepare_export_rows
 
     dossier_id, billable_filter, date_from, date_to = _get_export_filters()
     entries = list_time_entries(
@@ -611,6 +671,9 @@ def export_time_pdf_route() -> Response:
         billable_filter=billable_filter or None,
         date_from=date_from,
         date_to=date_to,
+    )
+    entries = prepare_export_rows(
+        entries, label_maps={"sous_phase": _PHASE_EXPORT_LABELS}
     )
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return export_pdf(
@@ -636,7 +699,11 @@ def export_expense_csv_route() -> Response:
         date_from=date_from,
         date_to=date_to,
     )
-    expenses = prepare_export_rows(expenses, label_maps={"category": CATEGORY_LABELS})
+    expenses = prepare_export_rows(
+        expenses,
+        label_maps={"category": CATEGORY_LABELS,
+                    "sous_phase": _PHASE_EXPORT_LABELS},
+    )
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return export_csv(
         rows=expenses,
@@ -660,7 +727,11 @@ def export_expense_pdf_route() -> Response:
         date_from=date_from,
         date_to=date_to,
     )
-    expenses = prepare_export_rows(expenses, label_maps={"category": CATEGORY_LABELS})
+    expenses = prepare_export_rows(
+        expenses,
+        label_maps={"category": CATEGORY_LABELS,
+                    "sous_phase": _PHASE_EXPORT_LABELS},
+    )
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return export_pdf(
         rows=expenses,

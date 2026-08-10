@@ -1330,6 +1330,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                        "never history."),
         "priority": _str(),
         "category": _str(),
+        "phase": _str("Phase du litige (code, '' = non renseignée)."),
+        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
     }, dav=True),
 
     "create_hearing": _entity_write_result({
@@ -1341,6 +1343,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "create_time_entry": _entity_write_result({
         "hours": _num(),
         "billable": _bool(),
+        "phase": _str("Phase du litige (code, '' = non renseignée)."),
+        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
         **_money("rate"),
         **_money("amount"),
     }, dav=False),
@@ -1348,6 +1352,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "create_expense": _entity_write_result({
         "category": _str(),
         "taxable": _bool(),
+        "phase": _str("Phase du litige (code, '' = non renseignée)."),
+        "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
         **_money("amount"),
     }, dav=False),
 

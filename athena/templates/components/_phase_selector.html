@@ -1,0 +1,92 @@
+{# Phase O — cascading litigation-phase picker (phase → sous-code).
+   Include AFTER setting in context:
+     phase_value / sous_phase_value  — current values ("" when new)
+     is_edit                         — editing an existing document
+     phase_recents                   — list of recent sous-codes (may be empty)
+   Route context must provide phases_payload + phase_labels
+   (routes/*._template_context).
+
+   Self-contained Alpine scope (no coupling to the host form's x-data): it
+   notifies the host via a bubbling « phase-changed » event carrying
+   { facturable } so the time form can uncheck « Facturable » on ADM/HOR
+   (D-8) with a simple listener. The data block is NON-EXECUTABLE JSON (the
+   taxonomie-data pattern — no fetch(): a raw fetch carries no App Check
+   header, and the cascade must work on first paint). The sub-code resets to
+   the phase's « -00 » on a phase change — a CONCRETE value, so the POST can
+   never carry an incoherent pair. #}
+<script type="application/json" id="phases-data">{{ phases_payload | tojson }}</script>
+<div x-data="{
+       phasesData: JSON.parse(document.getElementById('phases-data').textContent),
+       phase: '{{ phase_value or '' }}',
+       sousPhase: '{{ sous_phase_value or '' }}',
+       get sousCodes() {
+         return this.phasesData[this.phase] ? this.phasesData[this.phase].sous_codes : [];
+       },
+       get portee() {
+         return this.phasesData[this.phase] ? this.phasesData[this.phase].portee : '';
+       },
+       notify() {
+         let p = this.phasesData[this.phase];
+         this.$dispatch('phase-changed', { facturable: !p || p.facturable_defaut });
+       },
+       onPhaseChange() {
+         this.sousPhase = this.phase ? this.phase + '-00' : '';
+         this.notify();
+       },
+       pick(code) {
+         this.phase = code.split('-')[0];
+         this.sousPhase = code;
+         this.notify();
+       }
+     }"
+     class="space-y-4">
+
+  {% if phase_recents %}
+  <div>
+    <span class="block text-xs text-gray-400 mb-1">Codes récents du dossier</span>
+    <div class="flex flex-wrap gap-1.5">
+      {% for code in phase_recents %}
+      <button type="button" @click="pick('{{ code }}')"
+              class="px-2.5 py-1 text-xs font-medium bg-gray-100 rounded-full hover:bg-gray-200 transition-colors"
+              :class="sousPhase === '{{ code }}' ? 'text-indigo-600' : 'text-gray-600'">
+        {{ code }}
+      </button>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div>
+    <label for="phase" class="block text-sm font-medium text-gray-700 mb-1">Phase du litige{{ '' if is_edit else ' *' }}</label>
+    <select id="phase" name="phase" x-model="phase" x-on:change="onPhaseChange()"
+            {% if not is_edit %}required{% endif %}
+            class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      {% if is_edit and not phase_value %}
+      {# A legacy document stays saveable without forcing a choice (D-6). #}
+      <option value="">Non renseignée</option>
+      {% elif not is_edit %}
+      <option value="">— Choisir une phase —</option>
+      {% endif %}
+      {% for code, label in phase_labels.items() if code %}
+      <option value="{{ code }}">{{ label }} [{{ code }}]</option>
+      {% endfor %}
+    </select>
+    <p class="text-xs text-gray-400 mt-1" x-show="portee" x-cloak x-text="portee"></p>
+  </div>
+
+  <div x-show="phase" x-cloak>
+    <label for="sous_phase" class="block text-sm font-medium text-gray-700 mb-1">Sous-code</label>
+    {# Options come from x-for, so the Jinja `selected` idiom cannot be used.
+       x-model alone can apply its value before x-for has rendered the
+       options, which would silently blank a saved sub-code on the edit form
+       — the $nextTick re-application closes that window (the domaine/action
+       cascade's own fix). #}
+    <select id="sous_phase" name="sous_phase" x-model="sousPhase"
+            x-init="$nextTick(() => { $el.value = sousPhase })"
+            class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <template x-for="sc in sousCodes" :key="sc.code">
+        <option :value="sc.code" x-text="sc.label"></option>
+      </template>
+    </select>
+  </div>
+</div>

@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils import phases
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,14 @@ CATEGORY_LABELS = {
     "autre": "Autre",
 }
 
+# Phase-of-litigation vocabulary (Phase O, axis 1) — lives in utils/phases.py,
+# NOT here. ORTHOGONAL to `category` above (D-11: type of disbursement ≠
+# phase of litigation — never overload one with the other).
+VALID_PHASES = phases.VALID_PHASES
+VALID_SOUS_PHASES = phases.VALID_SOUS_PHASES
+PHASE_LABELS = phases.PHASE_LABELS
+SOUS_PHASE_LABELS = phases.SOUS_PHASE_LABELS
+
 
 def _default_doc() -> dict:
     """Return a dict with every expense field set to its default value."""
@@ -51,6 +60,9 @@ def _default_doc() -> dict:
         "date": None,
         "description": "",
         "category": "autre",
+        # Phase O — "" = non renseignée (legacy docs are never backfilled)
+        "phase": "",
+        "sous_phase": "",
         "amount": 0,          # cents
         "taxable": True,
         "receipt_document_id": None,
@@ -95,6 +107,8 @@ def _validate(data: dict) -> list[str]:
     if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
         errors.append("Le montant doit être supérieur à zéro.")
 
+    errors.extend(phases.validate_pair(data))
+
     return errors
 
 
@@ -104,6 +118,7 @@ def _validate(data: dict) -> list[str]:
 def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
     merged = {**_default_doc(), **_sanitize_data(data)}
+    phases.apply_sous_phase_default(merged)
 
     errors = _validate(merged)
     if errors:
@@ -282,6 +297,7 @@ def update_expense(
         return None, ["Impossible de modifier une dépense déjà facturée."]
 
     merged = {**existing, **_sanitize_data(data)}
+    phases.apply_sous_phase_default(merged)
 
     errors = _validate(merged)
     if errors:

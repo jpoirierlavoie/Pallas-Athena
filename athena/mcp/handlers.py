@@ -61,7 +61,7 @@ from models import time_entry as time_entry_model
 from models import trust as trust_model
 from security import sanitize
 from tz import MTL
-from utils import deadlines, taxonomie
+from utils import deadlines, phases, taxonomie
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
@@ -2901,6 +2901,29 @@ def _write_date(args: dict, key: str, *, required: bool) -> Optional[datetime]:
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
+def _resolve_phase_pair(args: dict) -> tuple[str, str]:
+    """The optional Phase O pair, with the schema-documented ergonomics.
+
+    Unknown codes never reach here (schema enums). ``sous_phase`` alone
+    derives its parent from the prefix; a phase alone imputes to its ``-00``;
+    a contradictory pair is refused in French BEFORE anything is written.
+    Both omitted → ``("", "")`` = non renseignée.
+    """
+    phase = (args.get("phase") or "").strip()
+    sous = (args.get("sous_phase") or "").strip()
+    if sous and not phase:
+        phase = phases.phase_of(sous)
+    if phase and sous and phases.phase_of(sous) != phase:
+        raise ToolArgumentError(
+            f"La sous-phase « {sous} » n'appartient pas à la phase "
+            f"« {phase} ». Corrigez le couple ou omettez `phase` pour "
+            "qu'elle soit déduite du préfixe."
+        )
+    if phase and not sous:
+        sous = phases.default_sous_phase(phase)
+    return phase, sous
+
+
 def _entity_write_result(
     entity_type: str,
     entity: dict,
@@ -2977,6 +3000,7 @@ def _create_task_impl(args: dict, dry_run: bool) -> dict:
     description = f"{description}\n\n{stamp}" if description else stamp
     description = _clean_entity_text(description, "description")
     due = _write_date(args, "due_date", required=False)
+    phase, sous_phase = _resolve_phase_pair(args)
 
     # EXPLICIT whitelist. `status` is PINNED to « à_faire »: a caller-
     # supplied « terminée » would mint a completed task with a fabricated
@@ -2992,6 +3016,8 @@ def _create_task_impl(args: dict, dry_run: bool) -> dict:
         "category": args.get("category") or "autre",
         "status": "à_faire",
         "due_date": due,
+        "phase": phase,
+        "sous_phase": sous_phase,
         "created_via": "mcp",
     }
 
@@ -3006,6 +3032,8 @@ def _create_task_impl(args: dict, dry_run: bool) -> dict:
             "status": doc.get("status", ""),
             "priority": doc.get("priority", ""),
             "category": doc.get("category", ""),
+            "phase": doc.get("phase", ""),
+            "sous_phase": doc.get("sous_phase", ""),
         }
 
     if dry_run:
@@ -3150,6 +3178,8 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
         # the web form prefills.
         rate = int(dossier.get("hourly_rate") or 0)
 
+    phase, sous_phase = _resolve_phase_pair(args)
+
     # No provenance TEXT: descriptions print verbatim on invoices, and a
     # provenance sentence would leak into a client-facing billing
     # narrative. The stored created_via field carries it instead.
@@ -3162,6 +3192,8 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
         "hours": hours,
         "rate": int(rate),
         "billable": billable,
+        "phase": phase,
+        "sous_phase": sous_phase,
         "invoiced": False,
         "created_via": "mcp",
     }
@@ -3176,6 +3208,8 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
             "date": date_str(doc.get("date")),
             "hours": float(doc.get("hours") or 0),
             "billable": bool(doc.get("billable")),
+            "phase": doc.get("phase", ""),
+            "sous_phase": doc.get("sous_phase", ""),
         }
         _money(row, "rate", doc.get("rate", 0))
         _money(row, "amount", doc.get("amount", 0))
@@ -3221,6 +3255,8 @@ def _create_expense_impl(args: dict, dry_run: bool) -> dict:
             "`amount_cents` doit être un montant positif en cents."
         )
 
+    phase, sous_phase = _resolve_phase_pair(args)
+
     data = {
         "dossier_id": dossier_id,
         "dossier_file_number": dossier.get("file_number", ""),
@@ -3230,6 +3266,8 @@ def _create_expense_impl(args: dict, dry_run: bool) -> dict:
         "category": args.get("category") or "autre",
         "amount": amount,
         "taxable": bool(args.get("taxable", True)),
+        "phase": phase,
+        "sous_phase": sous_phase,
         "invoiced": False,
         "created_via": "mcp",
     }
@@ -3244,6 +3282,8 @@ def _create_expense_impl(args: dict, dry_run: bool) -> dict:
             "date": date_str(doc.get("date")),
             "category": doc.get("category", ""),
             "taxable": bool(doc.get("taxable")),
+            "phase": doc.get("phase", ""),
+            "sous_phase": doc.get("sous_phase", ""),
         }
         _money(row, "amount", doc.get("amount", 0))
         return row

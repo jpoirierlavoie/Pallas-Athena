@@ -3608,3 +3608,109 @@ def test_derive_step_status_prorogue_une_echeance_de_fin_de_semaine():
         "à_venir", saturday, today=date(2026, 7, 20)) != "en_retard"
     assert handlers.derive_step_status(
         "à_venir", saturday, today=date(2026, 7, 21)) == "en_retard"
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Phase O — phase/sous_phase on the three phased creators (§7 conformance)
+# ════════════════════════════════════════════════════════════════════════
+
+_PHASED_TOOLS = ("create_task", "create_time_entry", "create_expense")
+
+
+def test_phase_enums_are_derived_from_the_pure_module():
+    """Unlike the hand-copied model literals, these enums are DERIVED from
+    utils/phases.py (the _COVERAGE_CODES precedent) — this pin documents the
+    contract rather than protecting against drift, which is impossible."""
+    from utils import phases as phases_mod
+
+    expected_phases = [c for c in phases_mod.VALID_PHASES if c]
+    expected_sous = [c for c in phases_mod.VALID_SOUS_PHASES if c]
+    for tool in _PHASED_TOOLS:
+        schema = tools.TOOLS[tool]["input_schema"]
+        props = schema["properties"]
+        assert props["phase"]["enum"] == expected_phases, tool
+        assert props["sous_phase"]["enum"] == expected_sous, tool
+        # Optional (D-6 lives at the web form) with per-usage descriptions.
+        assert "phase" not in schema.get("required", []), tool
+        assert "sous_phase" not in schema.get("required", []), tool
+        assert props["phase"]["description"], tool
+        assert props["sous_phase"]["description"], tool
+
+
+def test_phase_prefix_invariant_over_the_exposed_enums():
+    from utils import phases as phases_mod
+
+    props = tools.TOOLS["create_task"]["input_schema"]["properties"]
+    for sp in props["sous_phase"]["enum"]:
+        assert phases_mod.phase_of(sp) in props["phase"]["enum"], sp
+
+
+def test_schema_rejects_unknown_phase_codes():
+    schema = tools.TOOLS["create_task"]["input_schema"]
+    assert tools.validate_args(schema, {"title": "x", "phase": "ZZZ"})
+    assert tools.validate_args(schema, {"title": "x", "sous_phase": "CTS-77"})
+    assert tools.validate_args(schema, {"title": "x", "phase": ""})  # "" excluded
+    assert not tools.validate_args(schema, {"title": "x", "phase": "CTS"})
+
+
+def test_resolve_phase_pair_ergonomics():
+    assert handlers._resolve_phase_pair({}) == ("", "")
+    assert handlers._resolve_phase_pair({"phase": "CTS"}) == ("CTS", "CTS-00")
+    assert handlers._resolve_phase_pair({"sous_phase": "CTS-02"}) == ("CTS", "CTS-02")
+    with pytest.raises(tools.ToolArgumentError, match="n'appartient pas"):
+        handlers._resolve_phase_pair({"phase": "INT", "sous_phase": "CTS-02"})
+
+
+def test_create_time_entry_stores_and_echoes_phase(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    seen = {}
+
+    def _create(data):
+        seen.update(data)
+        return {**data, "id": "te-new", "amount": 30000}, []
+
+    monkeypatch.setattr(handlers.time_entry_model, "create_time_entry", _create)
+    payload = handlers.create_time_entry({
+        "dossier_id": "d1", "date": "2026-08-10",
+        "description": "Rédaction de la défense", "hours": 1.0,
+        "sous_phase": "CTS-02",   # alone: the parent derives from the prefix
+    })
+    assert seen["phase"] == "CTS"
+    assert seen["sous_phase"] == "CTS-02"
+    assert payload["entity"]["phase"] == "CTS"
+    assert payload["entity"]["sous_phase"] == "CTS-02"
+
+
+def test_create_expense_without_phase_stays_blank(monkeypatch):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+    seen = {}
+
+    def _create(data):
+        seen.update(data)
+        return {**data, "id": "e-new"}, []
+
+    monkeypatch.setattr(handlers.expense_model, "create_expense", _create)
+    payload = handlers.create_expense({
+        "dossier_id": "d1", "date": "2026-08-10",
+        "description": "Timbre", "amount_cents": 10500,
+    })
+    assert seen["phase"] == "" and seen["sous_phase"] == ""
+    assert payload["entity"]["phase"] == ""
+
+
+def test_create_task_contradictory_pair_refused_before_write(monkeypatch, bumps):
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: _wdossier())
+
+    def _must_not_run(_data):
+        raise AssertionError("a contradictory pair reached the model")
+
+    monkeypatch.setattr(handlers.task_model, "create_task", _must_not_run)
+    with pytest.raises(tools.ToolArgumentError):
+        handlers.create_task({
+            "dossier_id": "d1", "title": "x",
+            "phase": "INT", "sous_phase": "CTS-02",
+        })
+    assert bumps["bump"] == []

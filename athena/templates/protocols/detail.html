@@ -132,6 +132,18 @@
           </div>
         </div>
         <div>
+          {# Phase O — optional on a custom step; the -00 sub-code is imputed
+             server-side when a phase is chosen. #}
+          <label class="block text-xs font-medium text-gray-700 mb-1">Phase du litige</label>
+          <select name="phase"
+                  class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+            <option value="">Non renseignée</option>
+            {% for code, label in phase_labels.items() if code %}
+            <option value="{{ code }}">{{ label }} [{{ code }}]</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
           <label class="block text-xs font-medium text-gray-700 mb-1">Description</label>
           <textarea name="description" rows="2" placeholder="Détails…"
                     class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"></textarea>
@@ -220,9 +232,12 @@
                   {% endif %}
                 </div>
 
-                {# C.p.c. reference #}
-                {% if step.cpc_reference %}
-                <p class="text-xs text-gray-400 mb-1">{{ step.cpc_reference }}</p>
+                {# C.p.c. reference + litigation phase (Phase O — label, the
+                   code stays technical) #}
+                {% if step.cpc_reference or step.phase %}
+                <p class="text-xs text-gray-400 mb-1">
+                  {{ step.cpc_reference }}{% if step.cpc_reference and step.phase %} · {% endif %}{% if step.phase %}{{ sous_phase_labels.get(step.sous_phase, phase_labels.get(step.phase, step.phase)) }}{% endif %}
+                </p>
                 {% endif %}
 
                 {# Deadline + days remaining #}

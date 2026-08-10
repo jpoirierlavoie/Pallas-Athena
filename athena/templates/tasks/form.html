@@ -130,6 +130,12 @@
       </div>
     </div>
 
+    {# Phase du litige (Phase O) — cascading picker, shared partial #}
+    {% set phase_value = task.phase if task and task.phase else (phase_default or '') %}
+    {% set sous_phase_value = task.sous_phase if task and task.sous_phase else (sous_phase_default or '') %}
+    {% set is_edit = task and task.id %}
+    {% include "components/_phase_selector.html" %}
+
     {# Due date + Status row #}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div>

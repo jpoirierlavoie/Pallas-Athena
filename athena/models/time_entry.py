@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils import phases
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,14 @@ QUICK_DESCRIPTIONS = (
     "Négociation",
 )
 
+# Phase-of-litigation vocabulary (Phase O, axis 1) — lives in utils/phases.py,
+# NOT here (the taxonomie.py pattern: one place to edit; mcp/tools.py derives
+# its enums from the same pure module).
+VALID_PHASES = phases.VALID_PHASES
+VALID_SOUS_PHASES = phases.VALID_SOUS_PHASES
+PHASE_LABELS = phases.PHASE_LABELS
+SOUS_PHASE_LABELS = phases.SOUS_PHASE_LABELS
+
 
 def _default_doc() -> dict:
     """Return a dict with every time entry field set to its default value."""
@@ -42,6 +51,9 @@ def _default_doc() -> dict:
         "dossier_title": "",
         "date": None,
         "description": "",
+        # Phase O — "" = non renseignée (legacy docs are never backfilled)
+        "phase": "",
+        "sous_phase": "",
         "hours": 0.0,
         "rate": 0,          # cents
         "amount": 0,        # cents (computed: hours * rate)
@@ -115,6 +127,8 @@ def _validate(data: dict) -> list[str]:
     if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount < 0:
         errors.append("Le montant calculé est invalide.")
 
+    errors.extend(phases.validate_pair(data))
+
     return errors
 
 
@@ -127,6 +141,7 @@ def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
     merged["amount"] = _compute_entry_amount(
         merged.get("hours", 0), merged.get("rate", 0), bool(merged.get("billable"))
     )
+    phases.apply_sous_phase_default(merged)
 
     errors = _validate(merged)
     if errors:
@@ -314,6 +329,7 @@ def update_time_entry(
     merged["amount"] = _compute_entry_amount(
         merged.get("hours", 0), merged.get("rate", 0), bool(merged.get("billable"))
     )
+    phases.apply_sous_phase_default(merged)
 
     errors = _validate(merged)
     if errors:

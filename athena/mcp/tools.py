@@ -15,6 +15,9 @@ from mcp import SCOPE_READ, SCOPE_WRITE, write_enabled
 from mcp import coverage
 from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
+# Pure module (no Firestore at import) — safe to derive enums from, unlike
+# models.* (see the literal-enum comment below).
+from utils import phases
 
 # ── Money / date formatting (§10.1 conventions) ─────────────────────────
 
@@ -439,6 +442,43 @@ _EXPENSE_CATEGORIES = [
     "signification", "expertise", "transcription", "deplacement",
     "photocopie", "timbre_judiciaire", "autre",
 ]
+
+# Phase O — DERIVED, not hand-copied (the _COVERAGE_CODES precedent):
+# utils/phases.py is pure (no model import, no Firestore at load), so the
+# enum can never drift from the vocabulary the models validate against.
+# "" is deliberately EXCLUDED from the input enums: an MCP caller either
+# phases the entry or omits the parameter — passing "" would be noise.
+_PHASE_CODES = [c for c in phases.VALID_PHASES if c]
+_SOUS_PHASE_CODES = [c for c in phases.VALID_SOUS_PHASES if c]
+
+# The optional phase pair shared by the three phased write tools.
+_PHASE_DESCRIPTION = (
+    "Code de phase du litige (axe 1 — ex. « CTS » Contestation, « PRE » "
+    "Préjudiciaire, « ADM » Administration). Optionnel : omis = non "
+    "renseignée. Indépendant de `category` (nature du travail). Si seul "
+    "`sous_phase` est fourni, la phase parente est déduite du préfixe."
+)
+_SOUS_PHASE_DESCRIPTION = (
+    "Sous-code complet de la phase (ex. « CTS-02 » Demande "
+    "reconventionnelle). Optionnel : une phase sans sous-code impute au "
+    "« -00 » (Général) de cette phase. Le préfixe doit concorder avec "
+    "`phase` si les deux sont fournis."
+)
+
+
+def _phase_props() -> dict:
+    return {
+        "phase": {
+            "type": "string",
+            "enum": _PHASE_CODES,
+            "description": _PHASE_DESCRIPTION,
+        },
+        "sous_phase": {
+            "type": "string",
+            "enum": _SOUS_PHASE_CODES,
+            "description": _SOUS_PHASE_DESCRIPTION,
+        },
+    }
 
 
 # ── Registry ────────────────────────────────────────────────────────────
@@ -1566,6 +1606,7 @@ TOOLS: dict[str, dict] = {
                     "enum": _TASK_CATEGORIES,
                     "description": "Defaults to 'autre'.",
                 },
+                **_phase_props(),
                 **_write_protocol_props(),
             },
             "required": ["title"],
@@ -1712,6 +1753,7 @@ TOOLS: dict[str, dict] = {
                         "with amount 0."
                     ),
                 },
+                **_phase_props(),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id", "date", "description", "hours"],
@@ -1761,6 +1803,7 @@ TOOLS: dict[str, dict] = {
                     "type": "boolean",
                     "description": "Defaults to true.",
                 },
+                **_phase_props(),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id", "date", "description", "amount_cents"],
