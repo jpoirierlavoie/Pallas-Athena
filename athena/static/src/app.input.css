@@ -91,15 +91,16 @@
   src: url("material-symbols-outlined-v364-15c3a869.woff2") format("woff2");
 }
 
-/* Règles MANUELLES (jamais purgées). wght 300 : les Heroicons remplacés
-   traçaient stroke-width 1.5 sur un viewBox 24 (≈6 % de l'em) ; Material à
-   wght 400 trace ≈8 % — sensiblement plus gras ; 300 est l'équivalent
-   visuel aux tailles 16/20 px. opsz suit font-size (auto), borné à l'axe
-   20..48 : sous 20 px le dessin opsz-20 est réduit homothétiquement
-   (traits relativement plus épais — souhaitable en petit). */
+/* Règles MANUELLES (jamais purgées). wght 350 : les Heroicons remplacés
+   traçaient stroke-width 1.5 (≈6 % de l'em) — 300 en était l'équivalent
+   exact, relevé à 350 après revue visuelle (décision utilisateur
+   2026-08-10 : « un poil plus épais »). opsz suit font-size (auto), borné
+   à l'axe 20..48 : sous 20 px le dessin opsz-20 est réduit
+   homothétiquement (traits relativement plus épais — souhaitable en
+   petit). */
 .ms {
   font-family: "Material Symbols Outlined";
-  font-weight: 300;
+  font-weight: 350;
   font-style: normal;
   font-optical-sizing: auto;
   line-height: 1;
@@ -117,18 +118,20 @@
 }
 
 /* Tailles — projection des w-N/h-N que portaient les svg (w-2.5→10 …
-   w-16→64). Les très petits corps regagnent en graisse l'équivalent des
-   stroke-width 2/3 qu'ils portaient. */
-.ms-10 { font-size: 10px; font-weight: 500; }
-.ms-12 { font-size: 12px; font-weight: 400; }
-.ms-14 { font-size: 14px; font-weight: 400; }
-.ms-16 { font-size: 16px; }
-.ms-20 { font-size: 20px; }
-.ms-24 { font-size: 24px; }
-.ms-28 { font-size: 28px; }
-.ms-40 { font-size: 40px; }
-.ms-48 { font-size: 48px; }
-.ms-64 { font-size: 64px; }
+   w-16→64), relevées de +1 px (+2 sur les grandes) après revue visuelle
+   (même décision 2026-08-10 : « un poil plus grand »). Les très petits
+   corps regagnent en graisse l'équivalent des stroke-width 2/3 qu'ils
+   portaient. */
+.ms-10 { font-size: 11px; font-weight: 500; }
+.ms-12 { font-size: 13px; font-weight: 450; }
+.ms-14 { font-size: 15px; font-weight: 450; }
+.ms-16 { font-size: 17px; }
+.ms-20 { font-size: 21px; }
+.ms-24 { font-size: 25px; }
+.ms-28 { font-size: 30px; }
+.ms-40 { font-size: 42px; }
+.ms-48 { font-size: 50px; }
+.ms-64 { font-size: 66px; }
 
 /* Axe FILL (épinglé/signet actifs) — ne fixe QUE FILL ; font-weight et
    opsz (propriétés haut niveau) continuent de s'appliquer. */
