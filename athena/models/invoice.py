@@ -532,6 +532,54 @@ def get_invoice_with_items(invoice_id: str) -> tuple[Optional[dict], list[dict]]
     return invoice, items
 
 
+def list_line_items(invoice_id: str) -> list[dict]:
+    """The line items of one invoice, without re-reading the invoice.
+
+    :func:`get_invoice_with_items` costs an extra document read the journal
+    export does not need — it already holds every invoice document. Fails
+    open to ``[]``: a journal row must still print (its stored totals are
+    authoritative) even when the detail is unreadable.
+    """
+    try:
+        docs = (
+            db.collection(COLLECTION)
+            .document(invoice_id)
+            .collection(LINE_ITEMS_SUB)
+            .stream()
+        )
+        return [d.to_dict() for d in docs]
+    except Exception as exc:
+        logger.warning(
+            "list_line_items failed for %s: %s",
+            sanitize_log_value(invoice_id), exc,
+        )
+        return []
+
+
+def expense_split(invoice: dict, line_items: list[dict]) -> tuple[int, int]:
+    """Disbursements split as ``(taxable_cents, non_taxable_cents)``.
+
+    The Barreau's « Journal des honoraires » wants that split, which the
+    invoice document does not store — only the ``subtotal_expenses`` total.
+    So the STORED total stays authoritative and the items are used solely to
+    carve out the non-taxable part: the two columns then always add back to
+    ``subtotal_expenses``, and a row whose items are missing or unreadable
+    still ties (everything falls under taxable, which is the ``taxable:
+    True`` default the tax was computed under) instead of silently
+    under-reporting the sheet's own subtotal.
+
+    Fees are excluded — ``create_invoice`` always writes them ``taxable:
+    True``, so they are the journal's « Honoraires » column whole.
+    """
+    non_taxable = sum(
+        int(i.get("amount") or 0)
+        for i in line_items
+        if i.get("type") != "fee" and not i.get("taxable", True)
+    )
+    total_expenses = int(invoice.get("subtotal_expenses") or 0)
+    return total_expenses - non_taxable, non_taxable
+
+
 def list_invoices(
     status_filter: Optional[str] = None,
     dossier_id: Optional[str] = None,

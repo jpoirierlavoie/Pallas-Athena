@@ -28,9 +28,11 @@ from models.invoice import (
     balance_of,
     create_invoice,
     delete_invoice,
+    expense_split,
     get_invoice_with_items,
     list_invoices,
     list_invoices_page,
+    list_line_items,
     record_payment,
     update_status,
     void_invoice,
@@ -691,26 +693,12 @@ _EXPORT_COLUMNS_CSV = [
     ("status", "Statut"),
 ]
 
-_EXPORT_COLUMNS_PDF = [
-    ("invoice_number", "N° facture", 1.0),
-    ("date", "Date", 1.0),
-    ("dossier_file_number", "Dossier", 1.0),
-    ("client_name", "Client", 1.5),
-    ("subtotal", "Sous-total", 0.8),
-    ("gst_amount", "TPS", 0.6),
-    ("qst_amount", "TVQ", 0.6),
-    ("total", "Total", 0.8),
-    ("status", "Statut", 0.8),
-]
+# The PDF export is the « Journal des honoraires » (utils/journal_pdf.py),
+# which owns its own thirteen columns — no generic column list here.
 
 
-def _get_export_invoices() -> list[dict]:
-    """Fetch and pre-process invoices for export, respecting current filters."""
-    from utils.export_csv import prepare_export_rows
-
-    status_filter = request.args.get("status", "")
-    dossier_id = request.args.get("dossier_id", "").strip()
-
+def _export_filters() -> tuple[str, str, "datetime | None", "datetime | None"]:
+    """The list filters an export must honour: (status, dossier_id, from, to)."""
     def _parse_date_local(value: str) -> datetime | None:
         if not value or not value.strip():
             return None
@@ -721,16 +709,86 @@ def _get_export_invoices() -> list[dict]:
         except ValueError:
             return None
 
-    date_from = _parse_date_local(request.args.get("date_from", ""))
-    date_to = _parse_date_local(request.args.get("date_to", ""))
+    return (
+        request.args.get("status", ""),
+        request.args.get("dossier_id", "").strip(),
+        _parse_date_local(request.args.get("date_from", "")),
+        _parse_date_local(request.args.get("date_to", "")),
+    )
 
-    invoices = list_invoices(
+
+def _filtered_invoices() -> list[dict]:
+    status_filter, dossier_id, date_from, date_to = _export_filters()
+    return list_invoices(
         status_filter=status_filter or None,
         dossier_id=dossier_id or None,
         date_from=date_from,
         date_to=date_to,
     )
-    return prepare_export_rows(invoices, label_maps={"status": STATUS_LABELS})
+
+
+def _get_export_invoices() -> list[dict]:
+    """Fetch and pre-process invoices for export, respecting current filters."""
+    from utils.export_csv import prepare_export_rows
+
+    return prepare_export_rows(
+        _filtered_invoices(), label_maps={"status": STATUS_LABELS}
+    )
+
+
+def _journal_rows(invoices: list[dict]) -> list[dict]:
+    """One « Journal des honoraires » row per invoice, amounts in cents.
+
+    Costs one line-item read per invoice: the taxable/non-taxable split of
+    disbursements is not stored on the invoice document (see
+    ``models.invoice.expense_split``). Deliberately uncapped — an accounting
+    journal that silently stopped at N rows would be worse than a slow one.
+    """
+    rows: list[dict] = []
+    for inv in invoices:
+        items = list_line_items(inv.get("id", ""))
+        debours_tx, debours_ntx = expense_split(inv, items)
+        date = inv.get("date")
+        rows.append({
+            "date": date.strftime("%Y-%m-%d")
+            if date and hasattr(date, "strftime") else "",
+            "reference": inv.get("dossier_file_number", ""),
+            "client": inv.get("client_name", ""),
+            "numero": inv.get("invoice_number", ""),
+            "honoraires": int(inv.get("subtotal_fees") or 0),
+            "debours_tx": debours_tx,
+            "debours_ntx": debours_ntx,
+            "sous_total": int(inv.get("subtotal") or 0),
+            "tps": int(inv.get("gst_amount") or 0),
+            "tvq": int(inv.get("qst_amount") or 0),
+            "total": int(inv.get("total") or 0),
+            "recu": int(inv.get("amount_paid") or 0),
+            "solde": balance_of(inv),
+            "annulee": inv.get("status") == "annulée",
+        })
+    return rows
+
+
+def _journal_subtitle() -> str:
+    """The active filters, spelled out — a journal must say what it covers."""
+    status_filter, dossier_id, date_from, date_to = _export_filters()
+    parts: list[str] = []
+    if date_from and date_to:
+        parts.append(
+            f"Période du {date_from.strftime('%Y-%m-%d')} "
+            f"au {date_to.strftime('%Y-%m-%d')}"
+        )
+    elif date_from:
+        parts.append(f"À compter du {date_from.strftime('%Y-%m-%d')}")
+    elif date_to:
+        parts.append(f"Jusqu'au {date_to.strftime('%Y-%m-%d')}")
+    else:
+        parts.append("Toutes les factures")
+    if status_filter:
+        parts.append(f"Statut : {STATUS_LABELS.get(status_filter, status_filter)}")
+    if dossier_id:
+        parts.append("Un seul dossier")
+    return " · ".join(parts)
 
 
 @invoices_bp.route("/export/csv")
@@ -752,15 +810,18 @@ def export_csv_route() -> Response:
 @invoices_bp.route("/export/pdf")
 @login_required
 def export_pdf_route() -> Response:
-    """Export invoices as PDF report."""
-    from utils.export_pdf import export_pdf
+    """Export the « Journal des honoraires » (Barreau model, legal landscape)."""
+    from utils.journal_pdf import build_journal_pdf
 
-    rows = _get_export_invoices()
+    invoices = _filtered_invoices()
+    # Chronological: a journal reads oldest first, where the screen list
+    # reads newest first.
+    invoices.sort(
+        key=lambda i: i.get("date") or datetime.min.replace(tzinfo=timezone.utc)
+    )
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return export_pdf(
-        rows=rows,
-        columns=_EXPORT_COLUMNS_PDF,
-        title="Factures",
-        filename=f"factures_{date_str}.pdf",
-        cents_fields=["subtotal", "gst_amount", "qst_amount", "total"],
+    return build_journal_pdf(
+        _journal_rows(invoices),
+        subtitle=_journal_subtitle(),
+        filename=f"journal-honoraires_{date_str}.pdf",
     )
