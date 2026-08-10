@@ -38,6 +38,8 @@ def web():
     app = Flask(__name__, template_folder=_TEMPLATES)
     app.config["SECRET_KEY"] = "test-secret"
     app.config["TESTING"] = True
+    from utils.icons import ms as _ms
+    app.jinja_env.globals["ms"] = _ms  # icônes Material (global posé par create_app en prod)
     app.register_blueprint(rc.reception_bp)
     client = app.test_client()
     with client.session_transaction() as s:

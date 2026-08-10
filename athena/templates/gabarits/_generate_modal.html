@@ -17,9 +17,7 @@
               @click="$el.closest('#gabarit-modal').innerHTML = ''"
               class="p-3 text-gray-400 hover:text-gray-600"
               aria-label="Fermer">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
-        </svg>
+        {{ ms('close', 20) }}
       </button>
     </div>
 

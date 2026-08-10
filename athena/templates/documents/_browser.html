@@ -24,9 +24,7 @@
     Documents
   </a>
   {% for crumb in breadcrumb %}
-  <svg class="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/>
-  </svg>
+  {{ ms('chevron_right', 16, 'text-gray-400') }}
   {% if loop.last %}
   <span class="text-gray-900 whitespace-nowrap font-medium">{{ crumb.name }}</span>
   {% else %}
@@ -58,9 +56,7 @@
       {% if folder_id %}
       <input type="hidden" name="parent_folder_id" value="{{ folder_id }}">
       {% endif %}
-      <svg class="w-5 h-5 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
-      </svg>
+      {{ ms('folder_open', 20, 'text-amber-500') }}
       <input type="text"
              name="name"
              placeholder="Nom du nouveau dossier…"
@@ -71,25 +67,21 @@
              x-init="$nextTick(() => $refs.folderInput.focus())"
              class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
       <button type="submit"
+              title="Créer le dossier" aria-label="Créer le dossier"
               class="p-1.5 text-green-600 hover:text-green-700">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/>
-        </svg>
+        {{ ms('check', 20) }}
       </button>
       <button type="button" @click="creating = false"
+              title="Annuler" aria-label="Annuler"
               class="p-1.5 text-gray-400 hover:text-gray-600">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
-        </svg>
+        {{ ms('close', 20) }}
       </button>
     </form>
   </template>
   <template x-if="!creating">
     <button @click="creating = true"
             class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
-      </svg>
+      {{ ms('add', 16) }}
       Nouveau dossier
     </button>
   </template>
@@ -113,17 +105,13 @@
          hx-push-url="true"
          class="flex items-center gap-4 flex-1 min-w-0">
         <div class="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
-          <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
-          </svg>
+          {{ ms('folder_open', 20, 'text-amber-500') }}
         </div>
         <div class="flex-1 min-w-0">
           <span class="text-sm font-medium text-gray-900 truncate block">{{ f.name }}</span>
           <span class="text-xs text-gray-400">{{ f._item_count }} élément{{ 's' if f._item_count != 1 }}</span>
         </div>
-        <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/>
-        </svg>
+        {{ ms('chevron_right', 20, 'text-gray-400') }}
       </a>
     </template>
 
@@ -139,9 +127,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="dossier_id" value="{{ dossier_id }}">
         <div class="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
-          <svg class="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
-          </svg>
+          {{ ms('folder_open', 20, 'text-amber-500') }}
         </div>
         <input type="text"
                name="new_name"
@@ -150,11 +136,11 @@
                maxlength="100"
                autofocus
                class="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        <button type="submit" class="p-1.5 text-green-600 hover:text-green-700">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        <button type="submit" title="Confirmer le renommage" aria-label="Confirmer le renommage" class="p-1.5 text-green-600 hover:text-green-700">
+          {{ ms('check', 20) }}
         </button>
-        <button type="button" @click="renaming = false" class="p-1.5 text-gray-400 hover:text-gray-600">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+        <button type="button" @click="renaming = false" title="Annuler" aria-label="Annuler" class="p-1.5 text-gray-400 hover:text-gray-600">
+          {{ ms('close', 20) }}
         </button>
       </form>
     </template>
@@ -163,10 +149,9 @@
     <template x-if="!renaming">
       <div class="relative flex-shrink-0">
         <button @click.stop="menuOpen = !menuOpen"
+                title="Actions du dossier" aria-label="Actions du dossier"
                 class="p-1.5 text-gray-400 hover:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 12.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5ZM12 18.75a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z"/>
-          </svg>
+          {{ ms('more_vert', 20) }}
         </button>
         <div x-show="menuOpen"
              @click.outside="menuOpen = false"
@@ -225,26 +210,7 @@
      class="flex items-center gap-4 p-4 bg-white rounded-xl border border-gray-200 hover:border-gray-300 transition-colors">
 
     {# File type icon #}
-    <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0
-                {% if d._file_icon == 'pdf' %}bg-red-50{% elif d._file_icon == 'word' %}bg-blue-50{% elif d._file_icon == 'image' %}bg-green-50{% else %}bg-gray-50{% endif %}">
-      {% if d._file_icon == 'pdf' %}
-      <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
-      </svg>
-      {% elif d._file_icon == 'word' %}
-      <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
-      </svg>
-      {% elif d._file_icon == 'image' %}
-      <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/>
-      </svg>
-      {% else %}
-      <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
-      </svg>
-      {% endif %}
-    </div>
+    {% with kind = d._file_icon %}{% include 'components/_file_icon.html' %}{% endwith %}
 
     {# Info #}
     <div class="flex-1 min-w-0">
@@ -267,9 +233,7 @@
     </div>
 
     {# Chevron #}
-    <svg class="w-5 h-5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/>
-    </svg>
+    {{ ms('chevron_right', 20, 'text-gray-400') }}
   </a>
   {% endfor %}
 
@@ -277,9 +241,7 @@
 {% include "components/pagination.html" %}
 {% else %}
 <div class="flex flex-col items-center justify-center py-16 text-center">
-  <svg class="w-12 h-12 text-gray-300 mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-    <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/>
-  </svg>
+  {{ ms('draft', 48, 'text-gray-300 mb-4') }}
   {% if folder_id %}
   <p class="text-gray-500 text-sm mb-4">Ce dossier est vide.</p>
   {% else %}

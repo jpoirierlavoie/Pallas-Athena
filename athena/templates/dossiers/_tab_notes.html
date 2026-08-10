@@ -15,9 +15,7 @@
        class="p-3 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
       <div class="flex items-center gap-2 mb-1">
         {% if n.pinned %}
-        <svg class="w-3 h-3 text-amber-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/>
-        </svg>
+        {{ ms('push_pin', 12, 'text-amber-500', fill=True) }}
         {% endif %}
         <span class="text-sm font-medium text-gray-900 truncate">{{ n.title }}</span>
         <span class="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-gray-100 text-gray-600">

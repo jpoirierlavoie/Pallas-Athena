@@ -73,6 +73,67 @@
     U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* ── Material Symbols Outlined — icônes (ligatures), sous-ensemble vendu ───
+   Apache-2.0 (fichier licence sœur *-Apache-2.0.txt — PAS OFL comme les
+   Noto). Liste canonique des glyphes : utils/icons.py (MATERIAL_ICONS),
+   épinglée par tests/test_icons.py — le woff2 contient EXACTEMENT ces
+   ligatures ; ajouter une icône = régénérer le sous-ensemble = NOUVEAU nom
+   de fichier + fan-out complet (procédure : utils/fonts/README.md).
+   font-display: block — le « texte de repli » d'une icône est le NOM de sa
+   ligature (« delete ») : swap l'afficherait brut pendant le chargement ;
+   block masque le glyphe (≤3 s), atténué par le preload Early Hints + le
+   precache du service worker. */
+@font-face {
+  font-family: "Material Symbols Outlined";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: block;
+  src: url("material-symbols-outlined-v364-15c3a869.woff2") format("woff2");
+}
+
+/* Règles MANUELLES (jamais purgées). wght 300 : les Heroicons remplacés
+   traçaient stroke-width 1.5 sur un viewBox 24 (≈6 % de l'em) ; Material à
+   wght 400 trace ≈8 % — sensiblement plus gras ; 300 est l'équivalent
+   visuel aux tailles 16/20 px. opsz suit font-size (auto), borné à l'axe
+   20..48 : sous 20 px le dessin opsz-20 est réduit homothétiquement
+   (traits relativement plus épais — souhaitable en petit). */
+.ms {
+  font-family: "Material Symbols Outlined";
+  font-weight: 300;
+  font-style: normal;
+  font-optical-sizing: auto;
+  line-height: 1;
+  display: inline-block;
+  flex-shrink: 0;            /* remplace les flex-shrink-0 des anciens svg */
+  vertical-align: middle;    /* les rares sites hors conteneur flex */
+  letter-spacing: normal;    /* neutralise un tracking-* hérité (ligatures) */
+  text-transform: none;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Tailles — projection des w-N/h-N que portaient les svg (w-2.5→10 …
+   w-16→64). Les très petits corps regagnent en graisse l'équivalent des
+   stroke-width 2/3 qu'ils portaient. */
+.ms-10 { font-size: 10px; font-weight: 500; }
+.ms-12 { font-size: 12px; font-weight: 400; }
+.ms-14 { font-size: 14px; font-weight: 400; }
+.ms-16 { font-size: 16px; }
+.ms-20 { font-size: 20px; }
+.ms-24 { font-size: 24px; }
+.ms-28 { font-size: 28px; }
+.ms-40 { font-size: 40px; }
+.ms-48 { font-size: 48px; }
+.ms-64 { font-size: 64px; }
+
+/* Axe FILL (épinglé/signet actifs) — ne fixe QUE FILL ; font-weight et
+   opsz (propriétés haut niveau) continuent de s'appliquer. */
+.ms-fill { font-variation-settings: "FILL" 1; }
+
 /* Override Tailwind's stock --font-sans (which had silently diverged from the
    body stack — an element carrying the `font-sans` utility resolved to
    ui-sans-serif, not the body font) and define --font-serif. The

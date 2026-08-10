@@ -123,6 +123,13 @@ def create_app() -> Flask:
 
     app.jinja_env.filters["markdown"] = render_markdown
 
+    # Material Symbols (icônes en ligatures) — global plutôt que macro Jinja :
+    # ~65 gabarits appelants, et utils/icons.py est aussi le lieu de la liste
+    # canonique du sous-ensemble vendu (validation + gouvernance + émission
+    # au même endroit ; tests/test_icons.py épingle l'accord).
+    from utils.icons import ms
+    app.jinja_env.globals["ms"] = ms
+
     # ── Blueprints ───────────────────────────────────────────────────
     from routes.auth_routes import auth_bp
     from routes.dashboard import dashboard_bp

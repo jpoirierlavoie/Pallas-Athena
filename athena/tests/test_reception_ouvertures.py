@@ -42,6 +42,8 @@ def web():
     app = Flask(__name__, template_folder=_TEMPLATES)
     app.config["SECRET_KEY"] = "test-secret"
     app.config["TESTING"] = True
+    from utils.icons import ms as _ms
+    app.jinja_env.globals["ms"] = _ms  # icônes Material (global posé par create_app en prod)
     app.register_blueprint(rc.reception_bp)
     # Réception redirige vers la fiche créée (§5.3) : sans ce blueprint,
     # url_for lèverait BuildError — ce qui a d'ailleurs révélé que

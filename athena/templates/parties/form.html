@@ -41,7 +41,7 @@
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('parties.partie_detail', partie_id=partie.id) if partie and partie.id else url_for('parties.partie_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      {{ ms('chevron_left', 16) }}
       Retour
     </a>
     <h1 class="text-lg font-semibold text-gray-900">
@@ -397,7 +397,7 @@
       <ul x-show="mandataires.length > 0" x-cloak class="space-y-2 mb-4">
         <template x-for="(m, idx) in mandataires" :key="m.id">
           <li class="flex items-start gap-3 p-3 rounded-lg bg-indigo-50 border border-indigo-200">
-            <svg class="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z"/></svg>
+            {{ ms('person', 20, 'text-indigo-600 mt-0.5') }}
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-sm font-medium text-gray-900" x-text="m.name"></span>
@@ -413,7 +413,7 @@
                     @click="mandataires.splice(idx, 1)"
                     class="text-indigo-700 hover:text-indigo-900 flex-shrink-0"
                     aria-label="Retirer ce mandataire">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+              {{ ms('close', 20) }}
             </button>
           </li>
         </template>
@@ -486,7 +486,7 @@
       <template x-if="identityVerified === 'non_vérifié'">
         <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
           <p class="text-xs text-amber-700">
-            <svg class="w-4 h-4 inline-block mr-1" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>
+            {{ ms('warning', 16, 'inline-block mr-1') }}
             L'identité de ce client n'a pas encore été vérifiée.
           </p>
         </div>

@@ -46,6 +46,8 @@ def _make_app(**config) -> Flask:
     from routes.auth_routes import auth_bp
     from security import csrf, limiter
 
+    from utils.icons import ms as _ms
+    app.jinja_env.globals["ms"] = _ms  # icônes Material (global posé par create_app en prod)
     csrf.init_app(app)
     limiter.init_app(app)
     app.register_blueprint(auth_bp)

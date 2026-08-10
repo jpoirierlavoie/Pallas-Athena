@@ -1,0 +1,17 @@
+{# Vignette type-de-fichier (pdf/word/image/autre) — remplace les 4
+   duplications historiques (documents/_document_rows, documents/_browser,
+   dossiers/_tab_documents, documents/detail).
+   Contexte requis : kind (la valeur de document._file_icon).
+   Optionnel : variant ∈ 'sm' (w-8, 16px) | 'md' (w-10, 20px — défaut) |
+   'lg' (w-14, 28px — page détail).
+   Les noms d'icônes et les classes restent des LITTÉRAUX complets
+   (contrat du scan tests/test_icons.py + anti-purge Tailwind). #}
+{% set _v = variant | default('md') %}
+<div class="{% if _v == 'lg' %}w-14 h-14 rounded-xl{% elif _v == 'sm' %}w-8 h-8 rounded-md{% else %}w-10 h-10 rounded-lg{% endif %} flex items-center justify-center flex-shrink-0
+            {% if kind == 'pdf' %}bg-red-50{% elif kind == 'word' %}bg-blue-50{% elif kind == 'image' %}bg-green-50{% else %}bg-gray-50{% endif %}">
+  {% set _sz = 28 if _v == 'lg' else (16 if _v == 'sm' else 20) %}
+  {% if kind == 'pdf' %}{{ ms('picture_as_pdf', _sz, 'text-red-500') }}
+  {% elif kind == 'word' %}{{ ms('description', _sz, 'text-blue-500') }}
+  {% elif kind == 'image' %}{{ ms('image', _sz, 'text-green-500') }}
+  {% else %}{{ ms('draft', _sz, 'text-gray-400') }}{% endif %}
+</div>

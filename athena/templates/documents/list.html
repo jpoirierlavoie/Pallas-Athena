@@ -9,9 +9,7 @@
     <h1 class="text-xl font-semibold text-gray-900">Documents</h1>
     <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
        class="hidden md:inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>
-      </svg>
+      {{ ms('upload', 16) }}
       Téléverser
     </a>
   </div>
@@ -89,9 +87,7 @@
   {# ── Mobile FAB ───────────────────────────────────────────── #}
   <a href="{{ url_for('documents.document_upload_form', dossier_id=dossier_id, folder_id=folder_id or '') }}"
      class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
-    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-      <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/>
-    </svg>
+    {{ ms('upload', 24) }}
   </a>
 
 </div>

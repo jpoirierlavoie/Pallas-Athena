@@ -19,7 +19,7 @@
   <div class="flex items-center justify-between mb-6">
     <a href="{{ url_for('dossiers.dossier_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      {{ ms('chevron_left', 16) }}
       Dossiers
     </a>
     <div class="flex items-center gap-2">
@@ -30,25 +30,25 @@
               hx-target="#gabarit-modal"
               hx-swap="innerHTML"
               class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
+        {{ ms('draft', 20) }}
       </button>
       <a href="{{ url_for('reception.inviter_form', dossier_id=dossier.id) }}"
          title="Demander des documents"
          aria-label="Demander des documents"
          class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0-3-3m3 3 3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z"/></svg>
+        {{ ms('archive', 20) }}
       </a>
       <a href="{{ url_for('dossiers.dossier_edit', dossier_id=dossier.id) }}"
          title="Modifier"
          aria-label="Modifier"
          class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"/></svg>
+        {{ ms('edit', 20) }}
       </a>
       <button @click="deleteOpen = true"
               title="Supprimer"
               aria-label="Supprimer"
               class="inline-flex items-center justify-center p-2 text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
+        {{ ms('delete', 20) }}
       </button>
     </div>
   </div>
@@ -60,9 +60,7 @@
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
     <div class="flex items-start gap-4">
       <div class="w-14 h-14 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
-        <svg class="w-7 h-7 text-indigo-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/>
-        </svg>
+        {{ ms('folder_open', 28, 'text-indigo-600') }}
       </div>
       <div class="flex-1 min-w-0">
         <h1 class="text-xl font-semibold text-gray-900 mb-2">{{ dossier.title }}</h1>
@@ -107,7 +105,7 @@
         <div>
           <a href="{{ url_for('parties.partie_detail', partie_id=c.id) }}"
              class="flex items-center gap-2 text-sm text-indigo-600 font-medium hover:text-indigo-700">
-            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
+            {{ ms('person', 16) }}
             <span>{{ c.name }}{% if c.roles %}<span class="text-gray-500 font-normal">, {% for r in c.roles %}{{ party_role_labels.get(r, r) | lower }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}</span>
           </a>
           {% if c.avocat_name %}
@@ -135,7 +133,7 @@
         <div>
           <a href="{{ url_for('parties.partie_detail', partie_id=p.id) }}"
              class="flex items-center gap-2 text-sm text-red-600 font-medium hover:text-red-700">
-            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0"/></svg>
+            {{ ms('person', 16) }}
             <span>{{ p.name }}{% if p.roles %}<span class="text-gray-500 font-normal">, {% for r in p.roles %}{{ party_role_labels.get(r, r) | lower }}{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}</span>
           </a>
           {% if p.avocat_name %}

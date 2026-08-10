@@ -22,16 +22,18 @@
        hx-get="{{ url_for('hearings.hearing_list', view='month', month=prev_month, type=hearing_type_filter, status=status_filter) }}"
        hx-target="#hearing-content"
        hx-swap="innerHTML"
+       title="Mois précédent" aria-label="Mois précédent"
        class="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5"/></svg>
+      {{ ms('chevron_left', 20) }}
     </a>
     <h2 class="text-sm font-semibold text-gray-900 capitalize">{{ month_label }}</h2>
     <a href="{{ url_for('hearings.hearing_list', view='month', month=next_month, type=hearing_type_filter, status=status_filter) }}"
        hx-get="{{ url_for('hearings.hearing_list', view='month', month=next_month, type=hearing_type_filter, status=status_filter) }}"
        hx-target="#hearing-content"
        hx-swap="innerHTML"
+       title="Mois suivant" aria-label="Mois suivant"
        class="p-2 rounded-lg hover:bg-gray-100 text-gray-500">
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5"/></svg>
+      {{ ms('chevron_right', 20) }}
     </a>
   </div>
 

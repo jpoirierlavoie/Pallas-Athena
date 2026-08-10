@@ -12,10 +12,8 @@
        class="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
     <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200">
       <h2 class="text-base font-semibold text-gray-900">{{ modal_title|default('') }}</h2>
-      <button @click="open = false" class="text-gray-400 hover:text-gray-600">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/>
-        </svg>
+      <button @click="open = false" title="Fermer" aria-label="Fermer" class="text-gray-400 hover:text-gray-600">
+        {{ ms('close', 20) }}
       </button>
     </div>
     <div class="p-5">

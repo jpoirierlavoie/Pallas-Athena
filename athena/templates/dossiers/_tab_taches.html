@@ -40,11 +40,11 @@
       {# Priority dot / completion indicator #}
       {% if t.status == 'terminée' %}
       <div class="w-5 h-5 rounded border-2 border-green-500 bg-green-500 flex-shrink-0 flex items-center justify-center">
-        <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        {{ ms('check', 12, 'text-white') }}
       </div>
       {% elif t.status == 'annulée' %}
       <div class="w-5 h-5 rounded border-2 border-gray-300 flex-shrink-0 flex items-center justify-center">
-        <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+        {{ ms('close', 12, 'text-gray-400') }}
       </div>
       {% else %}
       <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 {{ priority_dot.get(t.priority, 'bg-gray-400') }}"></span>

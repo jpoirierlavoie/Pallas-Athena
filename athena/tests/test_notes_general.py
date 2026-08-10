@@ -64,6 +64,8 @@ def client(monkeypatch):
     )
     app.jinja_env.filters["markdown"] = lambda v: v
     app.jinja_env.globals["csp_nonce"] = "test-nonce"
+    from utils.icons import ms as _ms
+    app.jinja_env.globals["ms"] = _ms  # icônes Material (global posé par create_app en prod)
     from security import csrf
 
     app.config["WTF_CSRF_ENABLED"] = False

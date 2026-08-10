@@ -37,7 +37,36 @@ The `unicode-range` in `app.input.css` is copied verbatim from the Google CSS
 responses (latin blocks — cover French incl. œ/Œ, « », ’, —; identical range
 for both families).
 
-## License
+## Material Symbols Outlined (`static/vendor/`) — icônes en ligatures
+
+Sous-ensemble variable (axes `opsz 20..48`, `wght 100..700`, `FILL 0..1` —
+GRAD exclu, app exclusivement claire) contenant EXACTEMENT les glyphes de
+`utils/icons.MATERIAL_ICONS`, épinglé par `tests/test_icons.py`. Téléchargé
+2026-08-10 via l'API css2 (User-Agent navigateur obligatoire), version
+gstatic **v364** :
+
+| Fichier | SHA-256 |
+|---|---|
+| `material-symbols-outlined-v364-15c3a869.woff2` | `15c3a8697a1c9152ca13ed2f10e27011d38731b606e40ed31d5b7e5c2314790b` |
+
+URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
+
+```
+https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL@20..48,100..700,0..1&icon_names=<liste-triée-virgules>&display=block
+```
+
+**Procédure « ajouter une icône »** : 1) ajouter le nom à `MATERIAL_ICONS`
+(`utils/icons.py`) ; 2) reconstruire l'URL ci-dessus et re-télécharger le
+woff2 pointé par le `@font-face` de la réponse ; 3) sha256 → **NOUVEAU nom**
+`material-symbols-outlined-vNNN-<sha8>.woff2` + suppression de l'ancien
+(actif immuable — jamais d'édition en place) ; 4) `url()` dans
+`app.input.css` → recompilation + re-hachage CSS → fan-out complet
+(gabarits ×3, Early Hints ×2, PRECACHE + bump `STATIC_CACHE`, test des
+en-têtes) ; 5) mettre à jour ce tableau ; 6) `pytest`.
+
+Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v364-Apache-2.0.txt`.
+
+## License (Noto)
 
 SIL OFL 1.1 — `OFL.txt` here and `static/vendor/noto-serif-v33-OFL.txt` accompany
 the fonts as the license requires. Self-hosting and PDF embedding are permitted.

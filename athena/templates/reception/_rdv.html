@@ -97,7 +97,7 @@
     <div class="text-xs mb-3">
       {% if h._partie_id %}
       <span class="inline-flex items-center gap-1 text-green-700">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        {{ ms('check', 14) }}
         Partie reconnue&nbsp;: {{ h._partie_nom }}
       </span>
       {% else %}
