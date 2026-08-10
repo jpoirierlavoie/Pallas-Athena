@@ -20,7 +20,7 @@ from auth import login_required
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import safe_internal_redirect
 from config import Config
-from utils.format_fr import parse_cents_fr
+from utils.format_fr import format_rate_fr, parse_cents_fr
 from models.invoice import (
     STATUS_LABELS,
     STATUS_TRANSITIONS,
@@ -88,22 +88,6 @@ def _parse_cents(value: str) -> int:
         return 0
 
 
-def _firm_info() -> dict:
-    """Return firm info from config for invoice display."""
-    return {
-        "name": Config.FIRM_NAME,
-        "street": Config.FIRM_STREET,
-        "unit": Config.FIRM_UNIT,
-        "city": Config.FIRM_CITY,
-        "province": Config.FIRM_PROVINCE,
-        "postal_code": Config.FIRM_POSTAL_CODE,
-        "phone": Config.FIRM_PHONE,
-        "email": Config.FIRM_EMAIL,
-        "gst_number": Config.GST_NUMBER,
-        "qst_number": Config.QST_NUMBER,
-    }
-
-
 def _build_billing_address(partie: dict) -> dict:
     """Snapshot the billing address from a partie record."""
     name = display_name(partie)
@@ -128,11 +112,16 @@ def _build_billing_address(partie: dict) -> dict:
 
 
 def _template_context() -> dict:
-    """Return shared template context for invoice views."""
-    return {
-        "status_labels": STATUS_LABELS,
-        "firm": _firm_info(),
-    }
+    """Return shared template context for invoice views.
+
+    No firm block: the client-facing document is the Word note d'honoraires
+    (``/factures/<id>/note-docx``, whose letterhead comes from the gabarit),
+    and the detail page is a DATA sheet — it never restates the firm's own
+    identity. The tax numbers a given invoice was issued under live on the
+    invoice itself (``gst_number``/``qst_number``, snapshotted at creation),
+    which is what the sheet shows.
+    """
+    return {"status_labels": STATUS_LABELS}
 
 
 # ── Invoice list ─────────────────────────────────────────────────────────
@@ -386,14 +375,23 @@ def invoice_create() -> str:
 @invoices_bp.route("/<invoice_id>")
 @login_required
 def invoice_detail(invoice_id: str) -> str:
-    """Render the invoice detail / print-ready view."""
+    """Render the invoice data sheet.
+
+    A structured reading of what is STORED — never a facsimile of the client
+    document: that is the Word note d'honoraires. Nothing here is recomputed
+    (``compute_totals`` runs at creation only); the one derived figure is the
+    live balance, and it is labelled as such.
+    """
     invoice, items = get_invoice_with_items(invoice_id)
     if not invoice:
         return redirect(url_for("invoices.invoice_list"))
 
-    # Separate items by type
+    # Split by type. Everything that is not a fee is a disbursement — the
+    # same rule utils/invoice_docx.py applies. Matching on == "expense"
+    # would let a line item of any other type vanish from a page whose whole
+    # purpose is to show what the invoice holds.
     fee_items = [i for i in items if i.get("type") == "fee"]
-    expense_items = [i for i in items if i.get("type") == "expense"]
+    expense_items = [i for i in items if i.get("type") != "fee"]
 
     # Available status transitions
     current_status = invoice.get("status", "")
@@ -407,6 +405,11 @@ def invoice_detail(invoice_id: str) -> str:
         transitions=transitions,
         # amount_due is frozen at issuance; the live balance is derived.
         balance=balance_of(invoice),
+        # Rates as STORED on this invoice (GST ×100, QST ×1000) rather than
+        # today's statutory rates hardcoded in the markup — an invoice issued
+        # under a different rate must read back under that rate.
+        gst_rate_display=format_rate_fr(invoice.get("gst_rate") or 0, 100),
+        qst_rate_display=format_rate_fr(invoice.get("qst_rate") or 0, 1000),
         return_to=request.args.get("return_to", ""),
     )
     return render_template("invoices/detail.html", **ctx)

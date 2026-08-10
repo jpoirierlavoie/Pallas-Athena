@@ -1,42 +1,25 @@
 {% extends "base.html" %}
 {% block title %}Facture {{ invoice.invoice_number }} — Pallas Athena{% endblock %}
 
-{% block head %}
-<style>
-  @media print {
-    /* Hide navigation, action buttons, non-essential UI */
-    nav, .no-print, .md\:flex > nav { display: none !important; }
-    main { padding-bottom: 0 !important; }
-    body { background: white !important; }
-    .print-container { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
-    .print-container > * { break-inside: avoid; }
-    /* Clean black-and-white */
-    .bg-white { box-shadow: none !important; border: none !important; }
-    .rounded-xl { border-radius: 0 !important; }
-    /* Page break control */
-    table { page-break-inside: auto; }
-    tr { page-break-inside: avoid; }
-  }
-</style>
-{% endblock %}
+{# Invoice DATA sheet — deliberately not a facsimile of the client document.
+   The client-facing note d'honoraires is the Word one (button below), whose
+   letterhead and layout live in the gabarit; restating them here would mean
+   two renderings of the same invoice to keep in step. So: no firm header, no
+   « FACTURE » title, no paper margins, no @media print. Everything shown is
+   STORED on the invoice — the one derived figure is the balance, labelled as
+   such. #}
 
 {% block content %}
-<div class="max-w-4xl mx-auto px-4 py-6 print-container">
+<div class="max-w-3xl mx-auto px-4 py-6">
 
-  {# ── Back + actions (hidden on print) ──────────────────────── #}
-  <div class="flex items-center justify-between mb-6 no-print">
+  {# ── Back + actions ────────────────────────────────────────── #}
+  <div class="flex items-center justify-between mb-6">
     <a href="{{ return_to or url_for('invoices.invoice_list') }}"
        class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700">
       {{ ms('chevron_left', 16) }}
       {{ 'Retour' if return_to else 'Factures' }}
     </a>
     <div class="flex items-center gap-2">
-      <button type="button" data-print
-              title="Imprimer"
-              aria-label="Imprimer"
-              class="inline-flex items-center justify-center p-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-        {{ ms('print', 20) }}
-      </button>
       {% if invoice.status != 'annulée' %}
       <button type="button"
               hx-post="{{ url_for('invoices.invoice_note_docx', invoice_id=invoice.id) }}"
@@ -80,7 +63,6 @@
         </form>
         {% endif %}
       {% endfor %}
-      {# Delete button for cancelled invoices #}
       {% if invoice.status == 'annulée' %}
       <form method="post" action="{{ url_for('invoices.invoice_delete', invoice_id=invoice.id) }}" class="inline"
             data-confirm="Supprimer définitivement cette facture ?">
@@ -96,265 +78,290 @@
   </div>
 
   {# ── Note-d'honoraires generation result (HTMX target) ─────── #}
-  <div id="note-docx-result" class="no-print"></div>
+  <div id="note-docx-result"></div>
 
-  {# ── Status badge (hidden on print) ───────────────────────── #}
-  <div class="mb-4 no-print">
-    {% set status_colors = {
-      'brouillon': 'bg-gray-200 text-gray-600',
-      'envoyée': 'bg-blue-100 text-blue-700',
-      'payée': 'bg-green-100 text-green-700',
-      'en_retard': 'bg-red-100 text-red-700',
-      'annulée': 'bg-gray-200 text-gray-500'
-    } %}
-    <span class="inline-flex px-3 py-1 text-sm font-medium rounded-full {{ status_colors.get(invoice.status, 'bg-gray-100 text-gray-600') }}">
+  {# ── Title + status ────────────────────────────────────────── #}
+  {% set status_colors = {
+    'brouillon': 'bg-gray-200 text-gray-600',
+    'envoyée': 'bg-blue-100 text-blue-700',
+    'payée': 'bg-green-100 text-green-700',
+    'en_retard': 'bg-red-100 text-red-700',
+    'annulée': 'bg-gray-200 text-gray-500'
+  } %}
+  <div class="flex items-center gap-3 mb-1">
+    <h1 class="text-xl font-semibold text-gray-900">Facture {{ invoice.invoice_number }}</h1>
+    <span class="text-xs px-2 py-0.5 rounded-full {{ status_colors.get(invoice.status, 'bg-gray-100 text-gray-600') }}">
       {{ status_labels.get(invoice.status, invoice.status) }}
     </span>
   </div>
+  <p class="text-sm text-gray-500 mb-6">{{ invoice.client_name }}</p>
 
-  {# ── Invoice document ─────────────────────────────────────── #}
-  <div class="bg-white rounded-xl border border-gray-200 p-6 md:p-10">
+  {# ── Identification ────────────────────────────────────────── #}
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 
-    {# Header: firm info + invoice number #}
-    <div class="flex justify-between items-start mb-8 border-b border-gray-200 pb-6">
-      <div>
-        {% if firm.name %}
-        <h2 class="text-lg font-bold text-gray-900">{{ firm.name }}</h2>
-        {% endif %}
-        {% if firm.street %}
-        <p class="text-sm text-gray-600">{{ firm.street }}{% if firm.unit %}, {{ firm.unit }}{% endif %}</p>
-        {% endif %}
-        {% if firm.city %}
-        <p class="text-sm text-gray-600">{{ firm.city }}{% if firm.province %}, {{ firm.province }}{% endif %} {{ firm.postal_code }}</p>
-        {% endif %}
-        {% if firm.phone %}
-        <p class="text-sm text-gray-600">{{ firm.phone }}</p>
-        {% endif %}
-        {% if firm.email %}
-        <p class="text-sm text-gray-600">{{ firm.email }}</p>
-        {% endif %}
-        {% if firm.gst_number %}
-        <p class="text-xs text-gray-500 mt-2">TPS : {{ firm.gst_number }}</p>
-        {% endif %}
-        {% if firm.qst_number %}
-        <p class="text-xs text-gray-500">TVQ : {{ firm.qst_number }}</p>
-        {% endif %}
-      </div>
-      <div class="text-right">
-        <h1 class="text-2xl font-bold text-gray-900">FACTURE</h1>
-        <p class="text-sm text-gray-600 mt-1">N° {{ invoice.invoice_number }}</p>
-        <p class="text-sm text-gray-600">Date : {{ invoice.date.strftime('%d/%m/%Y') if invoice.date and invoice.date.strftime is defined else '' }}</p>
-        <p class="text-sm text-gray-600">Échéance : {{ invoice.due_date.strftime('%d/%m/%Y') if invoice.due_date and invoice.due_date.strftime is defined else '' }}</p>
-      </div>
-    </div>
-
-    {# Client address + dossier reference #}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-      <div>
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Facturer à</p>
-        {% set addr = invoice.billing_address or {} %}
-        {% if addr.name %}<p class="text-sm font-medium text-gray-900">{{ addr.name }}</p>{% endif %}
-        {% if addr.street %}<p class="text-sm text-gray-600">{{ addr.street }}{% if addr.unit %}, {{ addr.unit }}{% endif %}</p>{% endif %}
-        {% if addr.city %}<p class="text-sm text-gray-600">{{ addr.city }}{% if addr.province %}, {{ addr.province }}{% endif %} {{ addr.postal_code }}</p>{% endif %}
-      </div>
-      <div>
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Référence du dossier</p>
-        <p class="text-sm text-gray-900">{{ invoice.dossier_file_number }}</p>
-        <p class="text-sm text-gray-600">{{ invoice.dossier_title }}</p>
-      </div>
-    </div>
-
-    {# Line items table — fees #}
-    {% if fee_items %}
-    <div class="mb-6">
-      <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Honoraires professionnels</h3>
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="border-b border-gray-200">
-            <th class="text-left py-2 text-gray-500 font-medium">Date</th>
-            <th class="text-left py-2 text-gray-500 font-medium">Description</th>
-            <th class="text-right py-2 text-gray-500 font-medium">Heures</th>
-            <th class="text-right py-2 text-gray-500 font-medium">Taux</th>
-            <th class="text-right py-2 text-gray-500 font-medium">Montant</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in fee_items %}
-          <tr class="border-b border-gray-100">
-            <td class="py-2 text-gray-600">{{ item.date.strftime('%d/%m/%Y') if item.date and item.date.strftime is defined else '' }}</td>
-            <td class="py-2 text-gray-900">{{ item.description }}</td>
-            <td class="py-2 text-right text-gray-600">{{ item.hours }}</td>
-            <td class="py-2 text-right text-gray-600">{{ item.rate | cents_fr }}</td>
-            <td class="py-2 text-right text-gray-900 font-medium">{{ item.amount | cents_fr }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
-
-    {# Line items table — expenses #}
-    {% if expense_items %}
-    <div class="mb-6">
-      <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Débours et frais</h3>
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="border-b border-gray-200">
-            <th class="text-left py-2 text-gray-500 font-medium">Date</th>
-            <th class="text-left py-2 text-gray-500 font-medium">Description</th>
-            <th class="text-right py-2 text-gray-500 font-medium">Montant</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in expense_items %}
-          <tr class="border-b border-gray-100">
-            <td class="py-2 text-gray-600">{{ item.date.strftime('%d/%m/%Y') if item.date and item.date.strftime is defined else '' }}</td>
-            <td class="py-2 text-gray-900">
-              {{ item.description }}
-              {% if not item.taxable %}
-              <span class="text-[10px] ml-1 text-gray-400">(non taxable)</span>
-              {% endif %}
-            </td>
-            <td class="py-2 text-right text-gray-900 font-medium">{{ item.amount | cents_fr }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
-
-    {# Totals #}
-    <div class="border-t border-gray-200 pt-4">
-      <div class="max-w-xs ml-auto">
-        <dl class="space-y-2 text-sm">
-          {% if fee_items %}
-          <div class="flex justify-between">
-            <dt class="text-gray-500">Honoraires</dt>
-            <dd class="text-gray-900">{{ invoice.subtotal_fees | cents_fr }}</dd>
-          </div>
-          {% endif %}
-          {% if expense_items %}
-          <div class="flex justify-between">
-            <dt class="text-gray-500">Débours</dt>
-            <dd class="text-gray-900">{{ invoice.subtotal_expenses | cents_fr }}</dd>
-          </div>
-          {% endif %}
-          <div class="flex justify-between border-t border-gray-100 pt-2">
-            <dt class="text-gray-700 font-medium">Sous-total</dt>
-            <dd class="text-gray-900 font-medium">{{ invoice.subtotal | cents_fr }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-gray-500">TPS (5 %)</dt>
-            <dd class="text-gray-900">{{ invoice.gst_amount | cents_fr }}</dd>
-          </div>
-          <div class="flex justify-between">
-            <dt class="text-gray-500">TVQ (9,975 %)</dt>
-            <dd class="text-gray-900">{{ invoice.qst_amount | cents_fr }}</dd>
-          </div>
-          <div class="flex justify-between border-t border-gray-200 pt-2">
-            <dt class="text-gray-900 font-bold">Total</dt>
-            <dd class="text-gray-900 font-bold text-base">{{ invoice.total | cents_fr }}</dd>
-          </div>
-          {% if invoice.retainer_applied %}
-          <div class="flex justify-between">
-            <dt class="text-gray-500">Provision appliquée</dt>
-            <dd class="text-green-700 font-medium">-{{ invoice.retainer_applied | cents_fr }}</dd>
-          </div>
-          <div class="flex justify-between border-t border-gray-200 pt-2">
-            <dt class="text-gray-900 font-bold">Montant dû</dt>
-            <dd class="text-gray-900 font-bold text-lg">{{ invoice.amount_due | cents_fr }}</dd>
-          </div>
-          {% endif %}
-          {# Encaissement (lot P). « Montant dû » ci-dessus est FIGÉ à
-             l'émission — le solde vivant est la ligne ci-dessous. #}
-          {% if invoice.amount_paid %}
-          <div class="flex justify-between">
-            <dt class="text-gray-500">Encaissé{% if invoice.paid_date %}
-              <span class="text-gray-400">({{ invoice.paid_date.strftime('%Y-%m-%d') }})</span>{% endif %}</dt>
-            <dd class="text-green-700 font-medium">-{{ invoice.amount_paid | cents_fr }}</dd>
-          </div>
-          <div class="flex justify-between border-t border-gray-200 pt-2">
-            <dt class="text-gray-900 font-bold">Solde</dt>
-            <dd class="text-gray-900 font-bold text-lg">{{ balance | cents_fr }}</dd>
-          </div>
-          {% endif %}
-        </dl>
-      </div>
-    </div>
-
-    {# Enregistrer un paiement — l'émission d'une facture et la constatation
-       d'un paiement restent des actes de l'avocat, posés ici. Aucun outil du
-       connecteur MCP n'écrit un encaissement. #}
-    {% if invoice.status not in ('brouillon', 'annulée') %}
-    <div class="border-t border-gray-200 mt-6 pt-6">
-      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-        Encaissement
-      </p>
-      {% if request.args.get('erreur') == 'montant' %}
-      <p class="text-sm text-red-600 mb-2">Montant invalide.</p>
-      {% elif request.args.get('erreur') == 'date' %}
-      <p class="text-sm text-red-600 mb-2">Date invalide.</p>
-      {% elif request.args.get('erreur') == 'paiement' %}
-      <p class="text-sm text-red-600 mb-2">
-        Encaissement refusé (montant supérieur au total, ou facture non
-        éligible).
-      </p>
-      {% elif request.args.get('message') == 'paiement' %}
-      <p class="text-sm text-green-700 mb-2">Encaissement enregistré.</p>
-      {% endif %}
-      <form method="post"
-            action="{{ url_for('invoices.invoice_record_payment', invoice_id=invoice.id) }}"
-            class="flex flex-wrap items-end gap-3">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div>
-          <label for="amount_paid" class="block text-xs text-gray-500 mb-1">
-            Montant encaissé ($)
-          </label>
-          <input type="text" inputmode="decimal" id="amount_paid" name="amount_paid"
-                 value="{{ '%.2f'|format(invoice.amount_paid / 100) if invoice.amount_paid else '' }}"
-                 placeholder="0,00"
-                 class="w-24 px-3 py-2 text-sm border border-gray-300 rounded-lg">
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Facture</h2>
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Numéro</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.invoice_number }}</dd>
         </div>
-        <div>
-          <label for="paid_date" class="block text-xs text-gray-500 mb-1">
-            Date du paiement
-          </label>
-          <input type="date" id="paid_date" name="paid_date"
-                 value="{{ invoice.paid_date.strftime('%Y-%m-%d') if invoice.paid_date else '' }}"
-                 class="px-3 py-2 text-sm border border-gray-300 rounded-lg">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Date</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.date.strftime('%Y-%m-%d') if invoice.date and invoice.date.strftime is defined else '—' }}</dd>
         </div>
-        <button type="submit"
-                class="px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-          Enregistrer
-        </button>
-      </form>
-      <p class="text-xs text-gray-500 mt-2">
-        Un solde ramené à zéro fait passer la facture à « payée ». Corriger le
-        montant à la baisse annule cette bascule ; saisir 0 efface
-        l'encaissement.
-      </p>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Échéance</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date and invoice.due_date.strftime is defined else '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Dossier</dt>
+          <dd class="text-gray-900 text-right">
+            {% if invoice.dossier_id %}
+            <a href="{{ url_for('dossiers.dossier_detail', dossier_id=invoice.dossier_id, tab='facturation') }}"
+               class="text-indigo-600 hover:underline">{{ invoice.dossier_file_number or 'Dossier' }}</a>
+            {% else %}
+            {{ invoice.dossier_file_number or '—' }}
+            {% endif %}
+          </dd>
+        </div>
+        {% if invoice.dossier_title %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Intitulé</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.dossier_title }}</dd>
+        </div>
+        {% endif %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Client</dt>
+          <dd class="text-gray-900 text-right">
+            {% if invoice.client_id %}
+            <a href="{{ url_for('parties.partie_detail', partie_id=invoice.client_id) }}"
+               class="text-indigo-600 hover:underline">{{ invoice.client_name or 'Client' }}</a>
+            {% else %}
+            {{ invoice.client_name or '—' }}
+            {% endif %}
+          </dd>
+        </div>
+      </dl>
     </div>
-    {% endif %}
 
-    {# Notes & payment terms #}
-    {% if invoice.notes or invoice.payment_terms %}
-    <div class="border-t border-gray-200 mt-6 pt-6">
-      {% if invoice.notes %}
-      <div class="mb-3">
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Notes</p>
-        <p class="text-sm text-gray-600">{{ invoice.notes }}</p>
-      </div>
-      {% endif %}
-      {% if invoice.payment_terms %}
-      <div>
-        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Conditions de paiement</p>
-        <p class="text-sm text-gray-600">{{ invoice.payment_terms }}</p>
-      </div>
-      {% endif %}
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Facturation</h2>
+      {# Snapshots frozen at issuance — what was true the day the invoice was
+         issued, not what the contact or the config say today. #}
+      {% set addr = invoice.billing_address or {} %}
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Adresse (figée)</dt>
+          <dd class="text-gray-900 text-right">
+            {% if addr.name or addr.street or addr.city %}
+            {% if addr.name %}{{ addr.name }}<br>{% endif %}
+            {% if addr.street %}{{ addr.street }}{% if addr.unit %}, {{ addr.unit }}{% endif %}<br>{% endif %}
+            {% if addr.city %}{{ addr.city }}{% if addr.province %} ({{ addr.province }}){% endif %} {{ addr.postal_code }}{% endif %}
+            {% else %}—{% endif %}
+          </dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">N° TPS</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.gst_number or '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">N° TVQ</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.qst_number or '—' }}</dd>
+        </div>
+        {% if invoice.payment_terms %}
+        <div class="flex justify-between gap-4">
+          <dt class="text-gray-500 flex-shrink-0">Conditions</dt>
+          <dd class="text-gray-900 text-right">{{ invoice.payment_terms }}</dd>
+        </div>
+        {% endif %}
+      </dl>
     </div>
-    {% endif %}
 
   </div>
+
+  {# ── Postes : honoraires ───────────────────────────────────── #}
+  {% if fee_items %}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Honoraires ({{ fee_items|length }})</h2>
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto mb-4">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Date</th>
+          <th class="px-3 py-2 font-medium">Description</th>
+          <th class="px-3 py-2 font-medium text-right">Heures</th>
+          <th class="px-3 py-2 font-medium text-right">Taux</th>
+          <th class="px-3 py-2 font-medium text-right">Montant</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for item in fee_items %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ item.date.strftime('%Y-%m-%d') if item.date and item.date.strftime is defined else '—' }}</td>
+          <td class="px-3 py-2 text-gray-900">{{ item.description }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-600">{{ '%.2f'|format(item.hours or 0)|replace('.', ',') }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-600">{{ item.rate | cents_fr }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ item.amount | cents_fr }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ── Postes : débours ──────────────────────────────────────── #}
+  {% if expense_items %}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Débours ({{ expense_items|length }})</h2>
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto mb-4">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Date</th>
+          <th class="px-3 py-2 font-medium">Description</th>
+          <th class="px-3 py-2 font-medium">Taxable</th>
+          <th class="px-3 py-2 font-medium text-right">Montant</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for item in expense_items %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ item.date.strftime('%Y-%m-%d') if item.date and item.date.strftime is defined else '—' }}</td>
+          <td class="px-3 py-2 text-gray-900">{{ item.description }}</td>
+          <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ 'Oui' if item.taxable else 'Non' }}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ item.amount | cents_fr }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if not fee_items and not expense_items %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm mb-4">
+    Aucun poste sur cette facture.
+  </div>
+  {% endif %}
+
+  {# ── Totaux ────────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Totaux</h2>
+    <dl class="space-y-1.5 text-sm">
+      {% if fee_items %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Honoraires</dt>
+        <dd class="text-gray-900 text-right">{{ invoice.subtotal_fees | cents_fr }}</dd>
+      </div>
+      {% endif %}
+      {% if expense_items %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Débours</dt>
+        <dd class="text-gray-900 text-right">{{ invoice.subtotal_expenses | cents_fr }}</dd>
+      </div>
+      {% endif %}
+      <div class="flex justify-between gap-4 border-t border-gray-100 pt-2">
+        <dt class="text-gray-700 flex-shrink-0">Sous-total</dt>
+        <dd class="text-gray-900 text-right font-medium">{{ invoice.subtotal | cents_fr }}</dd>
+      </div>
+      {# Rates as stored on THIS invoice, never today's statutory ones. #}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">TPS ({{ gst_rate_display }})</dt>
+        <dd class="text-gray-900 text-right">{{ invoice.gst_amount | cents_fr }}</dd>
+      </div>
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">TVQ ({{ qst_rate_display }})</dt>
+        <dd class="text-gray-900 text-right">{{ invoice.qst_amount | cents_fr }}</dd>
+      </div>
+      <div class="flex justify-between gap-4 border-t border-gray-200 pt-2">
+        <dt class="text-gray-900 font-medium flex-shrink-0">Total</dt>
+        <dd class="text-gray-900 text-right font-medium">{{ invoice.total | cents_fr }}</dd>
+      </div>
+      {% if invoice.retainer_applied %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Provision appliquée</dt>
+        <dd class="text-green-700 text-right">-{{ invoice.retainer_applied | cents_fr }}</dd>
+      </div>
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">Montant dû à l'émission</dt>
+        <dd class="text-gray-900 text-right">{{ invoice.amount_due | cents_fr }}</dd>
+      </div>
+      {% endif %}
+      {% if invoice.amount_paid %}
+      <div class="flex justify-between gap-4">
+        <dt class="text-gray-500 flex-shrink-0">
+          Encaissé{% if invoice.paid_date %} <span class="text-gray-400">({{ invoice.paid_date.strftime('%Y-%m-%d') }})</span>{% endif %}
+        </dt>
+        <dd class="text-green-700 text-right">-{{ invoice.amount_paid | cents_fr }}</dd>
+      </div>
+      {% endif %}
+      {# The live figure. amount_due is FROZEN at issuance and stays non-zero
+         on a fully paid invoice — it is not a balance, so it never carries
+         that label here. #}
+      <div class="flex justify-between gap-4 border-t border-gray-200 pt-2">
+        <dt class="text-gray-900 font-bold flex-shrink-0">Solde</dt>
+        <dd class="text-gray-900 text-right font-bold text-base">{{ balance | cents_fr }}</dd>
+      </div>
+    </dl>
+  </div>
+
+  {# ── Encaissement ──────────────────────────────────────────── #}
+  {# Issuing an invoice and recording a payment stay the lawyer's own acts,
+     posted here. No MCP connector tool writes a payment. #}
+  {% if invoice.status not in ('brouillon', 'annulée') %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Encaissement</h2>
+    {% if request.args.get('erreur') == 'montant' %}
+    <p class="text-sm text-red-600 mb-2">Montant invalide.</p>
+    {% elif request.args.get('erreur') == 'date' %}
+    <p class="text-sm text-red-600 mb-2">Date invalide.</p>
+    {% elif request.args.get('erreur') == 'paiement' %}
+    <p class="text-sm text-red-600 mb-2">
+      Encaissement refusé (montant supérieur au total, ou facture non
+      éligible).
+    </p>
+    {% elif request.args.get('message') == 'paiement' %}
+    <p class="text-sm text-green-700 mb-2">Encaissement enregistré.</p>
+    {% endif %}
+    <form method="post"
+          action="{{ url_for('invoices.invoice_record_payment', invoice_id=invoice.id) }}"
+          class="flex flex-wrap items-end gap-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div>
+        <label for="amount_paid" class="block text-xs text-gray-500 mb-1">
+          Montant encaissé ($)
+        </label>
+        <input type="text" inputmode="decimal" id="amount_paid" name="amount_paid"
+               value="{{ '%.2f'|format(invoice.amount_paid / 100) if invoice.amount_paid else '' }}"
+               placeholder="0,00"
+               class="w-24 px-3 py-2 text-sm border border-gray-300 rounded-lg">
+      </div>
+      <div>
+        <label for="paid_date" class="block text-xs text-gray-500 mb-1">
+          Date du paiement
+        </label>
+        <input type="date" id="paid_date" name="paid_date"
+               value="{{ invoice.paid_date.strftime('%Y-%m-%d') if invoice.paid_date else '' }}"
+               class="px-3 py-2 text-sm border border-gray-300 rounded-lg">
+      </div>
+      <button type="submit"
+              class="px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Enregistrer
+      </button>
+    </form>
+    <p class="text-xs text-gray-500 mt-2">
+      Un solde ramené à zéro fait passer la facture à « payée ». Corriger le
+      montant à la baisse annule cette bascule ; saisir 0 efface
+      l'encaissement.
+    </p>
+  </div>
+  {% endif %}
+
+  {# ── Notes ─────────────────────────────────────────────────── #}
+  {% if invoice.notes %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Notes</h2>
+    <p class="text-sm text-gray-700 whitespace-pre-line">{{ invoice.notes }}</p>
+  </div>
+  {% endif %}
 
 </div>
 {% endblock %}
