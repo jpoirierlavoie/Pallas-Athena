@@ -416,23 +416,11 @@ def invoice_detail(invoice_id: str) -> str:
 
 
 def _cabinet_dict() -> dict:
-    """Firm info in the Phase H catalog shape (``cabinet.*`` resolvers)."""
-    street = Config.FIRM_STREET
-    if Config.FIRM_UNIT:
-        street = f"{street}, {Config.FIRM_UNIT}" if street else Config.FIRM_UNIT
-    try:
-        telephone = format_phone_display(Config.FIRM_PHONE) if Config.FIRM_PHONE else ""
-    except Exception:
-        telephone = Config.FIRM_PHONE or ""
-    return {
-        "nom": Config.FIRM_NAME,
-        "adresse_civique": street,
-        "ville": Config.FIRM_CITY,
-        "province": Config.FIRM_PROVINCE,
-        "code_postal": Config.FIRM_POSTAL_CODE,
-        "telephone": telephone,
-        "courriel": Config.FIRM_EMAIL,
-    }
+    """Firm info in the Phase H catalog shape — hoisted to utils/cabinet.py
+    (one authority; doc_templates and the note-print route share it)."""
+    from utils.cabinet import cabinet_dict
+
+    return cabinet_dict()
 
 
 def _note_error(message: str) -> str:
@@ -482,7 +470,8 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
         log_template_event("generation_failed", reason="no_note_template")
         return _note_error(
             "Aucun gabarit de note d'honoraires n'est configuré. Téléversez-en un "
-            "dans « Gabarits » et cochez « Gabarit de note d'honoraires »."
+            "dans « Gabarits » et choisissez le type « Note d'honoraires "
+            "(facture) »."
         )
     template_id = template["id"]
 

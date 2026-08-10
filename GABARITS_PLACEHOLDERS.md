@@ -1,14 +1,15 @@
 # Gabarit placeholder reference
 
-Every placeholder string you can use inside a `.docx` **gabarit** (Phase H) or
-**note d'honoraires** (Phase H.2) template, and the syntax rules that govern
-them.
+Every placeholder string you can use inside a `.docx` **gabarit** (Phase H), a
+**note d'honoraires** (Phase H.2) or a **note-print** (Phase H.3) template,
+and the syntax rules that govern them.
 
 > **Source of truth.** This document is a human-readable index of what the fill
 > engine actually supports. The authoritative definitions live in the code:
 > - **Syntax / structural tokens** → [`athena/utils/docx_fill.py`](athena/utils/docx_fill.py)
 > - **Field catalog, flat aliases, manual & passthrough fields** → [`athena/utils/template_fields.py`](athena/utils/template_fields.py)
 > - **Note-d'honoraires context (`facture.*`, rows, conditions)** → [`athena/utils/invoice_docx.py`](athena/utils/invoice_docx.py)
+> - **Note-print context (`note.*`) + markdown→Word conversion** → [`athena/utils/note_docx.py`](athena/utils/note_docx.py) / [`athena/utils/markdown_docx.py`](athena/utils/markdown_docx.py)
 >
 > If you add or rename a catalog field, alias, manual field, region, or
 > condition in those files, **update this document to match.**
@@ -291,6 +292,49 @@ are prefixed `h.` / `d.` so they never collide with the global scalars.
 | `{{?si_debours_ntx}}` … `{{/si_debours_ntx}}` | there is ≥ 1 non-taxable disbursement |
 
 Wrap each section's table in its flag so an empty section disappears cleanly.
+
+---
+
+## 7. Impression d'une note only (`kind="note"`)
+
+The **note-print** template — the .docx the « Imprimer (Word) » button on a
+note's page (and on the Analyse tab) fills, streamed as a **direct download**
+(never saved into the dossier's documents). Upload it in « Gabarits » with the
+type **« Note (impression) »**; the most recently updated template of that
+kind is the one used. It can use everything above (`dossier.*`, `cabinet.*`,
+`date.*`, flat aliases — no destinataire slot in this flow) **plus**:
+
+### `note.*` scalars
+
+| Placeholder | Value |
+|---|---|
+| `{{note.titre}}` | The note's title, verbatim. |
+| `{{note.categorie}}` | The category's French label (« Stratégie », « Rencontre », …). |
+| `{{note.date}}` | Creation date — **Montréal** calendar date, French long form (« 1er août 2026 »). |
+| `{{note.date_maj}}` | Last-modified date, same form — **empty when same day as creation** (mirrors the on-screen « Modifiée » rule). |
+| `{{note.dossier}}` | `N° — Titre` of the note's dossier; **« Général »** for a dossier-less note (always resolves — prefer it over `dossier.*` if your template must serve general notes too, whose `dossier.*` fields render `[CHAMP MANQUANT : …]`). |
+| `{{note.contenu}}` | **The rich field** — the note's Markdown body converted to real Word formatting. |
+
+### What `{{note.contenu}}` renders
+
+The conversion targets the SCREEN rendering (same markdown pipeline):
+headings (sized steps off your template's font size, bold), **bold** /
+*italic*, inline `code` and fenced blocks (Consolas, shaded), bullet and
+numbered lists (text bullets / computed numbers — printable, not
+Word-restyleable), `>` blockquotes (left border), `---` rules, single line
+breaks as real line breaks, links as underlined text with the URL appended,
+and **markdown tables as real Word tables** (bordered, header row shaded,
+`:---:` alignment honoured, equal column widths across the page).
+
+### Rules that bite (note-print)
+
+- **`{{note.contenu}}` must sit ALONE in its own paragraph** in the template.
+  The engine replaces that whole paragraph with the converted content; the
+  paragraph's own formatting (font, size, justification) seeds the body text.
+  If the placeholder shares its line with other text, the content degrades to
+  plain text (markdown sigils visible) — the document still generates.
+- Never put `{{note.contenu}}` in a header/footer — it is left verbatim there.
+- The other `note.*` fields are ordinary scalars and work anywhere.
 
 ---
 

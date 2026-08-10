@@ -16,8 +16,17 @@
 <div class="bg-white rounded-xl border border-gray-200 p-5">
   <div class="flex items-center justify-between mb-3">
     <h3 class="text-sm font-semibold text-gray-900">{{ analyse_note.title }}</h3>
-    <a href="{{ url_for('notes.note_edit', note_id=analyse_note.id, return_to=tab_return_to) }}"
-       class="text-xs text-indigo-600 font-medium hover:text-indigo-700">Modifier</a>
+    <div class="flex items-center gap-3">
+      {# POST navigateur ordinaire depuis le fragment HTMX : la réponse est
+         une pièce jointe .docx, la page du dossier reste en place. #}
+      <form method="post" action="{{ url_for('notes.note_gabarit_docx', note_id=analyse_note.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                class="text-xs text-indigo-600 font-medium hover:text-indigo-700">Imprimer (Word)</button>
+      </form>
+      <a href="{{ url_for('notes.note_edit', note_id=analyse_note.id, return_to=tab_return_to) }}"
+         class="text-xs text-indigo-600 font-medium hover:text-indigo-700">Modifier</a>
+    </div>
   </div>
   <div class="note-content text-sm text-gray-700">
     {{ analyse_note.content | markdown | safe }}

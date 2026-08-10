@@ -137,8 +137,8 @@ INFO, except `generation_failed` (WARNING). **Never pass field values** (client 
 | `template_uploaded` | New gabarit; `template_id`, `placeholder_count`, `warning_count` (split-run suspects) |
 | `template_updated` | Metadata edit or file replacement; `file_replaced: bool`, `version` |
 | `template_deleted` | Gabarit + Storage object removed |
-| `document_generated` | `template_id`, `dossier_id` (when saved), `saved_document_id` (when saved), `field_count`, `missing_count` (blanks replaced by the visible French fallback). **Note d'honoraires (Phase H.2):** adds `invoice_id`, `source="facture"`, and the three row counts `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` (instead of `field_count`/`missing_count`) |
-| `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`; Phase H.2 adds `no_note_template`, `invoice_voided`, `unbalanced_condition`) — never a filename or field value |
+| `document_generated` | `template_id`, `dossier_id` (when saved), `saved_document_id` (when saved), `field_count`, `missing_count` (blanks replaced by the visible French fallback). **Note d'honoraires (Phase H.2):** adds `invoice_id`, `source="facture"`, and the three row counts `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` (instead of `field_count`/`missing_count`). **Impression de note (Phase H.3):** adds `note_id`, `source="note"`, `field_count` — never the note's title or content |
+| `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`; Phase H.2 adds `no_note_template`, `invoice_voided`, `unbalanced_condition`; Phase H.3 adds `no_note_print_template`) — never a filename or field value |
 
 ### `log_trust_event(event, outcome='success', *, transaction_id=None, dossier_id=None, account_id=None, reconciliation_id=None, reason=None, **extra)` — logger `pallas.trust`
 
@@ -269,7 +269,7 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `auth.*` | Reserved — wrap auth verification helpers as needed | (not yet instrumented) |
 | `mcp.request` | MCP JSON-RPC dispatch (one per POST /mcp) | `mcp.request` with `method` attribute |
 | `mcp.tool.*` | One span per tool execution | `mcp.tool.get_agenda`, `mcp.tool.list_dossiers`; the write spans `mcp.tool.create_note` / `mcp.tool.append_to_note` carry `dossier_id` only — never the note title or content |
-| `template.fill` | docx fill inside the generation POST (Phase H / H.2) | `template.fill` with `template_id`, `field_count` (gabarits) or `invoice_id` + `rows_honoraire`/`rows_debours_tx`/`rows_debours_ntx` (note d'honoraires) — never values or content, counts and IDs only |
+| `template.fill` | docx fill inside the generation POST (Phase H / H.2 / H.3) | `template.fill` with `template_id`, `field_count` (gabarits) or `invoice_id` + `rows_honoraire`/`rows_debours_tx`/`rows_debours_ntx` (note d'honoraires) or `note_id` (impression de note) — never values or content, counts and IDs only |
 | `trust.transaction` | One trust write — create / reversal / inter-dossier transfer (Phase K) | `trust.transaction` with `direction`, `purpose`, `dossier_id` — **never amounts** |
 | `trust.reconcile` | Reconciliation completion (Phase K) | `trust.reconcile` with `account_id`, `cleared_count` |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |

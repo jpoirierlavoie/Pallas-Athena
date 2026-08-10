@@ -543,6 +543,113 @@ def _ensure_table_separation(xml: str) -> str:
     return _ADJACENT_TABLES_RE.sub("</w:tbl>" + _TABLE_SEPARATOR, xml)
 
 
+# ── Rich values (note printing) — markdown → formatted block content ─────
+# Seed extractors for the host paragraph. Both tempered (no `.`, no DOTALL —
+# the linearity invariant): the pPr body refuses to cross another pPr
+# boundary, so a paragraph carrying <w:pPrChange> (tracked formatting change,
+# which nests a pPr) simply yields no match → seed falls back to "", which
+# is always valid (plain formatting).
+_PPR_SEED_RE = re.compile(r"<w:pPr>((?:(?!</?w:pPr[\s/>])[\s\S])*)</w:pPr>")
+# Page geometry (last <w:sectPr> = the body section). `[^>]*?` bodies are
+# linear per position; attribute order inside the tags is Word-stable but
+# the lazy skip tolerates any order.
+_PGSZ_W_RE = re.compile(r'<w:pgSz\s[^>]*?w:w="(\d+)"')
+_PGMAR_LEFT_RE = re.compile(r'<w:pgMar\s[^>]*?w:left="(\d+)"')
+_PGMAR_RIGHT_RE = re.compile(r'<w:pgMar\s[^>]*?w:right="(\d+)"')
+
+# Fallback usable width (twips): US Letter minus 1" margins. Kept equal to
+# markdown_docx.DEFAULT_USABLE_WIDTH (import stays lazy/one-way).
+_DEFAULT_USABLE_WIDTH = 9360
+
+
+def _usable_width(xml: str) -> int:
+    """Printable width in twips from the template's own page geometry."""
+    sizes = _PGSZ_W_RE.findall(xml)
+    lefts = _PGMAR_LEFT_RE.findall(xml)
+    rights = _PGMAR_RIGHT_RE.findall(xml)
+    if not (sizes and lefts and rights):
+        return _DEFAULT_USABLE_WIDTH
+    try:
+        width = int(sizes[-1]) - int(lefts[-1]) - int(rights[-1])
+    except ValueError:
+        return _DEFAULT_USABLE_WIDTH
+    return width if width >= 1440 else _DEFAULT_USABLE_WIDTH
+
+
+def _apply_rich(
+    xml: str, rich_values: dict[str, str]
+) -> tuple[str, dict[str, str]]:
+    """Replace each host paragraph holding a rich placeholder ALONE with the
+    markdown-converted block sequence.
+
+    Returns ``(xml, demoted)`` — ``demoted`` holds the names whose host could
+    not be safely block-replaced (placeholder sharing its paragraph, host
+    carrying ``<w:sectPr>``, host inside a text-box paragraph, converter
+    failure of any kind). Demoted names are re-filled by the caller through
+    the ordinary block/scalar path: raw markdown sigils become visible, but
+    the letter is generated and the archive stays valid — the degradation is
+    the long-tested Phase-H behavior, never a corrupt document.
+    """
+    from utils.markdown_docx import markdown_to_ooxml  # lazy — stdlib purity
+
+    usable = _usable_width(xml)
+    demoted: dict[str, str] = {}
+    memo: dict[tuple, str] = {}
+
+    for name, md_text in rich_values.items():
+        source = "" if md_text is None else str(md_text)
+        name_re = _name_pattern(name)
+        if not name_re.search(xml):
+            continue
+        state = {"fallback": False}
+
+        def _repl(match: re.Match) -> str:
+            para = match.group(0)
+            if not name_re.search(para):
+                return para
+            if "<w:sectPr" in para:
+                # Deleting this paragraph would destroy a section break (and
+                # with it the letterhead's per-section headers).
+                state["fallback"] = True
+                return para
+            if name_re.sub("", _XML_TAG_RE.sub("", para)).strip():
+                # The placeholder shares its paragraph with other text —
+                # blocks cannot be spliced mid-paragraph.
+                state["fallback"] = True
+                return para
+            ppr_m = _PPR_SEED_RE.search(para)
+            base_ppr = ppr_m.group(1) if ppr_m else ""
+            run_m = _TEXT_RUN_RE.search(para)
+            rpr_full = run_m.group("rpr") if run_m else ""
+            base_rpr = (
+                rpr_full[len("<w:rPr>"):-len("</w:rPr>")]
+                if rpr_full and rpr_full.startswith("<w:rPr>")
+                else ""
+            )
+            key = (base_ppr, base_rpr)
+            try:
+                if key not in memo:
+                    memo[key] = markdown_to_ooxml(
+                        source,
+                        base_ppr=base_ppr,
+                        base_rpr=base_rpr,
+                        usable_width=usable,
+                    )
+                return memo[key]
+            except Exception:
+                # Whatever the converter's problem, the letter must still
+                # generate — and nothing was spliced, so nothing can corrupt.
+                state["fallback"] = True
+                return para
+
+        xml = _PARAGRAPH_RE.sub(_repl, xml)
+        if state["fallback"] or name_re.search(xml):
+            # Explicit fallback, or a leftover occurrence inside a paragraph
+            # _PARAGRAPH_RE cannot host-match (text-box nesting).
+            demoted[name] = source
+    return xml, demoted
+
+
 # ── Public API ──────────────────────────────────────────────────────────
 
 def extract_placeholders(docx_bytes: bytes) -> list[str]:
@@ -626,15 +733,21 @@ def _fill_target_xml(
     *,
     rows_by_region: dict[str, list[dict]] | None = None,
     conditions: dict[str, bool] | None = None,
+    rich_values: dict[str, str] | None = None,
 ) -> str:
     """Fill one target XML.
 
     Order (§4.3): normalize runs → conditional regions → repeating rows →
-    block paragraphs → scalars. Conditionals first so a removed table never
-    reaches row expansion; scalars last so globals in surviving structure
-    resolve. ``rows_by_region``/``conditions`` are passed only for
-    ``word/document.xml`` (tables live in the body); headers/footers get the
-    Phase H block + scalar passes only.
+    RICH block replacement → block paragraphs → scalars. Conditionals first
+    so a removed table never reaches row expansion; rich after structure (a
+    table removed by a False condition must never host rich content) and
+    before blocks/scalars so a demoted rich name re-enters the plain path of
+    the SAME call; scalars last so globals in surviving structure resolve.
+    ``rows_by_region``/``conditions``/``rich_values`` are passed only for
+    ``word/document.xml``; headers/footers get the Phase H block + scalar
+    passes only (a rich name in a header is left verbatim — filling a note
+    body into a header would destroy the layout, and flattening it silently
+    would hide a template-authoring error).
     """
     # Heal Word's run-splitting first, so EVERY occurrence of a repeated
     # placeholder (and every structural marker) matches — not just the clean
@@ -649,6 +762,13 @@ def _fill_target_xml(
         # A removed conditional can leave two tables adjacent — keep them
         # distinct (and gap-free) before the block/scalar passes.
         xml = _ensure_table_separation(xml)
+    if rich_values:
+        xml, demoted = _apply_rich(xml, rich_values)
+        # The converted sequence may start/end with a <w:tbl> right against a
+        # template table — same separation need as the conditional pass.
+        xml = _ensure_table_separation(xml)
+        if demoted:
+            values = {**values, **demoted}
     block_pairs: list[tuple[str, str]] = []
     scalar_pairs: list[tuple[str, str]] = []
     for name, raw_value in values.items():
@@ -704,6 +824,7 @@ def fill_docx(
     *,
     rows_by_region: dict[str, list[dict]] | None = None,
     conditions: dict[str, bool] | None = None,
+    rich_values: dict[str, str] | None = None,
 ) -> bytes:
     """Fill placeholders in a .docx template; return the new archive.
 
@@ -714,10 +835,22 @@ def fill_docx(
     oversized archive.
 
     ``rows_by_region`` (repeating table rows, §4) and ``conditions``
-    (conditional sections, §5) are the Phase H.2 extensions; they apply to
-    ``word/document.xml`` only. When both are ``None`` the behavior is
-    identical to Phase H (existing callers are untouched).
+    (conditional sections, §5) are the Phase H.2 extensions;
+    ``rich_values`` (note printing — RAW MARKDOWN per placeholder name,
+    converted to formatted Word content in place of the host paragraph) is
+    the kind-« note » extension. All three apply to ``word/document.xml``
+    only. When all are ``None`` the behavior is identical to Phase H
+    (existing callers are untouched). A name present in both ``values`` and
+    ``rich_values`` raises — no silent precedence.
     """
+    if rich_values:
+        overlap = set(values) & set(rich_values)
+        if overlap:
+            raise DocxFillError(
+                "Champ défini à la fois en valeur simple et en valeur riche : "
+                f"« {sorted(overlap)[0]} »."
+            )
+
     errors, zf = _structural_errors(docx_bytes)
     if errors or zf is None:
         raise DocxFillError(errors[0] if errors else "Archive invalide.")
@@ -738,6 +871,7 @@ def fill_docx(
                     values,
                     rows_by_region=rows_by_region if is_document else None,
                     conditions=conditions if is_document else None,
+                    rich_values=rich_values if is_document else None,
                 ).encode("utf-8")
             # Reuse the original ZipInfo: preserves entry order, per-entry
             # compress_type, timestamps and attributes.

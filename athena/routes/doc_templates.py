@@ -40,7 +40,9 @@ from config import Config
 from models.doc_template import (
     CATEGORY_LABELS,
     DOCX_MIME,
+    KIND_LABELS,
     VALID_CATEGORIES,
+    VALID_KINDS,
     create_template,
     delete_template,
     get_signed_url,
@@ -96,7 +98,22 @@ def _template_context() -> dict:
     return {
         "valid_categories": VALID_CATEGORIES,
         "category_labels": CATEGORY_LABELS,
+        "kind_labels": KIND_LABELS,
     }
+
+
+def _kind_from_form(form) -> str:
+    """Template kind from the upload/edit form.
+
+    Form control: a ``kind`` radio (gabarit | note_honoraires | note).
+    Legacy fallback: the pre-radio ``is_note_honoraires`` checkbox, so a
+    stale cached form still maps correctly. An unknown radio value falls
+    through the legacy path to « gabarit ».
+    """
+    kind = (form.get("kind") or "").strip()
+    if kind in VALID_KINDS:
+        return kind
+    return "note_honoraires" if form.get("is_note_honoraires") else "gabarit"
 
 
 def _firm_dict() -> dict:
@@ -154,7 +171,7 @@ def template_create() -> Response | str:
         "name": request.form.get("name", "").strip(),
         "description": request.form.get("description", "").strip(),
         "category": request.form.get("category", "autre").strip(),
-        "kind": "note_honoraires" if request.form.get("is_note_honoraires") else "gabarit",
+        "kind": _kind_from_form(request.form),
     }
     file = request.files.get("file")
     if not file or not file.filename:
@@ -238,7 +255,7 @@ def template_update(template_id: str) -> Response | str:
         "name": request.form.get("name", "").strip(),
         "description": request.form.get("description", "").strip(),
         "category": request.form.get("category", "autre").strip(),
-        "kind": "note_honoraires" if request.form.get("is_note_honoraires") else "gabarit",
+        "kind": _kind_from_form(request.form),
     }
     file = request.files.get("file")
     file_stream = None

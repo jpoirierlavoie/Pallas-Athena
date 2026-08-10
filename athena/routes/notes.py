@@ -262,7 +262,144 @@ def note_detail(note_id: str) -> str:
     ctx["note"] = note
     ctx["linked_tasks"] = linked_tasks
     ctx["return_to"] = request.args.get("return_to", "")
+    ctx["gabarit_error"] = _GABARIT_ERRORS.get(
+        request.args.get("gabarit_erreur", "")
+    )
     return render_template("notes/detail.html", **ctx)
+
+
+# ── Impression via gabarit (kind « note », Phase H.3) ───────────────────
+
+_GABARIT_ERRORS = {
+    "aucun_gabarit": (
+        "Aucun gabarit d'impression de note n'est configuré. Téléversez-en un "
+        "dans « Gabarits » et choisissez le type « Note (impression) »."
+    ),
+    "fichier_introuvable": (
+        "Le fichier du gabarit est introuvable. Téléversez-le à nouveau."
+    ),
+    "gabarit_invalide": "Le gabarit est invalide et n'a pas pu être rempli.",
+    "erreur": "Erreur lors de la génération. Veuillez réessayer.",
+    "htmx": "Utilisez le bouton « Imprimer (Word) » de la page de la note.",
+}
+
+
+def _gabarit_error_redirect(note_id: str, code: str) -> Response:
+    return redirect(
+        url_for("notes.note_detail", note_id=note_id, gabarit_erreur=code)
+    )
+
+
+@notes_bp.route("/<note_id>/gabarit-docx", methods=["POST"])
+@login_required
+def note_gabarit_docx(note_id: str) -> Response:
+    """Fill the note-print gabarit (kind « note ») from this note and stream
+    the .docx as a DIRECT download — never saved into the dossier's
+    documents (user decision 2026-08-10). Analyse notes included. The note's
+    Markdown body travels through the engine's rich hook (markdown →
+    formatted Word content)."""
+    import io as _io
+
+    from flask import send_file
+    from werkzeug.utils import secure_filename
+
+    from models.doc_template import (
+        DOCX_MIME,
+        get_note_template,
+        get_template_bytes,
+    )
+    from tz import MTL
+    from utils.cabinet import cabinet_dict
+    from utils.docx_fill import DocxFillError, fill_docx
+    from utils.logging_setup import log_template_event, log_unexpected
+    from utils.note_docx import assemble_note_print_values, build_note_context
+    from utils.tracing_setup import add_attributes, span
+
+    note = get_note(note_id)
+    if not note:
+        return redirect(url_for("notes.note_list"))
+
+    # An HTMX submit landing here would swap raw .docx bytes into the page.
+    if _is_htmx():
+        return _gabarit_error_redirect(note_id, "htmx")
+
+    template = get_note_template()
+    if not template:
+        log_template_event(
+            "generation_failed", reason="no_note_print_template", note_id=note_id
+        )
+        return _gabarit_error_redirect(note_id, "aucun_gabarit")
+    template_id = template["id"]
+
+    dossier_id = note.get("dossier_id", "")
+    dossier = get_dossier(dossier_id) if dossier_id else None
+    today = datetime.now(MTL).date()
+
+    ctx = build_note_context(
+        note, dossier=dossier, firm=cabinet_dict(), today=today
+    )
+    values = assemble_note_print_values(template, ctx)
+    add_attributes(
+        template_id=template_id, note_id=note_id, field_count=len(values)
+    )
+
+    docx_bytes = get_template_bytes(template_id)
+    if docx_bytes is None:
+        log_template_event(
+            "generation_failed",
+            template_id=template_id,
+            reason="template_file_unavailable",
+            note_id=note_id,
+        )
+        return _gabarit_error_redirect(note_id, "fichier_introuvable")
+
+    try:
+        with span("template.fill", template_id=template_id, note_id=note_id):
+            filled = fill_docx(docx_bytes, values, rich_values=ctx.rich_values)
+    except DocxFillError:
+        log_template_event(
+            "generation_failed",
+            template_id=template_id,
+            reason="fill_error",
+            note_id=note_id,
+        )
+        return _gabarit_error_redirect(note_id, "gabarit_invalide")
+    except Exception:
+        log_unexpected("note gabarit fill failed", template_id=template_id)
+        log_template_event(
+            "generation_failed",
+            template_id=template_id,
+            reason="fill_error",
+            note_id=note_id,
+        )
+        return _gabarit_error_redirect(note_id, "erreur")
+
+    # Filename: "{ref} - YYYY-MM-DD - {titre}" — deliberately NOT
+    # projet_document_name (its « Projet » prefix is wrong for a note print).
+    reference = note.get("dossier_file_number", "") or "Note"
+    display = " - ".join(
+        p
+        for p in (reference, today.isoformat(), note.get("title", "")[:80])
+        if p
+    )
+    out_name = secure_filename(f"{display}.docx")
+    if not out_name.lower().endswith(".docx"):
+        out_name = f"note_{today.isoformat()}.docx"  # accent-only title case
+
+    log_template_event(
+        "document_generated",
+        template_id=template_id,
+        dossier_id=dossier_id or None,
+        note_id=note_id,
+        source="note",
+        field_count=len(values),
+    )
+    return send_file(
+        _io.BytesIO(filled),
+        mimetype=DOCX_MIME,
+        as_attachment=True,
+        download_name=out_name,
+    )
 
 
 # ── Edit ─────────────────────────────────────────────────────────────────

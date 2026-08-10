@@ -49,15 +49,23 @@
     </div>
 
     <div>
-      <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
-        <input type="checkbox" name="is_note_honoraires" value="1"
-               {{ 'checked' if template and template.kind == 'note_honoraires' }}
-               class="h-4 w-4 border-gray-300 focus:ring-indigo-500">
-        Gabarit de note d'honoraires (facture)
-      </label>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Type de gabarit</label>
+      <div class="space-y-1">
+        {% for kind_key, kind_label in kind_labels.items() %}
+        <label class="flex items-center gap-2 text-sm text-gray-700">
+          <input type="radio" name="kind" value="{{ kind_key }}"
+                 {{ 'checked' if (template.kind if template and template.kind else 'gabarit') == kind_key }}
+                 class="h-4 w-4 border-gray-300 text-indigo-600 focus:ring-indigo-500">
+          {{ kind_label }}
+        </label>
+        {% endfor %}
+      </div>
       <p class="text-xs text-gray-400 mt-1.5">
-        Cochez si ce gabarit sert à générer la note d'honoraires depuis une facture
-        (tables des honoraires et débours, bloc des totaux). Le plus récent est utilisé.
+        « Note d'honoraires (facture) » : rempli depuis une facture (tables des
+        honoraires et débours). « Note (impression) » : rempli depuis une note du
+        bloc-notes ({% raw %}{{note.titre}}, {{note.contenu}}{% endraw %}, … —
+        voir GABARITS_PLACEHOLDERS.md §7). Pour chaque type, le gabarit le plus
+        récent est utilisé.
       </p>
     </div>
 

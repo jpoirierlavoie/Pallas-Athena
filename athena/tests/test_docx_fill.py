@@ -948,3 +948,218 @@ def test_normalize_runs_single_pass_on_deep_chains():
     assert "x" * 4096 in out_uniform
     # The 42-way split heals into one matchable placeholder.
     assert token in _XML_TAG_RE.sub("", out_split)
+
+
+# ── Rich values (markdown → formatted content, note printing) ────────────
+
+
+def _rich_docx(host_para: str, **kwargs) -> bytes:
+    return _make_docx(_doc(
+        _para("Intro avant la note."),
+        host_para,
+        _para("Conclusion après la note."),
+    ), **kwargs)
+
+
+def test_rich_solo_host_replaced_with_seed_inheritance():
+    host = (
+        '<w:p><w:pPr><w:jc w:val="both"/></w:pPr>'
+        '<w:r><w:rPr><w:rFonts w:ascii="Garamond"/><w:sz w:val="24"/></w:rPr>'
+        "<w:t>{{note.contenu}}</w:t></w:r></w:p>"
+    )
+    out = fill_docx(
+        _rich_docx(host), {},
+        rich_values={"note.contenu": "# Titre\n\nTexte **gras**."},
+    )
+    xml = _document_xml(out)
+    assert "{{note.contenu}}" not in xml
+    # Heading: seed 24 + 14 = 38 half-points; body inherits seed jc + font.
+    assert '<w:sz w:val="38"/>' in xml
+    assert '<w:jc w:val="both"/>' in xml
+    assert 'w:ascii="Garamond"' in xml
+    assert "<w:b/>" in xml
+    assert "Intro avant la note." in xml
+    assert "Conclusion après la note." in xml
+
+
+def test_rich_shared_paragraph_demotes_to_plain_fill():
+    docx = _make_docx(_doc(_para("Contenu : {{note.contenu}}")))
+    out = fill_docx(
+        docx, {}, rich_values={"note.contenu": "ligne\n\n**gras** encore"}
+    )
+    xml = _document_xml(out)
+    # Plain block fill: two cloned paragraphs, raw sigils visible, no residue.
+    assert "{{note.contenu}}" not in xml
+    assert "**gras** encore" in xml
+    assert xml.count("Contenu :") == 2
+
+
+def test_rich_sectpr_host_demoted_and_section_break_preserved():
+    host = (
+        '<w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>'
+        "</w:pPr><w:r><w:t>{{note.contenu}}</w:t></w:r></w:p>"
+    )
+    out = fill_docx(_rich_docx(host), {}, rich_values={"note.contenu": "texte"})
+    xml = _document_xml(out)
+    assert "<w:sectPr>" in xml
+    assert "{{note.contenu}}" not in xml
+    assert "texte" in xml
+
+
+def test_rich_textbox_inner_host_replaced_in_place():
+    host = (
+        "<w:p><w:r><w:pict><w:txbxContent>"
+        "<w:p><w:r><w:t>{{note.contenu}}</w:t></w:r></w:p>"
+        "</w:txbxContent></w:pict></w:r></w:p>"
+    )
+    # _PARAGRAPH_RE matches INNERMOST paragraphs, so the txbxContent
+    # paragraph is a legitimate solo host; what matters: no residue,
+    # well-formed output, content present.
+    out = fill_docx(_rich_docx(host), {}, rich_values={"note.contenu": "texte"})
+    xml = _document_xml(out)
+    assert "{{note.contenu}}" not in xml
+    assert "texte" in xml
+
+
+def test_rich_header_occurrence_left_verbatim():
+    docx = _make_docx(
+        _doc(_para("{{note.contenu}}")),
+        headers=[_hdr(_para("{{note.contenu}}"))],
+    )
+    out = fill_docx(docx, {}, rich_values={"note.contenu": "corps"})
+    xml = _document_xml(out)
+    assert "corps" in xml
+    with zipfile.ZipFile(io.BytesIO(out)) as zf:
+        header = zf.read("word/header1.xml").decode("utf-8")
+    assert "{{note.contenu}}" in header  # verbatim — authoring error surfaced
+
+
+def test_rich_and_scalar_same_name_refused():
+    docx = _make_docx(_doc(_para("{{x}}")))
+    with pytest.raises(DocxFillError):
+        fill_docx(docx, {"x": "a"}, rich_values={"x": "b"})
+
+
+def test_rich_converter_failure_degrades_to_plain(monkeypatch):
+    import utils.markdown_docx as mdx
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("converter bug")
+
+    monkeypatch.setattr(mdx, "markdown_to_ooxml", _boom)
+    docx = _make_docx(_doc(_para("{{note.contenu}}")))
+    out = fill_docx(docx, {}, rich_values={"note.contenu": "**gras**"})
+    xml = _document_xml(out)
+    assert "{{note.contenu}}" not in xml
+    assert "**gras**" in xml  # raw sigils — degraded, valid, content intact
+
+
+def test_rich_none_is_byte_identical_to_omitting_the_kwarg():
+    docx = _make_docx(_doc(
+        _para("Réf : {{ref}}"),
+        _para("{{bloc}}"),
+    ))
+    values = {"ref": "2026-001", "bloc": "Un.\n\nDeux."}
+    assert fill_docx(docx, values) == fill_docx(docx, values, rich_values=None)
+    assert fill_docx(docx, values) == fill_docx(docx, values, rich_values={})
+
+
+def test_rich_table_against_template_table_gets_separator():
+    md_table = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+    document = _doc(
+        _tbl(_tr(_tc("table du gabarit"))),
+        "<w:p><w:r><w:t>{{note.contenu}}</w:t></w:r></w:p>",
+    )
+    out = fill_docx(
+        _make_docx(document), {}, rich_values={"note.contenu": md_table}
+    )
+    xml = _document_xml(out)
+    assert "</w:tbl><w:tbl>" not in xml
+    assert xml.count("<w:tbl>") >= 2
+
+
+def test_rich_usable_width_read_from_sectpr():
+    document = (
+        f'<?xml version="1.0"?><w:document {_W_NS}><w:body>'
+        "<w:p><w:r><w:t>{{note.contenu}}</w:t></w:r></w:p>"
+        '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+        '<w:pgMar w:top="1440" w:right="1000" w:bottom="1440" w:left="1000"/>'
+        "</w:sectPr></w:body></w:document>"
+    )
+    md_table = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+    out = fill_docx(_make_docx(document), {}, rich_values={"note.contenu": md_table})
+    xml = _document_xml(out)
+    # usable = 11906 - 1000 - 1000 = 9906 → 2 columns of 4953.
+    assert '<w:gridCol w:w="4953"/>' in xml
+
+
+def _load_analyse_seed() -> str:
+    """The _ANALYSE_SEED string WITHOUT importing models (whose __init__
+    builds the Firestore client at import): exec only the assignment."""
+    seed_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "models", "note.py",
+    )
+    src = open(seed_path, encoding="utf-8").read()
+    start = src.index("_ANALYSE_SEED")
+    seg = src[start:]
+    end = seg.index('"""', seg.index('"""') + 3) + 3
+    namespace: dict = {}
+    exec(seg[:end], namespace)
+    return namespace["_ANALYSE_SEED"]
+
+
+def test_rich_analyse_seed_end_to_end():
+    """Acceptance: the full « Théorie de la cause » seed through a synthetic
+    gabarit — the heaviest real markdown in the app (tables with alignment,
+    checkbox glyphs, headings, lists, blockquote, rules)."""
+    from defusedxml import ElementTree as ET
+
+    seed = _load_analyse_seed()
+    assert len(seed) > 3000
+
+    host = (
+        '<w:p><w:pPr><w:jc w:val="both"/></w:pPr>'
+        '<w:r><w:rPr><w:sz w:val="22"/></w:rPr>'
+        "<w:t>{{note.contenu}}</w:t></w:r></w:p>"
+    )
+    docx = _make_docx(
+        _doc(_para("En-tête du gabarit"), host, _para("Pied du gabarit")),
+        headers=[_hdr(_para("Dossier {{numero_dossier}}"))],
+        extra={"word/styles.xml": b"<styles/>"},
+    )
+    out = fill_docx(
+        docx, {"numero_dossier": "2026-001"},
+        rich_values={"note.contenu": seed},
+    )
+    xml = _document_xml(out)
+    ET.fromstring(xml)  # well-formed — the no-repair proxy
+    assert "{{" not in xml
+    assert xml.count("<w:tbl>") >= 5          # the seed's five md tables
+                                              # (17 pipe rows → 5 <table> on
+                                              # screen; converter == screen)
+    assert '<w:jc w:val="center"/>' in xml    # alignment rows honoured
+    assert "☐" in xml
+    assert '<w:sz w:val="36"/>' in xml        # h1 = 22 + 14
+    assert "A6A6A6" in xml                    # blockquote border
+    assert ">1.</w:t>" in xml                 # ordered list literals
+    # Non-target entries byte-identical.
+    with zipfile.ZipFile(io.BytesIO(out)) as zf:
+        assert zf.read("word/styles.xml") == b"<styles/>"
+        header = zf.read("word/header1.xml").decode("utf-8")
+    assert "2026-001" in header
+
+
+def test_rich_seed_pattern_linearity_invariant():
+    import re as _re
+
+    from utils.docx_fill import (
+        _PGMAR_LEFT_RE,
+        _PGMAR_RIGHT_RE,
+        _PGSZ_W_RE,
+        _PPR_SEED_RE,
+    )
+
+    for pat in (_PPR_SEED_RE, _PGSZ_W_RE, _PGMAR_LEFT_RE, _PGMAR_RIGHT_RE):
+        assert "." not in pat.pattern.replace("\\.", ""), pat.pattern
+        assert not pat.flags & _re.DOTALL, pat.pattern

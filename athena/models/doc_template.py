@@ -43,13 +43,17 @@ CATEGORY_LABELS = {
     "autre": "Autre",
 }
 
-# Discriminator (Phase H.2): an ordinary gabarit vs the invoice
-# note-d'honoraires template the /factures page fills. Kept separate from
-# `category` so the user's own category taxonomy stays free.
-VALID_KINDS = ("gabarit", "note_honoraires")
+# Discriminator (Phase H.2, extended H.3): an ordinary gabarit vs the two
+# purpose-bound templates — the invoice note-d'honoraires the /factures page
+# fills, and the note-print gabarit the /notes page fills (markdown body →
+# formatted Word content). Kept separate from `category` so the user's own
+# category taxonomy stays free. For each special kind, the MOST RECENTLY
+# UPDATED template of that kind is the one used.
+VALID_KINDS = ("gabarit", "note_honoraires", "note")
 KIND_LABELS = {
     "gabarit": "Gabarit",
     "note_honoraires": "Note d'honoraires (facture)",
+    "note": "Note (impression)",
 }
 
 MAX_TEMPLATE_SIZE = 10 * 1024 * 1024  # compressed .docx cap (also in docx_fill)
@@ -292,26 +296,37 @@ def list_templates(
     return results
 
 
-def get_note_honoraires_template() -> Optional[dict]:
-    """Most recently updated ``kind == "note_honoraires"`` template, or None.
+def _latest_template_of_kind(kind: str) -> Optional[dict]:
+    """Most recently updated template of *kind*, or None.
 
     Filters the small ``doc_templates`` collection in Python (no index; same
     bounded-collection approach as :func:`list_templates`). Legacy docs with
-    no ``kind`` field read as ``"gabarit"`` and are excluded.
+    no ``kind`` field read as ``"gabarit"`` and are excluded from the special
+    kinds.
     """
     try:
         docs = [d.to_dict() for d in db.collection(COLLECTION).stream()]
     except Exception as exc:
         logger.warning(
-            "get_note_honoraires_template failed: %s", type(exc).__name__
+            "_latest_template_of_kind(%s) failed: %s", kind, type(exc).__name__
         )
         return None
-    notes = [t for t in docs if t.get("kind") == "note_honoraires"]
-    if not notes:
+    matches = [t for t in docs if t.get("kind") == kind]
+    if not matches:
         return None
     epoch = datetime.min.replace(tzinfo=timezone.utc)
-    notes.sort(key=lambda t: t.get("updated_at") or epoch, reverse=True)
-    return notes[0]
+    matches.sort(key=lambda t: t.get("updated_at") or epoch, reverse=True)
+    return matches[0]
+
+
+def get_note_honoraires_template() -> Optional[dict]:
+    """The invoice note-d'honoraires template (Phase H.2)."""
+    return _latest_template_of_kind("note_honoraires")
+
+
+def get_note_template() -> Optional[dict]:
+    """The note-print template (kind « note », Phase H.3)."""
+    return _latest_template_of_kind("note")
 
 
 def update_template(
