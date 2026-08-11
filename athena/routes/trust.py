@@ -40,7 +40,7 @@ from models.trust import (
 )
 from pagination import PAGE_SIZE, cursor_pagination, parse_trail
 from security import safe_internal_redirect
-from utils.logging_setup import log_trust_event
+from utils.logging_setup import log_trust_event, log_unexpected
 
 trust_bp = Blueprint("trust", __name__, url_prefix="/fideicommis")
 
@@ -789,28 +789,52 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
     The period is honoured."""
     from utils.trust_journal_pdf import build_trust_journal_pdf
 
-    txs, truncated = trust.list_register(
-        account_id, date_from=date_from, date_to=date_to
-    )
+    notices: list[str] = []
+
+    # The register itself. Both reads fail CLOSED in the model; here they
+    # DEGRADE, because a lawyer asking for their journal should get one that
+    # states its own gaps rather than a generic error page.
+    try:
+        txs, truncated = trust.list_register(
+            account_id, date_from=date_from, date_to=date_to
+        )
+    except Exception:
+        log_unexpected("trust register read failed")
+        txs = trust.list_transactions(
+            account_id=account_id, date_from=date_from, date_to=date_to,
+            limit=5000,
+        )
+        truncated = len(txs) >= 5000
     rows = _trust_journal_rows(txs)
 
     opening_cents = None
     opening_label = ""
-    notices: list[str] = []
     if date_from is not None:
-        carried, had_prior = trust.opening_book_balance(account_id, date_from)
+        try:
+            carried, had_prior = trust.opening_book_balance(
+                account_id, date_from
+            )
+        except Exception:
+            log_unexpected("trust opening balance read failed")
+            carried, had_prior = None, False
+            notices.append(
+                "Avertissement : le solde reporté n'a pas pu être établi. "
+                "Les inscriptions ci-dessous sont complètes, mais la colonne "
+                "« Solde » ne peut pas être rapprochée d'un solde d'ouverture."
+            )
         opening_cents = carried
-        opening_label = (
-            f"SOLDE REPORTÉ AU {date_from.strftime('%Y-%m-%d')}"
-            if had_prior else
-            f"SOLDE REPORTÉ AU {date_from.strftime('%Y-%m-%d')} — "
-            "aucune inscription antérieure"
-        )
+        if carried is not None:
+            opening_label = (
+                f"SOLDE REPORTÉ AU {date_from.strftime('%Y-%m-%d')}"
+                if had_prior else
+                f"SOLDE REPORTÉ AU {date_from.strftime('%Y-%m-%d')} — "
+                "aucune inscription antérieure"
+            )
         # Free cross-check: the first entry's own frozen balance implies what
         # the period opened on. A mismatch means the date/sequence invariant
         # was broken (an entry written outside create_transaction, a reset
         # counter) — say so on the sheet rather than print a wrong report.
-        if txs:
+        if txs and carried is not None:
             implied = trust.implied_opening_balance(txs[0])
             if implied != carried:
                 notices.append(

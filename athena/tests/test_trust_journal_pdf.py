@@ -238,3 +238,96 @@ def test_carte_client_projection_is_untouched():
         "date", "n_ref", "counterparty", "client", "objet", "mode",
         "recette", "credit", "solde",
     ]
+
+
+# ── The route degrades; it does not 500 ─────────────────────────────────────
+#
+# On 2026-08-11 the export answered a generic « Erreur interne du serveur »:
+# both model reads fail CLOSED (they propagate), and the route caught
+# nothing. A register the lawyer needs must come out stating its own gaps
+# instead of vanishing behind an error page.
+
+
+def _route_world(monkeypatch, *, register=None, opening=None,
+                 register_raises=False, opening_raises=False):
+    from flask import Flask
+    from models import trust
+    import routes.trust as R
+
+    def _register(account_id, date_from=None, date_to=None, limit=10000):
+        if register_raises:
+            raise RuntimeError("firestore boom")
+        return (register or []), False
+
+    def _opening(account_id, as_of):
+        if opening_raises:
+            raise RuntimeError("firestore boom")
+        return opening if opening is not None else (250000, True)
+
+    monkeypatch.setattr(trust, "list_register", _register)
+    monkeypatch.setattr(trust, "opening_book_balance", _opening)
+    monkeypatch.setattr(
+        trust, "list_transactions",
+        lambda **kw: (register or []),
+    )
+    return Flask(__name__), R
+
+
+def _tx(**over):
+    from datetime import datetime, timezone
+    d = {
+        "date": datetime(2026, 5, 3, tzinfo=timezone.utc),
+        "client_name": "M. Client", "dossier_file_number": "2026-001",
+        "counterparty": "Tiers", "purpose": "dépôt_client", "method": "chèque",
+        "reference": "0042", "direction": "recette", "amount": 500000,
+        "balance_after_account": 750000, "status": "compensée",
+    }
+    d.update(over)
+    return d
+
+
+_ACCOUNT = {"id": "a1", "name": "Compte général en fidéicommis",
+            "institution": "Banque Nationale", "account_number_last4": "1234"}
+
+
+def _period():
+    from datetime import datetime, timezone
+    return (datetime(2026, 5, 1, tzinfo=timezone.utc),
+            datetime(2026, 5, 31, tzinfo=timezone.utc))
+
+
+def test_route_renders_the_register_for_a_period(monkeypatch):
+    app, R = _route_world(monkeypatch, register=[_tx()])
+    df, dt = _period()
+    with app.test_request_context("/fideicommis/export/pdf"):
+        resp = R._journal_pdf(_ACCOUNT, "a1", df, dt)
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF")
+    assert "journal_caisse_fideicommis" in resp.headers["Content-Disposition"]
+
+
+def test_route_degrades_when_the_opening_balance_cannot_be_read(monkeypatch):
+    app, R = _route_world(monkeypatch, register=[_tx()], opening_raises=True)
+    df, dt = _period()
+    with app.test_request_context("/fideicommis/export/pdf"):
+        resp = R._journal_pdf(_ACCOUNT, "a1", df, dt)
+    # A register, with a notice — never a generic error page.
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF")
+
+
+def test_route_degrades_when_the_register_read_fails(monkeypatch):
+    app, R = _route_world(monkeypatch, register=[_tx()], register_raises=True)
+    df, dt = _period()
+    with app.test_request_context("/fideicommis/export/pdf"):
+        resp = R._journal_pdf(_ACCOUNT, "a1", df, dt)
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF")
+
+
+def test_route_without_a_period_prints_no_carried_balance(monkeypatch):
+    app, R = _route_world(monkeypatch, register=[_tx()])
+    with app.test_request_context("/fideicommis/export/pdf"):
+        resp = R._journal_pdf(_ACCOUNT, "a1", None, None)
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF")

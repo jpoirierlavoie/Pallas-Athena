@@ -1498,45 +1498,49 @@ def test_reconciliation_form_caps_period_end_at_today():
 
 
 class _OpeningQuery:
-    """Minimal stand-in for the Firestore chain of opening_book_balance:
-    where(account_id) → where(date <) → order_by ×2 → limit → stream."""
+    """Stand-in for opening_book_balance's chain: where(account_id) →
+    order_by(sequence DESC) → stream(). Same proven shape as
+    book_balance_as_of — index #1, in production since Phase K — so the
+    register never leans on Firestore serving a composite index's inverse."""
 
     def __init__(self, rows):
         self._rows = rows
-        self._cutoff = None
         self._account = None
+        # Witnessed, not swallowed: the 2026-08-11 outage was a query shape
+        # no index served, and a mock that accepts any order_by cannot see it.
+        self.equalities: list[str] = []
+        self.ordering: list[tuple[str, str]] = []
 
     def where(self, filter=None):
-        field, op, value = filter.field_path, filter.op_string, filter.value
-        if field == "account_id":
-            self._account = value
-        elif field == "date" and op == "<":
-            self._cutoff = value
+        if filter.field_path == "account_id":
+            self._account = filter.value
+        self.equalities.append(f"{filter.field_path} {filter.op_string}")
         return self
 
-    def order_by(self, *a, **kw):
+    def order_by(self, field, direction="ASCENDING", **kw):
+        self.ordering.append((field, direction))
         return self
 
     def limit(self, n):
-        self._limit = n
         return self
 
     def stream(self):
-        rows = [
-            r for r in self._rows
-            if r["account_id"] == self._account and r["date"] < self._cutoff
-        ]
-        # date DESC, sequence DESC — the query's own ordering
-        rows.sort(key=lambda r: (r["date"], r["sequence"]), reverse=True)
-        for r in rows[:1]:
+        rows = [r for r in self._rows if r["account_id"] == self._account]
+        rows.sort(key=lambda r: r["sequence"], reverse=True)   # sequence DESC
+        for r in rows:
             yield mock.Mock(to_dict=lambda r=r: r)
 
 
-def _opening_db(rows):
+def _opening_db(rows, seen=None):
     collection = mock.Mock()
-    collection.where.side_effect = lambda filter=None: _OpeningQuery(rows).where(
-        filter=filter
-    )
+
+    def _where(filter=None):
+        q = _OpeningQuery(rows)
+        if seen is not None:
+            seen.append(q)
+        return q.where(filter=filter)
+
+    collection.where.side_effect = _where
     db = mock.Mock()
     db.collection.return_value = collection
     return db
@@ -1562,6 +1566,62 @@ def test_opening_balance_takes_the_last_entry_before_the_period(monkeypatch):
         _entry(3, 28, 999999),          # inside the period — must not count
     ]))
     assert trust.opening_book_balance("a1", datetime(2026, 8, 25, tzinfo=timezone.utc)) == (250000, True)
+
+
+def test_opening_balance_query_is_one_an_index_actually_serves(monkeypatch):
+    """The 2026-08-11 outage, pinned.
+
+    ``opening_book_balance`` read a single document with ``account_id ==`` +
+    ``date <`` ordered ``date DESC, sequence DESC``, on the belief that
+    Firestore serves a composite index's complete inverse. It does — but
+    « complete » flips EVERY field, ``account_id`` included, so the inverse of
+    ``(account_id ASC, date ASC, sequence ASC)`` is ``(account_id DESC, …)``,
+    not that. Every period export answered FAILED_PRECONDITION → 500.
+
+    So this asserts the query against the DEPLOYED index inventory rather than
+    against a remembered rule: whatever shape the function uses, some entry of
+    ``firestore.indexes.json`` must cover it, equality directions included.
+    """
+    import json
+    import os
+
+    seen: list = []
+    monkeypatch.setattr(trust, "db", _opening_db([_entry(1, 5, 100000)], seen))
+    trust.opening_book_balance("a1", datetime(2026, 8, 25, tzinfo=timezone.utc))
+
+    q = seen[0]
+    equality_fields = [e.split(" ")[0] for e in q.equalities if e.endswith("==")]
+    range_fields = [e.split(" ")[0] for e in q.equalities if not e.endswith("==")]
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, "firestore.indexes.json"), encoding="utf-8") as fh:
+        inventory = json.load(fh)["indexes"]
+
+    # Firestore reads an index forwards or backwards; a backwards read flips
+    # every field. So the query is servable iff some index's field list is
+    # [equalities…, ranges…, ordering…] with the ordering directions either
+    # all matching or all opposite — and the equality directions matching the
+    # SAME reading. Encode a reading as the list of directions it produces.
+    wanted = (
+        [(f, "ASCENDING") for f in equality_fields + range_fields]
+        + [(f, d) for f, d in q.ordering if f not in equality_fields]
+    )
+    flipped = [
+        (f, "DESCENDING" if d == "ASCENDING" else "ASCENDING") for f, d in wanted
+    ]
+
+    available = [
+        [(fld["fieldPath"], fld.get("order")) for fld in idx["fields"]]
+        for idx in inventory
+        if idx.get("collectionGroup") == "trust_transactions"
+    ]
+    assert any(
+        idx[: len(wanted)] in (wanted, flipped) for idx in available
+    ), (
+        "opening_book_balance issues a query no trust_transactions index "
+        f"serves: {wanted}. Deploy the index BEFORE the code, or use a shape "
+        f"already exercised. Available: {available}"
+    )
 
 
 def test_opening_balance_same_day_takes_the_highest_sequence(monkeypatch):

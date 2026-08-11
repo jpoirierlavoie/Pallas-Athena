@@ -1337,20 +1337,30 @@ def opening_book_balance(account_id: str, as_of_exclusive) -> tuple[int, bool]:
     from « no entry precedes this period at all », which a book of account
     must not blur into an ambiguous zero.
 
-    ONE document read, served by the existing ``(account_id, date,
-    sequence)`` composite (Firestore serves a composite index's complete
-    inverse, so the DESC sort needs no new index).
-
     Exact for the reason :func:`book_balance_as_of` is: per-account dates are
     NON-DECREASING in sequence order — the backdating guard refuses an
     earlier date and reversals are dated now — so the last entry dated before
     D carries the balance the period opens on, already FROZEN in
     ``balance_after_account``. No SUM, no recomputation.
 
-    Preferred over ``book_balance_as_of(D - 1 day)`` here: that one streams
-    ``sequence DESC`` with no limit, so an opening balance for an old period
-    re-reads every entry booked since. Read errors propagate (fail CLOSED —
-    the caller decides what a register does when it cannot be trusted).
+    Uses the SAME query shape as :func:`book_balance_as_of` — ``(account_id
+    ==, sequence DESC)``, index #1, in production since Phase K — and stops at
+    the first row dated before the cutoff.
+
+    It read ONE document until 2026-08-11: ``date < D`` ordered ``date DESC,
+    sequence DESC``, on the belief that Firestore serves a composite index's
+    complete inverse. It does — but « complete » means EVERY field flips,
+    ``account_id`` included, so the inverse of ``(account_id ASC, date ASC,
+    sequence ASC)`` is ``(account_id DESC, …)`` and not the ``(account_id ASC,
+    date DESC, sequence DESC)`` this needed. An equality field looks
+    direction-free from the query side and is not, in the index. Firestore
+    answered FAILED_PRECONDITION and the export served a generic error page.
+    A book of account is not the place to bet on an index-direction subtlety:
+    the proven shape costs the entries booked since the period opened, which
+    is what a reconciliation already reads.
+
+    Read errors propagate (fail CLOSED — the caller decides what a register
+    does when it cannot be trusted).
     """
     cutoff = _midnight_utc(as_of_exclusive)
     if cutoff is None:
@@ -1358,13 +1368,13 @@ def opening_book_balance(account_id: str, as_of_exclusive) -> tuple[int, bool]:
     q = (
         db.collection(TRANSACTIONS_COLLECTION)
         .where(filter=FieldFilter("account_id", "==", account_id))
-        .where(filter=FieldFilter("date", "<", cutoff))
-        .order_by("date", direction=firestore.Query.DESCENDING)
         .order_by("sequence", direction=firestore.Query.DESCENDING)
-        .limit(1)
     )
     for snap in q.stream():
-        return int((snap.to_dict() or {}).get("balance_after_account", 0)), True
+        row = snap.to_dict() or {}
+        row_date = _as_utc(row.get("date"))
+        if isinstance(row_date, datetime) and row_date < cutoff:
+            return int(row.get("balance_after_account", 0)), True
     return 0, False
 
 
