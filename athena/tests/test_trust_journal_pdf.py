@@ -325,6 +325,25 @@ def test_route_degrades_when_the_register_read_fails(monkeypatch):
     assert resp.data.startswith(b"%PDF")
 
 
+def test_route_survives_both_reads_failing(monkeypatch):
+    """The double failure still produces a document — one that says outright
+    it holds no entries AND that this does not mean the period is empty. A
+    silently empty register is the failure mode worth the extra branch."""
+    from models import trust
+
+    app, R = _route_world(monkeypatch, register_raises=True)
+
+    def _boom(**kw):
+        raise RuntimeError("firestore boom")
+
+    monkeypatch.setattr(trust, "list_transactions", _boom)
+    df, dt = _period()
+    with app.test_request_context("/fideicommis/export/pdf"):
+        resp = R._journal_pdf(_ACCOUNT, "a1", df, dt)
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF")
+
+
 def test_route_without_a_period_prints_no_carried_balance(monkeypatch):
     app, R = _route_world(monkeypatch, register=[_tx()])
     with app.test_request_context("/fideicommis/export/pdf"):

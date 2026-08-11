@@ -800,11 +800,29 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
         )
     except Exception:
         log_unexpected("trust register read failed")
-        txs = trust.list_transactions(
-            account_id=account_id, date_from=date_from, date_to=date_to,
-            limit=5000,
-        )
-        truncated = len(txs) >= 5000
+        # Second path on a DIFFERENT index (account_id + sequence) — which is
+        # what makes it worth having: the failure this covers, in practice, is
+        # a missing or still-building composite. Same order either way, dates
+        # being non-decreasing in sequence order. It is announced on the sheet:
+        # a degraded read that looks like a normal one is the whole problem.
+        try:
+            txs = trust.list_transactions(
+                account_id=account_id, date_from=date_from, date_to=date_to,
+                limit=5000,
+            )
+            truncated = len(txs) >= 5000
+            notices.append(
+                "Avertissement : le registre a été lu par une voie de secours. "
+                "Recomptez les inscriptions avant de vous fier à ce document."
+            )
+        except Exception:
+            log_unexpected("trust register fallback read failed")
+            txs, truncated = [], False
+            notices.append(
+                "AVERTISSEMENT : les inscriptions n'ont pas pu être lues. Ce "
+                "document ne contient AUCUNE inscription — cela ne signifie "
+                "pas que la période est vide. Ne l'utilisez pas comme registre."
+            )
     rows = _trust_journal_rows(txs)
 
     opening_cents = None
