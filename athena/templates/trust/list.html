@@ -96,8 +96,12 @@
                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
       </div>
       <div class="ml-auto flex gap-2">
-        <a href="{{ url_for('trust.journal_export', fmt='csv', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
-        <a href="{{ url_for('trust.journal_export', fmt='pdf', account_id=account.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
+        {# The export carries the ACTIVE period: without it the PDF register
+           could not state the period it covers, nor carry a balance forward
+           into it. The PDF ignores the statut/sens filters on purpose (a
+           book of account is complete); the CSV keeps honouring them. #}
+        <a href="{{ url_for('trust.journal_export', fmt='csv', account_id=account.id, status=filters.status, direction=filters.direction, date_from=filters.date_from, date_to=filters.date_to) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+        <a href="{{ url_for('trust.journal_export', fmt='pdf', account_id=account.id, date_from=filters.date_from, date_to=filters.date_to) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
       </div>
     </div>
   </div>

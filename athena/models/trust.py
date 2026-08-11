@@ -1327,6 +1327,66 @@ def book_balance_as_of(account_id: str, as_of) -> int:
     return 0
 
 
+def opening_book_balance(account_id: str, as_of_exclusive) -> tuple[int, bool]:
+    """Carried-forward book balance the DAY BEFORE *as_of_exclusive*.
+
+    The « solde reporté » a period register opens on (art. 38 RLRQ c. B-1,
+    r. 5 wants the running balance after each entry; a period sheet is only
+    readable if it says what it opened on). Returns
+    ``(cents, had_prior_entry)`` — the flag separates « reporté : 0,00 $ »
+    from « no entry precedes this period at all », which a book of account
+    must not blur into an ambiguous zero.
+
+    ONE document read, served by the existing ``(account_id, date,
+    sequence)`` composite (Firestore serves a composite index's complete
+    inverse, so the DESC sort needs no new index).
+
+    Exact for the reason :func:`book_balance_as_of` is: per-account dates are
+    NON-DECREASING in sequence order — the backdating guard refuses an
+    earlier date and reversals are dated now — so the last entry dated before
+    D carries the balance the period opens on, already FROZEN in
+    ``balance_after_account``. No SUM, no recomputation.
+
+    Preferred over ``book_balance_as_of(D - 1 day)`` here: that one streams
+    ``sequence DESC`` with no limit, so an opening balance for an old period
+    re-reads every entry booked since. Read errors propagate (fail CLOSED —
+    the caller decides what a register does when it cannot be trusted).
+    """
+    cutoff = _midnight_utc(as_of_exclusive)
+    if cutoff is None:
+        return 0, False
+    q = (
+        db.collection(TRANSACTIONS_COLLECTION)
+        .where(filter=FieldFilter("account_id", "==", account_id))
+        .where(filter=FieldFilter("date", "<", cutoff))
+        .order_by("date", direction=firestore.Query.DESCENDING)
+        .order_by("sequence", direction=firestore.Query.DESCENDING)
+        .limit(1)
+    )
+    for snap in q.stream():
+        return int((snap.to_dict() or {}).get("balance_after_account", 0)), True
+    return 0, False
+
+
+def implied_opening_balance(first_tx: dict) -> int:
+    """The opening balance the period's FIRST entry implies, read back from
+    its own frozen running balance. Pure — no read.
+
+    ``balance_after_account`` minus that entry's own book contribution IS the
+    balance standing just before it. Cross-checking it against
+    :func:`opening_book_balance` costs nothing and catches the one thing that
+    would make the register silently wrong: a broken date/sequence invariant
+    (an entry written outside ``create_transaction``, a reset counter). A
+    mismatch is reported on the sheet, never swallowed.
+    """
+    delta = compute_deltas(
+        first_tx.get("direction", ""),
+        int(first_tx.get("amount") or 0),
+        first_tx.get("status", ""),
+    )
+    return int(first_tx.get("balance_after_account", 0)) - delta["book"]
+
+
 def _list_cleared_after(account_id: str, as_of) -> list[dict]:
     """Resurrection set: entries dated <= as_of that were STILL outstanding at
     as_of because they cleared later (``cleared_date`` > as_of — a later
@@ -1779,6 +1839,43 @@ def list_transactions(
         if len(out) >= limit:
             break
     return out
+
+
+def list_register(
+    account_id: str, date_from=None, date_to=None, limit: int = 10000
+) -> tuple[list[dict], bool]:
+    """One account's COMPLETE register for a period, chronological.
+
+    Returns ``(rows, truncated)``. The register the art. 38 sheet prints:
+    every entry, every status, both directions — a book of account is
+    complete by definition, and only a complete one lets « report + Σ
+    recettes − Σ déboursés = solde de clôture » verify.
+
+    Date bounds are pushed to FIRESTORE on the existing ``(account_id, date,
+    sequence)`` composite, unlike :func:`list_transactions`, which fetches
+    ``limit * 3`` rows and filters them in Python — for a period sheet that
+    reads the whole account to print one month. The ``truncated`` flag is
+    returned rather than swallowed: a register that stopped early without
+    saying so would read as a complete one. Fails CLOSED (propagates).
+    """
+    query = db.collection(TRANSACTIONS_COLLECTION).where(
+        filter=FieldFilter("account_id", "==", account_id)
+    )
+    df = _midnight_utc(date_from)
+    dt = _midnight_utc(date_to)
+    if df is not None:
+        query = query.where(filter=FieldFilter("date", ">=", df))
+    if dt is not None:
+        # date is stored at midnight, so « <= end of day dt » is « < dt+1 »;
+        # comparing against midnight(dt) directly would drop that whole day.
+        query = query.where(
+            filter=FieldFilter("date", "<", dt + timedelta(days=1))
+        )
+    query = query.order_by("date").order_by("sequence")
+    rows = [d.to_dict() for d in query.limit(limit + 1).stream()]
+    if len(rows) > limit:
+        return rows[:limit], True
+    return rows, False
 
 
 def list_transactions_page(

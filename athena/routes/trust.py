@@ -654,7 +654,11 @@ def reconciliation_abandon(rec_id: str):
 
 # ── Exports (spec §8) — TWO-column « Recette » / « Crédit » ─────────────────
 
-# CSV: (key, label). PDF: (key, label, width_ratio). Both consume to_barreau_row.
+# CSV (journal + carte) and the CARTE-CLIENT PDF consume to_barreau_row.
+# The JOURNAL PDF does NOT: since August 2026 it is the art. 38 register
+# built by utils/trust_journal_pdf.py, with its own ten columns. Do not fold
+# the two back together — these widths and BARREAU_COLUMNS are pinned by
+# nine tests and still serve the carte.
 _CSV_COLUMNS = list(BARREAU_COLUMNS)
 _PDF_WIDTHS = [8, 10, 20, 20, 14, 10, 9, 9, 9]
 _PDF_COLUMNS = [(k, label, w) for (k, label), w in zip(BARREAU_COLUMNS, _PDF_WIDTHS)]
@@ -677,6 +681,69 @@ def _export_rows(txs: list[dict], view: str) -> list[dict]:
     return out
 
 
+def _trust_journal_rows(txs: list[dict]) -> list[dict]:
+    """Project entries onto the art. 38 register columns (journal PDF only).
+
+    Distinct from :func:`_export_rows`, which the CSV and the carte-client
+    still use unchanged. Amounts stay integer cents; « Recette » and
+    « Débours » are mutually exclusive by direction and the inapplicable one
+    is None so it prints BLANK, not « 0,00 $ ». « N° de chèque » reads the
+    entry's ``reference`` — the field whose form label is « Référence (n°
+    chèque…) » — as art. 38 (2°h) asks, « le cas échéant ». The uncleared
+    flag travels as its own key rather than glued onto the date string.
+    """
+    out = []
+    for tx in txs:
+        d = trust._as_utc(tx.get("date"))
+        objet = trust.PURPOSE_LABELS.get(
+            tx.get("purpose", ""), tx.get("purpose", "")
+        )
+        if tx.get("status") == "annulée":
+            objet = f"{objet} (annulée)"
+        direction = tx.get("direction", "")
+        amount = int(tx.get("amount") or 0)
+        out.append({
+            "date": d.strftime("%Y-%m-%d") if isinstance(d, datetime) else "",
+            "client": tx.get("client_name", ""),
+            "n_ref": tx.get("dossier_file_number", ""),
+            "counterparty": tx.get("counterparty", ""),
+            "objet": objet,
+            # « Mode » carries art. 38 (2°g) AND the 1°g cash indication:
+            # a « Comptant » receipt reads as one.
+            "mode": trust.METHOD_LABELS.get(
+                tx.get("method", ""), tx.get("method", "")
+            ),
+            "cheque": tx.get("reference", ""),
+            "recette": amount if direction == "recette" else None,
+            "debours": amount if direction == "déboursé" else None,
+            "solde": int(tx.get("balance_after_account") or 0),
+            "en_circulation": tx.get("status") == "en_circulation",
+        })
+    return out
+
+
+def _journal_period_label(date_from, date_to) -> str:
+    if date_from and date_to:
+        return (f"Période du {date_from.strftime('%Y-%m-%d')} "
+                f"au {date_to.strftime('%Y-%m-%d')}")
+    if date_from:
+        return f"À compter du {date_from.strftime('%Y-%m-%d')}"
+    if date_to:
+        return f"Jusqu'au {date_to.strftime('%Y-%m-%d')}"
+    return "Depuis l'ouverture du compte"
+
+
+def _account_line(account: dict) -> str:
+    """Name — institution — ••••1234. Never the transit, never the full
+    number: a register identifies the account, it does not expose it."""
+    parts = [account.get("name", "") or "Compte en fidéicommis"]
+    if account.get("institution"):
+        parts.append(account["institution"])
+    if account.get("account_number_last4"):
+        parts.append(f"••••{account['account_number_last4']}")
+    return " — ".join(parts)
+
+
 @trust_bp.route("/export/<fmt>")
 @login_required
 def journal_export(fmt: str):
@@ -696,6 +763,10 @@ def journal_export(fmt: str):
         status = None
     if direction not in VALID_DIRECTIONS:
         direction = None
+
+    if fmt == "pdf":
+        return _journal_pdf(account, account_id, date_from, date_to)
+
     txs = trust.list_transactions(
         account_id=account_id, status=status, direction=direction,
         date_from=date_from, date_to=date_to, limit=5000,
@@ -709,6 +780,62 @@ def journal_export(fmt: str):
     log_trust_event("trust_export", format=fmt, view="journal", row_count=len(rows))
     return _render_export(fmt, rows, "Journal de caisse — recettes et déboursés",
                           subtitle, f"journal_fideicommis_{day}")
+
+
+def _journal_pdf(account: dict, account_id: str, date_from, date_to):
+    """The art. 38 register. Deliberately IGNORES the screen's status and
+    direction filters: a book of account is complete, and only a complete one
+    lets « report + Σ recettes − Σ déboursés = solde de clôture » verify.
+    The period is honoured."""
+    from utils.trust_journal_pdf import build_trust_journal_pdf
+
+    txs, truncated = trust.list_register(
+        account_id, date_from=date_from, date_to=date_to
+    )
+    rows = _trust_journal_rows(txs)
+
+    opening_cents = None
+    opening_label = ""
+    notices: list[str] = []
+    if date_from is not None:
+        carried, had_prior = trust.opening_book_balance(account_id, date_from)
+        opening_cents = carried
+        opening_label = (
+            f"SOLDE REPORTÉ AU {date_from.strftime('%Y-%m-%d')}"
+            if had_prior else
+            f"SOLDE REPORTÉ AU {date_from.strftime('%Y-%m-%d')} — "
+            "aucune inscription antérieure"
+        )
+        # Free cross-check: the first entry's own frozen balance implies what
+        # the period opened on. A mismatch means the date/sequence invariant
+        # was broken (an entry written outside create_transaction, a reset
+        # counter) — say so on the sheet rather than print a wrong report.
+        if txs:
+            implied = trust.implied_opening_balance(txs[0])
+            if implied != carried:
+                notices.append(
+                    "Avertissement : le solde reporté ne concorde pas avec la "
+                    "première inscription de la période. Vérifiez l'intégrité "
+                    "du registre avant de vous fier à ce document."
+                )
+    if truncated:
+        notices.append(
+            "Avertissement : le registre a été tronqué — cette feuille ne "
+            "couvre pas toute la période demandée."
+        )
+
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log_trust_event("trust_export", format="pdf", view="journal",
+                    row_count=len(rows))
+    return build_trust_journal_pdf(
+        rows,
+        account_line=_account_line(account),
+        period=_journal_period_label(date_from, date_to),
+        filename=f"journal_caisse_fideicommis_{day}.pdf",
+        opening_cents=opening_cents,
+        opening_label=opening_label,
+        notices=notices,
+    )
 
 
 @trust_bp.route("/carte/<dossier_id>/<client_id>/export/<fmt>")

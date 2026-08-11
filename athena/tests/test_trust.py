@@ -1492,3 +1492,135 @@ def test_reconciliation_form_caps_period_end_at_today():
     html = _template("reconciliation_form.html")
     tags = [t for t in _input_tags(html) if 'name="period_end"' in t]
     assert tags and 'max="{{ today }}"' in tags[0]
+
+
+# ── Solde reporté (art. 38 period sheet) ────────────────────────────────────
+
+
+class _OpeningQuery:
+    """Minimal stand-in for the Firestore chain of opening_book_balance:
+    where(account_id) → where(date <) → order_by ×2 → limit → stream."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self._cutoff = None
+        self._account = None
+
+    def where(self, filter=None):
+        field, op, value = filter.field_path, filter.op_string, filter.value
+        if field == "account_id":
+            self._account = value
+        elif field == "date" and op == "<":
+            self._cutoff = value
+        return self
+
+    def order_by(self, *a, **kw):
+        return self
+
+    def limit(self, n):
+        self._limit = n
+        return self
+
+    def stream(self):
+        rows = [
+            r for r in self._rows
+            if r["account_id"] == self._account and r["date"] < self._cutoff
+        ]
+        # date DESC, sequence DESC — the query's own ordering
+        rows.sort(key=lambda r: (r["date"], r["sequence"]), reverse=True)
+        for r in rows[:1]:
+            yield mock.Mock(to_dict=lambda r=r: r)
+
+
+def _opening_db(rows):
+    collection = mock.Mock()
+    collection.where.side_effect = lambda filter=None: _OpeningQuery(rows).where(
+        filter=filter
+    )
+    db = mock.Mock()
+    db.collection.return_value = collection
+    return db
+
+
+def _entry(seq, day, balance, account="a1"):
+    return {
+        "account_id": account, "sequence": seq,
+        "date": datetime(2026, 8, day, tzinfo=timezone.utc),
+        "balance_after_account": balance,
+    }
+
+
+def test_opening_balance_empty_register_is_flagged(monkeypatch):
+    monkeypatch.setattr(trust, "db", _opening_db([]))
+    assert trust.opening_book_balance("a1", datetime(2026, 8, 1, tzinfo=timezone.utc)) == (0, False)
+
+
+def test_opening_balance_takes_the_last_entry_before_the_period(monkeypatch):
+    monkeypatch.setattr(trust, "db", _opening_db([
+        _entry(1, 5, 100000),
+        _entry(2, 20, 250000),          # last one before 2026-08-25
+        _entry(3, 28, 999999),          # inside the period — must not count
+    ]))
+    assert trust.opening_book_balance("a1", datetime(2026, 8, 25, tzinfo=timezone.utc)) == (250000, True)
+
+
+def test_opening_balance_same_day_takes_the_highest_sequence(monkeypatch):
+    monkeypatch.setattr(trust, "db", _opening_db([
+        _entry(7, 20, 100000),
+        _entry(8, 20, 175000),          # same day, later sequence
+    ]))
+    assert trust.opening_book_balance("a1", datetime(2026, 8, 21, tzinfo=timezone.utc)) == (175000, True)
+
+
+def test_opening_balance_excludes_the_first_day_itself(monkeypatch):
+    # « reporté AU 1er » means the balance standing BEFORE that day's entries.
+    monkeypatch.setattr(trust, "db", _opening_db([
+        _entry(1, 10, 100000),
+        _entry(2, 15, 400000),
+    ]))
+    assert trust.opening_book_balance("a1", datetime(2026, 8, 15, tzinfo=timezone.utc)) == (100000, True)
+
+
+def test_opening_balance_ignores_other_accounts(monkeypatch):
+    monkeypatch.setattr(trust, "db", _opening_db([
+        _entry(1, 5, 100000, account="a1"),
+        _entry(9, 9, 888888, account="autre"),
+    ]))
+    assert trust.opening_book_balance("a1", datetime(2026, 8, 20, tzinfo=timezone.utc)) == (100000, True)
+
+
+def test_implied_opening_balance_reads_back_the_first_entry():
+    # balance_after_account minus that entry's own book contribution.
+    recette = {"direction": "recette", "amount": 500000,
+               "status": "en_circulation", "balance_after_account": 600000}
+    assert trust.implied_opening_balance(recette) == 100000
+    debourse = {"direction": "déboursé", "amount": 25000,
+                "status": "compensée", "balance_after_account": 75000}
+    assert trust.implied_opening_balance(debourse) == 100000
+    # annulée still counts in the book balance (compute_deltas §4.2).
+    annulee = {"direction": "recette", "amount": 30000,
+               "status": "annulée", "balance_after_account": 130000}
+    assert trust.implied_opening_balance(annulee) == 100000
+
+
+def test_period_sheet_reconciles_opening_entries_and_closing():
+    """The arithmetic the carried-forward line exists for:
+    report + Σ recettes − Σ déboursés = solde de clôture."""
+    opening = 100000
+    entries = [
+        {"direction": "recette", "amount": 500000, "status": "compensée"},
+        {"direction": "déboursé", "amount": 25000, "status": "en_circulation"},
+        {"direction": "recette", "amount": 12550, "status": "annulée"},
+    ]
+    running = opening
+    for e in entries:
+        running += trust.compute_deltas(
+            e["direction"], e["amount"], e["status"]
+        )["book"]
+        e["balance_after_account"] = running
+
+    recettes = sum(e["amount"] for e in entries if e["direction"] == "recette")
+    debours = sum(e["amount"] for e in entries if e["direction"] == "déboursé")
+    assert opening + recettes - debours == running
+    # …and the first entry alone implies the opening balance.
+    assert trust.implied_opening_balance(entries[0]) == opening
