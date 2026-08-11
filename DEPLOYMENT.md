@@ -49,7 +49,7 @@ Architecture at a glance:
 ```
 Browser / DavX5 / Claude
         │
-   Cloudflare  (TLS, WAF, Access on /dav/*, Early Hints, origin secret)
+   Cloudflare  (TLS, WAF, Early Hints, origin secret)
         │
   App Engine Standard (Flask + gunicorn, Python 3.13)
         │
@@ -65,7 +65,7 @@ Firestore        Firebase Storage     Firebase Auth    Secret Manager
 **Accounts**
 - A **Google Cloud** account with billing enabled.
 - A **Cloudflare** account on the **Pro plan** (≈ US$25/mo) — required for
-  Access (Zero Trust on `/dav/*`) and Early Hints.
+  Early Hints. (Zero Trust / Access is optional — this deployment does not use it.)
 - A **domain name** you control (this guide uses `yourdomain.example`).
 - *Optional:* a **Google Play Console** account (only for the Android TWA, §12).
 - *Optional:* a **claude.ai** account (only for the MCP connector, §11).
@@ -463,13 +463,18 @@ python -m scripts.seed_reference_data
 ## 10. Optional — DavX5 calendar/contacts sync
 
 Skip this if you don't need Android sync. If you keep it:
-- Front `/dav/*` (only) with **Cloudflare Access (Zero Trust)**: a service-token
-  policy for DavX5 plus a Google-SSO policy for interactive use.
 - In DavX5, add the account by URL (`https://yourdomain.example/`), with HTTP
   Basic credentials: username = `AUTHORIZED_USER_EMAIL`, password = the plaintext
-  whose bcrypt hash is in `dav-password-hash`. Also add the Cloudflare Access
-  service-token headers (`CF-Access-Client-Id`, `CF-Access-Client-Secret`) as
-  custom headers, or the edge blocks the request before Basic auth runs.
+  whose bcrypt hash is in `dav-password-hash`.
+- `/dav/*` is defended by the App Engine firewall, the origin-secret check, the
+  bcrypt Basic auth and a per-IP brute-force brake. **Do not put Cloudflare
+  Access in front of it** without reading this first: DavX5 has no
+  custom-header setting, so a service token cannot be presented (verified on
+  device, 2026-08-11). Its only mTLS-capable path is a *client certificate*
+  (Advanced login → select a certificate from the Android KeyChain) — and
+  Cloudflare enables mTLS **per hostname, not per path**, so switching it on
+  for a host that also serves the web UI and the MCP endpoint affects every
+  client of that host. If you want Access on DAV, give DAV its own hostname.
 
 ---
 
@@ -485,7 +490,7 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 
 (TTL is garbage collection only — expiry is enforced in code regardless.)
 
-- Ensure **Cloudflare Access does NOT cover** `/mcp`, `/oauth/*`, or
+- If you use Cloudflare Access at all, ensure it **does NOT cover** `/mcp`, `/oauth/*`, or
   `/.well-known/oauth*` (only `/dav/*`).
 - Add a Cloudflare **Configuration Rule** disabling Browser Integrity Check on
   those paths (Claude's server is not a browser); watch Security → Events for
@@ -589,7 +594,7 @@ Notes:
 | Login rejected with *"Accès non autorisé"* | The Firebase user's email ≠ `AUTHORIZED_USER_EMAIL`. |
 | Login rejected after password entry | `REQUIRE_MFA=true` but no second factor enrolled. |
 | Warning about App Check in prod logs | `RECAPTCHA_ENTERPRISE_SITE_KEY` unset — App Check is fail-open. |
-| DavX5 silently won't sync | Missing Cloudflare Access service-token headers, or a DAV Basic-Auth mismatch. Test the endpoint with `curl` first. |
+| DavX5 silently won't sync | A DAV Basic-Auth mismatch, or the account was not re-added after a DAV collection layout change. Test the endpoint with `curl` first — an anonymous `PROPFIND /dav/` must answer `401 WWW-Authenticate: Basic`. |
 | Word shows a "repair" prompt on a generated doc | A template-engine change introduced a `docxtpl`/`python-docx` round-trip — forbidden (see CLAUDE.md). |
 
 ---
