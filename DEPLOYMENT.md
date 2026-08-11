@@ -253,16 +253,31 @@ firebase deploy --only firestore:indexes,firestore:rules,storage --project $PROJ
 
 Create the secrets (only `flask-secret-key` is strictly required):
 
+> **The `| tr -d '\n'` in every line below is load-bearing — do not drop it.**
+> `print()` appends a newline, `gcloud secrets create --data-file=-` stores the
+> payload **byte for byte**, and nothing in `config.py` strips it (`_secret` →
+> `_from_secret_manager` decodes and returns as-is). A trailing `\n` therefore
+> becomes part of the secret. For `cf-origin-secret` that is site-wide
+> downtime: `security.py`'s `hmac.compare_digest` compares the stored value
+> against the header a Cloudflare Transform Rule injects, and a rule cannot
+> emit a newline — so **every request answers 403** and the only cure is a new
+> secret version plus a redeploy (the value is read once at import and
+> `lru_cache`d, so a live instance never re-reads it). `dav-password-hash` has
+> the same trap for a different reason: a 61-byte bcrypt hash never matches the
+> 60 bytes `checkpw` recomputes, and DavX5 fails silently. Verify after
+> creating: `gcloud secrets versions access latest --secret=<id> | xxd | tail -1`
+> must not end in `0a`.
+
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(64))" \
+python -c "import secrets; print(secrets.token_urlsafe(64))" | tr -d '\n' \
   | gcloud secrets create flask-secret-key --data-file=- --project=$PROJECT
 
 # bcrypt hash for the DAV password (pick your own password):
-python -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_DAV_PASSWORD', bcrypt.gensalt()).decode())" \
+python -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_DAV_PASSWORD', bcrypt.gensalt()).decode())" | tr -d '\n' \
   | gcloud secrets create dav-password-hash --data-file=- --project=$PROJECT
 
 printf '%s' 'YOUR_FIREBASE_WEB_API_KEY' | gcloud secrets create firebase-api-key --data-file=- --project=$PROJECT
-python -c "import secrets; print(secrets.token_urlsafe(32))" \
+python -c "import secrets; print(secrets.token_urlsafe(32))" | tr -d '\n' \
   | gcloud secrets create cf-origin-secret --data-file=- --project=$PROJECT   # also paste into the Cloudflare Transform Rule (§7)
 ```
 

@@ -336,3 +336,160 @@ def test_origin_secret_bypassed_only_for_internal_dispatch_headers():
     ).status_code == 200
     # A plain external request (no internal header) is still refused.
     assert web.get("/").status_code == 403
+
+
+def test_origin_secret_bypassed_for_appengine_warmup():
+    """`/_ah/*` never transits Cloudflare, so it carries no injected header.
+
+    Untested until August 2026, and it is the exemption that decides whether a
+    cold instance can warm up once the secret is armed: App Engine sends
+    `/_ah/warmup` before routing live traffic, and a 403 there would leave the
+    Firestore channel unprimed on every cold start.
+    """
+    app = _make_app(CF_ORIGIN_SECRET="s3cret")
+
+    @app.route("/_ah/warmup")
+    def warmup():
+        return "", 200
+
+    assert app.test_client().get("/_ah/warmup").status_code == 200
+
+
+# ── HSTS: one value, repeated in ten places, previously pinned by nothing ──
+#
+# `Strict-Transport-Security` is emitted by security.py, by
+# client/security.py, and by the static handlers of BOTH yaml files (static
+# handlers are served by the App Engine frontend and never reach Flask's
+# after_request hook). Until August 2026 no test asserted it anywhere, so the
+# ten copies could drift silently — and two handlers had already fallen out.
+#
+# These tests DERIVE the inventory from the yaml files instead of holding a
+# list. A hand-kept inventory decays: that is the same lesson the MCP suite
+# learned when `list_invoices` slipped past a hand-written tuple.
+
+_ATHENA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read(*parts: str) -> str:
+    with open(os.path.join(_ATHENA_DIR, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _yaml_handlers(text: str) -> list[dict]:
+    """Parse the `handlers:` blocks of an App Engine yaml.
+
+    Deliberately small rather than pulling in PyYAML, which is not a
+    dependency of this project (runtime or dev). It reads only the shape these
+    two files actually use: `  - url: X` followed by indented `key: value`
+    lines, with an `http_headers:` sub-block. `_assert_parse_is_sane` below is
+    what stops a silently-empty parse from passing every other assertion.
+    """
+    handlers: list[dict] = []
+    current: dict | None = None
+    in_headers = False
+    for raw in text.splitlines():
+        if raw.startswith("  - url:"):
+            current = {"url": raw.split(":", 1)[1].strip(), "headers": {}}
+            handlers.append(current)
+            in_headers = False
+            continue
+        if current is None or not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if not raw.startswith("    "):        # dedented out of the block
+            current = None
+            continue
+        stripped = raw.strip()
+        if stripped == "http_headers:":
+            in_headers = True
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        value = value.strip().strip('"')
+        if in_headers and raw.startswith("      "):
+            current["headers"][key.strip()] = value
+        else:
+            in_headers = False
+            current[key.strip()] = value
+    return handlers
+
+
+def _assert_parse_is_sane(handlers: list[dict], name: str) -> None:
+    assert len(handlers) >= 3, f"{name}: parser found {len(handlers)} handlers"
+    assert handlers[-1]["url"] == "/.*", f"{name}: last handler is not the catch-all"
+    assert handlers[-1].get("script") == "auto", f"{name}: catch-all is not script:auto"
+
+
+def _static_handlers(handlers: list[dict]) -> list[dict]:
+    """Handlers served by the App Engine frontend, which bypass Flask."""
+    return [h for h in handlers if "static_files" in h or "static_dir" in h]
+
+
+def _hsts_of(app_response_headers) -> str:
+    return app_response_headers["Strict-Transport-Security"]
+
+
+def test_hsts_is_the_same_string_in_all_ten_places():
+    """Flask is the reference; every other copy must equal it byte for byte."""
+    canonical = _hsts_of(_make_app().test_client().get("/").headers)
+
+    copies: list[tuple[str, str]] = [("security.py (Flask)", canonical)]
+
+    # The portail service's own after_request, read as source: importing
+    # client.security would drag in the portal's config resolution.
+    portail_src = _read("client", "security.py")
+    found = re.findall(r'"(max-age=[^"]+)"', portail_src)
+    assert found, "client/security.py: no HSTS literal found"
+    copies += [("client/security.py", v) for v in found]
+
+    for yaml_name in ("app.yaml", "portail.yaml"):
+        handlers = _yaml_handlers(_read(yaml_name))
+        _assert_parse_is_sane(handlers, yaml_name)
+        for h in _static_handlers(handlers):
+            value = h["headers"].get("Strict-Transport-Security")
+            assert value, f"{yaml_name} {h['url']}: no Strict-Transport-Security"
+            copies.append((f"{yaml_name} {h['url']}", value))
+
+    assert len(copies) >= 10, f"expected at least 10 copies, found {len(copies)}"
+    divergent = [(where, v) for where, v in copies if v != canonical]
+    assert not divergent, f"HSTS diverges from {canonical!r}: {divergent}"
+
+
+def test_hsts_value_still_satisfies_the_preload_requirements():
+    """Consistency is not enough — the value itself must stay strong.
+
+    The preload list demands max-age >= 31536000 (one year) plus
+    includeSubDomains. The edge served 15552000 (180 days) for months while
+    the code said 63072000, so this asserts the property, not just that the
+    ten copies agree on whatever they happen to say.
+    """
+    value = _hsts_of(_make_app().test_client().get("/").headers)
+    max_age = int(re.search(r"max-age=(\d+)", value).group(1))
+    assert max_age >= 31536000, f"max-age={max_age} is below the one-year floor"
+    assert "includeSubDomains" in value
+    assert "preload" in value
+
+
+def test_every_static_handler_carries_the_full_baseline():
+    """The rule is TOTAL — no 'HTML and scripts only' carve-out.
+
+    /sw.js and /manifest.json sat without HSTS or `secure: always` precisely
+    because they fell outside an exception list. Handlers with `script: auto`
+    are excluded on a principled basis, not an arbitrary one: those responses
+    go through Flask, where _add_security_headers sets the same headers.
+    """
+    for yaml_name in ("app.yaml", "portail.yaml"):
+        handlers = _yaml_handlers(_read(yaml_name))
+        _assert_parse_is_sane(handlers, yaml_name)
+        for h in _static_handlers(handlers):
+            where = f"{yaml_name} {h['url']}"
+            assert h.get("secure") == "always", f"{where}: missing `secure: always`"
+            assert h["headers"].get("X-Content-Type-Options") == "nosniff", (
+                f"{where}: missing nosniff"
+            )
+            assert h["headers"].get("Strict-Transport-Security"), (
+                f"{where}: missing HSTS"
+            )
+        assert handlers[-1].get("secure") == "always", (
+            f"{yaml_name}: the catch-all must still force HTTPS"
+        )

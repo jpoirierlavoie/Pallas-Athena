@@ -103,47 +103,75 @@ env_variables:
   # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH, GRAPH_CLIENT_SECRET)
   # are pulled from Google Cloud Secret Manager at runtime — see config.py.
 
+# Static handlers bypass Flask's after_request security headers, so each one
+# repeats the baseline. The rule is deliberately TOTAL — every handler carries
+# `secure: always` + nosniff + HSTS, with no "HTML and scripts only" carve-out.
+# An exception list is a list that decays: /sw.js and /manifest.json sat
+# without HSTS or `secure: always` for months precisely because they fell
+# outside one. tests/test_security_headers.py now derives the inventory from
+# this file and enforces it, so a new handler cannot quietly skip the baseline.
 handlers:
   - url: /manifest.json
     static_files: manifest.json
     upload: manifest.json
     mime_type: application/manifest+json
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   - url: /sw.js
     static_files: static/sw.js
     upload: static/sw.js
     mime_type: application/javascript
+    secure: always
     http_headers:
       Cache-Control: no-cache
       Service-Worker-Allowed: /
       X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   - url: /favicon.ico
     static_files: static/icons/favicon.ico
     upload: static/icons/favicon.ico
     mime_type: image/x-icon
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   - url: /robots.txt
     static_files: robots.txt
     upload: robots.txt
     mime_type: text/plain
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   - url: /apple-touch-icon-precomposed.png
     static_files: static/icons/icon-192.png
     upload: static/icons/icon-192.png
     mime_type: image/png
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   - url: /apple-touch-icon.png
     static_files: static/icons/icon-192.png
     upload: static/icons/icon-192.png
     mime_type: image/png
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
-  # Static handlers bypass Flask's after_request security headers — set the
-  # baseline explicitly on every handler that serves HTML or scripts.
   - url: /privacy
     static_files: static/legal/privacy.html
     upload: static/legal/privacy.html
     mime_type: text/html
+    secure: always
     http_headers:
       X-Content-Type-Options: nosniff
       X-Frame-Options: DENY
@@ -154,6 +182,7 @@ handlers:
     static_files: static/legal/terms.html
     upload: static/legal/terms.html
     mime_type: text/html
+    secure: always
     http_headers:
       X-Content-Type-Options: nosniff
       X-Frame-Options: DENY

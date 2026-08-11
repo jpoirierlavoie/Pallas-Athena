@@ -64,6 +64,16 @@ _FAIL_OPEN_ENV = {
     "DAV_PASSWORD_HASH": "DAV Basic Auth cannot succeed — DavX5 sync is unavailable.",
 }
 
+# Of those, the ones production resolves from SECRET MANAGER, not the
+# environment. Reporting them "unset in production" from os.environ is a FALSE
+# NEGATIVE — config.py's `_secret()` never consults the env var when
+# ENV=production. _check_prod_secrets is the authority for these; the env pass
+# defers to it rather than printing a warning that is wrong by construction.
+_SECRET_BACKED = {
+    "CF_ORIGIN_SECRET": "cf-origin-secret",
+    "DAV_PASSWORD_HASH": "dav-password-hash",
+}
+
 _OK, _WARN, _FAIL = "OK", "WARN", "FAIL"
 _SYMBOL = {_OK: "  ok ", "WARN": "warn ", "FAIL": "FAIL "}
 
@@ -122,6 +132,8 @@ def _check_runtime_env(rpt: Report, is_prod: bool) -> None:
     for var, consequence in _FAIL_OPEN_ENV.items():
         if os.environ.get(var):
             rpt.emit(_OK, f"{var} is set")
+        elif is_prod and var in _SECRET_BACKED:
+            rpt.emit(_OK, f"{var} comes from Secret Manager in production — see pass 1b")
         elif is_prod:
             rpt.emit(_WARN, f"{var} unset in production — {consequence}")
         else:
@@ -151,19 +163,37 @@ def _check_prod_secrets(rpt: Report) -> None:
         rpt.emit(_WARN, f"Could not init Secret Manager client to verify secrets ({type(exc).__name__}); skipping")
         return
 
-    for secret_id, required in (
-        ("flask-secret-key", True),
-        ("firebase-api-key", False),
-        ("dav-password-hash", False),
-        ("cf-origin-secret", False),
+    for secret_id, required, consequence in (
+        ("flask-secret-key", True, "the app will not boot"),
+        ("firebase-api-key", False, "the login page cannot init Firebase"),
+        ("dav-password-hash", False, "DAV Basic Auth cannot succeed — DavX5 sync is unavailable"),
+        ("cf-origin-secret", False, "the Cloudflare origin-secret check is disabled (direct-to-App-Engine access not blocked)"),
     ):
         name = f"projects/{project}/secrets/{secret_id}/versions/latest"
         try:
-            client.access_secret_version(request={"name": name})
-            rpt.emit(_OK, f"secret '{secret_id}' resolves")
+            response = client.access_secret_version(request={"name": name})
         except Exception as exc:  # noqa: BLE001
             level = _FAIL if required else _WARN
-            rpt.emit(level, f"secret '{secret_id}' did not resolve ({type(exc).__name__})")
+            rpt.emit(level, f"secret '{secret_id}' did not resolve ({type(exc).__name__}) — {consequence}")
+            continue
+
+        # The payload matters, not just its existence. Nothing in config.py
+        # strips it, so surrounding whitespace becomes part of the value: a
+        # trailing newline on cf-origin-secret makes hmac.compare_digest fail
+        # against a header no Transform Rule can reproduce, and EVERY request
+        # answers 403. Never print the payload — only its shape.
+        payload = response.payload.data.decode("utf-8", "replace")
+        if not payload:
+            rpt.emit(_WARN, f"secret '{secret_id}' resolves but is EMPTY — {consequence}")
+        elif payload != payload.strip():
+            rpt.emit(
+                _FAIL,
+                f"secret '{secret_id}' has surrounding whitespace "
+                f"({len(payload) - len(payload.strip())} stray char(s)) — it is compared "
+                "byte for byte; recreate it with `| tr -d '\\n'`",
+            )
+        else:
+            rpt.emit(_OK, f"secret '{secret_id}' resolves ({len(payload)} chars, no stray whitespace)")
 
 
 def _check_owner_literals(rpt: Report) -> None:

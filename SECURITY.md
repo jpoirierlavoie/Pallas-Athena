@@ -58,9 +58,9 @@ If you spot any secret in this repository (current files or git history), please
 - **Authorization:** Every state-mutating endpoint requires `@login_required`.
 - **CSRF:** `flask-wtf` `CSRFProtect` on all POST/PUT/DELETE.
 - **App Check:** Firebase App Check with reCAPTCHA Enterprise on HTMX requests.
-- **DAV auth:** Separate HTTP Basic Auth (bcrypt-hashed password) plus Cloudflare Access Zero Trust on `/dav/*`.
-- **Edge:** Cloudflare in front of App Engine with Full Strict TLS. Direct App Engine access (`*.appspot.com`) is rejected by a `before_request` hook.
-- **Headers:** HSTS (2-year), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, restrictive `Permissions-Policy`. CSP is **enforced** (since 2026-07-11) with a per-request nonce on `script-src` (no `'unsafe-inline'`); violations are still collected via `report-uri` → `/csp-report`.
+- **DAV auth:** Separate HTTP Basic Auth (bcrypt-hashed password) plus a per-IP brute-force brake. Cloudflare Access Zero Trust on `/dav/*` is planned but **not currently configured** (verified 2026-08-11).
+- **Edge:** Cloudflare in front of App Engine with Full Strict TLS, and an App Engine firewall that admits only Cloudflare's published IP ranges. Direct App Engine access (`*.appspot.com`) is rejected by a `before_request` hook. The origin-secret header check (`X-Origin-Auth`) is implemented in `security.py` but **not currently armed** — `cf-origin-secret` is unset, so it fails open (verified 2026-08-11).
+- **Headers:** HSTS (2-year at the origin; **the Cloudflare edge currently overrides it to 180 days**, verified 2026-08-11), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, restrictive `Permissions-Policy`. CSP is **enforced** (since 2026-07-11) with a per-request nonce on `script-src` (no `'unsafe-inline'`); violations are still collected via `report-uri` → `/csp-report`.
 - **Rate limiting:** `flask-limiter` on `/auth/login`.
 - **Input handling:** All user input is sanitized via `security.sanitize()` and length-capped per field.
 - **Storage:** Firebase Storage URLs are signed with 15-minute expiry; raw bucket URLs are never exposed.

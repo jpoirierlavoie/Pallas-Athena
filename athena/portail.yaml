@@ -46,16 +46,29 @@ env_variables:
   # l'exécution (client/config.py — résolution paresseuse). AUCUNE variable
   # GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler Graph).
 
+# Les gestionnaires statiques court-circuitent l'after_request de Flask : chacun
+# répète donc la ligne de base. La règle est TOTALE à dessein — tout
+# gestionnaire porte `secure: always` + nosniff + HSTS, sans exception « HTML et
+# scripts seulement ». Une liste d'exceptions est une liste qui dérive.
+# tests/test_security_headers.py dérive l'inventaire de ce fichier et l'exige.
 handlers:
   - url: /favicon.ico
     static_files: static/icons/favicon.ico
     upload: static/icons/favicon.ico
     mime_type: image/x-icon
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   - url: /robots.txt
     static_files: robots.txt
     upload: robots.txt
     mime_type: text/plain
+    secure: always
+    http_headers:
+      X-Content-Type-Options: nosniff
+      Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
 
   # Les polices vendues exigent un mime_type explicite : .woff2 est absent de
   # la table MIME du runtime (servi application/octet-stream sinon) et chaque
