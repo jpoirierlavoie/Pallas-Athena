@@ -1624,3 +1624,50 @@ def test_period_sheet_reconciles_opening_entries_and_closing():
     assert opening + recettes - debours == running
     # …and the first entry alone implies the opening balance.
     assert trust.implied_opening_balance(entries[0]) == opening
+
+
+# ── Export links must follow the ACTIVE period ──────────────────────────────
+
+
+def test_export_links_carry_the_period_and_live_in_one_partial():
+    """Both links read the active filters. The PDF register drops statut/sens
+    (a book of account is complete) but MUST carry the period: it prints it
+    and carries a balance forward into it."""
+    html = _template("_export_links.html")
+    for fmt in ("'csv'", "'pdf'"):
+        link = next(
+            line for line in html.splitlines()
+            if f"fmt={fmt}" in line
+        )
+        assert "date_from=filters.date_from" in link, fmt
+        assert "date_to=filters.date_to" in link, fmt
+    csv_link = next(l for l in html.splitlines() if "fmt='csv'" in l)
+    pdf_link = next(l for l in html.splitlines() if "fmt='pdf'" in l)
+    assert "status=filters.status" in csv_link
+    assert "status=filters.status" not in pdf_link       # complete register
+
+
+def test_rows_partial_reswaps_the_export_links_out_of_band():
+    """The regression this pins: the links sit OUTSIDE #trust-rows, the only
+    region an HTMX filter change swaps. Without the OOB re-emission they keep
+    the period of the initial page load, and the exported register silently
+    covers everything — which is exactly what shipped on 2026-08-11."""
+    rows = _template("_transaction_rows.html")
+    assert 'hx-swap-oob="true"' in rows
+    assert 'id="trust-export"' in rows
+    assert '{% include "trust/_export_links.html" %}' in rows
+    # Guarded, or a full-page render would emit the id twice.
+    assert "request.headers.get('HX-Request')" in rows
+    # OUTSIDE the rows/no-rows branches: an empty period must refresh them too.
+    oob_at = rows.index('hx-swap-oob="true"')
+    assert oob_at > rows.rindex("{% else %}")
+
+
+def test_list_page_hosts_the_same_export_container():
+    """The OOB swap replaces by id — the host container must carry the same
+    id and classes, or the toolbar reflows on the first filter change."""
+    html = _template("list.html")
+    assert '<div id="trust-export" class="ml-auto flex gap-2">' in html
+    assert '{% include "trust/_export_links.html" %}' in html
+    # The links themselves live in the partial alone — no second copy to drift.
+    assert "trust.journal_export" not in html

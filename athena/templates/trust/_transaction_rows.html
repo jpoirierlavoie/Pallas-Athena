@@ -49,3 +49,15 @@
 {% include "components/pagination.html" %}
 {% endif %}
 {% endif %}
+
+{# OOB swap of the export links — the period the register covers.
+   The links live OUTSIDE #trust-rows, the only region an HTMX filter change
+   swaps, so without this they keep the period of the initial page load and
+   the exported register silently covers everything. OUTSIDE the rows/no-rows
+   branches on purpose: a period with no entries must refresh them too.
+   Guarded on HX-Request so a full-page render does not emit the id twice. #}
+{% if request.headers.get('HX-Request') == 'true' %}
+<div id="trust-export" class="ml-auto flex gap-2" hx-swap-oob="true">
+  {% include "trust/_export_links.html" %}
+</div>
+{% endif %}

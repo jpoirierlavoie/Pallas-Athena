@@ -1,0 +1,12 @@
+{# The journal's two export links. Extracted so the rows partial can re-emit
+   them out-of-band: they sit OUTSIDE #trust-rows, the only region an HTMX
+   filter change swaps, so without that re-emission they would keep the
+   period of the initial page load and the register would silently cover
+   everything. Args: account, filters. #}
+<a href="{{ url_for('trust.journal_export', fmt='csv', account_id=account.id, status=filters.status, direction=filters.direction, date_from=filters.date_from, date_to=filters.date_to) }}"
+   class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">CSV</a>
+{# The PDF register deliberately drops statut/sens (a book of account is
+   complete) but MUST carry the period — it prints it, and carries a balance
+   forward into it. #}
+<a href="{{ url_for('trust.journal_export', fmt='pdf', account_id=account.id, date_from=filters.date_from, date_to=filters.date_to) }}"
+   class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">PDF</a>
