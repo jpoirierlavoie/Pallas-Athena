@@ -316,7 +316,16 @@ def test_get_agenda_filters_cancelled_and_formats_money(monkeypatch):
 
 
 def test_get_agenda_marks_overdue_tasks(monkeypatch):
-    past = datetime.now(UTC) - timedelta(days=3)
+    # FROZEN day, fixed deadline — never derived from the clock. This test
+    # used to read `now(UTC) - 3 days` and broke the 2026-08-11 00:03 UTC
+    # build: in the 00:00-04:00 UTC band today_mtl() is still the PREVIOUS
+    # Montréal day, so a 3-day UTC offset is only 2 Montréal days back — it
+    # landed on Saturday the 8th, which prorogation carries to Monday the
+    # 10th, i.e. today, i.e. not yet late. The app was right; the test mixed
+    # a UTC-derived date with a Montréal today. Widening the offset (as the
+    # sibling test below once did) only makes the landmine rarer.
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 31))       # a Friday
+    past = datetime(2026, 7, 28, tzinfo=UTC)                # a Tuesday
     monkeypatch.setattr(handlers.hearing_model, "list_hearings_in_range",
                         lambda a, b, limit=100: [])
     monkeypatch.setattr(handlers.task_model, "list_urgent_tasks",
@@ -1109,13 +1118,15 @@ def test_billing_snapshot_dossier_caps_rows_at_50(monkeypatch):
 # ── protocol steps ──────────────────────────────────────────────────────
 
 def test_list_protocol_steps_derives_overdue_without_writes(monkeypatch):
-    # 7 days back, not 2: lateness now evaluates on the PROROGUED deadline
-    # (2026-08-02 decision), and now-2d lands on a weekend whenever the test
-    # runs on a Sunday/Monday — prorogued to Monday, hence not yet late. A
-    # 7-day margin stays past due under any prorogation (the worst cluster,
-    # Dec 31 → Jan 4, adds four days).
-    past = datetime.now(UTC) - timedelta(days=7)
-    future = datetime.now(UTC) + timedelta(days=30)
+    # FROZEN day, fixed deadlines. Lateness evaluates on the PROROGUED
+    # deadline (2026-08-02 decision), so a clock-derived offset lands on a
+    # weekend some days and reads as not-yet-late. This test once answered
+    # that by widening the offset from 2 days to 7 — a probabilistic patch
+    # that left the same landmine armed elsewhere (see the agenda test
+    # above, which broke a build). Freezing the day settles it outright.
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 31))       # a Friday
+    past = datetime(2026, 7, 24, tzinfo=UTC)                # a Friday
+    future = datetime(2026, 8, 28, tzinfo=UTC)
     protocol = {"id": "p1", "title": "Protocole de l'instance",
                 "protocol_type": "cq_simplifié", "status": "actif",
                 "start_date": datetime(2026, 5, 1, tzinfo=UTC),
@@ -1147,9 +1158,13 @@ def test_list_protocol_steps_derives_overdue_without_writes(monkeypatch):
 
 
 def test_step_and_task_due_today_are_not_overdue(monkeypatch):
-    today_midnight = datetime.combine(
-        datetime.now(UTC).date(), datetime.min.time(), tzinfo=UTC
-    )
+    # FROZEN, and not merely to be deterministic: with a clock-derived
+    # `now(UTC).date()` this test QUIETLY STOPPED testing its own claim in
+    # the 00:00-04:00 UTC band, where that date is already TOMORROW in
+    # Montréal — it went on passing while asserting nothing about « due
+    # today ».
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 31))       # a Friday
+    today_midnight = datetime(2026, 7, 31, tzinfo=UTC)
     protocol = {"id": "p1", "status": "actif",
                 "steps": [{"id": "s1", "order": 1, "title": "Dépôt",
                            "status": "à_venir", "deadline_date": today_midnight}]}
