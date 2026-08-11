@@ -48,29 +48,64 @@ def _row(**over) -> dict:
 
 def _widths() -> list[float]:
     usable = landscape(LEGAL)[0] - 2 * 10 * mm
-    return [ratio * usable for _, ratio, _ in journal_pdf.COLUMNS]
+    return [col.ratio * usable for col in journal_pdf.COLUMNS]
 
 
 # ── The sheet's shape ───────────────────────────────────────────────────────
 
 
 def test_thirteen_columns_in_the_requested_order():
-    assert [label for label, _, _ in journal_pdf.COLUMNS] == [
-        "Date", "N/Réf", "Client", "N° de note", "Honoraires",
-        "Débours\ntaxables", "Débours non\ntaxables", "Sous-total",
-        "TPS", "TVQ", "Total", "Sommes\nreçues", "Solde",
+    # Date · Client · N/Réf · N° de note — the Barreau model's own order.
+    assert [c.label for c in journal_pdf.COLUMNS] == [
+        "Date", "Client", "N/Réf", "N° de note", "Honoraires",
+        "Débours TX", "Débours NTX", "Sous-total",
+        "TPS", "TVQ", "Total", "Sommes reçues", "Solde",
     ]
+
+
+def test_headers_are_single_line():
+    # The shortened labels all fit on one line now — a uniform header band.
+    for col in journal_pdf.COLUMNS:
+        assert "\n" not in col.label, col.label
 
 
 def test_column_ratios_spend_the_whole_sheet():
     # The widths must fill the legal sheet — that is what keeps rows on one
     # line (« ajusté la largeur afin de remplir la grandeur de la feuille »).
-    assert abs(sum(r for _, r, _ in journal_pdf.COLUMNS) - 1.0) < 1e-9
+    assert abs(sum(c.ratio for c in journal_pdf.COLUMNS) - 1.0) < 1e-9
 
 
 def test_money_columns_are_the_nine_summed_ones():
-    money = [label for label, _, is_money in journal_pdf.COLUMNS if is_money]
+    money = [c for c in journal_pdf.COLUMNS if c.money]
     assert len(money) == len(journal_pdf.MONEY_KEYS) == 9
+    # MONEY_KEYS is DERIVED from COLUMNS — the totals row can only ever sum
+    # the money columns that are actually printed.
+    assert journal_pdf.MONEY_KEYS == tuple(c.key for c in money)
+    assert journal_pdf.TEXT_COLUMN_COUNT == 13 - 9
+
+
+def test_each_value_lands_under_its_own_column():
+    """The net that was missing: cells are built from each column's KEY, so
+    re-ordering COLUMNS can never shift a row's content sideways. Feed a row
+    whose every field is distinctive and check where each one lands."""
+    widths = _widths()
+    row = _row(
+        date="1111-11-11", client="CLIENT-MARKER", reference="REF-MARKER",
+        numero="NUM-MARKER", honoraires=101, debours_tx=202, debours_ntx=303,
+        sous_total=404, tps=505, tvq=606, total=707, recu=808, solde=909,
+    )
+    cells = journal_pdf._row_cells(row, widths)
+    by_label = {
+        col.label: cell for col, cell in zip(journal_pdf.COLUMNS, cells)
+    }
+    assert by_label["Date"] == "1111-11-11"
+    assert by_label["Client"] == "CLIENT-MARKER"
+    assert by_label["N/Réf"] == "REF-MARKER"
+    assert by_label["N° de note"] == "NUM-MARKER"
+    assert by_label["Honoraires"] == format_cents_fr(101)
+    assert by_label["Débours TX"] == format_cents_fr(202)
+    assert by_label["Débours NTX"] == format_cents_fr(303)
+    assert by_label["Solde"] == format_cents_fr(909)
 
 
 def test_pdf_is_legal_landscape_and_font_pure():
@@ -92,7 +127,7 @@ def test_title_and_no_grouping_band():
     )
     assert resp.status_code == 200
     # The Barreau sheet's top band is deliberately dropped.
-    labels = [label for label, _, _ in journal_pdf.COLUMNS]
+    labels = [col.label for col in journal_pdf.COLUMNS]
     assert "Facturation" not in labels
     assert "DÉTAIL DE LA FACTURE" not in labels
     assert journal_pdf.TITLE == "JOURNAL DES HONORAIRES"
@@ -132,11 +167,48 @@ def test_every_cell_fits_its_column_even_with_extreme_values():
 
 def test_long_client_name_is_clipped_not_wrapped():
     widths = _widths()
-    cells = journal_pdf._row_cells(
-        _row(client="X" * 400), widths
+    cells = journal_pdf._row_cells(_row(client="X" * 400), widths)
+    client = cells[1]          # Client is the second column now
+    assert client.endswith("…")
+    assert len(client) < 400
+
+
+def test_client_is_the_only_clippable_column():
+    """Clipping a client name is cosmetic; clipping an identifier or an
+    AMOUNT in a book of account makes it false."""
+    clippable = [c.label for c in journal_pdf.COLUMNS if c.clip]
+    assert clippable == ["Client"]
+
+
+def test_identifiers_and_amounts_are_never_clipped():
+    widths = _widths()
+    row = _row(
+        reference="UNE-RÉFÉRENCE-DE-DOSSIER-ABSURDEMENT-LONGUE",
+        numero="2026-F0001 (une note héritée très longue)",
+        **{k: 999_999_999_99 for k in journal_pdf.MONEY_KEYS},
     )
-    assert cells[2].endswith("…")
-    assert len(cells[2]) < 400
+    cells = journal_pdf._row_cells(row, widths)
+    for col, cell in zip(journal_pdf.COLUMNS, cells):
+        if col.clip:
+            continue
+        assert not cell.endswith("…"), (col.label, cell)
+        if col.money:
+            assert cell == format_cents_fr(999_999_999_99)
+
+
+def test_a_legacy_voided_note_number_still_fits_its_column():
+    # « 2026-F001 (ann.) » is the widest note number the sheet can hold —
+    # the column is budgeted for it rather than clipping an identifier.
+    widths = _widths()
+    cells = journal_pdf._row_cells(
+        _row(numero="2026-F001", reference="", annulee=True), widths
+    )
+    idx = [c.key for c in journal_pdf.COLUMNS].index("numero")
+    assert cells[idx] == "2026-F001 (ann.)"
+    drawn = pdfmetrics.stringWidth(
+        cells[idx], journal_pdf._FONT, journal_pdf._SIZE
+    )
+    assert drawn <= widths[idx] - 2 * journal_pdf._PAD, (drawn, widths[idx])
 
 
 def test_voided_invoice_is_marked_in_the_note_number():
@@ -144,6 +216,39 @@ def test_voided_invoice_is_marked_in_the_note_number():
     live = journal_pdf._row_cells(_row(), widths)[3]
     void = journal_pdf._row_cells(_row(annulee=True), widths)[3]
     assert "(ann.)" in void and "(ann.)" not in live
+    # Marked AFTER the prefix is dropped — « 03 (ann.) », not the whole number.
+    assert void == "03 (ann.)"
+
+
+# ── The note number drops the file-number prefix ────────────────────────────
+
+
+def test_note_number_drops_the_dossier_prefix():
+    # The N/Réf column already carries « 2026-001 ».
+    assert journal_pdf._short_note_number("2026-001-03", "2026-001") == "03"
+    # Past 99 the suffix widens — still all digits, still dropped.
+    assert journal_pdf._short_note_number("2026-001-100", "2026-001") == "100"
+
+
+def test_note_number_is_left_whole_when_the_prefix_is_not_the_file():
+    # A legacy YYYY-FNNN number: the prefix is the YEAR, deducible from no
+    # other column.
+    assert journal_pdf._short_note_number("2026-F001", "2026-001") == "2026-F001"
+    # No N/Réf: the note number is the row's only identification.
+    assert journal_pdf._short_note_number("2026-F001", "") == "2026-F001"
+    # The free-form file-number trap: « 2026 » is a legal file number, and a
+    # naive strip would read « 2026-F001 » as « F001 ».
+    assert journal_pdf._short_note_number("2026-F001", "2026") == "2026-F001"
+    # A prefix/reference divergence (rename race, DAV import stray space).
+    assert (
+        journal_pdf._short_note_number("2025-014-01", "2026-001")
+        == "2025-014-01"
+    )
+
+
+def test_note_number_survives_dashes_inside_the_file_number():
+    # A rsplit/split("-") would fall apart here; startswith does not.
+    assert journal_pdf._short_note_number("A-B-C-07", "A-B-C") == "07"
 
 
 # ── Arithmetic ──────────────────────────────────────────────────────────────

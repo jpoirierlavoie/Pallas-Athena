@@ -23,6 +23,7 @@ page callbacks must call ``canvas.setFont`` explicitly or the deploy gate's
 import io
 import logging
 from datetime import datetime
+from typing import NamedTuple
 from xml.sax.saxutils import escape
 
 from flask import Response
@@ -41,31 +42,49 @@ logger = logging.getLogger(__name__)
 
 TITLE = "JOURNAL DES HONORAIRES"
 
-# (header label, ratio, money?) — ratios sum to 1 and are spent over the full
-# legal-landscape width, which is what keeps every row on a single line.
-# Header labels carry their own line breaks; DATA cells never do.
-COLUMNS: tuple[tuple[str, float, bool], ...] = (
-    ("Date", 0.055, False),
-    ("N/Réf", 0.055, False),
-    ("Client", 0.145, False),
-    ("N° de note", 0.075, False),
-    ("Honoraires", 0.075, True),
-    ("Débours\ntaxables", 0.075, True),
-    ("Débours non\ntaxables", 0.080, True),
-    ("Sous-total", 0.075, True),
-    ("TPS", 0.065, True),
-    ("TVQ", 0.065, True),
-    ("Total", 0.075, True),
-    ("Sommes\nreçues", 0.075, True),
-    ("Solde", 0.085, True),
+class Column(NamedTuple):
+    label: str
+    ratio: float          # share of the usable width; the ratios sum to 1
+    money: bool           # right-aligned, fr-CA formatted
+    key: str              # the journal-row key this column reads
+    clip: bool = False    # may be ellipsised to fit — see below
+
+
+# The sheet, in reading order — Date · Client · N/Réf · N° de note, which is
+# the Barreau model's own (« Date de la facture | Nom du client | No Dossier
+# Références | # Facture »). The ratios spend the whole legal-landscape width,
+# which is what keeps every row on a single line.
+#
+# ORDER LIVES HERE ALONE: every consumer reads ``key``, so re-ordering is a
+# permutation of this table and cannot silently shift a column's content the
+# way a parallel positional list would.
+#
+# CLIENT IS THE ONLY CLIPPABLE COLUMN. Everything else on this sheet either
+# identifies the entry (date, file number, note number) or states an amount,
+# and a truncated identifier or figure is a FALSE one — worse in a book of
+# account than an untidy one. Their widths are therefore budgeted past the
+# widest value they can realistically hold (a legacy « 2026-F001 (ann.) »
+# note number, a seven-figure amount), and a test measures that.
+COLUMNS: tuple[Column, ...] = (
+    Column("Date", 0.055, False, "date"),
+    Column("Client", 0.178, False, "client", clip=True),
+    Column("N/Réf", 0.065, False, "reference"),
+    Column("N° de note", 0.072, False, "numero"),
+    Column("Honoraires", 0.070, True, "honoraires"),
+    Column("Débours TX", 0.070, True, "debours_tx"),
+    Column("Débours NTX", 0.070, True, "debours_ntx"),
+    Column("Sous-total", 0.070, True, "sous_total"),
+    Column("TPS", 0.070, True, "tps"),
+    Column("TVQ", 0.070, True, "tvq"),
+    Column("Total", 0.070, True, "total"),
+    Column("Sommes reçues", 0.070, True, "recu"),
+    Column("Solde", 0.070, True, "solde"),
 )
 
-# The money keys of a journal row, in column order — the totals row sums
-# exactly these, so what is printed is what is added.
-MONEY_KEYS = (
-    "honoraires", "debours_tx", "debours_ntx", "sous_total",
-    "tps", "tvq", "total", "recu", "solde",
-)
+# Derived, never hand-kept: the totals row sums exactly the money columns
+# that are printed, and the label spans exactly the leading text ones.
+MONEY_KEYS: tuple[str, ...] = tuple(c.key for c in COLUMNS if c.money)
+TEXT_COLUMN_COUNT: int = sum(1 for c in COLUMNS if not c.money)
 
 _FONT = "NotoSerif"
 _FONT_BOLD = "NotoSerif-Bold"
@@ -83,8 +102,11 @@ def _fit(text: str, width: float) -> str:
 
     « Les lignes ne devraient pas plier sur elles-mêmes » (practitioner,
     2026-08-10): plain-string cells do not wrap, but a long client name would
-    otherwise run under the next column. Only that column ever realistically
-    clips; every money column is budgeted well beyond its widest value.
+    otherwise run under the next column.
+
+    Applied to the CLIENT column alone (``Column.clip``). Every other column
+    identifies the entry or states an amount, and a truncated identifier or
+    figure is a false one — see the COLUMNS note.
     """
     text = str(text or "")
     usable = width - 2 * _PAD
@@ -98,31 +120,72 @@ def _fit(text: str, width: float) -> str:
     return text + ellipsis
 
 
-def _row_cells(row: dict, widths: list[float]) -> list[str]:
-    numero = row.get("numero", "")
+def _short_note_number(numero: str, reference: str) -> str:
+    """« 2026-001-03 » → « 03 » when the N/Réf column already shows the file.
+
+    Self-referential on purpose: only the LITERAL ``f"{reference}-"`` prefix
+    of this very row is removed, matched on the whole string — which is immune
+    to the dashes a file number itself contains (« 2026-001 »), where a
+    ``split("-")`` would fall apart. The remainder must be all digits, so the
+    number is left WHOLE whenever the prefix is not really the file:
+
+    * a legacy ``YYYY-FNNN`` invoice — the prefix there is the year, and it
+      is deducible from no other column;
+    * a row with no N/Réf — the note number is then its only identification;
+    * a free-form file number like « 2026 », which would otherwise turn
+      « 2026-F001 » into « F001 », a false reading;
+    * any prefix/reference divergence (a rename race, a DAV import's stray
+      space) — the journal must then show both values as they stand.
+
+    Confined to this sheet: everywhere else the whole number is the identity
+    of the accounting artefact sent to the client, and routes/trust.py matches
+    a fee transfer against it by exact string.
+    """
+    ref = (reference or "").strip()
+    num = str(numero or "")
+    if ref and num.startswith(f"{ref}-"):
+        suffix = num[len(ref) + 1:]
+        if suffix.isdigit():
+            return suffix
+    return num
+
+
+def _display_values(row: dict) -> dict[str, str]:
+    """Every column's cell text, keyed by column — never positional."""
+    out = {c.key: str(row.get(c.key) or "") for c in COLUMNS if not c.money}
+    numero = _short_note_number(row.get("numero", ""), row.get("reference", ""))
     if row.get("annulee"):
         # No status column in this sheet — mark the row rather than let a
         # voided invoice read as a live one. Its amounts stay visible (and
-        # counted): the journal shows what it shows.
+        # counted): the journal shows what it shows. Marked AFTER the prefix
+        # is dropped, or the suffix test would fail on « … (ann.) ».
         numero = f"{numero} (ann.)"
-    values = [
-        row.get("date", ""),
-        row.get("reference", ""),
-        row.get("client", ""),
-        numero,
-    ] + [format_cents_fr(int(row.get(k) or 0)) for k in MONEY_KEYS]
-    return [_fit(v, w) for v, w in zip(values, widths)]
+    out["numero"] = numero
+    for col in COLUMNS:
+        if col.money:
+            out[col.key] = format_cents_fr(int(row.get(col.key) or 0))
+    return out
+
+
+def _row_cells(row: dict, widths: list[float]) -> list[str]:
+    values = _display_values(row)
+    return [
+        _fit(values[col.key], width) if col.clip else values[col.key]
+        for col, width in zip(COLUMNS, widths)
+    ]
 
 
 def _totals_cells(rows: list[dict], widths: list[float]) -> list[str]:
     label = f"TOTAL — {len(rows)} facture{'s' if len(rows) != 1 else ''}"
-    sums = [sum(int(r.get(k) or 0) for r in rows) for k in MONEY_KEYS]
-    cells = [label, "", "", ""] + [format_cents_fr(s) for s in sums]
-    # The label spans the four text columns (SPAN below), so measure it
+    n = TEXT_COLUMN_COUNT
+    # The label spans the leading text columns (SPAN below), so measure it
     # against their combined width rather than the first one alone.
-    fitted = [_fit(cells[0], sum(widths[:4]))] + ["", "", ""]
-    fitted += [_fit(c, w) for c, w in zip(cells[4:], widths[4:])]
-    return fitted
+    cells = [_fit(label, sum(widths[:n]))] + [""] * (n - 1)
+    cells += [
+        format_cents_fr(sum(int(r.get(k) or 0) for r in rows))
+        for k in MONEY_KEYS
+    ]
+    return cells
 
 
 def _page_furniture(canvas, doc, generated: str) -> None:
@@ -143,7 +206,7 @@ def build_journal_pdf(
     page_size = landscape(LEGAL)
     side = 10 * mm
     usable = page_size[0] - 2 * side
-    widths = [ratio * usable for _, ratio, _ in COLUMNS]
+    widths = [col.ratio * usable for col in COLUMNS]
 
     base = getSampleStyleSheet()
     base["Normal"].fontName = _FONT
@@ -156,7 +219,7 @@ def build_journal_pdf(
         alignment=TA_CENTER, textColor=_MUTED,
     )
 
-    data: list[list[str]] = [[label for label, _, _ in COLUMNS]]
+    data: list[list[str]] = [[col.label for col in COLUMNS]]
     data += [_row_cells(r, widths) for r in rows]
     if rows:
         data.append(_totals_cells(rows, widths))
@@ -179,14 +242,14 @@ def build_journal_pdf(
         ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
     ]
     # Money columns right-aligned in the body.
-    for idx, (_, _, is_money) in enumerate(COLUMNS):
-        if is_money:
+    for idx, col in enumerate(COLUMNS):
+        if col.money:
             style_cmds.append(("ALIGN", (idx, 1), (idx, -1), "RIGHT"))
     if rows:
         style_cmds += [
             ("FONTNAME", (0, last), (-1, last), _FONT_BOLD),
             ("BACKGROUND", (0, last), (-1, last), _BAND),
-            ("SPAN", (0, last), (3, last)),
+            ("SPAN", (0, last), (TEXT_COLUMN_COUNT - 1, last)),
             ("ALIGN", (0, last), (0, last), "LEFT"),
         ]
 

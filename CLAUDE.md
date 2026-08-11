@@ -325,8 +325,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
 │   │   ├── export_pdf.py           # reportlab-based PDF export
 │   │   ├── journal_pdf.py          # « Journal des honoraires » (août 2026): la feuille du
-│   │   │                           # Barreau — papier LÉGAL paysage, 13 colonnes, cellules
-│   │   │                           # en chaînes ÉCRÊTÉES (jamais de repli de ligne), fr-CA
+│   │   │                           # Barreau — papier LÉGAL paysage, 13 colonnes pilotées
+│   │   │                           # par CLÉ (l'ordre vit dans une seule table), cellules en
+│   │   │                           # chaînes (jamais de repli), fr-CA ; SEUL le nom du client
+│   │   │                           # s'écrête — un identifiant ou un montant tronqué serait FAUX
 │   │   ├── budget_pdf.py           # Budget PDF builder (août 2026): les 2 variantes client
 │   │   │                           # (estimation portrait / suivi paysage), sous-totaux par
 │   │   │                           # phase, pied de page cabinet paginé, montants fr-CA
@@ -1415,7 +1417,7 @@ Time entries live at the prefix root; expenses live under `/depenses`. No `/heur
 | `/factures/<id>/delete` | POST | Hard-delete a cancelled invoice |
 | `/factures/<id>/note-docx` | POST | **Phase H.2** — generate the Word note d'honoraires from this invoice via the `kind="note_honoraires"` gabarit; save the `.docx` into the dossier's « **Projets** » folder (`GENERATED_FOLDER_NAME`) under the name `"{file_number} - YYYY-MM-DD - Projet {template} {invoice_number}"` (`projet_document_name`); HTMX success partial (`_note_generated.html`). Refuses `annulée`; French message if no note template exists. **This is the ONE client-facing rendering of an invoice** — the detail page became a data sheet in August 2026 precisely so there is only one document to keep in step. (The list-level `/factures/export/pdf` is a different animal: the Barreau's « Journal des honoraires », a book of account, never a client document) |
 | `/factures/export/csv` | GET | CSV export of the filtered list (9 columns, unchanged) |
-| `/factures/export/pdf` | GET | **« Journal des honoraires »** (August 2026) — the Barreau du Québec's fee-journal sheet: **legal paper, landscape**, 13 columns (Date · N/Réf · Client · N° de note · Honoraires · Débours taxables · Débours non taxables · Sous-total · TPS · TVQ · Total · Sommes reçues · Solde), chronological (oldest first — the screen list reads newest first), a totals row, and the active filters spelled out as a subtitle. Honours the same filters as the list. Built by `utils/journal_pdf.py`, never `utils/export_pdf.py` |
+| `/factures/export/pdf` | GET | **« Journal des honoraires »** (August 2026) — the Barreau du Québec's fee-journal sheet: **legal paper, landscape**, 13 columns in the model's own order (Date · Client · N/Réf · N° de note · Honoraires · Débours TX · Débours NTX · Sous-total · TPS · TVQ · Total · Sommes reçues · Solde), chronological (oldest first — the screen list reads newest first), a totals row, and the active filters spelled out as a subtitle. The **N° de note drops the file-number prefix** the N/Réf column already carries (`2026-001-03` → `03`) — but only when that prefix is literally this row's reference AND the remainder is all digits, so a legacy `YYYY-FNNN`, a row with no N/Réf, and a free-form file number like « 2026 » all stay whole (`journal_pdf._short_note_number`). Honours the same filters as the list. Built by `utils/journal_pdf.py`, never `utils/export_pdf.py` |
 
 ### `hearings.py` — `/audiences/*`
 
