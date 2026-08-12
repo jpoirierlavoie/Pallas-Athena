@@ -25,7 +25,11 @@
 transmettre vos documents de façon sécurisée par le lien suivant :
 <a href="{{ lien }}">transmettre mes documents</a>.</p>
 
-<p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office et
-texte ; taille maximale de {{ max_file_mb }} Mo par fichier.</p>
+{# Même énumération, mot pour mot, que la page du portail et son erreur 422
+   (client/templates/documents.html, client/routes.py) — l'omission
+   audio/vidéo réparée le 2026-08-11 en ajoutant courriels + ZIP. #}
+<p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office,
+texte, courriels (EML, MSG), archives ZIP, audio et vidéo ; taille maximale
+de {{ max_file_mb }} Mo par fichier.</p>
 
 {% include "reception/_invitation_pied.html" %}

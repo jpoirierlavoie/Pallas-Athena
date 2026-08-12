@@ -350,6 +350,16 @@ def creer_session():
     session["inv_id"] = inv_id
     session["uid"] = decoded["uid"]
     session["email"] = invitation["email"]
+    if invitation.get("type") == "documents":
+        # Le LOT est frappé ICI — l'unique requête de la session sans
+        # concurrence — jamais au premier téléversement : la première vague
+        # de /api/televersement part en PARALLÈLE avec le même témoin sans
+        # lot, et chaque requête frappait alors le sien, à la seconde près.
+        # À cheval sur un changement de seconde, les objets se répartissaient
+        # sur DEUX lots et la finalisation refusait « Requête invalide. »
+        # sans issue (2026-08-11 : deux lots réels coupés ainsi dans les
+        # journaux — 18 h 12 et 19 h 26).
+        session["batch"] = stockage.horodatage_utc_compact()
     log_portail_event("session_creee", invitation_id=inv_id)
 
     if invitation.get("statut") == "envoyée":
@@ -428,9 +438,16 @@ def _purger_lot() -> None:
     Called on BOTH terminal outcomes of a finalisation — the write and the
     409 that means someone already wrote it. Leaving these behind on the 409
     wedges the client permanently (see api_finaliser).
+
+    Un lot NEUF est refrappé aussitôt (D-2 : la session survit à la
+    soumission) : le prochain lot doit exister AVANT sa première vague de
+    téléversements parallèles, pour la même raison qu'à la création de
+    session — l'ancienne valeur, elle, est bien partie, donc rien ne peut
+    plus retomber dans le lot déjà manifesté.
     """
     for cle in ("batch", "seq", "files_count", "total_bytes"):
         session.pop(cle, None)
+    session["batch"] = stockage.horodatage_utc_compact()
 
 
 def _deja_transmis(invitation: dict) -> tuple[int, int]:
@@ -501,7 +518,8 @@ def api_televersement():
         return jsonify({
             "erreur": "Type de fichier non admis. Formats acceptés : PDF, "
                       "images (JPEG, PNG, HEIC, TIFF), documents Office, "
-                      "texte, audio et vidéo."
+                      "texte, courriels (EML, MSG), archives ZIP, audio "
+                      "et vidéo."
         }), 422
     if size <= 0 or size > PORTAIL_MAX_FILE_MB * _MIB:
         log_portail_event(
@@ -545,6 +563,10 @@ def api_televersement():
 
     batch = session.get("batch")
     if not batch:
+        # Repli (sessions d'avant 2026-08-11) : le lot est normalement frappé
+        # à la création de session — voir creer_session. Ce chemin-ci est
+        # RACÉ sous téléversements parallèles (le JS les sérialise désormais,
+        # mais la frappe amont reste la vraie garde).
         batch = stockage.horodatage_utc_compact()
         session["batch"] = batch
     seq = int(session.get("seq", 0)) + 1

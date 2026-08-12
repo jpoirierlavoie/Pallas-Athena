@@ -565,6 +565,10 @@ PortailEvent = Literal[
     "manifeste_ecrit",
     "document_verse",
     "document_refuse",
+    # Le blob de quarantaine ne correspond plus au manifeste au moment du
+    # versement (taille ou empreinte SHA-512) — anomalie d'intégrité,
+    # émise en ERROR (outcome="failure") à dessein.
+    "versement_divergence",
     "lot_traite",
     "invitation_emise",
     "invitation_revoquee",

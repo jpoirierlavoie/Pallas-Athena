@@ -82,11 +82,11 @@
           <input type="file"
                  name="files"
                  multiple
-                 accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.tiff,.tif"
+                 accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.tiff,.tif,.zip,.eml,.msg"
                  class="sr-only"
                  @change="handleFiles($event)">
         </label>
-        <p class="text-xs text-gray-400 mt-2">PDF, DOCX, DOC, JPG, PNG, TIFF — 25 Mo max par fichier</p>
+        <p class="text-xs text-gray-400 mt-2">PDF, Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG) — 25 Mo max par fichier</p>
       </div>
 
       {# Selected files list #}

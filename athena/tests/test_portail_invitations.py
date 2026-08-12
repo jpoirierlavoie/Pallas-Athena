@@ -373,6 +373,9 @@ def test_les_documents_gardent_leur_texte(store, monkeypatch):
     assert objet == "Transmission de documents — Dossier 2026-001"
     assert "transmettre mes documents" in corps
     assert "Formats admis" in corps and "Mo par fichier" in corps
+    # 2026-08-11 : l'énumération nomme les courriels et le ZIP, et
+    # l'omission audio/vidéo (admis depuis L1) est réparée.
+    assert "courriels" in corps and "ZIP" in corps and "audio" in corps
     assert "formulaire d'ouverture" not in corps
 
 

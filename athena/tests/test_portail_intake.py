@@ -164,6 +164,10 @@ def test_session_dirige_vers_la_page_du_type(web, monkeypatch):
         rep = _post_json(web, "/session", {"token": "t", "i": "inv1"})
     assert rep.status_code == 200
     assert rep.get_json()["suivant"].endswith("/ouverture")
+    with web.session_transaction() as s:
+        # La frappe du lot à la session (2026-08-11) est propre à la file
+        # documents — l'intake frappe le sien à SA finalisation.
+        assert "batch" not in s
 
 
 # ── Plafond du témoin ────────────────────────────────────────────────────

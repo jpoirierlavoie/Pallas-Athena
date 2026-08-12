@@ -45,6 +45,17 @@ from models.folder import (
 
 documents_bp = Blueprint("documents", __name__, url_prefix="/documents")
 
+# The only types detail.html renders inline (PDF iframe, image <img>).
+# Everything else — ZIP, .eml, .msg included — is served exclusively as
+# an attachment through the download route: the inline signed URL is
+# simply never minted for them (which also saves an IAM signBlob call).
+_PREVIEWABLE_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/tiff",
+}
+
 
 def _is_htmx() -> bool:
     return request.headers.get("HX-Request") == "true"
@@ -154,7 +165,10 @@ def document_detail(document_id: str) -> str:
     doc["_file_size_fmt"] = format_file_size(doc.get("file_size", 0))
     doc["_file_icon"] = get_file_icon(doc.get("file_type", ""))
 
-    signed_url = get_signed_url(document_id)
+    if doc.get("file_type", "") in _PREVIEWABLE_TYPES:
+        signed_url = get_signed_url(document_id)
+    else:
+        signed_url = None
 
     # Folder breadcrumb for context
     dossier_id = doc.get("dossier_id", "")

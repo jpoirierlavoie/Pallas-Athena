@@ -234,12 +234,26 @@ def test_csrf_ssl_strict_disabled_for_no_referrer_policy(app):
 # ── §13.c — televersement validation ─────────────────────────────────────
 
 
-@pytest.mark.parametrize("nom", ["script.exe", "archive.zip", "page.html",
+@pytest.mark.parametrize("nom", ["script.exe", "page.html",
                                  "image.svg", "sans_extension"])
 def test_televersement_extension_refusee(web, connecte, nom):
+    # archive.zip a quitté cette liste le 2026-08-11 (décision utilisateur —
+    # le ZIP est admis, remplaçant le refus v1 « décision D-4 »).
     reponse = _post_json(web, "/api/televersement",
                          {"name": nom, "size": 100, "content_type": "x"})
     assert reponse.status_code == 422
+
+
+@pytest.mark.parametrize("nom", ["pieces.zip", "courriel.eml", "message.msg"])
+def test_televersement_accepte_zip_et_courriels(web, connecte, monkeypatch, nom):
+    # ZIP admis depuis la décision 2026-08-11 ; .eml/.msg l'étaient déjà —
+    # pinnés ici pour que la liste ne régresse pas en silence.
+    monkeypatch.setattr(stockage, "ouvrir_session_reprenable",
+                        lambda objet, content_type, size: "https://up.example/s")
+    reponse = _post_json(web, "/api/televersement",
+                         {"name": nom, "size": 100, "content_type": "x"})
+    assert reponse.status_code == 200
+    assert reponse.get_json()["objet"].endswith(nom)
 
 
 def test_televersement_taille_refusee(web, connecte):
@@ -309,9 +323,11 @@ def test_finaliser_ecrit_l_enveloppe_et_signale(web, connecte, monkeypatch):
     env = enveloppes[0]
     assert env["invitation_id"] == "inv1" and env["dossier_id"] == "d1"
     assert env["files"][0]["name"] == "Nom d'origine intégral (avec accents).pdf"
-    # The batch is closed: a new upload would start a fresh one.
+    # Le lot est clos et un NEUF est déjà frappé (D-2 — la session survit) :
+    # rien ne peut plus retomber dans le lot manifesté, et le prochain lot
+    # existe AVANT sa première vague de téléversements parallèles.
     with web.session_transaction() as s:
-        assert "batch" not in s
+        assert s.get("batch") and s["batch"] != "20260725T120000"
 
 
 def test_finaliser_double_soumission_est_un_succes_et_purge_le_lot(
@@ -337,8 +353,10 @@ def test_finaliser_double_soumission_est_un_succes_et_purge_le_lot(
     assert reponse.status_code == 200
     assert reponse.get_json()["suivant"].endswith("/confirmation")
     with web.session_transaction() as s:
-        for cle in ("batch", "seq", "files_count", "total_bytes"):
+        for cle in ("seq", "files_count", "total_bytes"):
             assert cle not in s
+        # Lot renouvelé, jamais conservé (l'ancien coincerait le client).
+        assert s.get("batch") and s["batch"] != "20260725T120000"
 
 
 def test_finaliser_echec_enfilage_ne_fait_pas_echouer(web, connecte, monkeypatch):
@@ -413,6 +431,34 @@ def test_session_valide_signale_ouverte(web, monkeypatch):
     assert signaux == ["ouverte"]
     with web.session_transaction() as s:
         assert s["inv_id"] == "inv1" and s["uid"] == "u1"
+        # Le lot naît ICI (l'unique requête sans concurrence), jamais au
+        # premier téléversement — la première vague part en parallèle.
+        assert s.get("batch")
+
+
+def test_televersement_emploie_le_lot_frappe_a_la_session(web, monkeypatch):
+    # 2026-08-11 : la première vague de téléversements parallèles frappait
+    # chacune SON lot (horodatage à la seconde) — à cheval sur un changement
+    # de seconde, la finalisation refusait « Requête invalide. » sans issue.
+    # Le lot vient désormais de la session ; ce test épingle qu'aucun
+    # re-frappage n'a lieu au téléversement.
+    monkeypatch.setattr(invitations, "lire", lambda i: _invitation())
+    with mock.patch("firebase_admin.auth.verify_id_token",
+                    return_value=_decoded()):
+        assert _post_json(
+            web, "/session", {"token": "t", "i": "inv1"}
+        ).status_code == 200
+    with web.session_transaction() as s:
+        lot = s["batch"]
+    monkeypatch.setattr(stockage, "ouvrir_session_reprenable",
+                        lambda objet, content_type, size: "https://up.example/s")
+    reponse = _post_json(web, "/api/televersement", {
+        "name": "a.pdf", "size": 100, "content_type": "application/pdf",
+    })
+    assert reponse.status_code == 200
+    assert reponse.get_json()["objet"].startswith(
+        f"submissions/inv1/{lot}/files/"
+    )
 
 
 # ── /api/renvoi — anti-enumeration ───────────────────────────────────────

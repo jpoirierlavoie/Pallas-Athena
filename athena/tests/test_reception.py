@@ -3,10 +3,12 @@
 CI-only style (imports models under the mocked Firestore client). The GET
 views render the full base template and are exercised end-to-end manually;
 these tests pin the LOGIC: the versement pre-check (restriction au
-vocabulaire documents — décision 2026-07-25), the explicit-decision guard
+vocabulaire documents — 9 types depuis la décision 2026-08-11), the
+freshness + SHA-512 guards of « Verser », the explicit-decision guard
 before purging a lot, the provenance fields, and the badge cache fail-open.
 """
 
+import hashlib
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -64,6 +66,12 @@ def _manifeste(*fichiers) -> dict:
             "files": list(fichiers), "etat_lot": "soumis"}
 
 
+# Octets servis par le blob mocké des chemins nominaux de « Verser » — le
+# durcissement 2026-08-11 vérifie l'empreinte du manifeste contre eux.
+_OCTETS_PDF = b"%PDF-1.4 data"
+_SHA_PDF = hashlib.sha512(_OCTETS_PDF).hexdigest()
+
+
 # ── Pré-contrôle du versement (restriction au vocabulaire actuel) ────────
 
 
@@ -71,11 +79,18 @@ def test_versable_pdf_recu():
     assert rc._versable(_entree()) is True
 
 
+@pytest.mark.parametrize("nom", ["archive.zip", "courriel.eml", "message.msg"])
+def test_versable_nouveaux_types(nom):
+    # Décision utilisateur 2026-08-11 : ZIP + courriels versables au dossier.
+    assert rc._versable(_entree(name=nom)) is True
+
+
 @pytest.mark.parametrize("entree", [
     _entree(name="photo.heic", content_type="image/heic"),
     _entree(name="video.mp4"),
     _entree(name="classeur.xlsx"),
     _entree(size_gcs=26 * 1024 * 1024),          # > 25 Mo
+    _entree(name="archive.zip", size_gcs=26 * 1024 * 1024),  # zip > 25 Mo
     _entree(size_gcs=0),
     _entree(etat="versé"),
     _entree(etat="refusé"),
@@ -93,13 +108,14 @@ def _dossier():
 
 
 def test_verser_ingere_avec_provenance(web, monkeypatch):
-    manifeste = _manifeste(_entree())
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
     ecrits = []
     monkeypatch.setattr(rc, "_ecrire_manifeste",
                         lambda i, b, m: ecrits.append(m))
     blob = mock.Mock()
-    blob.download_as_bytes.return_value = b"%PDF-1.4 data"
+    blob.size = len(_OCTETS_PDF)
+    blob.download_as_bytes.return_value = _OCTETS_PDF
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
@@ -123,7 +139,7 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     metadata = args[5]
     assert metadata["tags"] == ["portail"]
     assert "invitation inv1" in metadata["description"]
-    assert ("cafe" * 32) in metadata["description"]
+    assert _SHA_PDF in metadata["description"]
     assert metadata["folder_id"] == "f-portail"
     # Manifest entry flipped to « versé » and persisted.
     assert manifeste["files"][0]["etat"] == "versé"
@@ -150,6 +166,52 @@ def test_verser_deja_traite_refuse(web, monkeypatch):
     reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
                        data={"dossier_id": "d1"})
     assert "erreur=" in reponse.headers["Location"]
+
+
+def test_verser_refuse_blob_regonfle_sans_telechargement(web, monkeypatch):
+    # Fraîcheur (revue 2026-08-11) : la taille jugée par _versable est celle
+    # du MANIFESTE, figée à la prise d'empreintes — si le blob VIVANT a
+    # grossi au-delà de 25 Mo depuis, refuser AVANT download_as_bytes pour
+    # que l'objet regonflé n'atteigne jamais la RAM du service.
+    manifeste = _manifeste(_entree())
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    blob = mock.Mock()
+    blob.size = 26 * 1024 * 1024
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
+    upload = mock.Mock()
+    monkeypatch.setattr(rc, "upload_document", upload)
+
+    reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                       data={"dossier_id": "d1"})
+    assert "erreur=" in reponse.headers["Location"]
+    blob.download_as_bytes.assert_not_called()
+    upload.assert_not_called()
+    assert manifeste["files"][0]["etat"] == "reçu"  # untouched
+
+
+def test_verser_refuse_divergence_sha512(web, monkeypatch):
+    # Intégrité probante : la description du document cite l'empreinte du
+    # manifeste — des octets qui ne la confirment pas ne sont jamais versés.
+    manifeste = _manifeste(_entree())          # sha512 = "cafe" * 32
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    blob = mock.Mock()
+    blob.size = len(_OCTETS_PDF)
+    blob.download_as_bytes.return_value = _OCTETS_PDF
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
+    upload = mock.Mock()
+    monkeypatch.setattr(rc, "upload_document", upload)
+
+    reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                       data={"dossier_id": "d1"})
+    assert "erreur=" in reponse.headers["Location"]
+    upload.assert_not_called()
+    assert manifeste["files"][0]["etat"] == "reçu"  # untouched
 
 
 # ── Refuser + traiter le lot ─────────────────────────────────────────────
@@ -273,12 +335,13 @@ def test_traiter_reprend_un_lot_deja_archive(web, monkeypatch):
 def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
     # The document IS in the dossier but the quarantine state still says
     # « reçu » — a plain success message would invite a duplicate ingest.
-    manifeste = _manifeste(_entree())
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
     monkeypatch.setattr(rc, "_ecrire_manifeste",
                         mock.Mock(side_effect=RuntimeError("gcs down")))
     blob = mock.Mock()
-    blob.download_as_bytes.return_value = b"%PDF-1.4 data"
+    blob.size = len(_OCTETS_PDF)
+    blob.download_as_bytes.return_value = _OCTETS_PDF
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)

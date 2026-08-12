@@ -115,10 +115,12 @@
     </div>
   </div>
 
-  {# ── Preview area ──────────────────────────────────────────── #}
-  {% if signed_url %}
+  {# ── Preview area ── la carte se rend toujours ; les branches inline
+     exigent EN PLUS l'URL signé (routes/documents.py ne le mint que pour
+     les types prévisualisables), donc ZIP/.eml/.msg — et tout échec de
+     signature — tombent sur le repli Télécharger. #}
   <div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4">
-    {% if document.file_type == 'application/pdf' %}
+    {% if document.file_type == 'application/pdf' and signed_url %}
     <div class="w-full" style="height: 80vh;">
       <iframe src="{{ signed_url }}"
               class="w-full h-full border-0"
@@ -130,7 +132,7 @@
       </iframe>
     </div>
 
-    {% elif document.file_type in ('image/jpeg', 'image/png', 'image/tiff') %}
+    {% elif document.file_type in ('image/jpeg', 'image/png', 'image/tiff') and signed_url %}
     <div class="p-4">
       <div class="flex items-center gap-2 mb-3">
         <button @click="zoom = Math.max(0.25, zoom - 0.25)"
@@ -167,7 +169,6 @@
     </div>
     {% endif %}
   </div>
-  {% endif %}
 
   {# ── Move modal ────────────────────────────────────────────── #}
   <div x-show="moveOpen"

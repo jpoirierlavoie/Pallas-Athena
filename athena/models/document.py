@@ -6,6 +6,7 @@ import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import BinaryIO, Optional
+from urllib.parse import quote
 
 import google.auth
 from google.auth.transport import requests as auth_requests
@@ -45,7 +46,8 @@ def projet_document_name(reference: str, template_name: str, day: date) -> str:
     ]
     return " - ".join(p for p in parts if p)
 
-# Allowed MIME types for upload
+# Allowed MIME types for upload (9 since the 2026-08-11 user decision,
+# which widened the original 6 with ZIP archives and email files)
 ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/msword",
@@ -53,10 +55,16 @@ ALLOWED_MIME_TYPES = {
     "image/jpeg",
     "image/png",
     "image/tiff",
+    "application/zip",
+    "message/rfc822",
+    "application/vnd.ms-outlook",
 }
 
 # Allowed extensions (fallback when MIME detection fails)
-ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tiff", ".tif"}
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
+    ".zip", ".eml", ".msg",
+}
 
 # Expected MIME type for each allowed extension (used to detect a
 # mismatch between the sniffed content and the client-supplied name)
@@ -69,6 +77,9 @@ EXTENSION_MIME_TYPES = {
     ".png": "image/png",
     ".tiff": "image/tiff",
     ".tif": "image/tiff",
+    ".zip": "application/zip",
+    ".eml": "message/rfc822",
+    ".msg": "application/vnd.ms-outlook",
 }
 
 # Max upload size: 25 MB
@@ -132,6 +143,28 @@ FILE_TYPE_ICONS = {
     "image/jpeg": "image",
     "image/png": "image",
     "image/tiff": "image",
+    "application/zip": "archive",
+    "message/rfc822": "mail",
+    "application/vnd.ms-outlook": "mail",
+}
+
+# Types the app never renders inline: their blobs are stored with
+# Content-Disposition: attachment so even a signed URL WITHOUT a
+# response-disposition override serves a download, never a page.
+_ATTACHMENT_ONLY_TYPES = {
+    "application/zip",
+    "message/rfc822",
+    "application/vnd.ms-outlook",
+}
+
+# Download-filename extensions, deterministic across platforms —
+# mimetypes reads OS registries and may return ".jpe" for JPEG,
+# ".mht"/None for rfc822/ms-outlook depending on the host.
+_DOWNLOAD_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "application/zip": ".zip",
+    "message/rfc822": ".eml",
+    "application/vnd.ms-outlook": ".msg",
 }
 
 
@@ -230,7 +263,8 @@ def _validate_file(filename: str, file_size: int) -> list[str]:
 
     if ext not in ALLOWED_EXTENSIONS:
         errors.append(
-            "Type de fichier non autorisé. Formats acceptés : PDF, DOCX, DOC, JPG, PNG, TIFF."
+            "Type de fichier non autorisé. Formats acceptés : PDF, "
+            "Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
         )
 
     if file_size > MAX_FILE_SIZE:
@@ -242,16 +276,44 @@ def _validate_file(filename: str, file_size: int) -> list[str]:
     return errors
 
 
+# Bounded sniff probe: covers every magic below plus the first header
+# line of an RFC 822 message (the .eml heuristic).
+_SNIFF_PROBE_BYTES = 512
+
+
+def _looks_like_eml(head: bytes) -> bool:
+    """True when *head* opens like an RFC 822/5322 message.
+
+    .eml has no magic bytes, so the test is structural: after an optional
+    UTF-8 BOM (some export tools prepend one), the first line must be a
+    header field — a 1-77 byte field name of printable US-ASCII (no
+    space, no control char) followed by a colon. Single pass over the
+    bounded probe, no regex (CWE-1333 linearity doctrine). A leading
+    mbox « From  » line fails (space before any colon) — deliberate.
+    """
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    line = head.split(b"\n", 1)[0].rstrip(b"\r")
+    name, sep, _value = line.partition(b":")
+    if not sep or not 0 < len(name) <= 77:
+        return False
+    return all(33 <= b <= 126 for b in name)
+
+
 def _sniff_content_type(file_stream: BinaryIO, ext: str) -> Optional[str]:
     """Sniff the MIME type from the stream's magic bytes (stdlib only).
 
     Reads the first bytes of *file_stream* then seeks back to the start.
     Returns the detected MIME type, or None when no known signature
-    matches. The ZIP signature (PK) is ambiguous — any zip container —
-    so it is only trusted when the extension is .docx.
+    matches. Two container signatures are ambiguous and resolved by the
+    caller-supplied extension: PK (any zip — .docx vs .zip) and OLE2
+    (any compound document — .doc vs .msg). .eml has no signature at
+    all, so it is recognized LAST via the header-shape heuristic — a
+    real magic always wins over it (a PDF renamed .eml sniffs as PDF,
+    then fails the extension-agreement check upstream).
     """
     try:
-        header = file_stream.read(8)
+        header = file_stream.read(_SNIFF_PROBE_BYTES)
         file_stream.seek(0)
     except Exception as exc:
         logger.warning("_sniff_content_type: stream read failed: %s", type(exc).__name__)
@@ -268,10 +330,24 @@ def _sniff_content_type(file_stream: BinaryIO, ext: str) -> Optional[str]:
     if header.startswith(b"\x49\x49\x2a\x00") or header.startswith(b"\x4d\x4d\x00\x2a"):
         return "image/tiff"
     if header.startswith(b"\xd0\xcf\x11\xe0"):
-        # OLE2 compound document — legacy MS Word (.doc)
-        return "application/msword"
-    if header.startswith(b"\x50\x4b\x03\x04") and ext == ".docx":
-        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        # OLE2 compound document — legacy MS Word and Outlook .msg share
+        # the signature; only those two extensions are trusted.
+        if ext == ".doc":
+            return "application/msword"
+        if ext == ".msg":
+            return "application/vnd.ms-outlook"
+        return None
+    if header.startswith(b"\x50\x4b\x03\x04"):
+        # ZIP container — a .docx IS a zip; only the two zip-based kinds
+        # are trusted. (An empty archive starts PK\x05\x06 and is
+        # deliberately refused: no evidentiary value.)
+        if ext == ".docx":
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if ext == ".zip":
+            return "application/zip"
+        return None
+    if ext == ".eml" and _looks_like_eml(header):
+        return "message/rfc822"
     return None
 
 
@@ -322,7 +398,8 @@ def upload_document(
     if not content_type or content_type not in ALLOWED_MIME_TYPES:
         return None, [
             "Le contenu du fichier ne correspond à aucun format autorisé. "
-            "Formats acceptés : PDF, DOCX, DOC, JPG, PNG, TIFF."
+            "Formats acceptés : PDF, Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, "
+            "courriels (EML/MSG)."
         ]
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]
@@ -379,6 +456,10 @@ def upload_document(
     try:
         bucket = storage.bucket()
         blob = bucket.blob(storage_path)
+        if content_type in _ATTACHMENT_ONLY_TYPES:
+            # Belt and braces: any signed URL WITHOUT a response-disposition
+            # override still serves these as a download, never inline.
+            blob.content_disposition = "attachment"
         blob.upload_from_file(file_stream, content_type=content_type)
     except Exception as exc:
         logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
@@ -581,16 +662,30 @@ def get_signed_url(
         query_params: dict[str, str] = {}
         if download:
             filename = doc.get("display_name") or doc.get("original_filename") or doc.get("filename", "document")
-            # Ensure the filename has an extension so the OS recognises the file type
+            # Ensure the filename has an extension so the OS recognises the
+            # file type. _DOWNLOAD_EXTENSIONS first — mimetypes reads OS
+            # registries and is platform-variant (".jpe" for JPEG, ".mht"
+            # or None for rfc822/ms-outlook).
             if "." not in os.path.basename(filename):
-                ext = mimetypes.guess_extension(doc.get("file_type", "")) or ""
-                # mimetypes may return '.jpe' for JPEG; prefer common extensions
-                if ext == ".jpe":
-                    ext = ".jpg"
+                file_type = doc.get("file_type", "")
+                ext = (
+                    _DOWNLOAD_EXTENSIONS.get(file_type)
+                    or mimetypes.guess_extension(file_type)
+                    or ""
+                )
                 filename += ext
-            query_params["response-content-disposition"] = (
-                f'attachment; filename="{filename}"'
+            # RFC 6266: a double quote would malform the quoted-string, so
+            # it is dropped; the plain filename= keeps an ASCII fallback and
+            # non-ASCII names travel in filename*=UTF-8''.
+            filename = filename.replace('"', "")
+            ascii_name = (
+                filename.encode("ascii", "ignore").decode("ascii").strip()
+                or "document"
             )
+            disposition = f'attachment; filename="{ascii_name}"'
+            if filename != ascii_name:
+                disposition += f"; filename*=UTF-8''{quote(filename, safe='')}"
+            query_params["response-content-disposition"] = disposition
             content_type = doc.get("file_type")
             if content_type:
                 query_params["response-content-type"] = content_type

@@ -101,12 +101,13 @@ INTAKE_CHAMP_MAX_PAR_NOM = {
 INTAKE_BROUILLON_MAX = 2500
 INTAKE_CONSENTEMENT_VERSION = "1"
 
-# Inert-handling whitelist (spec §7.5): notably NO svg/html/htm/js, and no
-# archives (zip refused in v1 — décision D-4).
+# Inert-handling whitelist (spec §7.5): notably NO svg/html/htm/js. ZIP est
+# admis depuis la décision utilisateur 2026-08-11 (remplace le refus v1 —
+# décision D-4) ; l'archive reste INERTE, rien côté serveur ne la décompresse.
 PORTAIL_EXTENSIONS = {
     "pdf", "jpg", "jpeg", "png", "heic", "heif", "tif", "tiff",
     "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "eml", "msg",
-    "mp3", "m4a", "wav", "mp4", "mov",
+    "zip", "mp3", "m4a", "wav", "mp4", "mov",
 }
 
 # ── Lazy secret resolution (mirror of config.py's policy) ────────────────

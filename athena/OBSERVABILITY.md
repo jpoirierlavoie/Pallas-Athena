@@ -181,6 +181,7 @@ Portail client (spec L1). One vocabulary for **both services**: the portal proce
 | `lot_abandonne` | **failure** | A quarantine prefix holds files but **no envelope**, and stopped moving >2 h ago: the client uploaded but never completed « Soumettre » (guard refusal mid-upload, expired session, closed tab). Nothing references it — Réception cannot see it and the 90-day lifecycle would delete it silently; `invitation_id`, `batch`. **No accusé is ever emitted for such a lot** — it would attest reception of files the client never confirmed |
 | `document_verse` | success | A quarantine file was ingested into the dossier; `invitation_id`, `batch`, `dossier_id`, `document_id` |
 | `document_refuse` | success | A file was explicitly refused in Réception |
+| `versement_divergence` | **failure** | The live quarantine blob no longer matches the manifest at « Verser » time — `reason` = `taille` (blob grew past 25 Mo since hashing; refused BEFORE any download so the oversized object never reaches RAM) or `sha512` (downloaded bytes ≠ the manifest fingerprint the accusé attested). Integrity anomaly, deliberately ERROR: the reviewed file is not the file about to enter the dossier. IDs only (`invitation_id`, `batch`, `seq`) — never a filename |
 | `lot_traite` | success | Lot archived (envelope+manifeste → `archive/`, files purged), invitation → `traitée` |
 | `invitation_emise` | success | Invitation created (+ claim stamped); `invitation_id`, `dossier_id`, `emailed: bool` |
 | `invitation_revoquee` | success | Instant revocation from Réception |

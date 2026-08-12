@@ -10,7 +10,8 @@
 
   <div class="text-xs text-gray-500 space-y-1 mb-5">
     <p>Formats admis : PDF, images (JPEG, PNG, HEIC, TIFF), documents Office,
-       texte, audio et vidéo. Taille maximale : {{ max_file_mb }} Mo par fichier.</p>
+       texte, courriels (EML, MSG), archives ZIP, audio et vidéo.
+       Taille maximale : {{ max_file_mb }} Mo par fichier.</p>
     <p>Il vous reste {{ fichiers_restants }} fichier(s) pour cette transmission.</p>
     <p class="text-amber-700 font-medium">Ce lien est strictement personnel et ne doit pas être transféré.</p>
   </div>
@@ -183,22 +184,44 @@
     }
   }
 
+  // Les POST /api/televersement mutent la session signée (lot, n° de
+  // séquence, compteurs de quota) : chacun doit avoir vu le Set-Cookie du
+  // précédent, ils sont donc SÉRIALISÉS par cette file. Sans elle, la
+  // première vague partait en parallèle avec le même témoin sans lot et
+  // chaque requête frappait le sien — à cheval sur un changement de
+  // seconde, la finalisation refusait « Requête invalide. » (2026-08-11).
+  // Les PUT vers GCS, eux, restent parallèles : le transfert n'est pas
+  // ralenti, seule l'ouverture (quelques ms) fait la file.
+  let tourReservation = Promise.resolve();
+  function reserver(f) {
+    const tour = tourReservation.then(function () {
+      return ouvrirTeleversement(f);
+    });
+    tourReservation = tour.then(function () {}, function () {});
+    return tour;
+  }
+
+  async function ouvrirTeleversement(f) {
+    const rep = await fetch('/api/televersement', {
+      method: 'POST',
+      headers: await enTetesFetch(),
+      body: JSON.stringify({ name: f.name, size: f.size, content_type: f.content_type })
+    });
+    const donnees = await rep.json().catch(function () { return {}; });
+    return { ok: rep.ok, donnees: donnees };
+  }
+
   async function demarrer(f) {
     try {
-      const rep = await fetch('/api/televersement', {
-        method: 'POST',
-        headers: await enTetesFetch(),
-        body: JSON.stringify({ name: f.name, size: f.size, content_type: f.content_type })
-      });
-      const donnees = await rep.json().catch(function () { return {}; });
-      if (!rep.ok) {
+      const resultat = await reserver(f);
+      if (!resultat.ok) {
         f.statut = 'rejeté';
-        f.motif = donnees.erreur || 'refusé';
+        f.motif = resultat.donnees.erreur || 'refusé';
         rendre();
         return;
       }
-      f.objet = donnees.objet;
-      f.url = donnees.url;
+      f.objet = resultat.donnees.objet;
+      f.url = resultat.donnees.url;
       f.statut = 'en cours';
       rendre();
       await televerser(f);

@@ -1,6 +1,6 @@
-{# Vignette type-de-fichier (pdf/word/image/autre) — remplace les 4
-   duplications historiques (documents/_document_rows, documents/_browser,
-   dossiers/_tab_documents, documents/detail).
+{# Vignette type-de-fichier (pdf/word/image/archive/mail/autre) — remplace
+   les 4 duplications historiques (documents/_document_rows,
+   documents/_browser, dossiers/_tab_documents, documents/detail).
    Contexte requis : kind (la valeur de document._file_icon).
    Optionnel : variant ∈ 'sm' (w-8, 16px) | 'md' (w-10, 20px — défaut) |
    'lg' (w-14, 28px — page détail).
@@ -13,5 +13,7 @@
   {% if kind == 'pdf' %}{{ ms('picture_as_pdf', _sz, 'text-red-500') }}
   {% elif kind == 'word' %}{{ ms('description', _sz, 'text-blue-500') }}
   {% elif kind == 'image' %}{{ ms('image', _sz, 'text-green-500') }}
+  {% elif kind == 'archive' %}{{ ms('archive', _sz, 'text-gray-400') }}
+  {% elif kind == 'mail' %}{{ ms('mail', _sz, 'text-gray-400') }}
   {% else %}{{ ms('draft', _sz, 'text-gray-400') }}{% endif %}
 </div>
