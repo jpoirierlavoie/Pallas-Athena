@@ -1,0 +1,24 @@
+{# Sélecteur de facture du virement d'honoraires — contenu de
+   #facture-select, rendu au chargement du formulaire et rechargé par
+   /fideicommis/factures-du-dossier quand le dossier change (événement
+   « rafraichir-factures »). N'offre QUE les factures ÉMISES
+   (envoyée/en_retard) : exactement ce que la vérification transactionnelle
+   de models/trust acceptera, avec le solde dû qu'elle plafonne. La garde
+   _resolve_invoice_number (égalité exacte dans le dossier) reste le
+   verdict final ; un select désactivé ne soumet rien — le champ « facture
+   antérieure » demeure la voie des factures papier pré-Athéna.
+   Contexte requis : factures ([{invoice_number, solde_fmt}]), selected. #}
+{% if factures %}
+<select name="invoice_number"
+        class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+  <option value="">Choisir la facture…</option>
+  {% for f in factures %}
+  <option value="{{ f.invoice_number }}" {% if f.invoice_number == selected %}selected{% endif %}>{{ f.invoice_number }} — solde dû {{ f.solde_fmt }}</option>
+  {% endfor %}
+</select>
+{% else %}
+<select name="invoice_number" disabled
+        class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
+  <option value="">Aucune facture émise dans ce dossier</option>
+</select>
+{% endif %}

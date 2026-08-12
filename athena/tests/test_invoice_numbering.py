@@ -1,8 +1,11 @@
-"""Per-file invoice numbering (models/invoice.py).
+"""Year-sequential invoice numbering (models/invoice.py).
 
-Going forward an invoice number is « {file_number}-NN » — the dossier's file
-number and the 2-digit-padded sequence within that file (user decision
-2026-07-17). Existing invoices keep their legacy « YYYY-F### » numbers.
+An invoice number is « YYYY-FNNN » again — the MONTRÉAL calendar year, the
+« F » marker, and a 3-digit zero-padded year-wide sequence (user decision
+2026-08-12, reverting the per-file « {file_number}-NN » scheme of
+2026-07-17 after four weeks; the six invoices that scheme minted keep
+their numbers for ever — an accounting artifact sent to a client is never
+renumbered).
 
 Same import-stub approach as test_trust: stub whatever google/firebase lib is
 missing on a bare interpreter, and (in the integration fixture) patch
@@ -14,7 +17,7 @@ import importlib
 import importlib.util
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import date
 from unittest import mock
 
 import os
@@ -75,40 +78,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import models.invoice as invoice
 
 
-# ── Pure helpers ───────────────────────────────────────────────────────────
-
-
-def test_format_invoice_number_2_digit_pad():
-    assert invoice._format_invoice_number("2025-001", 1) == "2025-001-01"
-    assert invoice._format_invoice_number("2025-001", 3) == "2025-001-03"
-    assert invoice._format_invoice_number("2025-001", 10) == "2025-001-10"
-    assert invoice._format_invoice_number("2025-001", 100) == "2025-001-100"  # rolls to 3
-
-
-def test_seed_counts_all_invoices_in_the_file():
-    assert invoice._seed_invoice_seq([], "2025-001") == 0
-    legacy = [{"invoice_number": "2025-F007"}, {"invoice_number": "2025-F012"}]
-    assert invoice._seed_invoice_seq(legacy, "2025-001") == 2  # next will be -03
-
-
-def test_seed_is_deletion_safe():
-    # -02 was deleted: only two rows remain but -03 exists → seed 3, not 2,
-    # so the next number can never collide with the surviving -03.
-    mixed = [{"invoice_number": "2025-001-01"}, {"invoice_number": "2025-001-03"}]
-    assert invoice._seed_invoice_seq(mixed, "2025-001") == 3
-
-
-def test_seed_parses_padded_suffix():
-    assert invoice._seed_invoice_seq([{"invoice_number": "2025-001-09"}], "2025-001") == 9
-
-
-def test_seed_ignores_other_dossiers_suffixes():
-    # a different file's number must not bleed into this file's max-suffix
-    other = [{"invoice_number": "2025-002-05"}]
-    assert invoice._seed_invoice_seq(other, "2025-001") == 1  # counts 1 row, suffix 0
-
-
-# ── Integration: the transactional generator over a fake Firestore ─────────
+# ── Fake Firestore (transactional counter + collection scan) ───────────────
 
 
 class _Snap:
@@ -200,32 +170,69 @@ def store(monkeypatch):
     monkeypatch.setattr(invoice, "db", _DB(s))
     monkeypatch.setattr(invoice, "firestore", _FS)
     monkeypatch.setattr(invoice, "FieldFilter", _FF)
-    import models.dossier as dossier_model
-
-    files = {"dosA": "2025-001", "dosB": "2025-002", "dosEmpty": ""}
-    monkeypatch.setattr(
-        dossier_model, "get_dossier",
-        lambda did: {"id": did, "file_number": files.get(did, "2025-999")},
-    )
+    # Millésime FIGÉ (jamais un offset dérivé de l'horloge — la leçon du
+    # test de retard du 2026-08-11) : le générateur lit today_mtl, pas
+    # datetime.now, et ce gel est ce que pinne test_millesime_de_montreal.
+    monkeypatch.setattr(invoice, "today_mtl", lambda: date(2026, 6, 15))
     return s
 
 
-def test_per_file_sequence_is_monotonic_and_independent(store):
-    assert invoice._generate_invoice_number("dosA") == "2025-001-01"
-    assert invoice._generate_invoice_number("dosA") == "2025-001-02"
-    # a different file gets its own sequence, starting at 01
-    assert invoice._generate_invoice_number("dosB") == "2025-002-01"
-    assert invoice._generate_invoice_number("dosA") == "2025-001-03"
+# ── Le générateur annuel ───────────────────────────────────────────────────
 
 
-def test_sequence_seeds_from_existing_invoices(store):
-    store["invoices"]["i1"] = {"id": "i1", "dossier_id": "dosA", "invoice_number": "2025-F007"}
-    store["invoices"]["i2"] = {"id": "i2", "dossier_id": "dosA", "invoice_number": "2025-F012"}
-    # two invoices already in the file → next is the 3rd
-    assert invoice._generate_invoice_number("dosA") == "2025-001-03"
+def test_sequence_annuelle_monotone(store):
+    assert invoice._generate_invoice_number() == "2026-F001"
+    assert invoice._generate_invoice_number() == "2026-F002"
+    assert invoice._generate_invoice_number() == "2026-F003"
 
 
-def test_empty_file_number_falls_back_to_year_scheme(store):
-    number = invoice._generate_invoice_number("dosEmpty")
-    year = datetime.now(timezone.utc).strftime("%Y")
-    assert number.startswith(f"{year}-F")
+def test_compteur_existant_continue_sans_reamorcage(store):
+    # Le portrait de production du retour (2026-08-12) : compteur à 30 —
+    # le prochain numéro est F031, jamais une réutilisation (un numéro
+    # alloué puis brûlé ou supprimé reste un trou pour toujours).
+    store["counters"]["invoices-2026"] = {"seq": 30}
+    assert invoice._generate_invoice_number() == "2026-F031"
+
+
+def test_amorcage_ignore_les_numeros_par_dossier(store):
+    # Premier usage d'une année SANS compteur : l'amorçage balaie les
+    # factures existantes — les « YYYY-FNNN » comptent, les numéros par
+    # dossier de la parenthèse 2026-07-17→2026-08-12 sont invisibles au
+    # préfixe « 2026-F » et ne peuvent ni collisionner ni décaler la suite.
+    store["invoices"] = {
+        "i1": {"id": "i1", "invoice_number": "2026-F007"},
+        "i2": {"id": "i2", "invoice_number": "2026-F012"},
+        "i3": {"id": "i3", "invoice_number": "2026-001-05"},
+        "i4": {"id": "i4", "invoice_number": "2026-028-02"},
+    }
+    assert invoice._generate_invoice_number() == "2026-F013"
+
+
+def test_amorcage_sans_facture_annuelle_demarre_a_f001(store):
+    store["invoices"] = {
+        "i1": {"id": "i1", "invoice_number": "2026-001-05"},
+    }
+    assert invoice._generate_invoice_number() == "2026-F001"
+
+
+def test_millesime_de_montreal(store):
+    # Le préfixe suit le jour civil de MONTRÉAL (today_mtl — l'unique
+    # horloge maison), plus l'année UTC : une facture du 31 décembre au
+    # soir porte le millésime en cours. Pinné en pointant today_mtl sur
+    # une autre année que celle de l'horloge murale.
+    invoice.today_mtl = lambda: date(2030, 12, 31)
+    assert invoice._generate_invoice_number() == "2030-F001"
+
+
+def test_debordement_a_quatre_chiffres_apres_f999(store):
+    store["counters"]["invoices-2026"] = {"seq": 999}
+    assert invoice._generate_invoice_number() == "2026-F1000"
+
+
+def test_scan_max_invoice_seq_tolere_les_suffixes_non_numeriques(store):
+    store["invoices"] = {
+        "i1": {"id": "i1", "invoice_number": "2026-F009"},
+        "i2": {"id": "i2", "invoice_number": "2026-Fxx"},   # jamais émis par nous
+        "i3": {"id": "i3", "invoice_number": ""},
+    }
+    assert invoice._scan_max_invoice_seq("2026-F") == 9

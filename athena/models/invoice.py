@@ -11,6 +11,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils.deadlines import today_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -207,38 +208,25 @@ def _scan_max_invoice_seq(prefix: str) -> int:
     return max_seq
 
 
-def _format_invoice_number(file_number: str, seq: int) -> str:
-    """Per-file invoice number: the dossier's file number, a dash, and the
-    2-digit-padded sequence within that file (rolls to 3+ digits past 99).
-    E.g. file « 2025-001 », 3rd invoice → « 2025-001-03 »."""
-    return f"{file_number}-{seq:02d}"
+def _generate_invoice_number() -> str:
+    """Allocate the next year-sequential invoice number « YYYY-FNNN ».
 
-
-def _seed_invoice_seq(invoices: list[dict], file_number: str) -> int:
-    """Seed for a dossier's per-file counter on first use: the position the
-    NEXT invoice occupies in the file. Deletion-safe — the greater of (a) the
-    count of ALL existing invoices in the file (so the sequence counts legacy
-    YYYY-F### invoices too) and (b) the highest existing per-file suffix (so a
-    deleted new-scheme invoice can never let its number be reused)."""
-    prefix = f"{file_number}-"
-    count = 0
-    max_suffix = 0
-    for inv in invoices:
-        count += 1
-        num = inv.get("invoice_number", "")
-        if num.startswith(prefix):
-            try:
-                max_suffix = max(max_suffix, int(num[len(prefix):]))
-            except (ValueError, IndexError):
-                continue
-    return max(count, max_suffix)
-
-
-def _generate_year_invoice_number() -> str:
-    """Legacy year-sequential number (YYYY-FNNN). Retained ONLY as a fallback
-    for a dossier that somehow has no file number — a per-file number is
-    undefined there. Existing invoices keep whatever number they were issued."""
-    year = datetime.now(timezone.utc).strftime("%Y")
+    The canonical scheme again since the 2026-08-12 user decision (the
+    per-file « {file_number}-NN » scheme of 2026-07-17 lasted four weeks —
+    the six invoices it minted keep their numbers for ever, an accounting
+    artifact sent to a client is never renumbered). The year is the
+    MONTRÉAL calendar year (``today_mtl`` — the house clock seam; the UTC
+    year would stamp a Dec 31 evening invoice with the next millésime).
+    Sequence: 3-digit zero-padded, rolling to 4+ past 999, from the
+    monotonic transactional counter ``counters/invoices-{year}`` — never
+    reused, never decremented; a deleted invoice leaves a hole. On the
+    first use of a year the counter is seeded by ``_scan_max_invoice_seq``
+    so pre-counter numbering continues without duplicates (per-file
+    numbers never match the « YYYY-F » prefix and are ignored). Any
+    failure propagates — a number is never guessed, which could mint a
+    colliding one.
+    """
+    year = today_mtl().strftime("%Y")
     prefix = f"{year}-F"
     counter_ref = db.collection(COUNTERS_COLLECTION).document(f"invoices-{year}")
 
@@ -257,53 +245,6 @@ def _generate_year_invoice_number() -> str:
         return next_seq
 
     return f"{prefix}{_allocate(transaction):03d}"
-
-
-def _generate_invoice_number(dossier_id: str) -> str:
-    """Allocate the next per-file invoice number « {file_number}-NN » atomically.
-
-    Uses a monotonic per-dossier Firestore counter (``counters/invoice-{dossier_id}``)
-    incremented inside a transaction, so concurrent allocations for the same file
-    can never collide. On first use the counter is seeded from the file's existing
-    invoices (``_seed_invoice_seq``) so the sequence continues from the file's
-    invoice history — legacy YYYY-F### invoices included. Numbers are never reused
-    (the counter never decrements). A dossier with no file number falls back to the
-    legacy year-sequential number. Any failure propagates — a number is never
-    guessed, which could mint a colliding one.
-    """
-    from models.dossier import get_dossier
-
-    dossier = get_dossier(dossier_id) or {}
-    file_number = (dossier.get("file_number") or "").strip()
-    if not file_number:
-        return _generate_year_invoice_number()
-
-    counter_ref = db.collection(COUNTERS_COLLECTION).document(f"invoice-{dossier_id}")
-
-    # Seed scan before the transaction (collection scans are not transactional);
-    # the transaction then takes max(counter.seq, seed) so numbering continues
-    # without duplicates.
-    seed = 0
-    if not counter_ref.get().exists:
-        existing = [
-            doc.to_dict()
-            for doc in db.collection(COLLECTION)
-            .where(filter=FieldFilter("dossier_id", "==", dossier_id))
-            .stream()
-        ]
-        seed = _seed_invoice_seq(existing, file_number)
-
-    transaction = db.transaction()
-
-    @firestore.transactional
-    def _allocate(txn: firestore.Transaction) -> int:
-        snapshot = counter_ref.get(transaction=txn)
-        current = int((snapshot.to_dict() or {}).get("seq", 0)) if snapshot.exists else 0
-        next_seq = max(current, seed) + 1
-        txn.set(counter_ref, {"seq": next_seq, "updated_at": datetime.now(timezone.utc)})
-        return next_seq
-
-    return _format_invoice_number(file_number, _allocate(transaction))
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────
@@ -413,10 +354,11 @@ def create_invoice(
             "La provision appliquée doit être comprise entre 0 $ et le total de la facture."
         ]
 
-    # Allocate the per-file invoice number via the transactional counter. Any
-    # failure aborts the creation — never fall back to a guessed number.
+    # Allocate the year-sequential invoice number via the transactional
+    # counter. Any failure aborts the creation — never fall back to a
+    # guessed number.
     try:
-        invoice_number = _generate_invoice_number(dossier_id)
+        invoice_number = _generate_invoice_number()
     except Exception as exc:
         logger.error("create_invoice: invoice number allocation failed: %s", exc)
         return None, [

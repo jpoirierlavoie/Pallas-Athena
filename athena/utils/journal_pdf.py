@@ -63,8 +63,9 @@ class Column(NamedTuple):
 # identifies the entry (date, file number, note number) or states an amount,
 # and a truncated identifier or figure is a FALSE one — worse in a book of
 # account than an untidy one. Their widths are therefore budgeted past the
-# widest value they can realistically hold (a legacy « 2026-F001 (ann.) »
-# note number, a seven-figure amount), and a test measures that.
+# widest value they can realistically hold (a « 2026-F001 (ann.) » note
+# number — the canonical shape again since 2026-08-12 — a seven-figure
+# amount), and a test measures that.
 COLUMNS: tuple[Column, ...] = (
     Column("Date", 0.055, False, "date"),
     Column("Client", 0.178, False, "client", clip=True),
@@ -123,14 +124,21 @@ def _fit(text: str, width: float) -> str:
 def _short_note_number(numero: str, reference: str) -> str:
     """« 2026-001-03 » → « 03 » when the N/Réf column already shows the file.
 
+    HISTORICAL rows only since 2026-08-12: the per-file « {file} -NN »
+    scheme lasted four weeks (2026-07-17 → 2026-08-12) and minted six
+    invoices, which keep their numbers for ever — this shortener exists for
+    them. Every invoice since is « YYYY-FNNN » again and passes through
+    WHOLE (the year prefix never equals the row's N/Réf, and the ``F`` in
+    the suffix fails ``isdigit`` regardless).
+
     Self-referential on purpose: only the LITERAL ``f"{reference}-"`` prefix
     of this very row is removed, matched on the whole string — which is immune
     to the dashes a file number itself contains (« 2026-001 »), where a
     ``split("-")`` would fall apart. The remainder must be all digits, so the
     number is left WHOLE whenever the prefix is not really the file:
 
-    * a legacy ``YYYY-FNNN`` invoice — the prefix there is the year, and it
-      is deducible from no other column;
+    * a ``YYYY-FNNN`` invoice — the prefix there is the year, and it is
+      deducible from no other column;
     * a row with no N/Réf — the note number is then its only identification;
     * a free-form file number like « 2026 », which would otherwise turn
       « 2026-F001 » into « F001 », a false reading;

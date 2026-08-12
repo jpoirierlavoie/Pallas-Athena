@@ -1451,6 +1451,57 @@ def test_resolve_invoice_number_hard_errors_on_typo(monkeypatch):
     assert non_transfer["invoice_id"] is None
 
 
+# ── Le sélecteur de factures du virement d'honoraires (2026-08-12) ──────────
+
+
+def test_factures_emises_n_offre_que_ce_que_la_transaction_accepte(monkeypatch):
+    """Le sélecteur remplace la transcription à la main du numéro (deux
+    schémas coexistent depuis le retour au YYYY-F###) — il ne doit offrir
+    QUE les statuts que la vérification transactionnelle acceptera, avec le
+    solde dû qu'elle plafonne."""
+    import routes.trust as rt
+    import models.invoice as invoice_model
+
+    monkeypatch.setattr(
+        invoice_model, "list_invoices",
+        lambda dossier_id=None: [
+            {"invoice_number": "2026-F031", "status": "envoyée", "amount_due": 115000},
+            {"invoice_number": "2026-F030", "status": "en_retard", "amount_due": 50000},
+            {"invoice_number": "2026-F029", "status": "payée", "amount_due": 0},
+            {"invoice_number": "2026-F028", "status": "brouillon", "amount_due": 9900},
+            {"invoice_number": "2026-028-02", "status": "annulée", "amount_due": 100},
+        ],
+    )
+    rows = rt._factures_emises("d1")
+    assert [r["invoice_number"] for r in rows] == ["2026-F031", "2026-F030"]
+    from utils.format_fr import format_cents_fr
+    assert rows[0]["solde_fmt"] == format_cents_fr(115000)
+    # Sans dossier : rien à offrir (le select désactivé ne soumet rien).
+    assert rt._factures_emises(None) == []
+    assert rt._factures_emises("") == []
+
+
+def test_form_recharge_le_selecteur_au_choix_du_dossier():
+    """Le formulaire porte le conteneur rechargé par HTMX : l'événement
+    « rafraichir-factures » est expédié APRÈS $nextTick (le champ caché
+    dossier_id doit déjà porter la valeur quand hx-include le lit)."""
+    html = _template("form.html")
+    assert 'id="facture-select"' in html
+    assert 'hx-trigger="rafraichir-factures from:body"' in html
+    assert "hx-include=\"[name='dossier_id']\"" in html
+    assert html.count("rafraichir-factures") >= 3  # conteneur + clic + effacement
+    assert "$nextTick" in html
+    assert 'include "trust/_facture_options.html"' in html
+
+
+def test_facture_options_offre_le_select_ou_l_etat_vide():
+    html = _template("_facture_options.html")
+    assert html.count('name="invoice_number"') == 2  # select actif + désactivé
+    assert "disabled" in html                        # l'état vide ne soumet rien
+    assert "Aucune facture émise dans ce dossier" in html
+    assert "solde dû" in html
+
+
 # ── Worksheet as-of wiring guards (retro reconciliation) ────────────────────
 
 

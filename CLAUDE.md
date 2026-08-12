@@ -447,7 +447,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── protocols/              # list, detail, form + _protocol_rows
 │   │   ├── documents/              # list, detail, upload, edit + _browser, _document_rows, _folder_tree
 │   │   ├── gabarits/               # list, detail, form + _template_rows, _generate_modal, _generate_fields
-│   │   ├── trust/                   # Phase K: list (journal), _transaction_rows, detail, form, card,
+│   │   ├── trust/                   # Phase K: list (journal), _transaction_rows, detail, form,
+│   │   │                            # _facture_options (sélecteur du virement, 2026-08-12), card,
 │   │   │                            # transfer_form, reverse_confirm, client_consolidated, accounts_list,
 │   │   │                            # account_form/detail, reconciliations_list, reconciliation_form/worksheet
 │   │   ├── budgets/                 # août 2026: form (répéteur versionné par phase), history
@@ -851,10 +852,13 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
 
 ```python
 {
-    "invoice_number": str,                # "{file_number}-NN" — per-file sequence
-                                          # (2-digit padded, rolls to 3+ past 99;
-                                          # e.g. "2025-001-03"). Legacy invoices
-                                          # keep their "YYYY-F###" numbers.
+    "invoice_number": str,                # "YYYY-F###" — Montréal-year sequence
+                                          # (3-digit padded, rolls to 4+ past
+                                          # 999; e.g. "2026-F031"). Canonical
+                                          # again since 2026-08-12; the SIX
+                                          # per-file "{file_number}-NN" invoices
+                                          # of the 2026-07-17→08-12 parenthesis
+                                          # keep their numbers for ever.
     "dossier_id": str, "dossier_file_number": str, "dossier_title": str,
     "client_id": str, "client_name": str,
 
@@ -1424,7 +1428,7 @@ Time entries live at the prefix root; expenses live under `/depenses`. No `/heur
 | `/factures/<id>/delete` | POST | Hard-delete a cancelled invoice |
 | `/factures/<id>/note-docx` | POST | **Phase H.2** — generate the Word note d'honoraires from this invoice via the `kind="note_honoraires"` gabarit; save the `.docx` into the dossier's « **Projets** » folder (`GENERATED_FOLDER_NAME`) under the name `"{file_number} - YYYY-MM-DD - Projet {template} {invoice_number}"` (`projet_document_name`); HTMX success partial (`_note_generated.html`). Refuses `annulée`; French message if no note template exists. **This is the ONE client-facing rendering of an invoice** — the detail page became a data sheet in August 2026 precisely so there is only one document to keep in step. (The list-level `/factures/export/pdf` is a different animal: the Barreau's « Journal des honoraires », a book of account, never a client document) |
 | `/factures/export/csv` | GET | CSV export of the filtered list (9 columns, unchanged) |
-| `/factures/export/pdf` | GET | **« Journal des honoraires »** (August 2026) — the Barreau du Québec's fee-journal sheet: **legal paper, landscape**, 13 columns in the model's own order (Date · Client · N/Réf · N° de note · Honoraires · Débours TX · Débours NTX · Sous-total · TPS · TVQ · Total · Sommes reçues · Solde), chronological (oldest first — the screen list reads newest first), a totals row, and the active filters spelled out as a subtitle. The **N° de note drops the file-number prefix** the N/Réf column already carries (`2026-001-03` → `03`) — but only when that prefix is literally this row's reference AND the remainder is all digits, so a legacy `YYYY-FNNN`, a row with no N/Réf, and a free-form file number like « 2026 » all stay whole (`journal_pdf._short_note_number`). Honours the same filters as the list. Built by `utils/journal_pdf.py`, never `utils/export_pdf.py` |
+| `/factures/export/pdf` | GET | **« Journal des honoraires »** (August 2026) — the Barreau du Québec's fee-journal sheet: **legal paper, landscape**, 13 columns in the model's own order (Date · Client · N/Réf · N° de note · Honoraires · Débours TX · Débours NTX · Sous-total · TPS · TVQ · Total · Sommes reçues · Solde), chronological (oldest first — the screen list reads newest first), a totals row, and the active filters spelled out as a subtitle. The **N° de note drops the file-number prefix** the N/Réf column already carries (`2026-001-03` → `03`) — HISTORICAL rows only since the 2026-08-12 numbering revert (the six per-file invoices of the 2026-07-17→08-12 parenthesis); it fires only when that prefix is literally this row's reference AND the remainder is all digits, so a `YYYY-FNNN` (every invoice since), a row with no N/Réf, and a free-form file number like « 2026 » all stay whole (`journal_pdf._short_note_number`). Honours the same filters as the list. Built by `utils/journal_pdf.py`, never `utils/export_pdf.py` |
 
 ### `hearings.py` — `/audiences/*`
 
@@ -1572,7 +1576,8 @@ All `@login_required`, French UI, standard CSRF (no exemption), default 1 MB req
 | Route | Method | Purpose |
 |---|---|---|
 | `/fideicommis/` | GET | **Journal de caisse** — per-account, cursor pagination (`sequence` DESC); filters (compte/statut/sens/période) use a bounded 200-row fallback. Header: book/bank/outstanding/in-transit + overdue-reconciliation badge |
-| `/fideicommis/nouvelle` · `/` | GET · POST | Entry form · create (refuses `purpose="correction"`) |
+| `/fideicommis/nouvelle` · `/` | GET · POST | Entry form · create (refuses `purpose="correction"`). Since 2026-08-12 the virement-d'honoraires invoice is picked from a **SELECT of the dossier's issued invoices** (number + solde dû — exactly what the transactional verification accepts/caps) instead of hand-transcribed; `_resolve_invoice_number` (exact string, dossier-scoped) remains the final verdict, and `invoice_external_ref` stays the free-text path for pre-Athéna paper invoices |
+| `/fideicommis/factures-du-dossier` | GET | HTMX partial (`trust/_facture_options.html`): the issued-invoice select, reloaded via the « rafraichir-factures » custom event when the entry form's dossier changes ($nextTick AFTER setting the hidden dossier_id, so hx-include reads the fresh value; a `function () {}` expression on purpose — an arrow's `>` inside an attribute breaks naive `<input[^>]*>` tag parsing, see test_dossier_search_inputs_send_a_query_param) |
 | `/fideicommis/<id>` | GET | Detail: all fields, both frozen balances, links to reversal pair / other transfer leg / invoice; inline compenser + contrepasser actions |
 | `/fideicommis/<id>/compenser` · `/compenser-lot` | POST | Single / bulk clear (all-or-nothing) |
 | `/fideicommis/<id>/contrepasser` | GET · POST | Reversal confirmation (mandatory motif) · submit |
@@ -1738,7 +1743,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `expense_split(invoice, line_items) -> (taxable, non_taxable)` (August 2026, pure) — the Barreau journal needs the disbursement split, which **the invoice document does not store** (only `subtotal_expenses`). So the STORED total stays authoritative and the items only carve out the non-taxable part: the two columns always add back to `subtotal_expenses`, and a row whose items are missing still ties (everything under taxable — the `taxable: True` default the tax was computed under) instead of silently under-reporting the sheet's own subtotal. Fees are excluded: `create_invoice` always writes them `taxable: True`, so they are the journal's « Honoraires » column whole.
 - `balance_of(invoice) -> int` (August 2026) — the LIVE balance in cents, `amount_due − amount_paid`, **derived and never stored**. Note the trap it replaces: **`amount_due` is frozen at issuance and stays non-zero on a fully paid invoice**, so it has never been a balance despite reading like one.
 - `record_payment(invoice_id, amount_paid, paid_date=None)` (August 2026) — the only writer of `amount_paid`/`paid_date`. Transactional; owns BOTH fields **and** the status flip: a zero balance flips the invoice to `payée`, and a CORRECTION that reopens a balance **undoes that flip**. The undo is deliberately narrow (status `payée` **with** a recorded payment that no longer covers the invoice) — a `payée` set by hand is the lawyer's statement and is never touched. Without it a mistyped amount would strand the invoice for ever, `payée` being terminal in `STATUS_TRANSITIONS`. **Caps on `amount_due`, not `total`**: with a retainer applied `amount_due < total`, and capping on the total let a payment land between the two and produce a NEGATIVE balance with nothing to explain it.
-- Invoice numbers are **per-file**: `"{file_number}-NN"` (2-digit-padded sequence within the dossier; e.g. `2025-001-03`). Allocated by `_generate_invoice_number(dossier_id)` from a **per-dossier** transactional counter `counters/invoice-{dossier_id}` (`seq`), seeded on first use by `_seed_invoice_seq` = max(count of the file's existing invoices, highest existing per-file suffix) — so the sequence counts legacy `YYYY-F###` invoices too and a deleted new-scheme number can never be reused (monotonic; the counter never decrements). A dossier with **no file number** falls back to the legacy year-sequential `YYYY-F###` (`_generate_year_invoice_number` + `counters/invoices-{year}`). **Existing invoices keep whatever number they were issued** — never renumbered (immutable accounting artifact). Allocation failure aborts invoice creation — no guessed fallback number.
+- Invoice numbers are **year-sequential**: `"YYYY-F###"` (3-digit-padded, rolling to 4+ past 999; e.g. `2026-F031`) — the canonical scheme AGAIN since the 2026-08-12 user decision, reverting the per-file `"{file_number}-NN"` scheme of 2026-07-17 after four weeks. The **year is the MONTRÉAL calendar year** (`today_mtl` — no longer the UTC year, which stamped a Dec 31 evening invoice with the next millésime). Allocated by `_generate_invoice_number()` from the transactional counter `counters/invoices-{year}` (`seq`), seeded on a year's first use by `_scan_max_invoice_seq` (full-collection scan on the `"YYYY-F"` prefix — per-file numbers never match it and are ignored); monotonic, never reused — the production counter stood at seq=30 at the revert, so numbering resumed at `2026-F031`, no reseeding. **Existing invoices keep whatever number they were issued** — never renumbered (immutable accounting artifact); the SIX per-file invoices of the parenthesis stay as issued, and the orphaned `counters/invoice-{dossier_id}` docs sit inert in Firestore. Allocation failure aborts invoice creation — no guessed fallback number.
 
 ### `models/hearing.py`
 - `get_hearing_summary(dossier_id) -> dict`, `get_upcoming_hearings(days=30) -> list[dict]`

@@ -40,6 +40,7 @@ from models.trust import (
 )
 from pagination import PAGE_SIZE, cursor_pagination, parse_trail
 from security import safe_internal_redirect
+from utils.format_fr import format_cents_fr
 from utils.logging_setup import log_trust_event, log_unexpected
 
 trust_bp = Blueprint("trust", __name__, url_prefix="/fideicommis")
@@ -307,6 +308,43 @@ def _resolve_invoice_number(data: dict) -> list[str]:
     return []
 
 
+def _factures_emises(dossier_id) -> list[dict]:
+    """Factures ÉMISES du dossier, pour le sélecteur du virement d'honoraires.
+
+    Exactement les statuts que la vérification transactionnelle accepte
+    (models.trust._ISSUED_INVOICE_STATUSES), avec le solde dû qu'elle
+    plafonne. Le sélecteur n'est qu'une aide à la transcription — depuis le
+    retour au schéma annuel (décision 2026-08-12), DEUX formes de numéros
+    coexistent dans le registre — et le verdict final reste
+    _resolve_invoice_number + la transaction.
+    """
+    if not dossier_id:
+        return []
+    from models.invoice import list_invoices
+
+    return [
+        {
+            "invoice_number": inv.get("invoice_number", ""),
+            "solde_fmt": format_cents_fr(int(inv.get("amount_due") or 0)),
+        }
+        for inv in list_invoices(dossier_id=dossier_id)
+        if inv.get("status") in trust._ISSUED_INVOICE_STATUSES
+    ]
+
+
+@trust_bp.route("/factures-du-dossier")
+@login_required
+def factures_du_dossier() -> str:
+    """Partial HTMX : le sélecteur de factures émises, rechargé quand le
+    dossier du formulaire d'écriture change."""
+    dossier_id = request.args.get("dossier_id", "").strip() or None
+    return render_template(
+        "trust/_facture_options.html",
+        factures=_factures_emises(dossier_id),
+        selected=request.args.get("selected", ""),
+    )
+
+
 @trust_bp.route("/nouvelle")
 @login_required
 def entry_new():
@@ -316,7 +354,9 @@ def entry_new():
     dossier = get_dossier(dossier_id) if dossier_id else None
     return render_template(
         "trust/form.html", accounts=accounts, entry=None, dossier=dossier,
-        locked=locked, errors=[], **_labels(),
+        locked=locked, errors=[],
+        factures=_factures_emises(dossier["id"] if dossier else None),
+        **_labels(),
     )
 
 
@@ -336,7 +376,9 @@ def entry_create():
         dossier = get_dossier(data["dossier_id"]) if data.get("dossier_id") else None
         return render_template(
             "trust/form.html", accounts=accounts, entry=data, dossier=dossier,
-            locked=request.form.get("locked") == "1", errors=errors, **_labels(),
+            locked=request.form.get("locked") == "1", errors=errors,
+            factures=_factures_emises(dossier["id"] if dossier else None),
+            **_labels(),
         ), 400
     return redirect(url_for("trust.entry_detail", tx_id=entry["id"]))
 
