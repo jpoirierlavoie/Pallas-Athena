@@ -214,6 +214,64 @@ def test_verser_refuse_divergence_sha512(web, monkeypatch):
     assert manifeste["files"][0]["etat"] == "reçu"  # untouched
 
 
+# ── Télécharger (redirection URL signé — plafond 32 Mo App Engine) ───────
+
+
+def _preparer_telechargement(monkeypatch, entree):
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: _manifeste(entree))
+    blob = mock.Mock()
+    blob.exists.return_value = True
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    captures: dict = {}
+    monkeypatch.setattr(
+        rc, "sign_blob_url",
+        lambda b, params, expiry_minutes=15: captures.update(params=params)
+        or "https://signed.example/quarantaine",
+    )
+    return captures
+
+
+def test_telecharger_redirige_vers_un_url_signe(web, monkeypatch):
+    # App Engine Standard PLAFONNE toute réponse à 32 Mo (« Response size
+    # was too large », 2026-08-12 — un lot de 68 et 128 Mo répondait 500) :
+    # les octets ne transitent JAMAIS par l'app — redirection vers un URL
+    # signé, attachment forcé + type déclaré (§7.5 intact).
+    captures = _preparer_telechargement(monkeypatch, _entree())
+    reponse = web.get("/reception/lots/inv1/b1/fichiers/0")
+    assert reponse.status_code == 302
+    assert reponse.headers["Location"] == "https://signed.example/quarantaine"
+    disposition = captures["params"]["response-content-disposition"]
+    assert disposition.startswith('attachment; filename="piece.pdf"')
+    assert captures["params"]["response-content-type"] == "application/pdf"
+
+
+def test_telecharger_nom_falsifie_nettoye(web, monkeypatch):
+    # Le nom d'origine reste VERBATIM dans le manifeste (valeur probante) —
+    # les caractères de contrôle sont retirés AU POINT D'USAGE seulement.
+    captures = _preparer_telechargement(
+        monkeypatch, _entree(name="pi\r\nece.pdf"),
+    )
+    reponse = web.get("/reception/lots/inv1/b1/fichiers/0")
+    assert reponse.status_code == 302
+    assert '"piece.pdf"' in captures["params"]["response-content-disposition"]
+
+
+def test_telecharger_echec_de_signature_degrade_en_erreur(web, monkeypatch):
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: _manifeste(_entree()))
+    blob = mock.Mock()
+    blob.exists.return_value = True
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "sign_blob_url",
+                        mock.Mock(side_effect=RuntimeError("iam down")))
+    reponse = web.get("/reception/lots/inv1/b1/fichiers/0")
+    assert reponse.status_code == 302
+    assert "erreur=" in reponse.headers["Location"]
+
+
 # ── Refuser + traiter le lot ─────────────────────────────────────────────
 
 

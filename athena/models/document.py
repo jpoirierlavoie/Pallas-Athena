@@ -637,6 +637,47 @@ def delete_document(document_id: str) -> tuple[bool, str]:
         return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
+def build_attachment_disposition(filename: str) -> str:
+    """RFC 6266 ``Content-Disposition`` value forcing a download of *filename*.
+
+    A double quote would malform the quoted-string, so it is dropped; the
+    plain filename= keeps an ASCII fallback and non-ASCII names travel in
+    filename*=UTF-8''. Callers strip control characters first.
+    """
+    filename = (filename or "document").replace('"', "")
+    ascii_name = (
+        filename.encode("ascii", "ignore").decode("ascii").strip()
+        or "document"
+    )
+    disposition = f'attachment; filename="{ascii_name}"'
+    if filename != ascii_name:
+        disposition += f"; filename*=UTF-8''{quote(filename, safe='')}"
+    return disposition
+
+
+def sign_blob_url(blob, query_params: dict[str, str],
+                  expiry_minutes: int = 15) -> str:
+    """V4-sign a GET on *blob* — works on ANY bucket the runtime SA reads.
+
+    On App Engine Standard, Application Default Credentials come from the
+    metadata server and lack a local private key. Passing the service
+    account email + access token tells the library to sign via the IAM
+    signBlob API instead (requires iam.serviceAccountTokenCreator on
+    itself — see CLAUDE.md, IAM requirements). Raises on failure — each
+    caller owns its degradation.
+    """
+    signing_creds, _ = google.auth.default()
+    signing_creds.refresh(auth_requests.Request())
+    return blob.generate_signed_url(
+        version="v4",
+        expiration=timedelta(minutes=expiry_minutes),
+        method="GET",
+        query_parameters=query_params,
+        service_account_email=signing_creds.service_account_email,
+        access_token=signing_creds.token,
+    )
+
+
 def get_signed_url(
     document_id: str,
     expiry_minutes: int = 15,
@@ -674,38 +715,14 @@ def get_signed_url(
                     or ""
                 )
                 filename += ext
-            # RFC 6266: a double quote would malform the quoted-string, so
-            # it is dropped; the plain filename= keeps an ASCII fallback and
-            # non-ASCII names travel in filename*=UTF-8''.
-            filename = filename.replace('"', "")
-            ascii_name = (
-                filename.encode("ascii", "ignore").decode("ascii").strip()
-                or "document"
+            query_params["response-content-disposition"] = (
+                build_attachment_disposition(filename)
             )
-            disposition = f'attachment; filename="{ascii_name}"'
-            if filename != ascii_name:
-                disposition += f"; filename*=UTF-8''{quote(filename, safe='')}"
-            query_params["response-content-disposition"] = disposition
             content_type = doc.get("file_type")
             if content_type:
                 query_params["response-content-type"] = content_type
 
-        # On App Engine Standard, Application Default Credentials come from
-        # the metadata server and lack a local private key.  Passing the
-        # service account email + access token tells the library to sign
-        # via the IAM signBlob API instead.
-        signing_creds, _ = google.auth.default()
-        signing_creds.refresh(auth_requests.Request())
-
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(minutes=expiry_minutes),
-            method="GET",
-            query_parameters=query_params,
-            service_account_email=signing_creds.service_account_email,
-            access_token=signing_creds.token,
-        )
-        return url
+        return sign_blob_url(blob, query_params, expiry_minutes)
     except Exception:
         return None
 

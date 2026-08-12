@@ -26,7 +26,6 @@ from flask import (
     redirect,
     render_template,
     request,
-    send_file,
     session,
     url_for,
 )
@@ -50,6 +49,8 @@ from models.document import (
     CATEGORY_LABELS,
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
+    build_attachment_disposition,
+    sign_blob_url,
     upload_document,
 )
 from models.dossier import get_dossier, list_dossiers
@@ -754,14 +755,23 @@ def telecharger(inv_id: str, batch: str, seq: int):
     nom = "".join(
         c for c in (entree.get("name") or "document") if ord(c) >= 32
     ) or "document"
-    # §7.5 — téléchargement FORCÉ (attachment), content_type DÉCLARÉ,
-    # jamais de rendu en ligne depuis la quarantaine.
-    return send_file(
-        blob.open("rb"),
-        as_attachment=True,
-        download_name=nom,
-        mimetype=entree.get("content_type") or "application/octet-stream",
-    )
+    # §7.5 — téléchargement FORCÉ (attachment), content_type DÉCLARÉ, jamais
+    # de rendu en ligne depuis la quarantaine. REDIRECTION vers un URL signé
+    # V4 (15 min) plutôt que send_file : App Engine Standard PLAFONNE toute
+    # réponse à 32 Mo (« Response size was too large » — 2026-08-12, un lot
+    # de 68 et 128 Mo répondait 500), donc les octets vont de GCS au
+    # navigateur sans transiter par l'application.
+    try:
+        url = sign_blob_url(blob, {
+            "response-content-disposition": build_attachment_disposition(nom),
+            "response-content-type": (
+                entree.get("content_type") or "application/octet-stream"
+            ),
+        })
+    except Exception:
+        logger.exception("reception: quarantine signed url failed")
+        return _rediriger(erreur="Téléchargement impossible. Réessayez.")
+    return redirect(url)
 
 
 @reception_bp.post("/lots/<inv_id>/<batch>/fichiers/<int:seq>/verser")
