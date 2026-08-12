@@ -82,8 +82,11 @@ EXTENSION_MIME_TYPES = {
     ".msg": "application/vnd.ms-outlook",
 }
 
-# Max upload size: 25 MB
-MAX_FILE_SIZE = 25 * 1024 * 1024
+# Max document size: 200 MB (user decision 2026-08-12 — was 25 MB; the
+# ceiling became a pure POLICY once the byte paths stopped transiting the
+# application: App Engine Standard caps any request AND response at 32 MB,
+# so uploads go browser→GCS direct and ingestion is a GCS-side rewrite).
+MAX_FILE_SIZE = 200 * 1024 * 1024
 
 # Valid document categories. NOTE (spec §6): « facture » and « déboursé »
 # here mean DOCUMENTS (the PDF of a received invoice, a disbursement receipt),
@@ -268,7 +271,7 @@ def _validate_file(filename: str, file_size: int) -> list[str]:
         )
 
     if file_size > MAX_FILE_SIZE:
-        errors.append("Le fichier dépasse la taille maximale de 25 Mo.")
+        errors.append("Le fichier dépasse la taille maximale de 200 Mo.")
 
     if file_size == 0:
         errors.append("Le fichier est vide.")
@@ -318,7 +321,16 @@ def _sniff_content_type(file_stream: BinaryIO, ext: str) -> Optional[str]:
     except Exception as exc:
         logger.warning("_sniff_content_type: stream read failed: %s", type(exc).__name__)
         return None
+    return _sniff_header(header, ext)
 
+
+def _sniff_header(header: bytes, ext: str) -> Optional[str]:
+    """Decide the MIME type from already-read leading bytes.
+
+    Same contract as _sniff_content_type — this bytes-level seam exists so
+    the GCS-side ingestion path (ingest_blob_as_document) can sniff a
+    512-byte ranged read without ever holding the object's stream.
+    """
     if not isinstance(header, bytes):
         return None
     if header.startswith(b"%PDF-"):
@@ -369,6 +381,162 @@ def get_file_icon(file_type: str) -> str:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
+def _prepare_document_record(
+    dossier_id: str,
+    dossier_file_number: str,
+    filename: str,
+    ext: str,
+    content_type: str,
+    file_size: int,
+    metadata: dict,
+    user_id: str,
+) -> tuple[Optional[dict], list[str]]:
+    """Build the Firestore record + storage path shared by the two
+    ingestion paths (through-app stream and GCS-side copy).
+
+    Validates the metadata (folder, category) and sanitizes the filename
+    used in the Storage path — the raw client name is kept ONLY in
+    original_filename/display_name (display purposes).
+    """
+    merged = {**_default_doc(), **_sanitize_data(metadata)}
+    merged["dossier_id"] = dossier_id
+    merged["dossier_file_number"] = dossier_file_number
+    merged["document_date"] = _coerce_document_date(merged.get("document_date"))
+
+    folder_id = merged.get("folder_id")
+    if folder_id:
+        from models.folder import get_folder
+        folder = get_folder(dossier_id, folder_id)
+        if not folder:
+            return None, ["Le dossier de destination est introuvable."]
+
+    meta_errors = _validate_metadata(merged)
+    if meta_errors:
+        return None, meta_errors
+
+    now = datetime.now(timezone.utc)
+    document_id = str(uuid.uuid4())
+
+    printable = "".join(ch for ch in filename if ch.isprintable())
+    safe_filename = secure_filename(printable)
+    if len(safe_filename) > 200:
+        safe_filename = safe_filename[: 200 - len(ext)] + ext
+    if not safe_filename or not safe_filename.lower().endswith(ext):
+        safe_filename = "document" + ext
+    storage_path = f"users/{user_id}/dossiers/{dossier_id}/documents/{document_id}/{safe_filename}"
+
+    merged.update({
+        "id": document_id,
+        "filename": safe_filename,
+        "original_filename": filename,
+        "display_name": merged.get("display_name") or filename.rsplit(".", 1)[0],
+        "file_type": content_type,
+        "file_size": file_size,
+        "storage_path": storage_path,
+        "created_at": now,
+        "updated_at": now,
+        "etag": str(uuid.uuid4()),
+    })
+    return merged, []
+
+
+def ingest_blob_as_document(
+    source_blob,
+    dossier_id: str,
+    dossier_file_number: str,
+    filename: str,
+    metadata: dict,
+    user_id: str,
+) -> tuple[Optional[dict], list[str]]:
+    """Ingest an EXISTING GCS object as a document via a server-side copy.
+
+    The bytes never transit the application — App Engine Standard caps any
+    request AND response at 32 MB (both directions burned us; see the
+    Known Gotchas): validation reads only the blob's metadata and a
+    512-byte ranged probe, and the copy is a GCS rewrite. Serves the
+    Réception versement (source in the quarantine bucket) and the
+    direct-to-GCS upload form (source under staging/ in the canonical
+    bucket). The CALLER must have reload()ed *source_blob* (its .size is
+    what the size policy is enforced on) and owns the source's cleanup.
+    """
+    file_errors = _validate_file(filename, int(source_blob.size or 0))
+    if file_errors:
+        return None, file_errors
+    ext = "." + filename.rsplit(".", 1)[1].lower()  # validated above
+
+    try:
+        header = source_blob.download_as_bytes(
+            start=0, end=_SNIFF_PROBE_BYTES - 1
+        )
+    except Exception as exc:
+        logger.warning(
+            "ingest_blob: header read failed: %s", type(exc).__name__
+        )
+        return None, ["Lecture du fichier source impossible. Réessayez."]
+    content_type = _sniff_header(header, ext)
+    if not content_type or content_type not in ALLOWED_MIME_TYPES:
+        return None, [
+            "Le contenu du fichier ne correspond à aucun format autorisé. "
+            "Formats acceptés : PDF, Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, "
+            "courriels (EML/MSG)."
+        ]
+    if EXTENSION_MIME_TYPES.get(ext) != content_type:
+        return None, ["Le contenu du fichier ne correspond pas à son extension."]
+
+    merged, errors = _prepare_document_record(
+        dossier_id, dossier_file_number, filename, ext,
+        content_type, int(source_blob.size or 0), metadata, user_id,
+    )
+    if errors:
+        return None, errors
+    storage_path = merged["storage_path"]
+    document_id = merged["id"]
+
+    try:
+        bucket = storage.bucket()
+        dest = bucket.blob(storage_path)
+        # GCS-side rewrite (loops for large objects). The destination then
+        # gets the SNIFFED type — never the source's client-declared one —
+        # and the attachment discipline of the non-previewable types.
+        token, _, _ = dest.rewrite(source_blob)
+        while token is not None:
+            token, _, _ = dest.rewrite(source_blob, token=token)
+        dest.content_type = content_type
+        if content_type in _ATTACHMENT_ONLY_TYPES:
+            dest.content_disposition = "attachment"
+        dest.patch()
+    except Exception as exc:
+        logger.warning(
+            "ingest_blob failed for document %s: %s",
+            document_id, type(exc).__name__,
+        )
+        try:
+            bucket = storage.bucket()
+            bucket.blob(storage_path).delete()
+        except Exception:
+            pass
+        return None, ["Erreur lors du versement. Veuillez réessayer."]
+
+    try:
+        db.collection(COLLECTION).document(document_id).set(merged)
+    except Exception as exc:
+        logger.warning(
+            "ingest_blob failed for document %s: %s",
+            document_id, type(exc).__name__,
+        )
+        try:
+            bucket = storage.bucket()
+            bucket.blob(storage_path).delete()
+        except Exception as cleanup_exc:
+            logger.warning(
+                "ingest_blob: storage rollback failed for document %s: %s",
+                document_id, type(cleanup_exc).__name__,
+            )
+        return None, ["Erreur lors du versement. Veuillez réessayer."]
+
+    return merged, []
+
+
 def upload_document(
     dossier_id: str,
     dossier_file_number: str,
@@ -404,51 +572,14 @@ def upload_document(
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]
 
-    # Build metadata
-    merged = {**_default_doc(), **_sanitize_data(metadata)}
-    merged["dossier_id"] = dossier_id
-    merged["dossier_file_number"] = dossier_file_number
-    merged["document_date"] = _coerce_document_date(merged.get("document_date"))
-
-    # Validate folder_id if provided
-    folder_id = merged.get("folder_id")
-    if folder_id:
-        from models.folder import get_folder
-        folder = get_folder(dossier_id, folder_id)
-        if not folder:
-            return None, ["Le dossier de destination est introuvable."]
-
-    # Validate metadata
-    meta_errors = _validate_metadata(merged)
-    if meta_errors:
-        return None, meta_errors
-
-    now = datetime.now(timezone.utc)
-    document_id = str(uuid.uuid4())
-    etag = str(uuid.uuid4())
-
-    # Sanitize the filename used in the Storage path. The raw client name
-    # is kept ONLY in original_filename/display_name (display purposes).
-    printable = "".join(ch for ch in filename if ch.isprintable())
-    safe_filename = secure_filename(printable)
-    if len(safe_filename) > 200:
-        safe_filename = safe_filename[: 200 - len(ext)] + ext
-    if not safe_filename or not safe_filename.lower().endswith(ext):
-        safe_filename = "document" + ext
-    storage_path = f"users/{user_id}/dossiers/{dossier_id}/documents/{document_id}/{safe_filename}"
-
-    merged.update({
-        "id": document_id,
-        "filename": safe_filename,
-        "original_filename": filename,
-        "display_name": merged.get("display_name") or filename.rsplit(".", 1)[0],
-        "file_type": content_type,
-        "file_size": file_size,
-        "storage_path": storage_path,
-        "created_at": now,
-        "updated_at": now,
-        "etag": etag,
-    })
+    merged, errors = _prepare_document_record(
+        dossier_id, dossier_file_number, filename, ext,
+        content_type, file_size, metadata, user_id,
+    )
+    if errors:
+        return None, errors
+    storage_path = merged["storage_path"]
+    document_id = merged["id"]
 
     # Upload to Firebase Storage
     # (Log only the document ID + exception type — the storage path and

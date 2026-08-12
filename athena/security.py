@@ -240,7 +240,11 @@ def _add_early_hints(response: Response) -> None:
 # ---------------------------------------------------------------------------
 # Request size guard (non-upload routes capped at 1 MB)
 # ---------------------------------------------------------------------------
-UPLOAD_PATHS = ("/documents/upload",)
+# Empty since 2026-08-12: the document upload went direct-to-GCS (the bytes
+# never transit the app — App Engine caps any request at 32 MB anyway), so
+# no route needs to escape the 1 MB default any more. The tuple stays as
+# the documented seam for a future through-app upload path.
+UPLOAD_PATHS: tuple[str, ...] = ()
 _DAV_MAX_BODY = 5 * 1024 * 1024  # vCard/iCal payloads are KBs; 5 MB is generous
 # Template upload/replace (Phase H): POST /gabarits/ and POST /gabarits/<id>
 # carry a .docx (≤ 10 MB, also enforced model-side). The generation POST
@@ -261,8 +265,8 @@ def _is_template_upload_path(path: str) -> bool:
 
 def _enforce_request_size() -> Optional[Response]:
     """Reject oversized requests for non-upload and non-DAV endpoints."""
-    # DAV payloads (vCard, iCal, PROPFIND XML) get their own, tighter cap
-    # than the global 25 MB upload allowance.
+    # DAV payloads (vCard, iCal, PROPFIND XML) get their own cap, above the
+    # 1 MB default but far below MAX_CONTENT_LENGTH's 25 MB backstop.
     if request.path.startswith("/dav/") or request.path.startswith("/.well-known/"):
         if request.content_length and request.content_length > _DAV_MAX_BODY:
             abort(413)

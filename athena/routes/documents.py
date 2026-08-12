@@ -3,8 +3,13 @@
 Includes folder management routes for hierarchical document organization.
 """
 
+import logging
+import uuid
+
+from firebase_admin import storage
 from flask import (
     Blueprint,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -12,26 +17,32 @@ from flask import (
     url_for,
 )
 from markupsafe import escape
+from werkzeug.utils import secure_filename
 
 from auth import login_required
+from config import Config
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
 from models.document import (
+    ALLOWED_EXTENSIONS,
     CATEGORY_LABELS,
+    MAX_FILE_SIZE,
     VALID_CATEGORIES,
     delete_document,
     format_file_size,
     get_document,
     get_file_icon,
     get_signed_url,
+    ingest_blob_as_document,
     list_documents,
     move_document,
     move_documents_bulk,
     update_metadata,
-    upload_document,
 )
+
+logger = logging.getLogger(__name__)
 from models.folder import (
     create_folder,
     delete_folder,
@@ -225,113 +236,138 @@ def document_upload_form() -> str:
         folder_id=folder_id,
         folder_breadcrumb=folder_breadcrumb,
         errors=[],
-        return_to=request.args.get("return_to", ""),
+        # return_to est rejoué par le JS dans window.location à la fin du
+        # téléversement : validé DÈS LE RENDU — le POST multipart supprimé
+        # le passait par safe_internal_redirect, et sa disparition ne doit
+        # pas rouvrir la redirection ouverte (revue 2026-08-12).
+        return_to=safe_internal_redirect(
+            request.args.get("return_to", ""), ""
+        ),
     )
 
 
-@documents_bp.route("/upload", methods=["POST"])
+@documents_bp.route("/api/televersement", methods=["POST"])
 @login_required
-def document_upload() -> str:
-    """Handle file upload(s)."""
-    dossier_id = request.form.get("dossier_id", "").strip()
-    folder_id = request.form.get("folder_id", "").strip() or None
-    dossier = get_dossier(dossier_id) if dossier_id else None
-    return_to = request.form.get("return_to", "")
+def api_televersement():
+    """Ouvre une session GCS reprenable pour un téléversement DIRECT.
 
-    if not dossier:
-        errors = ["Veuillez sélectionner un dossier."]
-        return render_template(
-            "documents/upload.html",
-            dossier=None,
-            dossiers=list_dossiers(),
-            category_labels=CATEGORY_LABELS,
-            folder_id=folder_id,
-            folder_breadcrumb=[],
-            errors=errors,
-            return_to=return_to,
-        )
+    Les octets vont du navigateur à GCS sans transiter par l'application —
+    App Engine Standard plafonne toute requête à 32 Mo, et le plafond
+    documents est à 200 Mo (décision 2026-08-12). L'objet naît sous
+    staging/{uid}/ ; api_finaliser le vérifie (sniff des octets) puis
+    l'ingère par copie côté serveur et consomme le staging.
+    """
+    donnees = request.get_json(silent=True) or {}
+    nom = str(donnees.get("name") or "")
+    try:
+        size = int(donnees.get("size"))
+    except (TypeError, ValueError):
+        size = -1
 
-    files = request.files.getlist("files")
-    if not files or all(f.filename == "" for f in files):
-        folder_breadcrumb = get_folder_breadcrumb(dossier_id, folder_id) if folder_id else []
-        errors = ["Veuillez sélectionner au moins un fichier."]
-        return render_template(
-            "documents/upload.html",
-            dossier=dossier,
-            dossiers=list_dossiers(),
-            category_labels=CATEGORY_LABELS,
-            folder_id=folder_id,
-            folder_breadcrumb=folder_breadcrumb,
-            errors=errors,
-            return_to=return_to,
+    ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        return jsonify({"erreur": (
+            "Type de fichier non autorisé. Formats acceptés : PDF, "
+            "Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
+        )}), 422
+    if size <= 0 or size > MAX_FILE_SIZE:
+        return jsonify({
+            "erreur": "Chaque fichier doit faire entre 1 octet et 200 Mo."
+        }), 422
+
+    # Type déclaré par le navigateur — indicatif seulement (l'ingestion
+    # re-sniffe les octets) ; réduit à l'ASCII imprimable.
+    ct = "".join(
+        c for c in str(donnees.get("content_type") or "")
+        if 32 <= ord(c) < 127
+    )[:100] or "application/octet-stream"
+    user_id = session.get("user_id", "unknown")
+    printable = "".join(ch for ch in nom if ch.isprintable())
+    safe = secure_filename(printable) or "document"
+    objet = f"staging/{user_id}/{uuid.uuid4()}/{safe}"
+    # Origine CORS de la session = l'origine de la PAGE. En production le
+    # TLS se termine en amont de gunicorn et il n'y a pas de ProxyFix —
+    # request.scheme lirait « http » et le navigateur refuserait les PUT ;
+    # https est donc FORCÉ (le motif du portail : origin=f"https://{HOST}").
+    scheme = "https" if Config.ENV == "production" else (request.scheme or "http")
+    try:
+        blob = storage.bucket().blob(objet)
+        # size= : GCS refuse tout octet au-delà du déclaré (le vrai plafond,
+        # non contournable) ; origin= : la politique CORS vit sur la
+        # SESSION reprenable, pas sur le bucket.
+        url = blob.create_resumable_upload_session(
+            content_type=ct, size=size, origin=f"{scheme}://{request.host}",
         )
+    except Exception:
+        logger.exception("documents: resumable-session open failed")
+        return jsonify({
+            "erreur": "Erreur lors de l'ouverture du téléversement. Réessayez."
+        }), 503
+    return jsonify({"url": url, "objet": objet})
+
+
+@documents_bp.route("/api/finaliser", methods=["POST"])
+@login_required
+def api_finaliser():
+    """Ingère un objet staging téléversé en direct → document du dossier.
+
+    Le staging est CONSOMMÉ dans les deux issues : copié au chemin
+    canonique (réussite) ou supprimé (refus — des octets non conformes
+    n'ont rien à faire en staging non plus). Un staging jamais finalisé
+    (navigateur fermé en plein transfert) est un orphelin inerte que la
+    règle de cycle de vie du bucket balaie (préfixe staging/, 7 jours).
+    """
+    donnees = request.get_json(silent=True) or {}
+    objet = str(donnees.get("objet") or "")
+    nom = str(donnees.get("name") or "").strip() or "document"
+    dossier_id = str(donnees.get("dossier_id") or "").strip()
 
     user_id = session.get("user_id", "unknown")
-    category = request.form.get("category", "autre").strip()
-    description = request.form.get("description", "").strip()
-    tags_raw = request.form.get("tags", "").strip()
-    tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+    if not objet.startswith(f"staging/{user_id}/"):
+        # Le client ne nomme jamais que SES objets staging — tout autre
+        # chemin est une charge forgée.
+        return jsonify({"erreur": "Requête invalide."}), 400
+    dossier = get_dossier(dossier_id) if dossier_id else None
+    if dossier is None:
+        return jsonify({"erreur": "Veuillez sélectionner un dossier."}), 422
 
-    uploaded = []
-    all_errors: list[str] = []
+    try:
+        blob = storage.bucket().blob(objet)
+        blob.reload()
+    except Exception:
+        logger.exception("documents: staging blob reload failed")
+        return jsonify({
+            "erreur": "Fichier téléversé introuvable. Réessayez."
+        }), 422
 
-    for f in files:
-        if not f.filename:
-            continue
-
-        f.seek(0, 2)
-        file_size = f.tell()
-        f.seek(0)
-
-        metadata = {
-            "category": category,
-            "description": description,
-            "tags": tags,
-            "display_name": request.form.get("display_name", "").strip() or "",
-            "folder_id": folder_id,
-            # The document's OWN date (PV, jugement…) — optional, distinct
-            # from the upload instant.
-            "document_date": request.form.get("document_date", "").strip(),
-        }
-
-        doc, errors = upload_document(
-            dossier_id=dossier_id,
-            dossier_file_number=dossier.get("file_number", ""),
-            file_stream=f,
-            filename=f.filename,
-            file_size=file_size,
-            metadata=metadata,
-            user_id=user_id,
-        )
-
-        if errors:
-            all_errors.extend([f"{f.filename} : {e}" for e in errors])
-        elif doc:
-            uploaded.append(doc)
-
-    if all_errors and not uploaded:
-        folder_breadcrumb = get_folder_breadcrumb(dossier_id, folder_id) if folder_id else []
-        return render_template(
-            "documents/upload.html",
-            dossier=dossier,
-            dossiers=list_dossiers(),
-            category_labels=CATEGORY_LABELS,
-            folder_id=folder_id,
-            folder_breadcrumb=folder_breadcrumb,
-            errors=all_errors,
-            return_to=return_to,
-        )
-
-    # Redirect to caller (e.g. dossier hub) when provided, else the browser.
-    fallback = url_for(
-        "documents.document_list", dossier_id=dossier_id, folder_id=folder_id or ""
+    tags_raw = str(donnees.get("tags") or "")
+    metadata = {
+        "category": str(donnees.get("category") or "autre").strip(),
+        "description": str(donnees.get("description") or "").strip(),
+        "tags": [t.strip() for t in tags_raw.split(",") if t.strip()],
+        "display_name": str(donnees.get("display_name") or "").strip(),
+        "folder_id": str(donnees.get("folder_id") or "").strip() or None,
+        # The document's OWN date (PV, jugement…) — optional, distinct
+        # from the upload instant.
+        "document_date": str(donnees.get("document_date") or "").strip(),
+    }
+    document, errors = ingest_blob_as_document(
+        blob,
+        dossier_id,
+        dossier.get("file_number", ""),
+        nom,
+        metadata,
+        user_id,
     )
-    target = safe_internal_redirect(return_to, fallback)
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    try:
+        blob.delete()
+    except Exception:
+        logger.warning("documents: staging cleanup failed")
+    if errors or document is None:
+        return jsonify({
+            "erreur": " ".join(errors) or "Téléversement impossible."
+        }), 422
+    return jsonify({"ok": True, "document_id": document["id"]})
 
 
 # ── Edit metadata ─────────────────────────────────────────────────────────

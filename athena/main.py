@@ -36,6 +36,11 @@ def create_app() -> Flask:
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = Config.ENV == "production"
+    # Jetons CSRF valides pour la SESSION, pas 1 h (défaut flask-wtf) : la
+    # finalisation d'un lot de téléversements directs-à-GCS (≤ 200 Mo par
+    # fichier, séquentiels) peut arriver plus d'une heure après le rendu du
+    # formulaire — même décision que le portail (client/app.py, 2026-08-12).
+    app.config["WTF_CSRF_TIME_LIMIT"] = None
     app.permanent_session_lifetime = timedelta(
         hours=Config.SESSION_LIFETIME_HOURS,
     )

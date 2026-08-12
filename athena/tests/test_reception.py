@@ -9,6 +9,7 @@ before purging a lot, the provenance fields, and the badge cache fail-open.
 """
 
 import hashlib
+import io
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -72,6 +73,15 @@ _OCTETS_PDF = b"%PDF-1.4 data"
 _SHA_PDF = hashlib.sha512(_OCTETS_PDF).hexdigest()
 
 
+def _blob_quarantaine(octets=_OCTETS_PDF, size=None):
+    """Blob GCS mocké : métadonnées + lecture EN FLUX (jamais download_as_bytes
+    entier — le versement par copie de 2026-08-12 n'en fait plus)."""
+    blob = mock.MagicMock()
+    blob.size = len(octets) if size is None else size
+    blob.open.return_value.__enter__.return_value = io.BytesIO(octets)
+    return blob
+
+
 # ── Pré-contrôle du versement (restriction au vocabulaire actuel) ────────
 
 
@@ -85,12 +95,20 @@ def test_versable_nouveaux_types(nom):
     assert rc._versable(_entree(name=nom)) is True
 
 
+def test_versable_gros_fichier_200mo():
+    # Décision 2026-08-12 : ≤ 200 Mo — le versement par copie côté serveur
+    # ne fait plus transiter les octets par l'application.
+    assert rc._versable(_entree(name="archive.zip",
+                                size_gcs=130 * 1024 * 1024)) is True
+    assert rc._versable(_entree(size_gcs=200 * 1024 * 1024)) is True
+
+
 @pytest.mark.parametrize("entree", [
     _entree(name="photo.heic", content_type="image/heic"),
     _entree(name="video.mp4"),
     _entree(name="classeur.xlsx"),
-    _entree(size_gcs=26 * 1024 * 1024),          # > 25 Mo
-    _entree(name="archive.zip", size_gcs=26 * 1024 * 1024),  # zip > 25 Mo
+    _entree(size_gcs=201 * 1024 * 1024),          # > 200 Mo
+    _entree(name="archive.zip", size_gcs=201 * 1024 * 1024),  # zip > 200 Mo
     _entree(size_gcs=0),
     _entree(etat="versé"),
     _entree(etat="refusé"),
@@ -113,9 +131,7 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     ecrits = []
     monkeypatch.setattr(rc, "_ecrire_manifeste",
                         lambda i, b, m: ecrits.append(m))
-    blob = mock.Mock()
-    blob.size = len(_OCTETS_PDF)
-    blob.download_as_bytes.return_value = _OCTETS_PDF
+    blob = _blob_quarantaine()
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
@@ -123,8 +139,8 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "get_or_create_folder",
                         lambda d, nom: {"id": "f-portail", "name": nom})
-    upload = mock.Mock(return_value=({"id": "doc9"}, []))
-    monkeypatch.setattr(rc, "upload_document", upload)
+    ingest = mock.Mock(return_value=({"id": "doc9"}, []))
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
     reponse = web.post(
         "/reception/lots/inv1/b1/fichiers/0/verser",
@@ -133,14 +149,17 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     assert reponse.status_code == 302
     assert "message=" in reponse.headers["Location"]
 
-    args = upload.call_args.args
-    assert args[0] == "d1" and args[1] == "2026-001"
-    assert args[3] == "piece.pdf" and args[6] == "u1"
-    metadata = args[5]
+    args = ingest.call_args.args
+    # Copie GCS→GCS : le BLOB passe tel quel, jamais d'octets en RAM.
+    assert args[0] is blob
+    assert args[1] == "d1" and args[2] == "2026-001"
+    assert args[3] == "piece.pdf" and args[5] == "u1"
+    metadata = args[4]
     assert metadata["tags"] == ["portail"]
     assert "invitation inv1" in metadata["description"]
     assert _SHA_PDF in metadata["description"]
     assert metadata["folder_id"] == "f-portail"
+    blob.download_as_bytes.assert_not_called()
     # Manifest entry flipped to « versé » and persisted.
     assert manifeste["files"][0]["etat"] == "versé"
     assert ecrits
@@ -149,14 +168,14 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
 def test_verser_non_versable_refuse_sans_ingestion(web, monkeypatch):
     manifeste = _manifeste(_entree(name="photo.heic"))
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
-    upload = mock.Mock()
-    monkeypatch.setattr(rc, "upload_document", upload)
+    ingest = mock.Mock()
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
     reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
                        data={"dossier_id": "d1"})
     assert reponse.status_code == 302
     assert "erreur=" in reponse.headers["Location"]
-    upload.assert_not_called()
+    ingest.assert_not_called()
     assert manifeste["files"][0]["etat"] == "reçu"  # untouched
 
 
@@ -168,49 +187,46 @@ def test_verser_deja_traite_refuse(web, monkeypatch):
     assert "erreur=" in reponse.headers["Location"]
 
 
-def test_verser_refuse_blob_regonfle_sans_telechargement(web, monkeypatch):
+def test_verser_refuse_blob_regonfle_sans_lecture(web, monkeypatch):
     # Fraîcheur (revue 2026-08-11) : la taille jugée par _versable est celle
     # du MANIFESTE, figée à la prise d'empreintes — si le blob VIVANT a
-    # grossi au-delà de 25 Mo depuis, refuser AVANT download_as_bytes pour
-    # que l'objet regonflé n'atteigne jamais la RAM du service.
+    # grossi au-delà du plafond depuis, refuser AVANT toute lecture.
     manifeste = _manifeste(_entree())
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
-    blob = mock.Mock()
-    blob.size = 26 * 1024 * 1024
+    blob = _blob_quarantaine(size=201 * 1024 * 1024)
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
     monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
-    upload = mock.Mock()
-    monkeypatch.setattr(rc, "upload_document", upload)
+    ingest = mock.Mock()
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
     reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
                        data={"dossier_id": "d1"})
     assert "erreur=" in reponse.headers["Location"]
-    blob.download_as_bytes.assert_not_called()
-    upload.assert_not_called()
+    blob.open.assert_not_called()
+    ingest.assert_not_called()
     assert manifeste["files"][0]["etat"] == "reçu"  # untouched
 
 
 def test_verser_refuse_divergence_sha512(web, monkeypatch):
     # Intégrité probante : la description du document cite l'empreinte du
     # manifeste — des octets qui ne la confirment pas ne sont jamais versés.
+    # Le recalcul se fait EN FLUX (l'objet peut faire 200 Mo).
     manifeste = _manifeste(_entree())          # sha512 = "cafe" * 32
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
-    blob = mock.Mock()
-    blob.size = len(_OCTETS_PDF)
-    blob.download_as_bytes.return_value = _OCTETS_PDF
+    blob = _blob_quarantaine()                 # streams _OCTETS_PDF
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
     monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
-    upload = mock.Mock()
-    monkeypatch.setattr(rc, "upload_document", upload)
+    ingest = mock.Mock()
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
     reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
                        data={"dossier_id": "d1"})
     assert "erreur=" in reponse.headers["Location"]
-    upload.assert_not_called()
+    ingest.assert_not_called()
     assert manifeste["files"][0]["etat"] == "reçu"  # untouched
 
 
@@ -397,15 +413,13 @@ def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
     monkeypatch.setattr(rc, "_ecrire_manifeste",
                         mock.Mock(side_effect=RuntimeError("gcs down")))
-    blob = mock.Mock()
-    blob.size = len(_OCTETS_PDF)
-    blob.download_as_bytes.return_value = _OCTETS_PDF
+    blob = _blob_quarantaine()
     bucket = mock.Mock()
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
     monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
     monkeypatch.setattr(rc, "get_or_create_folder", lambda d, n: None)
-    monkeypatch.setattr(rc, "upload_document",
+    monkeypatch.setattr(rc, "ingest_blob_as_document",
                         mock.Mock(return_value=({"id": "doc9"}, [])))
 
     reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",

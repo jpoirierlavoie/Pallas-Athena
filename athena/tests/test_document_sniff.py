@@ -189,3 +189,95 @@ def test_upload_document_refuse_desaccord_extension(monkeypatch):
     assert document is None
     assert erreurs and "aucun format autorisé" in erreurs[0]
     blob.upload_from_file.assert_not_called()
+
+
+# ── ingest_blob_as_document (copie GCS→GCS — décision 2026-08-12) ────────
+# Les octets ne transitent jamais par l'application : validation sur les
+# métadonnées + une sonde de 512 octets, copie par rewrite côté GCS.
+
+
+def _source_blob(octets: bytes, size=None):
+    blob = mock.MagicMock()
+    blob.size = len(octets) if size is None else size
+    blob.download_as_bytes.return_value = octets[:512]
+    return blob
+
+
+def _mock_dest(monkeypatch):
+    dest = mock.MagicMock()
+    dest.rewrite.return_value = (None, 0, 0)
+    bucket = mock.MagicMock()
+    bucket.blob.return_value = dest
+    monkeypatch.setattr(doc.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(
+        doc, "db",
+        mock.Mock(collection=lambda n: mock.Mock(document=lambda i: mock.Mock())),
+    )
+    return dest
+
+
+def test_ingest_blob_zip(monkeypatch):
+    dest = _mock_dest(monkeypatch)
+    source = _source_blob(_PK + b"\x00" * 64)
+    document, erreurs = doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "pieces.zip", {"category": "pièce"}, "u1",
+    )
+    assert erreurs == []
+    assert document["file_type"] == "application/zip"
+    assert document["file_size"] == source.size
+    # Sonde bornée — jamais le corps entier.
+    source.download_as_bytes.assert_called_once_with(start=0, end=511)
+    dest.rewrite.assert_called_once_with(source)
+    # La destination porte le type SNIFFÉ (jamais le déclaré de la source)
+    # + la discipline attachment des types non prévisualisables.
+    assert dest.content_type == "application/zip"
+    assert dest.content_disposition == "attachment"
+    dest.patch.assert_called_once()
+
+
+def test_ingest_blob_boucle_de_rewrite(monkeypatch):
+    # Un objet volumineux exige plusieurs passes de rewrite (jeton).
+    dest = _mock_dest(monkeypatch)
+    dest.rewrite.side_effect = [("jeton", 0, 0), (None, 0, 0)]
+    source = _source_blob(_PK + b"\x00" * 64, size=150 * 1024 * 1024)
+    document, erreurs = doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "pieces.zip", {"category": "pièce"}, "u1",
+    )
+    assert erreurs == []
+    assert document["file_size"] == 150 * 1024 * 1024
+    assert dest.rewrite.call_count == 2
+    assert dest.rewrite.call_args_list[1].kwargs.get("token") == "jeton"
+
+
+def test_ingest_blob_refuse_plus_de_200_mo(monkeypatch):
+    dest = _mock_dest(monkeypatch)
+    source = _source_blob(_PK, size=201 * 1024 * 1024)
+    document, erreurs = doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "pieces.zip", {"category": "pièce"}, "u1",
+    )
+    assert document is None
+    assert erreurs and "200 Mo" in erreurs[0]
+    dest.rewrite.assert_not_called()
+
+
+def test_ingest_blob_refuse_mauvais_contenu(monkeypatch):
+    dest = _mock_dest(monkeypatch)
+    source = _source_blob(_OLE)          # OLE nommé .pdf → sniff None
+    document, erreurs = doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "piece.pdf", {"category": "pièce"}, "u1",
+    )
+    assert document is None
+    assert erreurs and "aucun format autorisé" in erreurs[0]
+    dest.rewrite.assert_not_called()
+
+
+def test_ingest_blob_pdf_sans_disposition(monkeypatch):
+    # Un type prévisualisable ne reçoit PAS l'attachment forcé.
+    dest = _mock_dest(monkeypatch)
+    source = _source_blob(b"%PDF-1.7 contenu")
+    document, erreurs = doc.ingest_blob_as_document(
+        source, "d1", "2026-001", "piece.pdf", {"category": "pièce"}, "u1",
+    )
+    assert erreurs == []
+    assert dest.content_type == "application/pdf"
+    assert dest.content_disposition != "attachment"

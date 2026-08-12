@@ -3,17 +3,15 @@
 Tout est @login_required, français, POST+redirect avec messages en query
 (motif maison sans flash). RIEN n'est ingéré automatiquement : chaque octet
 client n'entre au stockage canonique que sur clic « Verser » du juriste, et
-seuls les fichiers conformes au vocabulaire documents (9 types, ≤ 25 Mo —
-décision utilisateur 2026-08-11, élargissant celle du 2026-07-25 de ZIP,
-.eml et .msg) sont versables ; les autres se téléchargent (attachment
-forcé, §7.5) et se traitent hors application.
+seuls les fichiers conformes au vocabulaire documents (9 types depuis le
+2026-08-11, ≤ 200 Mo depuis le 2026-08-12) sont versables — par COPIE
+côté serveur (les octets ne transitent jamais par l'app) ; les autres se
+téléchargent (attachment forcé, §7.5) et se traitent hors application.
 
 Fail-open d'affichage : la base « portail » ou le bucket absents (infra pas
 encore créée) rendent des états vides et un avertissement, jamais un 500.
 """
 
-import hashlib
-import io
 import json
 import logging
 import time
@@ -50,9 +48,10 @@ from models.document import (
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
     build_attachment_disposition,
+    ingest_blob_as_document,
     sign_blob_url,
-    upload_document,
 )
+from routes.taches_portail import sha512_flux
 from models.dossier import get_dossier, list_dossiers
 from models.folder import get_or_create_folder
 from models.hearing import get_hearing, list_hearings, update_hearing
@@ -185,10 +184,11 @@ def _ecrire_manifeste(inv_id: str, batch: str, manifeste: dict) -> None:
 
 def _versable(entree: dict) -> bool:
     """Précontrôle du versement (vocabulaire documents courant — 9 types
-    depuis la décision utilisateur 2026-08-11 : + ZIP, .eml, .msg).
+    depuis 2026-08-11, ≤ 200 Mo depuis 2026-08-12).
 
-    Le verdict final reste celui d'upload_document (sniff des octets) — ce
-    contrôle n'existe que pour l'UI et un message français précis.
+    Le verdict final reste celui d'ingest_blob_as_document (sniff des
+    octets) — ce contrôle n'existe que pour l'UI et un message français
+    précis.
     """
     nom = entree.get("name") or ""
     ext = "." + nom.rsplit(".", 1)[1].lower() if "." in nom else ""
@@ -786,7 +786,7 @@ def verser(inv_id: str, batch: str, seq: int):
         return _rediriger(erreur=(
             "Ce fichier ne peut pas être versé tel quel : seuls les PDF, "
             "Word (doc/docx), JPEG, PNG, TIFF, ZIP et courriels (.eml/.msg) "
-            "de 25 Mo ou moins sont admis au dossier. Téléchargez-le et "
+            "de 200 Mo ou moins sont admis au dossier. Téléchargez-le et "
             "traitez-le hors application."
         ))
 
@@ -797,8 +797,7 @@ def verser(inv_id: str, batch: str, seq: int):
 
     # Fraîcheur (revue 2026-08-11) : _versable a jugé la taille du
     # MANIFESTE, figée au traitement du lot — le blob VIVANT peut différer.
-    # Relire ses métadonnées AVANT de le charger en mémoire, sinon un objet
-    # regonflé après la prise d'empreintes arriverait entier en RAM.
+    # Relire ses métadonnées AVANT toute lecture.
     try:
         blob = _bucket().blob(entree["objet"])
         blob.reload()
@@ -816,25 +815,30 @@ def verser(inv_id: str, batch: str, seq: int):
             "vérifiez le lot avant toute décision."
         ))
 
-    try:
-        octets = blob.download_as_bytes()
-    except Exception:
-        logger.exception("reception: quarantine download failed")
-        return _rediriger(erreur="Lecture du fichier en quarantaine impossible.")
-
     # Intégrité probante : la description du document au dossier citera
     # l'empreinte du manifeste — ne verser que des octets qui la confirment.
+    # Recalcul EN FLUX (tranches de 8 Mio) : l'objet peut faire 200 Mo et
+    # n'entre jamais entier en RAM (2026-08-12 — le versement par copie).
     sha_manifeste = entree.get("sha512") or ""
-    if sha_manifeste and hashlib.sha512(octets).hexdigest() != sha_manifeste:
-        log_portail_event(
-            "versement_divergence", "failure",
-            invitation_id=inv_id, batch=batch, seq=seq, reason="sha512",
-        )
-        return _rediriger(erreur=(
-            "Le fichier en quarantaine ne correspond plus à l'empreinte "
-            "SHA-512 calculée à la réception. Versement refusé — "
-            "retéléchargez le fichier et vérifiez le lot."
-        ))
+    if sha_manifeste:
+        try:
+            with blob.open("rb") as flux:
+                calcule = sha512_flux(flux)
+        except Exception:
+            logger.exception("reception: quarantine hash failed")
+            return _rediriger(
+                erreur="Lecture du fichier en quarantaine impossible."
+            )
+        if calcule != sha_manifeste:
+            log_portail_event(
+                "versement_divergence", "failure",
+                invitation_id=inv_id, batch=batch, seq=seq, reason="sha512",
+            )
+            return _rediriger(erreur=(
+                "Le fichier en quarantaine ne correspond plus à l'empreinte "
+                "SHA-512 calculée à la réception. Versement refusé — "
+                "retéléchargez le fichier et vérifiez le lot."
+            ))
 
     dossier_reel = dossier["id"]
     folder = get_or_create_folder(dossier_reel, PORTAL_FOLDER_NAME)
@@ -851,12 +855,14 @@ def verser(inv_id: str, batch: str, seq: int):
         "tags": ["portail"],
         "folder_id": folder["id"] if folder else None,
     }
-    document, errors = upload_document(
+    # Copie côté serveur (GCS→GCS, 2026-08-12) : les octets ne transitent
+    # JAMAIS par l'application — App Engine plafonne requêtes ET réponses
+    # à 32 Mo, et l'objet peut faire 200 Mo.
+    document, errors = ingest_blob_as_document(
+        blob,
         dossier_reel,
         dossier.get("file_number", ""),
-        io.BytesIO(octets),
         entree.get("name") or "document",
-        len(octets),
         metadata,
         session["user_id"],
     )
