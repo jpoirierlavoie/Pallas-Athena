@@ -57,8 +57,12 @@ def test_sniff_magies_reelles(data, ext, attendu):
 def test_sniff_pk_par_extension():
     assert _sniff(_PK, ".docx") == _DOCX_MIME
     assert _sniff(_PK, ".zip") == "application/zip"
+    # Excel versable depuis la décision 2026-08-13.
+    assert _sniff(_PK, ".xlsx") == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     # Tout autre couple PK + extension est refusé (fail-closed).
-    assert _sniff(_PK, ".xlsx") is None
+    assert _sniff(_PK, ".pptx") is None
     assert _sniff(_PK, "") is None
 
 
@@ -74,6 +78,8 @@ def test_sniff_zip_vide_refuse():
 def test_sniff_ole_par_extension():
     assert _sniff(_OLE, ".doc") == "application/msword"
     assert _sniff(_OLE, ".msg") == "application/vnd.ms-outlook"
+    # Excel hérité versable depuis la décision 2026-08-13.
+    assert _sniff(_OLE, ".xls") == "application/vnd.ms-excel"
     # Un conteneur OLE sous toute autre extension est refusé (fail-closed —
     # avant 2026-08-11 il sniffait msword et échouait plus haut au contrôle
     # d'accord extension ; même issue, chemin plus franc).
@@ -128,11 +134,12 @@ def test_sniff_repositionne_le_flux():
 
 
 def test_validate_file_nouvelles_extensions():
-    for nom in ("pieces.zip", "courriel.eml", "message.msg"):
+    for nom in ("pieces.zip", "courriel.eml", "message.msg",
+                "classeur.xls", "classeur.xlsx"):
         assert doc._validate_file(nom, 100) == []
-    for nom in ("archive.7z", "archive.rar"):
+    for nom in ("archive.7z", "archive.rar", "diapos.pptx"):
         erreurs = doc._validate_file(nom, 100)
-        assert erreurs and "courriels (EML/MSG)" in erreurs[0]
+        assert erreurs and "Excel (XLS/XLSX)" in erreurs[0]
 
 
 # ── upload_document bout-en-bout (stockage + Firestore mockés) ───────────
@@ -165,6 +172,22 @@ def test_upload_document_zip_bout_en_bout(monkeypatch):
     )
     # Revue 2026-08-11 : disposition posée sur l'OBJET, si bien qu'un URL
     # signé sans override de requête sert quand même en pièce jointe.
+    assert blob.content_disposition == "attachment"
+
+
+def test_upload_document_xlsx_bout_en_bout(monkeypatch):
+    # Excel (2026-08-13) : sniffé comme conteneur PK désambiguïsé, et servi
+    # en pièce jointe seulement (non prévisualisable).
+    blob = _mock_storage(monkeypatch)
+    contenu = _PK + b"\x00" * 64
+    document, erreurs = doc.upload_document(
+        "d1", "2026-001", io.BytesIO(contenu), "classeur.xlsx",
+        len(contenu), {"category": "pièce"}, "u1",
+    )
+    assert erreurs == []
+    assert document["file_type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     assert blob.content_disposition == "attachment"
 
 

@@ -70,6 +70,19 @@ def test_upload_form_valide_return_to_au_rendu(web, monkeypatch, cible, attendu)
     assert captures["return_to"] == attendu
 
 
+def test_le_gabarit_replie_vers_le_navigateur_filtre():
+    # Après téléversement, le repli du JS vise le navigateur FILTRÉ au
+    # dossier (et au dossier de classement) — la sémantique de l'ancien
+    # POST multipart, restaurée le 2026-08-13. Épinglage de source.
+    chemin = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "templates", "documents", "upload.html",
+    )
+    html = open(chemin, encoding="utf-8").read()
+    assert "'?dossier_id=' + encodeURIComponent(dossierId)" in html
+    assert "'&folder_id=' + encodeURIComponent(dossierClassement)" in html
+
+
 # ── /documents/api/televersement ─────────────────────────────────────────
 
 

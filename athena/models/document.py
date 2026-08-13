@@ -4,8 +4,9 @@ import logging
 import mimetypes
 import os
 import uuid
+import zipfile
 from datetime import date, datetime, timedelta, timezone
-from typing import BinaryIO, Optional
+from typing import BinaryIO, NamedTuple, Optional
 from urllib.parse import quote
 
 import google.auth
@@ -16,6 +17,7 @@ from firebase_admin import storage
 from werkzeug.utils import secure_filename
 from models import db
 from security import sanitize
+from tz import to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -46,8 +48,8 @@ def projet_document_name(reference: str, template_name: str, day: date) -> str:
     ]
     return " - ".join(p for p in parts if p)
 
-# Allowed MIME types for upload (9 since the 2026-08-11 user decision,
-# which widened the original 6 with ZIP archives and email files)
+# Allowed MIME types for upload (11 since the 2026-08-13 user decision —
+# Excel — after 2026-08-11 widened the original 6 with ZIP and email files)
 ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/msword",
@@ -58,12 +60,14 @@ ALLOWED_MIME_TYPES = {
     "application/zip",
     "message/rfc822",
     "application/vnd.ms-outlook",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 # Allowed extensions (fallback when MIME detection fails)
 ALLOWED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".tiff", ".tif",
-    ".zip", ".eml", ".msg",
+    ".zip", ".eml", ".msg", ".xls", ".xlsx",
 }
 
 # Expected MIME type for each allowed extension (used to detect a
@@ -80,6 +84,8 @@ EXTENSION_MIME_TYPES = {
     ".zip": "application/zip",
     ".eml": "message/rfc822",
     ".msg": "application/vnd.ms-outlook",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 # Max document size: 200 MB (user decision 2026-08-12 — was 25 MB; the
@@ -149,6 +155,8 @@ FILE_TYPE_ICONS = {
     "application/zip": "archive",
     "message/rfc822": "mail",
     "application/vnd.ms-outlook": "mail",
+    "application/vnd.ms-excel": "sheet",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "sheet",
 }
 
 # Types the app never renders inline: their blobs are stored with
@@ -158,6 +166,8 @@ _ATTACHMENT_ONLY_TYPES = {
     "application/zip",
     "message/rfc822",
     "application/vnd.ms-outlook",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 # Download-filename extensions, deterministic across platforms —
@@ -168,6 +178,8 @@ _DOWNLOAD_EXTENSIONS = {
     "application/zip": ".zip",
     "message/rfc822": ".eml",
     "application/vnd.ms-outlook": ".msg",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
 }
 
 
@@ -267,7 +279,8 @@ def _validate_file(filename: str, file_size: int) -> list[str]:
     if ext not in ALLOWED_EXTENSIONS:
         errors.append(
             "Type de fichier non autorisé. Formats acceptés : PDF, "
-            "Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
+            "Word (DOC/DOCX), Excel (XLS/XLSX), JPG, PNG, TIFF, ZIP, "
+            "courriels (EML/MSG)."
         )
 
     if file_size > MAX_FILE_SIZE:
@@ -342,19 +355,23 @@ def _sniff_header(header: bytes, ext: str) -> Optional[str]:
     if header.startswith(b"\x49\x49\x2a\x00") or header.startswith(b"\x4d\x4d\x00\x2a"):
         return "image/tiff"
     if header.startswith(b"\xd0\xcf\x11\xe0"):
-        # OLE2 compound document — legacy MS Word and Outlook .msg share
-        # the signature; only those two extensions are trusted.
+        # OLE2 compound document — legacy Word, Outlook .msg and legacy
+        # Excel share the signature; only these extensions are trusted.
         if ext == ".doc":
             return "application/msword"
         if ext == ".msg":
             return "application/vnd.ms-outlook"
+        if ext == ".xls":
+            return "application/vnd.ms-excel"
         return None
     if header.startswith(b"\x50\x4b\x03\x04"):
-        # ZIP container — a .docx IS a zip; only the two zip-based kinds
-        # are trusted. (An empty archive starts PK\x05\x06 and is
+        # ZIP container — a .docx/.xlsx IS a zip; only the zip-based
+        # kinds are trusted. (An empty archive starts PK\x05\x06 and is
         # deliberately refused: no evidentiary value.)
         if ext == ".docx":
             return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if ext == ".xlsx":
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         if ext == ".zip":
             return "application/zip"
         return None
@@ -477,8 +494,8 @@ def ingest_blob_as_document(
     if not content_type or content_type not in ALLOWED_MIME_TYPES:
         return None, [
             "Le contenu du fichier ne correspond à aucun format autorisé. "
-            "Formats acceptés : PDF, Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, "
-            "courriels (EML/MSG)."
+            "Formats acceptés : PDF, Word (DOC/DOCX), Excel (XLS/XLSX), "
+            "JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
         ]
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]
@@ -566,8 +583,8 @@ def upload_document(
     if not content_type or content_type not in ALLOWED_MIME_TYPES:
         return None, [
             "Le contenu du fichier ne correspond à aucun format autorisé. "
-            "Formats acceptés : PDF, Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, "
-            "courriels (EML/MSG)."
+            "Formats acceptés : PDF, Word (DOC/DOCX), Excel (XLS/XLSX), "
+            "JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
         ]
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]
@@ -856,6 +873,293 @@ def get_signed_url(
         return sign_blob_url(blob, query_params, expiry_minutes)
     except Exception:
         return None
+
+
+# ── Archive ZIP d'un dossier de classement (décision 2026-08-13) ─────────
+# L'archive est composée DANS GCS (flux, jamais entière en RAM — App Engine
+# plafonne toute réponse à 32 Mo) puis remise par URL signé V4. ZIP_STORED :
+# le corpus (PDF/images/ZIP/DOCX) ne se recompresse pas, et DEFLATE sur un
+# cœur F2 transformerait une route I/O en route CPU — le risque SIGKILL du
+# timeout gunicorn de 60 s.
+
+# Les DEUX plafonds sont nécessaires (appliqués sur les métadonnées AVANT
+# tout octet) : au plancher conservateur de ~20 Mo/s, 400 Mo ≈ 21 s ; et à
+# ~100 ms d'initiation GET par fichier, 150 fichiers ≈ 15 s — le pire cas
+# conjoint reste ≈ 38 s sous les 60 s. Le plafond d'octets seul ne protège
+# pas : 4 000 petits fichiers = ~400 s d'initiations.
+MAX_ZIP_TOTAL_BYTES = 400 * 1024 * 1024
+MAX_ZIP_FILES = 150
+_ZIP_CHUNK = 8 * 1024 * 1024   # multiple obligatoire de 256 Kio (BlobWriter)
+
+# Caractères que l'extraction Windows refuse — un zip que l'Explorateur ne
+# peut extraire dénature le dossier autant qu'un fichier manquant.
+_WINDOWS_HOSTILES = '<>:"/\\|?*'
+_DOS_RESERVES = (
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+class _ZipEntry(NamedTuple):
+    arcname: str
+    storage_path: str
+    file_size: int
+    created_at: object
+
+
+def _zip_component(name: str) -> str:
+    """Assainit UN segment de chemin d'archive (nom de dossier ou de
+    fichier) pour une extraction Windows propre. Balayages linéaires,
+    aucun regex (doctrine CWE-1333)."""
+    propre = "".join(
+        ch for ch in str(name or "") if ord(ch) >= 32 and ord(ch) != 127
+    )
+    propre = "".join(
+        "-" if ch in _WINDOWS_HOSTILES else ch for ch in propre
+    )
+    sortie: list[str] = []
+    for ch in propre:
+        if ch.isspace():
+            if sortie and sortie[-1] == " ":
+                continue
+            sortie.append(" ")
+        elif ch == "-" and sortie and sortie[-1] == "-":
+            continue
+        else:
+            sortie.append(ch)
+    propre = "".join(sortie).strip().rstrip(". ")
+    if propre and propre.split(".", 1)[0].upper() in _DOS_RESERVES:
+        propre = "_" + propre
+    if not propre:
+        return "sans-titre"
+    if len(propre) > 150:
+        base, ext = os.path.splitext(propre)
+        garde = ext if len(ext) <= 10 else ""
+        propre = base[: 150 - len(garde)] + garde
+    return propre
+
+
+def _zip_entry_basename(doc: dict) -> str:
+    """Nom de fichier d'une entrée d'archive, avec garantie d'extension.
+
+    Précédent get_signed_url (display_name → original_filename → filename),
+    resserré à dessein : le test n'est pas « un point quelque part » mais
+    « se termine par une extension CONNUE du type » — « Pièce P-1.2 » doit
+    devenir « Pièce P-1.2.pdf » (sur disque l'extension choisit l'ouvreur)
+    sans doubler « photo.jpeg » en « photo.jpeg.jpg »."""
+    file_type = doc.get("file_type", "")
+    nom = _zip_component(
+        doc.get("display_name") or doc.get("original_filename")
+        or doc.get("filename") or "document"
+    )
+    connues = [e for e, m in EXTENSION_MIME_TYPES.items() if m == file_type]
+    if not any(nom.lower().endswith(e) for e in connues):
+        nom += (
+            _DOWNLOAD_EXTENSIONS.get(file_type)
+            or (connues[0] if connues else "")
+            or (mimetypes.guess_extension(file_type) or "")
+        )
+    return nom
+
+
+def _zip_dedupe(nom: str, used: set, is_dir: bool) -> str:
+    """Suffixe « (2) » avant l'extension, en casse pliée (l'extraction
+    Windows est insensible à la casse — et un fichier ne doit pas non plus
+    entrer en collision avec un dossier frère)."""
+    stem, ext = (nom, "") if is_dir else os.path.splitext(nom)
+    candidat = nom
+    n = 2
+    while candidat.casefold() in used:
+        candidat = f"{stem} ({n}){ext}"
+        n += 1
+    used.add(candidat.casefold())
+    return candidat
+
+
+def _zip_entry_dt(created_at) -> tuple:
+    try:
+        local = to_mtl(created_at)
+        return (local.year, local.month, local.day,
+                local.hour, local.minute, local.second)
+    except Exception:
+        return (1980, 1, 1, 0, 0, 0)
+
+
+def _collect_zip_entries(
+    tree: list, docs_by_folder: dict, folder_id: Optional[str],
+) -> tuple[list, list]:
+    """DFS du sous-arbre → (entrées de fichiers, répertoires).
+
+    folder_id None ⇒ racine du dossier : enfants = racines de l'arbre,
+    fichiers = racine (folder_id None) PLUS tout document dont le
+    folder_id ne correspond à aucun nœud (référence pendante) — jamais
+    silencieusement omis. Dédoublonnage par répertoire : les dossiers
+    réclament leurs noms d'abord, puis les fichiers triés."""
+    entries: list = []
+    dirs: list = []
+
+    def _find(nodes, fid):
+        for n in nodes:
+            if n.get("id") == fid:
+                return n
+            trouve = _find(n.get("children", []), fid)
+            if trouve is not None:
+                return trouve
+        return None
+
+    def _walk(prefix, children, docs_here):
+        used: set = set()
+        nommes = []
+        for child in children:
+            nom = _zip_dedupe(
+                _zip_component(child.get("name") or ""), used, is_dir=True
+            )
+            nommes.append((nom, child))
+        bases = sorted(
+            ((_zip_entry_basename(d), d) for d in docs_here),
+            key=lambda x: x[0].casefold(),
+        )
+        for base, d in bases:
+            base = _zip_dedupe(base, used, is_dir=False)
+            entries.append(_ZipEntry(
+                prefix + base,
+                d.get("storage_path", ""),
+                int(d.get("file_size") or 0),
+                d.get("created_at"),
+            ))
+        for nom, child in nommes:
+            arc = prefix + nom
+            dirs.append(arc)
+            _walk(arc + "/", child.get("children", []),
+                  docs_by_folder.get(child.get("id"), []))
+
+    if folder_id:
+        racine = _find(tree, folder_id)
+        if racine is None:
+            return [], []
+        _walk("", racine.get("children", []),
+              docs_by_folder.get(folder_id, []))
+    else:
+        connus: set = set()
+
+        def _ids(nodes):
+            for n in nodes:
+                connus.add(n.get("id"))
+                _ids(n.get("children", []))
+
+        _ids(tree)
+        racine_docs = list(docs_by_folder.get(None, []))
+        for fid, ds in docs_by_folder.items():
+            if fid is not None and fid not in connus:
+                racine_docs.extend(ds)
+        _walk("", tree, racine_docs)
+    return entries, dirs
+
+
+def build_folder_zip_url(
+    dossier_id: str,
+    folder_id: Optional[str],
+    user_id: str,
+    expiry_minutes: int = 15,
+) -> tuple[Optional[str], list[str]]:
+    """Compose le zip du sous-arbre dans GCS et retourne (url signé, erreurs).
+
+    Politique d'échec TOUT-OU-RIEN : un blob introuvable annule l'archive —
+    une archive silencieusement incomplète dénaturerait le dossier. L'abandon
+    est propre par construction : BlobWriter.__exit__ TERMINE la session
+    recomposable sur exception, donc aucun objet partiel n'existe jamais ;
+    le seul résidu possible est un zip COMPLET dont la signature a échoué,
+    que la règle de cycle de vie staging/ 7 j balaie."""
+    from models.dossier import get_dossier
+    from models.folder import get_folder, get_folder_tree
+
+    dossier = get_dossier(dossier_id)
+    if not dossier:
+        return None, ["Dossier introuvable."]
+    if folder_id:
+        folder = get_folder(dossier_id, folder_id)
+        if not folder:
+            return None, ["Dossier de documents introuvable."]
+        root_name = folder.get("name") or "Documents"
+    else:
+        root_name = "Documents"
+
+    tree = get_folder_tree(dossier_id)
+    docs = list_documents(dossier_id=dossier_id)
+    docs_by_folder: dict = {}
+    for d in docs:
+        docs_by_folder.setdefault(d.get("folder_id"), []).append(d)
+
+    entries, dirs = _collect_zip_entries(tree, docs_by_folder, folder_id)
+
+    if not entries:
+        return None, ["Ce dossier ne contient aucun document."]
+    if len(entries) > MAX_ZIP_FILES:
+        return None, [
+            f"Ce dossier contient plus de {MAX_ZIP_FILES} documents. "
+            "Téléchargez par sous-dossier."
+        ]
+    total = sum(e.file_size for e in entries)
+    if total > MAX_ZIP_TOTAL_BYTES:
+        return None, [
+            "L'archive dépasserait la limite de 400 Mo (contenu : "
+            f"{format_file_size(total)}). Téléchargez les documents "
+            "individuellement ou par sous-dossier."
+        ]
+
+    zip_name = _zip_component(
+        f"{dossier.get('file_number', '')} - {root_name}".strip(" -")
+    ) + ".zip"
+    zip_path = f"staging/{user_id}/exports/{uuid.uuid4()}/{zip_name}"
+
+    try:
+        bucket = storage.bucket()
+        zip_blob = bucket.blob(zip_path)
+        # Portée par l'initiation de la session recomposable.
+        zip_blob.content_disposition = "attachment"
+        # ignore_flush OBLIGATOIRE : zipfile appelle flush() sur son puits
+        # et BlobWriter.flush() lève sans lui ; chunk_size explicite — le
+        # tampon par défaut du writer est 40 Mio.
+        with zip_blob.open(
+            "wb", chunk_size=_ZIP_CHUNK, ignore_flush=True,
+            content_type="application/zip",
+        ) as sink:
+            with zipfile.ZipFile(
+                sink, "w", zipfile.ZIP_STORED, allowZip64=True
+            ) as zf:
+                for arcname in dirs:
+                    zf.mkdir(arcname)
+                for e in entries:
+                    zi = zipfile.ZipInfo(
+                        e.arcname, date_time=_zip_entry_dt(e.created_at)
+                    )
+                    zi.compress_type = zipfile.ZIP_STORED
+                    with zf.open(zi, "w") as sortie:
+                        # UN GET en flux par document (blob sans chunk_size
+                        # = téléchargement streamé d'une seule requête).
+                        bucket.blob(e.storage_path).download_to_file(sortie)
+    except NotFound:
+        return None, [
+            "Un document de ce dossier est introuvable dans le stockage. "
+            "Archive annulée — aucun fichier partiel n'a été conservé."
+        ]
+    except Exception:
+        log_unexpected("folder zip failed")
+        return None, [
+            "Erreur lors de la préparation de l'archive. Veuillez réessayer."
+        ]
+
+    try:
+        return sign_blob_url(zip_blob, {
+            "response-content-disposition": build_attachment_disposition(zip_name),
+            "response-content-type": "application/zip",
+        }, expiry_minutes), []
+    except Exception:
+        log_unexpected("folder zip signing failed")
+        return None, [
+            "Erreur lors de la préparation de l'archive. Veuillez réessayer."
+        ]
 
 
 # ── Move ─────────────────────────────────────────────────────────────────

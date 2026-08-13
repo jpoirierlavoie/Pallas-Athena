@@ -13,6 +13,11 @@
   'autre': 'bg-gray-100 text-gray-600'
 } %}
 
+{# ── Rebond d'erreur (archive zip…) — se dissipe à la navigation. #}
+{% if erreur %}
+<div class="text-red-600 text-sm mb-4">{{ erreur }}</div>
+{% endif %}
+
 {# ── Breadcrumb ───────────────────────────────────────────── #}
 {% if dossier_id and (breadcrumb or folder_id) %}
 <nav class="flex items-center gap-1 text-sm mb-4 overflow-x-auto" aria-label="Fil d'Ariane">
@@ -79,11 +84,22 @@
     </form>
   </template>
   <template x-if="!creating">
-    <button @click="creating = true"
-            class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700">
-      {{ ms('add', 16) }}
-      Nouveau dossier
-    </button>
+    {# Racine unique obligatoire pour x-if — le bouton et le lien zip
+       partagent l'enveloppe. À la racine du dossier, le zip couvre tout
+       le dossier ; dans un sous-dossier, ce sous-arbre. #}
+    <div class="flex items-center gap-4">
+      <button @click="creating = true"
+              class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700">
+        {{ ms('add', 16) }}
+        Nouveau dossier
+      </button>
+      <a href="{{ url_for('documents.folder_zip', dossier_id=dossier_id, folder_id=folder_id or '') }}"
+         title="Préparer une archive ZIP de ce dossier (le téléchargement démarre après la composition)"
+         class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700">
+        {{ ms('download', 16) }}
+        Télécharger (zip)
+      </a>
+    </div>
   </template>
 </div>
 {% endif %}
@@ -161,6 +177,11 @@
                   class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
             Renommer
           </button>
+          <a href="{{ url_for('documents.folder_zip', dossier_id=dossier_id, folder_id=f.id) }}"
+             @click="menuOpen = false"
+             class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+            Télécharger (zip)
+          </a>
           <button @click="menuOpen = false; deleteOpen = true"
                   class="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50">
             Supprimer

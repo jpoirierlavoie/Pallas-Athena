@@ -22,7 +22,7 @@ from werkzeug.utils import secure_filename
 from auth import login_required
 from config import Config
 from models.audit_event import record_deletion
-from security import safe_internal_redirect
+from security import safe_internal_redirect, sanitize
 from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
 from models.document import (
@@ -30,6 +30,7 @@ from models.document import (
     CATEGORY_LABELS,
     MAX_FILE_SIZE,
     VALID_CATEGORIES,
+    build_folder_zip_url,
     delete_document,
     format_file_size,
     get_document,
@@ -153,6 +154,9 @@ def document_list() -> str:
         "category_labels": CATEGORY_LABELS,
         "valid_categories": VALID_CATEGORIES,
         "pagination": pagination,
+        # Rebond des routes qui redirigent vers le navigateur avec un
+        # message d'erreur (archive zip…) — motif reception.
+        "erreur": sanitize(request.args.get("erreur", ""), max_length=300),
     }
 
     if _is_htmx():
@@ -212,6 +216,29 @@ def document_download(document_id: str) -> str:
     return redirect(signed_url)
 
 
+@documents_bp.route("/zip")
+@login_required
+def folder_zip():
+    """Compose le zip du dossier de classement courant dans GCS puis
+    redirige vers l'URL signée (les octets ne transitent jamais par
+    l'application — plafond de 32 Mo par réponse). Sans folder_id :
+    tout le dossier."""
+    dossier_id = request.args.get("dossier_id", "").strip()
+    folder_id = request.args.get("folder_id", "").strip() or None
+    if not dossier_id:
+        return redirect(url_for("documents.document_list"))
+    url, errors = build_folder_zip_url(
+        dossier_id, folder_id, session.get("user_id", "unknown")
+    )
+    if not url:
+        return redirect(url_for(
+            "documents.document_list",
+            dossier_id=dossier_id, folder_id=folder_id or "",
+            erreur=" ".join(errors) or "Archive impossible.",
+        ))
+    return redirect(url)
+
+
 # ── Upload ────────────────────────────────────────────────────────────────
 
 
@@ -268,7 +295,8 @@ def api_televersement():
     if ext not in ALLOWED_EXTENSIONS:
         return jsonify({"erreur": (
             "Type de fichier non autorisé. Formats acceptés : PDF, "
-            "Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG)."
+            "Word (DOC/DOCX), Excel (XLS/XLSX), JPG, PNG, TIFF, ZIP, "
+            "courriels (EML/MSG)."
         )}), 422
     if size <= 0 or size > MAX_FILE_SIZE:
         return jsonify({

@@ -81,11 +81,11 @@
           <input type="file"
                  name="files"
                  multiple
-                 accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.tiff,.tif,.zip,.eml,.msg"
+                 accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.tiff,.tif,.zip,.eml,.msg"
                  class="sr-only"
                  @change="handleFiles($event)">
         </label>
-        <p class="text-xs text-gray-400 mt-2">PDF, Word (DOC/DOCX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG) — 200 Mo max par fichier</p>
+        <p class="text-xs text-gray-400 mt-2">PDF, Word (DOC/DOCX), Excel (XLS/XLSX), JPG, PNG, TIFF, ZIP, courriels (EML/MSG) — 200 Mo max par fichier</p>
       </div>
 
       {# Selected files list #}
@@ -259,7 +259,17 @@ function uploadForm() {
       this.submitting = false;
       const echecs = this.files.filter(function (f) { return f.statut === 'rejeté'; });
       if (!echecs.length) {
-        window.location = this.champ('return_to') || '{{ url_for('documents.document_list') }}';
+        // Repli : le navigateur de documents FILTRÉ au dossier (et au
+        // dossier de classement) du téléversement — la sémantique de
+        // l'ancien POST multipart, perdue au passage direct-à-GCS
+        // (2026-08-13). return_to (validé au rendu) garde priorité.
+        let repli = '{{ url_for('documents.document_list') }}'
+          + '?dossier_id=' + encodeURIComponent(dossierId);
+        const dossierClassement = this.champ('folder_id');
+        if (dossierClassement) {
+          repli += '&folder_id=' + encodeURIComponent(dossierClassement);
+        }
+        window.location = this.champ('return_to') || repli;
         return;
       }
       this.erreurs = echecs.map(function (f) { return f.name + ' : ' + (f.motif || 'refusé'); });

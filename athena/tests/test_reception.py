@@ -89,9 +89,11 @@ def test_versable_pdf_recu():
     assert rc._versable(_entree()) is True
 
 
-@pytest.mark.parametrize("nom", ["archive.zip", "courriel.eml", "message.msg"])
+@pytest.mark.parametrize("nom", ["archive.zip", "courriel.eml", "message.msg",
+                                 "classeur.xls", "classeur.xlsx"])
 def test_versable_nouveaux_types(nom):
-    # Décision utilisateur 2026-08-11 : ZIP + courriels versables au dossier.
+    # Décisions utilisateur 2026-08-11 (ZIP + courriels) et 2026-08-13
+    # (Excel) : versables au dossier.
     assert rc._versable(_entree(name=nom)) is True
 
 
@@ -106,7 +108,7 @@ def test_versable_gros_fichier_200mo():
 @pytest.mark.parametrize("entree", [
     _entree(name="photo.heic", content_type="image/heic"),
     _entree(name="video.mp4"),
-    _entree(name="classeur.xlsx"),
+    _entree(name="diapos.pptx"),
     _entree(size_gcs=201 * 1024 * 1024),          # > 200 Mo
     _entree(name="archive.zip", size_gcs=201 * 1024 * 1024),  # zip > 200 Mo
     _entree(size_gcs=0),

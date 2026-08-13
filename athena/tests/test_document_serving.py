@@ -68,6 +68,8 @@ def _preparer_detail(monkeypatch, file_type: str) -> tuple[mock.Mock, dict]:
 
 @pytest.mark.parametrize("file_type", [
     "application/zip", "message/rfc822", "application/vnd.ms-outlook",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ])
 def test_detail_ne_mint_pas_l_url_inline_hors_previsualisable(
     web, monkeypatch, file_type

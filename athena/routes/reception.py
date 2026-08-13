@@ -3,8 +3,8 @@
 Tout est @login_required, français, POST+redirect avec messages en query
 (motif maison sans flash). RIEN n'est ingéré automatiquement : chaque octet
 client n'entre au stockage canonique que sur clic « Verser » du juriste, et
-seuls les fichiers conformes au vocabulaire documents (9 types depuis le
-2026-08-11, ≤ 200 Mo depuis le 2026-08-12) sont versables — par COPIE
+seuls les fichiers conformes au vocabulaire documents (11 types depuis le
+2026-08-13, ≤ 200 Mo depuis le 2026-08-12) sont versables — par COPIE
 côté serveur (les octets ne transitent jamais par l'app) ; les autres se
 téléchargent (attachment forcé, §7.5) et se traitent hors application.
 
@@ -183,8 +183,8 @@ def _ecrire_manifeste(inv_id: str, batch: str, manifeste: dict) -> None:
 
 
 def _versable(entree: dict) -> bool:
-    """Précontrôle du versement (vocabulaire documents courant — 9 types
-    depuis 2026-08-11, ≤ 200 Mo depuis 2026-08-12).
+    """Précontrôle du versement (vocabulaire documents courant — 11 types
+    depuis 2026-08-13, ≤ 200 Mo depuis 2026-08-12).
 
     Le verdict final reste celui d'ingest_blob_as_document (sniff des
     octets) — ce contrôle n'existe que pour l'UI et un message français
@@ -785,9 +785,9 @@ def verser(inv_id: str, batch: str, seq: int):
     if not _versable(entree):
         return _rediriger(erreur=(
             "Ce fichier ne peut pas être versé tel quel : seuls les PDF, "
-            "Word (doc/docx), JPEG, PNG, TIFF, ZIP et courriels (.eml/.msg) "
-            "de 200 Mo ou moins sont admis au dossier. Téléchargez-le et "
-            "traitez-le hors application."
+            "Word (doc/docx), Excel (xls/xlsx), JPEG, PNG, TIFF, ZIP et "
+            "courriels (.eml/.msg) de 200 Mo ou moins sont admis au "
+            "dossier. Téléchargez-le et traitez-le hors application."
         ))
 
     dossier_id = request.form.get("dossier_id", "").strip()
