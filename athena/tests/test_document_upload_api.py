@@ -16,7 +16,8 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ATHENA)
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
@@ -35,6 +36,33 @@ def web():
     app.config["SECRET_KEY"] = "test-secret"
     app.config["TESTING"] = True
     app.register_blueprint(rd.documents_bp)
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["user_id"] = "u1"
+        s["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
+    return client
+
+
+@pytest.fixture()
+def web_rendu(monkeypatch):
+    """App qui rend RÉELLEMENT les gabarits — pour épingler le href que
+    l'avocat clique, pas la source du gabarit. Bon marché : base.html
+    n'appelle url_for que pour des fichiers statiques (csp_nonce non défini
+    se rend vide, inoffensif) ; motif de tests/test_mcp_oauth._make_app."""
+    from utils.icons import ms as _ms
+
+    app = Flask(__name__, template_folder=os.path.join(_ATHENA, "templates"))
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["TESTING"] = True
+    app.jinja_env.globals["ms"] = _ms
+    app.jinja_env.globals["csrf_token"] = lambda: "jeton-test"
+    app.register_blueprint(rd.documents_bp)
+    monkeypatch.setattr(rd, "list_dossiers", lambda: [])
+    monkeypatch.setattr(
+        rd, "get_dossier",
+        lambda did: {"id": did, "file_number": "2026-001", "title": "Essai"},
+    )
+    monkeypatch.setattr(rd, "get_folder_breadcrumb", lambda d, f: [])
     client = app.test_client()
     with client.session_transaction() as s:
         s["user_id"] = "u1"
@@ -68,6 +96,43 @@ def test_upload_form_valide_return_to_au_rendu(web, monkeypatch, cible, attendu)
     reponse = web.get("/documents/upload", query_string={"return_to": cible})
     assert reponse.status_code == 200
     assert captures["return_to"] == attendu
+
+
+def test_les_liens_retour_et_annuler_ramenent_au_navigateur_filtre(web_rendu):
+    """Le bogue signalé le 2026-08-13 : le repli du SUCCÈS était scopé, mais
+    les liens « retour » et « Annuler » — rendus CÔTÉ SERVEUR — retombaient
+    sur la liste PLATE (les trois entrées du navigateur ne passent aucun
+    return_to). Rendu RÉEL : on épingle le href cliqué, pas la source du
+    gabarit — l'épinglage de source du correctif précédent n'avait rien vu.
+    NB : l'autoéchappement Jinja rend « & » en « &amp; » dans un attribut."""
+    html = web_rendu.get(
+        "/documents/upload?dossier_id=d1&folder_id=f1"
+    ).get_data(as_text=True)
+    scope = "/documents/?dossier_id=d1&amp;folder_id=f1"
+    assert html.count(f'href="{scope}"') == 2      # retour + Annuler
+    assert 'href="/documents/"' not in html        # jamais la liste plate
+
+
+def test_les_liens_retour_et_annuler_sans_dossier_de_classement(web_rendu):
+    html = web_rendu.get("/documents/upload?dossier_id=d1").get_data(as_text=True)
+    assert html.count('href="/documents/?dossier_id=d1&amp;folder_id="') == 2
+    assert 'href="/documents/"' not in html
+
+
+def test_les_liens_retour_et_annuler_sans_dossier(web_rendu):
+    # Arrivée générique (aucun dossier) : la liste plate EST l'endroit d'où
+    # l'on vient — le repli scopé ne doit pas inventer un dossier.
+    html = web_rendu.get("/documents/upload").get_data(as_text=True)
+    assert html.count('href="/documents/"') == 2
+
+
+def test_return_to_garde_priorite_aux_deux_liens(web_rendu):
+    html = web_rendu.get(
+        "/documents/upload?dossier_id=d1&folder_id=f1"
+        "&return_to=/dossiers/d1%3Ftab%3Ddocuments"
+    ).get_data(as_text=True)
+    assert html.count('href="/dossiers/d1?tab=documents"') == 2
+    assert "dossier_id=d1&amp;folder_id=f1" not in html
 
 
 def test_le_gabarit_replie_vers_le_navigateur_filtre():

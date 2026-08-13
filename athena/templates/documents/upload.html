@@ -2,10 +2,20 @@
 {% block title %}Téléverser un document — Pallas Athena{% endblock %}
 
 {% block content %}
+{# Repli des liens « retour » et « Annuler » : le navigateur FILTRÉ au dossier
+   et au dossier de classement d'où l'on vient — même idiome que
+   documents/detail.html (les trois entrées du navigateur ne passent AUCUN
+   return_to, d'où le repli plat signalé le 2026-08-13). DISTINCT du repli JS
+   du succès plus bas, qui suit le dossier CHOISI dans le formulaire : après un
+   dépôt on va VOIR le fichier déposé, après une annulation on retourne D'OÙ
+   L'ON VIENT. Ne pas unifier. #}
+{% set retour = return_to or (
+     url_for('documents.document_list', dossier_id=dossier.id, folder_id=folder_id or '')
+     if dossier else url_for('documents.document_list')) %}
 <div class="max-w-2xl mx-auto px-4 py-6">
 
   {# ── Back ───────────────────────────────────────────────────── #}
-  <a href="{{ return_to or url_for('documents.document_list') }}"
+  <a href="{{ retour }}"
      class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
     {{ ms('chevron_left', 16) }}
     {{ 'Retour' if return_to else 'Documents' }}
@@ -173,7 +183,7 @@
           Téléversement…
         </span>
       </button>
-      <a href="{{ return_to or url_for('documents.document_list') }}"
+      <a href="{{ retour }}"
          class="px-4 py-2.5 text-sm text-gray-600 hover:text-gray-800">
         Annuler
       </a>
