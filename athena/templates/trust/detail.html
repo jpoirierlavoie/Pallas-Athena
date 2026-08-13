@@ -10,6 +10,14 @@
     {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
   </div>
 
+  {% if request.args.get('avertissement') == 'administration' %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    Le virement est inscrit au fidéicommis, mais la recette au compte
+    d'administration n'a pas pu suivre — inscrivez-la (ou corrigez-la)
+    manuellement au <a href="{{ url_for('admin_ledger.journal') }}" class="underline">registre d'administration</a>.
+  </div>
+  {% endif %}
+
   <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-3 text-sm">
     <div class="grid grid-cols-2 gap-3">
       <div><p class="text-xs text-gray-500">Date</p><p class="text-gray-900">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '—' }}</p></div>

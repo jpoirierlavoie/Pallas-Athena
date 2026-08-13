@@ -335,7 +335,7 @@ def test_to_barreau_row_deboursé_populates_credit_column():
 
 def test_to_barreau_row_labels_purpose_and_method():
     row = trust.to_barreau_row(_tx(purpose="virement_honoraires", method="virement"), "journal")
-    assert row["objet"] == "Virement d'honoraires"
+    assert row["objet"] == "Paiement d'honoraires"
     assert row["mode"] == "Virement"
 
 
@@ -675,6 +675,29 @@ def test_virement_honoraires_exceeds_invoice_refused(store):
              amount=60000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
     )
     assert errs and "solde dû" in errs[0].lower()
+
+
+def test_virement_honoraires_caps_on_the_live_balance_since_lot_p(store):
+    """Since 2026-08-13 the cap reads amount_due − amount_paid: a recorded
+    payment (Lot P) shrinks what may still be transferred out of trust —
+    the frozen amount_due alone would let the transfer take MORE of the
+    client's money than the invoice still owes. Pre-Lot-P invoices carry
+    no amount_paid (→ 0), so their behavior is unchanged."""
+    store["invoices"]["inv1"] = {
+        "id": "inv1", "status": "envoyée", "dossier_id": "dos1",
+        "amount_due": 100000, "amount_paid": 60000,
+    }
+    _fund_cleared(store, amount=100000)
+    _, errs = trust.create_transaction(
+        _new(direction="déboursé", purpose="virement_honoraires", invoice_id="inv1",
+             amount=50000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
+    )
+    assert errs and "solde dû" in errs[0].lower()
+    entry, errs = trust.create_transaction(
+        _new(direction="déboursé", purpose="virement_honoraires", invoice_id="inv1",
+             amount=40000, date=datetime(2026, 7, 3, tzinfo=timezone.utc))
+    )
+    assert errs == []
 
 
 def test_virement_honoraires_on_draft_invoice_refused(store):
@@ -1451,7 +1474,7 @@ def test_resolve_invoice_number_hard_errors_on_typo(monkeypatch):
     assert non_transfer["invoice_id"] is None
 
 
-# ── Le sélecteur de factures du virement d'honoraires (2026-08-12) ──────────
+# ── Le sélecteur de factures du paiement d'honoraires (2026-08-12) ──────────
 
 
 def test_factures_emises_n_offre_que_ce_que_la_transaction_accepte(monkeypatch):
@@ -1465,8 +1488,16 @@ def test_factures_emises_n_offre_que_ce_que_la_transaction_accepte(monkeypatch):
     monkeypatch.setattr(
         invoice_model, "list_invoices",
         lambda dossier_id=None: [
-            {"invoice_number": "2026-F031", "status": "envoyée", "amount_due": 115000},
+            # Partially paid (Lot P): the LIVE balance is what the
+            # transactional cap enforces since 2026-08-13 — the picker must
+            # show IT, never the frozen amount_due (which would invite an
+            # over-transfer of the client's trust funds).
+            {"invoice_number": "2026-F031", "status": "envoyée",
+             "amount_due": 115000, "amount_paid": 15000},
             {"invoice_number": "2026-F030", "status": "en_retard", "amount_due": 50000},
+            # Fully paid but still « envoyée » — nothing left to transfer.
+            {"invoice_number": "2026-F027", "status": "envoyée",
+             "amount_due": 80000, "amount_paid": 80000},
             {"invoice_number": "2026-F029", "status": "payée", "amount_due": 0},
             {"invoice_number": "2026-F028", "status": "brouillon", "amount_due": 9900},
             {"invoice_number": "2026-028-02", "status": "annulée", "amount_due": 100},
@@ -1475,7 +1506,7 @@ def test_factures_emises_n_offre_que_ce_que_la_transaction_accepte(monkeypatch):
     rows = rt._factures_emises("d1")
     assert [r["invoice_number"] for r in rows] == ["2026-F031", "2026-F030"]
     from utils.format_fr import format_cents_fr
-    assert rows[0]["solde_fmt"] == format_cents_fr(115000)
+    assert rows[0]["solde_fmt"] == format_cents_fr(100000)  # 1150 − 150 $
     # Sans dossier : rien à offrir (le select désactivé ne soumet rien).
     assert rt._factures_emises(None) == []
     assert rt._factures_emises("") == []

@@ -150,6 +150,7 @@ def create_app() -> Flask:
     from routes.doc_templates import doc_templates_bp
     from routes.trust import trust_bp
     from routes.budgets import budgets_bp
+    from routes.admin_ledger import admin_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
@@ -165,6 +166,7 @@ def create_app() -> Flask:
     app.register_blueprint(doc_templates_bp)
     app.register_blueprint(trust_bp)
     app.register_blueprint(budgets_bp)
+    app.register_blueprint(admin_bp)
 
     # ── DAV blueprints (CardDAV, CalDAV, RFC-5545, per-dossier) ─────────
     from dav import dav_bp

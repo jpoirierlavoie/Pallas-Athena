@@ -309,7 +309,7 @@ def _resolve_invoice_number(data: dict) -> list[str]:
 
 
 def _factures_emises(dossier_id) -> list[dict]:
-    """Factures ÉMISES du dossier, pour le sélecteur du virement d'honoraires.
+    """Factures ÉMISES du dossier, pour le sélecteur du paiement d'honoraires.
 
     Exactement les statuts que la vérification transactionnelle accepte
     (models.trust._ISSUED_INVOICE_STATUSES), avec le solde dû qu'elle
@@ -320,16 +320,86 @@ def _factures_emises(dossier_id) -> list[dict]:
     """
     if not dossier_id:
         return []
-    from models.invoice import list_invoices
+    from models.invoice import balance_of, list_invoices
 
-    return [
-        {
+    # balance_of (amount_due − amount_paid), never the frozen amount_due:
+    # the figure shown must be the one the transactional cap enforces, or
+    # the picker itself invites an over-transfer of the client's funds on a
+    # partially paid invoice (2026-08-13 review). Fully paid → not offered.
+    out = []
+    for inv in list_invoices(dossier_id=dossier_id):
+        if inv.get("status") not in trust._ISSUED_INVOICE_STATUSES:
+            continue
+        solde = balance_of(inv)
+        if solde <= 0:
+            continue
+        out.append({
             "invoice_number": inv.get("invoice_number", ""),
-            "solde_fmt": format_cents_fr(int(inv.get("amount_due") or 0)),
-        }
-        for inv in list_invoices(dossier_id=dossier_id)
-        if inv.get("status") in trust._ISSUED_INVOICE_STATUSES
-    ]
+            "solde_fmt": format_cents_fr(solde),
+        })
+    return out
+
+
+def _comptes_administration() -> list[dict]:
+    """Active OPERATIONS accounts for the auto-recette select (décision
+    utilisateur 2026-08-13 : un paiement d'honoraires crée automatiquement la
+    recette au compte d'administration). Fails OPEN to [] — the fee transfer
+    must never depend on the admin module's health."""
+    try:
+        from models import admin_ledger
+
+        return [
+            a for a in admin_ledger.list_accounts(status="actif")
+            if a.get("account_type") == "opérations"
+        ]
+    except Exception:
+        log_unexpected("trust: admin accounts read failed")
+        return []
+
+
+def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
+    """AFTER the committed fee transfer: mint the matching recette in the
+    administration register, linked via ``trust_transaction_id``. An
+    invoice-backed transfer becomes an « encaissement de facture » (which
+    ALSO records the payment on the invoice — the Lot P projection); an
+    external-ref transfer becomes an « autre recette » citing the paper
+    number. Fail-open: the trust write is already committed and NEVER
+    blocked; a failure surfaces as a banner."""
+    from models import admin_ledger
+    from routes.admin_ledger import _projeter_paiement
+
+    if not any(a["id"] == admin_account_id for a in _comptes_administration()):
+        return False
+    invoice_id = entry.get("invoice_id") or None
+    description = (
+        f"Paiement d'honoraires du fidéicommis — dossier "
+        f"{entry.get('dossier_file_number', '')}"
+    )
+    if not invoice_id and entry.get("invoice_external_ref"):
+        description += f" (facture {entry['invoice_external_ref']})"
+    recette, errors = admin_ledger.create_transaction({
+        "account_id": admin_account_id,
+        "kind": "encaissement_facture" if invoice_id else "recette_autre",
+        "direction": "recette",
+        "amount": int(entry.get("amount", 0)),
+        "method": "virement",
+        "counterparty": entry.get("client_name", "") or "Fidéicommis",
+        "date": entry.get("date"),
+        "description": description,
+        "reference": entry.get("reference", ""),
+        "invoice_id": invoice_id,
+        "dossier_id": None if invoice_id else (entry.get("dossier_id") or None),
+        "trust_transaction_id": entry.get("id"),
+    })
+    if errors or recette is None:
+        log_trust_event(
+            "trust_transaction_created", "refused",
+            transaction_id=entry.get("id"), reason="recette_administration_echec",
+        )
+        return False
+    if recette.get("invoice_id") and not _projeter_paiement(recette):
+        return False
+    return True
 
 
 @trust_bp.route("/factures-du-dossier")
@@ -356,6 +426,7 @@ def entry_new():
         "trust/form.html", accounts=accounts, entry=None, dossier=dossier,
         locked=locked, errors=[],
         factures=_factures_emises(dossier["id"] if dossier else None),
+        admin_accounts=_comptes_administration(),
         **_labels(),
     )
 
@@ -378,9 +449,15 @@ def entry_create():
             "trust/form.html", accounts=accounts, entry=data, dossier=dossier,
             locked=request.form.get("locked") == "1", errors=errors,
             factures=_factures_emises(dossier["id"] if dossier else None),
+            admin_accounts=_comptes_administration(),
             **_labels(),
         ), 400
-    return redirect(url_for("trust.entry_detail", tx_id=entry["id"]))
+    params = {}
+    admin_account_id = request.form.get("admin_account_id", "").strip()
+    if data.get("purpose") == "virement_honoraires" and admin_account_id:
+        if not _creer_recette_administration(entry, admin_account_id):
+            params["avertissement"] = "administration"
+    return redirect(url_for("trust.entry_detail", tx_id=entry["id"], **params))
 
 
 @trust_bp.route("/<tx_id>")
@@ -443,6 +520,7 @@ def entry_reverse_confirm(tx_id: str):
 @trust_bp.route("/<tx_id>/contrepasser", methods=["POST"])
 @login_required
 def entry_reverse(tx_id: str):
+    original = trust.get_transaction(tx_id)
     reason = request.form.get("reason", "").strip()
     reversal, errors = trust.reverse_transaction(tx_id, reason)
     if errors:
@@ -450,7 +528,40 @@ def entry_reverse(tx_id: str):
         return render_template(
             "trust/reverse_confirm.html", entry=entry, errors=errors, **_labels()
         ), 400
-    return redirect(url_for("trust.entry_detail", tx_id=reversal["id"]))
+    params = {}
+    if original and original.get("purpose") == "virement_honoraires":
+        # The fee transfer may have auto-created its admin recette (décision
+        # 2026-08-13) — reverse it too, and reduce the invoice's recorded
+        # payment. Best-effort: the trust reversal is already committed.
+        if not _contrepasser_recette_administration(tx_id, reason):
+            params["avertissement"] = "administration"
+    return redirect(url_for("trust.entry_detail", tx_id=reversal["id"], **params))
+
+
+def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
+    """Reverse the admin recette an auto-created fee transfer minted, and
+    reduce the invoice's recorded payment. True when there was nothing to do
+    or everything followed; False → banner."""
+    try:
+        from models import admin_ledger
+        from routes.admin_ledger import _reduire_paiement
+
+        recette = admin_ledger.find_by_trust_transaction(trust_tx_id)
+        if recette is None or recette.get("reversed_by_id"):
+            return True  # nothing was auto-created, or already reversed
+        _, errors = admin_ledger.reverse_transaction(
+            recette["id"],
+            f"Contre-passation du virement au fidéicommis — {reason}",
+            allow_linked=True,
+        )
+        if errors:
+            return False
+        if recette.get("invoice_id") and not _reduire_paiement(recette):
+            return False
+        return True
+    except Exception:
+        log_unexpected("trust: admin recette reversal failed")
+        return False
 
 
 # ── Inter-dossier transfer ─────────────────────────────────────────────────

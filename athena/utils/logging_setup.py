@@ -459,6 +459,7 @@ _PALLAS_UNEXPECTED = logging.getLogger("pallas.unexpected")
 _PALLAS_MCP = logging.getLogger("pallas.mcp")
 _PALLAS_TEMPLATES = logging.getLogger("pallas.templates")
 _PALLAS_TRUST = logging.getLogger("pallas.trust")
+_PALLAS_ADMIN_LEDGER = logging.getLogger("pallas.admin_ledger")
 _PALLAS_PORTAIL = logging.getLogger("pallas.portail")
 _PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
 
@@ -540,6 +541,26 @@ TrustEvent = Literal[
     "trust_export",
 ]
 TrustOutcome = Literal["success", "refused"]
+# Comptabilité d'administration (August 2026) — the operations-account /
+# corporate-card sibling of the trust register. Same discipline: IDs, counts
+# and cents deltas never appear; supplier names and descriptions are NEVER
+# logged (RedactionFilter does not auto-scrub names).
+AdminLedgerEvent = Literal[
+    "admin_transaction_created",
+    "admin_transaction_updated",
+    "admin_transaction_deleted",
+    "admin_transaction_cleared",
+    "admin_transaction_reversed",
+    "admin_transaction_refused",
+    "admin_card_payment_created",
+    "admin_receipt_attached",
+    "admin_invoice_payment_projected",
+    "admin_reconciliation_completed",
+    "admin_reconciliation_variance",
+    "admin_reconciliation_abandoned",
+    "admin_export",
+]
+AdminLedgerOutcome = Literal["success", "refused", "failure"]
 # Portail client (spec L1). One vocabulary for BOTH processes: the portal
 # service emits the portail_* client-facing events, the main service emits
 # the task/reconciliation/courriel/réception ones — Cloud Logging separates
@@ -788,6 +809,40 @@ def log_trust_event(
         fields["reason"] = reason
     level = logging.INFO if outcome == "success" else logging.WARNING
     _emit(_PALLAS_TRUST, level, event, fields)
+
+
+def log_admin_ledger_event(
+    event: AdminLedgerEvent,
+    outcome: AdminLedgerOutcome = "success",
+    *,
+    transaction_id: Optional[str] = None,
+    account_id: Optional[str] = None,
+    invoice_id: Optional[str] = None,
+    reconciliation_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit an administration-ledger event — logger ``pallas.admin_ledger``.
+
+    Mirrors :func:`log_trust_event`: ``success`` emits at INFO, everything
+    else at WARNING. ``reason`` is a short machine-stable string — never a
+    supplier name, a description, or a dollar amount (``variance_cents`` in
+    **extra keeps the trust exception: a control failure is useless without
+    the number). Only non-``None`` optional fields are included.
+    """
+    fields: dict[str, Any] = {"event": event, "outcome": outcome, **extra}
+    if transaction_id is not None:
+        fields["transaction_id"] = transaction_id
+    if account_id is not None:
+        fields["account_id"] = account_id
+    if invoice_id is not None:
+        fields["invoice_id"] = invoice_id
+    if reconciliation_id is not None:
+        fields["reconciliation_id"] = reconciliation_id
+    if reason is not None:
+        fields["reason"] = reason
+    level = logging.INFO if outcome == "success" else logging.WARNING
+    _emit(_PALLAS_ADMIN_LEDGER, level, event, fields)
 
 
 def log_portail_event(

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Administration — Journal de caisse — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-6">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Administration</h1>
+      <p class="text-sm text-gray-500">Journal de caisse — compte d'opérations et carte de crédit</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('admin_ledger.accounts_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
+      <a href="{{ url_for('admin_ledger.reconciliations_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
+      {% if account %}
+      <a href="{{ url_for('admin_ledger.card_payment') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Paiement de carte</a>
+      <a href="{{ url_for('admin_ledger.entry_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        {{ ms('add', 16) }}
+        Nouvelle écriture
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not accounts %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
+    <p class="text-gray-600 mb-4">Aucun compte d'administration n'est encore configuré.</p>
+    <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Créer un premier compte</a>
+  </div>
+  {% else %}
+
+  {# Ré-émis hors bande par _transaction_rows.html à chaque échange HTMX —
+     garder l'id en phase avec ce bloc. #}
+  <div id="admin-header">
+    {% include "administration/_header_cards.html" %}
+  </div>
+
+  {# Filters #}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <div id="filters" class="flex flex-wrap items-end gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Compte</label>
+        {# hx-include comme les autres contrôles : sans lui, changer de compte
+           perdrait silencieusement les filtres actifs (revue 2026-08-13). #}
+        <select name="account_id" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          {% for a in accounts %}
+          <option value="{{ a.id }}" {% if a.id == account.id %}selected{% endif %}>{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Type</label>
+        <select name="kind" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          <option value="">Tous</option>
+          {% for k in valid_kinds %}
+          <option value="{{ k }}" {% if filters.kind == k %}selected{% endif %}>{{ kind_labels[k] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Statut</label>
+        <select name="status" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          <option value="">Tous</option>
+          {% for s in valid_tx_statuses %}
+          <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ tx_status_labels[s] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Catégorie</label>
+        <select name="category" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+                class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+          <option value="">Toutes</option>
+          {% for c in valid_categories %}
+          <option value="{{ c }}" {% if filters.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Du</label>
+        <input type="date" name="date_from" value="{{ filters.date_from }}" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+               class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Au</label>
+        <input type="date" name="date_to" value="{{ filters.date_to }}" hx-get="{{ url_for('admin_ledger.journal') }}" hx-target="#admin-rows" hx-include="#filters select, #filters input" hx-push-url="true"
+               class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+      </div>
+      {# Re-emitted out-of-band by _transaction_rows.html on every HTMX filter
+         change — keep the id and the classes in step with that block. #}
+      <div id="admin-export" class="ml-auto flex gap-2">
+        {% include "administration/_export_links.html" %}
+      </div>
+    </div>
+  </div>
+
+  <div id="admin-rows">{% include "administration/_transaction_rows.html" %}</div>
+  {% endif %}
+
+  {% if account %}
+  <a href="{{ url_for('admin_ledger.entry_new') }}" class="md:hidden fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] right-4 z-30 w-14 h-14 flex items-center justify-center bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700">
+    {{ ms('add', 24) }}
+  </a>
+  {% endif %}
+</div>
+{% endblock %}

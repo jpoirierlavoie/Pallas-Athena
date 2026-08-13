@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}{% if mode == 'edit' %}Modifier l'écriture{% else %}Nouvelle écriture{% endif %} — Administration — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6">
+  <div class="flex items-center gap-2 mb-6">
+    <a href="{{ url_for('admin_ledger.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <h1 class="text-xl font-semibold text-gray-900">{% if mode == 'edit' %}Modifier l'écriture n<sup>o</sup> {{ entry.sequence }}{% else %}Nouvelle écriture d'administration{% endif %}</h1>
+  </div>
+
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# La ventilation d'origine ne se réaffiche que si l'écriture a été
+     RÉELLEMENT ventilée — la forme par défaut (net == montant, taxes 0)
+     s'affiche vide, pour que la resoumission re-déduise du nouveau montant. #}
+  {% set ventile = entry and (entry.gst_amount or entry.qst_amount or (entry.net_amount and entry.net_amount != entry.amount)) %}
+
+  <form method="post"
+        action="{% if mode == 'edit' %}{{ url_for('admin_ledger.entry_edit', tx_id=entry.id) }}{% else %}{{ url_for('admin_ledger.entry_create') }}{% endif %}"
+        x-data="{
+          kind: '{{ (entry.kind if entry and entry.kind else 'dépense') }}',
+          accountType: 'opérations',
+          dossierId: '{{ (entry.dossier_id if entry else '') or '' }}',
+          {# |jsattr est OBLIGATOIRE : un titre avec apostrophe (« L'Heureux »)
+             interpolé cru casserait tout le x-data (l'attribut HTML décode
+             &#39; AVANT qu'Alpine n'évalue) — et sous 'unsafe-eval', c'est
+             une injection d'expression. Le motif des formulaires frères. #}
+          dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
+          dossierOpen: false
+        }"
+        x-init="var sel = document.getElementById('compte-select'); if (sel && sel.selectedOptions.length) { accountType = sel.selectedOptions[0].dataset.accountType || 'opérations'; }"
+        class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Compte</label>
+      {% if mode == 'edit' %}
+      {# Le compte est immuable sur une écriture — la route écarte account_id. #}
+      <input type="text" disabled value="{{ (accounts | selectattr('id', 'equalto', entry.account_id) | map(attribute='name') | first) or 'Compte' }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
+      {% else %}
+      <select id="compte-select" name="account_id" required
+              @change="accountType = $event.target.selectedOptions[0].dataset.accountType || 'opérations'; if (accountType === 'carte_crédit' &amp;&amp; kind === 'encaissement_facture') { kind = 'dépense'; }"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        {% for a in accounts %}
+        <option value="{{ a.id }}" data-account-type="{{ a.account_type }}" {% if entry and entry.account_id == a.id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
+        {% endfor %}
+      </select>
+      {% endif %}
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        {# Le Sens est IMPLIQUÉ par le type (encaissement/autre recette →
+           recette ; dépense → déboursé) — pas de sélecteur Sens. #}
+        <label class="block text-sm font-medium text-gray-700 mb-1">Type</label>
+        {# Le passage à « encaissement » vide le dossier choisi : sur un
+           encaissement, la FACTURE détermine le dossier (le modèle l'impose
+           aussi — ceinture et bretelles). #}
+        <select name="kind" required x-model="kind"
+                @change="if (kind === 'encaissement_facture') { dossierId = ''; dossierDisplay = ''; }"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          <option value="dépense">Dépense</option>
+          <option value="recette_autre">Autre recette</option>
+          {% if mode != 'edit' %}
+          <option value="encaissement_facture" :disabled="accountType === 'carte_crédit'">Encaissement de facture</option>
+          {% endif %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Montant</label>
+        <input type="text" id="montant-input" name="amount" inputmode="decimal" required placeholder="0,00"
+               value="{{ '%.2f'|format(entry.amount / 100) if entry and entry.amount else '' }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Mode</label>
+        <select name="method" required class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+          {% for m in valid_methods %}
+          <option value="{{ m }}" {% if entry and entry.method == m %}selected{% endif %}>{{ method_labels[m] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        {# Date économique LIBRE dans le passé (l'antidatage est la raison
+           d'être du module) — le futur et une période conciliée sont refusés
+           par le modèle. #}
+        <label class="block text-sm font-medium text-gray-700 mb-1">Date</label>
+        <input type="date" name="date" required max="{{ today }}" value="{{ (entry.date.strftime('%Y-%m-%d') if entry and entry.date else today) }}"
+               class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Payeur / Fournisseur</label>
+      <input type="text" name="counterparty" required autocomplete="off" value="{{ entry.counterparty if entry else '' }}"
+             placeholder="Ex. : Bell Canada, Immeubles X, client…"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+    </div>
+
+    {# ── Facture Athéna (encaissement) — sélecteur GLOBAL des factures
+       impayées : une recette peut encaisser la facture de n'importe quel
+       dossier, c'est la facture qui détermine le dossier. #}
+    {% if mode != 'edit' %}
+    <div x-show="kind === 'encaissement_facture'" x-cloak class="p-3 border border-gray-200 rounded-xl space-y-2">
+      <label class="block text-sm font-medium text-gray-700">Facture encaissée</label>
+      {% if factures %}
+      <select name="invoice_id"
+              @change="var o = $event.target.selectedOptions[0]; if (o &amp;&amp; o.dataset.solde) { document.getElementById('montant-input').value = (parseInt(o.dataset.solde, 10) / 100).toFixed(2).replace('.', ','); }"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        <option value="">Choisir la facture…</option>
+        {% for f in factures %}
+        <option value="{{ f.id }}" data-solde="{{ f.solde_cents }}" {% if entry and entry.invoice_id == f.id %}selected{% endif %}>{{ f.invoice_number }} — {{ f.dossier }} — solde dû {{ f.solde_fmt }}</option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-500">Le montant se préremplit avec le solde dû (modifiable — un encaissement partiel est permis). La facture sera mise à jour automatiquement.</p>
+      {% else %}
+      <p class="text-sm text-gray-500">Aucune facture émise avec un solde dû.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Champs propres à une dépense ─────────────────────────────────── #}
+    <div x-show="kind === 'dépense'" x-cloak class="space-y-4">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Catégorie</label>
+          <select name="category" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+            <option value="">Choisir…</option>
+            {% for c in valid_categories %}
+            <option value="{{ c }}" {% if entry and entry.category == c %}selected{% endif %}>{{ category_labels[c] }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">N° facture fournisseur <span class="text-gray-400 font-normal">(facultatif)</span></label>
+          <input type="text" name="supplier_invoice_ref" value="{{ entry.supplier_invoice_ref if entry else '' }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+        </div>
+      </div>
+
+      <div class="p-3 border border-gray-200 rounded-xl space-y-3">
+        <div class="flex items-center justify-between">
+          <p class="text-xs font-medium text-gray-500">Ventilation des taxes <span class="font-normal">(vide = aucune TPS/TVQ réclamée)</span></p>
+          <button type="button"
+                  hx-get="{{ url_for('admin_ledger.ventilation') }}"
+                  hx-target="#ventilation-inputs"
+                  hx-include="#montant-input"
+                  class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Ventiler depuis le montant</button>
+        </div>
+        <div id="ventilation-inputs">
+          {% with net_amount = (entry.net_amount if ventile else none), gst_amount = (entry.gst_amount if ventile else none), qst_amount = (entry.qst_amount if ventile else none) %}
+          {% include "administration/_ventilation_fields.html" %}
+          {% endwith %}
+        </div>
+        <p class="text-xs text-gray-500">Net + TPS + TVQ doit égaler le montant. Les champs restent modifiables — pourboires, articles exonérés et TPS partielle existent.</p>
+      </div>
+    </div>
+
+    {# ── Dossier (facultatif — un huissier se rattache à un dossier, le loyer
+       non). Pour un encaissement, le dossier vient de la facture. #}
+    <div x-show="kind !== 'encaissement_facture'" x-cloak class="relative" @click.outside="dossierOpen = false">
+      <label class="block text-sm font-medium text-gray-700 mb-1">Dossier <span class="text-gray-400 font-normal">(facultatif)</span></label>
+      <input type="hidden" name="dossier_id" :value="dossierId">
+      {# name="q" is load-bearing : hx-include="this" sérialise l'élément par
+         son nom — sans lui, dossier_search ne reçoit aucune requête. #}
+      <input type="text" name="q" x-model="dossierDisplay" autocomplete="off" placeholder="Rechercher un dossier…"
+             @focus="dossierOpen = true" @input="dossierOpen = true; dossierId=''"
+             hx-get="{{ url_for('admin_ledger.dossier_search') }}" hx-trigger="input changed delay:300ms" hx-target="#dossier-results" hx-include="this"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+      <div id="dossier-results" x-show="dossierOpen" x-cloak
+           @click="var li = $event.target.closest('li'); if (li) { dossierId = li.dataset.dossierId; dossierDisplay = li.dataset.dossierFileNumber + ' — ' + li.dataset.dossierTitle; dossierOpen = false; }"
+           class="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg max-h-40 overflow-y-auto"></div>
+      <p class="text-xs text-gray-400 mt-1">Un déboursé refacturable au client s'inscrit aussi dans Dépenses (/temps) — ce registre ne crée pas la dépense au dossier.</p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Référence <span class="text-gray-400 font-normal">(n° chèque, n° d'opération…)</span></label>
+      <input type="text" name="reference" value="{{ entry.reference if entry else '' }}" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+      <textarea name="description" rows="2" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">{{ entry.description if entry else '' }}</textarea>
+    </div>
+
+    {% if mode != 'edit' %}
+    <label class="flex items-center gap-2 text-sm text-gray-700">
+      <input type="checkbox" name="deja_compensee" value="1" class="rounded border-gray-300">
+      Déjà compensée <span class="text-gray-400">(figure déjà au relevé — un virement instantané, un prélèvement)</span>
+    </label>
+    {% endif %}
+
+    <div class="flex justify-end gap-2 pt-2">
+      <a href="{% if mode == 'edit' %}{{ url_for('admin_ledger.entry_detail', tx_id=entry.id) }}{% else %}{{ url_for('admin_ledger.journal') }}{% endif %}" class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">Annuler</a>
+      <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">Enregistrer</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

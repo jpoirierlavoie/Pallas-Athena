@@ -22,7 +22,8 @@ ever updates one):
         "entity_type": str,          # task | hearing | note | document |
                                      # expense | time_entry | invoice |
                                      # partie | protocol | protocol_step |
-                                     # folder | doc_template | dossier
+                                     # folder | doc_template | dossier |
+                                     # admin_transaction
         "entity_id": str,
         "dossier_id": str,           # "" when the entity had none
         "snapshot_min": {            # just enough to answer « what was it » —
@@ -62,7 +63,7 @@ COLLECTION = "audit_events"
 VALID_ENTITY_TYPES = (
     "task", "hearing", "note", "document", "expense", "time_entry",
     "invoice", "partie", "protocol", "protocol_step", "folder",
-    "doc_template", "dossier",
+    "doc_template", "dossier", "admin_transaction",
 )
 
 _FETCH_CAP = 200

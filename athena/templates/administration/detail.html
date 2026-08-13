@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Écriture #{{ entry.sequence }} — Administration — Pallas Athena{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6" x-data="{ deleteOpen: false }">
+  <div class="flex items-center gap-2 mb-4">
+    <a href="{{ url_for('admin_ledger.journal', account_id=entry.account_id) }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
+    <h1 class="text-xl font-semibold text-gray-900">Écriture n<sup>o</sup> {{ entry.sequence }}</h1>
+    {% if entry.status == 'compensée' %}<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Compensée</span>
+    {% elif entry.status == 'en_circulation' %}<span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En circulation</span>
+    {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
+  </div>
+
+  {% if avertissement == 'facture' %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    L'écriture est inscrite, mais la facture n'a pas pu être mise à jour — corrigez l'encaissement sur la fiche de la facture.
+  </div>
+  {% elif avertissement == 'compensation' %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    La compensation n'a pas pu être enregistrée — l'écriture demeure « En
+    circulation ». Compensez-la ci-dessous (une date dans une période déjà
+    conciliée est refusée).
+  </div>
+  {% elif avertissement == 'recu' %}
+  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    La pièce justificative n'a pas pu être servie — réessayez dans un instant.
+  </div>
+  {% endif %}
+
+  <div class="bg-white rounded-xl border border-gray-200 p-4 md:p-6 space-y-3 text-sm">
+    <div class="grid grid-cols-2 gap-3">
+      <div><p class="text-xs text-gray-500">Date</p><p class="text-gray-900">{{ entry.date.strftime('%Y-%m-%d') if entry.date else '—' }}</p></div>
+      <div><p class="text-xs text-gray-500">Type</p><p class="text-gray-900">{{ kind_labels.get(entry.kind, entry.kind) }}</p></div>
+      <div><p class="text-xs text-gray-500">Montant</p><p class="text-gray-900 font-medium">{{ entry.amount | cents_fr }}</p></div>
+      <div><p class="text-xs text-gray-500">Mode</p><p class="text-gray-900">{{ method_labels.get(entry.method, entry.method) }}</p></div>
+      <div><p class="text-xs text-gray-500">Sens</p><p class="text-gray-900">{{ direction_labels_for(account.account_type if account else 'opérations').get(entry.direction, entry.direction) }}</p></div>
+      <div><p class="text-xs text-gray-500">Compte</p><p class="text-gray-900">{{ account.name if account else '' }}</p></div>
+      <div class="col-span-2"><p class="text-xs text-gray-500">Payeur / Fournisseur</p><p class="text-gray-900">{{ entry.counterparty }}</p></div>
+      {% if entry.category %}<div><p class="text-xs text-gray-500">Catégorie</p><p class="text-gray-900">{{ category_labels.get(entry.category, entry.category) }}</p></div>{% endif %}
+      {% if entry.supplier_invoice_ref %}<div><p class="text-xs text-gray-500">N° facture fournisseur</p><p class="text-gray-900">{{ entry.supplier_invoice_ref }}</p></div>{% endif %}
+      {% if entry.dossier_id %}<div><p class="text-xs text-gray-500">N/Réf</p><p class="text-gray-900"><a href="{{ url_for('dossiers.dossier_detail', dossier_id=entry.dossier_id) }}" class="text-indigo-600 hover:underline">{{ entry.dossier_file_number }}</a></p></div>{% endif %}
+      {% if entry.reference %}<div><p class="text-xs text-gray-500">Référence</p><p class="text-gray-900">{{ entry.reference }}</p></div>{% endif %}
+      {% if entry.cleared_date %}<div><p class="text-xs text-gray-500">Compensée le</p><p class="text-gray-900">{{ entry.cleared_date.strftime('%Y-%m-%d') }}</p></div>{% endif %}
+    </div>
+
+    {% if entry.direction == 'déboursé' and entry.kind in ('dépense', 'correction') %}
+    <div class="grid grid-cols-3 gap-3 pt-3 border-t border-gray-100">
+      <div><p class="text-xs text-gray-500">Net</p><p class="text-gray-900">{{ entry.net_amount | cents_fr }}</p></div>
+      <div><p class="text-xs text-gray-500">TPS</p><p class="text-gray-900">{{ entry.gst_amount | cents_fr }}</p></div>
+      <div><p class="text-xs text-gray-500">TVQ</p><p class="text-gray-900">{{ entry.qst_amount | cents_fr }}</p></div>
+    </div>
+    {% endif %}
+
+    {% if entry.description %}<div class="pt-3 border-t border-gray-100"><p class="text-xs text-gray-500">Description</p><p class="text-gray-900 whitespace-pre-line">{{ entry.description }}</p></div>{% endif %}
+
+    {# Liens vers les écritures liées #}
+    {% if reversal or reverses or other_leg or entry.trust_transaction_id %}
+    <div class="pt-3 border-t border-gray-100 space-y-1">
+      {% if reverses %}<p class="text-xs">Contre-passe l'écriture <a href="{{ url_for('admin_ledger.entry_detail', tx_id=reverses.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reverses.sequence }}</a></p>{% endif %}
+      {% if reversal %}<p class="text-xs">Contre-passée par l'écriture <a href="{{ url_for('admin_ledger.entry_detail', tx_id=reversal.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ reversal.sequence }}</a></p>{% endif %}
+      {% if other_leg %}<p class="text-xs">Autre jambe du paiement de carte : <a href="{{ url_for('admin_ledger.entry_detail', tx_id=other_leg.id) }}" class="text-indigo-600 hover:underline">n<sup>o</sup> {{ other_leg.sequence }}</a></p>{% endif %}
+      {% if entry.trust_transaction_id %}<p class="text-xs">Recette issue d'un paiement d'honoraires du fidéicommis : <a href="{{ url_for('trust.entry_detail', tx_id=entry.trust_transaction_id) }}" class="text-indigo-600 hover:underline">voir le virement</a></p>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if entry.revisions %}
+    <details class="pt-3 border-t border-gray-100">
+      <summary class="text-xs text-gray-500 cursor-pointer">Révisions ({{ entry.revisions | length }})</summary>
+      <ul class="mt-2 space-y-1 text-xs text-gray-600">
+        {% for rev in entry.revisions | reverse %}
+        <li>{{ (rev.at | to_mtl).strftime('%Y-%m-%d %H:%M') if rev.at and rev.at.strftime is defined else '' }} — {{ rev.changes.keys() | join(', ') }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </div>
+
+  {# ── Facture liée — le solde VIVANT, pour que toute dérive se voie ici. #}
+  {% if entry.invoice_id %}
+  <div class="mt-4 bg-white rounded-xl border border-gray-200 p-4 text-sm">
+    <p class="text-xs font-medium text-gray-500 mb-2">Facture liée</p>
+    {% if invoice %}
+    <div class="flex items-center justify-between">
+      <a href="{{ url_for('invoices.invoice_detail', invoice_id=entry.invoice_id) }}" class="text-indigo-600 hover:underline font-medium">{{ invoice.invoice_number }}</a>
+      <span class="text-gray-700">Solde dû actuel : <span class="font-medium">{{ invoice._balance | cents_fr }}</span></span>
+    </div>
+    {% else %}
+    <p class="text-gray-500">Facture illisible pour le moment — <a href="{{ url_for('invoices.invoice_detail', invoice_id=entry.invoice_id) }}" class="text-indigo-600 hover:underline">ouvrir la fiche</a>.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Pièce justificative — téléversement DIRECT-à-GCS (un PUT du corps
+     entier : ≤ 10 Mo, pas de boucle 308). Motif CSRF de documents/upload.html
+     (en-tête X-CSRFToken depuis le champ caché). #}
+  <div class="mt-4 bg-white rounded-xl border border-gray-200 p-4 text-sm"
+       x-data="{
+         occupe: false, erreur: '',
+         champ(nom) { var el = this.$el.querySelector('[name=' + JSON.stringify(nom) + ']'); return el ? el.value : ''; },
+         entetes() { return { 'Content-Type': 'application/json', 'X-CSRFToken': this.champ('csrf_token') }; },
+         async televerser(fichier) {
+           if (!fichier || this.occupe) { return; }
+           this.occupe = true; this.erreur = '';
+           try {
+             var ouverture = await fetch('{{ url_for('admin_ledger.api_televersement') }}', {
+               method: 'POST', headers: this.entetes(),
+               body: JSON.stringify({ name: fichier.name, size: fichier.size })
+             });
+             var donnees = await ouverture.json().catch(function () { return {}; });
+             if (!ouverture.ok) { this.erreur = donnees.erreur || 'refusé'; this.occupe = false; return; }
+             var put = await fetch(donnees.url, { method: 'PUT', body: fichier });
+             if (!put.ok) { this.erreur = 'transfert interrompu — réessayez'; this.occupe = false; return; }
+             var fin = await fetch('{{ url_for('admin_ledger.api_recu', tx_id=entry.id) }}', {
+               method: 'POST', headers: this.entetes(),
+               body: JSON.stringify({ objet: donnees.objet, name: fichier.name })
+             });
+             var resultat = await fin.json().catch(function () { return {}; });
+             if (!fin.ok) { this.erreur = resultat.erreur || 'refusé'; this.occupe = false; return; }
+             window.location.reload();
+           } catch (e) {
+             this.erreur = 'erreur réseau — réessayez'; this.occupe = false;
+           }
+         }
+       }">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <p class="text-xs font-medium text-gray-500">Pièce justificative</p>
+        {% if entry.receipt_storage_path %}
+        <p class="text-gray-900 mt-1">{{ entry.receipt_filename }} <span class="text-gray-400">({{ (entry.receipt_file_size / 1024) | round(0) | int }} Ko)</span></p>
+        {% else %}
+        <p class="text-gray-500 mt-1">Aucune — PDF, JPG, PNG ou TIFF, 10 Mo max.</p>
+        {% endif %}
+        <p x-show="erreur" x-cloak class="text-xs text-red-600 mt-1" x-text="erreur"></p>
+      </div>
+      <div class="flex items-center gap-2">
+        {% if entry.receipt_storage_path %}
+        <a href="{{ url_for('admin_ledger.recu', tx_id=entry.id) }}" class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Télécharger</a>
+        {% endif %}
+        {# opacity-50 seul : cursor-wait n'est PAS dans l'artefact CSS compilé
+           (pipeline précompilé — une classe absente ne s'applique pas). #}
+        <label class="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer"
+               :class="occupe ? 'opacity-50' : ''">
+          <span x-text="occupe ? 'Envoi…' : '{{ 'Remplacer' if entry.receipt_storage_path else 'Joindre' }}'"></span>
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif" class="hidden"
+                 @change="televerser($event.target.files[0]); $event.target.value = '';">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  {# ── Actions #}
+  <div class="mt-4 flex flex-wrap items-center gap-3">
+    {% if entry.status == 'en_circulation' %}
+    <form method="post" action="{{ url_for('admin_ledger.entry_clear', tx_id=entry.id) }}" class="flex items-end gap-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_to" value="{{ url_for('admin_ledger.entry_detail', tx_id=entry.id) }}">
+      <div>
+        <label class="block text-xs font-medium text-gray-700 mb-1">Compenser (date au relevé)</label>
+        <input type="date" name="cleared_date" required value="{{ today }}" class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
+      </div>
+      <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Compenser</button>
+    </form>
+    {% endif %}
+    {% if not lock_reason %}
+    <a href="{{ url_for('admin_ledger.entry_edit', tx_id=entry.id) }}" class="text-sm text-gray-700 hover:text-gray-900 font-medium">Modifier</a>
+    <button @click="deleteOpen = true" class="text-sm text-red-600 hover:text-red-700 font-medium">Supprimer</button>
+    {% endif %}
+    {% if not entry.reversed_by_id and entry.status != 'annulée' and not entry.trust_transaction_id %}
+    <a href="{{ url_for('admin_ledger.entry_reverse_confirm', tx_id=entry.id) }}" class="text-sm text-red-600 hover:text-red-700 font-medium">Contre-passer</a>
+    {% endif %}
+  </div>
+  {% if lock_reason %}
+  <p class="mt-2 text-xs text-gray-400">Écriture verrouillée (période conciliée, écriture compensée, liée ou membre d'une contre-passation) — la correction passe par une contre-passation.</p>
+  {% endif %}
+
+  {# ── Dialogue de confirmation de suppression #}
+  <div x-show="deleteOpen"
+       @keydown.escape.window="deleteOpen = false"
+       x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div @click.outside="deleteOpen = false"
+         class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+      <div class="p-6">
+        <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette écriture ?</h3>
+        <p class="text-sm text-gray-600 mb-6">
+          {% if entry.kind == 'paiement_carte' %}Les DEUX jambes du paiement de carte seront supprimées.{% else %}L'écriture sera définitivement supprimée (le registre des suppressions en garde la trace).{% endif %}
+        </p>
+        <div class="flex gap-3 justify-end">
+          <button @click="deleteOpen = false"
+                  class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+            Annuler
+          </button>
+          <form method="post" action="{{ url_for('admin_ledger.entry_delete', tx_id=entry.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit"
+                    class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+              Supprimer
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

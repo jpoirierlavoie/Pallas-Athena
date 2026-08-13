@@ -97,7 +97,7 @@ PURPOSE_LABELS = {
     "avance_honoraires": "Avance d'honoraires",
     "dépôt_client": "Dépôt du client",
     "règlement": "Règlement",
-    "virement_honoraires": "Virement d'honoraires",
+    "virement_honoraires": "Paiement d'honoraires",
     "remise_client": "Remise au client",
     "déboursé_tiers": "Déboursé à un tiers",
     "virement_inter_dossiers": "Virement inter-dossiers",
@@ -322,13 +322,13 @@ _ABORT_MESSAGES = {
         "La date ne peut être antérieure à la dernière écriture du compte. "
         "Corrigez plutôt par une contre-passation datée d'aujourd'hui."
     ),
-    "virement_direction": "Un virement d'honoraires doit être un déboursé.",
+    "virement_direction": "Un paiement d'honoraires doit être un déboursé.",
     "facture_introuvable": "Facture introuvable.",
     "facture_non_émise": "La facture doit être émise (envoyée ou en retard).",
     "facture_autre_dossier": "La facture appartient à un autre dossier.",
     "virement_excède_facture": "Le montant dépasse le solde dû de la facture.",
     "facture_requise": (
-        "Un virement d'honoraires doit être appuyé par une facture : indiquez une "
+        "Un paiement d'honoraires doit être appuyé par une facture : indiquez une "
         "facture de Pallas Athéna ou, pour une facture antérieure, son numéro externe."
     ),
     "facture_ambiguë": (
@@ -739,7 +739,13 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
                     raise _TxnAbort("facture_non_émise")
                 if invoice.get("dossier_id") != dossier_id:
                     raise _TxnAbort("facture_autre_dossier")
-                if amount > int(invoice.get("amount_due", 0)):
+                # The LIVE balance (amount_due − amount_paid), not the frozen
+                # amount_due: since Lot P recorded payments exist, a transfer
+                # capped on the frozen figure could take MORE of the client's
+                # trust money than the invoice still owes (2026-08-13 review
+                # — amount_paid is absent/0 on pre-Lot-P invoices, so this is
+                # the historical check unchanged there).
+                if amount > int(invoice.get("amount_due", 0)) - int(invoice.get("amount_paid", 0)):
                     raise _TxnAbort("virement_excède_facture")
             elif not invoice_external_ref:
                 raise _TxnAbort("facture_requise")

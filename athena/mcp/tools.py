@@ -1187,11 +1187,16 @@ TOOLS: dict[str, dict] = {
             "properties": {
                 "entity_type": {
                     "type": "string",
+                    # Kept in step with models/audit_event.VALID_ENTITY_TYPES
+                    # (hand-mirrored — the models/* import ban). Additive
+                    # input-enum growth is safe; the OUTPUT schema types
+                    # entity_type as a plain string, so new values never
+                    # violate the structuredContent contract.
                     "enum": [
                         "task", "hearing", "note", "document", "expense",
                         "time_entry", "invoice", "partie", "protocol",
                         "protocol_step", "folder", "doc_template",
-                        "dossier",
+                        "dossier", "admin_transaction",
                     ],
                     "description": "Filter to one entity type.",
                 },

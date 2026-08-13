@@ -158,6 +158,26 @@ Trust accounting (« comptabilité en fidéicommis », Phase K). `outcome` ∈ `
 | `trust_reconciliation_abandoned` | success | A DRAFT reconciliation was deleted (« Abandonner » — a brouillon never mutated any transaction); `reconciliation_id`, `account_id` |
 | `trust_export` | success | Journal / carte-client CSV or PDF export; `format`, `view`, `row_count` |
 
+### `log_admin_ledger_event(event, outcome='success', *, transaction_id=None, account_id=None, invoice_id=None, reconciliation_id=None, reason=None, **extra)` — logger `pallas.admin_ledger`
+
+Administration accounting (« comptabilité d'administration », August 2026) — the operations-account / corporate-card sibling of `pallas.trust`. `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / WARNING. Same PII discipline as trust: `reason` is a machine-stable abort string, **never** a supplier name, a description, or a dollar amount (`variance_cents` on `admin_reconciliation_variance` keeps the trust exception).
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `admin_transaction_created` | success | An entry was appended; `transaction_id`, `account_id`, `invoice_id` (encaissement), `direction`, `kind`, `sequence` |
+| `admin_transaction_updated` | success | An UNLOCKED entry was edited in place (the deliberate divergence from trust); `transaction_id`, `fields` (names only) — the change itself lands in the entry's on-document `revisions` trail |
+| `admin_transaction_deleted` | success | An unlocked entry (or both card-payment legs) was hard-deleted; the route records it in `audit_events` (`entity_type="admin_transaction"`) |
+| `admin_transaction_cleared` | success | `en_circulation` → `compensée`; `transaction_id` |
+| `admin_transaction_reversed` | success | A contre-passation was recorded; `transaction_id` (the reversal), `reverses_id` |
+| `admin_transaction_refused` | refused | Any create/update abort; `reason` = an abort string (`période_verrouillée`, `date_future`, `ventilation_invalide`, `encaissement_carte_interdit`, `encaissement_excède_solde`, …) |
+| `admin_card_payment_created` | success | Two linked legs (bank déboursé + card recette); `transaction_id` (bank leg), `account_id`, `card_account_id` |
+| `admin_receipt_attached` | success | A pièce justificative's metadata was set; `transaction_id`, `size` — never the filename |
+| `admin_invoice_payment_projected` | success ou **failure** | The Lot P projection: an encaissement recorded (or a reversal reduced — `reduced: true`) the payment on its invoice via `record_payment`; `failure` means the ENTRY STANDS and the UI showed the correction banner |
+| `admin_reconciliation_completed` | success | Variance 0, entries stamped, **the period is now LOCKED**; `reconciliation_id`, `account_id`, `cleared_count` |
+| `admin_reconciliation_variance` | refused | Completion refused; `variance_cents` |
+| `admin_reconciliation_abandoned` | success | A draft was deleted |
+| `admin_export` | success | Journal CSV or PDF; `format`, `account_id`, `row_count` |
+
 ### `log_portail_event(event, outcome='success', *, invitation_id=None, batch=None, dossier_id=None, document_id=None, reason=None, **extra)` — logger `pallas.portail`
 
 Portail client (spec L1). One vocabulary for **both services**: the portal process emits the client-facing events, the main service emits the task/reconciliation/courriel/Réception ones — Cloud Logging separates them by `resource.labels.module_id` (`portail` vs `default`; the log name `pallas-athena` is shared, so any alert filtering only on `logName` now also matches portal traffic). `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR** — a `failure` means work could be lost (enqueue failures, reconciliation repairs) and must reach error dashboards. **IDs and counts only**: a client's email, a file name, or a display label must NEVER appear in any field — the `RedactionFilter` auto-scrubs emails but not names/filenames, and portal identity is exactly what this boundary protects.
@@ -275,6 +295,8 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `template.fill` | docx fill inside the generation POST (Phase H / H.2 / H.3) | `template.fill` with `template_id`, `field_count` (gabarits) or `invoice_id` + `rows_honoraire`/`rows_debours_tx`/`rows_debours_ntx` (note d'honoraires) or `note_id` (impression de note) — never values or content, counts and IDs only |
 | `trust.transaction` | One trust write — create / reversal / inter-dossier transfer (Phase K) | `trust.transaction` with `direction`, `purpose`, `dossier_id` — **never amounts** |
 | `trust.reconcile` | Reconciliation completion (Phase K) | `trust.reconcile` with `account_id`, `cleared_count` |
+| `admin.transaction` | One administration write — create / reversal / card payment (August 2026) | `admin.transaction` with `direction`, `kind` — **never amounts, never supplier names** |
+| `admin.reconcile` | Administration reconciliation completion | `admin.reconcile` with `account_id`, `cleared_count` |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |
 
 ### Standard attributes
