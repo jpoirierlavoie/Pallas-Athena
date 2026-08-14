@@ -17,6 +17,7 @@ from markupsafe import escape
 from auth import login_required
 from dav.sync import bump_ctag, record_tombstone
 from models.audit_event import record_deletion
+from utils.template_fields import selected_address, selected_email
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import sanitize
 from models.partie import (
@@ -447,24 +448,28 @@ def partie_delete(partie_id: str) -> str:
 # ── Export ───────────────────────────────────────────────────────────────
 
 
+# « _courriel » / « _ville » sont DÉRIVÉS (motif de _display_name) : lire
+# email/address_city bruts exportait toute personne morale sans courriel ni
+# ville — son adresse et son courriel vivent dans le bloc professionnel, le
+# formulaire masquant le bloc personnel pour une entreprise.
 _EXPORT_COLUMNS_CSV = [
     ("_display_name", "Nom"),
     ("contact_role", "Rôle"),
-    ("email", "Courriel"),
+    ("_courriel", "Courriel"),
     ("phone_cell", "Cellulaire"),
     ("phone_work", "Tél. professionnel"),
     ("organization", "Organisation"),
-    ("address_city", "Ville"),
+    ("_ville", "Ville"),
 ]
 
 _EXPORT_COLUMNS_PDF = [
     ("_display_name", "Nom", 2.0),
     ("contact_role", "Rôle", 1.0),
-    ("email", "Courriel", 1.5),
+    ("_courriel", "Courriel", 1.5),
     ("phone_cell", "Cellulaire", 1.0),
     ("phone_work", "Tél. professionnel", 1.0),
     ("organization", "Organisation", 1.5),
-    ("address_city", "Ville", 1.0),
+    ("_ville", "Ville", 1.0),
 ]
 
 
@@ -479,6 +484,10 @@ def _get_export_parties() -> list[dict]:
     )
     for p in parties:
         p["_display_name"] = display_name(p)
+        # L'adresse et le courriel RETENUS — la même autorité que les
+        # gabarits, l'accusé du portail et le connecteur MCP.
+        p["_ville"] = selected_address(p).get("city", "")
+        p["_courriel"] = selected_email(p)
         p["contact_role"] = ROLE_LABELS.get(p.get("contact_role", ""), p.get("contact_role", ""))
     return parties
 

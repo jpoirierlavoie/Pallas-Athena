@@ -1411,7 +1411,12 @@ def reverse_transaction(
             }
 
         # Reversal date: [original date, today], above every touched floor.
-        rd = _midnight_utc(reversal_date) if reversal_date else _midnight_utc(now)
+        # The DEFAULT reads the Montréal clock, like the guard below it — a
+        # datetime.now(utc) default is already TOMORROW every evening after
+        # 20:00, so an undated contre-passation refused itself outright for
+        # four hours a day (the 2026-08-02 evening-band class, caught by the
+        # frozen-clock fixture the day after this module shipped).
+        rd = _midnight_utc(reversal_date) if reversal_date else _midnight_utc(today_mtl())
         if rd is None or rd.date() > today_mtl():
             raise _TxnAbort("date_contre_passation_invalide")
         for leg in legs:

@@ -196,6 +196,38 @@ def test_live_partie_used_when_provided():
     ctx = _build(_invoice(), [_fee("R", 1, 25000, 25000)], destinataire=partie)
     assert ctx.values["destinataire.nom_complet"] == "Luc Gagnon"  # bare
     assert ctx.values["destinataire.nom_complet_avec_civilite"] == "M. Luc Gagnon"
+    assert ctx.values["destinataire.adresse_complete"].startswith("9 av. du Parc")
+
+
+def test_live_organization_address_resolves_from_the_work_block():
+    """Le bogue signalé (2026-08-14), épinglé bout en bout : une personne
+    morale VIVANTE — le formulaire de contact masque son bloc personnel, donc
+    son adresse ne peut être que professionnelle — sortait avec « [CHAMP
+    MANQUANT : destinataire.adresse_complete] » sur la note d'honoraires.
+    Ironie du chemin : la même entreprise SUPPRIMÉE s'imprimait correctement,
+    l'instantané billing_address faisant déjà « travail sinon personnelle »."""
+    org = {
+        "type": "organization",
+        "organization_name": "Constructions Beaubien inc.",
+        "contact_role": "client",
+        "email_work": "info@beaubien.ca",
+        "work_address_street": "500 rue Beaubien Est",
+        "work_address_unit": "bureau 300",
+        "work_address_city": "Montréal",
+        "work_address_province": "Québec",
+        "work_address_postal_code": "H2S 1S5",
+        "work_address_country": "Canada",
+    }
+    ctx = _build(_invoice(), [_fee("R", 1, 25000, 25000)], destinataire=org)
+    assert ctx.values["destinataire.nom_complet"] == "Constructions Beaubien inc."
+    assert ctx.values["destinataire.adresse_complete"] == (
+        "500 rue Beaubien Est, bureau 300, Montréal (Québec) H2S 1S5"
+    )
+    assert ctx.values["destinataire.ville"] == "Montréal"
+    assert ctx.values["destinataire.courriel"] == "info@beaubien.ca"
+    # Les alias plats que les gabarits existants emploient suivent.
+    assert ctx.values["ville_récipient"] == "Montréal"
+    assert ctx.values["adresse_civique_récipient"] == "500 rue Beaubien Est, bureau 300"
 
 
 # ── End-to-end: build context → fill a full note template (§13.1–4) ─────

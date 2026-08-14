@@ -544,3 +544,53 @@ def test_une_invitation_documents_reste_sur_la_branche_documents(
     assert reponse.status_code == 200
     assert bucket.blob("submissions/inv1/b1/manifeste.json").exists()
     assert "Accusé de réception" in envoyer.call_args[0][1]
+
+
+# ── L'adresse du bordereau (2026-08-14) ─────────────────────────────────
+#
+# _adresse_lignes lisait address_* en dur : une personne morale — dont
+# l'adresse ne peut être saisie que dans le bloc professionnel, le formulaire
+# masquant le bloc personnel pour une entreprise — recevait un accusé de
+# réception SANS adresse. Le choix du bloc passe désormais par
+# template_fields.selected_address, l'autorité partagée avec les gabarits.
+
+
+def test_adresse_du_bordereau_pour_une_personne_morale():
+    lignes = tp._adresse_lignes({
+        "type": "organization",
+        "organization_name": "Constructions Beaubien inc.",
+        "contact_role": "client",
+        "work_address_street": "500 rue Beaubien Est",
+        "work_address_unit": "bureau 300",
+        "work_address_city": "Montréal",
+        "work_address_province": "Québec",
+        "work_address_postal_code": "H2S 1S5",
+        "work_address_country": "Canada",
+    })
+    assert lignes == [
+        "bureau 300-500 rue Beaubien Est",
+        "Montréal (Québec) H2S 1S5",
+        "Canada",
+    ]
+
+
+def test_adresse_du_bordereau_pour_un_individu_inchangee():
+    """Non-régression : un particulier garde son adresse personnelle."""
+    lignes = tp._adresse_lignes({
+        "type": "individual",
+        "contact_role": "client",
+        "address_street": "12 rue Principale",
+        "address_city": "Montréal",
+        "address_province": "QC",          # code hérité — toujours étendu ici
+        "address_postal_code": "H2X 1Y6",
+        "address_country": "CA",
+    })
+    assert lignes == [
+        "12 rue Principale",
+        "Montréal (Québec) H2X 1Y6",
+        "Canada",
+    ]
+
+
+def test_adresse_du_bordereau_vide_sans_aucune_adresse():
+    assert tp._adresse_lignes({"type": "individual", "contact_role": "client"}) == []

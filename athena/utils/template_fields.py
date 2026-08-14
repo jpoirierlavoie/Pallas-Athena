@@ -201,16 +201,85 @@ def _strip_civility_prefix(name: str) -> str:
     return stripped
 
 
+_ADDRESS_COMPONENTS = ("street", "unit", "city", "province", "postal_code", "country")
+
+
+def _address_component(value) -> str:
+    """Coerce ONE stored address component to a string.
+
+    The CardDAV PUT path can store a LIST here: vobject parses an ADR
+    component carrying an unescaped comma (a known bug in non-DavX5 clients)
+    as a Python list, and ``models/partie`` sanitizes only str values — so
+    the list is committed silently. A bare ``.strip()`` then raises
+    ``AttributeError`` and takes the whole caller down: a generated document,
+    an entire MCP contact page, or — worst — the portal's accusé de réception,
+    whose at-most-once marker is already committed by the time the letter is
+    rendered. Mirrors ``mcp.handlers._addr_str``.
+    """
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value).strip()
+    return str(value or "").strip()
+
+
+def _address_block(partie: dict, prefix: str) -> dict[str, str]:
+    """The six components of ONE address block (``address``/``work_address``)."""
+    return {
+        k: _address_component(partie.get(f"{prefix}_{k}"))
+        for k in _ADDRESS_COMPONENTS
+    }
+
+
 def _selected_address(partie: dict) -> tuple[dict[str, str], bool]:
-    """Return (address fields, is_work) per the §6.4 preference rule."""
-    prefer_work = bool(
-        partie.get("contact_role") in _WORK_PREFERRED_ROLES
-        and (partie.get("work_address_street") or "").strip()
-    )
-    prefix = "work_address" if prefer_work else "address"
-    fields = ("street", "unit", "city", "province", "postal_code", "country")
-    addr = {k: (partie.get(f"{prefix}_{k}") or "").strip() for k in fields}
-    return addr, prefer_work
+    """Return (address fields, is_work) — the §6.4 preference WITH a fallback.
+
+    The role decides which block is tried FIRST; the other one is the fallback
+    when the preferred block carries no usable address. The fallback is what
+    makes a **personne morale** printable: the contact form hides the whole
+    « Coordonnées personnelles » card for an organization (so a firm-entered
+    company address can only live in ``work_address_*``), while the portal
+    writes a company's address into ``address_*``. Both are legitimate, and
+    neither may silently win — before the fallback, a client organization
+    resolved to the empty personal block and every address placeholder on a
+    note d'honoraires printed « [CHAMP MANQUANT : …] ».
+
+    Known residual (narrow, deliberate): an organization created through the
+    portal and later edited by the lawyer carries BOTH blocks, and the role
+    preference then keeps the portal's — the lawyer's correction lands in a
+    block the documents do not read. Flipping organizations to work-first is
+    a one-line change if that case ever bites.
+    """
+    prefer_work = partie.get("contact_role") in _WORK_PREFERRED_ROLES
+    order = ("work_address", "address") if prefer_work else ("address", "work_address")
+    blocks = [(prefix, _address_block(partie, prefix)) for prefix in order]
+    # Street first — the original guard's exact criterion, and what
+    # _adresse_civique / _one_line_address require; city second, so a partial
+    # block still feeds {{…ville}} rather than nothing at all.
+    for criterion in ("street", "city"):
+        for prefix, addr in blocks:
+            if addr[criterion]:
+                return addr, prefix == "work_address"
+    return blocks[0][1], blocks[0][0] == "work_address"
+
+
+def selected_address(partie: dict) -> dict[str, str]:
+    """The address block a document should use for *partie* — the ONE authority.
+
+    Public so the portal's accusé de réception, the MCP connector and the
+    contact exports read the same arbitration the gabarits do. This module
+    stays Firestore-free, so it is importable from anywhere (the reverse —
+    putting the rule in ``models.partie`` — would make it unusable here).
+    """
+    return _selected_address(partie)[0]
+
+
+def selected_email(partie: dict) -> str:
+    """The email that goes with :func:`selected_address` — same authority.
+
+    ``""`` when the contact has none, so a caller can render a blank cell
+    rather than guess a prefix (the contact exports read the personal field
+    raw and therefore showed every organization as email-less).
+    """
+    return _courriel(partie) or ""
 
 
 def _adresse_civique(addr: dict[str, str]) -> Optional[str]:
@@ -538,8 +607,26 @@ def _addr_component(key: str) -> Callable[[dict], Optional[str]]:
 
 
 def _courriel(partie: dict) -> Optional[str]:
+    """The email that goes with the SELECTED address — with its own fallback.
+
+    « L'adresse choisie décide du courriel » (§6.4) is the rule, and it is
+    coherent: writing to an office address, one cites the office email. But
+    the rule alone is a trap now that the address itself falls back, because
+    the flag no longer means « this role prefers professional contact » — it
+    means « this is the block that happened to carry an address ». A client
+    who recorded only an office address would have lost their personal email
+    (an empty ``email_work`` → « [CHAMP MANQUANT : destinataire.courriel] »),
+    reintroducing on the courriel line the very defect the address fallback
+    removed. So the preferred field is tried first, the other second — the
+    ordered-chain shape ``_telephone`` has always used.
+    """
     _, is_work = _selected_address(partie)
-    return (partie.get("email_work") if is_work else partie.get("email")) or None
+    order = ("email_work", "email") if is_work else ("email", "email_work")
+    for key in order:
+        value = (partie.get(key) or "").strip()
+        if value:
+            return value
+    return None
 
 
 def _firm_field(key: str) -> Callable[[_Context], Optional[str]]:

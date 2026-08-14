@@ -32,6 +32,7 @@ from utils import courriel
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_portail_event
+from utils.template_fields import selected_address
 from utils.validators import format_phone_display
 
 logger = logging.getLogger(__name__)
@@ -92,9 +93,18 @@ def _taille_lisible(octets: int) -> str:
 
 
 def _adresse_lignes(partie: dict) -> list[str]:
-    """3-line letter address (mirror of templates/parties/_address_letter)."""
+    """3-line letter address (mirror of templates/parties/_address_letter).
+
+    The BLOCK is chosen by ``template_fields.selected_address`` — the one
+    authority, shared with the gabarits: reading ``address_*`` directly left a
+    personne morale's accusé de réception with a blank address (a company's
+    address can only be entered under « Adresse professionnelle »). Only the
+    three-line letter assembly stays here; template_fields has no such format.
+    """
+    adresse = selected_address(partie)
+
     def champ(suffixe: str) -> str:
-        return str(partie.get(f"address_{suffixe}") or "").strip()
+        return adresse.get(suffixe, "")
 
     provinces = {
         "QC": "Québec", "ON": "Ontario", "BC": "Colombie-Britannique",
@@ -356,7 +366,24 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
             quand = datetime.fromisoformat(manifeste.get("submitted_at") or "")
         except ValueError:
             quand = datetime.now(timezone.utc)
-        objet, corps = _corps_accuse(invitation, recus, quand, partie, dossier)
+        # Le RENDU est aussi best-effort — et pour une raison plus grave que
+        # les deux lectures ci-dessus : poser_accuse a DÉJÀ commis son
+        # marqueur (le test-and-set transactionnel, unique garde de l'unique
+        # effet non idempotent). Une exception ici remonterait en 5xx, Cloud
+        # Tasks rejouerait, poser_accuse rendrait alors False — et l'accusé ne
+        # partirait JAMAIS, sans même un courriel_echec, la réconciliation
+        # jugeant le lot complet. L'au-plus-une-fois dégénérerait en
+        # zéro-fois pour un bordereau à valeur probatoire. On dégrade donc en
+        # échec de courriel, journalisé, comme le fait déjà le bloc d'envoi.
+        try:
+            objet, corps = _corps_accuse(invitation, recus, quand, partie, dossier)
+        except Exception:
+            logger.exception("accusé render failed")
+            log_portail_event(
+                "courriel_echec", "failure",
+                invitation_id=inv_id, batch=batch, reason="rendu_accuse",
+            )
+            return
         try:
             courriel.envoyer(invitation.get("email", ""), objet, corps)
             log_portail_event(

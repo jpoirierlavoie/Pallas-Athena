@@ -353,10 +353,186 @@ def test_work_address_preferred_for_avocat_adverse_and_courriel_follows():
     assert resolved["destinataire.courriel"] == "claire@perso.com"
 
 
-def test_client_role_never_prefers_work_address():
+def test_client_prefers_personal_address_when_it_exists():
+    """La préférence par rôle décide du bloc ESSAYÉ EN PREMIER — un client
+    garde « personnelle d'abord » même lorsqu'une adresse de travail existe.
+    (Renommé le 2026-08-14 : l'assertion est inchangée, mais l'invariant
+    n'est plus « jamais le travail » — c'est « le personnel s'il existe ».)"""
     p = _individu(work_address_street="99 rue Bureau", work_address_city="Laval")
     resolved = _resolve(["client.ville"], client=p)
     assert resolved["client.ville"] == "Montréal"
+
+
+# ── Repli entre les deux blocs (2026-08-14) ─────────────────────────────
+#
+# Le formulaire de contact masque le bloc PERSONNEL pour une personne morale :
+# l'adresse d'une entreprise saisie côté juriste ne peut vivre que dans
+# work_address_*, alors que le portail écrit celle d'une entreprise dans
+# address_*. Sans repli, une note d'honoraires pour une personne morale
+# imprimait « [CHAMP MANQUANT : destinataire.adresse_complete] ».
+
+
+def _personne_morale(**overrides) -> dict:
+    """Une entreprise telle que le FORMULAIRE JURISTE la produit : adresse et
+    courriel dans le bloc professionnel, bloc personnel vide (masqué)."""
+    base = _individu(
+        id="p9",
+        type="organization",
+        organization_name="Constructions Beaubien inc.",
+        first_name="", last_name="", prefix="",
+        email="", email_work="info@beaubien.ca",
+        address_street="", address_city="", address_province="",
+        address_postal_code="", address_country="",
+        work_address_street="500 rue Beaubien Est",
+        work_address_unit="bureau 300",
+        work_address_city="Montréal",
+        work_address_province="Québec",
+        work_address_postal_code="H2S 1S5",
+        work_address_country="Canada",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_organization_address_falls_back_to_the_work_block():
+    """LE bogue signalé : le destinataire d'une note d'honoraires."""
+    resolved = _resolve(
+        ["destinataire.adresse_complete", "destinataire.adresse_civique",
+         "destinataire.ville", "destinataire.code_postal",
+         "destinataire.courriel", "destinataire.nom_complet"],
+        destinataire=_personne_morale(),
+    )
+    assert resolved["destinataire.adresse_complete"] == (
+        "500 rue Beaubien Est, bureau 300, Montréal (Québec) H2S 1S5"
+    )
+    assert resolved["destinataire.adresse_civique"] == "500 rue Beaubien Est, bureau 300"
+    assert resolved["destinataire.ville"] == "Montréal"
+    assert resolved["destinataire.code_postal"] == "H2S 1S5"
+    # Le courriel suit le bloc retenu — corrigé par effet de bord.
+    assert resolved["destinataire.courriel"] == "info@beaubien.ca"
+    assert resolved["destinataire.nom_complet"] == "Constructions Beaubien inc."
+
+
+def test_organization_from_the_portal_keeps_the_personal_block():
+    """Le portail écrit l'adresse d'une entreprise dans address_* : le repli
+    joue dans les DEUX sens, jamais une règle fondée sur le type."""
+    org = _personne_morale(
+        address_street="12 rue Principale", address_city="Montréal",
+        address_province="Québec", address_postal_code="H2X 1Y6",
+        address_country="Canada", email="info@portail.ca",
+        work_address_street="", work_address_unit="", work_address_city="",
+        work_address_province="", work_address_postal_code="",
+    )
+    resolved = _resolve(
+        ["destinataire.adresse_complete", "destinataire.courriel"],
+        destinataire=org,
+    )
+    assert resolved["destinataire.adresse_complete"].startswith("12 rue Principale")
+    assert resolved["destinataire.courriel"] == "info@portail.ca"
+
+
+def test_individual_client_with_only_a_work_address_falls_back_too():
+    """Le cas symétrique, réel lui aussi : un client qui n'a donné que son
+    adresse de bureau."""
+    p = _individu(
+        address_street="", address_city="", address_postal_code="",
+        work_address_street="99 rue Bureau", work_address_city="Laval",
+        work_address_province="Québec", work_address_postal_code="H7N 1A1",
+    )
+    resolved = _resolve(["client.adresse_complete", "client.ville"], client=p)
+    assert resolved["client.adresse_complete"].startswith("99 rue Bureau")
+    assert resolved["client.ville"] == "Laval"
+
+
+def test_a_city_only_block_still_feeds_the_component_fields():
+    """Aucun bloc n'a de rue : le second critère (la ville) évite de tout
+    perdre — adresse_complete reste absente (elle exige une rue)."""
+    p = _individu(
+        address_street="", address_city="", address_postal_code="",
+        work_address_street="", work_address_city="Laval",
+    )
+    resolved = _resolve(["client.ville", "client.adresse_complete"], client=p)
+    assert resolved["client.ville"] == "Laval"
+    assert "client.adresse_complete" not in resolved
+
+
+def test_no_address_at_all_resolves_nothing():
+    p = _individu(
+        address_street="", address_city="", address_province="",
+        address_postal_code="", address_country="",
+    )
+    resolved = _resolve(
+        ["client.adresse_complete", "client.ville", "client.adresse_civique"],
+        client=p,
+    )
+    assert resolved == {}
+
+
+def test_courriel_falls_back_when_the_selected_block_has_none():
+    """Revue 2026-08-14 : `is_work` ne signifie plus « ce rôle préfère le
+    professionnel » mais « voici le bloc qui portait une adresse ». Sans
+    repli propre au courriel, un client n'ayant enregistré que son adresse
+    de bureau perdait son courriel personnel — le défaut même que le repli
+    d'adresse venait de supprimer, réintroduit sur la ligne d'à côté."""
+    # Client dont la SEULE adresse est celle du bureau, sans courriel pro.
+    p = _individu(
+        address_street="", address_city="", address_postal_code="",
+        email="jean@example.com", email_work="",
+        work_address_street="99 rue Bureau", work_address_city="Laval",
+    )
+    resolved = _resolve(["client.courriel", "client.ville"], client=p)
+    assert resolved["client.ville"] == "Laval"          # l'adresse a bien replié
+    assert resolved["client.courriel"] == "jean@example.com"   # …sans perdre le courriel
+
+    # Rôle « travail d'abord » SANS aucune adresse : le courriel personnel
+    # reste servi (le cas terminal renvoyait is_work=True).
+    avocat = _avocat(
+        work_address_street="", work_address_city="", work_address_unit="",
+        work_address_postal_code="", address_street="", address_city="",
+        address_postal_code="", email_work="",
+    )
+    resolved = _resolve(["destinataire.courriel"], destinataire=avocat)
+    assert resolved["destinataire.courriel"] == "claire@perso.com"
+
+
+def test_a_list_valued_address_component_never_raises():
+    """Un client CardDAV non-DavX5 stocke une composante ADR en LISTE quand
+    une virgule n'est pas échappée (documenté : mcp.handlers._addr_str). Un
+    .strip() nu levait AttributeError — et la faisait remonter jusqu'au
+    rendu de l'accusé du portail, dont le marqueur au-plus-une-fois est
+    déjà posé à ce moment-là."""
+    p = _individu(address_street=["450 rue Sainte-Catherine", "Ouest"])
+    resolved = _resolve(
+        ["client.adresse_civique", "client.adresse_complete"], client=p,
+    )
+    assert resolved["client.adresse_civique"] == "450 rue Sainte-Catherine, Ouest"
+    assert "450 rue Sainte-Catherine, Ouest" in resolved["client.adresse_complete"]
+    assert selected_address_of(p)["street"] == "450 rue Sainte-Catherine, Ouest"
+
+
+def selected_address_of(partie):
+    from utils.template_fields import selected_address
+
+    return selected_address(partie)
+
+
+def test_selected_email_is_the_public_twin():
+    from utils.template_fields import selected_email
+
+    assert selected_email(_personne_morale()) == "info@beaubien.ca"
+    assert selected_email(_individu()) == "jean@example.com"
+    assert selected_email(_individu(email="", email_work="")) == ""
+
+
+def test_selected_address_is_the_public_authority():
+    """L'accusé du portail et le connecteur MCP lisent CE choix — le module
+    reste pur (importable sans Firestore)."""
+    from utils.template_fields import selected_address
+
+    assert selected_address(_personne_morale())["city"] == "Montréal"
+    assert selected_address(_personne_morale())["street"] == "500 rue Beaubien Est"
+    assert selected_address(_avocat())["street"] == "1000 boul. René-Lévesque"
+    assert selected_address(_individu())["street"] == "12 rue Principale"
 
 
 def test_telephone_preference_work_then_cell_then_home():

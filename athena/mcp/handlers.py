@@ -65,6 +65,7 @@ from utils import deadlines, phases, taxonomie
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
+from utils.template_fields import selected_address
 from utils.validators import format_phone_display
 
 from mcp.tools import ToolArgumentError, date_str, format_cents, iso_mtl
@@ -1328,7 +1329,11 @@ def list_parties(args: dict) -> dict:
             "type": p.get("type", ""),
             "contact_role": p.get("contact_role", ""),
             "is_organization": p.get("type") == "organization",
-            "city": p.get("address_city", ""),
+            # The SELECTED address block, not address_city: an organization's
+            # address lives in work_address_* (the form hides the personal
+            # block for a company), so reading the personal city reported
+            # every organization as city-less.
+            "city": selected_address(p).get("city", ""),
             **_stamps(p),
         }
         for p in page

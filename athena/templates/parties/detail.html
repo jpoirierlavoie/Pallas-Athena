@@ -142,6 +142,11 @@
     {# ── Personal contact info ─────────────────────────────────── #}
     {% set has_personal_address = partie.address_street or partie.address_city %}
     {% set has_personal_contact = partie.email or partie.phone_cell or partie.phone_home %}
+    {# Une personne morale n'a pas de coordonnées personnelles — le formulaire
+       masque d'ailleurs le bloc — donc la carte disparaît pour elle. Elle
+       reparaît si des données y existent (une entreprise créée par le portail,
+       qui écrit dans address_*) : ne jamais rendre une donnée inatteignable. #}
+    {% if partie.type != 'organization' or has_personal_contact or has_personal_address %}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
       <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées personnelles</h2>
       <dl class="space-y-2 text-sm">
@@ -172,13 +177,14 @@
         {% endif %}
       </dl>
     </div>
+    {% endif %}
 
     {# ── Professional contact info ─────────────────────────────── #}
     {% set has_work_address = partie.work_address_street or partie.work_address_city %}
     {% set has_work_contact = partie.job_title or partie.job_role or partie.organization
                               or partie.email_work or partie.phone_work or partie.fax %}
     <div class="bg-white rounded-xl border border-gray-200 p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-3">Coordonnées professionnelles</h2>
+      <h2 class="text-sm font-semibold text-gray-900 mb-3">{% if partie.type == 'organization' %}Coordonnées de l'entreprise{% else %}Coordonnées professionnelles{% endif %}</h2>
       <dl class="space-y-2 text-sm">
         {% if partie.job_title %}
         <div class="grid grid-cols-3 gap-3">

@@ -130,10 +130,16 @@ Each of the three slots exposes the **same 14 fields**. Replace `<slot>` with
 | `{{<slot>.telephone}}` | Phone, formatted (work → cell → home) |
 | `{{<slot>.numero_barreau}}` | Bar number |
 
-> **Address selection:** for a partie whose role is `avocat_adverse`, `expert`,
-> `huissier`, or `notaire` **and** who has a work address, the *work* address /
-> email are used; otherwise the personal ones. Affects every address/email
-> field on that slot.
+> **Address selection (preference + fallback):** the contact's role decides
+> which address block is tried **first** — the *work* block for
+> `avocat_adverse`, `expert`, `huissier` and `notaire`, the *personal* one for
+> everybody else (clients included). **The other block is the fallback** when
+> the preferred one carries no address, so a **personne morale** always prints:
+> the contact form hides the personal block for an organization (its address
+> can only be entered under « Adresse »/professional), while the client portal
+> writes a company's address into the personal one. Both are legitimate.
+> The email follows the block that was selected; the phone does not (it has its
+> own work → cell → home order). Affects every address/email field on the slot.
 
 ### `cabinet.*` (your firm)
 
