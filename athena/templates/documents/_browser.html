@@ -17,6 +17,11 @@
 {% if erreur %}
 <div class="text-red-600 text-sm mb-4">{{ erreur }}</div>
 {% endif %}
+{# ── Son pendant affirmatif : une suppression destructive dit ce qui a
+   disparu, sinon elle ne laisse aucune trace à l'écran. #}
+{% if message %}
+<div class="text-gray-600 text-sm mb-4">{{ message }}</div>
+{% endif %}
 
 {# ── Breadcrumb ───────────────────────────────────────────── #}
 {% if dossier_id and (breadcrumb or folder_id) %}
@@ -188,21 +193,45 @@
           </button>
         </div>
 
-        {# Delete confirmation #}
+        {# Delete confirmation — le contenu se DÉPLACE ou se SUPPRIME, et le
+           juriste tranche. Le décompte porte sur TOUT le sous-arbre : c'est
+           le seul garde-fou avant une suppression irréversible (les octets
+           partent de GCS ; le registre des suppressions ne garde que les
+           titres). DEUX formulaires distincts plutôt que deux boutons
+           « name= » dans un seul : le repli sans JS reste exact et rien ne
+           dépend de l'inclusion du bouton soumetteur par HTMX. #}
+        {% set nb_fichiers = f._subtree_documents or 0 %}
+        {% set nb_sous_dossiers = f._subtree_folders or 0 %}
         <div x-show="deleteOpen"
              @keydown.escape.window="deleteOpen = false"
              x-cloak
              class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div @click.outside="deleteOpen = false"
-               class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+               class="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div class="p-6">
               <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer le dossier « {{ f.name }} » ?</h3>
-              <p class="text-sm text-gray-600 mb-4">Les fichiers contenus seront déplacés vers le dossier parent.</p>
-              <div class="flex gap-3 justify-end">
+              {% if nb_fichiers %}
+              <p class="text-sm text-gray-600 mb-2">
+                Il contient {{ nb_fichiers }} fichier{{ 's' if nb_fichiers != 1 }}{% if nb_sous_dossiers %}
+                dans {{ nb_sous_dossiers }} sous-dossier{{ 's' if nb_sous_dossiers != 1 }}{% endif %}.
+              </p>
+              <p class="text-sm text-gray-600 mb-4">
+                Voulez-vous déplacer ces fichiers vers le dossier parent, ou les supprimer avec le dossier ?
+                <span class="text-gray-500">La suppression est définitive.</span>
+              </p>
+              {% elif nb_sous_dossiers %}
+              <p class="text-sm text-gray-600 mb-4">
+                Il contient {{ nb_sous_dossiers }} sous-dossier{{ 's' if nb_sous_dossiers != 1 }} vide{{ 's' if nb_sous_dossiers != 1 }}, qui ser{{ 'ont' if nb_sous_dossiers != 1 else 'a' }} supprimé{{ 's' if nb_sous_dossiers != 1 }}.
+              </p>
+              {% else %}
+              <p class="text-sm text-gray-600 mb-4">Ce dossier est vide.</p>
+              {% endif %}
+              <div class="flex flex-wrap gap-3 justify-end">
                 <button @click="deleteOpen = false"
                         class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
                   Annuler
                 </button>
+                {% if nb_fichiers %}
                 <form method="post"
                       action="{{ url_for('documents.folder_delete_route', folder_id=f.id) }}"
                       hx-post="{{ url_for('documents.folder_delete_route', folder_id=f.id) }}"
@@ -210,10 +239,24 @@
                       hx-swap="innerHTML">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="dossier_id" value="{{ dossier_id }}">
-                  <input type="hidden" name="recursive" value="true">
+                  <input type="hidden" name="contents" value="move">
+                  <button type="submit"
+                          class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+                    Déplacer les fichiers
+                  </button>
+                </form>
+                {% endif %}
+                <form method="post"
+                      action="{{ url_for('documents.folder_delete_route', folder_id=f.id) }}"
+                      hx-post="{{ url_for('documents.folder_delete_route', folder_id=f.id) }}"
+                      hx-target="#browser-content"
+                      hx-swap="innerHTML">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="dossier_id" value="{{ dossier_id }}">
+                  <input type="hidden" name="contents" value="{{ 'delete' if nb_fichiers else 'move' }}">
                   <button type="submit"
                           class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
-                    Supprimer
+                    {% if nb_fichiers %}Tout supprimer{% else %}Supprimer{% endif %}
                   </button>
                 </form>
               </div>

@@ -19,6 +19,23 @@ COLLECTION = "folders"
 MAX_NAME_LENGTH = 100
 MAX_NESTING_DEPTH = 5
 
+# Ceiling on « delete the contents too ». Each document costs THREE serial
+# round trips — get_document, blob.delete(), the Firestore delete — and
+# gunicorn kills the request at 60 s (app.yaml). MAX_ZIP_FILES sets the
+# house rate at 150 initiations ≈ 15 s, i.e. ~100 ms each, so 200 documents
+# (600 round trips) lands ON the kill point; 150 stays around 45 s. The
+# margin matters more here than anywhere else: a handled failure reports
+# what it already destroyed and the route journals it, but a SIGKILL
+# reports NOTHING — files gone from GCS and Firestore with no audit_events
+# row and no message. Refuse loudly, name the count, keep the same ceiling
+# as the ZIP export.
+MAX_FOLDER_DELETE_DOCUMENTS = 150
+
+# What to do with the documents a deleted folder contains.
+CONTENTS_MOVE = "move"
+CONTENTS_DELETE = "delete"
+VALID_CONTENTS = (CONTENTS_MOVE, CONTENTS_DELETE)
+
 
 def _validate_name(name: str) -> list[str]:
     """Validate folder name. Returns list of error messages."""
@@ -67,19 +84,126 @@ def _get_depth(dossier_id: str, folder_id: Optional[str]) -> int:
     return depth
 
 
-def _count_items(dossier_id: str, folder_id: str) -> dict:
-    """Count child folders and documents in a folder."""
-    child_folders = list_folders(dossier_id, parent_folder_id=folder_id)
-    try:
-        query = db.collection("documents").where(
-            filter=FieldFilter("dossier_id", "==", dossier_id)
-        ).where(
-            filter=FieldFilter("folder_id", "==", folder_id)
-        )
-        doc_count = sum(1 for _ in query.stream())
-    except Exception:
-        doc_count = 0
-    return {"folders": len(child_folders), "documents": doc_count}
+# _count_items (one query per folder, and fail-OPEN: doc_count = 0 on a read
+# error, so a populated folder read as empty) was removed in August 2026. Its
+# last caller, the browser's per-folder counts, moved to subtree_index, and
+# the emptiness guard that justified it no longer exists — delete_folder now
+# takes the whole subtree explicitly. Do not reinstate it: a fail-open
+# counter is exactly what must never feed a destructive dialog, and leaving
+# one in this module invites the reuse the comments below exist to prevent.
+
+
+# ── Subtree enumeration (TWO queries for a whole dossier) ─────────────────
+#
+# The idiom build_folder_zip_url already proved (models/document.py): read
+# every folder once and every document once, then work in Python — never one
+# query per node. Both readers below fail CLOSED (they propagate), because
+# they feed a destructive confirmation and a destructive write.
+
+
+def _all_folders(dossier_id: str) -> list[dict]:
+    """Every folder of a dossier — ONE query, errors PROPAGATE.
+
+    ``list_folders`` deliberately fails open to ``[]`` (a browser listing
+    degrades to « empty »); a deletion may not, or it would report « this
+    folder is empty » and destroy what it could not read.
+    """
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    )
+    return [doc.to_dict() for doc in query.stream()]
+
+
+def _all_documents(dossier_id: str) -> list[dict]:
+    """Every document of a dossier — ONE query, errors PROPAGATE.
+
+    Deliberately NOT ``models.document.list_documents``: that one ends in
+    ``except Exception: return []``, which is right for a browser listing
+    and catastrophic here. An unreadable documents collection would read as
+    « this folder holds nothing », the dialog would say « Ce dossier est
+    vide », and the folder records would be deleted over documents still
+    pointing at them — the dead-``folder_id`` bug this whole change exists
+    to remove, reintroduced through the back door.
+    """
+    query = db.collection("documents").where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    )
+    return [doc.to_dict() for doc in query.stream()]
+
+
+def _children_index(folders: list[dict]) -> dict:
+    """{parent_folder_id or None: [folder, …]} — a plain adjacency map."""
+    index: dict = {}
+    for f in folders:
+        index.setdefault(f.get("parent_folder_id"), []).append(f)
+    return index
+
+
+def _descendant_ids(folder_id: str, children: dict) -> list[str]:
+    """Ids of *folder_id* and every folder below it (cycle-safe)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    stack = [folder_id]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        out.append(current)
+        stack.extend(c["id"] for c in children.get(current, []))
+    return out
+
+
+def subtree_index(dossier_id: str) -> dict:
+    """``{folder_id: {"direct": n, "documents": n, "folders": n}}`` for EVERY
+    folder of the dossier, in TWO queries.
+
+    ``direct`` is the one-level count the browser row already displays;
+    ``documents`` / ``folders`` are the SUBTREE totals the delete dialog must
+    announce — « 23 fichiers dans 4 sous-dossiers » is the whole guard rail
+    the lawyer gets before an irreversible deletion, so it counts what will
+    actually be destroyed, not just the top level. Errors propagate.
+    """
+    folders = _all_folders(dossier_id)
+    documents = _all_documents(dossier_id)
+
+    children = _children_index(folders)
+    docs_by_folder: dict = {}
+    for d in documents:
+        docs_by_folder.setdefault(d.get("folder_id"), []).append(d)
+
+    index: dict = {}
+    for f in folders:
+        fid = f["id"]
+        ids = _descendant_ids(fid, children)
+        doc_total = sum(len(docs_by_folder.get(i, [])) for i in ids)
+        index[fid] = {
+            "direct": len(children.get(fid, [])) + len(docs_by_folder.get(fid, [])),
+            "documents": doc_total,
+            "folders": len(ids) - 1,          # the subtree, target excluded
+        }
+    return index
+
+
+def subtree_members(dossier_id: str, folder_id: str) -> tuple[list[str], list[dict]]:
+    """``(folder ids of the subtree — target INCLUDED, documents inside it)``.
+
+    A document whose ``folder_id`` points INTO the subtree is included even
+    if intermediate state is odd: matching on the id set is what still
+    reaches a document stranded by an earlier half-failed deletion, which no
+    browser view can show (``list_documents`` filters on exact equality).
+    Errors propagate — see :func:`_all_documents` for why the fail-open
+    reader is deliberately not used here.
+    """
+    folders = _all_folders(dossier_id)
+    children = _children_index(folders)
+    ids = _descendant_ids(folder_id, children)
+    id_set = set(ids)
+    documents = [
+        d for d in _all_documents(dossier_id)
+        if d.get("folder_id") in id_set
+    ]
+    return ids, documents
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
@@ -303,62 +427,139 @@ def move_folder(
     return existing, []
 
 
+_BATCH_CHUNK = 450          # Firestore caps a batch at 500 operations
+
+
 def delete_folder(
     dossier_id: str,
     folder_id: str,
-    recursive: bool = False,
-) -> tuple[bool, str]:
-    """Delete a folder. Returns (success, error_message)."""
+    *,
+    contents: str = CONTENTS_MOVE,
+) -> tuple[bool, str, dict]:
+    """Delete a folder and its whole subtree. ``contents`` decides the files.
+
+    * ``"move"`` (the default, and the fallback for ANY unrecognised value —
+      a forged or missing form field must never destroy): every document of
+      the subtree moves to the deleted folder's parent, in ONE write each.
+      The previous implementation bubbled documents up one level per
+      recursion step, so a document three levels down was rewritten three
+      times, minting three etags.
+    * ``"delete"``: every document of the subtree is deleted, GCS bytes
+      included. This is the application's ONLY destructive cascade, and it
+      exists solely because the user is asked first and told the count.
+
+    ORDER IS LOAD-BEARING: documents first, folder records second. A failure
+    in the document phase ABORTS without touching the folders (fail CLOSED).
+    The old code swallowed the reparent failure and deleted the folder
+    anyway, leaving documents with a dead ``folder_id`` — invisible in the
+    browser (``list_documents`` filters on exact equality), reachable only
+    through a free-text search or the whole-dossier ZIP.
+
+    Returns ``(ok, french_message, report)`` where *report* carries the
+    folders and documents ACTUALLY destroyed, so the route can mint one
+    deletion event per entity (the house invariant); the old
+    ``(bool, str)`` return made that impossible, and only the top folder was
+    ever journalled.
+    """
+    if contents not in VALID_CONTENTS:
+        contents = CONTENTS_MOVE
+
+    vide: dict = {"folders": [], "documents": [], "moved": 0}
+
     existing = get_folder(dossier_id, folder_id)
     if not existing:
-        return False, "Dossier introuvable."
-
-    items = _count_items(dossier_id, folder_id)
-    child_folders = list_folders(dossier_id, parent_folder_id=folder_id)
-    has_content = items["folders"] > 0 or items["documents"] > 0
-
-    if has_content and not recursive:
-        return False, "Le dossier n'est pas vide."
-
+        return False, "Dossier introuvable.", vide
     parent_id = existing.get("parent_folder_id")
 
-    if recursive:
-        # Recursively handle child folders first
-        for child in child_folders:
-            delete_folder(dossier_id, child["id"], recursive=True)
-
-        # Move all documents in this folder to the parent (or root)
-        try:
-            query = db.collection("documents").where(
-                filter=FieldFilter("dossier_id", "==", dossier_id)
-            ).where(
-                filter=FieldFilter("folder_id", "==", folder_id)
-            )
-            now = datetime.now(timezone.utc)
-            for doc_snap in query.stream():
-                db.collection("documents").document(doc_snap.id).update({
-                    "folder_id": parent_id,
-                    "updated_at": now,
-                    "etag": str(uuid.uuid4()),
-                })
-        except Exception as exc:
-            logger.warning(
-                "delete_folder: failed to reparent documents under %s: %s",
-                sanitize_log_value(folder_id), exc,
-            )
-
-    # Delete the folder
+    # Fail CLOSED: an unreadable subtree is never « an empty subtree ».
     try:
-        db.collection(COLLECTION).document(folder_id).delete()
+        folder_ids, documents = subtree_members(dossier_id, folder_id)
+    except Exception:
+        log_unexpected("folder subtree read failed")
+        return False, "Impossible de lire le contenu du dossier. Réessayez.", vide
+
+    if contents == CONTENTS_DELETE and len(documents) > MAX_FOLDER_DELETE_DOCUMENTS:
+        return False, (
+            f"Ce dossier contient {len(documents)} fichiers, au-delà de la "
+            f"limite de {MAX_FOLDER_DELETE_DOCUMENTS} par suppression. "
+            "Supprimez d'abord des sous-dossiers."
+        ), vide
+
+    folders_by_id = {f["id"]: f for f in _folders_by_ids(dossier_id, folder_ids)}
+    supprimes: list[dict] = []
+    moved = 0
+
+    # ── 1. Documents ──────────────────────────────────────────────────
+    if contents == CONTENTS_DELETE:
+        from models.document import delete_document
+
+        for doc in documents:
+            ok, erreur = delete_document(doc.get("id", ""))
+            if not ok:
+                # Stop here and keep every folder record: the tree stays
+                # navigable and the operation replays over what is left.
+                return False, (
+                    f"{len(supprimes)} fichier(s) supprimé(s), puis : {erreur} "
+                    "Le dossier a été conservé — réessayez."
+                ), {"folders": [], "documents": supprimes, "moved": 0}
+            supprimes.append(doc)
+    elif documents:
+        try:
+            now = datetime.now(timezone.utc)
+            for start in range(0, len(documents), _BATCH_CHUNK):
+                batch = db.batch()
+                for doc in documents[start:start + _BATCH_CHUNK]:
+                    ref = db.collection("documents").document(doc["id"])
+                    batch.update(ref, {
+                        "folder_id": parent_id,
+                        "updated_at": now,
+                        "etag": str(uuid.uuid4()),
+                    })
+                batch.commit()
+            moved = len(documents)
+        except Exception:
+            log_unexpected("folder document reparent failed")
+            return False, (
+                "Impossible de déplacer les fichiers. Le dossier a été "
+                "conservé — réessayez."
+            ), vide
+
+    # ── 2. Folder records (the subtree, deepest first is irrelevant —
+    #       the whole set goes in one commit) ────────────────────────────
+    try:
+        for start in range(0, len(folder_ids), _BATCH_CHUNK):
+            batch = db.batch()
+            for fid in folder_ids[start:start + _BATCH_CHUNK]:
+                batch.delete(db.collection(COLLECTION).document(fid))
+            batch.commit()
     except Exception:
         log_unexpected("folder delete failed")
-        return False, "Erreur lors de la suppression. Veuillez réessayer."
+        return False, "Erreur lors de la suppression. Veuillez réessayer.", {
+            "folders": [], "documents": supprimes, "moved": moved,
+        }
 
-    # Touch parent
     if parent_id:
         _touch_folder(dossier_id, parent_id)
 
-    return True, ""
+    return True, "", {
+        "folders": [folders_by_id.get(fid, {"id": fid}) for fid in folder_ids],
+        "documents": supprimes,
+        "moved": moved,
+    }
+
+
+def _folders_by_ids(dossier_id: str, folder_ids: list[str]) -> list[dict]:
+    """The folder docs behind *folder_ids* — for the deletion trail's titles.
+
+    Best-effort: a name that cannot be read costs a nameless trail entry,
+    never the deletion itself.
+    """
+    try:
+        wanted = set(folder_ids)
+        return [f for f in _all_folders(dossier_id) if f.get("id") in wanted]
+    except Exception:
+        logger.warning("folder titles unreadable for the deletion trail")
+        return []
 
 
 # ── Navigation helpers ────────────────────────────────────────────────────

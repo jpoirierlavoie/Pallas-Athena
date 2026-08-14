@@ -81,11 +81,27 @@ def _attach_computed_fields(documents: list[dict]) -> None:
 
 
 def _attach_folder_counts(folders: list[dict], dossier_id: str) -> None:
-    """Attach item counts to folder dicts for display."""
-    from models.folder import _count_items
+    """Attach the row count AND the subtree counts the delete dialog needs.
+
+    ONE pass over two queries (``subtree_index``) instead of one query per
+    folder — the N+1 the July 2026 note removed from the dossier tab still
+    lived here. The subtree figures are what the destructive confirmation
+    announces, so they must count the whole tree, not the top level. Fails
+    to zeros rather than breaking the listing; the dialog then offers no
+    « tout supprimer » (see the template's guard on ``_subtree_documents``).
+    """
+    from models.folder import subtree_index
+
+    try:
+        index = subtree_index(dossier_id)
+    except Exception:
+        logger.warning("folder counts unavailable for the browser")
+        index = {}
     for f in folders:
-        counts = _count_items(dossier_id, f["id"])
-        f["_item_count"] = counts["folders"] + counts["documents"]
+        counts = index.get(f["id"]) or {}
+        f["_item_count"] = counts.get("direct", 0)
+        f["_subtree_documents"] = counts.get("documents", 0)
+        f["_subtree_folders"] = counts.get("folders", 0)
 
 
 # ── List / Browser ───────────────────────────────────────────────────────
@@ -157,6 +173,9 @@ def document_list() -> str:
         # Rebond des routes qui redirigent vers le navigateur avec un
         # message d'erreur (archive zip…) — motif reception.
         "erreur": sanitize(request.args.get("erreur", ""), max_length=300),
+        # …et son pendant affirmatif : une suppression destructive dit ce
+        # qui a disparu, sans quoi elle ne laisse aucune trace à l'écran.
+        "message": sanitize(request.args.get("message", ""), max_length=300),
     }
 
     if _is_htmx():
@@ -634,9 +653,15 @@ def folder_move(folder_id: str) -> str:
 @documents_bp.route("/folders/<folder_id>/delete", methods=["POST"])
 @login_required
 def folder_delete_route(folder_id: str) -> str:
-    """Delete a folder."""
+    """Delete a folder — moving its files out, or deleting them with it.
+
+    ``contents`` comes from the confirmation dialog's two distinct forms.
+    Anything other than « delete » (a missing field, a stale page, a forged
+    post) is treated as « move » by the model — the destructive branch is
+    opt-in, never a default.
+    """
     dossier_id = request.form.get("dossier_id", "").strip()
-    recursive = request.form.get("recursive", "") == "true"
+    contents = request.form.get("contents", "").strip()
 
     if not dossier_id:
         if _is_htmx():
@@ -647,25 +672,76 @@ def folder_delete_route(folder_id: str) -> str:
     folder_data = get_folder(dossier_id, folder_id)
     parent_id = folder_data.get("parent_folder_id") if folder_data else None
 
-    success, error = delete_folder(dossier_id, folder_id, recursive=recursive)
+    success, error, rapport = delete_folder(
+        dossier_id, folder_id, contents=contents,
+    )
 
-    if success:
+    # ONE deletion event per entity — the house invariant (14 call sites).
+    # Until now a single event was minted for the top folder and the
+    # sub-folders vanished from the trail entirely.
+    #
+    # Journalled OUTSIDE the success test on purpose: two of delete_folder's
+    # failure returns are NOT atomic and carry what they already destroyed
+    # (a blob delete that fails on file 13 of 40 leaves 12 files gone from
+    # GCS and from Firestore, irreversibly). Gating on success dropped that
+    # report on the floor, so `list_deletions` — whose whole purpose is
+    # « qu'est-ce qui a disparu ? » — answered that nothing had. The report
+    # only ever lists COMMITTED deletes, so a run that destroyed nothing
+    # still journals nothing.
+    for doc in rapport.get("documents", []):
         record_deletion(
-            "folder", folder_id,
+            "document", doc.get("id", ""),
             dossier_id=dossier_id,
-            title=(folder_data or {}).get("name", ""),
-            status="récursif" if recursive else "",
+            title=doc.get("display_name", "") or doc.get("filename", ""),
+            status=doc.get("category", ""),
+        )
+    for folder in rapport.get("folders", []):
+        record_deletion(
+            "folder", folder.get("id", ""),
+            dossier_id=dossier_id,
+            title=folder.get("name", ""),
+            status="contenu supprimé" if rapport.get("documents") else "",
         )
 
+    message = _folder_delete_message(rapport) if success else ""
+
+    target = url_for(
+        "documents.document_list", dossier_id=dossier_id,
+        folder_id=parent_id or "",
+        **({"message": message} if message else {"erreur": error} if error else {}),
+    )
     if _is_htmx():
-        if not success:
-            return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-        target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_id or "")
+        # Succès comme échec : 200 + HX-Redirect vers le navigateur, qui
+        # relit ?message= / ?erreur= dans sa bannière. Surtout PAS un
+        # fragment 422 — htmx 2.0.4 n'échange que les 2xx (la règle que
+        # doc_templates.py:88 documente déjà), si bien qu'un refus (« 342
+        # fichiers, au-delà de la limite ») ou un aveu de destruction
+        # partielle mourait à l'écran : bouton mort, rien qui bouge, et
+        # l'utilisateur re-clique.
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_id or ""))
+    # La branche sans JS laissait tomber l'erreur en silence — elle rebondit
+    # désormais sur le navigateur avec ?erreur=, comme l'archive zip.
+    return redirect(target)
+
+
+def _folder_delete_message(rapport: dict) -> str:
+    """« 4 dossiers et 23 fichiers supprimés » — ce qui a réellement disparu."""
+    dossiers = len(rapport.get("folders", []))
+    fichiers = len(rapport.get("documents", []))
+    deplaces = int(rapport.get("moved", 0))
+    parts = [f"{dossiers} dossier{'s' if dossiers != 1 else ''}"]
+    if fichiers:
+        parts.append(f"{fichiers} fichier{'s' if fichiers != 1 else ''}")
+    phrase = " et ".join(parts) + (" supprimés" if fichiers or dossiers != 1 else " supprimé")
+    if deplaces:
+        phrase += (
+            f" — {deplaces} fichier{'s' if deplaces != 1 else ''} "
+            f"déplacé{'s' if deplaces != 1 else ''} vers le dossier parent"
+        )
+    return phrase
 
 
 # ── Folder tree API (for move modal) ─────────────────────────────────────
