@@ -60,4 +60,10 @@
 <div id="trust-export" class="ml-auto flex gap-2" hx-swap-oob="true">
   {% include "trust/_export_links.html" %}
 </div>
+{# L'en-tête aussi : il vit hors de #trust-rows, et un changement de COMPTE
+   laisserait sinon les soldes de l'ancien compte au-dessus du registre du
+   nouveau — des chiffres d'argent faux à côté d'un livre de compte. #}
+<div id="trust-header" hx-swap-oob="true">
+  {% include "trust/_header_cards.html" %}
+</div>
 {% endif %}

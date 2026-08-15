@@ -30,32 +30,11 @@
   </div>
   {% else %}
 
-  {# Account header: book / bank / outstanding / in-transit / last reconciliation #}
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
-      <p class="text-xs text-gray-500">Solde aux livres</p>
-      <p class="text-lg font-semibold text-gray-900">{{ header.book_balance | cents_fr }}</p>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
-      <p class="text-xs text-gray-500">Solde bancaire</p>
-      <p class="text-lg font-semibold text-gray-900">{{ header.bank_balance | cents_fr }}</p>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
-      <p class="text-xs text-gray-500">Chèques en circulation</p>
-      <p class="text-lg font-semibold text-gray-900">{{ header.outstanding_total | cents_fr }}</p>
-      <p class="text-xs text-gray-500">{{ header.outstanding_count }} écriture(s)</p>
-    </div>
-    <div class="bg-white rounded-xl border border-gray-200 p-4">
-      <p class="text-xs text-gray-500">Dépôts en transit</p>
-      <p class="text-lg font-semibold text-gray-900">{{ header.in_transit_total | cents_fr }}</p>
-      <p class="text-xs text-gray-500">{{ header.in_transit_count }} écriture(s)</p>
-    </div>
+  {# Ré-émis hors bande par _transaction_rows.html à chaque échange HTMX —
+     garder l'id en phase avec ce bloc. #}
+  <div id="trust-header">
+    {% include "trust/_header_cards.html" %}
   </div>
-  {% if header.reconciliation_overdue %}
-  <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-    Conciliation en retard — plus de 30 jours depuis la dernière fin de mois conciliée.
-  </div>
-  {% endif %}
 
   {# Filters #}
   <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">

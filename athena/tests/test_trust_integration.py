@@ -12,9 +12,24 @@ légitimement — on épingle les gabarits touchés seulement.
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
+from unittest import mock
+
+import pytest
 
 _ATHENA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ATHENA)
+
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
+
+with mock.patch("google.cloud.firestore.Client"):
+    import routes.trust as rt
+    import routes.admin_ledger as ra
+
+from flask import Flask  # noqa: E402
 
 
 def _template(name: str) -> str:
@@ -61,3 +76,83 @@ def test_comptes_et_conciliations_sont_atteignables_sur_mobile():
         src = _template(name)
         assert "hidden md:inline-flex" not in src, name
         assert "flex flex-wrap items-center justify-between" in src, name
+
+
+def test_rows_partial_reemits_export_et_header_oob():
+    """Miroir de test_rows_partial_reemits_the_export_links_oob (admin) :
+    l'export ET l'en-tête se ré-émettent hors bande — sans le second, un
+    changement de compte laissait les soldes de l'ANCIEN compte au-dessus du
+    registre du nouveau (des chiffres d'argent faux à côté d'un livre de
+    compte). Hors des branches lignes/vide, gardé sur HX-Request pour qu'un
+    rendu pleine page n'émette jamais l'id deux fois."""
+    rows = _template("trust/_transaction_rows.html")
+    assert 'hx-swap-oob="true"' in rows
+    assert 'id="trust-export"' in rows
+    assert 'id="trust-header"' in rows
+    assert "request.headers.get('HX-Request')" in rows
+
+    page = _template("trust/list.html")
+    assert 'id="trust-export"' in page
+    assert 'id="trust-header"' in page
+    assert 'hx-target="#trust-rows"' in page
+
+
+_ACC = {
+    "id": "ta1", "name": "Compte général", "account_type": "général",
+    "status": "actif", "institution": "BNC", "account_number_last4": "9876",
+    "book_balance": 250000, "bank_balance": 200000, "created_at": None,
+    "notes": "", "transit": "12345",
+}
+
+
+@pytest.fixture()
+def web_rendu(monkeypatch):
+    """Rendu réel du journal trust. trust_bp ET admin_bp : trust/form.html
+    porte le select admin_account_id, et un url_for('admin_ledger.…') dans
+    l'arbre de rendu exige le blueprint enregistré."""
+    from utils.format_fr import format_cents_fr
+    from utils.icons import ms as _ms
+
+    app = Flask(__name__, template_folder=os.path.join(_ATHENA, "templates"))
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["TESTING"] = True
+    app.jinja_env.globals["ms"] = _ms
+    app.jinja_env.globals["csrf_token"] = lambda: "jeton-test"
+    app.jinja_env.filters["cents_fr"] = format_cents_fr
+    app.register_blueprint(rt.trust_bp)
+    app.register_blueprint(ra.admin_bp)
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["user_id"] = "u1"
+        s["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
+    return client
+
+
+def _journal_lectures(monkeypatch):
+    monkeypatch.setattr(rt.trust, "list_accounts", lambda status=None: [dict(_ACC)])
+    monkeypatch.setattr(rt.trust, "list_outstanding", lambda aid, as_of=None: [])
+    monkeypatch.setattr(rt.trust, "list_in_transit", lambda aid, as_of=None: [])
+    monkeypatch.setattr(rt.trust, "list_reconciliations", lambda aid=None: [])
+    monkeypatch.setattr(rt.trust, "list_transactions_page",
+                        lambda aid, cursor=None, limit=15: ([], None))
+
+
+def test_rendu_pleine_page_un_seul_header(web_rendu, monkeypatch):
+    """Le rendu complet n'émet l'id qu'une fois — jamais le jumeau OOB."""
+    _journal_lectures(monkeypatch)
+    html = web_rendu.get("/fideicommis/").get_data(as_text=True)
+    assert html.count('id="trust-header"') == 1
+    assert html.count('id="trust-export"') == 1
+    assert "Solde aux livres" in html
+
+
+def test_echange_htmx_reemet_header_et_export(web_rendu, monkeypatch):
+    """La requête HTMX (un changement de filtre OU de compte) porte les DEUX
+    jumeaux OOB : les soldes affichés suivent le compte du registre."""
+    _journal_lectures(monkeypatch)
+    html = web_rendu.get("/fideicommis/",
+                         headers={"HX-Request": "true"}).get_data(as_text=True)
+    assert html.count('id="trust-header"') == 1
+    assert 'hx-swap-oob="true"' in html
+    assert html.count('id="trust-export"') == 1
+    assert "Solde aux livres" in html   # les cartes voyagent avec l'échange
