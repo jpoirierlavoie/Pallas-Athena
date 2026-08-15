@@ -58,7 +58,10 @@
     <div id="filters" class="flex flex-wrap items-end gap-3">
       <div>
         <label class="block text-xs font-medium text-gray-700 mb-1">Compte</label>
-        <select name="account_id" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-push-url="true"
+        {# hx-include comme les autres contrôles : sans lui, changer de compte
+           perdrait silencieusement les filtres actifs (revue 2026-08-13 côté
+           administration ; rétroporté au fidéicommis le 2026-08-15). #}
+        <select name="account_id" hx-get="{{ url_for('trust.journal') }}" hx-target="#trust-rows" hx-include="#filters select, #filters input" hx-push-url="true"
                 class="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white">
           {% for a in accounts %}
           <option value="{{ a.id }}" {% if a.id == account.id %}selected{% endif %}>{{ a.name }}</option>
