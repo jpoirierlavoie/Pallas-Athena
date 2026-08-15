@@ -126,7 +126,7 @@ def test_route_map_is_exactly_the_portal_set(app):
     }
     # Belt: none of the main service's surfaces exist in this process.
     for interdit in ("/dossiers/", "/mcp", "/dav/", "/auth/login",
-                     "/fideicommis/", "/reception/"):
+                     "/fideicommis/", "/reception/", "/comptabilite/"):
         assert not any(r.startswith(interdit) for r in rules), interdit
 
 
