@@ -383,9 +383,15 @@ def test_no_arrow_functions_in_template_attributes():
         assert "=>" not in src, name
 
 
-def test_admin_nav_entry_in_both_duplicated_lists():
+def test_comptabilite_nav_entry_in_both_duplicated_lists():
+    """Depuis la phase 2 de la consolidation (2026-08-15), l'entrée de nav
+    comptable est « Comptabilité » → le hub /comptabilite, qui mène aux deux
+    modules. Aucun lien /administration ni /fideicommis en dur dans la nav —
+    le hub est le seul point d'entrée nav des deux comptabilités."""
     src = _template("base.html")
-    assert src.count('href="/administration"') == 2  # sidebar + menu « Plus »
+    assert src.count('href="/comptabilite"') == 2  # sidebar + menu « Plus »
+    assert 'href="/administration"' not in src
+    assert 'href="/fideicommis"' not in src
 
 
 def test_form_has_csrf_and_the_ventilation_target():
