@@ -62,8 +62,14 @@ def test_le_type_de_compte_est_fige_en_edition():
     src = _template("trust/account_form.html")
     assert "{% if account and account.id %}" in src
     assert "disabled" in src
-    # Le select de création ne porte plus de branche « selected » d'édition.
-    assert 'account.account_type == t' not in src
+    # STRUCTUREL, pas littéral (la première épingle interdisait l'expression
+    # « selected » entière — ce qui interdisait AUSSI la préservation du type
+    # au re-rendu 400 de création, revue 2026-08-15) : la branche édition
+    # (input disabled) précède le select, qui vit dans le else.
+    assert src.index("disabled") < src.index('<select name="account_type"')
+    # Et la création PRÉSERVE le type soumis au re-rendu d'erreur.
+    creation = src[src.index('<select name="account_type"'):]
+    assert "selected" in creation
 
 
 def test_comptes_et_conciliations_sont_atteignables_sur_mobile():
@@ -85,10 +91,14 @@ def test_rows_partial_reemits_export_et_header_oob():
     registre du nouveau (des chiffres d'argent faux à côté d'un livre de
     compte). Hors des branches lignes/vide, gardé sur HX-Request pour qu'un
     rendu pleine page n'émette jamais l'id deux fois."""
+    import re
+
     rows = _template("trust/_transaction_rows.html")
-    assert 'hx-swap-oob="true"' in rows
-    assert 'id="trust-export"' in rows
-    assert 'id="trust-header"' in rows
+    # L'attribut OOB lié AU MÊME TAG que l'id (revue 2026-08-15 : des
+    # assertions de sous-chaînes indépendantes laissaient passer un header
+    # ré-émis sans hx-swap-oob — injecté EN LIGNE dans #trust-rows).
+    assert re.search(r'<div id="trust-export"[^>]*hx-swap-oob="true"', rows)
+    assert re.search(r'<div id="trust-header"[^>]*hx-swap-oob="true"', rows)
     assert "request.headers.get('HX-Request')" in rows
 
     page = _template("trust/list.html")

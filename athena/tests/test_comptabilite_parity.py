@@ -53,9 +53,16 @@ def test_les_deux_rows_partials_reemettent_export_et_header_oob():
     for cle, rep in _PAIRES.items():
         src = _template(f"{rep}/_transaction_rows.html")
         prefix = _IDS[cle]
-        assert f'id="{prefix}-export"' in src, rep
-        assert f'id="{prefix}-header"' in src, rep
-        assert 'hx-swap-oob="true"' in src, rep
+        # L'attribut OOB est lié AU MÊME TAG que l'id (revue 2026-08-15 :
+        # quatre assertions de sous-chaînes indépendantes laissaient passer
+        # un header ré-émis SANS hx-swap-oob — htmx l'aurait alors injecté
+        # EN LIGNE dans #rows, id dupliqué, en-tête périmé au-dessus).
+        assert re.search(
+            rf'<div id="{prefix}-export"[^>]*hx-swap-oob="true"', src
+        ), rep
+        assert re.search(
+            rf'<div id="{prefix}-header"[^>]*hx-swap-oob="true"', src
+        ), rep
         assert "request.headers.get('HX-Request')" in src, rep
 
 
@@ -151,3 +158,67 @@ def test_le_hub_n_a_aucune_route_d_ecriture():
     # delete_/reverse_ des deux modèles.
     for verbe in ("create_", "update_", "delete_", "reverse_", "clear_"):
         assert verbe not in src, verbe
+
+
+def test_le_hub_ne_lit_que_les_deux_instantanes():
+    """Le budget de lecture du hub, épinglé (revue 2026-08-15 — la doctrine
+    « no new Firestore query » était annoncée épinglée et ne l'était pas) :
+    la route ne référence que les DEUX instantanés et les tables de libellés.
+    Ajouter trust.list_transactions(...) ou al.list_reconciliations() ici
+    serait une requête nouvelle par compte — la violation exacte."""
+    path = os.path.join(_ATHENA, "routes", "comptabilite.py")
+    with open(path, encoding="utf-8") as f:
+        src = f.read()
+    allowed = {
+        "trust.get_firm_trust_snapshot", "al.get_firm_admin_snapshot",
+        "trust.ACCOUNT_TYPE_LABELS", "al.ACCOUNT_TYPE_LABELS",
+    }
+    used = set(re.findall(r"\b(?:trust|al)\.\w+", src))
+    assert used <= allowed, used - allowed
+
+
+# ── Le prédicat de conciliation en retard — miroir des deux côtés ─────────
+
+
+def test_le_predicat_de_retard_lit_l_horloge_de_montreal():
+    """2026-07-30T01:00Z = le 29 juillet, 21 h, à Montréal (EDT). En date
+    UTC, (30 juil − 30 j) = 30 juin — une fin de mois — d'où due_through
+    30 juin et un « Conciliation en retard » allumé dès 20 h LA VEILLE du
+    bon jour ; en date de Montréal, (29 juil − 30 j) = 29 juin → due_through
+    31 mai, et un compte concilié au 31 mai n'est PAS en retard. La bande du
+    soir — la classe de bogue payée le 2026-08-02 et le 2026-08-14 (doctrine
+    today_mtl). Horloge GELÉE, jamais dérivée du présent."""
+    from datetime import datetime, timezone
+
+    instant = datetime(2026, 7, 30, 1, 0, tzinfo=timezone.utc)
+    last = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    for mod in (_rt.trust, _ra.al):
+        assert mod._reconciliation_overdue(last, instant) is False, mod.__name__
+
+
+def test_un_compte_ferme_n_est_jamais_en_retard(monkeypatch):
+    """Aucune conciliation mensuelle n'est due après clôture : sans le garde,
+    un compte fermé lisait « Conciliation en retard » POUR TOUJOURS (le
+    prédicat ne connaît que des dates) — hub, tableau de bord et MCP à la
+    fois. Les DEUX instantanés, et le drapeau cabinet avec eux."""
+    ferme = {
+        "id": "x1", "name": "Ancien compte", "status": "fermé",
+        "book_balance": 0, "bank_balance": 0, "ledger_balance": 0,
+        "account_type": "général", "created_at": None,
+        "institution": "", "account_number_last4": "",
+    }
+    monkeypatch.setattr(_rt.trust, "list_accounts",
+                        lambda status=None: [dict(ferme)])
+    monkeypatch.setattr(_rt.trust, "list_reconciliations", lambda aid=None: [])
+    monkeypatch.setattr(_rt.trust, "list_outstanding", lambda aid, as_of=None: [])
+    monkeypatch.setattr(_rt.trust, "list_in_transit", lambda aid, as_of=None: [])
+    snap = _rt.trust.get_firm_trust_snapshot()
+    assert snap["accounts"][0]["reconciliation_overdue"] is False
+    assert snap["reconciliation_overdue"] is False
+
+    monkeypatch.setattr(_ra.al, "list_accounts",
+                        lambda status=None: [dict(ferme, account_type="opérations")])
+    monkeypatch.setattr(_ra.al, "list_reconciliations", lambda aid=None: [])
+    snap = _ra.al.get_firm_admin_snapshot()
+    assert snap["accounts"][0]["reconciliation_overdue"] is False
+    assert snap["reconciliation_overdue"] is False

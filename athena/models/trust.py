@@ -36,6 +36,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from tz import to_mtl
 from utils.logging_setup import log_trust_event, log_unexpected, sanitize_log_value
 from utils.tracing_setup import span
 
@@ -2014,10 +2015,18 @@ def _reconciliation_overdue(
     exempts an account younger than its first due month-end.
     """
     now = now or datetime.now(timezone.utc)
+    # The calendar day is MONTRÉAL's, never UTC's (the evening-band doctrine,
+    # 2026-08-02/2026-08-14): from 20:00 EDT the UTC date is already
+    # tomorrow's, so whenever (now − grace) crossed a month end the badge lit
+    # up to 4-5 h early — on the hub, the dashboard AND MCP at once
+    # (2026-08-15 review). Only the CLOCK converts: period_end stays a
+    # date-only value read as its UTC calendar date. Mirror of
+    # admin_ledger._reconciliation_overdue — fix both or neither.
+    today = to_mtl(now).date()
     due_through = _month_end_on_or_before(
-        (now - timedelta(days=RECONCILIATION_GRACE_DAYS)).date()
+        today - timedelta(days=RECONCILIATION_GRACE_DAYS)
     )
-    if account_floor is not None and _as_utc(account_floor).date() > due_through:
+    if account_floor is not None and to_mtl(_as_utc(account_floor)).date() > due_through:
         return False
     if last_period_end is None:
         return True
@@ -2060,9 +2069,16 @@ def get_firm_trust_snapshot() -> dict:
         a_last = max(mine, default=None)
         a["last_reconciliation_date"] = a_last
         a["never_reconciled"] = a_last is None
-        a["reconciliation_overdue"] = _reconciliation_overdue(
-            a_last, now, account_floor=a.get("created_at")
-        )
+        # Aucune conciliation mensuelle n'est due après clôture : sans ce
+        # garde, un compte fermé lisait « Conciliation en retard » POUR
+        # TOUJOURS (le prédicat ne connaît que des dates) — sur le hub, le
+        # tableau de bord et MCP à la fois (revue 2026-08-15). Miroir admin.
+        if a.get("status") == "fermé":
+            a["reconciliation_overdue"] = False
+        else:
+            a["reconciliation_overdue"] = _reconciliation_overdue(
+                a_last, now, account_floor=a.get("created_at")
+            )
         any_overdue = any_overdue or a["reconciliation_overdue"]
 
     last_date = max(

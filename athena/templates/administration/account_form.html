@@ -23,9 +23,12 @@
          modifiable après création ; update_account l'écarte de toute façon. #}
       <input type="text" disabled value="{{ account_type_labels.get(account.account_type, account.account_type) }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
       {% else %}
+      {# Au re-rendu 400 de la création, account = request.form.to_dict() :
+         le type CHOISI survit à une erreur de validation (miroir trust,
+         revue 2026-08-15 — une carte refusée re-soumettait « opérations »). #}
       <select name="account_type" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for t in valid_account_types %}
-        <option value="{{ t }}">{{ account_type_labels[t] }}</option>
+        <option value="{{ t }}" {% if account and account.account_type == t %}selected{% endif %}>{{ account_type_labels[t] }}</option>
         {% endfor %}
       </select>
       {% endif %}

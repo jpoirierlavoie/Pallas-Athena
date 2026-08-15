@@ -26,9 +26,13 @@
          enregistré. Miroir du formulaire d'administration. #}
       <input type="text" disabled value="{{ account_type_labels.get(account.account_type, account.account_type) }}" class="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl bg-gray-50 text-gray-500">
       {% else %}
+      {# Au re-rendu 400 de la création, account = request.form.to_dict() :
+         le type CHOISI survit à une erreur de validation — sans le selected,
+         un « spécial » refusé se re-soumettrait en « général » (première
+         option), type immuable après création (revue 2026-08-15). #}
       <select name="account_type" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
         {% for t in valid_account_types %}
-        <option value="{{ t }}">{{ account_type_labels[t] }}</option>
+        <option value="{{ t }}" {% if account and account.account_type == t %}selected{% endif %}>{{ account_type_labels[t] }}</option>
         {% endfor %}
       </select>
       {% endif %}

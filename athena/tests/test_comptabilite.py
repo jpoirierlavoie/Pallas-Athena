@@ -157,10 +157,15 @@ def test_les_actions_menent_aux_ecrans_des_modules(web_rendu, monkeypatch):
 
 
 def test_badges_type_ferme_et_conciliation(web_rendu, monkeypatch):
+    """Un compte FERMÉ porte son badge « Fermé » et n'offre PAS « Concilier »
+    (le formulaire ne liste que les actifs — l'offrir ferait retomber le
+    select sur le premier compte actif en silence) ; le modèle, lui, ne
+    marque plus jamais un fermé « Conciliation en retard » (aucune
+    conciliation n'est due après clôture — les deux, revue 2026-08-15)."""
     trust_snap = dict(_TRUST_SNAP)
     trust_snap["accounts"] = [dict(_TRUST_SNAP["accounts"][0],
                                    status="fermé",
-                                   reconciliation_overdue=True)]
+                                   reconciliation_overdue=False)]
     _snapshots(monkeypatch, trust_snap, _ADMIN_SNAP)
     html = web_rendu.get("/comptabilite/").get_data(as_text=True)
 
@@ -170,19 +175,34 @@ def test_badges_type_ferme_et_conciliation(web_rendu, monkeypatch):
     assert str(escape("Compte d'opérations")) in html  # badge admin (apostrophe échappée)
     assert "Carte de crédit" in html
     assert "Fermé" in html
-    assert "Conciliation en retard" in html
+    assert "Conciliation en retard" in html  # aa2, ACTIVE et en retard
     assert "Jamais concilié" in html         # aa1 : never_reconciled sans retard
+    # Le compte fermé garde Journal et Détail, jamais Concilier.
+    assert "/fideicommis/?account_id=ta1" in html
+    assert "/fideicommis/conciliations/nouvelle?account_id=ta1" not in html
+    assert "/administration/conciliations/nouvelle?account_id=aa2" in html
 
 
 def test_aucun_total_combine(web_rendu, monkeypatch):
-    """2 500,00 + 1 300,00 − 450,00 : additionner l'argent des clients à
+    """2 500,00 + 1 300,00 ± 450,00 : additionner l'argent des clients à
     l'encaisse du cabinet et à une dette de carte au signe inversé produirait
-    un chiffre juridiquement trompeur — le hub n'affiche JAMAIS de total."""
+    un chiffre juridiquement trompeur — le hub n'affiche JAMAIS de total.
+
+    Les montants interdits se composent par format_cents_fr, JAMAIS en
+    littéral : le millier est un NBSP, et un littéral à espace ASCII ne
+    matcherait aucun rendu du filtre cents_fr (constat MAJEUR de la revue
+    2026-08-15 — la première version de ce test était aveugle à sa propre
+    cible)."""
+    from utils.format_fr import format_cents_fr
+
     _snapshots(monkeypatch, _TRUST_SNAP, _ADMIN_SNAP)
     html = web_rendu.get("/comptabilite/").get_data(as_text=True)
 
-    for combined in ("4 250,00", "3 350,00", "3 800,00", "Total"):
-        assert combined not in html
+    # 250000 + 130000 = 380000 ; ±45000 (les deux signes de la carte) ;
+    # et les sommes partielles par section.
+    for cents in (380000, 425000, 335000, 205000, 295000, 85000, 175000):
+        assert format_cents_fr(cents) not in html, cents
+    assert "Total" not in html and "total" not in html
 
 
 # ── Fail-closed par section ────────────────────────────────────────────────

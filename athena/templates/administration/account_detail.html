@@ -25,7 +25,9 @@
 
   <div class="flex items-center justify-between mb-2">
     <h2 class="text-sm font-semibold text-gray-900">Conciliations</h2>
+    {% if account.status != 'fermé' %}
     <a href="{{ url_for('admin_ledger.reconciliation_new', account_id=account.id) }}" class="text-sm text-indigo-600 hover:underline">Nouvelle conciliation</a>
+    {% endif %}
   </div>
   {% if not reconciliations %}
   <div class="bg-white rounded-xl border border-gray-200 p-4 text-center text-gray-500 text-sm">Aucune conciliation.</div>

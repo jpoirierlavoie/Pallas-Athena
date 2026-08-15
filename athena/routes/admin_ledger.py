@@ -156,8 +156,12 @@ def _account_header(account: dict) -> dict:
         "in_transit_count": len(in_transit),
         "in_transit_total": sum(int(e.get("amount", 0)) for e in in_transit),
         "last_reconciliation_date": last_date,
-        "reconciliation_overdue": al._reconciliation_overdue(
-            last_date, account_floor=account.get("created_at")
+        # Aucune conciliation n'est due après clôture (revue 2026-08-15).
+        "reconciliation_overdue": (
+            False if account.get("status") == "fermé"
+            else al._reconciliation_overdue(
+                last_date, account_floor=account.get("created_at")
+            )
         ),
     }
 

@@ -59,6 +59,7 @@ from models import db
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from tz import to_mtl
 from utils.deadlines import today_mtl
 from utils.logging_setup import (
     log_admin_ledger_event,
@@ -2186,10 +2187,13 @@ def _reconciliation_overdue(
     (see trust._reconciliation_overdue for the two PA-D06 failure modes
     this shape fixes)."""
     now = now or datetime.now(timezone.utc)
+    # Montréal calendar day, never UTC's — the evening-band doctrine; see the
+    # trust twin for the full rationale. Mirror fixes both sides or neither.
+    today = to_mtl(now).date()
     due_through = _month_end_on_or_before(
-        (now - timedelta(days=RECONCILIATION_GRACE_DAYS)).date()
+        today - timedelta(days=RECONCILIATION_GRACE_DAYS)
     )
-    if account_floor is not None and _as_utc(account_floor).date() > due_through:
+    if account_floor is not None and to_mtl(_as_utc(account_floor)).date() > due_through:
         return False
     if last_period_end is None:
         return True
@@ -2219,9 +2223,14 @@ def get_firm_admin_snapshot() -> dict:
         a_last = max(mine, default=None)
         a["last_reconciliation_date"] = a_last
         a["never_reconciled"] = a_last is None
-        a["reconciliation_overdue"] = _reconciliation_overdue(
-            a_last, now, account_floor=a.get("created_at")
-        )
+        # Aucune conciliation n'est due après clôture (miroir trust — voir
+        # le commentaire du jumeau ; revue 2026-08-15).
+        if a.get("status") == "fermé":
+            a["reconciliation_overdue"] = False
+        else:
+            a["reconciliation_overdue"] = _reconciliation_overdue(
+                a_last, now, account_floor=a.get("created_at")
+            )
         any_overdue = any_overdue or a["reconciliation_overdue"]
     return {
         "accounts": accounts,
