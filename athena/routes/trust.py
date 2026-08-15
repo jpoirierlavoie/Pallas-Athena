@@ -726,7 +726,11 @@ def reconciliations_list():
 def reconciliation_new():
     accounts = trust.list_accounts(status="actif")
     if request.method == "GET":
-        return render_template("trust/reconciliation_form.html", accounts=accounts, errors=[], form={}, **_labels())
+        # « Concilier CE compte » depuis le hub / le détail : présélection
+        # par query string. Un id inconnu est inoffensif (aucune option ne
+        # correspond) ; create_reconciliation reste le garde au POST.
+        prefill = {"account_id": request.args.get("account_id", "")}
+        return render_template("trust/reconciliation_form.html", accounts=accounts, errors=[], form=prefill, **_labels())
     f = request.form
     # None (blank/unparseable) must ERROR — never coalesce to 0, which is a
     # LEGITIMATE statement balance (an emptied account reads exactly 0,00 $).

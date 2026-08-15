@@ -49,7 +49,7 @@
         <div class="flex items-center gap-2 mt-3">
           <a href="{{ url_for('trust.journal', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
           <a href="{{ url_for('trust.account_detail', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Détail</a>
-          <a href="{{ url_for('trust.reconciliation_new') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
+          <a href="{{ url_for('trust.reconciliation_new', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
         </div>
       </div>
       {% endfor %}
@@ -97,7 +97,7 @@
         <div class="flex items-center gap-2 mt-3">
           <a href="{{ url_for('admin_ledger.journal', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Journal</a>
           <a href="{{ url_for('admin_ledger.account_detail', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Détail</a>
-          <a href="{{ url_for('admin_ledger.reconciliation_new') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
+          <a href="{{ url_for('admin_ledger.reconciliation_new', account_id=a.id) }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Concilier</a>
         </div>
       </div>
       {% endfor %}

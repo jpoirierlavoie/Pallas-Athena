@@ -7,7 +7,10 @@
       <a href="{{ url_for('admin_ledger.journal') }}" class="text-gray-400 hover:text-gray-600">&larr;</a>
       <h1 class="text-xl font-semibold text-gray-900">Comptes d'administration</h1>
     </div>
-    <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+    <div class="flex items-center gap-3">
+      <a href="{{ url_for('comptabilite.hub') }}" class="text-sm text-indigo-600 hover:underline">Vue d'ensemble</a>
+      <a href="{{ url_for('admin_ledger.account_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Nouveau compte</a>
+    </div>
   </div>
 
   {% if not snapshot.accounts %}

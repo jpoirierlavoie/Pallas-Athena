@@ -151,8 +151,9 @@ def test_les_actions_menent_aux_ecrans_des_modules(web_rendu, monkeypatch):
     # Ouvrir un compte = le formulaire du module, jamais un écran du hub.
     assert "/fideicommis/comptes/nouveau" in html
     assert "/administration/comptes/nouveau" in html
-    assert "/fideicommis/conciliations/nouvelle" in html
-    assert "/administration/conciliations/nouvelle" in html
+    # « Concilier » présélectionne CE compte (phase 3).
+    assert "/fideicommis/conciliations/nouvelle?account_id=ta1" in html
+    assert "/administration/conciliations/nouvelle?account_id=aa1" in html
 
 
 def test_badges_type_ferme_et_conciliation(web_rendu, monkeypatch):
@@ -253,6 +254,68 @@ def test_le_gabarit_est_statique_et_sans_fleches():
     assert "=>" not in src
     assert "<script" not in src
     assert "hx-" not in src
+
+
+# ── Phase 3 — actions contextuelles ────────────────────────────────────────
+
+
+_TRUST_ACC = dict(_TRUST_SNAP["accounts"][0])
+
+
+def test_conciliation_trust_preselectionnee_depuis_le_hub(web_rendu, monkeypatch):
+    """« Concilier CE compte » : la branche GET lit ?account_id= et le select
+    porte selected sur la bonne option. Le POST est intouché — l'id inconnu
+    reste inoffensif (garde serveur create_reconciliation)."""
+    autre = dict(_TRUST_ACC, id="ta2", name="Compte spécial")
+    monkeypatch.setattr(rt.trust, "list_accounts",
+                        lambda status=None: [dict(_TRUST_ACC), autre])
+    html = web_rendu.get(
+        "/fideicommis/conciliations/nouvelle?account_id=ta2"
+    ).get_data(as_text=True)
+    assert 'value="ta2" selected' in html
+    assert 'value="ta1" selected' not in html
+
+
+def test_conciliation_admin_preselectionnee_depuis_le_hub(web_rendu, monkeypatch):
+    monkeypatch.setattr(ra.al, "list_accounts",
+                        lambda status=None: [dict(a) for a in _ADMIN_SNAP["accounts"]])
+    html = web_rendu.get(
+        "/administration/conciliations/nouvelle?account_id=aa2"
+    ).get_data(as_text=True)
+    assert 'value="aa2" selected' in html
+    assert 'value="aa1" selected' not in html
+
+
+def test_conciliation_sans_parametre_ne_preselectionne_rien(web_rendu, monkeypatch):
+    monkeypatch.setattr(rt.trust, "list_accounts",
+                        lambda status=None: [dict(_TRUST_ACC)])
+    html = web_rendu.get("/fideicommis/conciliations/nouvelle").get_data(as_text=True)
+    assert "selected" not in html
+
+
+def test_les_details_de_compte_precisent_le_compte_a_concilier():
+    """Épingle de source : « Nouvelle conciliation » depuis le détail d'un
+    compte passe account_id — des DEUX côtés (le bug de parité #4 touchait
+    les deux modules)."""
+    for name in ("trust/account_detail.html", "administration/account_detail.html"):
+        with open(os.path.join(_ATHENA, "templates", name), encoding="utf-8") as f:
+            src = f.read()
+        assert "reconciliation_new', account_id=account.id" in src, name
+
+
+def test_les_listes_de_comptes_offrent_la_vue_d_ensemble(web_rendu, monkeypatch):
+    """Le lien retour vers le hub, rendu RÉELLEMENT (les listes de comptes ne
+    sont couvertes par aucun smoke mono-blueprint — c'est la fixture aux
+    trois blueprints qui rend le url_for('comptabilite.hub') possible)."""
+    monkeypatch.setattr(rt.trust, "list_accounts",
+                        lambda status=None: [dict(_TRUST_ACC)])
+    html = web_rendu.get("/fideicommis/comptes/").get_data(as_text=True)
+    assert "/comptabilite/" in html
+
+    monkeypatch.setattr(ra.al, "get_firm_admin_snapshot",
+                        lambda: dict(_ADMIN_SNAP))
+    html = web_rendu.get("/administration/comptes/").get_data(as_text=True)
+    assert "/comptabilite/" in html
 
 
 def test_la_route_est_en_lecture_seule():

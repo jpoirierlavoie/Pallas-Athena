@@ -866,8 +866,12 @@ def reconciliations_list():
 def reconciliation_new():
     accounts = al.list_accounts(status="actif")
     if request.method == "GET":
+        # « Concilier CE compte » depuis le hub / le détail : présélection
+        # par query string. Un id inconnu est inoffensif (aucune option ne
+        # correspond) ; create_reconciliation reste le garde au POST.
+        prefill = {"account_id": request.args.get("account_id", "")}
         return render_template("administration/reconciliation_form.html",
-                               accounts=accounts, errors=[], form={}, **_labels())
+                               accounts=accounts, errors=[], form=prefill, **_labels())
     f = request.form
     statement_cents = _parse_cents(f.get("statement_balance", ""))
     if statement_cents is None:
