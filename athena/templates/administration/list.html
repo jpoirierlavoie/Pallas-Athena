@@ -2,16 +2,19 @@
 {% block title %}Administration — Journal de caisse — Pallas Athena{% endblock %}
 {% block content %}
 <div class="max-w-5xl mx-auto px-4 py-6">
-  <div class="flex items-center justify-between mb-6">
+  {# flex-wrap : sur 375 px, le groupe de boutons passe SOUS le titre au lieu
+     de déborder — « Comptes » et « Conciliations » sont visibles sur mobile
+     depuis le 2026-08-15 (le miroir du même correctif côté fidéicommis). #}
+  <div class="flex flex-wrap items-center justify-between mb-6">
     <div>
       <h1 class="text-xl font-semibold text-gray-900">Administration</h1>
       <p class="text-sm text-gray-500">Journal de caisse — compte d'opérations et carte de crédit</p>
     </div>
-    <div class="flex items-center gap-2">
-      <a href="{{ url_for('admin_ledger.accounts_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
-      <a href="{{ url_for('admin_ledger.reconciliations_list') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
+    <div class="flex flex-wrap items-center gap-2">
+      <a href="{{ url_for('admin_ledger.accounts_list') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Comptes</a>
+      <a href="{{ url_for('admin_ledger.reconciliations_list') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Conciliations</a>
       {% if account %}
-      <a href="{{ url_for('admin_ledger.card_payment') }}" class="hidden md:inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Paiement de carte</a>
+      <a href="{{ url_for('admin_ledger.card_payment') }}" class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">Paiement de carte</a>
       <a href="{{ url_for('admin_ledger.entry_new') }}" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
         {{ ms('add', 16) }}
         Nouvelle écriture

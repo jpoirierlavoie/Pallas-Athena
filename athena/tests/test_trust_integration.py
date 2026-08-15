@@ -49,3 +49,15 @@ def test_le_type_de_compte_est_fige_en_edition():
     assert "disabled" in src
     # Le select de création ne porte plus de branche « selected » d'édition.
     assert 'account.account_type == t' not in src
+
+
+def test_comptes_et_conciliations_sont_atteignables_sur_mobile():
+    """« Comptes » et « Conciliations » étaient hidden md:inline-flex sur les
+    DEUX journaux : au téléphone, ces écrans n'existaient pas hors URL tapée.
+    Le hub règle l'accès de nav ; la visibilité locale reste due — et le
+    conteneur porte flex-wrap pour que 375 px fasse passer le groupe sous le
+    titre au lieu de déborder."""
+    for name in ("trust/list.html", "administration/list.html"):
+        src = _template(name)
+        assert "hidden md:inline-flex" not in src, name
+        assert "flex flex-wrap items-center justify-between" in src, name
