@@ -36,3 +36,16 @@ def test_le_select_de_compte_du_journal_porte_hx_include():
             break
     else:
         raise AssertionError("account select not found")
+
+
+def test_le_type_de_compte_est_fige_en_edition():
+    """update_account écarte account_type de sa whitelist des deux côtés ;
+    le form trust affichait pourtant un select inconditionnel — un mensonge
+    d'interface (le changement semblait enregistré et ne l'était jamais).
+    Miroir du form admin : input disabled en édition, select à la création
+    seulement."""
+    src = _template("trust/account_form.html")
+    assert "{% if account and account.id %}" in src
+    assert "disabled" in src
+    # Le select de création ne porte plus de branche « selected » d'édition.
+    assert 'account.account_type == t' not in src
