@@ -1,4 +1,12 @@
-"""Invoice Firestore CRUD, tax computation, and line-item management."""
+"""Invoice Firestore CRUD, tax computation, and line-item management.
+
+``create_invoice`` has two branches. The ordinary one allocates a
+year-sequential number from the transactional counter. The IMPORT branch
+(keyword-only arguments, unreachable from ``request.form``) keeps a number
+the previous system already issued, never touches the counter, and refuses
+rather than write anything it cannot reconcile — a book of account is
+complete or it is wrong.
+"""
 
 import logging
 import uuid
@@ -26,6 +34,12 @@ COUNTERS_COLLECTION = "counters"
 class _SourceConflictError(Exception):
     """Raised when a billing source changed concurrently during invoicing."""
 
+
+class _DuplicateNumberError(Exception):
+    """Raised inside the creation transaction when an IMPORTED number is
+    already borne by another invoice — aborts, never writes."""
+
+
 # Valid statuses and their French labels
 VALID_STATUSES = ("brouillon", "envoyée", "payée", "en_retard", "annulée")
 
@@ -49,6 +63,25 @@ GST_RATE_BPS = 500       # 5.00%
 QST_RATE_BPS = 9975      # 9.975%
 
 DEFAULT_PAYMENT_TERMS = "Payable dans les 30 jours suivant la date de facturation."
+
+# ── Imported (historical) invoice numbers ────────────────────────────────
+# A number carried over from the practice's previous system. Free-form on
+# purpose — it is ANOTHER system's numbering and never ours to reshape (an
+# accounting artifact already sent to a client is never renumbered) — but
+# BOUNDED, because it prints on the note d'honoraires, exports to CSV and
+# folds into a generated document's display name.
+IMPORTED_NUMBER_MAX_LENGTH = 32
+_IMPORTED_NUMBER_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789"
+    " ./-"
+)
+
+# The adjustment line's own ceiling. It prints verbatim on the client's
+# invoice, so an over-long value is REFUSED rather than sanitize()d down —
+# see _adjustment_line_item.
+ADJUSTMENT_DESCRIPTION_MAX_LENGTH = 500
 
 
 def _default_doc() -> dict:
@@ -225,6 +258,11 @@ def _generate_invoice_number() -> str:
     numbers never match the « YYYY-F » prefix and are ignored). Any
     failure propagates — a number is never guessed, which could mint a
     colliding one.
+
+    An IMPORTED historical number never passes through here and never
+    advances the counter (user decision 2026-08-16): ``create_invoice``
+    resolves it through ``_clean_imported_number`` instead, so a refused
+    import consumes nothing and this function is not even called.
     """
     year = today_mtl().strftime("%Y")
     prefix = f"{year}-F"
@@ -247,6 +285,133 @@ def _generate_invoice_number() -> str:
     return f"{prefix}{_allocate(transaction):03d}"
 
 
+# ── Historical import: number, adjustment line ───────────────────────────
+
+
+def _is_live_sequence_number(number: str) -> bool:
+    """True when *number* falls in the namespace our own counter owns.
+
+    Deliberately the WHOLE « {current Montréal year}-F » prefix, matched the
+    way ``_scan_max_invoice_seq`` matches it — NOT « prefix + digits ».
+    ``int()`` strips whitespace, so « 2026-F 12 » fails ``str.isdigit`` yet
+    still parses to 12 in the seeding scan; anything sharing the prefix is
+    ours.
+
+    PAST years are not in the namespace: their counter can never be created
+    again, ``today_mtl`` only moving forward. FUTURE years are not either,
+    for a different reason — their counter does not exist yet, so its first
+    use SEEDS from ``_scan_max_invoice_seq``, which sees the imported number
+    and continues above it. The CURRENT year is the one hole: its counter
+    already exists, seeding will never run for it again, and a planted
+    number would be handed out a second time.
+    """
+    return number.startswith(f"{today_mtl().strftime('%Y')}-F")
+
+
+def _clean_imported_number(raw: object) -> tuple[str, list[str]]:
+    """Validate a historical invoice number. Returns ("", [erreurs]) on refusal.
+
+    ``sanitize`` is deliberately NOT used here: its whitelist is wider and it
+    TRUNCATES. Silently shortening an accounting identifier is exactly the
+    corruption this refuses to commit — over-long is an error, never a
+    haircut.
+    """
+    if not isinstance(raw, str):
+        return "", ["Le numéro de facture importé doit être une chaîne."]
+    number = raw.strip()
+    if not number:
+        return "", ["Le numéro de facture importé est requis."]
+    if len(number) > IMPORTED_NUMBER_MAX_LENGTH:
+        return "", [
+            "Le numéro de facture importé dépasse "
+            f"{IMPORTED_NUMBER_MAX_LENGTH} caractères. Il n'est jamais "
+            "tronqué : corrigez-le."
+        ]
+    bad = sorted({c for c in number if c not in _IMPORTED_NUMBER_CHARS})
+    if bad:
+        return "", [
+            "Le numéro de facture importé contient des caractères non "
+            f"admis : {' '.join(bad)}. Lettres, chiffres, espace, point, "
+            "barre oblique et trait d'union seulement."
+        ]
+    if _is_live_sequence_number(number):
+        year = today_mtl().strftime("%Y")
+        return "", [
+            f"« {number} » appartient à la numérotation courante de Pallas "
+            f"Athéna ({year}-F…) : un numéro importé ne peut pas emprunter "
+            "le millésime en cours, sinon le compteur le réattribuerait plus "
+            "tard."
+        ]
+    return number, []
+
+
+def _adjustment_line_item(adjustment: dict) -> tuple[Optional[dict], list[str]]:
+    """Materialize a named adjustment as ONE extra line item.
+
+    The escape hatch for a legacy invoice whose printed total cannot be
+    reconstructed from its lines — a courtesy write-down, a rounding, a
+    credit. The gap is written ON the invoice rather than hidden by a
+    tolerance or refused outright (user decision 2026-08-16).
+
+    Typed ``fee`` because a courtesy write-down reduces HONORAIRES: that puts
+    it in the « Honoraires » column of the Barreau fee journal and leaves
+    ``expense_split`` untouched, which only carves up disbursements. It is
+    the ONE line item in the system carrying no ``source_id`` — which is why
+    the caller must NAME it: an unexplained amount on a client's invoice is
+    worse than a refusal.
+
+    ``taxable`` decides whether the adjustment moves the tax base. True (the
+    default) reproduces an invoice whose GST/QST were computed on the
+    reduced amount; False reproduces one discounted after tax.
+    """
+    if not isinstance(adjustment, dict):
+        return None, ["L'ajustement doit être un objet."]
+
+    amount = adjustment.get("amount_cents")
+    if not isinstance(amount, int) or isinstance(amount, bool):
+        return None, ["`adjustment.amount_cents` doit être un entier de cents."]
+    if amount == 0:
+        return None, [
+            "Un ajustement de 0 $ n'explique rien : retirez-le, ou donnez le "
+            "montant réel de l'écart."
+        ]
+
+    raw_description = adjustment.get("description")
+    if not isinstance(raw_description, str) or not raw_description.strip():
+        return None, [
+            "`adjustment.description` est requise : l'écart doit être nommé "
+            "sur la facture (« Remise de courtoisie », « Arrondi »…)."
+        ]
+    description = raw_description.strip()
+    if len(description) > ADJUSTMENT_DESCRIPTION_MAX_LENGTH:
+        return None, [
+            "`adjustment.description` dépasse "
+            f"{ADJUSTMENT_DESCRIPTION_MAX_LENGTH} caractères."
+        ]
+    # Length is already refused above, so this can only strip markup — it can
+    # never truncate a description the caller believed was stored whole.
+    description = sanitize(description, max_length=ADJUSTMENT_DESCRIPTION_MAX_LENGTH)
+    if not description:
+        return None, ["`adjustment.description` est vide après nettoyage."]
+
+    taxable = adjustment.get("taxable", True)
+    if not isinstance(taxable, bool):
+        return None, ["`adjustment.taxable` doit être un booléen."]
+
+    return {
+        **_default_line_item(),
+        "id": str(uuid.uuid4()),
+        "type": "fee",
+        "source_id": "",
+        "date": None,
+        "description": description,
+        "hours": None,
+        "rate": None,
+        "amount": amount,
+        "taxable": taxable,
+    }, []
+
+
 # ── CRUD ─────────────────────────────────────────────────────────────────
 
 
@@ -255,15 +420,43 @@ def create_invoice(
     selected_entry_ids: list[str],
     selected_expense_ids: list[str],
     data: dict,
+    *,
+    invoice_number: Optional[str] = None,
+    expected_total: Optional[int] = None,
+    require_all_sources: bool = False,
+    adjustment: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Create an invoice with line items from selected time entries and expenses.
 
     Sources that are missing, already invoiced, or that belong to another
-    dossier are skipped. The invoice document, all line items, and the
-    invoiced=True flips for the retained sources are committed in a single
-    Firestore transaction that re-reads each source, so a concurrent
-    invoicing aborts the whole creation (no orphan invoices, no
-    double-billing). Returns (invoice, errors).
+    dossier are **skipped in silence** unless *require_all_sources*. The
+    invoice document, all line items, and the invoiced=True flips for the
+    retained sources are committed in a single Firestore transaction that
+    re-reads each source, so a concurrent invoicing aborts the whole creation
+    (no orphan invoices, no double-billing). Returns (invoice, errors).
+
+    The four keyword-only arguments serve the historical import and all
+    default to today's behaviour, so the web form path is unchanged:
+
+    * *invoice_number* — a number carried over from the previous system. The
+      year counter is then **never read and never advanced**; without it the
+      counter allocates as always. It cannot arrive through *data* (which
+      ``merged.update`` clobbers), so ``request.form`` can never forge one.
+    * *expected_total* — the grand total printed on the paper invoice. On any
+      difference the creation is refused, with the gap, the breakdown and the
+      retained-versus-supplied source count. No tolerance: one cent of
+      silent drift is how a book of account starts lying.
+    * *require_all_sources* — turn the silent skip into a refusal naming every
+      offender. This lives HERE and not only in a caller because the skip
+      happens in the pre-read loop below: a skipped id never enters
+      ``source_refs``, so ``_SourceConflictError`` can never catch it and a
+      caller's pre-flight is a TOCTOU snapshot the model may not honour.
+    * *adjustment* — a named, caller-justified extra line item (see
+      ``_adjustment_line_item``) for a legacy total the lines cannot
+      reconstruct.
+
+    Ordering is the contract: a refused import consumes nothing and never
+    even reads the counter.
     """
     from models.time_entry import COLLECTION as TE_COLLECTION, get_time_entry
     from models.expense import COLLECTION as EXP_COLLECTION, get_expense
@@ -289,14 +482,24 @@ def create_invoice(
     # concurrent content edit (hours/amount) aborts instead of snapshotting
     # a stale value into the line items.
     expected_etags: dict[str, str] = {}
+    # Why each id was dropped, for the require_all_sources refusal. Kept even
+    # when that flag is off so the reason is computed once, in the one place
+    # that actually knows it.
+    skipped: dict[str, str] = {}
 
     for eid in selected_entry_ids:
         entry = get_time_entry(eid)
-        if (
-            not entry
-            or entry.get("invoiced")
-            or entry.get("dossier_id") != dossier_id
-        ):
+        if not entry:
+            # get_time_entry swallows a read failure into None, so the model
+            # genuinely cannot tell a deleted entry from an unreadable one.
+            # Say both rather than assert the wrong one.
+            skipped[eid] = "introuvable ou illisible"
+            continue
+        if entry.get("invoiced"):
+            skipped[eid] = "déjà facturée"
+            continue
+        if entry.get("dossier_id") != dossier_id:
+            skipped[eid] = "rattachée à un autre dossier"
             continue
         valid_entry_ids.append(eid)
         expected_etags[eid] = entry.get("etag", "")
@@ -315,11 +518,14 @@ def create_invoice(
 
     for eid in selected_expense_ids:
         expense = get_expense(eid)
-        if (
-            not expense
-            or expense.get("invoiced")
-            or expense.get("dossier_id") != dossier_id
-        ):
+        if not expense:
+            skipped[eid] = "introuvable ou illisible"
+            continue
+        if expense.get("invoiced"):
+            skipped[eid] = "déjà facturé"
+            continue
+        if expense.get("dossier_id") != dossier_id:
+            skipped[eid] = "rattaché à un autre dossier"
             continue
         valid_expense_ids.append(eid)
         expected_etags[eid] = expense.get("etag", "")
@@ -336,11 +542,65 @@ def create_invoice(
             "taxable": expense.get("taxable", True),
         })
 
+    if require_all_sources:
+        # A repeated id appends two identical line items and doubles the fee:
+        # the build loops above do not dedupe, and the web form cannot
+        # produce a duplicate, so this is an import-only guard.
+        for label, ids in (
+            ("time_entry_ids", selected_entry_ids),
+            ("expense_ids", selected_expense_ids),
+        ):
+            seen: set[str] = set()
+            dupes: set[str] = set()
+            for source_id in ids:
+                if source_id in seen:
+                    dupes.add(source_id)
+                seen.add(source_id)
+            if dupes:
+                return None, [
+                    f"`{label}` contient des identifiants en double : "
+                    + ", ".join(sorted(dupes))
+                    + ". Chaque source ne peut être facturée qu'une fois."
+                ]
+        if skipped:
+            grouped: dict[str, list[str]] = {}
+            for sid, reason in skipped.items():
+                grouped.setdefault(reason, []).append(sid)
+            details = " ; ".join(
+                f"{reason} : {', '.join(sorted(ids))}"
+                for reason, ids in sorted(grouped.items())
+            )
+            return None, [
+                f"Sources inutilisables (rien n'a été écrit) — {details}."
+            ]
+
     if not line_items:
         return None, ["Aucune entrée valide sélectionnée."]
 
+    if adjustment is not None:
+        adjustment_item, adjustment_errors = _adjustment_line_item(adjustment)
+        if adjustment_errors:
+            return None, adjustment_errors
+        line_items.append(adjustment_item)
+
     # Compute totals
     totals = compute_totals(line_items)
+
+    if expected_total is not None:
+        if not isinstance(expected_total, int) or isinstance(expected_total, bool):
+            return None, ["`expected_total` doit être un entier de cents."]
+        if expected_total != totals["total"]:
+            gap = totals["total"] - expected_total
+            supplied = len(selected_entry_ids) + len(selected_expense_ids)
+            return None, [
+                f"Le total reconstitué ({totals['total']} ¢) ne correspond "
+                f"pas au total attendu ({expected_total} ¢) — écart "
+                f"{gap:+d} ¢. Calculé : honoraires {totals['subtotal_fees']} ¢, "
+                f"déboursés {totals['subtotal_expenses']} ¢, "
+                f"TPS {totals['gst_amount']} ¢, TVQ {totals['qst_amount']} ¢, "
+                f"sur {len(line_items)} ligne(s) retenue(s) pour {supplied} "
+                "source(s) fournie(s). Aucune facture n'a été créée."
+            ]
 
     # Retainer must stay within [0, total] so amount_due can never go negative.
     retainer_applied = merged.get("retainer_applied", 0)
@@ -354,20 +614,29 @@ def create_invoice(
             "La provision appliquée doit être comprise entre 0 $ et le total de la facture."
         ]
 
-    # Allocate the year-sequential invoice number via the transactional
-    # counter. Any failure aborts the creation — never fall back to a
-    # guessed number.
-    try:
-        invoice_number = _generate_invoice_number()
-    except Exception as exc:
-        logger.error("create_invoice: invoice number allocation failed: %s", exc)
-        return None, [
-            "Impossible de générer le numéro de facture. Veuillez réessayer."
-        ]
+    # Resolve the number LAST, so every refusal above happens before the
+    # counter is touched. On the imported branch it is never touched at all.
+    # Note the name `invoice_number` is NOT rebound — the transaction closure
+    # below reads the parameter to decide whether to run the uniqueness read.
+    if invoice_number is None:
+        # Allocate the year-sequential invoice number via the transactional
+        # counter. Any failure aborts the creation — never fall back to a
+        # guessed number.
+        try:
+            resolved_number = _generate_invoice_number()
+        except Exception as exc:
+            logger.error("create_invoice: invoice number allocation failed: %s", exc)
+            return None, [
+                "Impossible de générer le numéro de facture. Veuillez réessayer."
+            ]
+    else:
+        resolved_number, number_errors = _clean_imported_number(invoice_number)
+        if number_errors:
+            return None, number_errors
 
     merged.update({
         "id": invoice_id,
-        "invoice_number": invoice_number,
+        "invoice_number": resolved_number,
         "dossier_id": dossier_id,
         **totals,
         "gst_rate": GST_RATE_BPS,
@@ -408,6 +677,21 @@ def create_invoice(
             ):
                 raise _SourceConflictError(ref.id)
 
+        # Still a READ, so it must precede every write below. Import path
+        # only: on the generated path the monotonic counter already
+        # guarantees uniqueness, and paying a query on the web form's hot
+        # path would buy nothing. Single-field equality — served by the
+        # automatic index, no composite.
+        if invoice_number is not None:
+            clash = list(
+                db.collection(COLLECTION)
+                .where(filter=FieldFilter("invoice_number", "==", resolved_number))
+                .limit(1)
+                .stream(transaction=txn)
+            )
+            if clash:
+                raise _DuplicateNumberError(resolved_number)
+
         txn.set(invoice_ref, merged)
         for item in line_items:
             txn.set(
@@ -428,6 +712,18 @@ def create_invoice(
         return None, [
             "Certaines entrées sélectionnées ont été modifiées ou facturées entre-temps. Veuillez réessayer."
         ]
+    except _DuplicateNumberError as exc:
+        return None, [
+            f"Le numéro de facture « {exc} » existe déjà dans Pallas Athéna. "
+            "Une facture importée conserve son numéro d'origine : vérifiez "
+            "s'il n'a pas déjà été repris."
+        ]
+    # The uniqueness read lives inside the transaction, so a Firestore blip
+    # lands in the generic handler below and REFUSES — deliberately unlike
+    # create_dossier's file_number check, which fails open. A duplicated
+    # number in a legal accounting register is invisible to the lawyer and
+    # unrepairable without renumbering an artifact already sent to a client;
+    # a blocked web form on a transient error is merely annoying.
     except Exception as exc:
         logger.error("create_invoice: transaction failed for %s: %s", invoice_id, exc)
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
