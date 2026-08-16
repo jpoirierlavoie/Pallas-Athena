@@ -185,10 +185,126 @@ def test_find_imported_nomme_un_contact_par_son_nom_affiche(legacy):
     assert payload["matches"][0]["dossier_id"] is None
 
 
+# ── get_import_audit ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def audit(monkeypatch):
+    world = {
+        "dossier": {"id": "d1", "file_number": "2019-014", "title": "T",
+                    "status": "actif", "closed_date": None,
+                    "client_ids": ["p1"], "hourly_rate": 30000},
+        "entries": [], "entries_cursor": None,
+        "expenses": [], "expenses_cursor": None,
+        "invoices": [], "line_items": {},
+    }
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: world["dossier"] if i == "d1" else None)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        lambda fn: world["dossier"]
+                        if fn == "2019-014" else None)
+    monkeypatch.setattr(handlers.dossier_model, "field_defaults",
+                        lambda: {"hourly_rate": 30000})
+    monkeypatch.setattr(
+        handlers.time_entry_model, "list_time_entries_page",
+        lambda **kw: (world["entries"], world["entries_cursor"]))
+    monkeypatch.setattr(
+        handlers.expense_model, "list_expenses_page",
+        lambda **kw: (world["expenses"], world["expenses_cursor"]))
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: list(world["invoices"]))
+    monkeypatch.setattr(handlers.invoice_model, "list_line_items",
+                        lambda iid: world["line_items"].get(iid, []))
+    return world
+
+
+def test_get_import_audit_exige_exactement_un_selecteur(audit):
+    for args in ({}, {"dossier_id": "d1", "file_number": "2019-014"}):
+        with pytest.raises(tools.ToolArgumentError):
+            handlers.get_import_audit(args)
+
+
+def test_get_import_audit_par_numero_de_dossier(audit):
+    payload = handlers.get_import_audit({"file_number": "2019-014"})
+    assert payload["found"] is True
+    assert payload["dossier"]["file_number"] == "2019-014"
+
+
+def test_get_import_audit_dossier_absent(audit):
+    payload = handlers.get_import_audit({"dossier_id": "inconnu"})
+    assert payload["found"] is False
+
+
+def test_get_import_audit_compte_ce_que_la_reprise_a_ecrit(audit):
+    audit["entries"] = [
+        {"id": "e1", "amount": 45000, "invoiced": True, "invoice_id": "i1",
+         "created_via": "mcp", "phase": "CTS", "description": "A",
+         "date": "2019-11-04"},
+        {"id": "e2", "amount": 15000, "invoiced": False,
+         "description": "B", "date": "2019-11-05"},
+    ]
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    bloc = payload["time"]
+    assert bloc["count"] == 2
+    assert bloc["invoiced_count"] == 1 and bloc["uninvoiced_count"] == 1
+    assert bloc["created_via_mcp_count"] == 1
+    assert bloc["unphased_count"] == 1
+    assert bloc["amount_cents"] == 60000
+    assert bloc["uninvoiced_amount_cents"] == 15000
+
+
+def test_get_import_audit_supprime_les_controles_de_source_sur_fenetre_tronquee(audit):
+    """Le cœur du contrôle : une fenêtre tronquée ferait passer les postes
+    d'une facture pour orphelins. On SUPPRIME et on le DIT, plutôt que
+    d'accuser une reprise qui va bien."""
+    audit["entries_cursor"] = "il-en-reste"
+    audit["invoices"] = [{"id": "i1", "invoice_number": "2019-F014",
+                          "status": "payée", "subtotal": 45000,
+                          "total": 45000}]
+    audit["line_items"] = {"i1": [{"id": "li1", "source_id": "e1",
+                                   "amount": 45000}]}
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    codes = {f["code"] for f in payload["findings"]}
+    assert "IMP-03" not in codes and "IMP-06" not in codes
+    assert payload["checks_skipped"] == ["IMP-03", "IMP-06"]
+    assert payload["truncated"] is True
+
+
+def test_get_import_audit_sans_troncature_ne_supprime_rien(audit):
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    assert payload["checks_skipped"] == []
+    assert payload["truncated"] is False
+
+
+def test_get_import_audit_dit_quand_les_postes_sont_illisibles(audit):
+    """subtotal_matches_line_items est TRI-ÉTAT : null n'est pas « faux »."""
+    audit["invoices"] = [{"id": "i1", "invoice_number": "2019-F014",
+                          "status": "payée", "subtotal": 45000,
+                          "total": 45000}]
+    audit["line_items"] = {"i1": []}
+    row = handlers.get_import_audit({"dossier_id": "d1"})["invoices"][0]
+    assert row["subtotal_matches_line_items"] is None
+    assert row["line_count"] == 0
+
+
+def test_get_import_audit_signale_une_facture_restee_au_brouillon(audit):
+    audit["invoices"] = [{"id": "i1", "invoice_number": "2019-F014",
+                          "status": "brouillon", "subtotal": 45000,
+                          "total": 45000}]
+    audit["line_items"] = {"i1": [{"id": "li1", "source_id": "e1",
+                                   "amount": 45000}]}
+    audit["entries"] = [{"id": "e1", "amount": 45000, "invoiced": True,
+                         "invoice_id": "i1", "description": "A",
+                         "date": "2019-11-04"}]
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    assert "IMP-07" in {f["code"] for f in payload["findings"]}
+
+
 def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
     """Ils informent la reprise ; ils n'écrivent rien. Un scope d'écriture
     déclaré ici les retirerait d'un jeton en lecture seule sans raison."""
-    for name in ("get_reference_vocabulary", "find_imported"):
+    for name in ("get_reference_vocabulary", "find_imported",
+                 "get_import_audit"):
         assert name not in tools.WRITE_TOOLS
         assert tools.required_scope(name) == "athena:read"
         assert "scope" not in tools.TOOLS[name]

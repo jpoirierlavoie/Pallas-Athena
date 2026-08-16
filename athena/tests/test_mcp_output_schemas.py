@@ -899,6 +899,59 @@ def test_get_reference_vocabulary_conforms_filtered():
     ))
 
 
+def test_get_import_audit_conforms_found_and_not_found(monkeypatch):
+    dossier = {"id": "d1", "file_number": "2019-014", "title": "T",
+               "status": "fermé", "closed_date": None, "client_ids": ["p1"],
+               "hourly_rate": 30000}
+    invoice = {"id": "i1", "invoice_number": "2019-F014",
+               "status": "brouillon", "subtotal": 45000, "total": 45000,
+               "date": DT}
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: dossier if i == "d1" else None)
+    monkeypatch.setattr(handlers.dossier_model, "field_defaults",
+                        lambda: {"hourly_rate": 30000})
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        lambda **kw: ([{"id": "e1", "amount": 45000,
+                                        "invoiced": False,
+                                        "description": "A", "date": DT}], None))
+    monkeypatch.setattr(handlers.expense_model, "list_expenses_page",
+                        lambda **kw: ([], None))
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: [invoice])
+    monkeypatch.setattr(handlers.invoice_model, "list_line_items",
+                        lambda iid: [{"id": "li1", "source_id": "e1",
+                                      "amount": 45000}])
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    _conforms("get_import_audit", payload)
+    assert payload["findings"]          # the branch with findings, not an empty one
+
+    _conforms("get_import_audit",
+              handlers.get_import_audit({"dossier_id": "absent"}))
+
+
+def test_get_import_audit_conforms_with_unreadable_line_items(monkeypatch):
+    """The tri-state branch: subtotal_matches_line_items is null, which the
+    schema types as ["boolean", "null"] and the validator must accept."""
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": "d1", "file_number": "x", "title": "T",
+                                   "status": "actif", "client_ids": []})
+    monkeypatch.setattr(handlers.dossier_model, "field_defaults",
+                        lambda: {"hourly_rate": 30000})
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        lambda **kw: ([], None))
+    monkeypatch.setattr(handlers.expense_model, "list_expenses_page",
+                        lambda **kw: ([], None))
+    monkeypatch.setattr(handlers.invoice_model, "list_invoices",
+                        lambda **kw: [{"id": "i1", "invoice_number": "F1",
+                                       "status": "payée", "subtotal": 1,
+                                       "total": 1, "date": DT}])
+    monkeypatch.setattr(handlers.invoice_model, "list_line_items",
+                        lambda iid: [])
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    assert payload["invoices"][0]["subtotal_matches_line_items"] is None
+    _conforms("get_import_audit", payload)
+
+
 def test_find_imported_conforms_found_and_empty(monkeypatch):
     import models
 

@@ -42,7 +42,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
-from mcp import coverage
+from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
@@ -3189,6 +3189,133 @@ def find_imported(args: dict) -> dict:
                 "dossier_id": doc.get("dossier_id") or None,
             })
     return {"legacy_ref": legacy_ref, "matches": matches, "count": len(matches)}
+
+
+# ── 36. get_import_audit (read) ─────────────────────────────────────────
+
+_AUDIT_INVOICE_CAP = 50
+
+
+def _audit_dossier(args: dict) -> Optional[dict]:
+    dossier_id = args.get("dossier_id")
+    file_number = args.get("file_number")
+    if bool(dossier_id) == bool(file_number):
+        raise ToolArgumentError(
+            "Provide exactly one of `dossier_id` or `file_number`"
+        )
+    if file_number:
+        return dossier_model.get_dossier_by_file_number(file_number)
+    return dossier_model.get_dossier(dossier_id)
+
+
+def _audit_totals(rows: list[dict]) -> dict:
+    invoiced = [r for r in rows if r.get("invoiced")]
+    unbilled = [r for r in rows if not r.get("invoiced")]
+    block = {
+        "count": len(rows),
+        "invoiced_count": len(invoiced),
+        "uninvoiced_count": len(unbilled),
+        "created_via_mcp_count": sum(
+            1 for r in rows if r.get("created_via") == "mcp"
+        ),
+        "unphased_count": sum(1 for r in rows if not r.get("phase")),
+    }
+    _money(block, "amount", sum(int(r.get("amount") or 0) for r in rows))
+    _money(
+        block, "uninvoiced_amount",
+        sum(int(r.get("amount") or 0) for r in unbilled),
+    )
+    return block
+
+
+def get_import_audit(args: dict) -> dict:
+    d = _audit_dossier(args)
+    if d is None:
+        return {
+            "found": False,
+            "dossier_id": args.get("dossier_id"),
+            "file_number": args.get("file_number"),
+        }
+
+    did = d.get("id", "")
+    entries, entries_cursor = time_entry_model.list_time_entries_page(
+        dossier_id=did, limit=_FETCH_CAP
+    )
+    expenses, expenses_cursor = expense_model.list_expenses_page(
+        dossier_id=did, limit=_FETCH_CAP
+    )
+    invoices = invoice_model.list_invoices(dossier_id=did)
+    invoices_truncated = len(invoices) > _AUDIT_INVOICE_CAP
+    invoices = invoices[:_AUDIT_INVOICE_CAP]
+
+    invoice_blocks = []
+    for inv in invoices:
+        items = invoice_model.list_line_items(inv.get("id", ""))
+        invoice_blocks.append({"invoice": inv, "line_items": items})
+
+    # A truncated source window would make an invoice's own line items look
+    # orphaned. Suppress the two checks that compare against it rather than
+    # manufacture a « source introuvable » out of a paging boundary — the
+    # coverage report's rule: a shortened report must never pass for a clean
+    # one, and it must never accuse an import that is actually fine.
+    sources_complete = entries_cursor is None and expenses_cursor is None
+    skip = frozenset() if sources_complete else frozenset(
+        import_audit.NEEDS_COMPLETE_SOURCES
+    )
+
+    ctx = {
+        "dossier": d,
+        "time_entries": entries,
+        "expenses": expenses,
+        "invoices": invoice_blocks,
+    }
+    findings = import_audit.run_checks(ctx, skip=skip)
+
+    rows_invoices = []
+    for block in invoice_blocks:
+        inv = block["invoice"]
+        items = block["line_items"]
+        row = {
+            "id": inv.get("id", ""),
+            "invoice_number": inv.get("invoice_number", ""),
+            "date": date_str(_as_utc(inv.get("date"))),
+            "status": inv.get("status", ""),
+            "legacy_ref": inv.get("legacy_ref", ""),
+            "line_count": len(items),
+        }
+        _money(row, "total", inv.get("total", 0))
+        _money(
+            row, "line_items_total",
+            sum(int(i.get("amount") or 0) for i in items),
+        )
+        row["subtotal_matches_line_items"] = (
+            None if not items
+            else row["line_items_total_cents"] == int(inv.get("subtotal") or 0)
+        )
+        rows_invoices.append(row)
+
+    return {
+        "found": True,
+        "dossier": _dossier_row(d),
+        "completeness": {
+            "has_client": bool(d.get("client_ids")),
+            "closed_without_closed_date": bool(
+                d.get("status") in import_audit.CLOSED_STATUSES
+                and not d.get("closed_date")
+            ),
+            "hourly_rate_is_default": (
+                int(d.get("hourly_rate") or 0)
+                == int(dossier_model.field_defaults().get("hourly_rate") or 0)
+            ),
+            "legacy_ref": d.get("legacy_ref", ""),
+        },
+        "time": _audit_totals(entries),
+        "expenses": _audit_totals(expenses),
+        "invoices": rows_invoices,
+        "findings": findings,
+        "checks_skipped": sorted(skip),
+        "truncated": bool(not sources_complete or invoices_truncated),
+    }
 
 
 # ── 23. create_task (WRITE) ─────────────────────────────────────────────

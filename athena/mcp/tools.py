@@ -1263,6 +1263,50 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "find_imported",
     },
+    "get_import_audit": {
+        "title": "Vérifier l'import d'un dossier",
+        "description": (
+            "Reconcile ONE dossier after a historical import: its work, its "
+            "disbursements and its invoices checked against each other. Run "
+            "it after every file, before moving to the next spreadsheet row. "
+            "Findings are OBSERVATIONS, never instructions — this connector "
+            "cannot delete a duplicate entry, cannot void an invoice and "
+            "cannot move one out of brouillon; every detail says what to do "
+            "in the application. "
+            "IMP-01 unbilled work on a closed dossier (the signature of an "
+            "interrupted import). IMP-02 stored subtotal ≠ sum of line "
+            "items. IMP-03 a line item citing a source that no longer "
+            "exists. IMP-04 possible duplicate entries — same date, "
+            "description and amount, which is exactly what re-running an "
+            "import after the 24 h idempotency window produces. IMP-05 a "
+            "closed dossier with no closing date. IMP-06 an entry marked "
+            "invoiced whose invoice is missing. IMP-07 an imported invoice "
+            "still in brouillon. "
+            "`checks_skipped` names checks NOT run because the sources could "
+            "not be read completely — a shortened report must never pass for "
+            "a clean one, and a paging boundary must never be reported as a "
+            "missing source."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier to reconcile. Provide exactly one of "
+                    "dossier_id or file_number."
+                ),
+                "file_number": {
+                    "type": "string",
+                    "maxLength": 20,
+                    "description": (
+                        "The file number, e.g. « 2019-014 ». Matched exactly. "
+                        "Alternative to dossier_id — provide exactly one."
+                    ),
+                },
+            },
+            "additionalProperties": False,
+        },
+        "handler": "get_import_audit",
+    },
     "list_deletions": {
         "title": "Journal des suppressions",
         "description": (

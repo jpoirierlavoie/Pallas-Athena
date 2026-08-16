@@ -180,6 +180,21 @@ def _model_summary(description: str) -> dict:
 
 # ── Shared row schemas ──────────────────────────────────────────────────
 
+def _audit_block() -> dict[str, Any]:
+    """Totals over one population (time entries, or disbursements) as the
+    import audit reports it."""
+    block: dict[str, Any] = {
+        "count": _int(),
+        "invoiced_count": _int(),
+        "uninvoiced_count": _int(),
+        "created_via_mcp_count": _int("How many this connector wrote."),
+        "unphased_count": _int("Rows with no phase code — '' is a real state."),
+    }
+    block.update(_money("amount"))
+    block.update(_money("uninvoiced_amount"))
+    return _obj(block)
+
+
 def _phase_pair() -> dict[str, Any]:
     """The Phase O classification carried by a time entry, expense or task.
 
@@ -1076,6 +1091,61 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             }),
         }),
         {"invoice_id": _str("Echo of the id that was not found.")},
+    ),
+
+    "get_import_audit": _found_or_not(
+        _obj({
+            "found": _found(True),
+            "dossier": _dossier_list_row(),
+            "completeness": _obj({
+                "has_client": _bool(),
+                "closed_without_closed_date": _bool(),
+                "hourly_rate_is_default": _bool(
+                    "The dossier still carries the model's default rate — on "
+                    "a historical file, usually a rate that was never set."
+                ),
+                "legacy_ref": _str("'' when the record was not imported."),
+            }),
+            "time": _audit_block(),
+            "expenses": _audit_block(),
+            "invoices": _arr(_obj({
+                "id": _str(),
+                "invoice_number": _str(),
+                "date": _nstr("YYYY-MM-DD."),
+                "status": _str(),
+                "legacy_ref": _str(),
+                "line_count": _int(),
+                "subtotal_matches_line_items": {
+                    "type": ["boolean", "null"],
+                    "description": (
+                        "null when the line items could not be read — which "
+                        "is NOT the same as a mismatch, and is why IMP-02 "
+                        "stays silent on it."
+                    ),
+                },
+                **_money("total"),
+                **_money("line_items_total"),
+            })),
+            "findings": _arr(_obj({
+                "code": _str("IMP-01 … IMP-07."),
+                "severity": _str("manquement | signalement."),
+                "label": _str(),
+                "detail": _str(
+                    "What to do IN THE APPLICATION — the connector cannot "
+                    "delete, void, or change an invoice's status."
+                ),
+            })),
+            "checks_skipped": _arr(_str(
+                "Codes NOT run because the sources could not be read "
+                "completely. A shortened report must never pass for a clean "
+                "one."
+            )),
+            "truncated": _bool(),
+        }),
+        {
+            "dossier_id": _nstr("Echo of the selector, when it was the id."),
+            "file_number": _nstr("Echo of the selector, when it was the number."),
+        },
     ),
 
     "get_reference_vocabulary": _obj({
