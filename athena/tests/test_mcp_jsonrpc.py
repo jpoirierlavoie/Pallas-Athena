@@ -190,17 +190,28 @@ def test_initialize_shape(client):
     instructions = result["instructions"]
     # A bare `"read-only" in instructions` would keep passing against
     # "20 tools read; 9 write…" while proving nothing. Assert the write
-    # disclosure the client model actually needs: the create-only ceiling,
-    # the fill-only rule, and the WP15 retry protocol (dry_run +
-    # idempotency_key replaced the old blind-retry-duplicates advice).
-    assert "CREATE-ONLY" in instructions
+    # disclosure the client model actually needs: the three families, the
+    # fill-only rule, the WP15 retry protocol (dry_run + idempotency_key
+    # replaced the old blind-retry-duplicates advice), and — since lot Q —
+    # the boundaries that replaced the create-only ceiling.
+    assert "CORRECT" in instructions
     assert "create_note" in instructions
     assert "complete_dossier" in instructions
     assert "athena:write" in instructions
     assert "refuses to overwrite" in instructions
     assert "dry_run" in instructions
     assert "idempotency_key" in instructions
-    assert "never writable" in instructions
+    # What the connector still cannot do. « CREATE-ONLY » and « never
+    # writable » died with lot Q — asserting them would now pin a lie.
+    assert "NEVER allocates" in instructions
+    assert "brouillon" in instructions
+    assert "never records a payment" in instructions
+    assert "DELETED" in instructions
+    assert "trust accounting" in instructions
+    # The repair path must be stated: voiding the invoice in the application
+    # releases every source. Saying nothing would leave the model believing
+    # an import is irreversible.
+    assert "void the invoice IN THE APPLICATION" in instructions
 
 
 # ── tools/list & tools/call ─────────────────────────────────────────────

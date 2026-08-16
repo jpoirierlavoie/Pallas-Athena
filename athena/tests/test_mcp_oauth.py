@@ -524,9 +524,15 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     # Jinja line break inside a sentence cannot break the assertion.
     flat = " ".join(body.split())
     assert "création seulement" not in flat
-    assert "et <strong>uniquement</strong>, créer" in flat   # ceiling kept
-    # The grant control, every write family, the ONE modification, and the
-    # cascade the lawyer is consenting to.
+    # Lot Q killed the create-only ceiling and the « factures … intouchables »
+    # claim in the same breath: the connector now creates contacts, dossiers
+    # and imported invoices, and CORRECTS four kinds of record. A screen that
+    # still said « et uniquement, créer » would grant one thing and describe
+    # another — the exact failure these assertions exist to catch.
+    assert "et <strong>uniquement</strong>, créer" not in flat
+    assert "une seule modification" not in flat
+    # The grant control, every write family, and the cascade the lawyer is
+    # consenting to.
     assert 'name="grant_write"' in body
     assert "Autoriser les écritures" in flat
     assert "clore une <strong>tâche</strong>" in flat or "clore une tâche" in flat
@@ -538,10 +544,22 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "remplir des champs encore vides" in flat
     assert "jamais écraser une valeur existante" in flat
     assert "significations et des événements de prescription" in flat
+    # The lot Q families, named on the screen the lawyer actually reads.
+    assert "<strong>contacts</strong>" in flat
+    assert "<strong>dossiers</strong>" in flat
+    assert "<strong>factures reprises</strong>" in flat
+    assert "<strong>brouillon</strong>" in flat
+    assert "numéro et leur date d'origine" in flat
+    assert "tant qu'ils ne sont pas facturés" in flat
+    assert "<strong>remplace</strong> la valeur nommée" in flat
     # And what stays impossible must be said as plainly.
     assert "<strong>Rien ne peut être supprimé</strong>" in flat
-    assert "rien d'autre ne peut être modifié" in flat
-    assert "intouchables" in flat
+    assert "<strong>paiement</strong>" in flat
+    assert "émettre un nouveau numéro de facture" in flat
+    assert "<strong>fidéicommis</strong>" in flat
+    # The repair path exists and must be named: void_invoice releases every
+    # source. The old copy called the freeze permanent, which was false.
+    assert "annulez la facture dans l'application" in flat
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)

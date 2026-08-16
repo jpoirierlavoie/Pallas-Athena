@@ -520,6 +520,11 @@ McpEvent = Literal[
     # does not auto-scrub titles or free text).
     "mcp_note_written",
     "mcp_write_refused",
+    # The generalized write audit line. endpoint.py has emitted it since
+    # July 2026 and OBSERVABILITY.md has documented it just as long — only
+    # this Literal lied, so a reader checking the type concluded the event
+    # did not exist.
+    "mcp_write",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 TemplateEvent = Literal[

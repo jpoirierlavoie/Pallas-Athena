@@ -1,29 +1,43 @@
-"""The 33 MCP tool handlers — 23 read-only, plus 10 writes.
+"""The 43 MCP tool handlers — 26 read-only, plus 17 writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
 Handlers call EXISTING model/util functions only.
 
-**Read handlers must never write to Firestore.** The invariant survives the
-write tools in this narrowed form: only the handlers named in
-:data:`mcp.tools.WRITE_TOOLS` mutate anything, every one of them is
-CREATE-ONLY (a new note/task/hearing/time-entry/expense, an appended
-register entry, a fill-only-if-empty dossier field — never an edit, never a
-delete), and the writable collections are ``notes``, ``tasks``,
-``hearings``, ``timeentries``, ``expenses`` and ``dossiers`` (arrays +
-empty fields only). That is why, for example, ``list_protocol_steps``
-derives overdue status by date comparison instead of calling
+**Read handlers must never write to Firestore.** Only the handlers named in
+:data:`mcp.tools.WRITE_TOOLS` mutate anything. Since lot Q they fall in
+three families — CREATE (note, task, hearing, time entry, expense, partie,
+dossier, an appended register entry, a fill-only-if-empty dossier field),
+CORRECT (``update_partie``, ``update_dossier``, ``update_time_entry``,
+``update_expense``, and ``complete_task``'s status change), and IMPORT
+(``import_invoice``) — and the writable collections are ``notes``,
+``tasks``, ``hearings``, ``timeentries``, ``expenses``, ``parties``,
+``invoices`` (with its ``lineitems`` subcollection) and ``dossiers``.
+**NOTHING is ever deleted**, no invoice status is ever set and no payment is
+ever recorded. That is why, for example, ``list_protocol_steps`` derives
+overdue status by date comparison instead of calling
 ``check_overdue_steps``, which writes. (Note the request path itself does
 write outside the tool path: ``bearer.stamp_token_last_used``,
 ``oauth.touch_client``, and ``mcp/write_support.py``'s idempotency
 records.)
 
-**Every note write MUST bump the dossier's CTag.** ``models/note.py`` never
-bumps — bumping lives in the caller (``routes/notes.py``,
-``dav/dossier_collections.py``). A tool path that writes a note and skips
-``bump_ctag(f"dossier:{dossier_id}")`` leaves the note visible in the web UI
-while DavX5 silently never re-syncs it: nothing errors, and only the phone
-is wrong.
+**Every note write MUST bump the dossier's CTag, and every contact write
+the addressbook's.** ``models/note.py`` and ``models/partie.py`` never bump
+— bumping lives in the caller (``routes/notes.py``, ``routes/parties.py``,
+``dav/dossier_collections.py``). A tool path that writes and skips
+``bump_ctag(f"dossier:{dossier_id}")`` or ``bump_ctag("parties")`` leaves
+the record visible in the web UI while DavX5 silently never re-syncs it:
+nothing errors, and only the phone is wrong.
+
+**A dossier write must resolve every party id BEFORE the model sees it.**
+``dossier._rebuild_party_mirrors`` subscripts ``c["id"]`` raw, so an entry
+without an id raises an uncaught ``KeyError`` — an HTTP 500, not a
+validation error — and ``_validate`` never checks for the key.
+
+**A dry run that predicts a success the real call refuses is a lie.**
+``run_write`` short-circuits on ``dry_run`` WITHOUT calling the model, so
+every model-side guard a caller can trip (an invoiced entry, a missing name,
+an unknown id) must be repeated in the handler before that branch.
 
 Serialization rules (§10.1):
 * money → ``<field>_cents`` (int) + ``<field>_display`` (fr-CA string);

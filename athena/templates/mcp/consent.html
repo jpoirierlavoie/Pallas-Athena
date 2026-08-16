@@ -36,8 +36,8 @@
     <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
       <p class="font-medium">Écritures (facultatif)</p>
       <p class="mt-1">
-        Si vous cochez la case ci-dessous, ce connecteur pourra également,
-        et <strong>uniquement</strong>, créer&nbsp;:
+        Si vous cochez la case ci-dessous, ce connecteur pourra
+        <strong>créer</strong>&nbsp;:
       </p>
       <ul class="list-disc list-inside mt-2 space-y-1">
         <li>des notes dans un dossier (création et ajout à la fin —
@@ -46,30 +46,55 @@
         <li>des événements au calendrier (audiences et rendez-vous)&nbsp;;</li>
         <li>des entrées de temps et des déboursés (marqués non facturés,
           à réviser avant facturation)&nbsp;;</li>
+        <li>des <strong>contacts</strong> et des <strong>dossiers</strong>,
+          y compris déjà fermés ou archivés&nbsp;;</li>
+        <li>des <strong>factures reprises</strong> de votre ancien système,
+          toujours à l'état <strong>brouillon</strong>, sous leur
+          <strong>numéro et leur date d'origine</strong>, et composées
+          uniquement d'entrées de temps et de déboursés déjà
+          enregistrés&nbsp;;</li>
         <li>des compléments de dossier&nbsp;: remplir des champs encore
           vides (jamais écraser une valeur existante), consigner des
           significations et des événements de prescription.</li>
       </ul>
-      <p class="mt-2">
-        Et <strong>une seule modification</strong>&nbsp;: <strong>clore une
-        tâche</strong> (terminée, annulée, ou remise en cours). C'est le seul
-        changement d'état que le connecteur puisse faire.
+      <p class="mt-3">
+        Et <strong>corriger</strong>&nbsp;: un contact, un dossier, une
+        entrée de temps ou un déboursé <strong>tant qu'ils ne sont pas
+        facturés</strong>, ainsi que clore une tâche. Une correction
+        <strong>remplace</strong> la valeur nommée&nbsp;; les champs qui ne
+        sont pas nommés ne sont pas touchés.
       </p>
-      <p class="mt-2">
-        <strong>Conséquence à connaître avant de cocher.</strong> Clore une
-        tâche rattachée à une étape de protocole complète aussi cette
-        étape — exactement comme le ferait la case à cocher dans
+      <p class="mt-3 font-medium">Ce que le connecteur ne peut
+        <strong>jamais</strong> faire&nbsp;:</p>
+      <ul class="list-disc list-inside mt-1 space-y-1">
+        <li><strong>supprimer</strong> quoi que ce soit&nbsp;;</li>
+        <li>inscrire ou encaisser un <strong>paiement</strong>&nbsp;;</li>
+        <li>envoyer une facture, changer son statut ou l'annuler&nbsp;;</li>
+        <li><strong>émettre un nouveau numéro de facture</strong>&nbsp;: le
+          compteur annuel de l'application n'est jamais touché&nbsp;;</li>
+        <li>changer le statut d'un dossier — fermer un dossier doit vider sa
+          collection DavX5, ce que seule l'application fait&nbsp;;</li>
+        <li>toucher au <strong>fidéicommis</strong>, aux
+          <strong>documents</strong>, à la vérification d'identité ou à la
+          vérification des conflits d'intérêts.</li>
+      </ul>
+      <p class="mt-3">
+        <strong>Deux conséquences à connaître avant de cocher.</strong>
+        Clore une tâche rattachée à une étape de protocole complète aussi
+        cette étape — exactement comme le ferait la case à cocher dans
         l'application. Si c'était la dernière étape ouverte, <strong>le
         protocole entier se referme</strong> et ses échéances cessent de
-        paraître au relevé quotidien.
+        paraître au relevé quotidien. Et porter des entrées de temps ou des
+        déboursés à une facture reprise les <strong>fige</strong>&nbsp;: plus
+        rien ici ne pourra les modifier.
       </p>
       <p class="mt-2">
-        <strong>Rien ne peut être supprimé</strong>, et rien d'autre ne peut
-        être modifié. Les factures, le fidéicommis, les documents et les
-        contacts restent <strong>intouchables</strong>. Chaque écriture est
-        horodatée et signée «&nbsp;Claude&nbsp;». Les éléments créés se
-        synchronisent vers votre téléphone via DavX5, et <strong>rien ne
-        peut être annulé depuis le connecteur</strong>.
+        <strong>Rien ne peut être supprimé</strong>, et rien ne s'annule
+        depuis le connecteur. Pour défaire une reprise&nbsp;:
+        <strong>annulez la facture dans l'application</strong> — ses entrées
+        et ses déboursés redeviennent modifiables et le numéro se libère.
+        Chaque écriture est horodatée et signée «&nbsp;Claude&nbsp;». Les
+        éléments créés se synchronisent vers votre téléphone via DavX5.
       </p>
     </div>
     {% endif %}
@@ -94,10 +119,12 @@
         <span class="text-sm text-gray-700">
           <span class="font-medium">Autoriser les écritures</span>
           <span class="block text-gray-500 mt-1">
-            Créer des notes, tâches, événements, temps et déboursés,
-            compléter des champs vides — et clore une tâche, seule
-            modification permise. Jamais de
-            suppression.{% if params.write_requested %} Le client a demandé
+            Créer des notes, tâches, événements, temps, déboursés, contacts,
+            dossiers et factures reprises (brouillon, numéro d'origine)&nbsp;;
+            corriger un contact, un dossier, une entrée non facturée&nbsp;;
+            clore une tâche. Jamais de suppression, jamais de paiement,
+            jamais un nouveau numéro de
+            facture.{% if params.write_requested %} Le client a demandé
             cet accès.{% endif %}
           </span>
         </span>

@@ -9,17 +9,24 @@ Exposes Pallas Athena's data to Claude as a custom connector:
 * ``mcp_bp`` — ``POST /mcp``: a stateless, JSON-response-mode Streamable
   HTTP server (initialize / ping / tools list + call). No SSE, no sessions.
 
-**Reads dominate; every write is create-only.** The write tools are
-pinned in :data:`mcp.tools.WRITE_TOOLS` (notes, tasks, hearings, time
-entries, expenses, plus the dossier recorders ``complete_dossier`` /
-``record_signification`` / ``record_prescription_event``); none can edit
-or delete, and no other collection is writable from a tool path. Notes,
-tasks and hearings are DAV-exposed, and the models never bump a CTag —
-bumping lives in the caller. **Every DAV-exposed write on a tool path
-MUST call ``bump_ctag(collection_for(dossier_id))``**, or the item lands
-in Firestore, shows up in the web UI, and DavX5 silently never re-syncs
-it. All writes run through ``mcp/write_support.run_write`` (``dry_run``
-+ ``idempotency_key``).
+**Reads dominate; nothing is ever deleted.** The write tools are pinned in
+:data:`mcp.tools.WRITE_TOOLS`, in three families since lot Q (August 2026,
+the historical import): CREATE (notes, tasks, hearings, time entries,
+expenses, parties, dossiers, plus the recorders ``complete_dossier`` /
+``record_signification`` / ``record_prescription_event``), CORRECT (the
+four ``update_*`` tools and ``complete_task``), and IMPORT
+(``import_invoice``). :data:`mcp.tools.EDIT_TOOLS` is the subset that
+REPLACES a stored value, and it is what derives ``destructiveHint`` — the
+annotation stopped being a family constant the day an edit shipped.
+No tool deletes anything, sets an invoice status, or records a payment.
+
+Notes, tasks and hearings are DAV-exposed per dossier, and parties through
+the CardDAV addressbook; the models never bump a CTag — bumping lives in the
+caller. **Every DAV-exposed write on a tool path MUST call
+``bump_ctag(collection_for(dossier_id))``, or ``bump_ctag("parties")`` for a
+contact**, or the item lands in Firestore, shows up in the web UI, and DavX5
+silently never re-syncs it. All writes run through
+``mcp/write_support.run_write`` (``dry_run`` + ``idempotency_key``).
 
 Two independent kill switches, both defaulting to on:
 

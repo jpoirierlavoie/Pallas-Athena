@@ -670,3 +670,16 @@ def test_clear_context():
     record = _make_record()
     ContextFilter().filter(record)
     assert record.json_fields == {}
+
+
+def test_le_type_McpEvent_ne_ment_pas_sur_les_evenements_emis():
+    """endpoint.py emet mcp_write depuis juillet 2026 et OBSERVABILITY.md le
+    documente ; seul le Literal l'ignorait, donc un lecteur qui verifiait le
+    type concluait que l'evenement n'existait pas. Le Literal n'a aucun effet
+    a l'execution : c'est precisement pourquoi rien ne l'avait rattrape."""
+    from typing import get_args
+
+    from utils.logging_setup import McpEvent
+
+    emitted = {"mcp_write", "mcp_write_refused", "mcp_note_written"}
+    assert emitted <= set(get_args(McpEvent))
