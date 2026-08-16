@@ -614,3 +614,53 @@ def test_la_date_fournie_est_conservee_et_la_due_date_en_derive(store):
     doc, _ = _create(store, entries=[e], invoice_number="2019-F014")
     assert doc["date"] == datetime(2019, 11, 8, tzinfo=UTC)
     assert doc["due_date"] == datetime(2019, 12, 8, tzinfo=UTC)
+
+
+# ── billing_address_from ───────────────────────────────────────────────────
+# Remontée verbatim de routes/invoices._build_billing_address pour que le
+# formulaire web et le connecteur ne puissent pas facturer le même client à
+# deux adresses différentes selon la surface qui émet.
+
+
+def test_l_adresse_de_facturation_prefere_le_bloc_professionnel():
+    partie = {
+        "type": "individual", "first_name": "Jean", "last_name": "Tremblay",
+        "address_street": "1 rue Personnelle", "address_city": "Laval",
+        "work_address_street": "450 rue Sainte-Catherine Ouest",
+        "work_address_unit": "300", "work_address_city": "Montréal",
+        "work_address_province": "Québec", "work_address_postal_code": "H3B 1A7",
+    }
+    assert invoice.billing_address_from(partie) == {
+        "name": "Jean Tremblay",
+        "street": "450 rue Sainte-Catherine Ouest",
+        "unit": "300",
+        "city": "Montréal",
+        "province": "Québec",
+        "postal_code": "H3B 1A7",
+    }
+
+
+def test_l_adresse_de_facturation_retombe_sur_le_bloc_personnel():
+    partie = {
+        "type": "individual", "first_name": "Jean", "last_name": "Tremblay",
+        "address_street": "1 rue Personnelle", "address_city": "Laval",
+        "address_province": "Québec", "address_postal_code": "H7A 1A1",
+    }
+    got = invoice.billing_address_from(partie)
+    assert got["street"] == "1 rue Personnelle" and got["city"] == "Laval"
+
+
+def test_l_adresse_de_facturation_nomme_une_personne_morale_par_son_nom_legal():
+    partie = {"type": "organization", "organization_name": "Béton Nord inc.",
+              "trade_name": "Béton Nord"}
+    assert invoice.billing_address_from(partie)["name"] == "Béton Nord inc."
+
+
+def test_l_adresse_de_facturation_porte_toujours_la_cle_name():
+    """utils/invoice_docx._partie_from_billing_address mappe billing["name"]
+    vers le destinataire du Word. selected_address, l'autorité par RÔLE, ne
+    rend AUCUNE clé « name » — d'où le refus documenté d'y basculer ici : le
+    document sortirait sans destinataire."""
+    got = invoice.billing_address_from({"type": "individual", "last_name": "X"})
+    assert set(got) == {"name", "street", "unit", "city", "province", "postal_code"}
+    assert got["province"] == "QC"      # le défaut historique, inchangé

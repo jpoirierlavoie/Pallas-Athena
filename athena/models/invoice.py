@@ -285,6 +285,52 @@ def _generate_invoice_number() -> str:
     return f"{prefix}{_allocate(transaction):03d}"
 
 
+# ── Billing address snapshot ─────────────────────────────────────────────
+
+
+def billing_address_from(partie: dict) -> dict:
+    """Snapshot the billing address from a partie record.
+
+    Lifted VERBATIM from ``routes/invoices._build_billing_address`` so the web
+    form and the MCP connector cannot drift on which block an invoice
+    snapshots — the same client billed at two different addresses depending
+    on which surface issued the invoice is exactly the failure this prevents.
+
+    Behaviour is deliberately UNCHANGED: work address first, personal
+    fallback, province defaulting to « QC ».
+    ``utils.template_fields.selected_address`` is the ONE authority on which
+    block a given ROLE should try first, and this function predates it and
+    does work-then-personal unconditionally. Reconciling the two would MOVE
+    the address of existing invoices and is a separate decision — do not
+    « fix » it here. Note also the shape: {name, street, unit, city,
+    province, postal_code}. ``utils/invoice_docx._partie_from_billing_address``
+    maps ``billing["name"]`` into the recipient of the Word note d'honoraires,
+    and ``selected_address`` returns no ``name`` key at all — swapping to it
+    would produce documents with a blank addressee.
+    """
+    from models.partie import display_name
+
+    name = display_name(partie)
+    # Prefer work address if available, fall back to personal
+    if partie.get("work_address_street"):
+        return {
+            "name": name,
+            "street": partie.get("work_address_street", ""),
+            "unit": partie.get("work_address_unit", ""),
+            "city": partie.get("work_address_city", ""),
+            "province": partie.get("work_address_province", "QC"),
+            "postal_code": partie.get("work_address_postal_code", ""),
+        }
+    return {
+        "name": name,
+        "street": partie.get("address_street", ""),
+        "unit": partie.get("address_unit", ""),
+        "city": partie.get("address_city", ""),
+        "province": partie.get("address_province", "QC"),
+        "postal_code": partie.get("address_postal_code", ""),
+    }
+
+
 # ── Historical import: number, adjustment line ───────────────────────────
 
 

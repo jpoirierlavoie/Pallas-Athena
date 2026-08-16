@@ -26,6 +26,7 @@ from models.invoice import (
     STATUS_TRANSITIONS,
     VALID_STATUSES,
     balance_of,
+    billing_address_from,
     create_invoice,
     delete_invoice,
     expense_split,
@@ -39,7 +40,7 @@ from models.invoice import (
 )
 from models.audit_event import record_deletion
 from models.dossier import get_dossier, list_dossiers
-from models.partie import display_name, get_partie
+from models.partie import get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
 from models.doc_template import get_note_honoraires_template, get_template_bytes
@@ -88,29 +89,6 @@ def _parse_cents(value: str) -> int:
         return int(round(cents))
     except (ValueError, TypeError):
         return 0
-
-
-def _build_billing_address(partie: dict) -> dict:
-    """Snapshot the billing address from a partie record."""
-    name = display_name(partie)
-    # Prefer work address if available, fall back to personal
-    if partie.get("work_address_street"):
-        return {
-            "name": name,
-            "street": partie.get("work_address_street", ""),
-            "unit": partie.get("work_address_unit", ""),
-            "city": partie.get("work_address_city", ""),
-            "province": partie.get("work_address_province", "QC"),
-            "postal_code": partie.get("work_address_postal_code", ""),
-        }
-    return {
-        "name": name,
-        "street": partie.get("address_street", ""),
-        "unit": partie.get("address_unit", ""),
-        "city": partie.get("address_city", ""),
-        "province": partie.get("address_province", "QC"),
-        "postal_code": partie.get("address_postal_code", ""),
-    }
 
 
 def _template_context() -> dict:
@@ -239,7 +217,7 @@ def invoice_new() -> str:
     if clients:
         client_partie = get_partie(clients[0].get("id", ""))
         if client_partie:
-            billing_address = _build_billing_address(client_partie)
+            billing_address = billing_address_from(client_partie)
 
     today = datetime.now(timezone.utc)
 
@@ -273,7 +251,7 @@ def unbilled_items(dossier_id: str) -> str:
     if clients:
         client_partie = get_partie(clients[0].get("id", ""))
         if client_partie:
-            billing_address = _build_billing_address(client_partie)
+            billing_address = billing_address_from(client_partie)
 
     today = datetime.now(timezone.utc)
 
@@ -320,7 +298,7 @@ def invoice_create() -> str:
     if client_id:
         client_partie = get_partie(client_id)
         if client_partie:
-            billing_address = _build_billing_address(client_partie)
+            billing_address = billing_address_from(client_partie)
 
     data = {
         "dossier_id": dossier_id,
