@@ -940,6 +940,34 @@ def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
     _conforms("create_partie", payload)
 
 
+def test_dossier_writes_conform_live_and_dry(monkeypatch):
+    import models
+
+    parties = {"p1": {"id": "p1", "type": "individual", "last_name": "T"}}
+    existing = {"id": "d1", "file_number": "2019-014", "title": "T",
+                "status": "actif", "clients": []}
+    monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
+    monkeypatch.setattr(handlers.partie_model, "get_partie", parties.get)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        lambda fn: None)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: existing)
+    monkeypatch.setattr(handlers.dossier_model, "create_dossier",
+                        lambda data: ({**data, "id": "d-new"}, []))
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier",
+                        lambda did, data: ({**existing, **data, "id": did}, []))
+
+    args = {"file_number": "2019-014", "title": "Tremblay c. Lavoie",
+            "clients": [{"partie_id": "p1", "roles": ["demandeur"]}],
+            "status": "fermé"}
+    _conforms("create_dossier", handlers.create_dossier(dict(args)))
+    _conforms("create_dossier", handlers.create_dossier({**args, "dry_run": True}))
+
+    upd = {"dossier_id": "d1", "sommaire": "résumé"}
+    _conforms("update_dossier", handlers.update_dossier(dict(upd)))
+    _conforms("update_dossier", handlers.update_dossier({**upd, "dry_run": True}))
+
+
 def test_get_import_audit_conforms_found_and_not_found(monkeypatch):
     dossier = {"id": "d1", "file_number": "2019-014", "title": "T",
                "status": "fermé", "closed_date": None, "client_ids": ["p1"],

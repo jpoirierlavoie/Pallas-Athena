@@ -3271,6 +3271,177 @@ def _bump_parties_ctag() -> bool:
         return False
 
 
+def _derive_court_metadata(court_file_number: str) -> dict:
+    """The judicial metadata a Québec court file number carries.
+
+    Extracted verbatim from ``complete_dossier`` so the three dossier write
+    paths derive it identically: a dossier citing a number its own cards
+    cannot explain is exactly what the web form's parse step exists to
+    prevent.
+    """
+    parsed = reference.parse_court_file_number(court_file_number)
+    greffe = parsed.get("greffe") or {}
+    juridiction = parsed.get("juridiction") or {}
+    forum = parsed.get("forum") or {}
+    return {
+        "greffe_number": parsed.get("greffe_number") or "",
+        "juridiction_number": parsed.get("juridiction_number") or "",
+        "tribunal": juridiction.get("tribunal") or forum.get("name") or "",
+        "competence": juridiction.get("competence") or "",
+        "palais_de_justice": greffe.get("palais_de_justice") or "",
+        "district_judiciaire": greffe.get("district_judiciaire") or "",
+        "is_administrative_tribunal": bool(parsed.get("is_administrative")),
+    }
+
+
+def _resolve_party_entries(raw: Any, label: str) -> list[dict]:
+    """Canonical party entries, every id RESOLVED server-side.
+
+    Two reasons this cannot be a pass-through. First
+    ``dossier._rebuild_party_mirrors`` subscripts ``c["id"]`` RAW, so an entry
+    without an id raises an uncaught KeyError inside the model — an HTTP 500,
+    not a validation error, and ``_validate`` never checks for the key.
+    Second, ``name`` and ``avocat_name`` are SNAPSHOTS the caller must not be
+    able to falsify: they are what a generated procedure cites.
+
+    Junk roles are REFUSED, where the web route drops them silently — a
+    connector that quietly discards half a party's roles reports a success
+    that is not one.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ToolArgumentError(f"`{label}` doit être une liste.")
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ToolArgumentError(f"`{label}[{index}]` doit être un objet.")
+        pid = (item.get("partie_id") or "").strip()
+        if not pid:
+            raise ToolArgumentError(
+                f"`{label}[{index}].partie_id` est requis."
+            )
+        if pid in seen:
+            raise ToolArgumentError(
+                f"La partie {pid} figure deux fois dans `{label}`."
+            )
+        seen.add(pid)
+        partie = partie_model.get_partie(pid)
+        if partie is None:
+            raise ToolArgumentError(
+                f"Contact introuvable : {pid} ({label}[{index}]). Créez-le "
+                "avec create_partie, ou utilisez list_parties pour obtenir un "
+                "partie_id valide."
+            )
+        roles = item.get("roles") or []
+        if not isinstance(roles, list):
+            raise ToolArgumentError(f"`{label}[{index}].roles` doit être une liste.")
+        unknown = [r for r in roles if r not in dossier_model.PARTY_ROLES]
+        if unknown:
+            raise ToolArgumentError(
+                f"Rôle de partie inconnu dans `{label}[{index}]` : "
+                + ", ".join(str(r) for r in unknown)
+            )
+        avocat_id = (item.get("avocat_partie_id") or "").strip()
+        avocat_name = ""
+        if avocat_id:
+            if avocat_id == pid:
+                raise ToolArgumentError(
+                    "Une partie ne peut pas être son propre avocat."
+                )
+            avocat = partie_model.get_partie(avocat_id)
+            if avocat is None:
+                raise ToolArgumentError(
+                    f"Avocat introuvable : {avocat_id} ({label}[{index}])."
+                )
+            avocat_name = partie_model.display_name(avocat)
+        entries.append({
+            "id": pid,
+            "name": partie_model.display_name(partie),
+            "roles": list(roles),
+            "avocat_id": avocat_id,
+            "avocat_name": avocat_name,
+        })
+    return entries
+
+
+def _dossier_field_updates(args: dict, *, defaults_only: bool = False) -> dict:
+    """The shared classification/financial block, coerced, BY PRESENCE."""
+    out: dict[str, Any] = {}
+    for field, kind in _COMPLETABLE_FIELDS.items():
+        if field not in args or args[field] in (None, ""):
+            continue
+        out[field] = _coerce_completable(
+            field, kind, args[field], allow_zero=field in _ZERO_MEANINGFUL
+        )
+    for field in ("prescription_notes",):
+        if field in args:
+            out[field] = _clean_entity_text(str(args[field] or ""), field)
+    return out
+
+
+def _forum_warnings(before: dict, after: dict) -> list[str]:
+    """What ``normalize_forum`` silently discarded, said out loud.
+
+    It clears ``district_judiciaire`` for an administrative or federal forum
+    and FORCES ``court_file_number`` to « Préjudiciaire » before any
+    proceedings — both correct, both invisible. The same disclosure shape the
+    recomputed prescription date already gets.
+    """
+    warnings: list[str] = []
+    if before.get("district_judiciaire") and not after.get("district_judiciaire"):
+        warnings.append(
+            "Le district judiciaire fourni a été écarté : il ne s'applique "
+            f"pas à un forum « {after.get('forum_type', '')} »."
+        )
+    if (
+        before.get("court_file_number")
+        and after.get("court_file_number") != before.get("court_file_number")
+    ):
+        warnings.append(
+            "Le numéro de cour a été remplacé par "
+            f"« {after.get('court_file_number', '')} » : un dossier "
+            "préjudiciaire n'en porte pas d'autre tant que rien n'est déposé."
+        )
+    return warnings
+
+
+def _dossier_write_result(
+    doc: dict, *, dry_run: bool, verb: str, warnings: list[str]
+) -> dict:
+    """Success payload of a dossier write.
+
+    NO ctag keys: dossiers are not a DAV collection, and faking a sync that
+    does not exist is the failure the note tools' warning text exists to
+    avoid. A dossier created « fermé » simply is never advertised — there was
+    never a collection to drain, which is why create may set a status and
+    update may not.
+    """
+    derived = dossier_model.derive_prescription(doc)
+    payload: dict[str, Any] = {
+        verb: True,
+        "entity_type": "dossier",
+        "entity": {
+            "id": doc.get("id", ""),
+            "dossier_id": doc.get("id", ""),
+            "file_number": doc.get("file_number", ""),
+            "label": doc.get("title", ""),
+            "status": doc.get("status", ""),
+            "legacy_ref": doc.get("legacy_ref", ""),
+        },
+        "prescription_date": date_str(_as_utc(doc.get("prescription_date"))),
+        "prescription_status": derived["status"],
+        "warnings": list(warnings),
+    }
+    if dry_run:
+        payload["warnings"].append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+    return payload
+
+
 def _refuse_legacy_ref_collision(collection: str, legacy_ref: str) -> None:
     """Un legacy_ref déjà pris est un doublon en préparation.
 
@@ -3577,6 +3748,233 @@ def _update_partie_impl(args: dict, dry_run: bool) -> dict:
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _partie_write_result(partie, dry_run=False, verb="updated")
+
+
+# ── 39. create_dossier (WRITE) ──────────────────────────────────────────
+
+
+def create_dossier(args: dict) -> dict:
+    return run_write(
+        "create_dossier", args, lambda dry: _create_dossier_impl(args, dry)
+    )
+
+
+def _create_dossier_impl(args: dict, dry_run: bool) -> dict:
+    file_number = _clean_entity_text(args.get("file_number") or "", "file_number")
+    title = _clean_entity_text(args.get("title") or "", "title")
+    if not file_number:
+        raise ToolArgumentError("`file_number` est requis.")
+    if not title:
+        raise ToolArgumentError("`title` est requis.")
+
+    clients = _resolve_party_entries(args.get("clients"), "clients")
+    if not clients:
+        raise ToolArgumentError(
+            "`clients` est requis et doit contenir au moins une partie."
+        )
+    opposing = _resolve_party_entries(
+        args.get("opposing_parties"), "opposing_parties"
+    )
+    both = {c["id"] for c in clients} & {p["id"] for p in opposing}
+    if both:
+        raise ToolArgumentError(
+            "Ces parties figurent à la fois comme client et comme partie "
+            "adverse : " + ", ".join(sorted(both))
+        )
+
+    # Fail CLOSED. get_dossier_by_file_number RAISES on a query failure
+    # precisely so this pre-check cannot read « absent » out of an outage and
+    # mint a duplicate nothing can delete.
+    if dossier_model.get_dossier_by_file_number(file_number) is not None:
+        raise ToolArgumentError(
+            f"Le numéro de dossier « {file_number} » existe déjà. Utilisez "
+            "get_dossier pour le retrouver."
+        )
+    _refuse_legacy_ref_collision("dossiers", (args.get("legacy_ref") or "").strip())
+
+    data: dict[str, Any] = {
+        "file_number": file_number,
+        "title": title,
+        "clients": clients,
+        "opposing_parties": opposing,
+        "created_via": "mcp",
+    }
+    data.update(_dossier_field_updates(args))
+    for key in ("forum_type", "forum", "district_judiciaire", "legacy_ref"):
+        if key in args:
+            data[key] = _clean_entity_text(str(args[key] or ""), key)
+    if "status" in args:
+        data["status"] = args["status"]
+    for key in ("opened_date", "closed_date"):
+        when = _write_date(args, key, required=False)
+        if when is not None:
+            data[key] = when
+
+    if data.get("court_file_number") and (
+        data.get("forum_type", "judiciaire") == "judiciaire"
+    ):
+        data.update(_derive_court_metadata(data["court_file_number"]))
+
+    # normalize_forum is called by the ROUTE, never by the model. Skipping it
+    # stores an inconsistent forum block — a préjudiciaire dossier without its
+    # « Préjudiciaire » file number, so {{dossier.numero_cour}} fills blank.
+    before = dict(data)
+    dossier_model.normalize_forum(data)
+    warnings = _forum_warnings(before, data)
+
+    if dry_run:
+        preview = {**dossier_model.field_defaults(), **data, "id": ""}
+        dossier_model._apply_prescription_deadline(preview)
+        warnings.extend(_prescription_warnings(preview, data))
+        return _dossier_write_result(
+            preview, dry_run=True, verb="created", warnings=warnings
+        )
+
+    dossier, errors = dossier_model.create_dossier(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    warnings.extend(_prescription_warnings(dossier, data))
+    if dossier.get("status") in ("fermé", "archivé"):
+        warnings.append(
+            f"Le dossier est créé « {dossier.get('status')} » : sa collection "
+            "n'est pas annoncée à DavX5. C'est voulu pour une reprise "
+            "historique — il n'y a rien à purger, la collection n'a jamais "
+            "existé."
+        )
+    return _dossier_write_result(
+        dossier, dry_run=False, verb="created", warnings=warnings
+    )
+
+
+def _prescription_warnings(doc: dict, supplied: dict) -> list[str]:
+    """Say when the « date pour agir » was COMPUTED rather than imported.
+
+    ``_apply_prescription_deadline`` overwrites ``prescription_date`` as soon
+    as ``droit_action_date`` and a periodic ``prescription_type`` coexist —
+    silently, and the connector cannot force a historical value past it.
+    """
+    if not (supplied.get("droit_action_date") and supplied.get("prescription_type")):
+        return []
+    if not doc.get("prescription_date"):
+        return []
+    return [
+        "La « date pour agir » a été CALCULÉE à partir du droit d'action et "
+        f"du délai confirmé : {date_str(_as_utc(doc.get('prescription_date')))}. "
+        "Elle n'est pas reprise telle quelle de l'ancien système — vérifiez-la."
+    ]
+
+
+# ── 40. update_dossier (WRITE — remplace la valeur nommée) ──────────────
+
+
+def update_dossier(args: dict) -> dict:
+    return run_write(
+        "update_dossier", args, lambda dry: _update_dossier_impl(args, dry)
+    )
+
+
+def _update_dossier_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id = (args.get("dossier_id") or "").strip()
+    if not dossier_id:
+        raise ToolArgumentError("`dossier_id` est requis.")
+
+    # Tripwire. `status` is not declared, so additionalProperties: false
+    # already rejects it — this carries the REASON, so a future schema slip
+    # becomes a French refusal instead of a silent DavX5 desync.
+    if "status" in args:
+        raise ToolArgumentError(
+            "Le statut d'un dossier ne se change pas par le connecteur : la "
+            "fermeture exige la purge DavX5 du côté route "
+            "(routes/dossiers._sync_dossier_dav_visibility), que les modèles "
+            "n'appellent jamais. Un dossier fermé ici laisserait ses tâches, "
+            "ses notes et ses audiences sur le téléphone pour toujours. "
+            "Fixez le statut à la création, ou fermez-le dans l'application."
+        )
+
+    existing = dossier_model.get_dossier(dossier_id)
+    if existing is None:
+        raise ToolArgumentError(
+            f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers ou "
+            "get_dossier pour obtenir un dossier_id valide."
+        )
+
+    data = _dossier_field_updates(args)
+    for key in ("title", "sommaire", "forum_type", "forum",
+                "district_judiciaire", "legacy_ref"):
+        if key in args:
+            data[key] = _clean_entity_text(str(args[key] or ""), key)
+    if "opened_date" in args:
+        when = _write_date(args, "opened_date", required=False)
+        if when is not None:
+            data["opened_date"] = when
+
+    # Party arrays are APPEND-only. _rebuild_party_mirrors recomputes
+    # client_ids from whatever it is handed, with no diff and no warning:
+    # passing [A] to a dossier holding [A, B] would DELETE B in silence and
+    # report a success.
+    for arg_key, field in (
+        ("add_clients", "clients"),
+        ("add_opposing_parties", "opposing_parties"),
+    ):
+        additions = _resolve_party_entries(args.get(arg_key), arg_key)
+        if not additions:
+            continue
+        current = list(existing.get(field) or [])
+        present = {c.get("id") for c in current}
+        already = [a["id"] for a in additions if a["id"] in present]
+        if already:
+            raise ToolArgumentError(
+                f"Ces parties figurent déjà dans `{field}` : "
+                + ", ".join(sorted(already))
+                + ". Rien n'a été écrit."
+            )
+        data[field] = current + additions
+
+    if not data:
+        raise ToolArgumentError(
+            "Aucun champ à corriger : fournissez au moins un champ."
+        )
+    if "legacy_ref" in data and data["legacy_ref"] != existing.get("legacy_ref", ""):
+        _refuse_legacy_ref_collision("dossiers", data["legacy_ref"])
+
+    merged_forum = {
+        **{k: existing.get(k, "") for k in
+           ("forum_type", "forum", "district_judiciaire", "court_file_number",
+            "tribunal", "competence", "palais_de_justice", "greffe_number",
+            "juridiction_number")},
+        **{k: v for k, v in data.items() if k in (
+            "forum_type", "forum", "district_judiciaire", "court_file_number")},
+    }
+    if "court_file_number" in data and (
+        merged_forum.get("forum_type", "judiciaire") == "judiciaire"
+    ):
+        merged_forum.update(_derive_court_metadata(data["court_file_number"]))
+    touches_forum = any(
+        k in data for k in
+        ("forum_type", "forum", "district_judiciaire", "court_file_number")
+    )
+    warnings: list[str] = []
+    if touches_forum:
+        before = dict(merged_forum)
+        dossier_model.normalize_forum(merged_forum)
+        warnings = _forum_warnings(before, merged_forum)
+        data.update(merged_forum)
+
+    if dry_run:
+        preview = {**existing, **data}
+        dossier_model._apply_prescription_deadline(preview)
+        warnings.extend(_prescription_warnings(preview, data))
+        return _dossier_write_result(
+            preview, dry_run=True, verb="updated", warnings=warnings
+        )
+
+    dossier, errors = dossier_model.update_dossier(dossier_id, data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    warnings.extend(_prescription_warnings(dossier, data))
+    return _dossier_write_result(
+        dossier, dry_run=False, verb="updated", warnings=warnings
+    )
 
 
 # ── 23. create_task (WRITE) ─────────────────────────────────────────────
@@ -3925,14 +4323,26 @@ _COMPLETABLE_FIELDS: dict[str, str] = {
 }
 
 
-def _coerce_completable(field: str, kind: str, raw: Any):
+# Fields where 0 is a REAL value, not an unset one. A pro bono or aide
+# juridique dossier has an hourly rate of zero, and refusing it would both
+# block the import and poison every time entry created afterwards —
+# create_time_entry defaults rate_cents to the dossier's rate, so the file
+# would silently bill at the model default of 300 $/h.
+_ZERO_MEANINGFUL = frozenset({"hourly_rate"})
+
+
+def _coerce_completable(field: str, kind: str, raw: Any, *, allow_zero: bool = False):
     if kind == "date":
         d = _parse_iso_date(str(raw), field)
         return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
     if kind in ("cents", "basis_points"):
         value = int(raw)
-        if value <= 0:
-            raise ToolArgumentError(f"`{field}` doit être un entier positif.")
+        floor = 0 if allow_zero else 1
+        if value < floor:
+            raise ToolArgumentError(
+                f"`{field}` doit être un entier "
+                + ("positif ou nul." if allow_zero else "positif.")
+            )
         return value
     return _clean_entity_text(str(raw), field)
 
@@ -4000,19 +4410,7 @@ def _complete_dossier_impl(args: dict, dry_run: bool) -> dict:
     if "court_file_number" in updates and (
         dossier.get("forum_type", "judiciaire") == "judiciaire"
     ):
-        parsed = reference.parse_court_file_number(updates["court_file_number"])
-        greffe = parsed.get("greffe") or {}
-        juridiction = parsed.get("juridiction") or {}
-        forum = parsed.get("forum") or {}
-        derived = {
-            "greffe_number": parsed.get("greffe_number") or "",
-            "juridiction_number": parsed.get("juridiction_number") or "",
-            "tribunal": juridiction.get("tribunal") or forum.get("name") or "",
-            "competence": juridiction.get("competence") or "",
-            "palais_de_justice": greffe.get("palais_de_justice") or "",
-            "district_judiciaire": greffe.get("district_judiciaire") or "",
-            "is_administrative_tribunal": bool(parsed.get("is_administrative")),
-        }
+        derived = _derive_court_metadata(updates["court_file_number"])
         for key, value in derived.items():
             if value in ("", None, False):
                 continue

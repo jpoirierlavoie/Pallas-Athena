@@ -390,6 +390,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     # additifs ; les update_* REMPLACENT une valeur nommée, ce qui les rend
     # destructifs au sens de la spec MCP (voir EDIT_TOOLS).
     "create_partie", "update_partie",
+    "create_dossier", "update_dossier",
 })
 
 # Writes that REPLACE a stored value rather than adding one. Lot Q ended the
@@ -399,7 +400,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
 # client uses the hint to decide whether to confirm with the user first.
 # Derived into the annotations below, never restated per tool.
 EDIT_TOOLS: frozenset[str] = frozenset({
-    "update_partie",
+    "update_partie", "update_dossier",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -524,6 +525,130 @@ def _partie_identity_props() -> dict:
                   "description": "Free-text notes on the contact."},
         **_address_props("address", "Personal"),
         **_address_props("work_address", "Work"),
+    }
+
+
+_PARTY_ROLES = [
+    "demandeur", "défendeur", "demandeur reconventionnel",
+    "défendeur reconventionnel", "mis en cause", "intervenant",
+    "appelant", "intimé", "requérant", "autre",
+]
+
+
+def _party_entry_props() -> dict:
+    """One party on a dossier. The connector RESOLVES every id and snapshots
+    the names itself — they are what a generated procedure cites."""
+    return {
+        "type": "object",
+        "properties": {
+            "partie_id": _id(
+                "An EXISTING contact's id. Refused if it does not resolve — "
+                "never silently blanked."
+            ),
+            "roles": {
+                "type": "array",
+                "items": {"type": "string", "enum": _PARTY_ROLES},
+                "description": (
+                    "Procedural roles; a party may hold several. An unknown "
+                    "role is REFUSED here (the web form drops it silently)."
+                ),
+            },
+            "avocat_partie_id": _id(
+                "This party's lawyer, as another contact's id. Optional."
+            ),
+        },
+        "required": ["partie_id"],
+        "additionalProperties": False,
+    }
+
+
+def _forum_props() -> dict:
+    """Forum fields. The model's normalize_forum reconciles them server-side
+    and DISCARDS what does not apply — the handler reports what it dropped."""
+    return {
+        "forum_type": {
+            "type": "string",
+            "enum": ["judiciaire", "administratif", "federal", "prejudiciaire"],
+            "description": (
+                "judiciaire = ordinary court, the file number is parsed. "
+                "administratif / federal = the body named by `forum`; the "
+                "number is stored unparsed and the district is cleared. "
+                "prejudiciaire = nothing filed; the file number is FORCED to "
+                "« Préjudiciaire »."
+            ),
+        },
+        "forum": {
+            "type": "string", "maxLength": 40,
+            "description": (
+                "Body slug for administratif/federal — from "
+                "get_reference_vocabulary(kind=\"forums\"). A slug from the "
+                "wrong category is refused."
+            ),
+        },
+        "district_judiciaire": {
+            "type": "string", "maxLength": 60,
+            "description": (
+                "Judicial district. Discarded for an administrative or "
+                "federal forum, with a warning saying so."
+            ),
+        },
+    }
+
+
+def _dossier_field_props() -> dict:
+    """The classification/financial block shared by complete_dossier,
+    create_dossier and update_dossier — one definition, three tools."""
+    return {
+        "domaine": {"type": "string", "maxLength": 10,
+                    "description": "Taxonomy family — get_reference_vocabulary."},
+        "action": {"type": "string", "maxLength": 10,
+                   "description": "Named recourse; its prefix MUST equal domaine."},
+        "action_precision": {"type": "string", "maxLength": 2000,
+                             "description": "Free text; required by « Autre » rows."},
+        "sommaire": {"type": "string", "maxLength": 5000,
+                     "description": "Free-text case summary."},
+        "mandate_type": {"type": "string", "maxLength": 40,
+                         "description": "judiciaire | service_conseils | general | special."},
+        "court_file_number": {
+            "type": "string", "maxLength": 40,
+            "description": (
+                "e.g. « 500-05-123456-241 ». On a judiciaire forum the "
+                "greffe, juridiction, tribunal and district are DERIVED from "
+                "it."
+            ),
+        },
+        "prescription_type": {"type": "string", "maxLength": 40,
+                              "description": "Delay key — get_reference_vocabulary."},
+        "fee_type": {"type": "string", "maxLength": 30,
+                     "description": "hourly | flat | contingency | mixed | pro_bono | aide_juridique."},
+        "fee_notes": {"type": "string", "maxLength": 2000,
+                      "description": "Free text on the fee arrangement."},
+        "valeur": {"type": "integer", "minimum": 1, "maximum": 100000000000,
+                   "description": "Amount in dispute, integer cents."},
+        "hourly_rate": {
+            "type": "integer", "minimum": 0, "maximum": 100000000,
+            "description": (
+                "Integer cents. 0 is REAL (pro bono, aide juridique) — set it "
+                "on a historical file, because create_time_entry defaults "
+                "each entry's rate to this value."
+            ),
+        },
+        "flat_fee": {"type": "integer", "minimum": 1, "maximum": 100000000000,
+                     "description": "Flat fee, integer cents."},
+        "contingency_percent": {
+            "type": "integer", "minimum": 1, "maximum": 10000,
+            "description": "BASIS POINTS: 2500 = 25,00 %.",
+        },
+        "droit_action_date": _date("« Droit d'action » start, YYYY-MM-DD."),
+        "date_avis": _date("Confirmed avis préalable date, YYYY-MM-DD."),
+        "prise_action_date": _date("Interruptive act filed, YYYY-MM-DD."),
+        "prescription_notes": {
+            "type": "string", "maxLength": 2000,
+            "description": (
+                "Free-text notes on the limitation analysis. A real dossier "
+                "field the connector could not reach before this lot."
+            ),
+        },
     }
 
 
@@ -2265,6 +2390,125 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "record_prescription_event",
+        "scope": SCOPE_WRITE,
+    },
+    "create_dossier": {
+        "title": "Créer un dossier",
+        "description": (
+            "WRITE. Open a dossier — built for transcribing a historical "
+            "file, so `status` may be « fermé » or « archivé » from the "
+            "start and `opened_date` / `closed_date` are yours to set. A "
+            "dossier created closed is never advertised to DavX5, which is "
+            "deliberate: there is no collection to drain because none ever "
+            "existed. "
+            "Every partie_id is RESOLVED before anything is written and the "
+            "names are snapshotted server-side — they are what a generated "
+            "procedure will cite. An unknown id is refused, never blanked. "
+            "Call get_reference_vocabulary for domaine / action / "
+            "prescription_type / forum / district codes instead of guessing: "
+            "the model refuses an invalid one without naming a valid one. "
+            "`hourly_rate` accepts 0 (pro bono, aide juridique) — set it, "
+            "because create_time_entry defaults each entry's rate to it. "
+            "Check find_imported first and pass `legacy_ref`: nothing here "
+            "can delete a duplicate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_number": {
+                    "type": "string", "minLength": 1, "maxLength": 40,
+                    "description": (
+                        "The file number as the practice wrote it, e.g. "
+                        "« 2019-014 ». Refused if a dossier already bears it."
+                    ),
+                },
+                "title": {
+                    "type": "string", "minLength": 1, "maxLength": 300,
+                    "description": "e.g. « Tremblay c. Lavoie ».",
+                },
+                "clients": {
+                    "type": "array",
+                    "description": (
+                        "At least one. Each entry names an EXISTING contact."
+                    ),
+                    "items": _party_entry_props(),
+                },
+                "opposing_parties": {
+                    "type": "array",
+                    "description": "Opposing parties, same shape as clients.",
+                    "items": _party_entry_props(),
+                },
+                "status": {
+                    "type": "string", "enum": _DOSSIER_STATUSES,
+                    "description": (
+                        "Defaults to « actif ». A historical file usually "
+                        "arrives « fermé » or « archivé »; it can NEVER be "
+                        "changed afterwards through this connector."
+                    ),
+                },
+                "opened_date": _date("Opening date, YYYY-MM-DD."),
+                "closed_date": _date(
+                    "Closing date, YYYY-MM-DD. Auto-stamped when the status "
+                    "is fermé/archivé and none is given."
+                ),
+                **_forum_props(),
+                **_dossier_field_props(),
+                **_legacy_ref_prop(),
+                **_write_protocol_props(),
+            },
+            "required": ["file_number", "title", "clients"],
+            "additionalProperties": False,
+        },
+        "handler": "create_dossier",
+        "scope": SCOPE_WRITE,
+    },
+    "update_dossier": {
+        "title": "Corriger un dossier",
+        "description": (
+            "WRITE — REPLACES the values you name; a field you omit is "
+            "untouched. Use complete_dossier instead when you only want to "
+            "FILL fields that are still empty: it refuses to overwrite, which "
+            "is the safer tool for an unattended job. "
+            "`status` is deliberately NOT accepted: closing a dossier must "
+            "drain its DavX5 collection, which only the application does — "
+            "one closed here would leave its tasks, notes and hearings on the "
+            "phone for ever. `file_number` is not accepted either (every "
+            "invoice froze a snapshot of it), nor is `closed_date`. "
+            "Party arrays are APPEND-only via add_clients / "
+            "add_opposing_parties: passing a whole array would silently drop "
+            "the parties you left out."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier to correct (UUIDv4). Required."),
+                "title": {"type": "string", "maxLength": 300,
+                          "description": "New title."},
+                "sommaire": {"type": "string", "maxLength": 5000,
+                             "description": "Free-text case summary."},
+                "opened_date": _date("Correct the opening date, YYYY-MM-DD."),
+                "add_clients": {
+                    "type": "array",
+                    "description": (
+                        "Parties to ADD as clients. Refused if one is already "
+                        "on the dossier."
+                    ),
+                    "items": _party_entry_props(),
+                },
+                "add_opposing_parties": {
+                    "type": "array",
+                    "description": "Parties to ADD as opposing parties.",
+                    "items": _party_entry_props(),
+                },
+                **_forum_props(),
+                **_dossier_field_props(),
+                **_legacy_ref_prop(),
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_dossier",
         "scope": SCOPE_WRITE,
     },
     "create_partie": {

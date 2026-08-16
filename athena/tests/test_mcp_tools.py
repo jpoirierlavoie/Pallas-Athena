@@ -136,7 +136,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 38  # 26 lectures + 12 ecritures
+    assert len(tools.TOOLS) == 40  # 26 lectures + 14 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -158,6 +158,7 @@ def test_write_tools_set_is_pinned():
         "complete_task",
         # Lot Q — reprise de donnees historiques.
         "create_partie", "update_partie",
+        "create_dossier", "update_dossier",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 

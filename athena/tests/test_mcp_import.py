@@ -569,6 +569,254 @@ def test_update_ne_revérifie_pas_une_reference_inchangee(contacts):
     assert contacts["updated"]["notes"] == "x"
 
 
+# ── create_dossier / update_dossier ────────────────────────────────────────
+
+
+@pytest.fixture
+def dossiers(monkeypatch):
+    import models
+
+    world = {
+        "created": {}, "updated": {}, "existing": None,
+        "by_number": {}, "parties": {}, "legacy": {},
+    }
+
+    def _create(data):
+        world["created"] = dict(data)
+        doc = {**data, "id": "d-new"}
+        # Le VRAI dérivateur : create_dossier l'applique, et le taire ici
+        # ferait passer pour muet un avertissement qui parle en production.
+        handlers.dossier_model._apply_prescription_deadline(doc)
+        return doc, []
+
+    def _update(did, data):
+        world["updated"] = dict(data)
+        doc = {**(world["existing"] or {}), **data, "id": did}
+        handlers.dossier_model._apply_prescription_deadline(doc)
+        return doc, []
+
+    monkeypatch.setattr(handlers.dossier_model, "create_dossier", _create)
+    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _update)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: world["existing"])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        lambda fn: world["by_number"].get(fn))
+    monkeypatch.setattr(handlers.partie_model, "get_partie",
+                        lambda i: world["parties"].get(i))
+    monkeypatch.setattr(models, "find_by_legacy_ref",
+                        lambda c, r, limit=5: list(world["legacy"].get(r, [])))
+    world["parties"]["p1"] = {"id": "p1", "type": "individual",
+                              "last_name": "Tremblay", "first_name": "Jean"}
+    world["parties"]["p2"] = {"id": "p2", "type": "individual",
+                              "last_name": "Lavoie"}
+    world["parties"]["av1"] = {"id": "av1", "type": "individual",
+                               "prefix": "Me", "last_name": "Roy"}
+    return world
+
+
+def _mk(**over):
+    base = {"file_number": "2019-014", "title": "Tremblay c. Lavoie",
+            "clients": [{"partie_id": "p1", "roles": ["demandeur"]}]}
+    base.update(over)
+    return base
+
+
+def test_create_dossier_resout_et_instantane_les_parties(dossiers):
+    """Les noms sont des INSTANTANÉS que l'appelant ne doit pas pouvoir
+    falsifier : c'est ce qu'une procédure générée cite."""
+    handlers.create_dossier(_mk(
+        opposing_parties=[{"partie_id": "p2", "roles": ["défendeur"],
+                           "avocat_partie_id": "av1"}]))
+    created = dossiers["created"]
+    assert created["clients"][0] == {
+        "id": "p1", "name": "Jean Tremblay", "roles": ["demandeur"],
+        "avocat_id": "", "avocat_name": "",
+    }
+    adverse = created["opposing_parties"][0]
+    assert adverse["name"] == "Lavoie"
+    assert adverse["avocat_id"] == "av1" and adverse["avocat_name"] == "Me Roy"
+
+
+def test_une_partie_introuvable_est_un_refus_francais_pas_un_KeyError(dossiers):
+    """_rebuild_party_mirrors indice en BRUT c["id"] : sans cette résolution
+    préalable, une entrée non résolue lèverait un KeyError NON RATTRAPÉ dans
+    le modèle — un 500, pas une erreur de validation."""
+    with pytest.raises(tools.ToolArgumentError, match="Contact introuvable"):
+        handlers.create_dossier(_mk(clients=[{"partie_id": "fantome"}]))
+    assert dossiers["created"] == {}
+
+
+def test_une_entree_de_partie_sans_id_est_refusee(dossiers):
+    with pytest.raises(tools.ToolArgumentError, match="partie_id"):
+        handlers.create_dossier(_mk(clients=[{"roles": ["demandeur"]}]))
+
+
+def test_un_role_inconnu_est_refuse_pas_ecarte_en_silence(dossiers):
+    """Le formulaire web les écarte silencieusement ; un connecteur qui
+    jetterait la moitié des rôles rapporterait un succès qui n'en est pas un."""
+    with pytest.raises(tools.ToolArgumentError, match="Rôle de partie inconnu"):
+        handlers.create_dossier(_mk(
+            clients=[{"partie_id": "p1", "roles": ["capitaine"]}]))
+
+
+def test_une_partie_des_deux_cotes_est_refusee(dossiers):
+    with pytest.raises(tools.ToolArgumentError, match="client et comme partie"):
+        handlers.create_dossier(_mk(
+            opposing_parties=[{"partie_id": "p1"}]))
+
+
+def test_un_numero_de_dossier_deja_pris_est_refuse(dossiers):
+    dossiers["by_number"]["2019-014"] = {"id": "d-existant"}
+    with pytest.raises(tools.ToolArgumentError, match="existe déjà"):
+        handlers.create_dossier(_mk())
+    assert dossiers["created"] == {}
+
+
+def test_la_verification_d_unicite_echoue_fermee(dossiers, monkeypatch):
+    def _raises(fn):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        _raises)
+    with pytest.raises(RuntimeError):
+        handlers.create_dossier(_mk())
+    assert dossiers["created"] == {}
+
+
+def test_un_dossier_peut_naitre_ferme_et_le_dit(dossiers):
+    payload = handlers.create_dossier(_mk(status="fermé",
+                                          closed_date="2019-12-01"))
+    assert dossiers["created"]["status"] == "fermé"
+    assert any("DavX5" in w for w in payload["warnings"])
+
+
+def test_un_taux_horaire_nul_est_accepte(dossiers):
+    """Pro bono / aide juridique. Le refuser bloquerait la reprise ET
+    empoisonnerait chaque entrée de temps : create_time_entry prend le taux du
+    dossier par défaut, donc le dossier facturerait à 300 $/h."""
+    handlers.create_dossier(_mk(hourly_rate=0, fee_type="pro_bono"))
+    assert dossiers["created"]["hourly_rate"] == 0
+
+
+def test_le_numero_de_cour_derive_les_metadonnees_judiciaires(dossiers):
+    handlers.create_dossier(_mk(court_file_number="500-05-123456-241"))
+    created = dossiers["created"]
+    assert created["greffe_number"] == "500"
+    assert created["district_judiciaire"] == "Montréal"
+
+
+def test_normalize_forum_est_appele_et_ce_qu_il_ecarte_est_dit(dossiers):
+    """normalize_forum vit dans la ROUTE, jamais dans le modèle. Sans lui, un
+    dossier préjudiciaire n'aurait pas son numéro « Préjudiciaire » et
+    {{dossier.numero_cour}} se remplirait vide."""
+    payload = handlers.create_dossier(_mk(
+        forum_type="prejudiciaire", court_file_number="500-05-123456-241",
+        district_judiciaire="Montréal"))
+    assert dossiers["created"]["court_file_number"] == "Préjudiciaire"
+    assert any("Préjudiciaire" in w for w in payload["warnings"])
+
+
+def test_un_forum_administratif_ecarte_le_district_en_le_disant(dossiers):
+    payload = handlers.create_dossier(_mk(
+        forum_type="administratif", forum="taq", district_judiciaire="Montréal"))
+    assert dossiers["created"]["district_judiciaire"] == ""
+    assert any("district" in w.lower() for w in payload["warnings"])
+
+
+def test_une_date_pour_agir_calculee_est_annoncee(dossiers):
+    """_apply_prescription_deadline ÉCRASE prescription_date dès que le droit
+    d'action et un délai périodique coexistent — en silence, et le connecteur
+    ne peut pas forcer une valeur historique par-dessus."""
+    payload = handlers.create_dossier(_mk(
+        droit_action_date="2019-01-15", prescription_type="3_ans"))
+    assert any("CALCULÉE" in w for w in payload["warnings"])
+
+
+def test_create_dossier_en_simulation_n_ecrit_rien(dossiers):
+    payload = handlers.create_dossier(_mk(dry_run=True))
+    assert dossiers["created"] == {}
+    assert any("Simulation" in w for w in payload["warnings"])
+
+
+# ── update_dossier ─────────────────────────────────────────────────────────
+
+
+def test_update_dossier_refuse_un_changement_de_statut_en_donnant_la_raison(dossiers):
+    """Fermer un dossier exige la purge DavX5 côté route. Un dossier fermé
+    ici laisserait ses tâches, ses notes et ses audiences sur le téléphone
+    pour toujours."""
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif"}
+    with pytest.raises(tools.ToolArgumentError, match="DavX5"):
+        handlers.update_dossier({"dossier_id": "d1", "status": "fermé"})
+
+
+@pytest.mark.parametrize("forbidden", ["status", "file_number", "closed_date",
+                                       "clients", "opposing_parties"])
+def test_les_champs_non_corrigibles_ne_sont_pas_adressables(forbidden):
+    props = tools.TOOLS["update_dossier"]["input_schema"]["properties"]
+    assert forbidden not in props
+
+
+def test_update_dossier_ajoute_une_partie_sans_effacer_les_autres(dossiers):
+    """_rebuild_party_mirrors recalcule client_ids sans diff ni
+    avertissement : passer [A] à un dossier qui porte [A, B] SUPPRIMERAIT B
+    en silence en rapportant un succès."""
+    dossiers["existing"] = {
+        "id": "d1", "file_number": "2019-014", "status": "actif",
+        "clients": [{"id": "p1", "name": "Jean Tremblay", "roles": [],
+                     "avocat_id": "", "avocat_name": ""}],
+    }
+    handlers.update_dossier({"dossier_id": "d1",
+                             "add_clients": [{"partie_id": "p2"}]})
+    written = dossiers["updated"]["clients"]
+    assert [c["id"] for c in written] == ["p1", "p2"]
+
+
+def test_ajouter_une_partie_deja_presente_est_un_refus_atomique(dossiers):
+    dossiers["existing"] = {
+        "id": "d1", "file_number": "2019-014", "status": "actif",
+        "clients": [{"id": "p1", "name": "Jean Tremblay", "roles": [],
+                     "avocat_id": "", "avocat_name": ""}],
+    }
+    with pytest.raises(tools.ToolArgumentError, match="figurent déjà"):
+        handlers.update_dossier({"dossier_id": "d1",
+                                 "add_clients": [{"partie_id": "p1"}]})
+    assert dossiers["updated"] == {}
+
+
+def test_update_dossier_ne_remet_que_ce_qui_change(dossiers):
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif", "title": "ancien"}
+    handlers.update_dossier({"dossier_id": "d1", "sommaire": "résumé"})
+    assert set(dossiers["updated"]) == {"sommaire"}
+
+
+def test_update_dossier_refuse_un_id_inconnu_meme_en_simulation(dossiers):
+    dossiers["existing"] = None
+    for dry in (False, True):
+        with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
+            handlers.update_dossier({"dossier_id": "absent", "sommaire": "x",
+                                     "dry_run": dry})
+
+
+def test_update_dossier_sans_champ_est_refuse(dossiers):
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif"}
+    with pytest.raises(tools.ToolArgumentError, match="Aucun champ"):
+        handlers.update_dossier({"dossier_id": "d1"})
+
+
+def test_les_notes_de_prescription_sont_enfin_atteignables(dossiers):
+    """Un vrai champ du modèle, écrit par le formulaire web et absent de
+    _COMPLETABLE_FIELDS : le connecteur ne pouvait pas l'atteindre."""
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif"}
+    handlers.update_dossier({"dossier_id": "d1",
+                             "prescription_notes": "Suspension convenue."})
+    assert dossiers["updated"]["prescription_notes"] == "Suspension convenue."
+
+
 def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
     """Ils informent la reprise ; ils n'écrivent rien. Un scope d'écriture
     déclaré ici les retirerait d'un jeton en lecture seule sans raison."""

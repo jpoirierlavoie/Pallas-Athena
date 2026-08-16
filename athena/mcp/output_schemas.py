@@ -180,6 +180,41 @@ def _model_summary(description: str) -> dict:
 
 # ── Shared row schemas ──────────────────────────────────────────────────
 
+def _dossier_write_result(verb: str) -> dict:
+    """The success payload of a dossier write.
+
+    NO ctag_bumped / dav_synced: dossiers are not a DAV collection, and this
+    module's rule is never to declare a sync key a write cannot honour.
+    """
+    return _obj({
+        verb: {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « dossier »."),
+        "entity": _obj({
+            "id": _str(),
+            "dossier_id": _str("Same value as id — the audit log reads this."),
+            "file_number": _str(),
+            "label": _str("The dossier title."),
+            "status": _str(),
+            "legacy_ref": _str("'' when not imported."),
+        }),
+        "prescription_date": _nstr(
+            "The « date pour agir » AFTER the model recomputed it — it is "
+            "derived from droit_action_date + the confirmed delay, never "
+            "imported verbatim. A warning says so when it fired."
+        ),
+        "prescription_status": _str(
+            "courante | interrompue | echue | imprescriptible | a_verifier."
+        ),
+        "warnings": _arr(_str(
+            "French. Names anything the models rewrote or discarded: a "
+            "computed prescription date, a district cleared by the forum "
+            "rules, a file number forced to « Préjudiciaire », a dossier "
+            "created closed and therefore never advertised to DavX5."
+        )),
+        **_write_protocol_keys(),
+    })
+
+
 def _partie_write_result(verb: str) -> dict:
     """The success payload of a contact write.
 
@@ -1125,6 +1160,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "create_partie": _partie_write_result("created"),
     "update_partie": _partie_write_result("updated"),
+    "create_dossier": _dossier_write_result("created"),
+    "update_dossier": _dossier_write_result("updated"),
 
     "get_import_audit": _found_or_not(
         _obj({
