@@ -940,6 +940,33 @@ def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
     _conforms("create_partie", payload)
 
 
+def test_billing_edits_conform_live_and_dry(monkeypatch):
+    entry = {"id": "e1", "dossier_id": "d1", "description": "Rédaction",
+             "hours": 1.5, "rate": 30000, "amount": 45000, "billable": True,
+             "invoiced": False, "phase": "CTS", "sous_phase": "CTS-02",
+             "date": DT}
+    disb = {"id": "x1", "dossier_id": "d1", "description": "Timbre",
+            "amount": 5000, "taxable": True, "invoiced": False,
+            "category": "timbre_judiciaire", "date": DT}
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
+                        lambda i: entry)
+    monkeypatch.setattr(handlers.time_entry_model, "update_time_entry",
+                        lambda i, d: ({**entry, **d}, []))
+    monkeypatch.setattr(handlers.expense_model, "get_expense", lambda i: disb)
+    monkeypatch.setattr(handlers.expense_model, "update_expense",
+                        lambda i, d: ({**disb, **d}, []))
+
+    te = {"time_entry_id": "e1", "hours": 0.25}
+    _conforms("update_time_entry", handlers.update_time_entry(dict(te)))
+    _conforms("update_time_entry",
+              handlers.update_time_entry({**te, "dry_run": True}))
+
+    ex = {"expense_id": "x1", "amount_cents": 5250}
+    _conforms("update_expense", handlers.update_expense(dict(ex)))
+    _conforms("update_expense",
+              handlers.update_expense({**ex, "dry_run": True}))
+
+
 def test_dossier_writes_conform_live_and_dry(monkeypatch):
     import models
 

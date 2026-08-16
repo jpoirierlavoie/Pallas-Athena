@@ -817,6 +817,169 @@ def test_les_notes_de_prescription_sont_enfin_atteignables(dossiers):
     assert dossiers["updated"]["prescription_notes"] == "Suspension convenue."
 
 
+# ── update_time_entry / update_expense ─────────────────────────────────────
+
+
+@pytest.fixture
+def billing(monkeypatch):
+    world = {"entry": None, "expense": None, "written": {}}
+
+    def _upd_entry(eid, data):
+        world["written"] = dict(data)
+        return {**(world["entry"] or {}), **data, "id": eid}, []
+
+    def _upd_expense(xid, data):
+        world["written"] = dict(data)
+        return {**(world["expense"] or {}), **data, "id": xid}, []
+
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
+                        lambda i: world["entry"])
+    monkeypatch.setattr(handlers.time_entry_model, "update_time_entry", _upd_entry)
+    monkeypatch.setattr(handlers.expense_model, "get_expense",
+                        lambda i: world["expense"])
+    monkeypatch.setattr(handlers.expense_model, "update_expense", _upd_expense)
+    world["entry"] = {"id": "e1", "dossier_id": "d1", "description": "Rédaction",
+                      "hours": 1.5, "rate": 30000, "amount": 45000,
+                      "billable": True, "invoiced": False,
+                      "phase": "CTS", "sous_phase": "CTS-02"}
+    world["expense"] = {"id": "x1", "dossier_id": "d1", "description": "Timbre",
+                        "amount": 5000, "taxable": False, "invoiced": False,
+                        "category": "timbre_judiciaire",
+                        "phase": "PRE", "sous_phase": "PRE-00"}
+    return world
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_une_entree_deja_facturee_est_refusee_y_compris_en_simulation(billing, dry):
+    """LE contrôle de la famille. Le modèle refuse aussi, mais run_write
+    court-circuite sur dry_run sans jamais l'appeler : sans cette pré-lecture,
+    une simulation annoncerait un succès que l'appel réel refuse."""
+    billing["entry"]["invoiced"] = True
+    billing["entry"]["invoice_id"] = "i1"
+    with pytest.raises(tools.ToolArgumentError, match="déjà porté"):
+        handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0,
+                                    "dry_run": dry})
+    assert billing["written"] == {}
+
+
+def test_le_refus_nomme_la_vraie_voie_de_retour(billing):
+    """void_invoice, dans l'application, libère chaque source. Dire que rien
+    n'est possible serait faux."""
+    billing["entry"]["invoiced"] = True
+    with pytest.raises(tools.ToolArgumentError, match="annulez la facture"):
+        handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0})
+
+
+def test_omettre_billable_ne_refacture_pas(billing):
+    """La ligne la plus dangereuse de la famille serait args.get("billable",
+    True) : elle refacturerait en silence une entrée délibérément non
+    facturable ET rematérialiserait son montant, le modèle recalculant à
+    chaque sauvegarde."""
+    billing["entry"]["billable"] = False
+    handlers.update_time_entry({"time_entry_id": "e1",
+                                "description": "Corrigée"})
+    assert set(billing["written"]) == {"description"}
+    assert "billable" not in billing["written"]
+
+
+def test_omettre_taxable_n_ajoute_pas_de_tvq(billing):
+    handlers.update_expense({"expense_id": "x1", "description": "Corrigé"})
+    assert "taxable" not in billing["written"]
+
+
+def test_un_booleen_faux_atteint_bien_le_modele(billing):
+    """Un `or True` quelque part mangerait le False — le piège inverse."""
+    handlers.update_time_entry({"time_entry_id": "e1", "billable": False})
+    assert billing["written"]["billable"] is False
+
+
+def test_omettre_les_deux_cles_de_phase_n_efface_pas_la_classification(billing):
+    """_resolve_phase_pair({}) rend ("", ""), et les modèles écrivent le
+    document ENTIER : écrire ce couple effacerait la classification."""
+    handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0})
+    assert "phase" not in billing["written"]
+    assert "sous_phase" not in billing["written"]
+
+
+def test_nommer_une_seule_cle_de_phase_ecrit_les_deux(billing):
+    """apply_sous_phase_default impute mais ne RÉPARE pas : une re-phase
+    seule contre un sous-code étranger stocké serait rejetée par _validate."""
+    handlers.update_time_entry({"time_entry_id": "e1", "phase": "INS"})
+    assert billing["written"]["phase"] == "INS"
+    assert billing["written"]["sous_phase"] == "INS-00"
+
+
+def test_un_couple_de_phase_contradictoire_est_refuse(billing):
+    with pytest.raises(tools.ToolArgumentError, match="n'appartient pas"):
+        handlers.update_time_entry({"time_entry_id": "e1", "phase": "INS",
+                                    "sous_phase": "CTS-02"})
+
+
+@pytest.mark.parametrize("forbidden", ["dossier_id", "invoiced", "invoice_id",
+                                       "amount", "id"])
+def test_les_champs_derives_ou_d_imputation_ne_sont_pas_adressables(forbidden):
+    for name in ("update_time_entry", "update_expense"):
+        props = tools.TOOLS[name]["input_schema"]["properties"]
+        assert forbidden not in props, (name, forbidden)
+
+
+def test_le_montant_d_un_debourse_reste_adressable(billing):
+    """Asymétrie voulue : le modèle ne recalcule JAMAIS un déboursé, donc un
+    montant historique s'importe et se corrige exactement."""
+    assert "amount_cents" in tools.TOOLS["update_expense"]["input_schema"]["properties"]
+    handlers.update_expense({"expense_id": "x1", "amount_cents": 5250})
+    assert billing["written"]["amount"] == 5250
+
+
+def test_un_id_inconnu_est_refuse(billing):
+    billing["entry"] = None
+    with pytest.raises(tools.ToolArgumentError, match="introuvable"):
+        handlers.update_time_entry({"time_entry_id": "absent", "hours": 1.0})
+
+
+def test_sans_aucun_champ_c_est_un_refus(billing):
+    with pytest.raises(tools.ToolArgumentError, match="Aucun champ"):
+        handlers.update_time_entry({"time_entry_id": "e1"})
+
+
+# ── Les heures au quart d'heure (D-11) ─────────────────────────────────────
+
+
+def test_un_quart_d_heure_s_importe_exactement(billing, monkeypatch):
+    """round(0.25, 1) == 0.2 : à 300 $/h, 60,00 $ là où la facture papier
+    imprime 75,00 $ — en silence, et l'écart faisait ensuite échouer la
+    réconciliation de la facture par une différence que l'appelant ne pouvait
+    pas combler."""
+    created = {}
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": "d1", "file_number": "2019-014",
+                                   "title": "T", "status": "actif",
+                                   "hourly_rate": 30000})
+    monkeypatch.setattr(
+        handlers.time_entry_model, "create_time_entry",
+        lambda data: (created.update(data) or ({**data, "id": "e",
+                                                "amount": 7500}, [])))
+    handlers.create_time_entry({"dossier_id": "d1", "date": "2019-11-04",
+                                "description": "Appel", "hours": 0.25})
+    assert created["hours"] == 0.25
+
+    handlers.update_time_entry({"time_entry_id": "e1", "hours": 0.75})
+    assert billing["written"]["hours"] == 0.75
+
+
+@pytest.mark.parametrize("bad", [0.125, 0.333, 1.0001])
+def test_plus_de_deux_decimales_est_refuse_pas_arrondi(billing, bad):
+    with pytest.raises(tools.ToolArgumentError, match="deux décimales"):
+        handlers.update_time_entry({"time_entry_id": "e1", "hours": bad})
+    assert billing["written"] == {}
+
+
+def test_des_heures_nulles_ou_negatives_restent_refusees(billing):
+    for bad in (0, -1.0):
+        with pytest.raises(tools.ToolArgumentError, match="positif"):
+            handlers.update_time_entry({"time_entry_id": "e1", "hours": bad})
+
+
 def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
     """Ils informent la reprise ; ils n'écrivent rien. Un scope d'écriture
     déclaré ici les retirerait d'un jeton en lecture seule sans raison."""

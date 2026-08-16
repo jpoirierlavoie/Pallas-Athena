@@ -1160,6 +1160,43 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "create_partie": _partie_write_result("created"),
     "update_partie": _partie_write_result("updated"),
+    "update_time_entry": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « time_entry »."),
+        "entity": _obj({
+            "id": _str(),
+            "dossier_id": _str(),
+            "label": _str("The billing narrative."),
+            "date": _nstr("YYYY-MM-DD."),
+            "hours": _num(),
+            "billable": _bool(),
+            "invoiced": _bool("Always false — an invoiced entry is refused."),
+            **_phase_pair(),
+            **_money("rate"),
+            **_money("amount", "Recomputed as hours x rate; 0 when not billable."),
+        }),
+        "warnings": _arr(_str()),
+        **_write_protocol_keys(),
+    }),
+
+    "update_expense": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « expense »."),
+        "entity": _obj({
+            "id": _str(),
+            "dossier_id": _str(),
+            "label": _str(),
+            "date": _nstr("YYYY-MM-DD."),
+            "category": _str(),
+            "taxable": _bool(),
+            "invoiced": _bool("Always false — an invoiced one is refused."),
+            **_phase_pair(),
+            **_money("amount", "Stored verbatim; never recomputed."),
+        }),
+        "warnings": _arr(_str()),
+        **_write_protocol_keys(),
+    }),
+
     "create_dossier": _dossier_write_result("created"),
     "update_dossier": _dossier_write_result("updated"),
 

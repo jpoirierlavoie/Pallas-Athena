@@ -136,7 +136,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 40  # 26 lectures + 14 ecritures
+    assert len(tools.TOOLS) == 42  # 26 lectures + 16 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -159,6 +159,7 @@ def test_write_tools_set_is_pinned():
         # Lot Q — reprise de donnees historiques.
         "create_partie", "update_partie",
         "create_dossier", "update_dossier",
+        "update_time_entry", "update_expense",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -3766,7 +3767,18 @@ def test_derive_step_status_prorogue_une_echeance_de_fin_de_semaine():
 # Phase O — phase/sous_phase on the three phased creators (§7 conformance)
 # ════════════════════════════════════════════════════════════════════════
 
-_PHASED_TOOLS = ("create_task", "create_time_entry", "create_expense")
+def _phased_tools() -> list[str]:
+    """DERIVED from the registry, never a hand-kept tuple.
+
+    The old literal ("create_task", "create_time_entry", "create_expense")
+    was named in the codebase as a decay risk, and lot Q is exactly what it
+    would have missed: update_time_entry and update_expense are phased too,
+    and a frozen tuple would have let them ship unswept.
+    """
+    return [
+        name for name, spec in tools.TOOLS.items()
+        if "phase" in spec["input_schema"].get("properties", {})
+    ]
 
 
 def test_phase_enums_are_derived_from_the_pure_module():
@@ -3775,9 +3787,11 @@ def test_phase_enums_are_derived_from_the_pure_module():
     contract rather than protecting against drift, which is impossible."""
     from utils import phases as phases_mod
 
+    phased = _phased_tools()
+    assert len(phased) >= 5, phased      # garde contre un balayage vide
     expected_phases = [c for c in phases_mod.VALID_PHASES if c]
     expected_sous = [c for c in phases_mod.VALID_SOUS_PHASES if c]
-    for tool in _PHASED_TOOLS:
+    for tool in phased:
         schema = tools.TOOLS[tool]["input_schema"]
         props = schema["properties"]
         assert props["phase"]["enum"] == expected_phases, tool

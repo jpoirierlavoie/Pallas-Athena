@@ -391,6 +391,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     # destructifs au sens de la spec MCP (voir EDIT_TOOLS).
     "create_partie", "update_partie",
     "create_dossier", "update_dossier",
+    "update_time_entry", "update_expense",
 })
 
 # Writes that REPLACE a stored value rather than adding one. Lot Q ended the
@@ -401,6 +402,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
 # Derived into the annotations below, never restated per tool.
 EDIT_TOOLS: frozenset[str] = frozenset({
     "update_partie", "update_dossier",
+    "update_time_entry", "update_expense",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -2118,9 +2120,15 @@ TOOLS: dict[str, dict] = {
                 },
                 "hours": {
                     "type": "number",
-                    "minimum": 0.1,
+                    "minimum": 0.01,
                     "maximum": 24,
-                    "description": "Hours worked, 0.1 increments.",
+                    "description": (
+                        "Hours worked, at most TWO decimals — so a legacy "
+                        "quarter-hour (0.25) imports exactly. Anything finer "
+                        "is refused rather than rounded: 0.25 h silently "
+                        "rounded to 0.2 h bills 60,00 $ where the paper "
+                        "invoice printed 75,00 $."
+                    ),
                 },
                 "rate_cents": {
                     "type": "integer",
@@ -2390,6 +2398,103 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "record_prescription_event",
+        "scope": SCOPE_WRITE,
+    },
+    "update_time_entry": {
+        "title": "Corriger une entrée de temps",
+        "description": (
+            "WRITE — REPLACES the values you name; a field you omit is "
+            "untouched. Correct a transcription error BEFORE the entry is "
+            "invoiced: once it is, neither this connector nor the "
+            "application can modify it, and the only way back is voiding the "
+            "invoice in the application (which releases every source). "
+            "`amount` is never yours to set — the model recomputes it as "
+            "hours × rate, and forces 0 on a non-billable entry. "
+            "Omitting `billable` leaves it as it is: never send it « just in "
+            "case », because flipping a deliberately non-billable entry back "
+            "on rematerialises its amount. "
+            "Omitting BOTH phase keys leaves the classification alone; "
+            "naming either rewrites both."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "time_entry_id": _id("The entry to correct (UUIDv4). Required."),
+                "date": _date("Correct the date, YYYY-MM-DD."),
+                "description": {
+                    "type": "string", "minLength": 1, "maxLength": 2000,
+                    "description": (
+                        "Billing narrative, French — prints VERBATIM on the "
+                        "client's invoice. No provenance note is ever added."
+                    ),
+                },
+                "hours": {
+                    "type": "number", "minimum": 0.01, "maximum": 24,
+                    "description": (
+                        "At most two decimals (0.25 for a quarter hour); "
+                        "anything finer is refused rather than rounded."
+                    ),
+                },
+                "rate_cents": {
+                    "type": "integer", "minimum": 0, "maximum": 100000000,
+                    "description": "Hourly rate in cents; 0 is legitimate.",
+                },
+                "billable": {
+                    "type": "boolean",
+                    "description": (
+                        "Send ONLY to change it. A non-billable entry always "
+                        "carries amount 0."
+                    ),
+                },
+                **_phase_props(),
+                **_write_protocol_props(),
+            },
+            "required": ["time_entry_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_time_entry",
+        "scope": SCOPE_WRITE,
+    },
+    "update_expense": {
+        "title": "Corriger un déboursé",
+        "description": (
+            "WRITE — REPLACES the values you name; a field you omit is "
+            "untouched. Same wall as update_time_entry: once the "
+            "disbursement is invoiced nothing here can touch it. "
+            "Unlike a time entry, `amount_cents` IS yours — the model never "
+            "recomputes a disbursement, so a historical amount survives "
+            "exactly. "
+            "Omitting `taxable` leaves it as it is: sending it « just in "
+            "case » would add QST to a non-taxable disbursement."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "expense_id": _id("The disbursement to correct. Required."),
+                "date": _date("Correct the date, YYYY-MM-DD."),
+                "description": {
+                    "type": "string", "minLength": 1, "maxLength": 2000,
+                    "description": "Prints VERBATIM on the client's invoice.",
+                },
+                "amount_cents": {
+                    "type": "integer", "minimum": 1, "maximum": 100000000,
+                    "description": "Amount in integer cents.",
+                },
+                "category": {
+                    "type": "string", "enum": _EXPENSE_CATEGORIES,
+                    "description": "Disbursement category.",
+                },
+                "taxable": {
+                    "type": "boolean",
+                    "description": "Send ONLY to change it.",
+                },
+                **_phase_props(),
+                **_write_protocol_props(),
+            },
+            "required": ["expense_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_expense",
         "scope": SCOPE_WRITE,
     },
     "create_dossier": {

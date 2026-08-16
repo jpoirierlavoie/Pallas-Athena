@@ -3442,6 +3442,69 @@ def _dossier_write_result(
     return payload
 
 
+def _clean_hours(raw: Any) -> float:
+    """Hours at TWO decimals — the quarter-hour a legacy practice billed in.
+
+    ``round(hours, 1)`` was silent corruption: ``round(0.25, 1) == 0.2``, so a
+    0.25 h line at 300 $/h stored 60,00 $ where the paper invoice printed
+    75,00 $ — and the invoice then failed its own reconciliation by a gap the
+    caller could not close. Anything finer than two decimals is REFUSED, at
+    the entry where the data is, rather than rounded and discovered three
+    calls later at the invoice. (The subset validator has no ``multipleOf``,
+    so this must be a handler check.)
+    """
+    try:
+        hours = float(raw or 0)
+    except (TypeError, ValueError):
+        raise ToolArgumentError("`hours` doit être un nombre.")
+    if hours <= 0:
+        raise ToolArgumentError("`hours` doit être positif.")
+    rounded = round(hours, 2)
+    if abs(rounded - hours) > 1e-9:
+        raise ToolArgumentError(
+            f"`hours` : {hours} porte plus de deux décimales. Arrondir ici "
+            "changerait le montant facturé — donnez la valeur au centième "
+            "(0,25 pour un quart d'heure)."
+        )
+    return rounded
+
+
+def _optional_phase_pair(args: dict) -> Optional[tuple[str, str]]:
+    """The phase pair ONLY when the caller named one; ``None`` otherwise.
+
+    ``_resolve_phase_pair({})`` returns ``("", "")``, and the models write the
+    whole document — so writing that pair on an edit that never mentioned a
+    phase would ERASE a stored classification. When either key IS present,
+    BOTH are written: the models only call ``apply_sous_phase_default``, which
+    imputes but never REPAIRS (``models.task`` has a repair path, time entries
+    and expenses do not), so a phase-only retag against a foreign stored
+    sub-code would be rejected by ``_validate``.
+    """
+    if "phase" not in args and "sous_phase" not in args:
+        return None
+    return _resolve_phase_pair(args)
+
+
+def _refuse_if_invoiced(row: dict, kind: str) -> None:
+    """Refuse an edit on an invoiced row — BEFORE the dry_run branch.
+
+    The model refuses too, but ``run_write`` short-circuits on ``dry_run``
+    without ever calling it: without this pre-read a simulation would announce
+    a success the live call refuses. Note the remedy named is real — voiding
+    the invoice in the application releases every source (``void_invoice``
+    sets invoiced back to False), which is the ONE way back.
+    """
+    if not row.get("invoiced"):
+        return
+    raise ToolArgumentError(
+        f"{kind} est déjà porté(e) à la facture "
+        f"{row.get('invoice_id') or '(inconnue)'}. Le connecteur ne modifie "
+        "jamais une entrée facturée et ne peut pas annuler une facture. "
+        "Pour la libérer : annulez la facture dans l'application — ses "
+        "entrées et déboursés redeviennent modifiables."
+    )
+
+
 def _refuse_legacy_ref_collision(collection: str, legacy_ref: str) -> None:
     """Un legacy_ref déjà pris est un doublon en préparation.
 
@@ -3748,6 +3811,162 @@ def _update_partie_impl(args: dict, dry_run: bool) -> dict:
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _partie_write_result(partie, dry_run=False, verb="updated")
+
+
+# ── 41-42. update_time_entry / update_expense (WRITE — remplacent) ──────
+
+
+def _billing_edit(
+    args: dict,
+    dry_run: bool,
+    *,
+    id_key: str,
+    kind: str,
+    entity_type: str,
+    getter,
+    updater,
+    text_fields: tuple,
+    entity_builder,
+) -> dict:
+    """Shared body of the two billing editors.
+
+    Presence-only whitelist throughout — the most dangerous line of the
+    family would be ``args.get("billable", True)``: it would silently re-bill
+    an entry deliberately marked non-billable AND rematerialise its amount,
+    the model recomputing on every save. Same for a defaulted ``taxable``,
+    which would add QST to a non-taxable disbursement.
+    """
+    row_id = (args.get(id_key) or "").strip()
+    if not row_id:
+        raise ToolArgumentError(f"`{id_key}` est requis.")
+    existing = getter(row_id)
+    if existing is None:
+        raise ToolArgumentError(f"{kind} introuvable : {row_id}.")
+    _refuse_if_invoiced(existing, kind)
+
+    data: dict[str, Any] = {}
+    for field in text_fields:
+        if field in args:
+            data[field] = _clean_entity_text(str(args[field] or ""), field)
+    if "date" in args:
+        when = _write_date(args, "date", required=True)
+        if when is not None:
+            data["date"] = when
+    if "hours" in args:
+        data["hours"] = _clean_hours(args["hours"])
+    if "rate_cents" in args:
+        rate = int(args["rate_cents"])
+        if rate < 0:
+            raise ToolArgumentError("`rate_cents` ne peut pas être négatif.")
+        data["rate"] = rate
+    if "amount_cents" in args:
+        amount = int(args["amount_cents"])
+        if amount <= 0:
+            raise ToolArgumentError(
+                "`amount_cents` doit être un montant positif en cents."
+            )
+        data["amount"] = amount
+    for flag in ("billable", "taxable"):
+        if flag in args:
+            data[flag] = bool(args[flag])
+    if "category" in args:
+        data["category"] = args["category"]
+
+    pair = _optional_phase_pair(args)
+    if pair is not None:
+        data["phase"], data["sous_phase"] = pair
+
+    if not data:
+        raise ToolArgumentError(
+            "Aucun champ à modifier : fournissez au moins un champ."
+        )
+
+    if dry_run:
+        preview = {**existing, **data}
+        return {
+            "updated": True,
+            "entity_type": entity_type,
+            "entity": entity_builder(preview),
+            "warnings": [
+                "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+                "dry_run pour enregistrer."
+            ],
+        }
+
+    row, errors = updater(row_id, data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return {
+        "updated": True,
+        "entity_type": entity_type,
+        "entity": entity_builder(row),
+        "warnings": [],
+    }
+
+
+_TIME_ENTRY_TEXT = ("description",)
+_EXPENSE_TEXT = ("description",)
+
+
+def _time_entry_entity(doc: dict) -> dict:
+    row = {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id", ""),
+        "label": doc.get("description", ""),
+        "date": date_str(_as_utc(doc.get("date"))),
+        "hours": float(doc.get("hours") or 0),
+        "billable": bool(doc.get("billable")),
+        "invoiced": bool(doc.get("invoiced")),
+        **_phase_pair(doc),
+    }
+    _money(row, "rate", doc.get("rate", 0))
+    _money(row, "amount", doc.get("amount", 0))
+    return row
+
+
+def _expense_entity(doc: dict) -> dict:
+    row = {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id", ""),
+        "label": doc.get("description", ""),
+        "date": date_str(_as_utc(doc.get("date"))),
+        "category": doc.get("category", ""),
+        "taxable": bool(doc.get("taxable")),
+        "invoiced": bool(doc.get("invoiced")),
+        **_phase_pair(doc),
+    }
+    _money(row, "amount", doc.get("amount", 0))
+    return row
+
+
+def update_time_entry(args: dict) -> dict:
+    return run_write(
+        "update_time_entry", args,
+        lambda dry: _billing_edit(
+            args, dry,
+            id_key="time_entry_id", kind="Cette entrée de temps",
+            entity_type="time_entry",
+            getter=time_entry_model.get_time_entry,
+            updater=time_entry_model.update_time_entry,
+            text_fields=_TIME_ENTRY_TEXT,
+            entity_builder=_time_entry_entity,
+        ),
+    )
+
+
+def update_expense(args: dict) -> dict:
+    return run_write(
+        "update_expense", args,
+        lambda dry: _billing_edit(
+            args, dry,
+            id_key="expense_id", kind="Ce déboursé",
+            entity_type="expense",
+            getter=expense_model.get_expense,
+            updater=expense_model.update_expense,
+            text_fields=_EXPENSE_TEXT,
+            entity_builder=_expense_entity,
+        ),
+    )
 
 
 # ── 39. create_dossier (WRITE) ──────────────────────────────────────────
@@ -4162,9 +4381,7 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
     if not description:
         raise ToolArgumentError("`description` est requise.")
     when = _write_date(args, "date", required=True)
-    hours = round(float(args.get("hours") or 0), 1)
-    if hours <= 0:
-        raise ToolArgumentError("`hours` doit être positif (incréments de 0,1).")
+    hours = _clean_hours(args.get("hours"))
     billable = bool(args.get("billable", True))
     rate = args.get("rate_cents")
     if rate is None:
