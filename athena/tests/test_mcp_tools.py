@@ -134,7 +134,9 @@ def test_tool_result_envelope():
 
 
 def test_registry_shape():
-    assert len(tools.TOOLS) == 33  # 23 read-only + 10 writes
+    # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
+    # sans qu'on y pense casse ici, et nulle part ailleurs.
+    assert len(tools.TOOLS) == 35  # 25 lectures + 10 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -160,7 +162,9 @@ def test_write_tools_set_is_pinned():
 
 def test_annotations_split_both_directions():
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
-    assert len(descriptors) == 33
+    # Derive : le garde-fou du compte vit a test_registry_shape, une
+    # seule fois. Deux copies, c'est une copie qui derive.
+    assert len(descriptors) == len(tools.TOOLS)
     # idempotentHint is PER TOOL, not per family: every creator appends
     # again on a second call, while complete_task with the same status
     # writes nothing at all. A single family value would misdescribe one of
@@ -192,7 +196,7 @@ def test_required_scope_defaults_to_read_never_write():
 def test_list_tool_descriptors_filters_by_scope():
     read_only = tools.list_tool_descriptors(frozenset({"athena:read"}))
     names = {d["name"] for d in read_only}
-    assert len(read_only) == 23
+    assert len(read_only) == len(tools.TOOLS) - len(tools.WRITE_TOOLS)
     assert not (names & tools.WRITE_TOOLS)
 
     both = tools.list_tool_descriptors(

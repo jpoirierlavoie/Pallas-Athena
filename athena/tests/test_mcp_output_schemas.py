@@ -878,6 +878,45 @@ def test_list_documents_conforms_on_both_scopes(monkeypatch):
     _conforms("list_documents", handlers.list_documents({"scope": "cabinet"}))
 
 
+# ── Lot Q: the two reference/lookup reads ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["domaines", "actions", "prescription_types", "forums", "districts", "phases"],
+)
+def test_get_reference_vocabulary_conforms(kind):
+    """Every branch: the six vocabularies come from six different pure
+    sources, so one shape holding for one of them proves nothing."""
+    _conforms("get_reference_vocabulary", handlers.get_reference_vocabulary(
+        {"kind": kind}
+    ))
+
+
+def test_get_reference_vocabulary_conforms_filtered():
+    _conforms("get_reference_vocabulary", handlers.get_reference_vocabulary(
+        {"kind": "actions", "domaine": "REC"}
+    ))
+
+
+def test_find_imported_conforms_found_and_empty(monkeypatch):
+    import models
+
+    rows = {
+        "parties": [{"id": "p1", "type": "individual", "last_name": "Tremblay"}],
+        "invoices": [{"id": "i1", "invoice_number": "2019-F014",
+                      "dossier_id": "d1"}],
+    }
+    monkeypatch.setattr(models, "find_by_legacy_ref",
+                        lambda c, r, limit=5: list(rows.get(c, [])))
+    _conforms("find_imported", handlers.find_imported({"legacy_ref": "L-42"}))
+
+    monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
+    empty = handlers.find_imported({"legacy_ref": "L-42"})
+    _conforms("find_imported", empty)
+    assert empty["count"] == 0
+
+
 # ── Lot 5: the coverage report conforms, including its guard branches ───
 
 

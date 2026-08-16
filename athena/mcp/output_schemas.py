@@ -1078,6 +1078,38 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         {"invoice_id": _str("Echo of the id that was not found.")},
     ),
 
+    "get_reference_vocabulary": _obj({
+        "kind": _str("Echo of the requested vocabulary."),
+        "domaine": _str("Echo of the `actions` filter; '' when unfiltered."),
+        "items": _arr(_obj({
+            "code": _str("The value the write tools accept."),
+            "label": _str("French display name."),
+            "note": _str(
+                "Whatever qualifies this row — for an action, the taxonomy's "
+                "INDICATIVE delay (often '', which is deliberate: the source "
+                "has no single clean period). '' when nothing qualifies it."
+            ),
+        })),
+        "count": _int("Rows returned."),
+        "truncated": _bool("More rows exist than were returned."),
+    }),
+
+    "find_imported": _obj({
+        "legacy_ref": _str("Echo of the reference searched."),
+        "matches": _arr(_obj({
+            "entity_type": _str(
+                "partie | dossier | time_entry | expense | invoice."
+            ),
+            "id": _str("UUIDv4 — pass it to the read tools verbatim."),
+            "label": _str("Enough to recognise the record, never a full body."),
+            "dossier_id": _nstr("null on a contact."),
+        })),
+        "count": _int(
+            "0 means nothing bears this reference — a fact, not a read "
+            "failure, which would have reported an error instead."
+        ),
+    }),
+
     "get_coverage_report": _obj({
         "scope": _obj({
             "status": _str("Dossier status the sweep covered."),

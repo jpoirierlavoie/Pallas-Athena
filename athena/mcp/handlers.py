@@ -3020,6 +3020,177 @@ def _entity_write_result(
     return payload
 
 
+# ── 34. get_reference_vocabulary (read) ─────────────────────────────────
+# Les vocabulaires que les modèles VALIDENT mais n'énumèrent jamais dans
+# leurs refus : « Domaine invalide. » ne dit pas quels domaines existent, et
+# rien parmi les outils de lecture n'exposait la taxonomie. Sans cette
+# fenêtre, la colonne « classification » du tableur ne pouvait qu'être
+# devinée — puis refusée. Toutes les sources sont des modules PURS ou des
+# tables en mémoire : aucune lecture Firestore, aucun littéral recopié.
+
+_VOCAB_CAP = 200
+
+
+def _vocab_domaines() -> list[dict]:
+    return [
+        {"code": code, "label": taxonomie.DOMAINE_LABELS.get(code, ""), "note": ""}
+        for code in taxonomie.VALID_DOMAINES
+        if code
+    ]
+
+
+def _vocab_actions(domaine: str) -> list[dict]:
+    if domaine:
+        actions = taxonomie.actions_for(domaine)
+    else:
+        actions = tuple(taxonomie.ACTIONS.values())
+    return [
+        {
+            "code": a.code,
+            "label": a.libelle,
+            # Le délai est INDICATIF et le dit : la taxonomie suggère, elle
+            # ne fixe jamais. « » là où la source ne porte pas de période
+            # propre est une valeur voulue, pas une lacune.
+            "note": a.delai or "",
+        }
+        for a in actions
+    ]
+
+
+def _vocab_prescription_types() -> list[dict]:
+    from utils.recours import PRESCRIPTION_LABELS
+
+    return [
+        {"code": code, "label": label, "note": ""}
+        for code, label in PRESCRIPTION_LABELS.items()
+        if code
+    ]
+
+
+def _vocab_forums() -> list[dict]:
+    rows: list[dict] = []
+    for category, label, forums in reference.forums_by_category():
+        for f in forums:
+            rows.append(
+                {"code": f.get("forum_key", ""), "label": f.get("name", ""),
+                 "note": label}
+            )
+    return rows
+
+
+def _vocab_districts() -> list[dict]:
+    return [
+        {"code": d, "label": d, "note": ""}
+        for d in dossier_model.VALID_DISTRICTS
+        if d
+    ]
+
+
+def _vocab_phases() -> list[dict]:
+    rows: list[dict] = []
+    for code in phases.VALID_PHASES:
+        if not code:
+            continue
+        rows.append({
+            "code": code,
+            "label": phases.PHASE_LABELS.get(code, ""),
+            "note": "phase",
+        })
+        for sc in phases.sous_codes_for(code):
+            rows.append({
+                "code": sc.code, "label": sc.libelle, "note": f"sous-code de {code}",
+            })
+    return rows
+
+
+_VOCABULARIES = {
+    "domaines": _vocab_domaines,
+    "prescription_types": _vocab_prescription_types,
+    "forums": _vocab_forums,
+    "districts": _vocab_districts,
+    "phases": _vocab_phases,
+}
+
+
+def get_reference_vocabulary(args: dict) -> dict:
+    kind = args.get("kind") or ""
+    domaine = (args.get("domaine") or "").strip()
+    if domaine and kind != "actions":
+        raise ToolArgumentError(
+            "`domaine` ne filtre que `kind: \"actions\"`."
+        )
+    if kind == "actions":
+        if domaine and domaine not in taxonomie.VALID_DOMAINES:
+            raise ToolArgumentError(
+                f"Domaine inconnu : « {domaine} ». Appelez d'abord "
+                "get_reference_vocabulary(kind=\"domaines\")."
+            )
+        rows = _vocab_actions(domaine)
+    else:
+        builder = _VOCABULARIES.get(kind)
+        if builder is None:
+            raise ToolArgumentError(f"Vocabulaire inconnu : « {kind} ».")
+        rows = builder()
+
+    truncated = len(rows) > _VOCAB_CAP
+    return {
+        "kind": kind,
+        "domaine": domaine,
+        "items": rows[:_VOCAB_CAP],
+        "count": len(rows[:_VOCAB_CAP]),
+        "truncated": truncated,
+    }
+
+
+# ── 35. find_imported (read) ────────────────────────────────────────────
+
+_LEGACY_COLLECTIONS = (
+    ("partie", "parties"),
+    ("dossier", "dossiers"),
+    ("time_entry", "timeentries"),
+    ("expense", "expenses"),
+    ("invoice", "invoices"),
+)
+
+
+def _legacy_label(entity_type: str, doc: dict) -> str:
+    if entity_type == "partie":
+        return partie_model.display_name(doc)
+    if entity_type == "dossier":
+        return f"{doc.get('file_number', '')} {doc.get('title', '')}".strip()
+    if entity_type == "invoice":
+        return doc.get("invoice_number", "")
+    return doc.get("description", "")
+
+
+def find_imported(args: dict) -> dict:
+    """Retrouve ce qu'une reprise a déjà écrit, par son identifiant d'origine.
+
+    La protection anti-doublon DURABLE : la clé d'idempotence expire en 24 h
+    et une reprise s'étale sur des jours. Fail CLOSED — la question posée est
+    « dois-je créer ? », et le connecteur ne peut rien supprimer.
+    """
+    from models import find_by_legacy_ref
+
+    legacy_ref = (args.get("legacy_ref") or "").strip()
+    if not legacy_ref:
+        raise ToolArgumentError("`legacy_ref` est requis.")
+    wanted_type = (args.get("entity_type") or "").strip()
+
+    matches: list[dict] = []
+    for entity_type, collection in _LEGACY_COLLECTIONS:
+        if wanted_type and entity_type != wanted_type:
+            continue
+        for doc in find_by_legacy_ref(collection, legacy_ref):
+            matches.append({
+                "entity_type": entity_type,
+                "id": doc.get("id", ""),
+                "label": _legacy_label(entity_type, doc),
+                "dossier_id": doc.get("dossier_id") or None,
+            })
+    return {"legacy_ref": legacy_ref, "matches": matches, "count": len(matches)}
+
+
 # ── 23. create_task (WRITE) ─────────────────────────────────────────────
 
 def create_task(args: dict) -> dict:

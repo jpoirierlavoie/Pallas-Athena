@@ -1177,6 +1177,92 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "get_coverage_report",
     },
+    "get_reference_vocabulary": {
+        "title": "Vocabulaires de référence",
+        "description": (
+            "Enumerate a controlled vocabulary the models VALIDATE but never "
+            "spell out when they refuse — « Domaine invalide. » names no "
+            "valid domaine. Call this BEFORE writing a dossier's "
+            "classification rather than guessing a code. "
+            "kind='domaines' (20 families), 'actions' (162 named recourses; "
+            "pass `domaine` to narrow — the code prefix MUST equal the "
+            "domaine), 'prescription_types' (the delay dropdown), 'forums' "
+            "(non-judicial bodies: Québec administrative tribunals and "
+            "federal courts, for forum_type administratif/federal), "
+            "'districts' (judicial districts), 'phases' (litigation phase "
+            "codes and their sub-codes). "
+            "`note` carries whatever qualifies that row: for an action it is "
+            "the taxonomy's INDICATIVE delay — a suggestion the lawyer "
+            "confirms, never a computed deadline, and often empty because "
+            "the source has no single clean period. Pure reference data: no "
+            "dossier, no client, nothing personal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "domaines", "actions", "prescription_types",
+                        "forums", "districts", "phases",
+                    ],
+                    "description": "Which vocabulary to enumerate.",
+                },
+                "domaine": {
+                    "type": "string",
+                    "maxLength": 10,
+                    "description": (
+                        "Narrow `actions` to one family, e.g. « REC ». "
+                        "Refused with any other kind."
+                    ),
+                },
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+        "handler": "get_reference_vocabulary",
+    },
+    "find_imported": {
+        "title": "Retrouver un enregistrement importé",
+        "description": (
+            "Find what a historical import already wrote, by the identifier "
+            "it carried in the PREVIOUS system (`legacy_ref`). This is the "
+            "durable duplicate guard: an idempotency_key expires after 24 h "
+            "and an import runs for days, so before creating anything for a "
+            "spreadsheet row, look the row's own reference up here. "
+            "Searches contacts, dossiers, time entries, disbursements and "
+            "invoices at once; pass `entity_type` to narrow. An empty "
+            "`matches` means nothing bearing that reference exists — a fact "
+            "you can act on, because a failed lookup reports an error "
+            "instead. Nothing in this connector can delete a duplicate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "legacy_ref": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": (
+                        "The previous system's own identifier for this "
+                        "record — a row number, a file reference, an invoice "
+                        "number. Whatever convention you adopt, keep it "
+                        "stable for the whole import."
+                    ),
+                },
+                "entity_type": {
+                    "type": "string",
+                    "enum": [
+                        "partie", "dossier", "time_entry", "expense", "invoice",
+                    ],
+                    "description": "Restrict the search to one kind of record.",
+                },
+            },
+            "required": ["legacy_ref"],
+            "additionalProperties": False,
+        },
+        "handler": "find_imported",
+    },
     "list_deletions": {
         "title": "Journal des suppressions",
         "description": (

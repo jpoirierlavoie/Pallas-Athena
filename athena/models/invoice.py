@@ -129,6 +129,14 @@ def _default_doc() -> dict:
         "qst_number": "",
         "notes": "",
         "payment_terms": DEFAULT_PAYMENT_TERMS,
+        # Identifiant de l'enregistrement dans le système d'origine,
+        # posé par la reprise historique (août 2026) ; « » partout
+        # ailleurs. C'est l'ancre anti-doublon DURABLE : la clé
+        # d'idempotence MCP expire en 24 h et une reprise s'étale sur
+        # des jours, donc seul un identifiant porté par la donnée
+        # elle-même permet à une reprise interrompue de retrouver ce
+        # qu'elle a déjà écrit. Jamais sérialisé en vCard ni en iCal.
+        "legacy_ref": "",
         "created_at": None,
         "updated_at": None,
         "etag": "",
