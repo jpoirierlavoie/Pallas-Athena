@@ -3191,6 +3191,109 @@ def find_imported(args: dict) -> dict:
     return {"legacy_ref": legacy_ref, "matches": matches, "count": len(matches)}
 
 
+# ── Lot Q — helpers partagés par les écritures de reprise ───────────────
+
+
+def _supplied(args: dict, keys) -> dict:
+    """Les seules clés que l'appelant a RÉELLEMENT fournies.
+
+    Par PRÉSENCE, jamais ``args.get(k, defaut)``. Sur un modèle qui écrit le
+    document entier (``{**existing, **data}`` puis ``set()``), injecter un
+    défaut n'est pas une commodité : c'est une SUPPRESSION. La ligne la plus
+    dangereuse de la famille serait ``args.get("billable", True)`` — elle
+    refacturerait en silence une entrée délibérément non facturable.
+    """
+    return {k: args[k] for k in keys if k in args}
+
+
+def _clean_partie_text(value, field: str) -> str:
+    """Un champ de contact, nettoyé au plafond des entités (2000)."""
+    return _clean_entity_text(str(value if value is not None else ""), field)
+
+
+_ADDRESS_KEYS = ("street", "unit", "city", "province", "postal_code", "country")
+# Un bloc partiel est refusé sur ces quatre-là ; « unit » et « postal_code »
+# peuvent légitimement rester vides.
+_ADDRESS_REQUIRED = ("street", "city", "province", "country")
+
+
+def _require_address_bloc(args: dict, prefix: str) -> dict:
+    """Les six clés d'un bloc d'adresse, ou aucune.
+
+    ``models/partie._normalize`` appelle ``utils/validators.apply_address_
+    defaults``, qui écrit Canada / Québec / Montréal DANS le dictionnaire de
+    l'appelant dès qu'une rue est présente et que ces clés sont vides ; et
+    ``update_partie`` fusionne ``{**existing, **data}``. Un contact torontois
+    envoyé avec une rue et sans ville est donc silencieusement DÉMÉNAGÉ — sur
+    une facture que le client recevra.
+
+    La règle est délibérément plus grossière que la logique de l'injecteur :
+    elle reste correcte si cette logique change.
+    """
+    keys = [f"{prefix}_{k}" for k in _ADDRESS_KEYS]
+    present = [k for k in keys if k in args]
+    if not present:
+        return {}
+    missing = [
+        f"{prefix}_{k}" for k in _ADDRESS_REQUIRED if not (args.get(f"{prefix}_{k}") or "").strip()
+    ]
+    if missing:
+        raise ToolArgumentError(
+            f"Une adresse se fournit en BLOC : {', '.join(keys)}. "
+            f"Manquant ou vide : {', '.join(missing)}. Un bloc partiel ferait "
+            "remplacer les champs omis par les défauts Montréal / Québec / "
+            "Canada — le contact changerait de ville en silence."
+        )
+    return {k: _clean_partie_text(args.get(k, ""), k) for k in keys}
+
+
+def _bump_parties_ctag() -> bool:
+    """Bump le CTag du carnet d'adresses ; rend son succès.
+
+    Les parties sont exposées en CardDAV et ``models/partie.py`` ne bumpe
+    JAMAIS — le bump vit dans la route (trois sites), donc le connecteur doit
+    le refaire. Sans lui, le contact est en base, visible dans
+    l'application, et DavX5 ne le voit jamais : rien n'échoue, seul le
+    téléphone est faux.
+
+    Avale sa propre panne, pour la raison de ``_bump_note_ctag`` : le contact
+    est DÉJÀ écrit, et laisser l'exception filer jusqu'au ``except Exception``
+    de ``endpoint._tools_call`` rapporterait une écriture commise comme un
+    échec — le modèle réessaierait et créerait un doublon.
+    """
+    try:
+        bump_ctag("parties")
+        return True
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp partie write: ctag bump failed")
+        return False
+
+
+def _refuse_legacy_ref_collision(collection: str, legacy_ref: str) -> None:
+    """Un legacy_ref déjà pris est un doublon en préparation.
+
+    Requête à clé, donc bon marché — contrairement à un rapprochement de noms
+    qui balaierait toute la collection à CHAQUE création, soit O(N²) sur
+    l'opération même qui crée N contacts. C'est aussi la seule identité
+    EXACTE dont dispose une reprise ; ``utils/rapprochement`` propose et ne
+    tranche jamais, par doctrine.
+    """
+    if not legacy_ref:
+        return
+    from models import find_by_legacy_ref
+
+    existing = find_by_legacy_ref(collection, legacy_ref, limit=1)
+    if existing:
+        raise ToolArgumentError(
+            f"La référence d'origine « {legacy_ref} » est déjà portée par "
+            f"l'enregistrement {existing[0].get('id', '?')}. Utilisez "
+            "find_imported pour le retrouver, ou corrigez-le plutôt que d'en "
+            "créer un second — rien ici ne peut supprimer un doublon."
+        )
+
+
 # ── 36. get_import_audit (read) ─────────────────────────────────────────
 
 _AUDIT_INVOICE_CAP = 50
@@ -3316,6 +3419,164 @@ def get_import_audit(args: dict) -> dict:
         "checks_skipped": sorted(skip),
         "truncated": bool(not sources_complete or invoices_truncated),
     }
+
+
+# ── 37. create_partie (WRITE) ───────────────────────────────────────────
+
+# Les champs d'identité que les deux outils de contact adressent. NI la
+# conformité (identity_verified*, conflict_check*, kyc_document_ids), NI les
+# mandataires, NI birth_date : une machine n'atteste pas qu'une identité a
+# été vérifiée, et un `mandataires: []` partiel effacerait la liste.
+_PARTIE_TEXT_FIELDS = (
+    "prefix", "first_name", "last_name", "organization_name", "trade_name",
+    "governing_law", "language", "gender", "pronouns", "job_title",
+    "job_role", "organization", "email", "email_work", "phone_home",
+    "phone_cell", "phone_work", "fax", "bar_number", "company_neq", "notes",
+    "legacy_ref",
+)
+
+
+def _partie_payload(args: dict) -> dict:
+    """Liste blanche PAR PRÉSENCE des champs de contact fournis."""
+    data = {
+        key: _clean_partie_text(value, key)
+        for key, value in _supplied(args, _PARTIE_TEXT_FIELDS).items()
+    }
+    if "contact_role" in args:
+        data["contact_role"] = args["contact_role"]
+    data.update(_require_address_bloc(args, "address"))
+    data.update(_require_address_bloc(args, "work_address"))
+    return data
+
+
+def _partie_entity(doc: dict) -> dict:
+    return {
+        "id": doc.get("id", ""),
+        "dossier_id": "",
+        "label": partie_model.display_name(doc),
+        "type": doc.get("type", ""),
+        "contact_role": doc.get("contact_role", ""),
+        "legacy_ref": doc.get("legacy_ref", ""),
+    }
+
+
+def _partie_write_result(doc: dict, *, dry_run: bool, verb: str) -> dict:
+    payload: dict[str, Any] = {
+        verb: True,
+        "entity_type": "partie",
+        "entity": _partie_entity(doc),
+        "warnings": [],
+    }
+    bumped = False if dry_run else _bump_parties_ctag()
+    payload["ctag_bumped"] = bumped
+    payload["dav_synced"] = bumped
+    if not dry_run and not bumped:
+        payload["warnings"].append(
+            "Le contact est enregistré, mais la synchronisation CardDAV n'a "
+            "pas pu être déclenchée. Il apparaîtra sur l'appareil au prochain "
+            "changement du carnet d'adresses. Ne pas réessayer."
+        )
+    if dry_run:
+        payload["warnings"].append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+    return payload
+
+
+def create_partie(args: dict) -> dict:
+    return run_write(
+        "create_partie", args, lambda dry: _create_partie_impl(args, dry)
+    )
+
+
+def _create_partie_impl(args: dict, dry_run: bool) -> dict:
+    partie_type = args.get("type") or ""
+    data = _partie_payload(args)
+    data["type"] = partie_type
+
+    # XOR miroir : le validateur du connecteur ne connaît pas oneOf, et ce
+    # contrôle est REJOUÉ ici pour que la branche sèche refuse à l'identique.
+    # Un dry_run qui annonce un succès que l'appel réel refuse est un mensonge.
+    if partie_type == "individual" and not data.get("last_name", "").strip():
+        raise ToolArgumentError(
+            "Un contact « individual » exige `last_name`."
+        )
+    if partie_type == "organization" and not data.get(
+        "organization_name", ""
+    ).strip():
+        raise ToolArgumentError(
+            "Un contact « organization » exige `organization_name`."
+        )
+    if partie_type == "individual" and data.get("organization_name", "").strip():
+        raise ToolArgumentError(
+            "Les champs de personne physique et de personne morale ne se "
+            "mélangent pas : choisissez le `type` qui correspond."
+        )
+    if partie_type == "organization" and (
+        data.get("first_name", "").strip() or data.get("last_name", "").strip()
+    ):
+        raise ToolArgumentError(
+            "Les champs de personne physique et de personne morale ne se "
+            "mélangent pas : choisissez le `type` qui correspond."
+        )
+
+    _refuse_legacy_ref_collision("parties", data.get("legacy_ref", ""))
+
+    if dry_run:
+        return _partie_write_result(
+            {**data, "id": ""}, dry_run=True, verb="created"
+        )
+    partie, errors = partie_model.create_partie(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _partie_write_result(partie, dry_run=False, verb="created")
+
+
+# ── 38. update_partie (WRITE — remplace la valeur nommée) ───────────────
+
+
+def update_partie(args: dict) -> dict:
+    return run_write(
+        "update_partie", args, lambda dry: _update_partie_impl(args, dry)
+    )
+
+
+def _update_partie_impl(args: dict, dry_run: bool) -> dict:
+    partie_id = (args.get("partie_id") or "").strip()
+    if not partie_id:
+        raise ToolArgumentError("`partie_id` est requis.")
+    # Pré-lecture dans le gestionnaire pour que la branche sèche refuse un id
+    # inconnu à l'identique de l'appel réel.
+    existing = partie_model.get_partie(partie_id)
+    if existing is None:
+        raise ToolArgumentError(
+            f"Contact introuvable : {partie_id}. Utilisez list_parties ou "
+            "find_imported pour obtenir un partie_id valide."
+        )
+
+    data = _partie_payload(args)
+    # `id` n'est PAS adressable au schéma, et ne doit jamais l'être : le
+    # modèle fusionne sans le re-fixer, donc un id fourni corromprait le CHAMP
+    # id sans changer le chemin du document — ce qui casse en silence la
+    # pagination par curseur et les scans de mandataires.
+    data.pop("id", None)
+    if not data:
+        raise ToolArgumentError(
+            "Aucun champ à corriger : fournissez au moins un champ."
+        )
+
+    if "legacy_ref" in data and data["legacy_ref"] != existing.get("legacy_ref", ""):
+        _refuse_legacy_ref_collision("parties", data["legacy_ref"])
+
+    if dry_run:
+        return _partie_write_result(
+            {**existing, **data}, dry_run=True, verb="updated"
+        )
+    partie, errors = partie_model.update_partie(partie_id, data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _partie_write_result(partie, dry_run=False, verb="updated")
 
 
 # ── 23. create_task (WRITE) ─────────────────────────────────────────────

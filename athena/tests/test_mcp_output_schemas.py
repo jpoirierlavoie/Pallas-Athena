@@ -899,6 +899,47 @@ def test_get_reference_vocabulary_conforms_filtered():
     ))
 
 
+def test_partie_writes_conform_live_and_dry(monkeypatch):
+    import models
+
+    monkeypatch.setattr(handlers, "bump_ctag", lambda n: None)
+    monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
+    monkeypatch.setattr(handlers.partie_model, "create_partie",
+                        lambda data: ({**data, "id": "p-new"}, []))
+    monkeypatch.setattr(handlers.partie_model, "get_partie",
+                        lambda i: {"id": "p1", "type": "individual",
+                                   "last_name": "Tremblay"})
+    monkeypatch.setattr(handlers.partie_model, "update_partie",
+                        lambda pid, data: ({"id": pid, "type": "individual",
+                                            "last_name": "Tremblay", **data}, []))
+
+    args = {"type": "individual", "last_name": "Tremblay",
+            "first_name": "Jean", "legacy_ref": "L-42"}
+    _conforms("create_partie", handlers.create_partie(dict(args)))
+    _conforms("create_partie", handlers.create_partie({**args, "dry_run": True}))
+
+    upd = {"partie_id": "p1", "notes": "corrigé"}
+    _conforms("update_partie", handlers.update_partie(dict(upd)))
+    _conforms("update_partie", handlers.update_partie({**upd, "dry_run": True}))
+
+
+def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
+    """The write landed; only the sync did not. The payload must stay valid
+    so the warning actually reaches the caller."""
+    import models
+
+    def _boom(name):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(handlers, "bump_ctag", _boom)
+    monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
+    monkeypatch.setattr(handlers.partie_model, "create_partie",
+                        lambda data: ({**data, "id": "p-new"}, []))
+    payload = handlers.create_partie({"type": "individual", "last_name": "T"})
+    assert payload["ctag_bumped"] is False and payload["warnings"]
+    _conforms("create_partie", payload)
+
+
 def test_get_import_audit_conforms_found_and_not_found(monkeypatch):
     dossier = {"id": "d1", "file_number": "2019-014", "title": "T",
                "status": "fermé", "closed_date": None, "client_ids": ["p1"],

@@ -300,6 +300,275 @@ def test_get_import_audit_signale_une_facture_restee_au_brouillon(audit):
     assert "IMP-07" in {f["code"] for f in payload["findings"]}
 
 
+# ── create_partie / update_partie ──────────────────────────────────────────
+
+
+@pytest.fixture
+def contacts(monkeypatch):
+    """Capture ce qui est RÉELLEMENT remis au modèle, et les bumps CTag."""
+    import models
+
+    world = {
+        "created": {}, "updated": {}, "updated_id": None,
+        "bumps": [], "existing": None, "legacy": {},
+    }
+
+    def _create(data):
+        world["created"] = dict(data)
+        return {**data, "id": "p-new"}, []
+
+    def _update(pid, data):
+        world["updated"] = dict(data)
+        world["updated_id"] = pid
+        return {**(world["existing"] or {}), **data, "id": pid}, []
+
+    monkeypatch.setattr(handlers.partie_model, "create_partie", _create)
+    monkeypatch.setattr(handlers.partie_model, "update_partie", _update)
+    monkeypatch.setattr(handlers.partie_model, "get_partie",
+                        lambda i: world["existing"])
+    monkeypatch.setattr(handlers, "bump_ctag",
+                        lambda name: world["bumps"].append(name))
+    monkeypatch.setattr(models, "find_by_legacy_ref",
+                        lambda c, r, limit=5: list(world["legacy"].get(r, [])))
+    return world
+
+
+_INDIV = {"type": "individual", "last_name": "Tremblay", "first_name": "Jean"}
+
+
+def test_create_partie_bumpe_exactement_le_carnet_d_adresses(contacts):
+    """models/partie ne bumpe JAMAIS — le bump vit dans la route, donc le
+    connecteur doit le refaire. Sans lui le contact est en base, visible dans
+    l'application, et DavX5 ne le voit jamais."""
+    payload = handlers.create_partie(dict(_INDIV))
+    assert contacts["bumps"] == ["parties"]
+    assert payload["created"] is True
+    assert payload["ctag_bumped"] is True and payload["dav_synced"] is True
+    assert payload["entity"]["label"] == "Jean Tremblay"
+
+
+def test_create_partie_en_simulation_n_ecrit_ni_ne_bumpe(contacts):
+    payload = handlers.create_partie({**_INDIV, "dry_run": True})
+    assert contacts["created"] == {}
+    assert contacts["bumps"] == []
+    assert payload["ctag_bumped"] is False
+    assert any("Simulation" in w for w in payload["warnings"])
+
+
+def test_un_bump_rate_ne_fait_pas_reessayer(contacts, monkeypatch):
+    """Le contact est DÉJÀ écrit. Laisser filer l'exception le rapporterait
+    comme un échec, et le modèle réessaierait — un doublon."""
+    def _boom(name):
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(handlers, "bump_ctag", _boom)
+    payload = handlers.create_partie(dict(_INDIV))
+    assert payload["created"] is True
+    assert payload["ctag_bumped"] is False
+    assert any("Ne pas réessayer" in w for w in payload["warnings"])
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_une_personne_physique_exige_un_nom_de_famille(contacts, dry):
+    """Le refus doit être IDENTIQUE en simulation : un dry_run qui annonce un
+    succès que l'appel réel refuse est un mensonge."""
+    with pytest.raises(tools.ToolArgumentError, match="last_name"):
+        handlers.create_partie({"type": "individual", "first_name": "Jean",
+                                "dry_run": dry})
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_une_personne_morale_exige_un_nom_legal(contacts, dry):
+    with pytest.raises(tools.ToolArgumentError, match="organization_name"):
+        handlers.create_partie({"type": "organization", "dry_run": dry})
+
+
+def test_les_deux_familles_de_champs_ne_se_melangent_pas(contacts):
+    with pytest.raises(tools.ToolArgumentError, match="ne se mélangent pas"):
+        handlers.create_partie({"type": "organization",
+                                "organization_name": "Béton Nord inc.",
+                                "last_name": "Tremblay"})
+
+
+# ── Le bloc d'adresse ──────────────────────────────────────────────────────
+
+
+_FULL_ADDRESS = {
+    "address_street": "150 rue King", "address_unit": "",
+    "address_city": "Toronto", "address_province": "Ontario",
+    "address_postal_code": "M5H 1J9", "address_country": "Canada",
+}
+
+
+def test_une_adresse_complete_passe_telle_quelle(contacts):
+    handlers.create_partie({**_INDIV, **_FULL_ADDRESS})
+    for key, value in _FULL_ADDRESS.items():
+        assert contacts["created"][key] == value
+
+
+@pytest.mark.parametrize("missing", ["address_city", "address_province",
+                                     "address_street", "address_country"])
+def test_un_bloc_d_adresse_partiel_est_refuse(contacts, missing):
+    """apply_address_defaults écrit Montréal / Québec / Canada DANS le
+    dictionnaire de l'appelant dès qu'une rue est présente : un contact
+    torontois sans ville serait silencieusement déménagé — sur une facture
+    que le client recevra."""
+    partial = {k: v for k, v in _FULL_ADDRESS.items() if k != missing}
+    with pytest.raises(tools.ToolArgumentError, match="BLOC"):
+        handlers.create_partie({**_INDIV, **partial})
+    assert contacts["created"] == {}
+
+
+def test_un_bloc_partiel_est_refuse_aussi_en_simulation(contacts):
+    partial = {k: v for k, v in _FULL_ADDRESS.items() if k != "address_city"}
+    with pytest.raises(tools.ToolArgumentError, match="BLOC"):
+        handlers.create_partie({**_INDIV, **partial, "dry_run": True})
+
+
+def test_unit_et_code_postal_peuvent_rester_vides(contacts):
+    """Une adresse sans numéro d'unité est banale ; l'exiger refuserait des
+    contacts parfaitement valides."""
+    handlers.create_partie({
+        **_INDIV, "address_street": "1 rue X", "address_unit": "",
+        "address_city": "Laval", "address_province": "Québec",
+        "address_postal_code": "", "address_country": "Canada",
+    })
+    assert contacts["created"]["address_city"] == "Laval"
+
+
+def test_aucune_adresse_du_tout_reste_permis(contacts):
+    handlers.create_partie(dict(_INDIV))
+    assert not any(k.startswith("address_") for k in contacts["created"])
+
+
+# ── Ce qui n'est PAS adressable ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("forbidden", [
+    "id", "etag", "created_at", "updated_at", "vcard_uid",
+    "identity_verified", "identity_verified_date", "conflict_check",
+    "conflict_check_notes", "kyc_document_ids", "mandataires", "birth_date",
+])
+def test_les_champs_interdits_ne_sont_pas_adressables(forbidden):
+    """Le schéma est la garde : une machine n'atteste pas qu'une identité a
+    été vérifiée, et un mandataires vide effacerait la liste."""
+    for name in ("create_partie", "update_partie"):
+        props = tools.TOOLS[name]["input_schema"]["properties"]
+        assert forbidden not in props, (name, forbidden)
+
+
+def test_le_type_ne_se_change_pas_en_correction():
+    assert "type" not in tools.TOOLS["update_partie"]["input_schema"]["properties"]
+    assert "type" in tools.TOOLS["create_partie"]["input_schema"]["properties"]
+
+
+def test_les_vocabulaires_non_valides_par_le_modele_sont_bornes_au_schema():
+    """VALID_PREFIXES / LANGUAGES / GENDERS / PRONOUNS sont déclarés dans le
+    modèle et JAMAIS vérifiés par son _validate : le formulaire web les
+    contraint par un <select>, le modèle non. Sur le chemin du connecteur,
+    l'enum du schéma est donc l'UNIQUE garde."""
+    from models import partie as partie_model
+
+    props = tools.TOOLS["create_partie"]["input_schema"]["properties"]
+    for field, vocab in (
+        ("prefix", partie_model.VALID_PREFIXES),
+        ("language", partie_model.VALID_LANGUAGES),
+        ("gender", partie_model.VALID_GENDERS),
+        ("pronouns", partie_model.VALID_PRONOUNS),
+    ):
+        # Le modèle admet « » (absence) ; l'enum du connecteur ne l'expose
+        # pas — on omet le paramètre pour ne rien dire.
+        assert set(props[field]["enum"]) == {v for v in vocab if v}
+
+
+# ── update_partie ──────────────────────────────────────────────────────────
+
+
+def test_update_partie_refuse_un_id_inconnu_meme_en_simulation(contacts):
+    contacts["existing"] = None
+    for dry in (False, True):
+        with pytest.raises(tools.ToolArgumentError, match="introuvable"):
+            handlers.update_partie({"partie_id": "absent", "notes": "x",
+                                    "dry_run": dry})
+
+
+def test_update_partie_ne_remet_que_ce_qui_change(contacts):
+    """PATCH strict : le modèle écrit le document ENTIER, donc une clé
+    présente et vide EFFACE. Un champ omis ne doit jamais atteindre le
+    modèle."""
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "Tremblay", "email": "a@b.ca",
+                            "notes": "ancienne note"}
+    handlers.update_partie({"partie_id": "p1", "notes": "nouvelle note"})
+    assert set(contacts["updated"]) == {"notes"}
+    assert contacts["updated_id"] == "p1"
+
+
+def test_update_partie_ne_transmet_jamais_un_id(contacts):
+    """Le modèle fusionne sans re-fixer l'id : un id fourni corromprait le
+    CHAMP id sans changer le chemin du document, ce qui casse en silence la
+    pagination par curseur et les scans de mandataires."""
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "Tremblay"}
+    handlers.update_partie({"partie_id": "p1", "notes": "x"})
+    assert "id" not in contacts["updated"]
+
+
+def test_update_partie_sans_aucun_champ_est_refuse(contacts):
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "Tremblay"}
+    with pytest.raises(tools.ToolArgumentError, match="Aucun champ"):
+        handlers.update_partie({"partie_id": "p1"})
+
+
+def test_update_partie_bumpe_le_carnet(contacts):
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "Tremblay"}
+    payload = handlers.update_partie({"partie_id": "p1", "notes": "x"})
+    assert contacts["bumps"] == ["parties"]
+    assert payload["updated"] is True
+
+
+def test_update_partie_remonte_le_refus_du_modele_tel_quel(contacts, monkeypatch):
+    """_validate re-valide le document FUSIONNÉ : un contact héritant d'un
+    téléphone illisible refuse toute modification, en nommant un champ que
+    l'appelant n'a pas touché. Le message doit remonter mot pour mot pour que
+    l'opérateur répare la racine."""
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "Tremblay"}
+    monkeypatch.setattr(
+        handlers.partie_model, "update_partie",
+        lambda pid, data: (None, ["Cellulaire : Numéro de téléphone invalide."]))
+    with pytest.raises(tools.ToolArgumentError, match="Cellulaire"):
+        handlers.update_partie({"partie_id": "p1", "notes": "x"})
+
+
+# ── legacy_ref ─────────────────────────────────────────────────────────────
+
+
+def test_une_reference_d_origine_deja_prise_est_refusee(contacts):
+    contacts["legacy"]["L-42"] = [{"id": "p-existant"}]
+    with pytest.raises(tools.ToolArgumentError, match="p-existant"):
+        handlers.create_partie({**_INDIV, "legacy_ref": "L-42"})
+    assert contacts["created"] == {}
+
+
+def test_une_reference_d_origine_libre_passe(contacts):
+    handlers.create_partie({**_INDIV, "legacy_ref": "L-43"})
+    assert contacts["created"]["legacy_ref"] == "L-43"
+
+
+def test_update_ne_revérifie_pas_une_reference_inchangee(contacts):
+    """Sinon un contact ne pourrait plus jamais être corrigé : sa propre
+    référence est déjà prise… par lui-même."""
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "T", "legacy_ref": "L-42"}
+    contacts["legacy"]["L-42"] = [{"id": "p1"}]
+    handlers.update_partie({"partie_id": "p1", "legacy_ref": "L-42",
+                            "notes": "x"})
+    assert contacts["updated"]["notes"] == "x"
+
+
 def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
     """Ils informent la reprise ; ils n'écrivent rien. Un scope d'écriture
     déclaré ici les retirerait d'un jeton en lecture seule sans raison."""

@@ -136,7 +136,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 36  # 26 lectures + 10 ecritures
+    assert len(tools.TOOLS) == 38  # 26 lectures + 12 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -156,6 +156,8 @@ def test_write_tools_set_is_pinned():
         "complete_dossier", "record_signification",
         "record_prescription_event",
         "complete_task",
+        # Lot Q — reprise de donnees historiques.
+        "create_partie", "update_partie",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -176,10 +178,13 @@ def test_annotations_split_both_directions():
         assert ann["openWorldHint"] is False
         if name in tools.WRITE_TOOLS:
             assert ann["readOnlyHint"] is False
-            # destructiveHint must be explicit: the MCP spec defaults it to
-            # True once readOnlyHint is false, which would over-warn on a
-            # call that never deletes and never overwrites.
-            assert ann["destructiveHint"] is False
+            # destructiveHint must be explicit IN BOTH DIRECTIONS: the MCP
+            # spec defaults it to True once readOnlyHint is false, which
+            # would over-warn on a purely additive create; and an edit
+            # that REPLACES a stored value must not under-warn. Derived
+            # from EDIT_TOOLS, so a future editor is covered by
+            # membership rather than by someone remembering an override.
+            assert ann["destructiveHint"] is (name in tools.EDIT_TOOLS), name
             assert ann["idempotentHint"] is (name in idempotent), name
         else:
             assert ann["readOnlyHint"] is True

@@ -369,7 +369,7 @@ _READ_ONLY_ANNOTATIONS = {"readOnlyHint": True, "openWorldHint": False}
 # client over-warns on a purely additive call.
 _WRITE_ANNOTATIONS = {
     "readOnlyHint": False,
-    "destructiveHint": False,   # additive only: never overwrites, never deletes
+    "destructiveHint": False,   # additive by default: see EDIT_TOOLS below
     "idempotentHint": False,    # a second call creates/appends again
     "openWorldHint": False,
 }
@@ -386,6 +386,20 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     "complete_task",
     # WP17 — dossier mutators: fill-only-if-empty + append-only recorders.
     "complete_dossier", "record_signification", "record_prescription_event",
+    # Lot Q — la reprise de données historiques. Les créateurs restent
+    # additifs ; les update_* REMPLACENT une valeur nommée, ce qui les rend
+    # destructifs au sens de la spec MCP (voir EDIT_TOOLS).
+    "create_partie", "update_partie",
+})
+
+# Writes that REPLACE a stored value rather than adding one. Lot Q ended the
+# era where destructiveHint could be a family constant: « destructive » in
+# the MCP spec means « may perform destructive updates », which is exactly
+# what an edit does. Under-warning here is worse than over-warning — a
+# client uses the hint to decide whether to confirm with the user first.
+# Derived into the annotations below, never restated per tool.
+EDIT_TOOLS: frozenset[str] = frozenset({
+    "update_partie",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -423,6 +437,109 @@ _CONTACT_ROLES = [
     "expert", "huissier", "notaire", "autre",
 ]
 _PARTIE_TYPES = ["individual", "organization"]
+
+# Lot Q. These four are declared in models/partie.py and NEVER checked by its
+# _validate — the web form constrains them with a <select>, the model does
+# not. On the connector's path the schema enum is therefore the ONLY guard:
+# without it « gender: banana » persists silently onto a vCard.
+_PARTIE_PREFIXES = ["Me", "M.", "Mme"]
+_PARTIE_LANGUAGES = ["fr", "en", "es"]
+_PARTIE_GENDERS = ["M", "F", "O", "N", "U"]
+_PARTIE_PRONOUNS = ["il/lui", "elle", "iel", "he/him", "she/her", "they/them"]
+
+# The six keys of ONE address block. They travel together or not at all —
+# see _require_address_bloc in the handlers for why a partial block silently
+# relocates a contact.
+_ADDRESS_KEYS = ("street", "unit", "city", "province", "postal_code", "country")
+
+
+def _address_props(prefix: str, which: str) -> dict:
+    """The six flat address keys of one block, as fresh dicts (module rule)."""
+    return {
+        f"{prefix}_{key}": {
+            "type": "string",
+            "maxLength": 200,
+            "description": (
+                f"{which} address — {key}. The SIX keys of a block must be "
+                "supplied together (unit and postal_code may be empty "
+                "strings); a partial block would be completed with "
+                "Montréal / Québec / Canada defaults."
+            ),
+        }
+        for key in _ADDRESS_KEYS
+    }
+
+
+def _partie_identity_props() -> dict:
+    """Identity and contact fields shared by create_partie and update_partie."""
+    return {
+        "prefix": {
+            "type": "string", "enum": _PARTIE_PREFIXES,
+            "description": "Civility of a natural person.",
+        },
+        "first_name": {"type": "string", "maxLength": 200,
+                       "description": "Given name (natural person)."},
+        "last_name": {"type": "string", "maxLength": 200,
+                      "description": "Family name — REQUIRED on an individual."},
+        "organization_name": {
+            "type": "string", "maxLength": 300,
+            "description": (
+                "Legal name — REQUIRED on an organization. This is what "
+                "display_name returns for a company, never the trade name."
+            ),
+        },
+        "trade_name": {"type": "string", "maxLength": 300,
+                       "description": "Trade name / « doing business as »."},
+        "governing_law": {"type": "string", "maxLength": 300,
+                          "description": "Constituting statute."},
+        "language": {"type": "string", "enum": _PARTIE_LANGUAGES,
+                     "description": "Correspondence language (vCard LANG)."},
+        "gender": {"type": "string", "enum": _PARTIE_GENDERS,
+                   "description": "vCard GENDER."},
+        "pronouns": {"type": "string", "enum": _PARTIE_PRONOUNS,
+                     "description": "vCard X-PRONOUN."},
+        "job_title": {"type": "string", "maxLength": 200,
+                      "description": "vCard TITLE."},
+        "job_role": {"type": "string", "maxLength": 200,
+                     "description": "vCard ROLE."},
+        "organization": {"type": "string", "maxLength": 300,
+                         "description": "Employer (vCard ORG)."},
+        "email": {"type": "string", "maxLength": 254,
+                  "description": "Personal email; normalised to lowercase."},
+        "email_work": {"type": "string", "maxLength": 254,
+                       "description": "Work email."},
+        "phone_home": {"type": "string", "maxLength": 40,
+                       "description": "Normalised to E.164."},
+        "phone_cell": {"type": "string", "maxLength": 40,
+                       "description": "Normalised to E.164."},
+        "phone_work": {"type": "string", "maxLength": 40,
+                       "description": "Normalised to E.164."},
+        "fax": {"type": "string", "maxLength": 40,
+                "description": "Normalised to E.164."},
+        "bar_number": {"type": "string", "maxLength": 60,
+                       "description": "Barreau number, for a lawyer."},
+        "company_neq": {"type": "string", "maxLength": 60,
+                        "description": "Québec NEQ, for an organization."},
+        "notes": {"type": "string", "maxLength": 2000,
+                  "description": "Free-text notes on the contact."},
+        **_address_props("address", "Personal"),
+        **_address_props("work_address", "Work"),
+    }
+
+
+def _legacy_ref_prop() -> dict:
+    return {
+        "legacy_ref": {
+            "type": "string",
+            "maxLength": 64,
+            "description": (
+                "This record's identifier in the PREVIOUS system. Stored so "
+                "find_imported can retrieve it later: the idempotency window "
+                "is 24 h and an import runs for days. Refused if another "
+                "record of the same kind already bears it."
+            ),
+        }
+    }
 
 # WP16 write-tool enums — literals for the same firestore-at-import reason,
 # each pinned against its model by tests/test_mcp_tools.py.
@@ -2150,6 +2267,81 @@ TOOLS: dict[str, dict] = {
         "handler": "record_prescription_event",
         "scope": SCOPE_WRITE,
     },
+    "create_partie": {
+        "title": "Créer un contact",
+        "description": (
+            "WRITE. Create a contact (partie): a client, an opposing party, "
+            "opposing counsel, an expert, a bailiff… Built for transcribing "
+            "a historical file, so pass `legacy_ref` and check "
+            "find_imported first — this connector can never delete a "
+            "duplicate. "
+            "An individual REQUIRES last_name; an organization REQUIRES "
+            "organization_name; never mix the two families. "
+            "An ADDRESS TRAVELS AS A BLOCK of six keys (street, unit, city, "
+            "province, postal_code, country) or not at all: the model "
+            "completes a partial block with Montréal / Québec / Canada, so "
+            "a Toronto contact sent with a street and no city is silently "
+            "relocated — onto an invoice the client will receive. "
+            "Identity verification and conflict-of-interest checks are NOT "
+            "writable here and never will be: a machine must not attest "
+            "that a client's identity was verified."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string", "enum": _PARTIE_TYPES,
+                    "description": "individual (natural person) or organization.",
+                },
+                "contact_role": {
+                    "type": "string", "enum": _CONTACT_ROLES,
+                    "description": "The contact's role. Defaults to « client ».",
+                },
+                **_partie_identity_props(),
+                **_legacy_ref_prop(),
+                **_write_protocol_props(),
+            },
+            "required": ["type"],
+            "additionalProperties": False,
+        },
+        "handler": "create_partie",
+        "scope": SCOPE_WRITE,
+    },
+    "update_partie": {
+        "title": "Corriger un contact",
+        "description": (
+            "WRITE — REPLACES the values you name. Send ONLY the fields that "
+            "change: a field you omit is untouched, but a field sent EMPTY is "
+            "ERASED (the model writes the whole document). Never rebuild the "
+            "payload from a full get_partie card. "
+            "The same six-key ADDRESS BLOCK rule as create_partie: read the "
+            "current block from get_partie and send it back complete. "
+            "`type` is not changeable here — flipping individual ↔ "
+            "organization strands the required-name rule and every display "
+            "name built from it. Identity verification, conflict checks and "
+            "mandataires are not writable. "
+            "Note the model re-validates the WHOLE merged record: a legacy "
+            "contact carrying an unparseable phone number will refuse every "
+            "edit, naming a field you did not touch — fix that field first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "partie_id": _id("The contact to correct (UUIDv4). Required."),
+                "contact_role": {
+                    "type": "string", "enum": _CONTACT_ROLES,
+                    "description": "Change the contact's role.",
+                },
+                **_partie_identity_props(),
+                **_legacy_ref_prop(),
+                **_write_protocol_props(),
+            },
+            "required": ["partie_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_partie",
+        "scope": SCOPE_WRITE,
+    },
 }
 
 
@@ -2181,6 +2373,12 @@ def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict
         annotations = dict(
             _WRITE_ANNOTATIONS if name in WRITE_TOOLS else _READ_ONLY_ANNOTATIONS
         )
+        if name in EDIT_TOOLS:
+            # DERIVED from EDIT_TOOLS, never restated per tool: an edit that
+            # replaces a stored value IS a destructive update in the spec's
+            # sense, and a future editor gets the honest hint by membership
+            # alone rather than by someone remembering to add an override.
+            annotations["destructiveHint"] = True
         # A tool may correct a hint the family default gets wrong for it.
         # complete_task is genuinely idempotent — a second call with the
         # same status is a no-op that writes nothing — while every creator

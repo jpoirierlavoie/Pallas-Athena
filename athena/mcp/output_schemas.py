@@ -180,6 +180,36 @@ def _model_summary(description: str) -> dict:
 
 # ── Shared row schemas ──────────────────────────────────────────────────
 
+def _partie_write_result(verb: str) -> dict:
+    """The success payload of a contact write.
+
+    Carries ctag_bumped/dav_synced because parties ARE DAV-exposed (CardDAV,
+    /dav/addressbook/) — unlike time entries and disbursements, whose result
+    deliberately declares neither rather than fake a sync that does not
+    exist.
+    """
+    return _obj({
+        verb: {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « partie »."),
+        "entity": _obj({
+            "id": _str(),
+            "dossier_id": _str("Always '' — a contact belongs to no dossier."),
+            "label": _str("display_name: legal name for an organization."),
+            "type": _str("individual | organization."),
+            "contact_role": _str(),
+            "legacy_ref": _str("'' when not imported."),
+        }),
+        "ctag_bumped": _bool(
+            "The addressbook CTag moved, so DavX5 will re-sync. false with a "
+            "warning means the write landed but the sync was not triggered — "
+            "do NOT retry, it would duplicate the contact."
+        ),
+        "dav_synced": _bool("The contact will reach the phone."),
+        "warnings": _arr(_str("French; empty when nothing is amiss.")),
+        **_write_protocol_keys(),
+    })
+
+
 def _audit_block() -> dict[str, Any]:
     """Totals over one population (time entries, or disbursements) as the
     import audit reports it."""
@@ -1092,6 +1122,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         }),
         {"invoice_id": _str("Echo of the id that was not found.")},
     ),
+
+    "create_partie": _partie_write_result("created"),
+    "update_partie": _partie_write_result("updated"),
 
     "get_import_audit": _found_or_not(
         _obj({
