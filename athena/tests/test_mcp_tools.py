@@ -1094,6 +1094,82 @@ def test_list_time_entries_shows_invoiced_rows(monkeypatch):
     assert payload["truncated"] is False
 
 
+def test_the_two_billing_lists_read_back_the_phase(monkeypatch):
+    """Le connecteur ÉCRIT phase/sous_phase depuis Phase O et aucun
+    constructeur de rangée ne les relisait : il enregistrait une
+    classification qu'il ne pouvait pas vérifier. C'est précisément la
+    demande « complete access … including the phase and subphase
+    categorization »."""
+    monkeypatch.setattr(
+        handlers.time_entry_model, "list_time_entries_page",
+        lambda **kw: ([{
+            "id": "e1", "dossier_id": "d1",
+            "date": datetime(2026, 7, 20, tzinfo=UTC),
+            "description": "Rédaction", "hours": 1.5, "rate": 30000,
+            "amount": 45000, "billable": True,
+            "phase": "CTS", "sous_phase": "CTS-02", "created_via": "mcp",
+        }], None))
+    monkeypatch.setattr(
+        handlers.expense_model, "list_expenses_page",
+        lambda **kw: ([{
+            "id": "x1", "dossier_id": "d1",
+            "date": datetime(2026, 7, 21, tzinfo=UTC),
+            "description": "Timbre", "amount": 5000, "taxable": True,
+            "phase": "PRE", "sous_phase": "PRE-00",
+        }], None))
+
+    entry = handlers.list_time_entries({"dossier_id": "d1"})["items"][0]
+    assert entry["phase"] == "CTS"
+    assert entry["sous_phase"] == "CTS-02"
+    assert entry["phase_label"] == "Contestation"
+    assert entry["created_via"] == "mcp"
+
+    disb = handlers.list_expenses({"dossier_id": "d1"})["items"][0]
+    assert disb["phase"] == "PRE"
+    assert disb["sous_phase_label"]
+    assert disb["created_via"] == ""      # saisi dans l'application
+
+
+def test_the_phase_label_is_bare_never_repeating_the_code(monkeypatch):
+    """phases.sous_phase_label rend « Libellé [CODE] » — l'employer ici
+    répéterait le code que la rangée porte déjà dans sa propre clé. Les
+    libellés viennent donc de PHASE_LABELS / SOUS_PHASE_LABELS."""
+    monkeypatch.setattr(
+        handlers.time_entry_model, "list_time_entries_page",
+        lambda **kw: ([{"id": "e1", "dossier_id": "d1", "hours": 1.0,
+                        "rate": 100, "amount": 100,
+                        "phase": "CTS", "sous_phase": "CTS-02"}], None))
+    row = handlers.list_time_entries({"dossier_id": "d1"})["items"][0]
+    assert "[" not in row["sous_phase_label"]
+    assert "CTS-02" not in row["sous_phase_label"]
+
+
+def test_an_unphased_row_reads_non_renseignee(monkeypatch):
+    """« » est une valeur RÉELLE du vocabulaire, pas un champ manquant : les
+    documents hérités n'ont jamais été rétro-remplis, et la rangée doit le
+    dire au lieu de laisser un blanc muet."""
+    monkeypatch.setattr(
+        handlers.time_entry_model, "list_time_entries_page",
+        lambda **kw: ([{"id": "e1", "dossier_id": "d1", "hours": 1.0,
+                        "rate": 100, "amount": 100}], None))
+    row = handlers.list_time_entries({"dossier_id": "d1"})["items"][0]
+    assert row["phase"] == "" and row["sous_phase"] == ""
+    assert row["phase_label"] == "Non renseignée"
+    assert row["sous_phase_label"] == "Non renseignée"
+
+
+def test_a_task_row_carries_its_phase_too(monkeypatch):
+    monkeypatch.setattr(
+        handlers.task_model, "list_tasks",
+        lambda **kw: [{"id": "t1", "title": "Déposer", "status": "à_faire",
+                       "phase": "INS", "sous_phase": "INS-00"}])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk",
+                        lambda ids: {})
+    row = handlers.list_tasks({})["items"][0]
+    assert row["phase"] == "INS"
+    assert row["phase_label"]
+
+
 def test_list_time_entries_routes_the_unsupported_combo_in_python(monkeypatch):
     """dossier_id + billable_filter TOGETHER is unindexed server-side and
     the page function swallows the FAILED_PRECONDITION into [] — passing

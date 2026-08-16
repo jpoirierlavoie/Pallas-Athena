@@ -209,6 +209,28 @@ def _live_dossiers(*row_lists: list[dict]) -> dict[str, dict]:
     return dossier_model.get_dossiers_bulk(ids)
 
 
+def _phase_pair(doc: dict) -> dict:
+    """The Phase O classification, code AND bare label.
+
+    The connector WRITES phase/sous_phase on time entries, expenses and tasks
+    and, until this shipped, no row builder read them back: it recorded a
+    classification it could not verify. The label comes from
+    ``phases.PHASE_LABELS`` / ``SOUS_PHASE_LABELS``, which are bare
+    («&nbsp;Contestation&nbsp;») — never ``phases.sous_phase_label``, which
+    renders « Libellé [CODE] » and would repeat the code the row already
+    carries. An unclassified row reads « Non renseignée », which is the
+    vocabulary's own name for that state, not an invention.
+    """
+    phase = doc.get("phase", "") or ""
+    sous_phase = doc.get("sous_phase", "") or ""
+    return {
+        "phase": phase,
+        "sous_phase": sous_phase,
+        "phase_label": phases.PHASE_LABELS.get(phase, ""),
+        "sous_phase_label": phases.SOUS_PHASE_LABELS.get(sous_phase, ""),
+    }
+
+
 def _stamps(doc: dict) -> dict:
     """The created_at/updated_at pair every row now carries (PA-G05).
 
@@ -274,6 +296,7 @@ def _task_row(t: dict, *, today: Optional[date] = None) -> dict:
         "dossier_file_number": t.get("dossier_file_number", ""),
         "dossier_title": t.get("dossier_title", ""),
         "related_note_id": t.get("related_note_id"),
+        **_phase_pair(t),
         **_stamps(t),
     }
 
@@ -1718,6 +1741,9 @@ def list_time_entries(args: dict) -> dict:
             "billable": bool(e.get("billable")),
             "invoiced": bool(e.get("invoiced")),
             "invoice_id": e.get("invoice_id") or None,
+            "created_via": e.get("created_via", ""),
+            **_phase_pair(e),
+            **_stamps(e),
         }
         _money(row, "rate", e.get("rate", 0))
         _money(row, "amount", e.get("amount", 0))
@@ -1750,6 +1776,9 @@ def list_expenses(args: dict) -> dict:
             "taxable": bool(e.get("taxable")),
             "invoiced": bool(e.get("invoiced")),
             "invoice_id": e.get("invoice_id") or None,
+            "created_via": e.get("created_via", ""),
+            **_phase_pair(e),
+            **_stamps(e),
         }
         _money(row, "amount", e.get("amount", 0))
         items.append(row)

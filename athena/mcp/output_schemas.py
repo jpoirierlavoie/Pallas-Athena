@@ -180,6 +180,28 @@ def _model_summary(description: str) -> dict:
 
 # ── Shared row schemas ──────────────────────────────────────────────────
 
+def _phase_pair() -> dict[str, Any]:
+    """The Phase O classification carried by a time entry, expense or task.
+
+    Code AND bare label. The connector writes this pair and, until August
+    2026, no row read it back — a classification it could not verify. The
+    empty string is a real value in the vocabulary (« non renseignée »), not
+    a missing field, so every key is always present.
+    """
+    return {
+        "phase": _str(
+            "Litigation phase code, e.g. « CTS ». '' = non renseignée, which "
+            "is a legitimate state: legacy rows were never back-filled."
+        ),
+        "sous_phase": _str("Sub-code, e.g. « CTS-02 ». '' = non renseignée."),
+        "phase_label": _str(
+            "French label of `phase`, e.g. « Contestation ». « Non "
+            "renseignée » when the code is ''."
+        ),
+        "sous_phase_label": _str("French label of `sous_phase`."),
+    }
+
+
 def _stamps() -> dict[str, Any]:
     """The created_at/updated_at pair every row carries (PA-G05) — true
     instants (iso_mtl), nullable on pre-Rule-7 legacy docs. updated_at is
@@ -236,6 +258,7 @@ def _task_row(extra: Optional[dict[str, Any]] = None) -> dict:
         "dossier_file_number": _str(),
         "dossier_title": _str(),
         "related_note_id": _nstr("Linked parent note (RFC 5545 RELATED-TO)."),
+        **_phase_pair(),
         **_stamps(),
     }
     if extra:
@@ -980,6 +1003,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "billable": _bool("Non-billable time always carries amount 0."),
         "invoiced": _bool(),
         "invoice_id": _nstr("null until invoiced."),
+        "created_via": _str(
+            "« mcp » when this connector recorded it, '' otherwise."
+        ),
+        **_phase_pair(),
+        **_stamps(),
         **_money("rate"),
         **_money("amount"),
     }), extra=_next_cursor(), extra_required=["next_cursor"]),
@@ -995,6 +1023,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "taxable": _bool(),
         "invoiced": _bool(),
         "invoice_id": _nstr("null until invoiced."),
+        "created_via": _str(
+            "« mcp » when this connector recorded it, '' otherwise."
+        ),
+        **_phase_pair(),
+        **_stamps(),
         **_money("amount"),
     }), extra=_next_cursor(), extra_required=["next_cursor"]),
 
