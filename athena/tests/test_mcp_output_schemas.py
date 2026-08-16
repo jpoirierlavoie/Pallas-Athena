@@ -940,6 +940,45 @@ def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
     _conforms("create_partie", payload)
 
 
+def test_import_invoice_conforms_live_and_dry(monkeypatch):
+    """Both branches: the dry run carries line_preview, the live one does
+    not — and the schema types it without requiring it."""
+    import models
+
+    entry = {"id": "e1", "dossier_id": "d1", "amount": 45000,
+             "invoiced": False, "description": "Rédaction", "taxable": True}
+    monkeypatch.setattr(models, "find_by_legacy_ref", lambda c, r, limit=5: [])
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": "d1", "file_number": "2019-014",
+                                   "title": "T", "status": "fermé",
+                                   "clients": [{"id": "p1", "name": "Jean"}]})
+    monkeypatch.setattr(handlers.partie_model, "get_partie",
+                        lambda i: {"id": "p1", "type": "individual",
+                                   "last_name": "Tremblay"})
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
+                        lambda i: entry)
+    monkeypatch.setattr(
+        handlers.invoice_model, "create_invoice",
+        lambda d, e, x, data, **kw: ({**data, "id": "i-new",
+                                      "invoice_number": kw["invoice_number"],
+                                      "status": "brouillon",
+                                      "subtotal_fees": 45000,
+                                      "subtotal_expenses": 0,
+                                      "subtotal": 45000, "gst_amount": 2250,
+                                      "qst_amount": 4489, "total": 51739}, []))
+
+    args = {"dossier_id": "d1", "invoice_number": "2019-F014",
+            "date": "2019-11-08", "expected_total_cents": 51739,
+            "time_entry_ids": ["e1"]}
+    live = handlers.import_invoice(dict(args))
+    _conforms("import_invoice", live)
+    assert "line_preview" not in live
+
+    dry = handlers.import_invoice({**args, "dry_run": True})
+    _conforms("import_invoice", dry)
+    assert dry["line_preview"]
+
+
 def test_billing_edits_conform_live_and_dry(monkeypatch):
     entry = {"id": "e1", "dossier_id": "d1", "description": "Rédaction",
              "hours": 1.5, "rate": 30000, "amount": 45000, "billable": True,

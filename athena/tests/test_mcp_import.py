@@ -980,6 +980,198 @@ def test_des_heures_nulles_ou_negatives_restent_refusees(billing):
             handlers.update_time_entry({"time_entry_id": "e1", "hours": bad})
 
 
+# ── import_invoice ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def facture(monkeypatch):
+    import models
+
+    world = {
+        "entries": {"e1": {"id": "e1", "dossier_id": "d1", "amount": 45000,
+                           "invoiced": False, "description": "Rédaction",
+                           "taxable": True}},
+        "expenses": {"x1": {"id": "x1", "dossier_id": "d1", "amount": 5000,
+                            "invoiced": False, "description": "Timbre",
+                            "taxable": True}},
+        "call": {}, "parties": {"p1": {"id": "p1", "type": "individual",
+                                       "last_name": "Tremblay"}},
+        "legacy": {},
+    }
+
+    def _create(dossier_id, eids, xids, data, **kw):
+        world["call"] = {"dossier_id": dossier_id, "entry_ids": list(eids),
+                         "expense_ids": list(xids), "data": dict(data), **kw}
+        return {**data, "id": "i-new", "invoice_number": kw.get("invoice_number"),
+                "status": "brouillon", "subtotal_fees": 45000,
+                "subtotal_expenses": 5000, "subtotal": 50000,
+                "gst_amount": 2500, "qst_amount": 4988, "total": 57488}, []
+
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda i: {"id": "d1", "file_number": "2019-014",
+                                   "title": "T", "status": "fermé",
+                                   "clients": [{"id": "p1", "name": "Jean"}]}
+                        if i == "d1" else None)
+    monkeypatch.setattr(handlers.partie_model, "get_partie",
+                        lambda i: world["parties"].get(i))
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
+                        lambda i: world["entries"].get(i))
+    monkeypatch.setattr(handlers.expense_model, "get_expense",
+                        lambda i: world["expenses"].get(i))
+    monkeypatch.setattr(handlers.invoice_model, "create_invoice", _create)
+    monkeypatch.setattr(models, "find_by_legacy_ref",
+                        lambda c, r, limit=5: list(world["legacy"].get(r, [])))
+    return world
+
+
+def _imp(**over):
+    base = {"dossier_id": "d1", "invoice_number": "2019-F014",
+            "date": "2019-11-08", "expected_total_cents": 57488,
+            "time_entry_ids": ["e1"], "expense_ids": ["x1"]}
+    base.update(over)
+    return base
+
+
+def test_le_numero_passe_par_le_mot_cle_jamais_par_data(facture):
+    """`data` est ce que request.form remplit sur le chemin web : un numéro
+    qui y transiterait serait forgeable depuis le formulaire."""
+    handlers.import_invoice(_imp())
+    call = facture["call"]
+    assert call["invoice_number"] == "2019-F014"
+    assert "invoice_number" not in call["data"]
+
+
+def test_les_trois_gardes_du_modele_sont_armees(facture):
+    handlers.import_invoice(_imp())
+    call = facture["call"]
+    assert call["expected_total"] == 57488
+    assert call["require_all_sources"] is True
+
+
+def test_le_statut_et_le_paiement_ne_sont_jamais_transmis(facture):
+    """Décision D-4 : le connecteur n'écrit ni statut ni paiement."""
+    handlers.import_invoice(_imp())
+    for forbidden in ("status", "amount_paid", "paid_date"):
+        assert forbidden not in facture["call"]["data"]
+    props = tools.TOOLS["import_invoice"]["input_schema"]["properties"]
+    for forbidden in ("status", "amount_paid", "paid_date", "subtotal",
+                      "total", "gst_amount", "qst_amount"):
+        assert forbidden not in props
+
+
+def test_sans_aucune_source_c_est_un_refus(facture):
+    with pytest.raises(tools.ToolArgumentError, match="sources réelles"):
+        handlers.import_invoice(_imp(time_entry_ids=[], expense_ids=[]))
+
+
+def test_le_prevol_nomme_chaque_source_fautive(facture):
+    facture["entries"]["e2"] = {"id": "e2", "dossier_id": "d1",
+                                "amount": 1000, "invoiced": True,
+                                "description": "X"}
+    facture["entries"]["e3"] = {"id": "e3", "dossier_id": "autre",
+                                "amount": 1000, "invoiced": False,
+                                "description": "Y"}
+    with pytest.raises(tools.ToolArgumentError) as exc:
+        handlers.import_invoice(_imp(
+            time_entry_ids=["e1", "e2", "e3", "e-absente"], dry_run=True))
+    msg = str(exc.value)
+    assert "e2" in msg and "déjà facturée" in msg
+    assert "e3" in msg and "autre dossier" in msg
+    assert "e-absente" in msg and "introuvable" in msg
+
+
+def test_la_simulation_calcule_vraiment_les_totaux(facture):
+    """Pas une estimation : la vraie compute_totals sur les vraies sources,
+    pour que le juriste réconcilie contre le PDF avant d'écrire."""
+    payload = handlers.import_invoice(_imp(dry_run=True))
+    assert facture["call"] == {}                     # rien n'a été écrit
+    entity = payload["entity"]
+    assert entity["subtotal_cents"] == 50000
+    assert entity["gst_amount_cents"] == 2500
+    assert entity["total_cents"] == 57488
+    assert entity["status"] == "brouillon"
+    assert {l["source_id"] for l in payload["line_preview"]} == {"e1", "x1"}
+
+
+def test_la_simulation_annonce_un_ecart_de_total(facture):
+    payload = handlers.import_invoice(_imp(expected_total_cents=57000,
+                                           dry_run=True))
+    assert any("REFUSERA" in w for w in payload["warnings"])
+
+
+def test_un_total_attendu_manquant_est_refuse(facture):
+    args = _imp()
+    del args["expected_total_cents"]
+    with pytest.raises(tools.ToolArgumentError, match="expected_total_cents"):
+        handlers.import_invoice(args)
+
+
+def test_l_ajustement_entre_dans_l_apercu_sans_source(facture):
+    payload = handlers.import_invoice(_imp(
+        adjustment={"amount_cents": -5000, "description": "Remise"},
+        expected_total_cents=1, dry_run=True))
+    lignes = payload["line_preview"]
+    ajust = [l for l in lignes if not l["source_id"]]
+    assert len(ajust) == 1
+    assert ajust[0]["amount_cents"] == -5000
+    assert payload["line_count"] == 3
+
+
+def test_un_ajustement_mal_forme_est_refuse_des_la_simulation(facture):
+    with pytest.raises(tools.ToolArgumentError, match="description"):
+        handlers.import_invoice(_imp(
+            adjustment={"amount_cents": -5000}, dry_run=True))
+
+
+def test_un_client_disparu_est_un_refus_pas_une_adresse_vide(facture):
+    """L'adresse est GELÉE sur la facture : une adresse vide sur un document
+    que le client détient déjà est irréparable après coup."""
+    facture["parties"].clear()
+    with pytest.raises(tools.ToolArgumentError, match="introuvable"):
+        handlers.import_invoice(_imp())
+
+
+def test_l_adresse_de_facturation_vient_du_modele_partage(facture):
+    handlers.import_invoice(_imp())
+    billing = facture["call"]["data"]["billing_address"]
+    assert billing["name"] == "Tremblay"
+    assert set(billing) == {"name", "street", "unit", "city", "province",
+                            "postal_code"}
+
+
+def test_la_provision_est_transmise(facture):
+    """L'exclure rendait inimportable toute facture ayant appliqué une
+    provision : le solde resterait gonflé et la facture ne pourrait jamais
+    se solder."""
+    handlers.import_invoice(_imp(retainer_applied_cents=20000))
+    assert facture["call"]["data"]["retainer_applied"] == 20000
+
+
+def test_le_gel_des_sources_et_le_brouillon_sont_annonces(facture):
+    payload = handlers.import_invoice(_imp())
+    joined = " ".join(payload["warnings"])
+    assert "annulez la facture dans l'application" in joined
+    assert "BROUILLON" in joined
+    assert "Journal des honoraires" in joined
+
+
+def test_import_invoice_ne_pretend_aucune_synchronisation(facture):
+    """Les factures ne sont pas exposées en DAV : fabriquer ces clés
+    annoncerait une synchronisation qui n'existe pas."""
+    payload = handlers.import_invoice(_imp())
+    assert "ctag_bumped" not in payload
+    assert "dav_synced" not in payload
+
+
+def test_un_refus_du_modele_remonte_tel_quel(facture, monkeypatch):
+    monkeypatch.setattr(
+        handlers.invoice_model, "create_invoice",
+        lambda *a, **kw: (None, ["Le total reconstitué (57488 ¢) ne "
+                                 "correspond pas au total attendu (57000 ¢)"]))
+    with pytest.raises(tools.ToolArgumentError, match="ne correspond pas"):
+        handlers.import_invoice(_imp(expected_total_cents=57000))
+
+
 def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
     """Ils informent la reprise ; ils n'écrivent rien. Un scope d'écriture
     déclaré ici les retirerait d'un jeton en lecture seule sans raison."""

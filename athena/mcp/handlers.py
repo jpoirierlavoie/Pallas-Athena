@@ -42,6 +42,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
+from config import Config
 from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
@@ -3967,6 +3968,270 @@ def update_expense(args: dict) -> dict:
             entity_builder=_expense_entity,
         ),
     )
+
+
+# ── 43. import_invoice (WRITE) ──────────────────────────────────────────
+
+
+def import_invoice(args: dict) -> dict:
+    return run_write(
+        "import_invoice", args, lambda dry: _import_invoice_impl(args, dry)
+    )
+
+
+def _import_invoice_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    entry_ids = list(args.get("time_entry_ids") or [])
+    expense_ids = list(args.get("expense_ids") or [])
+    if not entry_ids and not expense_ids:
+        raise ToolArgumentError(
+            "Fournissez au moins une entrée de temps (`time_entry_ids`) ou un "
+            "déboursé (`expense_ids`) : une facture importée doit tracer à "
+            "ses sources réelles."
+        )
+
+    invoice_number = (args.get("invoice_number") or "").strip()
+    if not invoice_number:
+        raise ToolArgumentError("`invoice_number` est requis.")
+    when = _write_date(args, "date", required=True)
+    due = _write_date(args, "due_date", required=False)
+
+    expected_total = args.get("expected_total_cents")
+    if not isinstance(expected_total, int) or isinstance(expected_total, bool):
+        raise ToolArgumentError(
+            "`expected_total_cents` est requis : c'est le grand total imprimé "
+            "sur la facture papier, en cents."
+        )
+
+    # The client comes from the dossier, exactly as the web form does. A
+    # dossier whose first client no longer resolves would otherwise produce a
+    # blank address on an invoice the client already holds.
+    clients = dossier.get("clients") or []
+    client_id = clients[0].get("id", "") if clients else ""
+    client_name = clients[0].get("name", "") if clients else ""
+    billing_address = None
+    if client_id:
+        client_partie = partie_model.get_partie(client_id)
+        if client_partie is None:
+            raise ToolArgumentError(
+                f"Le client du dossier ({client_id}) est introuvable : "
+                "l'adresse de facturation serait vide sur une facture que le "
+                "client détient déjà. Corrigez le dossier d'abord."
+            )
+        billing_address = invoice_model.billing_address_from(client_partie)
+
+    data: dict[str, Any] = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": dossier.get("file_number", ""),
+        "dossier_title": dossier.get("title", ""),
+        "client_id": client_id,
+        "client_name": client_name,
+        "date": when,
+        "gst_number": Config.GST_NUMBER,
+        "qst_number": Config.QST_NUMBER,
+        "created_via": "mcp",
+    }
+    if billing_address is not None:
+        data["billing_address"] = billing_address
+    if due is not None:
+        data["due_date"] = due
+    for key, cap in (("notes", 1500), ("payment_terms", 500)):
+        if key in args:
+            value = str(args[key] or "")
+            if len(value) > cap:
+                raise ToolArgumentError(
+                    f"`{key}` dépasse {cap} caractères — il serait tronqué "
+                    "silencieusement à l'enregistrement."
+                )
+            data[key] = _clean_entity_text(value, key)
+    if "retainer_applied_cents" in args:
+        retainer = int(args["retainer_applied_cents"])
+        if retainer < 0:
+            raise ToolArgumentError(
+                "`retainer_applied_cents` ne peut pas être négatif."
+            )
+        data["retainer_applied"] = retainer
+    if "legacy_ref" in args:
+        data["legacy_ref"] = _clean_entity_text(
+            str(args["legacy_ref"] or ""), "legacy_ref"
+        )
+        _refuse_legacy_ref_collision("invoices", data["legacy_ref"])
+
+    adjustment = args.get("adjustment")
+
+    # Source pre-flight: the model refuses again under require_all_sources —
+    # this pass exists only to name each offender by reason, which the model
+    # cannot do as richly. The model's copy is the one that protects the
+    # invoice actually written (a source flipped between the two reads is
+    # never RETAINED, therefore never in source_refs, therefore invisible to
+    # _SourceConflictError).
+    if dry_run:
+        return _import_invoice_preview(
+            dossier_id, entry_ids, expense_ids, expected_total,
+            invoice_number, adjustment, data,
+        )
+
+    invoice, errors = invoice_model.create_invoice(
+        dossier_id, entry_ids, expense_ids, data,
+        invoice_number=invoice_number,
+        expected_total=expected_total,
+        require_all_sources=True,
+        adjustment=adjustment,
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    n_entries = len(entry_ids)
+    n_expenses = len(expense_ids)
+    return {
+        "created": True,
+        "entity_type": "invoice",
+        "entity": _import_invoice_entity(invoice, dossier_id),
+        "line_count": n_entries + n_expenses + (1 if adjustment else 0),
+        "warnings": [
+            f"Les {n_entries} entrée(s) et {n_expenses} déboursé(s) sont "
+            "maintenant marqués facturés : le connecteur ne peut plus les "
+            "modifier. Pour défaire cet import, annulez la facture dans "
+            "l'application — les entrées et déboursés redeviennent "
+            "modifiables et le numéro se libère.",
+            "La facture est au BROUILLON. Le connecteur ne change jamais le "
+            "statut d'une facture ni n'inscrit un paiement : promouvez-la "
+            "dans l'application (brouillon → envoyée, puis le paiement à sa "
+            "date historique), sinon le « Journal des honoraires » l'imprime "
+            "avec 0 $ reçu.",
+        ],
+    }
+
+
+def _import_invoice_entity(invoice: dict, dossier_id: str) -> dict:
+    row = {
+        "id": invoice.get("id", ""),
+        "dossier_id": dossier_id,
+        "label": invoice.get("invoice_number", ""),
+        "invoice_number": invoice.get("invoice_number", ""),
+        "date": date_str(_as_utc(invoice.get("date"))),
+        "status": invoice.get("status", ""),
+        "legacy_ref": invoice.get("legacy_ref", ""),
+    }
+    for key in ("subtotal_fees", "subtotal_expenses", "subtotal",
+                "gst_amount", "qst_amount", "total"):
+        _money(row, key, invoice.get(key, 0))
+    return row
+
+
+def _import_invoice_preview(
+    dossier_id: str,
+    entry_ids: list,
+    expense_ids: list,
+    expected_total: int,
+    invoice_number: str,
+    adjustment: Optional[dict],
+    data: dict,
+) -> dict:
+    """The dry run runs the REAL compute_totals over the REAL sources.
+
+    Not an estimate: the same pure function the model will use, over the same
+    documents, so the lawyer can reconcile the previewed subtotal / GST / QST
+    against the paper invoice BEFORE anything is written. Predicting instead
+    of computing is what makes a preview worthless.
+    """
+    line_items: list[dict] = []
+    problems: dict[str, list[str]] = {}
+
+    for eid in entry_ids:
+        row = time_entry_model.get_time_entry(eid)
+        reason = _source_problem(row, dossier_id, invoiced_label="déjà facturée")
+        if reason:
+            problems.setdefault(reason, []).append(eid)
+            continue
+        line_items.append({
+            "type": "fee", "source_id": eid, "amount": int(row.get("amount") or 0),
+            "taxable": True, "description": row.get("description", ""),
+        })
+    for xid in expense_ids:
+        row = expense_model.get_expense(xid)
+        reason = _source_problem(row, dossier_id, invoiced_label="déjà facturé")
+        if reason:
+            problems.setdefault(reason, []).append(xid)
+            continue
+        line_items.append({
+            "type": "expense", "source_id": xid,
+            "amount": int(row.get("amount") or 0),
+            "taxable": bool(row.get("taxable", True)),
+            "description": row.get("description", ""),
+        })
+
+    if problems:
+        details = " ; ".join(
+            f"{reason} : {', '.join(sorted(ids))}"
+            for reason, ids in sorted(problems.items())
+        )
+        raise ToolArgumentError(
+            f"Sources inutilisables (rien ne serait écrit) — {details}."
+        )
+
+    if adjustment is not None:
+        item, errors = invoice_model._adjustment_line_item(adjustment)
+        if errors:
+            raise ToolArgumentError("; ".join(errors))
+        line_items.append({
+            "type": "fee", "source_id": "", "amount": item["amount"],
+            "taxable": item["taxable"], "description": item["description"],
+        })
+
+    totals = invoice_model.compute_totals(line_items)
+    warnings: list[str] = [
+        "Simulation (dry_run) : rien n'a été écrit. Comparez ces totaux à la "
+        "facture papier AVANT de relancer sans dry_run."
+    ]
+    if totals["total"] != expected_total:
+        warnings.append(
+            f"Le total reconstitué ({totals['total']} ¢) ne correspond pas au "
+            f"total attendu ({expected_total} ¢) — l'appel réel REFUSERA."
+        )
+
+    preview = {
+        **data,
+        "id": "",
+        "invoice_number": invoice_number,
+        "status": "brouillon",
+        **totals,
+    }
+    return {
+        "created": True,
+        "entity_type": "invoice",
+        "entity": _import_invoice_entity(preview, dossier_id),
+        "line_count": len(line_items),
+        "line_preview": [
+            {
+                "source_id": i["source_id"],
+                "type": i["type"],
+                "description": i["description"],
+                "taxable": i["taxable"],
+                **{k: v for k, v in _money_pair("amount", i["amount"]).items()},
+            }
+            for i in line_items
+        ],
+        "warnings": warnings,
+    }
+
+
+def _money_pair(key: str, cents: int) -> dict:
+    row: dict = {}
+    _money(row, key, cents)
+    return row
+
+
+def _source_problem(
+    row: Optional[dict], dossier_id: str, *, invoiced_label: str
+) -> str:
+    if not row:
+        return "introuvable ou illisible"
+    if row.get("invoiced"):
+        return invoiced_label
+    if row.get("dossier_id") != dossier_id:
+        return "rattaché(e) à un autre dossier"
+    return ""
 
 
 # ── 39. create_dossier (WRITE) ──────────────────────────────────────────

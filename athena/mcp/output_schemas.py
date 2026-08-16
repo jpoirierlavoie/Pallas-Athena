@@ -1197,6 +1197,44 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         **_write_protocol_keys(),
     }),
 
+    "import_invoice": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « invoice »."),
+        "entity": _obj({
+            "id": _str("'' on a dry run — nothing was written."),
+            "dossier_id": _str(),
+            "label": _str("The invoice number."),
+            "invoice_number": _str("The number the previous system issued."),
+            "date": _nstr("YYYY-MM-DD, the ORIGINAL date."),
+            "status": _str("Always « brouillon » — never promoted here."),
+            "legacy_ref": _str(),
+            **_money("subtotal_fees"),
+            **_money("subtotal_expenses"),
+            **_money("subtotal"),
+            **_money("gst_amount"),
+            **_money("qst_amount"),
+            **_money("total", "Compare this to the paper invoice."),
+        }),
+        "line_count": _int("Line items, adjustment included."),
+        "line_preview": _arr(
+            _obj({
+                "source_id": _str("'' on the adjustment line — the only one "
+                                  "in the system tracing to no source."),
+                "type": _str("fee | expense."),
+                "description": _str(),
+                "taxable": _bool(),
+                **_money("amount"),
+            }),
+            "DRY RUN ONLY: the lines as they would be written, so the totals "
+            "can be reconciled line by line against the PDF.",
+        ),
+        "warnings": _arr(_str("French; empty when nothing is amiss.")),
+        **_write_protocol_keys(),
+    }, required=[
+        "created", "entity_type", "entity", "line_count", "warnings",
+        "dry_run", "idempotent_replay",
+    ]),
+
     "create_dossier": _dossier_write_result("created"),
     "update_dossier": _dossier_write_result("updated"),
 

@@ -392,6 +392,7 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     "create_partie", "update_partie",
     "create_dossier", "update_dossier",
     "update_time_entry", "update_expense",
+    "import_invoice",
 })
 
 # Writes that REPLACE a stored value rather than adding one. Lot Q ended the
@@ -403,6 +404,12 @@ WRITE_TOOLS: frozenset[str] = frozenset({
 EDIT_TOOLS: frozenset[str] = frozenset({
     "update_partie", "update_dossier",
     "update_time_entry", "update_expense",
+    # import_invoice ne remplace aucune valeur, mais il BASCULE N sources à
+    # « facturée » — après quoi les deux modèles refusent toute modification
+    # ET toute suppression. C'est le seul geste du connecteur qu'aucun autre
+    # outil du connecteur ne peut défaire (seule l'application le peut, en
+    # annulant la facture), donc sous-avertir ici serait le pire endroit.
+    "import_invoice",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -2495,6 +2502,135 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "update_expense",
+        "scope": SCOPE_WRITE,
+    },
+    "import_invoice": {
+        "title": "Importer une facture du système précédent",
+        "description": (
+            "WRITE. Recreate an invoice the previous system already issued, "
+            "under ITS OWN number and date — the year counter is never read "
+            "and never advanced, so the live numbering is untouched. "
+            "SOURCE-FIRST: create the historical time entries and "
+            "disbursements first, then bill them here. Line items can only "
+            "come from real, uninvoiced sources of this dossier; there is no "
+            "literal-line-item path, which is what keeps the budget, the "
+            "phase reporting and the fee journal truthful. "
+            "`expected_total_cents` is REQUIRED — the grand total printed on "
+            "the paper invoice, BEFORE any retainer is applied. Any "
+            "difference refuses the creation with the gap and the breakdown; "
+            "there is no tolerance, because one cent of silent drift is how "
+            "a book of account starts lying. When the paper total genuinely "
+            "cannot be rebuilt from the lines (a courtesy write-down, a "
+            "rounding), name the difference with `adjustment` so it is "
+            "written ON the invoice instead of hidden. "
+            "ALWAYS dry_run first and compare the previewed subtotal, GST and "
+            "QST against the PDF: the preview runs the real computation over "
+            "the real sources, it does not estimate. "
+            "The invoice lands in BROUILLON and stays there — this connector "
+            "never sets an invoice status and never records a payment. "
+            "Billing the sources freezes them: nothing here can modify them "
+            "afterwards, and the only way back is voiding the invoice in the "
+            "application, which releases every source."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id("The dossier this invoice belongs to."),
+                "invoice_number": {
+                    "type": "string", "minLength": 1, "maxLength": 32,
+                    "description": (
+                        "The number the invoice ALREADY bears. Refused if it "
+                        "belongs to the current year's live « YYYY-F… » "
+                        "series (that counter would hand it out again), if "
+                        "another invoice already carries it, or if it is over "
+                        "length — never truncated."
+                    ),
+                },
+                "date": _date("The ORIGINAL invoice date, YYYY-MM-DD."),
+                "due_date": _date("Defaults to date + 30 days."),
+                "expected_total_cents": {
+                    "type": "integer", "minimum": 0, "maximum": 100000000000,
+                    "description": (
+                        "The grand total printed on the paper invoice, in "
+                        "cents, BEFORE any retainer is deducted — not the "
+                        "balance due."
+                    ),
+                },
+                "time_entry_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "description": (
+                        "Time entries to bill. Every one must exist, be "
+                        "uninvoiced and belong to this dossier — otherwise "
+                        "the whole call is refused, naming each offender."
+                    ),
+                },
+                "expense_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 64},
+                    "description": "Disbursements to bill, same rules.",
+                },
+                "retainer_applied_cents": {
+                    "type": "integer", "minimum": 0, "maximum": 100000000000,
+                    "description": (
+                        "A provision deducted on the original invoice. "
+                        "Without it the recorded balance stays overstated and "
+                        "the invoice can never settle."
+                    ),
+                },
+                "adjustment": {
+                    "type": "object",
+                    "description": (
+                        "The escape hatch when the printed total cannot be "
+                        "rebuilt from the lines. Becomes ONE named fee line."
+                    ),
+                    "properties": {
+                        "amount_cents": {
+                            "type": "integer",
+                            "description": (
+                                "May be negative (a write-down). Never 0."
+                            ),
+                        },
+                        "description": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500,
+                            "description": (
+                                "French, printed on the invoice — « Remise de "
+                                "courtoisie », « Arrondi ». Required: an "
+                                "unexplained amount on a client's invoice is "
+                                "worse than a refusal."
+                            ),
+                        },
+                        "taxable": {
+                            "type": "boolean",
+                            "description": (
+                                "true (default) reproduces an invoice whose "
+                                "GST/QST were computed on the reduced amount; "
+                                "false reproduces one discounted after tax."
+                            ),
+                        },
+                    },
+                    "required": ["amount_cents", "description"],
+                    "additionalProperties": False,
+                },
+                "notes": {
+                    "type": "string", "maxLength": 1500,
+                    "description": "Notes carried on the invoice.",
+                },
+                "payment_terms": {
+                    "type": "string", "maxLength": 500,
+                    "description": "Payment terms as originally printed.",
+                },
+                **_legacy_ref_prop(),
+                **_write_protocol_props(),
+            },
+            "required": [
+                "dossier_id", "invoice_number", "date", "expected_total_cents",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": "import_invoice",
         "scope": SCOPE_WRITE,
     },
     "create_dossier": {
