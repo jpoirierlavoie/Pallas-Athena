@@ -1073,6 +1073,43 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
     return None
 
 
+def get_dossier_by_file_number(file_number: str) -> Optional[dict]:
+    """The dossier bearing *file_number*, or None when none does.
+
+    RAISES on query failure, deliberately unlike ``get_dossier``, which
+    swallows to None. A caller whose next move is « it does not exist, so
+    create it » must fail CLOSED: a swallowed error reads as « absent » and
+    mints a duplicate — and the MCP connector, which can never delete
+    anything, has no way back from one.
+
+    Exists because the connector's file_number lookup used to filter
+    ``list_dossiers_page(limit=200)`` in Python — the 200 most recently
+    OPENED dossiers. The dossiers of a historical import are by construction
+    the OLDEST opened_dates in the base, so past 200 dossiers the question
+    « does 2014-007 already exist? » answered « no » for a dossier that does.
+
+    The match is EXACT after stripping (a Firestore equality is), where the
+    old Python filter folded case. File numbers here are « YYYY-NNN », so
+    the fold never mattered; the exactness is stated in the tool description
+    so a caller does not read a miss as proof of absence.
+
+    Returns the SAME shape as ``get_dossier`` — migrations applied, removed
+    fields purged — so a caller never has two shapes to handle.
+    """
+    wanted = (file_number or "").strip()
+    if not wanted:
+        return None
+    docs = list(
+        db.collection(COLLECTION)
+        .where(filter=FieldFilter("file_number", "==", wanted))
+        .limit(1)
+        .stream()
+    )
+    if not docs:
+        return None
+    return _strip_removed_fields(_migrate_parties(docs[0].to_dict() or {}))
+
+
 def get_dossiers_bulk(dossier_ids: list[str]) -> dict[str, dict]:
     """Fetch many dossiers in a single round-trip. Returns {id: doc} for ids that exist."""
     unique_ids = [d for d in dict.fromkeys(dossier_ids) if d]

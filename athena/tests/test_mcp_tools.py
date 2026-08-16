@@ -509,9 +509,22 @@ def test_get_dossier_composes_summaries(monkeypatch):
     assert summaries["protocol"]["has_protocol"] is False
 
 
+def _blank_summaries(monkeypatch):
+    monkeypatch.setattr(handlers.hearing_model, "get_hearing_summary", lambda d: {})
+    monkeypatch.setattr(handlers.note_model, "get_notes_summary", lambda d: {})
+    monkeypatch.setattr(handlers.document_model, "get_document_summary", lambda d: {})
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_summary", lambda d: {})
+    monkeypatch.setattr(handlers.expense_model, "get_expense_summary", lambda d: {})
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_summary", lambda d: {})
+    monkeypatch.setattr(handlers.task_model, "get_task_summary",
+                        lambda d, today=None: {})
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_summary",
+                        lambda d, today=None: {})
+
+
 def test_get_dossier_by_file_number(monkeypatch):
-    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
-                        lambda status_filter=None, limit=200: ([_dossier()], None))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        lambda fn: _dossier() if fn == "2026-001" else None)
     monkeypatch.setattr(handlers.dossier_model, "get_dossier",
                         lambda i: _dossier() if i == "d1" else None)
     monkeypatch.setattr(handlers.task_model, "get_task_summary",
@@ -527,6 +540,44 @@ def test_get_dossier_by_file_number(monkeypatch):
 
     payload = handlers.get_dossier({"file_number": "2026-001"})
     assert payload["found"] is True
+
+
+def test_get_dossier_by_file_number_reaches_past_the_newest_window(monkeypatch):
+    """The lookup is a keyed query, not a filter over the 200 most recently
+    OPENED dossiers. A historical import's files are by construction the
+    OLDEST in the base, so under the old scan « does 2014-007 exist? »
+    answered « no » for a dossier that does — and the connector, which can
+    never delete, would then mint a duplicate."""
+    old = _dossier(did="d-old", fn="2014-007")
+
+    def _paged_must_not_run(**kw):
+        raise AssertionError(
+            "the file_number lookup must be a keyed query, never a page scan"
+        )
+
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
+                        _paged_must_not_run)
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        lambda fn: old if fn == "2014-007" else None)
+    _blank_summaries(monkeypatch)
+
+    payload = handlers.get_dossier({"file_number": "2014-007"})
+    assert payload["found"] is True
+    assert payload["dossier"]["id"] == "d-old"
+
+
+def test_get_dossier_by_file_number_fails_closed_on_a_read_error(monkeypatch):
+    """« Is there already a dossier numbered X? » is asked immediately before
+    creating one. A swallowed read error answering « no » is what mints a
+    duplicate, so this branch propagates where the dossier_id branch
+    swallows."""
+    def _raises(fn):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier_by_file_number",
+                        _raises)
+    with pytest.raises(RuntimeError):
+        handlers.get_dossier({"file_number": "2014-007"})
 
 
 # ── list_tasks ──────────────────────────────────────────────────────────

@@ -587,12 +587,15 @@ def get_dossier(args: dict) -> dict:
         )
 
     if file_number:
-        rows, _ = dossier_model.list_dossiers_page(limit=_FETCH_CAP)
-        wanted = file_number.strip().lower()
-        match = next(
-            (d for d in rows if d.get("file_number", "").lower() == wanted), None
-        )
-        d = dossier_model.get_dossier(match["id"]) if match else None
+        # A keyed query, not a scan of the 200 most recently OPENED dossiers:
+        # the oldest files in the base — a historical import's, by
+        # construction — sat outside that window and read as « absent ».
+        # This branch also fails CLOSED where the dossier_id branch below
+        # swallows a read error into found: false. The asymmetry is
+        # deliberate: « is there already a dossier numbered X? » is the
+        # question asked right before creating one, and a false « no » there
+        # mints a duplicate nothing can delete.
+        d = dossier_model.get_dossier_by_file_number(file_number)
     else:
         d = dossier_model.get_dossier(dossier_id)
 

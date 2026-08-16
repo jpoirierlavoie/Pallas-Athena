@@ -604,9 +604,17 @@ TOOLS: dict[str, dict] = {
                 "file_number": {
                     "type": "string",
                     "maxLength": 20,
-                    "description": ("The user-assigned file number, "
-                                    "e.g. « 2026-001 ». Alternative to "
-                                    "dossier_id — provide exactly one."),
+                    "description": (
+                        "The user-assigned file number, e.g. « 2026-001 ». "
+                        "Alternative to dossier_id — provide exactly one. "
+                        "Matched EXACTLY (whitespace trimmed), so « 2026-1 » "
+                        "does not find « 2026-001 »: found: false means no "
+                        "dossier bears this exact number, not that the file "
+                        "is absent under some other spelling. Unlike the "
+                        "dossier_id branch, a failed lookup reports an error "
+                        "rather than found: false — so « not found » here is "
+                        "a fact you can act on."
+                    ),
                 },
             },
             "additionalProperties": False,
