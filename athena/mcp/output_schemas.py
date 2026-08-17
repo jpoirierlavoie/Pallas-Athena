@@ -438,7 +438,7 @@ def _invoice_row(extra: Optional[dict[str, Any]] = None) -> dict:
             "type": "string",
             "enum": ["recorded", "none"],
             "description": (
-                "\"recorded\" = an amount was entered in the application; "
+                "\"recorded\" = an amount was posted in the accounting module; "
                 "\"none\" = nothing recorded. With \"none\", a balance equal "
                 "to the total means nothing has been RECORDED — NOT that "
                 "nothing was paid. Status alone may still say « payée »."

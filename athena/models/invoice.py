@@ -1016,8 +1016,11 @@ def record_payment(
 
     That second half is not a nicety. ``payée`` is terminal in
     ``STATUS_TRANSITIONS`` — ``update_status`` refuses to leave it — so
-    without an undo a mistyped amount would strand the invoice permanently
-    and need console surgery. The undo is deliberately NARROW: it only
+    without an undo an erroneous amount would strand the invoice permanently
+    and need console surgery. Since 2026-08-17 the caller that needs it is
+    ``routes/admin_ledger._reduire_paiement`` (a reversed encaissement), not
+    a form on the invoice: that form was the second, ledger-blind writer of
+    ``amount_paid`` and was removed. The undo is deliberately NARROW: it only
     reverses a flip this function could have made (status ``payée`` with a
     recorded payment that no longer covers the invoice). A ``payée`` set by
     hand, with no payment recorded, is never touched — that status is the

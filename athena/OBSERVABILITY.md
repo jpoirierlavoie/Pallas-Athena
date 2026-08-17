@@ -174,7 +174,7 @@ Administration accounting (« comptabilité d'administration », August 2026) �
 | `admin_transaction_refused` | refused | Any create/update abort; `reason` = an abort string (`période_verrouillée`, `date_future`, `ventilation_invalide`, `encaissement_carte_interdit`, `encaissement_excède_solde`, …) |
 | `admin_card_payment_created` | success | Two linked legs (bank déboursé + card recette); `transaction_id` (bank leg), `account_id`, `card_account_id` |
 | `admin_receipt_attached` | success | A pièce justificative's metadata was set; `transaction_id`, `size` — never the filename |
-| `admin_invoice_payment_projected` | success ou **failure** | The Lot P projection: an encaissement recorded (or a reversal reduced — `reduced: true`) the payment on its invoice via `record_payment`; `failure` means the ENTRY STANDS and the UI showed the correction banner |
+| `admin_invoice_payment_projected` | success ou **failure** | The Lot P projection: an encaissement recorded (or a reversal reduced — `reduced: true`) the payment on its invoice via `record_payment`; `failure` means the ENTRY STANDS and the UI showed the correction banner. **Since 2026-08-17 this is the ONLY event a payment can leave**: the invoice's own payment form was removed, so the accounting module is the single writer — an `amount_paid` that moved without this event means someone wrote outside the module |
 | `admin_reconciliation_completed` | success | Variance 0, entries stamped, **the period is now LOCKED**; `reconciliation_id`, `account_id`, `cleared_count` |
 | `admin_reconciliation_variance` | refused | Completion refused; `variance_cents` |
 | `admin_reconciliation_abandoned` | success | A draft was deleted |

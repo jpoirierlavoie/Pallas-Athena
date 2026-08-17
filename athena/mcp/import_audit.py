@@ -218,9 +218,11 @@ def _facture_importee_encore_au_brouillon(ctx: dict) -> Optional[str]:
         + ", ".join(drafts)
         + ". Le connecteur ne change JAMAIS le statut d'une facture ni "
         "n'inscrit un paiement. Tant qu'elles ne sont pas promues dans "
-        "l'application (brouillon → envoyée, puis le paiement à sa date "
-        "historique), le « Journal des honoraires » les imprime avec 0 $ reçu "
-        "et le total en solde, et le sommaire du dossier lit « payé 0 »."
+        "l'application (brouillon → envoyée), puis l'encaissement saisi au "
+        "registre d'administration à sa date historique — le seul endroit "
+        "d'où un paiement s'inscrit —, le « Journal des honoraires » les "
+        "imprime avec 0 $ reçu et le total en solde, et le sommaire du "
+        "dossier lit « payé 0 »."
     )
 
 

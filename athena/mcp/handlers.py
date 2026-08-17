@@ -418,7 +418,8 @@ def _invoice_row(inv: dict) -> dict:
             inv.get("status", ""), inv.get("status", "")
         ),
         "paid_date": date_str(_as_utc(inv.get("paid_date"))),
-        # « recorded » only once an amount was actually entered. A balance
+        # « recorded » only once the accounting module posted an amount
+        # (since 2026-08-17 it is the single writer). A balance
         # equal to the total must never be read as « nothing was paid » when
         # it means « nothing was RECORDED » — the distinction the payment
         # field was added to make sayable.
