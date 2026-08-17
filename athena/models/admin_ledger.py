@@ -1808,6 +1808,44 @@ def sum_invoice_receipts(invoice_id: str) -> int:
     return total
 
 
+def list_invoice_receipts(invoice_id: str) -> list[dict]:
+    """The register entries imputed on an invoice, oldest first.
+
+    The reading counterpart of :func:`sum_invoice_receipts`, and it differs
+    from it on two points, both deliberate.
+
+    It KEEPS the annulée and contre-passées rows. That function computes a
+    cumulative and must drop anything whose economic effect no longer
+    stands; this one feeds the invoice's « Paiements » block, whose whole
+    job is to show what happened — a receipt that was reversed is part of
+    the history, and hiding it would leave the reader wondering why the
+    balance moved. The caller renders the status in full.
+
+    It fails OPEN (``[]`` + a warning), the posture of
+    :func:`find_by_trust_transaction`: a display aid must never take a page
+    down. ``sum_invoice_receipts`` keeps its fail-closed posture — money is
+    projected from it.
+
+    Single-field equality, served by the automatic index. The sort is in
+    PYTHON, like ``_list_cleared_after``: ordering server-side would demand
+    an ``(invoice_id, date)`` composite for a display block, and the row
+    count per invoice is a handful.
+    """
+    if not invoice_id:
+        return []
+    try:
+        q = db.collection(TRANSACTIONS_COLLECTION).where(
+            filter=FieldFilter("invoice_id", "==", invoice_id)
+        )
+        rows = [snap.to_dict() or {} for snap in q.stream()]
+    except Exception:
+        logger.warning("admin list_invoice_receipts failed")
+        return []
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    rows.sort(key=lambda r: (r.get("date") or epoch, int(r.get("sequence") or 0)))
+    return rows
+
+
 # ── Reconciliation as-of machinery ─────────────────────────────────────────
 
 

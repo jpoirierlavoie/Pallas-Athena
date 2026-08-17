@@ -1072,6 +1072,55 @@ def test_sum_invoice_receipts_excludes_annulled(store):
     assert al.sum_invoice_receipts("fac1") == 30000
 
 
+def test_list_invoice_receipts_rend_les_lignes_pas_le_total(store):
+    a, _ = al.create_transaction(_encaissement(amount=30000))
+    store["invoices"]["fac1"]["amount_paid"] = 30000
+    b, _ = al.create_transaction(_encaissement(amount=20000))
+    rows = al.list_invoice_receipts("fac1")
+    assert [r["id"] for r in rows] == [a["id"], b["id"]]
+    assert [r["amount"] for r in rows] == [30000, 20000]
+
+
+def test_list_invoice_receipts_garde_les_contrepassees(store):
+    """La différence voulue avec sum_invoice_receipts : le total doit écarter
+    ce dont l'effet économique ne tient plus, mais la FICHE doit montrer ce
+    qui s'est passé — une contre-passation fait partie de l'histoire, et la
+    cacher laisserait le lecteur sans explication du mouvement du solde."""
+    a, _ = al.create_transaction(_encaissement(amount=30000))
+    store["invoices"]["fac1"]["amount_paid"] = 30000
+    al.reverse_transaction(a["id"], "chèque sans provision", allow_linked=True)
+
+    assert al.sum_invoice_receipts("fac1") == 0          # le cumul les écarte
+    rows = al.list_invoice_receipts("fac1")
+    assert len(rows) >= 1                                 # la liste les garde
+    assert any(r.get("reversed_by_id") or r.get("status") == "annulée"
+               for r in rows)
+
+
+def test_list_invoice_receipts_est_ordonnee_du_plus_ancien(store):
+    tardif, _ = al.create_transaction(_encaissement(amount=10000, date=_d(2026, 3, 9)))
+    store["invoices"]["fac1"]["amount_paid"] = 10000
+    ancien, _ = al.create_transaction(_encaissement(amount=5000, date=_d(2026, 1, 4)))
+    rows = al.list_invoice_receipts("fac1")
+    assert [r["id"] for r in rows] == [ancien["id"], tardif["id"]]
+
+
+def test_list_invoice_receipts_echoue_ouvert(store, monkeypatch):
+    """Aide à l'affichage, jamais le registre : une lecture ratée ne doit pas
+    emporter la fiche de la facture. sum_invoice_receipts, elle, garde son
+    fail-closed — on projette de l'argent depuis elle."""
+    class _Boom:
+        def collection(self, _name):
+            raise RuntimeError("firestore indisponible")
+
+    monkeypatch.setattr(al, "db", _Boom())
+    assert al.list_invoice_receipts("fac1") == []
+
+
+def test_list_invoice_receipts_sans_identifiant_ne_requete_pas(store):
+    assert al.list_invoice_receipts("") == []
+
+
 def test_find_by_trust_transaction(store):
     al.create_transaction(
         _new(direction="recette", kind="recette_autre", category="",
