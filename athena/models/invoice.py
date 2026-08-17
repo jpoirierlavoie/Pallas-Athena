@@ -51,12 +51,59 @@ STATUS_LABELS = {
     "annulée": "Annulée",
 }
 
-# Allowed status transitions
+# Allowed status transitions.
+#
+# « payée » ne se POSE plus à la main (2026-08-17). La comptabilité étant
+# l'unique écrivain d'un paiement, le seul chemin vers ce statut est la
+# bascule automatique de record_payment — qui écrit le champ directement et
+# n'emprunte PAS cette table. Un bouton « Marquer comme payée » rouvrait
+# exactement la porte que le retrait du formulaire d'encaissement venait de
+# fermer : un statut affirmant un paiement, sans montant, sans date, invisible
+# au grand livre. Dix-neuf factures en production sont dans cet état.
+#
+# En retour, « payée » cesse d'être un cul-de-sac : la sortie existe pour
+# corriger les statuts posés à la main AVANT cette doctrine. Elle est refermée
+# dès qu'un paiement est INSCRIT — voir available_transitions, sans quoi
+# « Rouvrir » puis « Annuler » libérerait les heures d'une facture réellement
+# encaissée (void_invoice ne regarde que le statut, jamais l'argent).
+#
+# « en_retard » gagne « envoyée » pour une raison propre : rien n'écrit ce
+# statut automatiquement, donc il se pose à la main, et sans autre sortie
+# qu'« annulée » une facture marquée en retard par erreur ne se corrigerait
+# que destructivement.
 STATUS_TRANSITIONS = {
     "brouillon": ("envoyée", "annulée"),
-    "envoyée": ("payée", "en_retard", "annulée"),
-    "en_retard": ("payée", "annulée"),
+    "envoyée": ("en_retard", "annulée"),
+    "en_retard": ("envoyée", "annulée"),
+    "payée": ("envoyée",),
 }
+
+
+def available_transitions(invoice: dict) -> tuple[str, ...]:
+    """Les transitions que CETTE facture peut réellement prendre.
+
+    ``STATUS_TRANSITIONS`` est indexée sur le seul statut : elle ne sait pas
+    distinguer un « payée » posé à la main d'un « payée » qu'un encaissement a
+    produit. C'est pourtant cette différence qui décide du chemin de
+    correction — le premier se rouvre ici, le second se corrige par
+    contre-passation, qui réduit le paiement ET rouvre la facture d'elle-même
+    (``routes/admin_ledger._reduire_paiement``).
+
+    Sans ce filtre, la réouverture serait un trou : ``void_invoice`` ne refuse
+    que le statut ``payée``, jamais un ``amount_paid`` non nul, donc
+    « Rouvrir » puis « Annuler » libérerait les heures et dépenses d'une
+    facture réellement encaissée — et rien ne l'attraperait, l'annulation ne
+    touchant pas ``amount_paid``. Le solde dû figé reparaîtrait au passage à
+    sa valeur entière dans ``get_outstanding_total``.
+
+    UNE seule autorité, consommée par ``update_status`` ET par la fiche : un
+    bouton qui s'affiche pour être refusé est un défaut de conception.
+    """
+    current = invoice.get("status", "")
+    allowed = STATUS_TRANSITIONS.get(current, ())
+    if current == "payée" and int(invoice.get("amount_paid", 0) or 0) > 0:
+        return tuple(s for s in allowed if s != "envoyée")
+    return allowed
 
 # Tax rates stored as basis points (×100 for GST, ×1000 for QST precision)
 GST_RATE_BPS = 500       # 5.00%
@@ -1014,10 +1061,12 @@ def record_payment(
     * a CORRECTION that reopens a balance undoes that flip, back to
       ``envoyée``.
 
-    That second half is not a nicety. ``payée`` is terminal in
-    ``STATUS_TRANSITIONS`` — ``update_status`` refuses to leave it — so
-    without an undo an erroneous amount would strand the invoice permanently
-    and need console surgery. Since 2026-08-17 the caller that needs it is
+    That second half is not a nicety. ``payée`` does now have a manual exit
+    (``payée → envoyée``), but ``available_transitions`` closes it the moment
+    a payment is RECORDED — a ledger-backed ``payée`` corrects by
+    contre-passation, never by hand. So for the ONE status this function can
+    set, the undo below remains the only way back, and an erroneous amount
+    would still strand the invoice without it. Its caller is
     ``routes/admin_ledger._reduire_paiement`` (a reversed encaissement), not
     a form on the invoice: that form was the second, ledger-blind writer of
     ``amount_paid`` and was removed. The undo is deliberately NARROW: it only
@@ -1112,8 +1161,22 @@ def update_status(invoice_id: str, new_status: str) -> tuple[bool, str]:
         return False, "Facture introuvable."
 
     current = invoice.get("status", "")
-    allowed = STATUS_TRANSITIONS.get(current, ())
+    allowed = available_transitions(invoice)
     if new_status not in allowed:
+        # Nommer la voie plutôt que de refuser sèchement : la seule raison
+        # qu'une facture payée ait de rester fermée est qu'un encaissement
+        # l'adosse, et cet encaissement a son propre chemin de correction.
+        if current == "payée" and new_status == "envoyée":
+            return False, (
+                "Cette facture porte un encaissement inscrit au grand livre. "
+                "Contre-passez l'écriture dans « Administration » — la facture "
+                "rouvrira d'elle-même."
+            )
+        if new_status == "payée":
+            return False, (
+                "Une facture se marque payée par un encaissement inscrit au "
+                "registre d'administration, jamais à la main."
+            )
         return False, f"Transition de « {STATUS_LABELS.get(current, current)} » vers « {STATUS_LABELS.get(new_status, new_status)} » non permise."
 
     now = datetime.now(timezone.utc)

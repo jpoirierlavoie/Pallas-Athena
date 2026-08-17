@@ -8,9 +8,15 @@ facture réglée — ce n'est pas un solde, malgré son nom. Le solde vivant
 est ``balance_of`` = amount_due − amount_paid, dérivé, jamais stocké.
 
 La bascule automatique à « payée » (décision de l'avocat) porte un piège
-propre : « payée » est TERMINAL dans STATUS_TRANSITIONS, donc une saisie
-erronée immobiliserait la facture. record_payment annule sa PROPRE bascule
-— et seulement la sienne. Ces deux moitiés sont épinglées séparément.
+propre : une saisie erronée immobiliserait la facture. record_payment annule
+sa PROPRE bascule — et seulement la sienne. Ces deux moitiés sont épinglées
+séparément.
+
+Depuis le 2026-08-17 « payée » n'est plus un cul-de-sac, mais l'annulation
+étroite reste nécessaire : available_transitions referme la sortie manuelle
+dès qu'un paiement est INSCRIT, si bien que pour le SEUL statut que
+record_payment sait poser, elle demeure l'unique chemin de retour. Le dernier
+bloc du fichier épingle ce nouveau sens.
 
 Firestore est bouchonné : la transaction est simulée par un faux document.
 """
@@ -50,6 +56,11 @@ class _Ref:
 
     def get(self, transaction=None):
         return _Snap(self.store.get("doc"))
+
+    def update(self, updates):
+        """Le chemin NON transactionnel — update_status écrit par ici."""
+        self.store.setdefault("applied", []).append(updates)
+        self.store["doc"] = {**self.store["doc"], **updates}
 
 
 class _Txn:
@@ -148,12 +159,13 @@ def test_the_etag_and_updated_at_move_on_every_payment(store):
     assert updated["updated_at"] is not None
 
 
-# ── The terminal-status trap, and its narrow undo ───────────────────────
+# ── The closed-status trap, and its narrow undo ─────────────────────────
 
 
 def test_correcting_a_payment_downward_undoes_the_flip(store):
-    """« payée » is TERMINAL: update_status refuses to leave it. Without
-    this undo, one mistyped amount would strand the invoice for good."""
+    """Une facture PORTANT un paiement ne se rouvre pas à la main
+    (available_transitions le refuse — la voie est la contre-passation), donc
+    sans cette annulation un montant erroné immobiliserait la facture."""
     store["doc"] = _invoice()
     imod.record_payment("inv1", 287437)                 # oops, the full sum
     assert store["doc"]["status"] == "payée"
@@ -269,3 +281,97 @@ def test_existing_invoices_read_as_unpaid_without_a_backfill():
     a legacy document has NEITHER key. balance_of must not raise on it."""
     legacy = {"id": "old", "total": 100000, "amount_due": 100000}
     assert imod.balance_of(legacy) == 100000
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Le sens du statut s'inverse (2026-08-17) : la comptabilité pose « payée »,
+# la main la retire.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_la_table_des_transitions_est_une_doctrine_pas_un_detail():
+    """Elle est épinglée LITTÉRALEMENT : chaque case dit qui a le droit de
+    déclarer qu'une facture est réglée. « payée » n'est plus une cible, et
+    n'est plus un cul-de-sac."""
+    assert imod.STATUS_TRANSITIONS == {
+        "brouillon": ("envoyée", "annulée"),
+        "envoyée": ("en_retard", "annulée"),
+        "en_retard": ("envoyée", "annulée"),
+        "payée": ("envoyée",),
+    }
+
+
+def test_marquer_payee_a_la_main_est_refuse(store):
+    """C'était la porte que le retrait du formulaire d'encaissement venait de
+    fermer : un statut affirmant un paiement, sans montant, sans date,
+    invisible au grand livre."""
+    store["doc"] = _invoice(status="envoyée")
+    ok, err = imod.update_status("inv1", "payée")
+    assert ok is False
+    assert "registre d'administration" in err
+    assert not store.get("applied"), "un refus a écrit"
+
+
+def test_la_bascule_automatique_survit_au_retrait(store):
+    """LA moitié qui aurait cassé en silence. record_payment écrit `status`
+    directement dans sa transaction, sans passer par la table — retirer
+    « payée » du menu manuel ne peut donc pas l'empêcher de fonctionner."""
+    store["doc"] = _invoice()
+    updated, errors = imod.record_payment("inv1", 287437)
+    assert errors == []
+    assert updated["status"] == "payée"
+
+
+def test_une_payee_posee_a_la_main_se_rouvre(store):
+    """Les dix-neuf factures « payée » sans montant de la production : elles
+    doivent pouvoir revenir impayées, sans quoi aucun encaissement ne peut
+    plus s'y porter (create_transaction refuse tout statut hors envoyée /
+    en_retard)."""
+    store["doc"] = _invoice(status="payée", amount_paid=0)
+    ok, err = imod.update_status("inv1", "envoyée")
+    assert ok is True and err == ""
+    assert store["doc"]["status"] == "envoyée"
+
+
+def test_une_payee_adossee_au_grand_livre_ne_se_rouvre_pas(store):
+    """Le piège que la réouverture ouvrirait : void_invoice ne refuse QUE le
+    statut « payée », jamais un montant encaissé. Sans ce garde,
+    « Rouvrir » puis « Annuler » libérerait les heures d'une facture
+    réellement encaissée — et rien ne l'attraperait, l'annulation ne touchant
+    pas amount_paid."""
+    store["doc"] = _invoice(status="payée", amount_paid=287437)
+    ok, err = imod.update_status("inv1", "envoyée")
+    assert ok is False
+    assert "Contre-passez" in err and "Administration" in err
+    assert not store.get("applied"), "un refus a écrit"
+
+
+def test_available_transitions_est_la_seule_autorite():
+    """La fiche et update_status lisent la MÊME fonction : un bouton qui
+    s'afficherait pour être refusé serait un défaut de conception."""
+    posee_a_la_main = _invoice(status="payée", amount_paid=0)
+    adossee = _invoice(status="payée", amount_paid=287437)
+    assert imod.available_transitions(posee_a_la_main) == ("envoyée",)
+    assert imod.available_transitions(adossee) == ()
+    # Et elle n'invente rien pour les autres statuts.
+    assert imod.available_transitions(_invoice(status="envoyée")) == (
+        "en_retard", "annulée")
+
+
+def test_en_retard_garde_une_sortie_non_destructive(store):
+    """Rien n'écrit « en retard » automatiquement : ce statut se pose à la
+    main, donc une erreur doit se corriger autrement qu'en annulant la
+    facture (ce qui libérerait toutes ses heures)."""
+    store["doc"] = _invoice(status="en_retard")
+    ok, err = imod.update_status("inv1", "envoyée")
+    assert ok is True and err == ""
+
+
+def test_le_chemin_payee_envoyee_annulee_reste_ferme_sur_une_facture_encaissee(store):
+    """Bout en bout : la seule voie vers l'annulation d'une facture encaissée
+    passerait par sa réouverture, et elle est fermée. void_invoice n'a jamais
+    eu à regarder l'argent, et n'a toujours pas à le faire."""
+    store["doc"] = _invoice(status="payée", amount_paid=287437)
+    assert "envoyée" not in imod.available_transitions(store["doc"])
+    ok, _ = imod.void_invoice("inv1")
+    assert ok is False        # void refuse « payée » — la porte de derrière

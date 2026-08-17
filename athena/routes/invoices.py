@@ -23,8 +23,8 @@ from config import Config
 from utils.format_fr import format_rate_fr
 from models.invoice import (
     STATUS_LABELS,
-    STATUS_TRANSITIONS,
     VALID_STATUSES,
+    available_transitions,
     balance_of,
     billing_address_from,
     create_invoice,
@@ -377,9 +377,11 @@ def invoice_detail(invoice_id: str) -> str:
     fee_items = [i for i in items if i.get("type") == "fee"]
     expense_items = [i for i in items if i.get("type") != "fee"]
 
-    # Available status transitions
-    current_status = invoice.get("status", "")
-    transitions = STATUS_TRANSITIONS.get(current_status, ())
+    # Available status transitions. available_transitions, jamais la table :
+    # elle seule sait qu'un « payée » adossé au grand livre ne se rouvre pas
+    # à la main. Un bouton qui s'afficherait pour être refusé serait un
+    # défaut de conception.
+    transitions = available_transitions(invoice)
 
     ctx = _template_context()
     ctx.update(

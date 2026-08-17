@@ -97,7 +97,9 @@ def _render(**over) -> str:
             "description": "Timbre judiciaire", "amount": 10500,
             "taxable": False,
         }],
-        "transitions": ("payée", "en_retard", "annulée"),
+        # available_transitions d'une facture « envoyée » depuis le
+        # 2026-08-17 : « payée » n'est plus une cible manuelle.
+        "transitions": ("en_retard", "annulée"),
         "balance": invoice["amount_due"] - invoice["amount_paid"],
         "gst_rate_display": format_rate_fr(invoice["gst_rate"], 100),
         "qst_rate_display": format_rate_fr(invoice["qst_rate"], 1000),
@@ -281,3 +283,43 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
         "admin_ledger.py",
         "purge_encaissements_factures.py",
     }, appelants
+
+
+# ── Le sens du statut s'inverse (2026-08-17) ────────────────────────────
+
+
+def test_no_template_offers_to_mark_an_invoice_paid_by_hand():
+    """La branche morte doit rester morte : laisser le balisage en place est
+    la façon dont le prochain lecteur conclut que le bouton existe encore."""
+    src = open(
+        os.path.join(_TEMPLATES_DIR, "invoices", "detail.html"), encoding="utf-8"
+    ).read()
+    assert "Marquer comme payée" not in src
+
+
+def test_a_hand_set_paid_invoice_offers_to_reopen_with_a_confirmation():
+    """Le libellé dépend du statut COURANT : sur une facture payée, la cible
+    « envoyée » se lit « Rouvrir », jamais « Marquer comme envoyée » — qui se
+    lirait comme un renvoi au client."""
+    html = _render(
+        invoice={"status": "payée", "amount_paid": 0},
+        transitions=("envoyée",),
+    )
+    assert "Rouvrir la facture" in html
+    assert "Marquer comme envoyée" not in html
+    # La confirmation dit ce que la réouverture NE fait pas.
+    assert "data-confirm=" in html
+    assert "sans encaissement inscrit en comptabilité" in html
+
+
+def test_a_ledger_backed_paid_invoice_offers_no_reopen():
+    """available_transitions rend () : la fiche ne doit alors afficher aucun
+    bouton de statut — un bouton qui s'affiche pour être refusé est un défaut
+    de conception, et celui-ci ouvrirait la voie payée → envoyée → annulée,
+    qui libérerait les heures d'une facture réellement encaissée."""
+    html = _render(
+        invoice={"status": "payée", "amount_paid": 184535},
+        transitions=(),
+    )
+    assert "Rouvrir la facture" not in html
+    assert "invoice_update_status" not in html
