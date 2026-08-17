@@ -1,0 +1,145 @@
+"""One-shot: purge the payments recorded OUTSIDE the accounting module.
+
+The invoice's own payment form (Lot P, 2 August 2026) predated the
+administration ledger by eleven days and was a second writer of
+``amount_paid``, invisible to the register. It was removed on 2026-08-17;
+this script clears what it left behind so the lawyer can re-enter each
+payment in « Administration », where it will also post to the operations
+account.
+
+Scope, deliberately narrow: an invoice with ``amount_paid > 0`` and NO
+matching ledger entry (``sum_invoice_receipts`` returning less). A payment
+already backed by the register is left alone — re-running is safe.
+
+It does not write Firestore directly. It calls
+``models.invoice.record_payment(invoice_id, 0)``, which already does the
+whole job and carries 19 tests:
+
+- ``amount_paid → 0`` and ``paid_date → None`` (an unpaid invoice bears no
+  payment date);
+- **the narrow undo fires: payée → envoyée.** That is not cosmetic, it is
+  what makes re-entry possible. ``_ISSUED_INVOICE_STATUSES`` is
+  ``("envoyée", "en_retard")``, so an invoice left « payée » would appear in
+  no picker and ``admin_ledger.create_transaction`` would refuse it outright
+  (``facture_non_émise``). The undo is narrow by design — it only touches a
+  « payée » invoice that CARRIES a recorded payment — so the nineteen
+  « payée » invoices with no amount are never touched.
+
+The list is printed BEFORE any write and again after, because it is the only
+record of what has to be re-entered.
+
+    python -m scripts.purge_encaissements_factures            # dry-run
+    python -m scripts.purge_encaissements_factures --apply    # write
+"""
+
+import argparse
+import sys
+
+from models import admin_ledger as al
+from models import db
+from models.invoice import record_payment
+from utils.format_fr import format_cents_fr
+
+
+def _date_str(value) -> str:
+    return value.strftime("%Y-%m-%d") if hasattr(value, "strftime") else "—"
+
+
+def _collect() -> tuple[list[dict], list[str]]:
+    """The invoices to purge, plus the failures that must NOT be silent.
+
+    Fails CLOSED on a per-invoice cumulative read: clearing a payment whose
+    ledger backing could not be read would destroy a legitimate figure.
+    """
+    cibles: list[dict] = []
+    erreurs: list[str] = []
+    for snap in db.collection("invoices").stream():
+        inv = snap.to_dict() or {}
+        paye = int(inv.get("amount_paid", 0) or 0)
+        if paye <= 0:
+            continue
+        try:
+            registre = al.sum_invoice_receipts(snap.id)
+        except Exception as exc:
+            erreurs.append(
+                f"{inv.get('invoice_number', snap.id)}: cumul du registre "
+                f"illisible ({exc}) — NON purgée"
+            )
+            continue
+        if registre >= paye:
+            continue  # déjà adossée à la comptabilité
+        cibles.append({
+            "id": snap.id,
+            "numero": inv.get("invoice_number", snap.id),
+            "dossier": inv.get("dossier_file_number", ""),
+            "client": inv.get("client_name", ""),
+            "statut": inv.get("status", ""),
+            "paye": paye,
+            "registre": registre,
+            "paid_date": inv.get("paid_date"),
+        })
+    cibles.sort(key=lambda c: c["numero"])
+    return cibles, erreurs
+
+
+def _print_table(cibles: list[dict]) -> None:
+    print(f"{'Facture':<14} {'Dossier':<10} {'Payé le':<11} "
+          f"{'Montant':>13}  {'Statut':<10} Client")
+    for c in cibles:
+        print(f"{c['numero']:<14} {c['dossier']:<10} "
+              f"{_date_str(c['paid_date']):<11} "
+              f"{format_cents_fr(c['paye']):>13}  {c['statut']:<10} {c['client']}")
+    total = sum(c["paye"] for c in cibles)
+    print(f"{'':<14} {'':<10} {'TOTAL':<11} {format_cents_fr(total):>13}")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Purge des encaissements "
+                                                 "saisis hors comptabilité.")
+    parser.add_argument("--apply", action="store_true",
+                        help="Écrit la purge (défaut : simulation).")
+    args = parser.parse_args(argv)
+
+    cibles, erreurs = _collect()
+    for e in erreurs:
+        print(f"⚠️  {e}")
+
+    if not cibles:
+        print("Aucune facture à purger : tout montant encaissé est adossé "
+              "à une écriture comptable.")
+        return 1 if erreurs else 0
+
+    print(f"\n{len(cibles)} facture(s) portent un paiement que le registre "
+          f"d'administration ne connaît pas :\n")
+    _print_table(cibles)
+    print("\nCes paiements seront effacés (montant, date) et le statut "
+          "« payée » reviendra à « envoyée »,")
+    print("pour que chaque facture se ressaisisse normalement en "
+          "« Administration ».")
+
+    if not args.apply:
+        print("\n(simulation — relancez avec --apply pour écrire)")
+        return 0
+
+    print()
+    echecs = 0
+    for c in cibles:
+        inv, errors = record_payment(c["id"], 0)
+        if errors or inv is None:
+            echecs += 1
+            print(f"❌ {c['numero']} : {'; '.join(errors) or 'échec'}")
+            continue
+        print(f"✔  {c['numero']} : {format_cents_fr(c['paye'])} effacé, "
+              f"statut « {inv.get('status', '')} »")
+
+    print("\nÀ RESSAISIR EN COMPTABILITÉ (conservez cette liste) :\n")
+    _print_table(cibles)
+    print("\nUn paiement venu du fidéicommis se ressaisit DEPUIS le "
+          "fidéicommis (contre-passer le virement,")
+    print("puis le refaire en nommant le compte d'administration) ; les "
+          "autres directement au registre.")
+    return 1 if (echecs or erreurs) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

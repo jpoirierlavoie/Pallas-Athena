@@ -258,9 +258,14 @@ def test_the_payment_endpoint_no_longer_exists():
 
 def test_the_accounting_module_is_the_only_writer_of_a_payment():
     """record_payment garde sa place — mais routes/admin_ledger en est
-    desormais le SEUL appelant de production. Un balayage de source, faute de
-    quoi un futur formulaire pourrait le rebrancher sans que rien ne le dise
-    (le patron de test_comptabilite.test_la_route_est_en_lecture_seule)."""
+    desormais le SEUL appelant SERVI PAR UNE REQUETE. Un balayage de source,
+    faute de quoi un futur formulaire pourrait le rebrancher sans que rien ne
+    le dise (le patron de test_comptabilite.test_la_route_est_en_lecture_seule).
+
+    L'ensemble est nomme plutot que la portee relachee : un script a lancer a
+    la main est un appelant legitime, mais il doit etre DECIDE, pas decouvert.
+    Le seul admis remet a zero les paiements saisis avant que la comptabilite
+    ne devienne l'unique ecrivain — il en efface, il n'en cree aucun."""
     import pathlib
 
     racine = pathlib.Path(__file__).resolve().parent.parent
@@ -272,4 +277,7 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
         texte = chemin.read_text(encoding="utf-8")
         if "record_payment(" in texte and chemin.name != "invoice.py":
             appelants.add(chemin.name)
-    assert appelants == {"admin_ledger.py"}, appelants
+    assert appelants == {
+        "admin_ledger.py",
+        "purge_encaissements_factures.py",
+    }, appelants
