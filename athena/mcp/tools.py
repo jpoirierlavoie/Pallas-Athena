@@ -615,7 +615,7 @@ def _dossier_field_props() -> dict:
         "action_precision": {"type": "string", "maxLength": 2000,
                              "description": "Free text; required by « Autre » rows."},
         "sommaire": {"type": "string", "maxLength": 5000,
-                     "description": "Free-text case summary."},
+                     "description": "Free-text case summary (stored up to 5000)."},
         "mandate_type": {"type": "string", "maxLength": 40,
                          "description": "judiciaire | service_conseils | general | special."},
         "court_file_number": {
@@ -2154,6 +2154,7 @@ TOOLS: dict[str, dict] = {
                     ),
                 },
                 **_phase_props(),
+                **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id", "date", "description", "hours"],
@@ -2204,6 +2205,7 @@ TOOLS: dict[str, dict] = {
                     "description": "Defaults to true.",
                 },
                 **_phase_props(),
+                **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id", "date", "description", "amount_cents"],
@@ -2247,8 +2249,12 @@ TOOLS: dict[str, dict] = {
                     "description": "Free-text precision (the -99 rows require it).",
                 },
                 "sommaire": {
-                    "type": "string", "maxLength": 2000,
-                    "description": "Case summary, French — only when empty.",
+                    "type": "string", "maxLength": 5000,
+                    "description": (
+                        "Case summary, French — only when empty. The model "
+                        "stores it up to 5000, unlike every other string "
+                        "field, which caps at 2000."
+                    ),
                 },
                 "mandate_type": {
                     "type": "string",
@@ -2454,6 +2460,7 @@ TOOLS: dict[str, dict] = {
                     ),
                 },
                 **_phase_props(),
+                **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
             "required": ["time_entry_id"],
@@ -2496,6 +2503,7 @@ TOOLS: dict[str, dict] = {
                     "description": "Send ONLY to change it.",
                 },
                 **_phase_props(),
+                **_legacy_ref_prop(),
                 **_write_protocol_props(),
             },
             "required": ["expense_id"],

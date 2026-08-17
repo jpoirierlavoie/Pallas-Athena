@@ -362,6 +362,27 @@ def _is_live_sequence_number(number: str) -> bool:
     return number.startswith(f"{today_mtl().strftime('%Y')}-F")
 
 
+def invoice_number_exists(number: str) -> bool:
+    """True when an invoice already bears *number*.
+
+    RAISES on query failure. The caller is a dry run asking « would the real
+    call be refused? », and a swallowed error answering « no » is exactly the
+    lie the dry-run contract exists to prevent. The authoritative check stays
+    inside ``create_invoice``'s transaction; this one exists so a preview can
+    refuse what the write would refuse.
+    """
+    wanted = (number or "").strip()
+    if not wanted:
+        return False
+    docs = list(
+        db.collection(COLLECTION)
+        .where(filter=FieldFilter("invoice_number", "==", wanted))
+        .limit(1)
+        .stream()
+    )
+    return bool(docs)
+
+
 def _clean_imported_number(raw: object) -> tuple[str, list[str]]:
     """Validate a historical invoice number. Returns ("", [erreurs]) on refusal.
 

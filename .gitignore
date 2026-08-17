@@ -54,3 +54,12 @@ venv/
 .venv/
 
 *.token
+
+# ── Documents de clients ─────────────────────────────────────────────────
+# Dossiers de travail déposés à la racine pour une reprise de données : des
+# factures et des journaux de caisse RÉELS, donc du secret professionnel.
+# Ce dépôt est poussé sur GitHub — rien de tout cela ne doit y entrer, et un
+# « git add -A » distrait suffirait. Ignoré à la source plutôt que rattrapé.
+/Comptes recevables/
+/Comptes payables/
+*.xlsx

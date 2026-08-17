@@ -2900,18 +2900,29 @@ def _append_to_note_impl(args: dict, dry_run: bool) -> dict:
 # lower ceiling than notes' 100k, and the same silent-truncation class the
 # note pre-checks exist for.
 _ENTITY_FIELD_MAX = 2000
+# models/dossier sanitizes `sommaire` at 5000, everything else at 2000.
+_SOMMAIRE_MAX = 5000
 
 
-def _clean_entity_text(raw: str, field: str) -> str:
-    """Length-then-chevron refusal at the task/hearing field ceiling."""
+def _clean_entity_text(
+    raw: str, field: str, limit: Optional[int] = None
+) -> str:
+    """Length-then-chevron refusal at a field's REAL storage ceiling.
+
+    *limit* exists because the ceiling is not uniform: ``models/dossier``
+    sanitizes ``sommaire`` at 5000 and everything else at 2000. Refusing a
+    3000-character sommaire « because it exceeds 2000 » would be a refusal
+    naming a limit that does not apply to it.
+    """
+    ceiling = _ENTITY_FIELD_MAX if limit is None else limit
     value = (raw or "").strip()
-    if len(value) > _ENTITY_FIELD_MAX:
+    if len(value) > ceiling:
         raise ToolArgumentError(
-            f"« {field} » dépasse {_ENTITY_FIELD_MAX} caractères — il serait "
+            f"« {field} » dépasse {ceiling} caractères — il serait "
             "tronqué silencieusement à l'enregistrement. Raccourcissez, ou "
             "mettez le détail dans une note (create_note)."
         )
-    if not _survives_storage(value, _ENTITY_FIELD_MAX):
+    if not _survives_storage(value, ceiling):
         raise ToolArgumentError(
             f"« {field} » contient du texte entre chevrons qui serait "
             f"supprimé à l'enregistrement. {_CHEVRON_ADVICE}"
@@ -3249,15 +3260,30 @@ def _require_address_bloc(args: dict, prefix: str) -> dict:
     present = [k for k in keys if k in args]
     if not present:
         return {}
-    missing = [
-        f"{prefix}_{k}" for k in _ADDRESS_REQUIRED if not (args.get(f"{prefix}_{k}") or "").strip()
-    ]
-    if missing:
+    # Every one of the six must be PRESENT, not merely non-empty. The block
+    # is written whole, so a key the caller omitted would go out as "" and
+    # ERASE the stored value on a correction — losing an apartment number or
+    # a postal code from the address a client is billed at. `unit` and
+    # `postal_code` may be sent empty; they may not be left unsaid.
+    absent = [k for k in keys if k not in args]
+    if absent:
         raise ToolArgumentError(
             f"Une adresse se fournit en BLOC : {', '.join(keys)}. "
-            f"Manquant ou vide : {', '.join(missing)}. Un bloc partiel ferait "
-            "remplacer les champs omis par les défauts Montréal / Québec / "
-            "Canada — le contact changerait de ville en silence."
+            f"Clé(s) absente(s) : {', '.join(absent)}. Envoyez les six — "
+            "« unit » et « postal_code » peuvent valoir une chaîne vide, mais "
+            "les omettre les effacerait, et un bloc partiel ferait remplacer "
+            "les champs omis par les défauts Montréal / Québec / Canada."
+        )
+    blank = [
+        f"{prefix}_{k}" for k in _ADDRESS_REQUIRED
+        if not (args.get(f"{prefix}_{k}") or "").strip()
+    ]
+    if blank:
+        raise ToolArgumentError(
+            f"Une adresse se fournit en BLOC : {', '.join(keys)}. "
+            f"Vide(s) : {', '.join(blank)}. Un bloc partiel ferait remplacer "
+            "les champs omis par les défauts Montréal / Québec / Canada — le "
+            "contact changerait de ville en silence."
         )
     return {k: _clean_partie_text(args.get(k, ""), k) for k in keys}
 
@@ -3381,14 +3407,37 @@ def _resolve_party_entries(raw: Any, label: str) -> list[dict]:
     return entries
 
 
-def _dossier_field_updates(args: dict, *, defaults_only: bool = False) -> dict:
-    """The shared classification/financial block, coerced, BY PRESENCE."""
+def _dossier_field_updates(args: dict, *, allow_clear: bool = False) -> dict:
+    """The shared classification/financial block, coerced, BY PRESENCE.
+
+    *allow_clear* separates the two tools that share this block.
+    ``complete_dossier`` FILLS what is empty, so an empty value is nothing to
+    do and is skipped. ``update_dossier`` REPLACES what it names, so an empty
+    string must actually clear a text field — and for a field it cannot
+    safely clear (a date, an amount, whose empty form is None or a derived
+    value) it REFUSES, rather than returning « updated: true » having quietly
+    done nothing to it.
+    """
     out: dict[str, Any] = {}
     for field, kind in _COMPLETABLE_FIELDS.items():
-        if field not in args or args[field] in (None, ""):
+        if field not in args:
+            continue
+        if args[field] in (None, ""):
+            if not allow_clear:
+                continue
+            if kind != "str":
+                raise ToolArgumentError(
+                    f"`{field}` ne peut pas être vidé par le connecteur : sa "
+                    "forme vide est une valeur nulle ou dérivée, pas une "
+                    "chaîne. Corrigez-le dans l'application, ou fournissez "
+                    "une vraie valeur."
+                )
+            out[field] = ""
             continue
         out[field] = _coerce_completable(
-            field, kind, args[field], allow_zero=field in _ZERO_MEANINGFUL
+            field, kind, args[field],
+            allow_zero=field in _ZERO_MEANINGFUL,
+            limit=_SOMMAIRE_MAX if field == "sommaire" else None,
         )
     for field in ("prescription_notes",):
         if field in args:
@@ -3520,6 +3569,22 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
     )
 
 
+def _apply_legacy_ref(args: dict, data: dict, collection: str) -> None:
+    """Carry the import anchor onto a create, refusing a collision.
+
+    One keyed query per create — the point of the anchor is that a resumed
+    import finds what it already wrote instead of writing it twice, and
+    detection without refusal would only report the damage after the fact.
+    """
+    if "legacy_ref" not in args:
+        return
+    ref = _clean_entity_text(str(args["legacy_ref"] or ""), "legacy_ref")
+    if not ref:
+        return
+    _refuse_legacy_ref_collision(collection, ref)
+    data["legacy_ref"] = ref
+
+
 def _refuse_legacy_ref_collision(collection: str, legacy_ref: str) -> None:
     """Un legacy_ref déjà pris est un doublon en préparation.
 
@@ -3610,7 +3675,27 @@ def get_import_audit(args: dict) -> dict:
     # manufacture a « source introuvable » out of a paging boundary — the
     # coverage report's rule: a shortened report must never pass for a clean
     # one, and it must never accuse an import that is actually fine.
-    sources_complete = entries_cursor is None and expenses_cursor is None
+    # Two ways the source population can be untrustworthy, and BOTH must
+    # suppress the checks that compare an invoice's line items against it.
+    # A truncated page is the obvious one. The second is a swallowed read:
+    # list_*_page fails OPEN to ([], None), so a Firestore blip is
+    # indistinguishable from « this dossier has no work » — and then every
+    # line item on every invoice looks orphaned, producing IMP-03/IMP-06
+    # manquements against an import that is perfectly fine. When the
+    # invoices themselves cite sources and the source population came back
+    # empty, the state is ambiguous, so we suppress and SAY SO rather than
+    # accuse.
+    cites_sources = any(
+        (item.get("source_id") or "")
+        for block in invoice_blocks
+        for item in block["line_items"]
+    )
+    sources_empty_but_cited = cites_sources and not entries and not expenses
+    sources_complete = (
+        entries_cursor is None
+        and expenses_cursor is None
+        and not sources_empty_but_cited
+    )
     skip = frozenset() if sources_complete else frozenset(
         import_audit.NEEDS_COMPLETE_SOURCES
     )
@@ -3841,6 +3926,7 @@ def _billing_edit(
     getter,
     updater,
     text_fields: tuple,
+    legacy_collection: str,
     entity_builder,
 ) -> dict:
     """Shared body of the two billing editors.
@@ -3891,6 +3977,9 @@ def _billing_edit(
     if pair is not None:
         data["phase"], data["sous_phase"] = pair
 
+    if "legacy_ref" in data and data["legacy_ref"] != existing.get("legacy_ref", ""):
+        _refuse_legacy_ref_collision(legacy_collection, data["legacy_ref"])
+
     if not data:
         raise ToolArgumentError(
             "Aucun champ à modifier : fournissez au moins un champ."
@@ -3919,8 +4008,8 @@ def _billing_edit(
     }
 
 
-_TIME_ENTRY_TEXT = ("description",)
-_EXPENSE_TEXT = ("description",)
+_TIME_ENTRY_TEXT = ("description", "legacy_ref")
+_EXPENSE_TEXT = ("description", "legacy_ref")
 
 
 def _time_entry_entity(doc: dict) -> dict:
@@ -3964,6 +4053,7 @@ def update_time_entry(args: dict) -> dict:
             getter=time_entry_model.get_time_entry,
             updater=time_entry_model.update_time_entry,
             text_fields=_TIME_ENTRY_TEXT,
+            legacy_collection="timeentries",
             entity_builder=_time_entry_entity,
         ),
     )
@@ -3979,6 +4069,7 @@ def update_expense(args: dict) -> dict:
             getter=expense_model.get_expense,
             updater=expense_model.update_expense,
             text_fields=_EXPENSE_TEXT,
+            legacy_collection="expenses",
             entity_builder=_expense_entity,
         ),
     )
@@ -4072,6 +4163,34 @@ def _import_invoice_impl(args: dict, dry_run: bool) -> dict:
         _refuse_legacy_ref_collision("invoices", data["legacy_ref"])
 
     adjustment = args.get("adjustment")
+
+    # Replay the model's number guards HERE, so the dry branch refuses what
+    # the live call refuses. run_write short-circuits dry_run without ever
+    # calling the model, so a preview that skipped these would report
+    # « created: true » for a number the real call rejects — the precise
+    # failure the dry-run contract exists to prevent, and the likeliest one
+    # in a resumed import (the number is already taken).
+    cleaned_number, number_errors = invoice_model._clean_imported_number(
+        invoice_number
+    )
+    if number_errors:
+        raise ToolArgumentError("; ".join(number_errors))
+    if invoice_model.invoice_number_exists(cleaned_number):
+        raise ToolArgumentError(
+            f"Le numéro de facture « {cleaned_number} » existe déjà dans "
+            "Pallas Athéna. Une facture importée conserve son numéro "
+            "d'origine : vérifiez s'il n'a pas déjà été repris "
+            "(find_imported)."
+        )
+    for label, ids in (("time_entry_ids", entry_ids),
+                       ("expense_ids", expense_ids)):
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ToolArgumentError(
+                f"`{label}` contient des identifiants en double : "
+                + ", ".join(dupes)
+                + ". Chaque source ne peut être facturée qu'une fois."
+            )
 
     # Source pre-flight: the model refuses again under require_all_sources —
     # this pass exists only to name each offender by reason, which the model
@@ -4396,11 +4515,14 @@ def _update_dossier_impl(args: dict, dry_run: bool) -> dict:
             "get_dossier pour obtenir un dossier_id valide."
         )
 
-    data = _dossier_field_updates(args)
+    data = _dossier_field_updates(args, allow_clear=True)
     for key in ("title", "sommaire", "forum_type", "forum",
                 "district_judiciaire", "legacy_ref"):
         if key in args:
-            data[key] = _clean_entity_text(str(args[key] or ""), key)
+            data[key] = _clean_entity_text(
+                str(args[key] or ""), key,
+                _SOMMAIRE_MAX if key == "sommaire" else None,
+            )
     if "opened_date" in args:
         when = _write_date(args, "opened_date", required=False)
         if when is not None:
@@ -4687,6 +4809,7 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
         "invoiced": False,
         "created_via": "mcp",
     }
+    _apply_legacy_ref(args, data, "timeentries")
 
     def _entity(doc: dict) -> dict:
         row = {
@@ -4761,6 +4884,7 @@ def _create_expense_impl(args: dict, dry_run: bool) -> dict:
         "invoiced": False,
         "created_via": "mcp",
     }
+    _apply_legacy_ref(args, data, "expenses")
 
     def _entity(doc: dict) -> dict:
         row = {
@@ -4827,7 +4951,14 @@ _COMPLETABLE_FIELDS: dict[str, str] = {
 _ZERO_MEANINGFUL = frozenset({"hourly_rate"})
 
 
-def _coerce_completable(field: str, kind: str, raw: Any, *, allow_zero: bool = False):
+def _coerce_completable(
+    field: str,
+    kind: str,
+    raw: Any,
+    *,
+    allow_zero: bool = False,
+    limit: Optional[int] = None,
+):
     if kind == "date":
         d = _parse_iso_date(str(raw), field)
         return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
@@ -4840,7 +4971,7 @@ def _coerce_completable(field: str, kind: str, raw: Any, *, allow_zero: bool = F
                 + ("positif ou nul." if allow_zero else "positif.")
             )
         return value
-    return _clean_entity_text(str(raw), field)
+    return _clean_entity_text(str(raw), field, limit)
 
 
 def _is_unset(current: Any, default: Any) -> bool:

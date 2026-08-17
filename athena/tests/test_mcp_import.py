@@ -996,7 +996,7 @@ def facture(monkeypatch):
                             "taxable": True}},
         "call": {}, "parties": {"p1": {"id": "p1", "type": "individual",
                                        "last_name": "Tremblay"}},
-        "legacy": {},
+        "legacy": {}, "numeros_pris": set(),
     }
 
     def _create(dossier_id, eids, xids, data, **kw):
@@ -1019,6 +1019,11 @@ def facture(monkeypatch):
     monkeypatch.setattr(handlers.expense_model, "get_expense",
                         lambda i: world["expenses"].get(i))
     monkeypatch.setattr(handlers.invoice_model, "create_invoice", _create)
+    # Explicite : sans cela le vrai lecteur interroge le MagicMock du client
+    # Firestore, dont l'itération par défaut est vide — les tests passeraient
+    # par accident plutôt que par contrat.
+    monkeypatch.setattr(handlers.invoice_model, "invoice_number_exists",
+                        lambda n: n in world["numeros_pris"])
     monkeypatch.setattr(models, "find_by_legacy_ref",
                         lambda c, r, limit=5: list(world["legacy"].get(r, [])))
     return world
@@ -1170,6 +1175,167 @@ def test_un_refus_du_modele_remonte_tel_quel(facture, monkeypatch):
                                  "correspond pas au total attendu (57000 ¢)"]))
     with pytest.raises(tools.ToolArgumentError, match="ne correspond pas"):
         handlers.import_invoice(_imp(expected_total_cents=57000))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Revue de code du lot — les six constats, chacun épinglé
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_un_bloc_d_adresse_incomplet_n_efface_pas_l_appartement(contacts):
+    """CONSTAT 1. Le bloc était émis en entier avec args.get(k, "") : omettre
+    « unit » et « postal_code » les écrivait vides, donc les EFFAÇAIT à la
+    correction — sur l'adresse à laquelle un client est facturé. Les six clés
+    doivent être PRÉSENTES, pas seulement non vides."""
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "T", "address_unit": "300",
+                            "address_postal_code": "H3B 1A7"}
+    quatre = {"address_street": "1 rue X", "address_city": "Laval",
+              "address_province": "Québec", "address_country": "Canada"}
+    with pytest.raises(tools.ToolArgumentError, match="absente"):
+        handlers.update_partie({"partie_id": "p1", **quatre})
+    assert contacts["updated"] == {}
+
+    # Envoyées vides EXPLICITEMENT, elles s'effacent — c'est une intention.
+    handlers.update_partie({"partie_id": "p1", **quatre,
+                            "address_unit": "", "address_postal_code": ""})
+    assert contacts["updated"]["address_unit"] == ""
+
+
+def test_l_ancre_d_import_est_atteignable_sur_le_temps_et_le_debourse():
+    """CONSTAT 2. find_imported annonce chercher dans timeentries et
+    expenses ; sans legacy_ref sur ces quatre outils, une reprise reprise
+    après 24 h n'y trouvait RIEN et recréait chaque ligne."""
+    for name in ("create_time_entry", "create_expense",
+                 "update_time_entry", "update_expense"):
+        assert "legacy_ref" in tools.TOOLS[name]["input_schema"]["properties"]
+
+
+def test_les_collections_cherchees_sont_celles_qu_on_peut_ancrer():
+    """La cohérence elle-même, dérivée : toute collection que find_imported
+    interroge doit avoir au moins un outil capable d'y poser l'ancre."""
+    ancrables = {
+        coll
+        for name, spec in tools.TOOLS.items()
+        if "legacy_ref" in spec["input_schema"]["properties"]
+        for coll in _collections_written_by(name)
+    }
+    cherchees = {coll for _t, coll in handlers._LEGACY_COLLECTIONS}
+    assert cherchees <= ancrables, cherchees - ancrables
+
+
+def _collections_written_by(tool: str) -> set:
+    return {
+        "create_partie": {"parties"}, "update_partie": {"parties"},
+        "create_dossier": {"dossiers"}, "update_dossier": {"dossiers"},
+        "create_time_entry": {"timeentries"},
+        "update_time_entry": {"timeentries"},
+        "create_expense": {"expenses"}, "update_expense": {"expenses"},
+        "import_invoice": {"invoices"},
+    }.get(tool, set())
+
+
+def test_l_audit_se_tait_quand_les_sources_sont_illisibles(audit):
+    """CONSTAT 3. list_*_page échoue OUVERT à ([], None) : une panne
+    Firestore était indiscernable de « ce dossier n'a aucun travail », et
+    tous les postes de toutes les factures passaient alors pour orphelins —
+    des manquements fabriqués contre une reprise parfaitement saine."""
+    audit["entries"] = []          # la « panne »
+    audit["expenses"] = []
+    audit["invoices"] = [{"id": "i1", "invoice_number": "2019-F014",
+                          "status": "payée", "subtotal": 45000,
+                          "total": 45000}]
+    audit["line_items"] = {"i1": [{"id": "li1", "source_id": "e1",
+                                   "amount": 45000}]}
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    codes = {f["code"] for f in payload["findings"]}
+    assert "IMP-03" not in codes and "IMP-06" not in codes
+    assert payload["checks_skipped"] == ["IMP-03", "IMP-06"]
+
+
+def test_l_audit_ne_se_tait_pas_sur_une_facture_sans_source_citee(audit):
+    """Le garde ne doit pas devenir un silence général : une facture dont
+    AUCUN poste ne cite de source (rien qu'un ajustement) n'est pas une
+    lecture ratée."""
+    audit["invoices"] = [{"id": "i1", "invoice_number": "F1",
+                          "status": "payée", "subtotal": -5000,
+                          "total": -5000}]
+    audit["line_items"] = {"i1": [{"id": "li1", "source_id": "",
+                                   "amount": -5000}]}
+    payload = handlers.get_import_audit({"dossier_id": "d1"})
+    assert payload["checks_skipped"] == []
+
+
+def test_la_simulation_refuse_un_numero_deja_pris(facture):
+    """CONSTAT 4. La branche sèche ne rejouait ni la validation du numéro ni
+    le contrôle d'unicité : elle annonçait « created: true » pour un numéro
+    que l'appel réel refuse — le refus le plus probable d'une reprise
+    relancée."""
+    facture["numeros_pris"].add("2019-F014")
+    with pytest.raises(tools.ToolArgumentError, match="existe déjà"):
+        handlers.import_invoice(_imp(dry_run=True))
+    # …et l'appel réel le refuse identiquement.
+    with pytest.raises(tools.ToolArgumentError, match="existe déjà"):
+        handlers.import_invoice(_imp())
+    assert facture["call"] == {}
+
+
+def test_la_simulation_refuse_le_millesime_courant(facture):
+    from utils.deadlines import today_mtl
+
+    annee = today_mtl().strftime("%Y")
+    with pytest.raises(tools.ToolArgumentError, match="millésime en cours"):
+        handlers.import_invoice(_imp(invoice_number=f"{annee}-F031",
+                                     dry_run=True))
+
+
+def test_la_simulation_refuse_une_source_en_double(facture):
+    with pytest.raises(tools.ToolArgumentError, match="double"):
+        handlers.import_invoice(_imp(time_entry_ids=["e1", "e1"],
+                                     dry_run=True))
+
+
+def test_update_dossier_vide_un_champ_texte_au_lieu_de_l_ignorer(dossiers):
+    """CONSTAT 5. « » était SAUTÉ, donc update_dossier rendait
+    « updated: true » sans avoir rien fait du champ — alors qu'il sait vider
+    title et sommaire. Un no-op silencieux sur un outil de remplacement."""
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif", "fee_notes": "ancienne note"}
+    handlers.update_dossier({"dossier_id": "d1", "fee_notes": ""})
+    assert dossiers["updated"]["fee_notes"] == ""
+
+
+def test_update_dossier_refuse_de_vider_ce_qu_il_ne_sait_pas_vider(dossiers):
+    """Une date ou un montant dont la forme vide est None ou une valeur
+    dérivée : refuser est honnête, ignorer ne l'était pas."""
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif"}
+    for champ in ("droit_action_date", "valeur", "hourly_rate"):
+        with pytest.raises(tools.ToolArgumentError, match="ne peut pas être vidé"):
+            handlers.update_dossier({"dossier_id": "d1", champ: ""})
+
+
+def test_complete_dossier_continue_d_ignorer_un_vide(dossiers):
+    """L'autre moitié du contrat : complete_dossier REMPLIT ce qui est vide,
+    donc une valeur vide n'y est rien à faire, pas une instruction."""
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif"}
+    with pytest.raises(tools.ToolArgumentError, match="Aucun champ"):
+        handlers.complete_dossier({"dossier_id": "d1", "fee_notes": ""})
+
+
+def test_le_sommaire_voyage_a_son_vrai_plafond(dossiers):
+    """CONSTAT 6. Le schéma annonçait 5000 (ce que le modèle stocke) et le
+    gestionnaire refusait au-delà de 2000, avec un message citant une limite
+    qui ne s'applique pas à ce champ."""
+    for name in ("create_dossier", "update_dossier", "complete_dossier"):
+        props = tools.TOOLS[name]["input_schema"]["properties"]
+        assert props["sommaire"]["maxLength"] == 5000, name
+
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "status": "actif"}
+    handlers.update_dossier({"dossier_id": "d1", "sommaire": "x" * 4000})
+    assert len(dossiers["updated"]["sommaire"]) == 4000
 
 
 def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
