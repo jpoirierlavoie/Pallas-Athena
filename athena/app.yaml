@@ -58,16 +58,27 @@ env_variables:
   # screen keeps working — and would silently reach the new tools the moment
   # they deploy, under a screen that never described them.
   #
-  # >>> IT IS ARMED RIGHT NOW, ON PURPOSE. <<<
-  # Lot Q (43 tools, 17 writes) ships with it "false" so that merging the lot
-  # lands the new surface DEAD rather than reachable by the token in force.
-  # Restore it to "true" ONLY after: (1) removing the connector in claude.ai,
-  # (2) python -m scripts.revoke_mcp_tokens, (3) re-adding it and ticking
-  # « Autoriser les écritures » on the rewritten consent screen.
-  # Until then EVERY write tool is refused — including create_note and
-  # create_task, so the 07:00 and 17:00 scheduled jobs read but cannot write.
-  # That is the deliberate cost of closing the window; reads are untouched.
-  MCP_WRITE_ENABLED: "false"
+  # ARM IT ("false") BEFORE deploying a lot that WIDENS the write surface.
+  # A scope is frozen at issuance, so a token granted under an older consent
+  # screen keeps working and would silently reach the new tools the moment
+  # they deploy, under a screen that never described them.
+  #
+  # THE ORDER IS NOT OBVIOUS, AND GETTING IT WRONG COSTS A ROUND TRIP.
+  # This switch does DOUBLE DUTY: it refuses the write tools, and it also
+  # sets `write_offered` (mcp/oauth.py), which gates BOTH the « Écritures »
+  # block and the « Autoriser les écritures » checkbox in
+  # templates/mcp/consent.html. While it is armed the consent screen shows
+  # no write section at all — so re-consenting under it silently yields a
+  # READ-ONLY grant. That happened on 2026-08-17 during lot Q.
+  #
+  #   1. arm ("false") + deploy the widening lot  → new tools land dead
+  #   2. revoke every token (scripts.revoke_mcp_tokens) → nothing holds a grant
+  #   3. DISARM ("true") + deploy  → the checkbox comes back
+  #   4. only now: re-add the connector in claude.ai and tick the box
+  #
+  # Step 3 before step 4 is the part that is easy to get backwards. It is
+  # safe because step 2 already left no token to escalate.
+  MCP_WRITE_ENABLED: "true"
   # Cloud Trace resource labels (instance, zone, service). Since OTel SDK
   # 1.42 (PR #5145) resource detectors are loaded ONLY when this is set —
   # Google's migration guide still claims the GCP detector is picked up
