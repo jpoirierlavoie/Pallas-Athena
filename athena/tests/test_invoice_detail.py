@@ -266,8 +266,12 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
 
     L'ensemble est nomme plutot que la portee relachee : un script a lancer a
     la main est un appelant legitime, mais il doit etre DECIDE, pas decouvert.
-    Le seul admis remet a zero les paiements saisis avant que la comptabilite
-    ne devienne l'unique ecrivain — il en efface, il n'en cree aucun."""
+
+    Les deux admis sont des outils de reprise, et leur coexistence est sure
+    parce qu'ils sont IDEMPOTENTS et convergent : la purge remet a zero tout
+    montant que le grand livre n'adosse pas ; la reprise inscrit l'ecriture
+    manquante puis re-projette le paiement. Dans un ordre comme dans l'autre,
+    le second trouve le travail du premier deja fait et ne le defait pas."""
     import pathlib
 
     racine = pathlib.Path(__file__).resolve().parent.parent
@@ -282,6 +286,7 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
     assert appelants == {
         "admin_ledger.py",
         "purge_encaissements_factures.py",
+        "reprise_encaissements.py",
     }, appelants
 
 

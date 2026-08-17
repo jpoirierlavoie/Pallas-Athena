@@ -28,6 +28,17 @@ whole job and carries 19 tests:
 The list is printed BEFORE any write and again after, because it is the only
 record of what has to be re-entered.
 
+**Relation with ``reprise_encaissements``.** That script books the ledger
+entry a fee transfer out of trust should have produced, and un-pays only the
+invoices it is about to credit. This one is the wider, permanent hygiene
+tool: it clears ANY recorded amount the register does not back — including
+the receipts that never came from trust and that no automated source can
+reconstruct. The two are idempotent and converge, so either order is safe:
+whichever runs second finds the first's work done and does not undo it. Since
+2026-08-17 an unbacked ``amount_paid`` is by definition wrong (check 8 of
+``verify_admin_integrity`` treats it as an error), so this script keeps a job
+after the historical reprise is over.
+
     python -m scripts.purge_encaissements_factures            # dry-run
     python -m scripts.purge_encaissements_factures --apply    # write
 """
