@@ -102,6 +102,13 @@ def _render(**over) -> str:
         "gst_rate_display": format_rate_fr(invoice["gst_rate"], 100),
         "qst_rate_display": format_rate_fr(invoice["qst_rate"], 1000),
         "status_labels": {"envoyée": "Envoyée", "payée": "Payée"},
+        # Sans cette cle, Jinja leve a l'iteration d'un Undefined et
+        # TOUS les tests du fichier tombent, pas seulement ceux du bloc.
+        "paiements": [],
+        "method_labels": {"virement": "Virement", "cheque": "Chèque"},
+        "tx_status_labels": {"compensée": "Compensée",
+                             "en_circulation": "En circulation",
+                             "annulée": "Annulée"},
         "return_to": "",
     }
     ctx.update(over)
@@ -154,9 +161,44 @@ def test_balance_is_labelled_solde_and_amount_due_never_is():
     assert format_cents_fr(0) in html
 
 
-def test_payment_form_present_when_issued_absent_on_draft():
-    assert "Encaissement" in _render()
-    assert "Encaissement" not in _render(invoice={"status": "brouillon"})
+def test_the_payment_form_is_gone_and_the_sheet_only_reports():
+    """Le formulaire d'encaissement datait du lot P et precedait le module de
+    comptabilite : c'etait un second ecrivain de amount_paid, invisible au
+    grand livre. La fiche RAPPORTE desormais, elle n'accepte plus."""
+    html = _render()
+    assert "Encaissement" not in html
+    assert "invoice_record_payment" not in html
+    assert "Paiements" in html
+
+
+def test_the_empty_state_says_where_a_payment_is_recorded():
+    """Un blanc laisserait le juriste chercher le formulaire disparu."""
+    html = _render()
+    assert "Aucun paiement inscrit en comptabilité" in html
+    assert "Administration" in html
+
+
+def test_a_draft_is_not_told_to_go_and_record_a_payment():
+    html = _render(invoice={"status": "brouillon"})
+    assert "Aucun paiement inscrit en comptabilité" in html
+    assert "Administration" not in html
+
+
+def test_the_block_lists_entries_and_keeps_the_reversed_ones():
+    """Cacher une contre-passation laisserait le mouvement du solde sans
+    explication — c'est pourquoi list_invoice_receipts les garde."""
+    html = _render(paiements=[
+        {"id": "t1", "date": datetime(2026, 8, 3, tzinfo=timezone.utc),
+         "method": "virement", "reference": "VIR-9", "amount": 174347,
+         "status": "compensée", "reversed_by_id": ""},
+        {"id": "t2", "date": datetime(2026, 8, 9, tzinfo=timezone.utc),
+         "method": "cheque", "reference": "CHQ-4", "amount": 50000,
+         "status": "annulée", "reversed_by_id": "t3"},
+    ])
+    assert "VIR-9" in html and "CHQ-4" in html
+    assert "Virement" in html and "Chèque" in html
+    assert "contre-passée" in html
+    assert format_cents_fr(174347) in html
 
 
 def test_word_button_is_the_client_document_path():
@@ -197,3 +239,37 @@ def test_route_context_carries_no_firm_block():
 
     assert "firm" not in invoices_routes._template_context()
     assert not hasattr(invoices_routes, "_firm_info")
+
+
+def test_the_payment_endpoint_no_longer_exists():
+    """Le gabarit ne le pointe plus, mais une route survivante resterait
+    atteignable par un signet ou un POST forge — et redeviendrait un second
+    ecrivain de amount_paid, invisible au grand livre."""
+    from flask import Flask
+
+    from routes import invoices as invoices_routes
+
+    app = Flask(__name__)
+    app.register_blueprint(invoices_routes.invoices_bp)
+    regles = [str(r) for r in app.url_map.iter_rules()]
+    assert not any("paiement" in r for r in regles), regles
+    assert not hasattr(invoices_routes, "invoice_record_payment")
+
+
+def test_the_accounting_module_is_the_only_writer_of_a_payment():
+    """record_payment garde sa place — mais routes/admin_ledger en est
+    desormais le SEUL appelant de production. Un balayage de source, faute de
+    quoi un futur formulaire pourrait le rebrancher sans que rien ne le dise
+    (le patron de test_comptabilite.test_la_route_est_en_lecture_seule)."""
+    import pathlib
+
+    racine = pathlib.Path(__file__).resolve().parent.parent
+    appelants = set()
+    for chemin in list((racine / "routes").glob("*.py")) + \
+            list((racine / "models").glob("*.py")) + \
+            list((racine / "mcp").glob("*.py")) + \
+            list((racine / "scripts").glob("*.py")):
+        texte = chemin.read_text(encoding="utf-8")
+        if "record_payment(" in texte and chemin.name != "invoice.py":
+            appelants.add(chemin.name)
+    assert appelants == {"admin_ledger.py"}, appelants

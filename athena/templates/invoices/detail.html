@@ -303,55 +303,54 @@
     </dl>
   </div>
 
-  {# ── Encaissement ──────────────────────────────────────────── #}
-  {# Issuing an invoice and recording a payment stay the lawyer's own acts,
-     posted here. No MCP connector tool writes a payment. #}
-  {% if invoice.status not in ('brouillon', 'annulée') %}
-  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-    <h2 class="text-sm font-semibold text-gray-900 mb-2">Encaissement</h2>
-    {% if request.args.get('erreur') == 'montant' %}
-    <p class="text-sm text-red-600 mb-2">Montant invalide.</p>
-    {% elif request.args.get('erreur') == 'date' %}
-    <p class="text-sm text-red-600 mb-2">Date invalide.</p>
-    {% elif request.args.get('erreur') == 'paiement' %}
-    <p class="text-sm text-red-600 mb-2">
-      Encaissement refusé (montant supérieur au total, ou facture non
-      éligible).
-    </p>
-    {% elif request.args.get('message') == 'paiement' %}
-    <p class="text-sm text-green-700 mb-2">Encaissement enregistré.</p>
+  {# ── Paiements ─────────────────────────────────────────────── #}
+  {# LECTURE SEULE. Un paiement s'inscrit dans « Administration » et nulle
+     part ailleurs : le grand livre est l'unique écrivain de amount_paid, et
+     cette fiche RAPPORTE au lieu d'accepter. Le formulaire d'encaissement
+     qui vivait ici datait du lot P et précédait le module de comptabilité —
+     c'était un second écrivain, invisible au registre. #}
+  <h2 class="text-sm font-semibold text-gray-900 mb-2">Paiements</h2>
+  {% if paiements %}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-x-auto mb-4">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
+          <th class="px-3 py-2 font-medium">Date</th>
+          <th class="px-3 py-2 font-medium">Mode</th>
+          <th class="px-3 py-2 font-medium">Référence</th>
+          <th class="px-3 py-2 font-medium">État</th>
+          <th class="px-3 py-2 font-medium text-right">Montant</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for p in paiements %}
+        <tr class="hover:bg-gray-50">
+          <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ p.date.strftime('%Y-%m-%d') if p.date and p.date.strftime is defined else '—' }}</td>
+          <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ method_labels.get(p.method, p.method or '—') }}</td>
+          <td class="px-3 py-2 text-gray-900">
+            <a href="{{ url_for('admin_ledger.entry_detail', tx_id=p.id) }}"
+               class="text-indigo-600 hover:underline font-medium">{{ p.reference or "Voir l'écriture" }}</a>
+          </td>
+          {# Les contre-passées et les annulées RESTENT affichées : cacher une
+             correction laisserait le mouvement du solde sans explication. #}
+          <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ tx_status_labels.get(p.status, p.status or '—') }}{% if p.reversed_by_id %} · contre-passée{% endif %}</td>
+          <td class="px-3 py-2 text-right whitespace-nowrap text-gray-900">{{ p.amount | cents_fr }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm mb-4">
+    Aucun paiement inscrit en comptabilité pour cette facture.
+    {% if invoice.status not in ('brouillon', 'annulée') %}
+    <span class="block mt-2">
+      Un encaissement se saisit dans
+      <a href="{{ url_for('admin_ledger.entry_new') }}"
+         class="text-indigo-600 hover:underline font-medium">Administration</a>,
+      en choisissant cette facture dans la liste.
+    </span>
     {% endif %}
-    <form method="post"
-          action="{{ url_for('invoices.invoice_record_payment', invoice_id=invoice.id) }}"
-          class="flex flex-wrap items-end gap-3">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div>
-        <label for="amount_paid" class="block text-xs text-gray-500 mb-1">
-          Montant encaissé ($)
-        </label>
-        <input type="text" inputmode="decimal" id="amount_paid" name="amount_paid"
-               value="{{ '%.2f'|format(invoice.amount_paid / 100) if invoice.amount_paid else '' }}"
-               placeholder="0,00"
-               class="w-24 px-3 py-2 text-sm border border-gray-300 rounded-lg">
-      </div>
-      <div>
-        <label for="paid_date" class="block text-xs text-gray-500 mb-1">
-          Date du paiement
-        </label>
-        <input type="date" id="paid_date" name="paid_date"
-               value="{{ invoice.paid_date.strftime('%Y-%m-%d') if invoice.paid_date else '' }}"
-               class="px-3 py-2 text-sm border border-gray-300 rounded-lg">
-      </div>
-      <button type="submit"
-              class="px-3 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
-        Enregistrer
-      </button>
-    </form>
-    <p class="text-xs text-gray-500 mt-2">
-      Un solde ramené à zéro fait passer la facture à « payée ». Corriger le
-      montant à la baisse annule cette bascule ; saisir 0 efface
-      l'encaissement.
-    </p>
   </div>
   {% endif %}
 

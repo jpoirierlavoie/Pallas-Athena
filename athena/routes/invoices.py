@@ -20,7 +20,7 @@ from auth import login_required
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import safe_internal_redirect
 from config import Config
-from utils.format_fr import format_rate_fr, parse_cents_fr
+from utils.format_fr import format_rate_fr
 from models.invoice import (
     STATUS_LABELS,
     STATUS_TRANSITIONS,
@@ -34,9 +34,13 @@ from models.invoice import (
     list_invoices,
     list_invoices_page,
     list_line_items,
-    record_payment,
     update_status,
     void_invoice,
+)
+from models.admin_ledger import (
+    METHOD_LABELS,
+    TX_STATUS_LABELS,
+    list_invoice_receipts,
 )
 from models.audit_event import record_deletion
 from models.dossier import get_dossier, list_dossiers
@@ -390,6 +394,13 @@ def invoice_detail(invoice_id: str) -> str:
         # under a different rate must read back under that rate.
         gst_rate_display=format_rate_fr(invoice.get("gst_rate") or 0, 100),
         qst_rate_display=format_rate_fr(invoice.get("qst_rate") or 0, 1000),
+        # The accounting entries imputed on this invoice. READ-ONLY: a payment
+        # is recorded in « Administration » and nowhere else, so this sheet
+        # reports rather than accepts. Fails open to [] — a display aid must
+        # not take the page down.
+        paiements=list_invoice_receipts(invoice_id),
+        method_labels=METHOD_LABELS,
+        tx_status_labels=TX_STATUS_LABELS,
         return_to=request.args.get("return_to", ""),
     )
     return render_template("invoices/detail.html", **ctx)
@@ -568,40 +579,6 @@ def invoice_update_status(invoice_id: str) -> str:
         resp.headers["HX-Redirect"] = target
         return resp
     return redirect(target)
-
-
-@invoices_bp.route("/<invoice_id>/paiement", methods=["POST"])
-@login_required
-def invoice_record_payment(invoice_id: str) -> str:
-    """Record (or correct) the amount received on an invoice.
-
-    Issuing an invoice and acknowledging a payment are the lawyer's own
-    acts, posed here in the application — no MCP tool writes a payment.
-    """
-    raw_amount = (request.form.get("amount_paid") or "").strip()
-    raw_date = (request.form.get("paid_date") or "").strip()
-    target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
-
-    # Entered in dollars fr-CA, stored in cents — never a float in between.
-    try:
-        cents = parse_cents_fr(raw_amount)
-    except ValueError:
-        return redirect(f"{target}?erreur=montant")
-
-    paid_date = None
-    if raw_date:
-        try:
-            parsed = datetime.strptime(raw_date, "%Y-%m-%d")
-            # Date-only at midnight UTC — the house convention for a day
-            # the user typed, so it is never shifted by a timezone.
-            paid_date = parsed.replace(tzinfo=timezone.utc)
-        except ValueError:
-            return redirect(f"{target}?erreur=date")
-
-    _, errors = record_payment(invoice_id, cents, paid_date)
-    if errors:
-        return redirect(f"{target}?erreur=paiement")
-    return redirect(f"{target}?message=paiement")
 
 
 @invoices_bp.route("/<invoice_id>/void", methods=["POST"])
