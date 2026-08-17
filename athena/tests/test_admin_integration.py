@@ -275,7 +275,7 @@ def _virement(**over):
 
 def test_creer_recette_administration_invoice_backed(monkeypatch):
     created = {}
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: [{"id": "ops1"}])
+    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
 
     def _ct(data):
         created.update(data)
@@ -293,7 +293,7 @@ def test_creer_recette_administration_invoice_backed(monkeypatch):
 
 def test_creer_recette_administration_external_ref(monkeypatch):
     created = {}
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: [{"id": "ops1"}])
+    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
 
     def _ct(data):
         created.update(data)
@@ -308,12 +308,12 @@ def test_creer_recette_administration_external_ref(monkeypatch):
 
 
 def test_creer_recette_refuses_an_unknown_admin_account(monkeypatch):
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: [{"id": "ops1"}])
+    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
     assert rt._creer_recette_administration(_virement(), "forgé") is False
 
 
 def test_creer_recette_failure_is_a_banner_never_an_exception(monkeypatch):
-    monkeypatch.setattr(rt, "_comptes_administration", lambda: [{"id": "ops1"}])
+    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
     monkeypatch.setattr(al, "create_transaction",
                         lambda data: (None, ["Compte d'administration introuvable."]))
     assert rt._creer_recette_administration(_virement(), "ops1") is False
@@ -406,7 +406,24 @@ def test_form_has_csrf_and_the_ventilation_target():
 def test_trust_form_offers_the_admin_account_select():
     src = _template("trust/form.html")
     assert 'name="admin_account_id"' in src
-    assert "Aucune (saisie manuelle)" in src
+    # D-4 (2026-08-17) : « Aucune (saisie manuelle) » a disparu. C'était le
+    # chemin par lequel un paiement d'honoraires sortait du fidéicommis sans
+    # écriture comptable — et la saisie manuelle promise n'avait rien pour la
+    # rappeler. La garde vit dans la route ; l'option retirée évite de la
+    # heurter par inadvertance.
+    assert "Aucune (saisie manuelle)" not in src
+
+
+def test_trust_form_tells_an_outage_from_an_absence():
+    """Doctrine du hub Comptabilité : un état vide pendant une panne invite à
+    ouvrir un compte en double. Les deux branches doivent donc être là, et
+    seule celle de l'absence porte le lien de création."""
+    src = _template("trust/form.html")
+    assert "{% elif admin_lisible %}" in src
+    assert "indisponibles" in src
+    creation = src.index("admin_ledger.account_new")
+    panne = src.index("indisponibles")
+    assert creation < panne, "le lien « ouvrir un compte » a glissé dans la panne"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -541,3 +558,122 @@ def test_rendu_edit_survit_a_une_apostrophe_dans_le_titre(web_rendu, monkeypatch
     html = web_rendu.get("/administration/t1/modifier").get_data(as_text=True)
     assert "dossierDisplay: &quot;2026-004 — Succession de L'Heureux&quot;" in html
     assert "dossierDisplay: '" not in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D-4 : un paiement d'honoraires NOMME son compte d'administration
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture()
+def web_trust():
+    """Le blueprint fidéicommis seul. Le rendu du gabarit est bouchonné (il
+    exige base.html, admin_bp pour ses url_for, et tout le contexte de la
+    fiche) : ce qui est mis à l'épreuve ici est la garde, pas la page."""
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["TESTING"] = True
+    app.register_blueprint(rt.trust_bp)
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["user_id"] = "u1"
+        s["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
+    return client
+
+
+def _form_virement(**over) -> dict:
+    payload = {
+        "account_id": "acc1", "direction": "déboursé", "amount": "600,00",
+        "purpose": "virement_honoraires", "method": "virement",
+        "counterparty": "Cabinet", "dossier_id": "dos1", "client_id": "cli1",
+        "date": "2026-07-10", "admin_account_id": "ops1",
+    }
+    payload.update(over)
+    return payload
+
+
+def _bouchonner_rendu(monkeypatch):
+    """Rend les erreurs en texte brut — le gabarit n'est pas le sujet."""
+    monkeypatch.setattr(
+        rt, "render_template",
+        lambda _tpl, **ctx: " | ".join(ctx.get("errors") or []),
+    )
+    monkeypatch.setattr(rt.trust, "list_accounts", lambda **kw: [])
+    monkeypatch.setattr(rt, "get_dossier", lambda _d: None)
+    monkeypatch.setattr(rt, "_factures_emises", lambda _d=None: [])
+    monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
+
+
+def test_un_paiement_dhonoraires_sans_compte_est_refuse_avant_toute_ecriture(
+    web_trust, monkeypatch
+):
+    """Sans compte d'administration, les fonds quittent le fidéicommis sans la
+    moindre écriture comptable et sans rien inscrire sur la facture — les trois
+    virements perdus de juillet 2026. Le refus tombe AVANT create_transaction,
+    sinon le registre porterait un mouvement que rien ne compense."""
+    _bouchonner_rendu(monkeypatch)
+    appels = []
+    monkeypatch.setattr(rt.trust, "create_transaction",
+                        lambda d: appels.append(d) or ({"id": "t1"}, []))
+
+    resp = web_trust.post("/fideicommis/", data=_form_virement(admin_account_id=""))
+
+    assert resp.status_code == 400
+    assert appels == []          # RIEN n'a été écrit au registre
+    assert "compte d'administration" in resp.get_data(as_text=True)
+
+
+def test_la_garde_ne_vise_que_le_paiement_dhonoraires(web_trust, monkeypatch):
+    """Une provision, un déboursé à un tiers : aucun compte d'administration
+    n'entre en jeu, et exiger le champ bloquerait des saisies légitimes."""
+    _bouchonner_rendu(monkeypatch)
+    appels = []
+
+    def _ct(data):
+        appels.append(data)
+        return {"id": "t1", **data}, []
+    monkeypatch.setattr(rt.trust, "create_transaction", _ct)
+    monkeypatch.setattr(rt, "_creer_recette_administration",
+                        lambda *a, **k: pytest.fail("aucune recette attendue"))
+
+    resp = web_trust.post("/fideicommis/", data=_form_virement(
+        purpose="provision", direction="recette", admin_account_id=""))
+
+    assert resp.status_code == 302
+    assert len(appels) == 1
+
+
+def test_avec_un_compte_le_comportement_reste_celui_du_13_aout(
+    web_trust, monkeypatch
+):
+    """La recette automatique était déjà là — D-4 ne change que son caractère
+    facultatif. Le chemin nominal doit rester octet pour octet le même."""
+    _bouchonner_rendu(monkeypatch)
+    monkeypatch.setattr(rt.trust, "create_transaction",
+                        lambda d: ({"id": "t1", **d}, []))
+    recus = {}
+    monkeypatch.setattr(
+        rt, "_creer_recette_administration",
+        lambda entry, compte: recus.update(entry=entry, compte=compte) or True,
+    )
+
+    resp = web_trust.post("/fideicommis/", data=_form_virement())
+
+    assert resp.status_code == 302
+    assert "avertissement" not in resp.headers["Location"]
+    assert recus["compte"] == "ops1"
+
+
+def test_un_echec_de_la_recette_reste_une_banniere(web_trust, monkeypatch):
+    """Le virement est COMMIS quand la recette échoue : le bloquer serait pire
+    (les fonds du client resteraient immobilisés sur une panne du module
+    comptable). L'avertissement reste la seule réponse correcte."""
+    _bouchonner_rendu(monkeypatch)
+    monkeypatch.setattr(rt.trust, "create_transaction",
+                        lambda d: ({"id": "t1", **d}, []))
+    monkeypatch.setattr(rt, "_creer_recette_administration", lambda *a: False)
+
+    resp = web_trust.post("/fideicommis/", data=_form_virement())
+
+    assert resp.status_code == 302
+    assert "avertissement=administration" in resp.headers["Location"]

@@ -175,21 +175,27 @@
       </div>
       <p class="text-xs text-gray-500">Une facture antérieure (hors Pallas Athéna) n'est pas vérifiée automatiquement — seul son numéro est consigné.</p>
 
-      {# Recette automatique au compte d'administration (décision 2026-08-13) :
-         le virement crée l'écriture recette correspondante — et, pour une
-         facture Athéna, met à jour son montant encaissé. « Aucune » = saisie
-         manuelle au registre d'administration. #}
+      {# Recette automatique au compte d'administration (décision 2026-08-13),
+         devenue OBLIGATOIRE le 2026-08-17 : le virement crée l'écriture
+         recette correspondante — et, pour une facture Athéna, met à jour son
+         montant encaissé. L'option « Aucune » a disparu parce qu'elle sortait
+         les fonds du fidéicommis sans laisser AUCUNE trace comptable ; c'est
+         par elle que les trois virements de juillet 2026 se sont perdus. La
+         garde vit dans la route — ce champ ne fait que la refléter. #}
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Compte d'administration <span class="text-gray-400 font-normal">(recette automatique)</span></label>
         {% if admin_accounts %}
         <select name="admin_account_id" class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
           {% for a in admin_accounts %}
-          <option value="{{ a.id }}">{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
+          <option value="{{ a.id }}" {% if a.id == admin_account_id %}selected{% endif %}>{{ a.name }}{% if a.account_number_last4 %} (…{{ a.account_number_last4 }}){% endif %}</option>
           {% endfor %}
-          <option value="">— Aucune (saisie manuelle)</option>
         </select>
+        {% elif admin_lisible %}
+        <p class="text-xs text-amber-600">Aucun compte d'opérations actif — un paiement d'honoraires doit se déposer quelque part. Ouvrez un compte au <a href="{{ url_for('admin_ledger.account_new') }}" class="text-indigo-600 hover:underline">registre d'administration</a> avant de continuer.</p>
         {% else %}
-        <p class="text-xs text-gray-500">Aucun compte d'opérations actif — inscrivez la recette manuellement au <a href="{{ url_for('admin_ledger.journal') }}" class="text-indigo-600 hover:underline">registre d'administration</a>.</p>
+        {# Panne de lecture, PAS une absence de compte : surtout aucune
+           invitation à en créer un — ce serait un doublon. #}
+        <p class="text-xs text-amber-600">Comptes d'administration indisponibles pour le moment. Réessayez dans un instant : un paiement d'honoraires ne peut pas s'inscrire sans son compte.</p>
         {% endif %}
       </div>
     </div>

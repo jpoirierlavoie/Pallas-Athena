@@ -344,21 +344,27 @@ def _factures_emises(dossier_id) -> list[dict]:
     return out
 
 
-def _comptes_administration() -> list[dict]:
+def _comptes_administration() -> tuple[list[dict], bool]:
     """Active OPERATIONS accounts for the auto-recette select (décision
     utilisateur 2026-08-13 : un paiement d'honoraires crée automatiquement la
-    recette au compte d'administration). Fails OPEN to [] — the fee transfer
-    must never depend on the admin module's health."""
+    recette au compte d'administration ; le compte est REQUIS depuis le
+    2026-08-17).
+
+    Rend ``(comptes, lisible)``. La liste échoue OPEN à ``[]`` — mais le
+    second membre distingue « aucun compte » d'« illisible », et le gabarit
+    en a besoin : la doctrine du hub Comptabilité veut qu'une panne affiche
+    « indisponibles » SANS invitation à créer un compte, un état vide pendant
+    une panne invitant à en ouvrir un en double."""
     try:
         from models import admin_ledger
 
         return [
             a for a in admin_ledger.list_accounts(status="actif")
             if a.get("account_type") == "opérations"
-        ]
+        ], True
     except Exception:
         log_unexpected("trust: admin accounts read failed")
-        return []
+        return [], False
 
 
 def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
@@ -372,7 +378,8 @@ def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
     from models import admin_ledger
     from routes.admin_ledger import _projeter_paiement
 
-    if not any(a["id"] == admin_account_id for a in _comptes_administration()):
+    comptes, _lisible = _comptes_administration()
+    if not any(a["id"] == admin_account_id for a in comptes):
         return False
     invoice_id = entry.get("invoice_id") or None
     description = (
@@ -426,11 +433,13 @@ def entry_new():
     dossier_id = request.args.get("dossier_id", "").strip() or None
     locked = request.args.get("locked") == "1"
     dossier = get_dossier(dossier_id) if dossier_id else None
+    admin_accounts, admin_lisible = _comptes_administration()
     return render_template(
         "trust/form.html", accounts=accounts, entry=None, dossier=dossier,
         locked=locked, errors=[],
         factures=_factures_emises(dossier["id"] if dossier else None),
-        admin_accounts=_comptes_administration(),
+        admin_accounts=admin_accounts, admin_lisible=admin_lisible,
+        admin_account_id="",
         **_labels(),
     )
 
@@ -443,22 +452,34 @@ def entry_create():
     if data.get("purpose") == "correction":
         data["purpose"] = ""
     errors = _resolve_invoice_number(data)
+    admin_account_id = request.form.get("admin_account_id", "").strip()
+    # D-4 (2026-08-17) : un paiement d'honoraires NOMME son compte
+    # d'administration. Sans lui, les fonds quittent le fidéicommis sans la
+    # moindre écriture comptable et sans rien inscrire sur la facture — c'est
+    # ce qui est arrivé aux trois virements de juillet 2026. Le refus est ici,
+    # AVANT toute écriture : le formulaire n'est pas une garde.
+    if data.get("purpose") == "virement_honoraires" and not admin_account_id:
+        errors = list(errors) + [
+            "Sélectionnez le compte d'administration où le paiement d'honoraires "
+            "est déposé : la recette correspondante doit être inscrite au registre."
+        ]
     entry = None
     if not errors:
         entry, errors = trust.create_transaction(data)
     if errors:
         accounts = trust.list_accounts(status="actif")
         dossier = get_dossier(data["dossier_id"]) if data.get("dossier_id") else None
+        admin_accounts, admin_lisible = _comptes_administration()
         return render_template(
             "trust/form.html", accounts=accounts, entry=data, dossier=dossier,
             locked=request.form.get("locked") == "1", errors=errors,
             factures=_factures_emises(dossier["id"] if dossier else None),
-            admin_accounts=_comptes_administration(),
+            admin_accounts=admin_accounts, admin_lisible=admin_lisible,
+            admin_account_id=admin_account_id,
             **_labels(),
         ), 400
     params = {}
-    admin_account_id = request.form.get("admin_account_id", "").strip()
-    if data.get("purpose") == "virement_honoraires" and admin_account_id:
+    if data.get("purpose") == "virement_honoraires":
         if not _creer_recette_administration(entry, admin_account_id):
             params["avertissement"] = "administration"
     return redirect(url_for("trust.entry_detail", tx_id=entry["id"], **params))
