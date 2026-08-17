@@ -1144,3 +1144,50 @@ def test_firm_snapshot_display_balances_and_overdue(store):
     assert by_id["carte1"]["balance_label"] == "Solde dû"
     # Never reconciled + no created_at floor → overdue.
     assert snap["reconciliation_overdue"] is True
+
+
+# ── list_by_trust_transaction : la clé d'idempotence de la reprise ──────
+
+
+def test_list_by_trust_transaction_rend_tout_pas_le_premier(store):
+    """find_by_trust_transaction lit deux lignes puis n'en rend qu'une : son
+    .limit(2) détecte le doublon et jette le signal. Une reprise qui décide
+    d'écrire ou non a besoin du signal."""
+    a, _ = al.create_transaction(_encaissement(amount=30000,
+                                              trust_transaction_id="ttx1"))
+    store["invoices"]["fac1"]["amount_paid"] = 30000
+    b, _ = al.create_transaction(_encaissement(amount=20000,
+                                              trust_transaction_id="ttx1"))
+    assert al.find_by_trust_transaction("ttx1")["id"] in (a["id"], b["id"])
+    assert [r["id"] for r in al.list_by_trust_transaction("ttx1")] == [
+        a["id"], b["id"]]
+
+
+def test_list_by_trust_transaction_echoue_FERME(store, monkeypatch):
+    """LA différence avec son voisin, et la raison d'être de la fonction.
+    find_by_trust_transaction échoue OUVERT à None : un hoquet de lecture
+    ferait conclure « rien n'est encore inscrit » et doublerait l'écriture —
+    au rejeu qui suit un incident, précisément. Une écriture d'encaissement
+    étant ensuite verrouillée à jamais, le doublon ne se corrigerait pas."""
+    class _Boom:
+        def collection(self, _name):
+            raise RuntimeError("firestore indisponible")
+
+    monkeypatch.setattr(al, "db", _Boom())
+    assert al.find_by_trust_transaction("ttx1") is None      # avale
+    with pytest.raises(RuntimeError):                        # propage
+        al.list_by_trust_transaction("ttx1")
+
+
+def test_list_by_trust_transaction_est_ordonnee_du_plus_ancien(store):
+    tardif, _ = al.create_transaction(_encaissement(
+        amount=10000, date=_d(2026, 3, 9), trust_transaction_id="ttx1"))
+    store["invoices"]["fac1"]["amount_paid"] = 10000
+    ancien, _ = al.create_transaction(_encaissement(
+        amount=5000, date=_d(2026, 1, 4), trust_transaction_id="ttx1"))
+    assert [r["id"] for r in al.list_by_trust_transaction("ttx1")] == [
+        ancien["id"], tardif["id"]]
+
+
+def test_list_by_trust_transaction_sans_identifiant_ne_requete_pas(store):
+    assert al.list_by_trust_transaction("") == []

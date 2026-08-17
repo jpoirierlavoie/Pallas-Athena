@@ -1781,6 +1781,41 @@ def find_by_trust_transaction(trust_tx_id: str) -> Optional[dict]:
     return rows[0] if rows else None
 
 
+def list_by_trust_transaction(trust_tx_id: str) -> list[dict]:
+    """Toutes les écritures portant ce virement du fidéicommis, ordre stable.
+
+    Le frère fail-CLOSED de :func:`find_by_trust_transaction`, écrit pour la
+    reprise historique du compte d'administration, qui s'en sert de clé
+    d'idempotence — un usage que son voisin ne peut pas servir, pour deux
+    raisons :
+
+    * il échoue **OUVERT** à ``None``. Un hoquet de lecture Firestore ferait
+      donc conclure « rien n'est encore inscrit » et **doublerait** l'écriture
+      — précisément au rejeu qui suit un incident, le moment où une reprise a
+      le plus besoin d'être sûre. Une écriture d'encaissement étant ensuite
+      verrouillée à jamais (``_entry_lock_reason``), le doublon ne se corrige
+      pas depuis l'application ;
+    * sa ``.limit(2)`` lit exactement de quoi détecter un doublon, puis n'en
+      dit rien (``rows[0]``). Une reprise qui décide d'écrire ou non a besoin
+      du signal, pas du premier venu.
+
+    Propage donc l'erreur, la posture de :func:`sum_invoice_receipts` : on
+    impute de l'argent à partir de cette réponse. Tri en Python sur
+    ``(date, sequence)`` — l'égalité simple champ est servie par l'index
+    automatique, y ajouter un ordre exigerait un index composite pour une
+    lecture d'appoint.
+    """
+    if not trust_tx_id:
+        return []
+    q = db.collection(TRANSACTIONS_COLLECTION).where(
+        filter=FieldFilter("trust_transaction_id", "==", trust_tx_id)
+    )
+    rows = [snap.to_dict() or {} for snap in q.stream()]
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    rows.sort(key=lambda r: (r.get("date") or epoch, int(r.get("sequence") or 0)))
+    return rows
+
+
 def sum_invoice_receipts(invoice_id: str) -> int:
     """Σ of ``encaissement_facture`` amounts linked to an invoice whose
     economic effect still stands — the recomputable cumulative behind the
