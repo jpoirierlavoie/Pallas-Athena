@@ -14,17 +14,24 @@ module deliberately does not have (balances are computed at read). Checks:
      lock's ongoing warranty — book_as_of + outstanding − in_transit vs the
      statement, in ledger sign);
   7. compensée ⇒ cleared_date present;
-  8. Σ of non-annulée « encaissement_facture » amounts per invoice == the
-     invoice's recorded ``amount_paid`` (Lot P drift made visible — a
-     mismatch is REPORTED, not an error exit: the invoice's manual payment
-     form is a legitimate second writer).
+  8. ``sum_invoice_receipts`` per invoice == the invoice's recorded
+     ``amount_paid``. This became a PROBLEM on 2026-08-17: the accounting
+     module is the only writer of a payment since the invoice's own form was
+     removed, so a mismatch is no longer explainable and means the operations
+     account is understated by the difference. It was degraded to a mere note
+     while that form existed as a legitimate second writer — the reason five
+     invoices carried 5 397,36 $ that no ledger row ever recorded, and this
+     very check could not see it.
+
+     The sum comes from the MODEL, not from a local reimplementation: the
+     copy that lived here omitted ``reversed_by_id`` and would report a false
+     gap after any contre-passation of a compensée encaissement — the one
+     correction flow the two-step lifecycle exists for.
 
 Run:  python -m scripts.verify_admin_integrity
 """
 
 import sys
-from collections import defaultdict
-
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import admin_ledger as al
@@ -43,7 +50,6 @@ def _account_transactions(account_id: str) -> list[dict]:
 
 def main() -> int:
     problems: list[str] = []
-    notes: list[str] = []
     accounts = al.list_accounts()
     print(f"Comptes d'administration : {len(accounts)}")
 
@@ -117,7 +123,7 @@ def main() -> int:
                     f"écart {variance} cents (le verrou a été contourné ?)"
                 )
 
-    invoice_sums: dict[str, int] = defaultdict(int)
+    invoice_ids: set[str] = set()
     for t in all_txs:
         tid = t.get("id", "?")
         # 2. Ventilation exactness on every déboursé.
@@ -161,12 +167,26 @@ def main() -> int:
                     problems.append(f"écriture {tid}: montants de jambes inégaux")
                 if other.get("direction") == t.get("direction"):
                     problems.append(f"écriture {tid}: jambes de carte de même sens")
-        # 8. Lot P cumulative.
-        if t.get("kind") == "encaissement_facture" and t.get("invoice_id") \
-                and t.get("status") != "annulée":
-            invoice_sums[t["invoice_id"]] += int(t.get("amount", 0))
+        # 8. Lot P cumulative — on ne retient ici que les factures CITÉES par
+        # le registre ; les autres sont balayées plus bas, car une facture
+        # payée SANS écriture est exactement le trou que ce contrôle a manqué.
+        if t.get("kind") == "encaissement_facture" and t.get("invoice_id"):
+            invoice_ids.add(t["invoice_id"])
 
-    for invoice_id, total in invoice_sums.items():
+    # Toute facture portant un montant encaissé entre dans le contrôle, qu'une
+    # écriture la cite ou non : la version antérieure n'examinait que les
+    # factures déjà présentes au registre, si bien qu'un paiement saisi hors
+    # comptabilité — le cas même qu'elle était censée révéler — restait
+    # invisible.
+    try:
+        for snap in db.collection("invoices").stream():
+            inv = snap.to_dict() or {}
+            if int(inv.get("amount_paid", 0)):
+                invoice_ids.add(snap.id)
+    except Exception as exc:
+        problems.append(f"factures: lecture impossible ({exc})")
+
+    for invoice_id in sorted(invoice_ids):
         try:
             snap = db.collection("invoices").document(invoice_id).get()
             inv = snap.to_dict() if snap.exists else None
@@ -175,19 +195,21 @@ def main() -> int:
         if inv is None:
             problems.append(f"facture {invoice_id}: introuvable (encaissements orphelins)")
             continue
+        try:
+            total = al.sum_invoice_receipts(invoice_id)
+        except Exception as exc:
+            problems.append(f"facture {invoice_id}: cumul illisible ({exc})")
+            continue
         recorded = int(inv.get("amount_paid", 0))
         if recorded != total:
-            # NOT an error: the invoice's own payment form is a legitimate
-            # second writer (a payment received into trust, a correction).
-            notes.append(
+            problems.append(
                 f"facture {inv.get('invoice_number', invoice_id)}: encaissements "
-                f"administration {total} ≠ montant encaissé {recorded} — normal "
-                f"si un paiement a été saisi ailleurs; vérifiez sinon."
+                f"administration {total} ≠ montant encaissé {recorded} — la "
+                f"comptabilité est le seul écrivain d'un paiement depuis le "
+                f"2026-08-17; le compte d'opérations est faux de l'écart."
             )
 
     print()
-    for n in notes:
-        print(f"ℹ️  {n}")
     if problems:
         print(f"❌ {len(problems)} écart(s) détecté(s) :")
         for p in problems:

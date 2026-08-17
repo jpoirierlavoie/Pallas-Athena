@@ -12,7 +12,13 @@
 
   {% if avertissement == 'facture' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-    L'écriture est inscrite, mais la facture n'a pas pu être mise à jour — corrigez l'encaissement sur la fiche de la facture.
+    {# Le texte disait « corrigez l'encaissement sur la fiche de la facture » —
+       ce formulaire n'existe plus depuis le 2026-08-17, et c'était le SEUL
+       chemin de réparation annoncé. La comptabilité étant désormais l'unique
+       écrivain d'un paiement, la réparation passe forcément par elle. #}
+    L'écriture est inscrite, mais le montant encaissé de la facture n'a pas pu
+    être mis à jour. Contre-passez cette écriture ci-dessous, puis ressaisissez-la :
+    la facture sera alors imputée correctement.
   </div>
   {% elif avertissement == 'compensation' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
