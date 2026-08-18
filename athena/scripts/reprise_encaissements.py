@@ -424,7 +424,6 @@ def planifier(compte_id: str, lignes: list[dict],
                     f"{format_cents_fr(provision)} déjà imputée — lancez "
                     f"d'abord corriger_provisions_factures.")
                 continue
-            groupes[facture["id"]] += montant
 
         etat, ecriture, motif = _etat(
             tid, facture["id"] if facture else None, montant)
@@ -433,6 +432,14 @@ def planifier(compte_id: str, lignes: list[dict],
             continue
         if etat == "faite":
             continue
+
+        # APRÈS le test d'état, jamais avant. `sum_invoice_receipts` porte
+        # déjà ce qu'une exécution précédente a écrit : compter ici une ligne
+        # « faite » l'additionnerait à elle-même, et le rejeu qui suit un
+        # `--seulement` — la manœuvre même que le lot recommande — se
+        # refuserait tout seul.
+        if facture:
+            groupes[facture["id"]] += montant
 
         actions.append({
             "virement": virement, "facture": facture, "mode": mode,

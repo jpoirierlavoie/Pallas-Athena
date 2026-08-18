@@ -597,3 +597,28 @@ def test_le_total_annonce_est_celui_qui_s_ecrira(monkeypatch, base, capsys):
     assert "2 écriture(s)" in sortie
     assert format_cents_fr(150592) in sortie        # le virement, porté UNE fois
     assert format_cents_fr(301184) not in sortie    # jamais le double
+
+
+def test_un_rejeu_apres_une_application_partielle_ne_se_refuse_pas(
+    monkeypatch, base
+):
+    """LE cas du `--seulement` : on applique un virement, puis on relance pour
+    les autres. La ligne déjà écrite est « faite » et sautée — mais si on
+    l'ajoutait quand même au groupe, elle s'additionnerait à ce que
+    `sum_invoice_receipts` porte déjà, et l'invariant de saturation refuserait
+    tout. C'est arrivé en production sur la reprise réelle."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=135211)],
+                 [_virement("t1", amount=135211)])
+    # L'écriture existe déjà, et le registre la porte.
+    monkeypatch.setattr(rep.al, "list_by_trust_transaction",
+                        lambda t: [{"id": "adm1", "invoice_id": "facA",
+                                    "amount": 135211, "status": "compensée"}])
+    monkeypatch.setattr(rep.al, "sum_invoice_receipts", lambda i: 135211)
+
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": "1 352,11 $"},
+    ], None)
+    assert actions == [], "une ligne déjà faite ne doit rien réécrire"
+    assert refus == [], f"le rejeu s'est refusé lui-même : {refus}"
