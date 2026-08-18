@@ -561,3 +561,39 @@ def test_une_facture_sans_provision_passe_normalement(monkeypatch, base):
          "montant_impute": ""},
     ], None)
     assert refus == [] and len(actions) == 1
+
+
+def test_le_total_annonce_est_celui_qui_s_ecrira(monkeypatch, base, capsys):
+    """Le chiffre du résumé est celui sur lequel le juriste décide d'écrire.
+    Sommer le montant du VIREMENT par action double chaque partage — sur la
+    reprise réelle, 36 562,99 $ annoncés pour 34 343,39 $ réellement portés,
+    soit 2 219,60 $ de trop, la somme exacte des quatre virements partagés."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=135211),
+                  _facture("facB", invoice_number="B", amount_due=15381)],
+                 [_virement("t1", amount=150592)])
+    monkeypatch.setattr(rep.al, "get_account",
+                        lambda i: {"account_type": "opérations", "status": "actif"})
+
+    import csv as _csv
+    import tempfile
+    import os as _os
+    fd, chemin = tempfile.mkstemp(suffix=".csv")
+    _os.close(fd)
+    with open(chemin, "w", encoding="utf-8-sig", newline="") as fh:
+        w = _csv.DictWriter(fh, fieldnames=rep.COLONNES)
+        w.writeheader()
+        for facture, montant in (("A", "1 352,11 $"), ("B", "153,81 $")):
+            w.writerow({"trust_tx_id": "t1", "date": "2026-04-10",
+                        "montant": "1 505,92 $", "reference_citee": "X",
+                        "mode": "encaissement", "facture_numero": facture,
+                        "montant_impute": montant, "note": ""})
+
+    assert rep.main(["--compte", "cpt1", "--verifier", chemin]) == 0
+    sortie = capsys.readouterr().out
+    _os.unlink(chemin)
+
+    from utils.format_fr import format_cents_fr
+    assert "2 écriture(s)" in sortie
+    assert format_cents_fr(150592) in sortie        # le virement, porté UNE fois
+    assert format_cents_fr(301184) not in sortie    # jamais le double

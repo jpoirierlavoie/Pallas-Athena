@@ -594,7 +594,11 @@ def main(argv: list[str]) -> int:
 
     for r in refus:
         print(f"  ✖ {r}")
-    total = sum(int(a["virement"].get("amount", 0)) for a in actions)
+    # Le montant IMPUTÉ, jamais celui du virement : depuis le partage, deux
+    # actions peuvent venir d'un même virement, et sommer le virement par
+    # action le compterait deux fois. Le chiffre annoncé ici est celui sur
+    # lequel le juriste décide d'écrire — il doit être celui qui s'écrira.
+    total = sum(int(a["montant"]) for a in actions)
     print(f"\n{len(actions)} écriture(s) à porter, {format_cents_fr(total)}.")
 
     if refus:
