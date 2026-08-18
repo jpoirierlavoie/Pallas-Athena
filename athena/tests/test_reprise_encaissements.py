@@ -100,16 +100,16 @@ def test_un_numero_porte_par_deux_factures_est_refuse():
     assert "ambigu" in motif
 
 
-def test_un_numero_reattribue_par_l_ancien_systeme_se_trahit_au_dossier():
-    """Le filet qui a servi dès le premier essai : « 250701-01 » se rapproche
-    pour un virement et pas pour deux autres, parce que ceux-là viennent d'un
-    autre dossier."""
+def test_un_dossier_different_n_est_PAS_un_refus():
+    """Ma garde « autre dossier » refusait des rapprochements justes : un
+    client à plusieurs dossiers acquitte depuis l'un la facture d'un autre.
+    Et `create_transaction` prend de toute façon le dossier sur la FACTURE."""
     f = _facture(invoice_number="250701-01", dossier_id="dosA")
     index = rep.indexer_factures([f])
-    _, motif = rep.resoudre(
+    trouvee, motif = rep.resoudre(
         _virement(invoice_external_ref="250701-01", dossier_id="dosB"),
         index, {})
-    assert "autre dossier" in motif
+    assert trouvee is f and motif == ""
 
 
 def test_un_virement_sans_reference_ne_devine_rien():
@@ -243,15 +243,37 @@ def test_seulement_restreint_a_un_virement(base):
 
 def test_l_etat_lit_toutes_les_ecritures_et_voit_le_doublon(monkeypatch):
     monkeypatch.setattr(rep.al, "list_by_trust_transaction",
-                        lambda t: [{"id": "a"}, {"id": "b"}])
-    etat, _, motif = rep._etat("ttx1")
-    assert etat == "refus" and "2 écritures" in motif
+                        lambda t: [{"id": "a", "invoice_id": "fac1", "amount": 50000},
+                                   {"id": "b", "invoice_id": "fac1", "amount": 50000}])
+    etat, _, motif = rep._etat("ttx1", "fac1", 50000)
+    assert etat == "refus" and "2 écritures identiques" in motif
+
+
+def test_la_cle_d_idempotence_est_le_COUPLE_virement_facture(monkeypatch):
+    """Depuis que le partage est permis, chercher par virement seul ferait
+    passer la seconde jambe pour déjà faite : le virement de 1 505,92 $ de
+    M. Duon-Sauvé en couvre deux."""
+    deja = [{"id": "a", "invoice_id": "facA", "amount": 135211,
+             "status": "compensée"}]
+    monkeypatch.setattr(rep.al, "list_by_trust_transaction", lambda t: deja)
+    assert rep._etat("ttx1", "facA", 135211)[0] == "faite"
+    assert rep._etat("ttx1", "facB", 15381)[0] == "à_créer"
+
+
+def test_un_meme_montant_sur_une_autre_facture_reste_a_creer(monkeypatch):
+    monkeypatch.setattr(rep.al, "list_by_trust_transaction",
+                        lambda t: [{"id": "a", "invoice_id": None,
+                                    "amount": 6, "status": "compensée"}])
+    assert rep._etat("ttx1", "facA", 9313)[0] == "à_créer"
+    assert rep._etat("ttx1", None, 6)[0] == "faite"
 
 
 @pytest.mark.parametrize("ecritures,attendu", [
     ([], "à_créer"),
-    ([{"id": "a", "status": "en_circulation"}], "à_compenser"),
-    ([{"id": "a", "status": "compensée"}], "faite"),
+    ([{"id": "a", "invoice_id": "fac1", "amount": 50000,
+       "status": "en_circulation"}], "à_compenser"),
+    ([{"id": "a", "invoice_id": "fac1", "amount": 50000,
+       "status": "compensée"}], "faite"),
 ])
 def test_l_etat_permet_de_reprendre_ou_l_on_s_est_arrete(
     monkeypatch, ecritures, attendu
@@ -259,7 +281,7 @@ def test_l_etat_permet_de_reprendre_ou_l_on_s_est_arrete(
     """La composition a trois temps et peut s'arrêter après chacun : rejouer
     tout serait doubler."""
     monkeypatch.setattr(rep.al, "list_by_trust_transaction", lambda t: ecritures)
-    assert rep._etat("ttx1")[0] == attendu
+    assert rep._etat("ttx1", "fac1", 50000)[0] == attendu
 
 
 def test_une_lecture_ratee_arrete_la_reprise_au_lieu_de_doubler(monkeypatch):
@@ -270,7 +292,7 @@ def test_une_lecture_ratee_arrete_la_reprise_au_lieu_de_doubler(monkeypatch):
         raise RuntimeError("firestore indisponible")
     monkeypatch.setattr(rep.al, "list_by_trust_transaction", _boum)
     with pytest.raises(RuntimeError):
-        rep._etat("ttx1")
+        rep._etat("ttx1", "fac1", 50000)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -293,9 +315,9 @@ def test_une_projection_ratee_arrete_TOUT(monkeypatch, base):
 
     actions = [
         {"virement": _virement("t1"), "facture": _facture(), "mode": "encaissement",
-         "etat": "à_créer", "ecriture": None},
+         "montant": 50000, "etat": "à_créer", "ecriture": None},
         {"virement": _virement("t2"), "facture": _facture(), "mode": "encaissement",
-         "etat": "à_créer", "ecriture": None},
+         "montant": 50000, "etat": "à_créer", "ecriture": None},
     ]
     echecs = rep.appliquer("cpt1", actions)
     assert echecs and "n'a PAS été créditée" in echecs[0]
@@ -321,7 +343,8 @@ def test_l_execution_n_ecrit_JAMAIS_au_fideicommis(monkeypatch, base):
     monkeypatch.setattr(rep.trust, "db", _Piege(), raising=False)
 
     actions = [{"virement": _virement(), "facture": _facture(),
-                "mode": "encaissement", "etat": "à_créer", "ecriture": None}]
+                "mode": "encaissement", "montant": 50000,
+                "etat": "à_créer", "ecriture": None}]
     assert rep.appliquer("cpt1", actions) == []
 
 
@@ -339,7 +362,7 @@ def test_l_ecriture_porte_le_virement_et_la_facture(monkeypatch, base):
 
     rep.appliquer("cpt1", [{
         "virement": _virement(invoice_external_ref="WP1820000001-01"),
-        "facture": _facture(), "mode": "encaissement",
+        "facture": _facture(), "mode": "encaissement", "montant": 50000,
         "etat": "à_créer", "ecriture": None}])
 
     assert vues["trust_transaction_id"] == "ttx1"
@@ -364,8 +387,8 @@ def test_une_recette_autre_ne_porte_aucune_facture(monkeypatch, base):
                         lambda e: pytest.fail("aucune projection attendue"))
 
     rep.appliquer("cpt1", [{"virement": _virement(), "facture": None,
-                            "mode": "recette_autre", "etat": "à_créer",
-                            "ecriture": None}])
+                            "mode": "recette_autre", "montant": 50000,
+                            "etat": "à_créer", "ecriture": None}])
     assert vues["kind"] == "recette_autre"
     assert vues["invoice_id"] is None
     assert vues["trust_transaction_id"] == "ttx1"
@@ -405,3 +428,136 @@ def test_ignorer_n_inscrit_rien(monkeypatch, base):
     actions, refus = rep.planifier(
         "cpt1", [{"trust_tx_id": "t1", "mode": "ignorer"}], None)
     assert actions == [] and refus == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Le partage : un virement peut acquitter plusieurs factures (2026-08-17)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _planifiable(monkeypatch, base, factures, virements):
+    monkeypatch.setattr(rep.al, "get_account",
+                        lambda i: {"account_type": "opérations", "status": "actif"})
+    monkeypatch.setattr(rep.al, "list_by_trust_transaction", lambda t: [])
+    monkeypatch.setattr(rep.al, "sum_invoice_receipts", lambda i: 0)
+    base["trust"] = virements
+    base["invoices"] = factures
+
+
+def test_un_virement_se_partage_entre_deux_factures(monkeypatch, base):
+    """Le cas de M. Duon-Sauvé : 1 505,92 $ = 1 352,11 $ + 153,81 $."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=135211),
+                  _facture("facB", invoice_number="B", amount_due=15381)],
+                 [_virement("t1", amount=150592)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": "1 352,11 $"},
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "B",
+         "montant_impute": "153,81 $"},
+    ], None)
+    assert refus == []
+    assert [(a["facture"]["invoice_number"], a["montant"]) for a in actions] == [
+        ("A", 135211), ("B", 15381)]
+
+
+def test_un_virement_se_partage_entre_une_facture_et_une_autre_recette(
+    monkeypatch, base
+):
+    """Le cas des six cents : 93,19 $ = 93,13 $ sur la facture + 0,06 $."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=9313)],
+                 [_virement("t1", amount=9319)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": "93,13 $"},
+        {"trust_tx_id": "t1", "mode": "recette_autre", "facture_numero": "",
+         "montant_impute": "0,06 $"},
+    ], None)
+    assert refus == []
+    assert [a["montant"] for a in actions] == [9313, 6]
+    assert actions[1]["facture"] is None
+
+
+def test_un_virement_partiellement_reparti_est_REFUSE(monkeypatch, base):
+    """LA garde du partage. Une ligne oubliée ferait entrer moins d'argent que
+    le fidéicommis n'en a sorti, et l'écart ne se verrait qu'à la
+    conciliation, des mois plus tard."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=135211)],
+                 [_virement("t1", amount=150592)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": "1 352,11 $"},
+    ], None)
+    # Le montant se compose par format_cents_fr, jamais en littéral : le
+    # millier est un espace INSÉCABLE, et un littéral ASCII ne matche rien.
+    from utils.format_fr import format_cents_fr
+    assert refus and "imputent" in refus[0]
+    assert format_cents_fr(150592) in refus[0]
+
+
+def test_un_montant_impute_vide_vaut_le_virement_entier(monkeypatch, base):
+    """Le cas nominal — 36 des 40 lignes ne se partagent pas, et le juriste
+    n'a pas à recopier un montant que le script connaît."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=50000)],
+                 [_virement("t1", amount=50000)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": ""},
+    ], None)
+    assert refus == [] and actions[0]["montant"] == 50000
+
+
+def test_un_montant_impute_illisible_est_refuse(monkeypatch, base):
+    """Jamais zéro : une écriture vide s'inscrirait en annonçant un succès."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=50000)],
+                 [_virement("t1", amount=50000)])
+    _, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": "1,352.11"},      # forme ambiguë : parse_cents_fr lève
+    ], None)
+    assert refus and "illisible" in refus[0]
+
+
+@pytest.mark.parametrize("cellule,attendu", [
+    ("1 352,11 $", 135211), ("1\u00a0352,11", 135211), ("0,06", 6),
+    ("353", 35300), ("", None), ("1,352.11", None), ("bidon", None),
+])
+def test_le_montant_se_lit_comme_l_ecriture_l_a_produit(cellule, attendu):
+    assert rep.parse_montant(cellule) == attendu
+
+
+def test_une_facture_a_provision_est_refusee_meme_si_le_du_le_permet(
+    monkeypatch, base
+):
+    """Le piège de 256401-01 : provision 500,00 $, dû 600,68 $, virement
+    500,00 $. La garde de saturation ne voit rien — le dû résiduel dépasse le
+    virement — mais ce dû est DÉJÀ net de la provision, donc l'imputer
+    compterait l'argent deux fois."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=60068,
+                           retainer_applied=50000)],
+                 [_virement("t1", amount=50000)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": ""},
+    ], None)
+    assert actions == []
+    assert refus and "provision" in refus[0]
+    assert "corriger_provisions_factures" in refus[0]
+
+
+def test_une_facture_sans_provision_passe_normalement(monkeypatch, base):
+    """Le contrôle négatif : la garde ne doit pas bloquer le cas nominal."""
+    _planifiable(monkeypatch, base,
+                 [_facture("facA", invoice_number="A", amount_due=60068,
+                           retainer_applied=0)],
+                 [_virement("t1", amount=50000)])
+    actions, refus = rep.planifier("cpt1", [
+        {"trust_tx_id": "t1", "mode": "encaissement", "facture_numero": "A",
+         "montant_impute": ""},
+    ], None)
+    assert refus == [] and len(actions) == 1

@@ -47,7 +47,7 @@ from models import admin_ledger as al
 from models import db
 from models import trust
 from models.invoice import get_invoice, record_payment, update_status
-from utils.format_fr import format_cents_fr
+from utils.format_fr import format_cents_fr, parse_cents_fr
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Couche PURE — aucune lecture Firestore, donc testable telle quelle
@@ -55,7 +55,7 @@ from utils.format_fr import format_cents_fr
 
 COLONNES = (
     "trust_tx_id", "date", "montant", "reference_citee",
-    "mode", "facture_numero", "note",
+    "mode", "facture_numero", "montant_impute", "note",
 )
 
 MODES = ("encaissement", "recette_autre", "ignorer")
@@ -119,11 +119,13 @@ def resoudre(virement: dict, index: dict[str, list[dict]],
         return None, "numéro d'origine pas encore repris dans Athéna"
     if len(candidates) > 1:
         return None, f"numéro ambigu ({len(candidates)} factures)"
-    facture = candidates[0]
-    if facture.get("dossier_id") and virement.get("dossier_id") \
-            and facture["dossier_id"] != virement["dossier_id"]:
-        return None, "la facture appartient à un autre dossier"
-    return facture, ""
+    # Le dossier du virement et celui de la facture peuvent légitimement
+    # différer : un client à plusieurs dossiers acquitte depuis l'un la
+    # facture d'un autre — c'est le cas de M. Hammoud, dont deux dossiers
+    # portent chacun une facture de 93,13 $. Cette garde était de mon
+    # invention (2026-08-17), et `create_transaction` prend de toute façon le
+    # dossier sur la FACTURE : elle refusait des rapprochements justes.
+    return candidates[0], ""
 
 
 def motif_inexecutable(facture: dict, somme_groupe: int,
@@ -161,6 +163,24 @@ def deneutraliser(texte: str) -> str:
     reviendrait avec une apostrophe collée devant.
     """
     return texte[1:] if texte.startswith("'") else texte
+
+
+def parse_montant(texte: str) -> Optional[int]:
+    """Un montant du CSV, en cents. None si vide ou illisible.
+
+    Délègue à `utils.format_fr.parse_cents_fr`, l'inverse de l'écriture — il
+    accepte le fr-CA (espace insécable, virgule décimale, « $ » final), lit un
+    entier nu comme des DOLLARS, et LÈVE sur une forme ambiguë (« 1,352.11 »)
+    plutôt que d'en deviner une. Un illisible rend None, jamais zéro : une
+    écriture vide s'inscrirait en annonçant un succès.
+    """
+    t = (texte or "").strip()
+    if not t:
+        return None
+    try:
+        return parse_cents_fr(t)
+    except Exception:
+        return None
 
 
 def _date_str(valeur) -> str:
@@ -228,17 +248,31 @@ def proposer(chemin: str, seulement: Optional[str]) -> int:
 
     lignes = []
     for v, facture, motif in resolus:
+        montant = int(v.get("amount", 0))
         if facture:
-            deja = al.sum_invoice_receipts(facture["id"])
-            motif = motif_inexecutable(facture, groupes[facture["id"]], deja)
+            provision = int(facture.get("retainer_applied", 0) or 0)
+            if provision:
+                # PRIME sur tout le reste, y compris quand le dû laisserait
+                # passer le montant : le « dû » d'une facture à provision est
+                # déjà NET de cet argent, donc l'imputer le compterait deux
+                # fois — et 256401-01 (provision 500,00 $, dû 600,68 $ pour un
+                # virement de 500,00 $) passait sans bruit la garde de
+                # saturation. C'est `corriger_provisions_factures` qui lève
+                # l'obstacle, et ce motif disparaît de lui-même ensuite.
+                motif = (f"provision de {format_cents_fr(provision)} déjà "
+                         f"imputée sur la facture — corrigez-la d'abord")
+            else:
+                deja = al.sum_invoice_receipts(facture["id"])
+                motif = motif_inexecutable(facture, groupes[facture["id"]], deja)
         mode = "encaissement" if (facture and not motif) else "recette_autre"
         lignes.append({
             "trust_tx_id": v.get("id", ""),
             "date": _date_str(v.get("date")),
-            "montant": format_cents_fr(int(v.get("amount", 0))),
+            "montant": format_cents_fr(montant),
             "reference_citee": v.get("invoice_external_ref", "") or "(par id)",
             "mode": mode,
             "facture_numero": facture.get("invoice_number", "") if facture and not motif else "",
+            "montant_impute": format_cents_fr(montant),
             "note": motif or "",
         })
 
@@ -274,19 +308,30 @@ def lire_csv(chemin: str) -> list[dict]:
                 for row in csv.DictReader(fh)]
 
 
-def _etat(trust_tx_id: str) -> tuple[str, Optional[dict], str]:
-    """Où en est ce virement au grand livre. (état, écriture, motif de refus).
+def _etat(trust_tx_id: str, invoice_id: Optional[str],
+          montant: int) -> tuple[str, Optional[dict], str]:
+    """Où en est CE COUPLE (virement, facture) au grand livre.
+
+    La clé d'idempotence est le couple, pas le virement seul : depuis le
+    2026-08-17 un virement peut acquitter plusieurs factures — celui de
+    1 505,92 $ de M. Duon-Sauvé en couvre deux au cent près. Chercher par
+    virement seul ferait passer le second pour déjà fait.
 
     Fail-CLOSED par construction : `list_by_trust_transaction` propage. Une
     lecture ratée doit arrêter la reprise, jamais lui faire conclure « rien
     n'est écrit » — ce qui doublerait une écriture qu'on ne peut plus corriger.
     """
-    lignes = al.list_by_trust_transaction(trust_tx_id)
-    if not lignes:
+    candidates = [
+        e for e in al.list_by_trust_transaction(trust_tx_id)
+        if (e.get("invoice_id") or None) == (invoice_id or None)
+        and int(e.get("amount", 0)) == montant
+    ]
+    if not candidates:
         return "à_créer", None, ""
-    if len(lignes) > 1:
-        return "refus", None, f"{len(lignes)} écritures portent déjà ce virement"
-    ecriture = lignes[0]
+    if len(candidates) > 1:
+        return "refus", None, (f"{len(candidates)} écritures identiques portent "
+                               f"déjà ce virement pour ce montant")
+    ecriture = candidates[0]
     if ecriture.get("status") == "annulée" or ecriture.get("reversed_by_id"):
         return "refus", ecriture, "l'écriture existante est annulée"
     if ecriture.get("status") == "en_circulation":
@@ -313,7 +358,10 @@ def planifier(compte_id: str, lignes: list[dict],
     par_numero = {f.get("invoice_number", ""): f for f in factures}
 
     actions: list[dict] = []
-    groupes: dict[str, int] = defaultdict(int)
+    groupes: dict[str, int] = defaultdict(int)      # par facture
+    imputes: dict[str, int] = defaultdict(int)      # par virement
+    concernes: set[str] = set()
+
     for ligne in lignes:
         tid = ligne.get("trust_tx_id", "")
         if seulement and tid != seulement:
@@ -323,6 +371,7 @@ def planifier(compte_id: str, lignes: list[dict],
             refus.append(f"{tid} : ce virement n'est plus éligible "
                          f"(contre-passé, annulé, ou inconnu).")
             continue
+        concernes.add(tid)
         mode = ligne.get("mode", "")
         if mode not in MODES:
             refus.append(f"{tid} : mode « {mode} » inconnu.")
@@ -330,12 +379,24 @@ def planifier(compte_id: str, lignes: list[dict],
         if mode == "ignorer":
             continue
 
-        etat, ecriture, motif = _etat(tid)
-        if etat == "refus":
-            refus.append(f"{tid} : {motif}")
+        # VIDE et ILLISIBLE ne sont pas le même cas. Vide = le virement
+        # entier, la situation nominale que 36 lignes sur 40 vivent, et le
+        # juriste n'a pas à recopier un montant que le script connaît.
+        # Illisible = une faute de frappe, et retomber sur le montant entier
+        # imputerait en silence bien plus que ce qui était voulu.
+        brut = (ligne.get("montant_impute") or "").strip()
+        if not brut:
+            montant = int(virement.get("amount", 0))
+        else:
+            montant = parse_montant(brut)
+            if montant is None:
+                refus.append(f"{tid} : montant imputé illisible "
+                             f"(« {brut} »).")
+                continue
+        if montant <= 0:
+            refus.append(f"{tid} : montant imputé nul.")
             continue
-        if etat == "faite":
-            continue
+        imputes[tid] += montant
 
         facture = None
         if mode == "encaissement":
@@ -344,18 +405,51 @@ def planifier(compte_id: str, lignes: list[dict],
             if facture is None:
                 refus.append(f"{tid} : aucune facture « {numero} ».")
                 continue
-            if facture.get("status") not in STATUTS_EMIS \
-                    and not _sera_rouverte(facture):
+            if (facture.get("status") not in STATUTS_EMIS
+                    and not _sera_rouverte(facture)):
                 refus.append(f"{tid} : la facture « {numero} » est "
                              f"« {facture.get('status')} » et ne peut pas "
                              f"recevoir d'encaissement.")
                 continue
-            groupes[facture["id"]] += int(virement.get("amount", 0))
+            provision = int(facture.get("retainer_applied", 0) or 0)
+            if provision:
+                # La proposition ne l'offre pas, mais le CSV est ÉDITABLE :
+                # c'est ici que le refus doit vivre. Le « dû » d'une facture à
+                # provision est déjà net de cet argent — l'imputer le
+                # compterait deux fois, et la garde de saturation ne le voit
+                # pas quand le dû résiduel dépasse le virement (256401-01 :
+                # provision 500,00 $, dû 600,68 $, virement 500,00 $).
+                refus.append(
+                    f"{tid} : la facture « {numero} » porte une provision de "
+                    f"{format_cents_fr(provision)} déjà imputée — lancez "
+                    f"d'abord corriger_provisions_factures.")
+                continue
+            groupes[facture["id"]] += montant
+
+        etat, ecriture, motif = _etat(
+            tid, facture["id"] if facture else None, montant)
+        if etat == "refus":
+            refus.append(f"{tid} : {motif}")
+            continue
+        if etat == "faite":
+            continue
 
         actions.append({
             "virement": virement, "facture": facture, "mode": mode,
-            "etat": etat, "ecriture": ecriture,
+            "montant": montant, "etat": etat, "ecriture": ecriture,
         })
+
+    # Un virement se répartit ENTIÈREMENT ou pas du tout : la somme de ses
+    # lignes doit égaler son montant au cent près. Sans ce contrôle, une ligne
+    # oubliée ferait entrer moins d'argent que le fidéicommis n'en a sorti, et
+    # l'écart ne se verrait qu'à la conciliation, des mois plus tard.
+    for tid in sorted(concernes):
+        attendu = int(par_tx[tid].get("amount", 0))
+        obtenu = imputes.get(tid, 0)
+        if obtenu and obtenu != attendu:
+            refus.append(
+                f"{tid} : les lignes imputent {format_cents_fr(obtenu)} "
+                f"pour un virement de {format_cents_fr(attendu)}.")
 
     # L'invariant de saturation : la somme d'un groupe, augmentée de ce que
     # le registre porte DÉJÀ hors de ce lot, ne doit pas dépasser le dû.
@@ -423,6 +517,7 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
     for a in actions:
         v, facture = a["virement"], a["facture"]
         ecriture = a["ecriture"]
+        montant = int(a["montant"])
         if a["etat"] == "à_créer":
             description = (
                 f"Paiement d'honoraires du fidéicommis — dossier "
@@ -435,7 +530,7 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
                 "account_id": compte_id,
                 "kind": "encaissement_facture" if facture else "recette_autre",
                 "direction": "recette",
-                "amount": int(v.get("amount", 0)),
+                "amount": montant,
                 "method": "virement",
                 "counterparty": v.get("client_name") or "Fidéicommis",
                 "date": v.get("date"),
@@ -448,7 +543,7 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
             if erreurs:
                 return [f"{v.get('id')} : {erreurs[0]}"]
             print(f"  ✔ {_date_str(v.get('date'))} "
-                  f"{format_cents_fr(int(v.get('amount', 0))):>13} "
+                  f"{format_cents_fr(montant):>13} "
                   f"{facture.get('invoice_number') if facture else '(autre recette)'}")
 
         if ecriture.get("status") == "en_circulation":
