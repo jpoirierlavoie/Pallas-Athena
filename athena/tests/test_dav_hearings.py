@@ -83,6 +83,36 @@ def test_vevent_stamps_survive_a_hearing_with_no_timestamps():
     assert "BEGIN:VEVENT" in ical
 
 
+def test_all_day_dtend_is_exclusive_and_never_equals_dtstart():
+    """DTEND is EXCLUSIVE for a DATE value (RFC 5545 §3.8.2.2).
+
+    create_hearing defaults end to start + 1 h, which for a midnight-UTC
+    all-day gives 01:00 the SAME day — so DTEND used to serialize equal to
+    DTSTART, a zero-length all-day event the standard forbids. A recurring
+    all-day series would ship one malformed VEVENT per occurrence.
+    """
+    h = _hearing()
+    h["all_day"] = True
+    h["start_datetime"] = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    h["end_datetime"] = datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc)
+    ical = hearing_model.hearing_to_vevent(h)
+    assert "DTSTART;VALUE=DATE:20260915" in ical
+    assert "DTEND;VALUE=DATE:20260916" in ical
+
+
+def test_all_day_multi_day_span_keeps_the_stored_exclusive_end():
+    """A stored end beyond the start day is already exclusive — the same
+    convention utils/graph_miroir._dates_journee applies to Outlook, so the
+    phone and Exchange agree on the span."""
+    h = _hearing()
+    h["all_day"] = True
+    h["start_datetime"] = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    h["end_datetime"] = datetime(2026, 9, 17, tzinfo=timezone.utc)
+    ical = hearing_model.hearing_to_vevent(h)
+    assert "DTSTART;VALUE=DATE:20260915" in ical
+    assert "DTEND;VALUE=DATE:20260917" in ical
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Collection membership
 # ══════════════════════════════════════════════════════════════════════

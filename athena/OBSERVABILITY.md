@@ -229,7 +229,19 @@ Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confir
 | `reception_rdv_refuse` | success ou refused | A rendez-vous was refused; `hearing_id`, `graph_annule: bool`. `refused` + `reason="graph_error"` when the Outlook cancellation failed (the Athéna refusal still stands — the juriste is told to cancel manually) |
 | `reception_rdv_divergence_traitee` | success | A `bookings_divergence` alert was applied/ignored/cancelled; `hearing_id`, `action` |
 | `miroir_outlook_execute` | success | Outlook-mirror cron sweep done; counters `vus`, `miroirs`, `crees`, `corriges`, `supprimes`, `ignores`, `erreurs` (per-event Graph failures — the sweep continues) |
-| `miroir_outlook_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (fail-open, no-op); `failure` + `reason="graph_error"` (Graph outage, cycle missed) or `reason="fenetre_pleine"` (the 500-hearing fetch window is full: the desired set is truncated, so the DELETE phase is disarmed until `_LIMITE_FENETRE` is raised — loud, never silent) |
+| `miroir_outlook_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (fail-open, no-op); `failure` + `reason="graph_error"` (Graph outage, cycle missed) or `reason="fenetre_pleine"` (the 1500-hearing fetch window is full: the desired set is truncated, so the DELETE phase is disarmed until `_LIMITE_FENETRE` is raised — loud, never silent) or `reason="lecture_firestore"` (the Athéna read FAILED: an empty list is indistinguishable from "nothing matched", and a caller that conflated them would treat every mirror as an orphan, so the sweep abstains entirely) |
+
+### `log_hearing_series_event(event, serie_id, **extra)` — logger `pallas.hearing`
+
+Recurring calendar series (« séries »). One click here creates or destroys up to 60 documents, mints as many DAV tombstones and pushes as many VEVENTs to the phone — before this family, `routes/hearings.py` emitted **no log line at all**, so the Calendrier's most consequential operation left no trace. Always INFO.
+
+**IDs and COUNTS only — never the title.** The `RedactionFilter` scrubs emails, phones, postal codes and court file numbers, but NOT names or free text, and a hearing title routinely carries a client's name.
+
+| `event` | Notes |
+|---|---|
+| `series_created` | A series was materialised; `serie_id`, `occurrences` (count), `dossier_id`, `frequence`, `ctag_bumped` (always true — the bump rides inside the write batch) |
+| `series_deleted` | A chain was deleted from an occurrence onward; `serie_id`, `occurrences` (how many were ACTUALLY destroyed, never how many were asked for), `dossier_id`, `ctag_bumped`. The deletion journal takes ONE `audit_events` row per chain — see the entry in CLAUDE.md for why N rows would evict the practice's whole deletion history |
+| `series_unlinked` | One occurrence was detached and became standalone; `serie_id` (the chain it LEFT), `hearing_id`, `dossier_id`, `ctag_bumped` |
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 

@@ -20,6 +20,31 @@
     </div>
   </div>
 
+  {# ── Bandeaux ────────────────────────────────────────────────── #}
+  {% if message %}
+  <div class="mb-4 bg-green-50 border border-green-200 text-green-800 text-sm rounded-lg px-4 py-3">{{ message }}</div>
+  {% endif %}
+  {% if erreur %}
+  <div class="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">{{ erreur }}</div>
+  {% endif %}
+
+  {% if serie_id %}
+  {# Vue d'une seule chaîne : la seule façon de vérifier qu'une action de
+     série a fait ce qu'on lui a demandé. Pas de filtres ici — on veut la
+     chaîne entière, passé compris. #}
+  <div class="mb-4 bg-gray-50 border border-gray-200 rounded-lg px-4 py-3">
+    <div class="flex items-center justify-between gap-3">
+      <div class="text-sm text-gray-700">
+        <span class="font-medium text-gray-900">Série</span>
+        {% if serie_label %}<span class="text-gray-500"> — {{ serie_label }}</span>{% endif %}
+        <span class="text-gray-500"> — {{ (upcoming|length) + (past|length) }} occurrence{{ 's' if (upcoming|length) + (past|length) > 1 else '' }}</span>
+      </div>
+      <a href="{{ url_for('hearings.hearing_list') }}"
+         class="text-sm text-indigo-600 hover:text-indigo-700 whitespace-nowrap">Tout le calendrier</a>
+    </div>
+  </div>
+  {% endif %}
+
   {# ── View toggle + filters ─────────────────────────────────── #}
   <div class="flex flex-wrap items-center gap-3 mb-4">
     {# View tabs #}

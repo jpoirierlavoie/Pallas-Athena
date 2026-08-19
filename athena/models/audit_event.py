@@ -64,6 +64,15 @@ VALID_ENTITY_TYPES = (
     "task", "hearing", "note", "document", "expense", "time_entry",
     "invoice", "partie", "protocol", "protocol_step", "folder",
     "doc_template", "dossier", "admin_transaction",
+    # Une série récurrente supprimée s'inscrit en UNE ligne portant son
+    # nombre d'occurrences, jamais N lignes. list_recent lit une fenêtre dure
+    # de 200 et applique tous ses filtres EN PYTHON après coup : N lignes par
+    # chaîne évinceraient tout l'historique de suppression du cabinet, après
+    # quoi list_deletions(entity_type="invoice") répondrait vide avec
+    # truncated: false — une affirmation de complétude qui serait fausse.
+    # Légitime UNIQUEMENT parce que la suppression d'une chaîne est atomique
+    # (un seul lot) : au-delà, une réussite partielle exigerait le détail.
+    "hearing_series",
 )
 
 _FETCH_CAP = 200

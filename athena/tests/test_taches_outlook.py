@@ -124,11 +124,21 @@ class _MiroirSpy:
         self.supprimes.append(event_id)
 
 
-def _run(monkeypatch, audiences, miroirs, echoue_sur=()):
+def _fenetre(rows, limit, *, raw_count=None, ok=True):
+    """Ce que le modèle rend : les lignes FILTRÉES, mais une troncature
+    mesurée sur la fenêtre BRUTE. ``raw_count`` permet d'exprimer le cas où
+    _filter_confirmation a retiré des lignes (une réservation « refusée »)."""
+    brut = len(rows) if raw_count is None else raw_count
+    return h.HearingWindow(rows, ok and brut >= limit, ok)
+
+
+def _run(monkeypatch, audiences, miroirs, echoue_sur=(), raw_count=None, ok=True):
     s = _MiroirSpy(echoue_sur)
     monkeypatch.setattr(
-        h, "list_hearings_in_range",
-        lambda debut, fin, limit, include_unconfirmed: audiences,
+        h, "list_hearings_in_range_state",
+        lambda debut, fin, limit, include_unconfirmed: _fenetre(
+            audiences, limit, raw_count=raw_count, ok=ok
+        ),
     )
     monkeypatch.setattr(to.graph_miroir, "lister_miroirs",
                         lambda debut, fin: miroirs)
@@ -267,6 +277,58 @@ def test_fenetre_pleine_bloque_les_suppressions(monkeypatch):
     assert evenements[0][2]["reason"] == "fenetre_pleine"
 
 
+def test_troncature_detectee_meme_quand_le_filtre_a_retire_des_lignes(monkeypatch):
+    """La troncature se mesure sur la fenêtre BRUTE, jamais sur les lignes.
+
+    _filter_confirmation retire les imports « refusée » DANS LES DEUX MODES.
+    Tant que la route mesurait `len(rows) >= limit` sur la liste filtrée, une
+    seule réservation refusée dans la fenêtre suffisait à faire passer une
+    lecture tronquée pour complète — ce qui RÉARMAIT la suppression des
+    miroirs situés au-delà de la coupe, c'est-à-dire de vraies dates de cour
+    effacées d'Outlook et non recréées avant des mois.
+    """
+    evenements = []
+    monkeypatch.setattr(
+        to, "log_bookings_event",
+        lambda event, outcome="success", **k: evenements.append(
+            (event, outcome, k)
+        ),
+    )
+    monkeypatch.setattr(to, "_LIMITE_FENETRE", 3)
+    # Firestore a rendu 3 documents (fenêtre pleine), le filtre en a retiré 1.
+    audiences = [_audience(hid="h-1"), _audience(hid="h-2")]
+    orphelin = _miroir_de(_audience(hid="h-coupe"), event_id="EVT-ORPHELIN")
+    counters, s = _run(monkeypatch, audiences, [orphelin], raw_count=3)
+
+    assert s.supprimes == []                     # la garde a tenu
+    assert counters["crees"] == 2                # créations toujours sûres
+    assert ("miroir_outlook_erreur_graph", "failure") == evenements[0][:2]
+    assert evenements[0][2]["reason"] == "fenetre_pleine"
+
+
+def test_lecture_firestore_en_echec_n_ecrit_rien_dans_graph(monkeypatch):
+    """Une panne de lecture rend une liste VIDE, comme « rien ne correspond ».
+
+    Les confondre est fatal : le jeu désiré vide fait passer TOUS les miroirs
+    pour orphelins, et `0 >= limit` est faux, donc la garde de troncature ne
+    protège pas. Le balayage doit s'abstenir entièrement.
+    """
+    evenements = []
+    monkeypatch.setattr(
+        to, "log_bookings_event",
+        lambda event, outcome="success", **k: evenements.append(
+            (event, outcome, k)
+        ),
+    )
+    aud = _audience()
+    counters, s = _run(monkeypatch, [], [_miroir_de(aud)], ok=False)
+
+    assert counters is None                      # balayage avorté
+    assert s.supprimes == [] and s.crees == [] and s.corriges == []
+    assert ("miroir_outlook_erreur_graph", "failure") == evenements[0][:2]
+    assert evenements[0][2]["reason"] == "lecture_firestore"
+
+
 def test_erreur_graph_par_evenement_continue(monkeypatch):
     """Une panne sur UN événement est comptée ; le reste du balayage passe."""
     counters, s = _run(
@@ -317,8 +379,10 @@ def test_erreur_graph_rend_200(client, monkeypatch):
                  ("GRAPH_CLIENT_SECRET", "s"), ("GRAPH_SENDER_UPN", "r@x")]:
         monkeypatch.setattr(Config, k, v)
     monkeypatch.setattr(
-        h, "list_hearings_in_range",
-        lambda debut, fin, limit, include_unconfirmed: [],
+        h, "list_hearings_in_range_state",
+        lambda debut, fin, limit, include_unconfirmed: h.HearingWindow(
+            [], False, True
+        ),
     )
 
     def _panne(*a, **k):
@@ -334,8 +398,10 @@ def test_sync_runs_and_returns_counters(client, monkeypatch):
                  ("GRAPH_CLIENT_SECRET", "s"), ("GRAPH_SENDER_UPN", "r@x")]:
         monkeypatch.setattr(Config, k, v)
     monkeypatch.setattr(
-        h, "list_hearings_in_range",
-        lambda debut, fin, limit, include_unconfirmed: [_audience()],
+        h, "list_hearings_in_range_state",
+        lambda debut, fin, limit, include_unconfirmed: h.HearingWindow(
+            [_audience()], False, True
+        ),
     )
     monkeypatch.setattr(to.graph_miroir, "lister_miroirs", lambda debut, fin: [])
     monkeypatch.setattr(to.graph_miroir, "creer_miroir", lambda aud: None)
@@ -352,13 +418,13 @@ def test_la_fenetre_est_partagee(monkeypatch):
     def _athena(debut, fin, limit, include_unconfirmed):
         fenetres["athena"] = (debut, fin)
         assert include_unconfirmed is True  # signal de troncature honnête
-        return []
+        return h.HearingWindow([], False, True)
 
     def _outlook(debut, fin):
         fenetres["outlook"] = (debut, fin)
         return []
 
-    monkeypatch.setattr(h, "list_hearings_in_range", _athena)
+    monkeypatch.setattr(h, "list_hearings_in_range_state", _athena)
     monkeypatch.setattr(to.graph_miroir, "lister_miroirs", _outlook)
     to._synchroniser()
     assert fenetres["athena"] == fenetres["outlook"]

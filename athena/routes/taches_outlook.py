@@ -38,7 +38,15 @@ taches_outlook_bp = Blueprint(
 # Au-delà de cette lecture, la fenêtre est TRONQUÉE : le jeu désiré ne décrit
 # plus tout ce qui existe, et la phase de suppression est désarmée (voir
 # _synchroniser — un desired tronqué piloterait une suppression massive).
-_LIMITE_FENETRE = 500
+#
+# Relevé de 500 à 1500 avec l'arrivée des séries récurrentes : une série
+# hebdomadaire au plafond (60 occurrences) occupe ~56 lignes en permanence
+# dans la fenêtre glissante de 395 jours, si bien que neuf séries suffisaient
+# à atteindre 500 et à désarmer définitivement le nettoyage des orphelins.
+# NE PAS réduire MIROIR_OUTLOOK_LOOKAHEAD_DAYS à la place : l'invariant
+# anti-orphelin ci-dessous tient UNIQUEMENT parce qu'un miroir ne peut sortir
+# de la fenêtre que par le bord passé.
+_LIMITE_FENETRE = 1500
 
 
 def _retenir(h: dict) -> bool:
@@ -60,7 +68,7 @@ def _retenir(h: dict) -> bool:
     )
 
 
-def _synchroniser() -> dict:
+def _synchroniser() -> dict | None:
     """Diff Athéna ↔ Outlook sur UNE fenêtre partagée ; rend les compteurs.
 
     La fenêtre est la même des deux côtés — l'invariant anti-orphelin : un
@@ -73,10 +81,31 @@ def _synchroniser() -> dict:
     debut = now - timedelta(days=Config.MIROIR_OUTLOOK_LOOKBACK_DAYS)
     fin = now + timedelta(days=Config.MIROIR_OUTLOOK_LOOKAHEAD_DAYS)
 
-    rows = hearing.list_hearings_in_range(
+    # list_hearings_in_range_state, jamais la variante simple : ce balayage
+    # SUPPRIME sur la foi d'une absence, donc il lui faut les deux signaux que
+    # la liste seule ne porte pas.
+    #
+    #   * window_full est mesuré sur la fenêtre BRUTE. Le mesurer sur les
+    #     lignes rendues serait faux : _filter_confirmation retire les imports
+    #     « refusée » DANS LES DEUX MODES, si bien qu'une seule réservation
+    #     refusée dans la fenêtre faisait passer une lecture tronquée pour
+    #     complète — et réarmait la suppression des miroirs situés au-delà de
+    #     la coupe, c'est-à-dire de vraies dates de cour dans Outlook.
+    #   * ok distingue « rien ne correspond » de « la requête a échoué ». Les
+    #     deux rendent une liste vide, et les confondre supprime TOUS les
+    #     miroirs sur un simple hoquet Firestore.
+    fenetre = hearing.list_hearings_in_range_state(
         debut, fin, limit=_LIMITE_FENETRE, include_unconfirmed=True
     )
-    fenetre_pleine = len(rows) >= _LIMITE_FENETRE
+    if not fenetre.ok:
+        # Jeu désiré non fiable : ne rien créer, ne rien corriger, ne rien
+        # supprimer. Le cycle suivant reprendra dans 10 minutes.
+        log_bookings_event(
+            "miroir_outlook_erreur_graph", "failure", reason="lecture_firestore"
+        )
+        return None
+    rows = fenetre.rows
+    fenetre_pleine = fenetre.window_full
     desired = {h["id"]: h for h in rows if _retenir(h)}
 
     counters = {
@@ -178,6 +207,11 @@ def sync():
             "miroir_outlook_erreur_graph", "failure", reason="graph_error"
         )
         return jsonify({"actif": True, "erreur": "graph"}), 200
+
+    if counters is None:
+        # Lecture Firestore en échec : le balayage s'est abstenu (il a déjà
+        # journalisé). 200 — le cycle suivant reprend.
+        return jsonify({"actif": True, "erreur": "lecture"}), 200
 
     log_bookings_event("miroir_outlook_execute", **counters)
     return jsonify({"actif": True, **counters})

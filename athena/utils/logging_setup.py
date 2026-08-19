@@ -462,6 +462,7 @@ _PALLAS_TRUST = logging.getLogger("pallas.trust")
 _PALLAS_ADMIN_LEDGER = logging.getLogger("pallas.admin_ledger")
 _PALLAS_PORTAIL = logging.getLogger("pallas.portail")
 _PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
+_PALLAS_HEARING = logging.getLogger("pallas.hearing")
 
 
 AuthEvent = Literal[
@@ -482,6 +483,15 @@ DossierEvent = Literal[
     "court_file_parsed",
     "budget_saved",
     "budget_exported",
+]
+# Séries récurrentes d'audiences. Un seul clic y crée ou détruit jusqu'à 60
+# documents, frappe autant de pierres tombales et pousse autant de VEVENT vers
+# le téléphone : sans ces événements, l'opération la plus conséquente du
+# Calendrier ne laisserait AUCUNE trace (routes/hearings n'en émettait pas).
+HearingSeriesEvent = Literal[
+    "series_created",
+    "series_deleted",
+    "series_unlinked",
 ]
 DavOperation = Literal[
     "propfind",
@@ -675,6 +685,25 @@ def log_dossier_event(
         **extra,
     }
     _emit(_PALLAS_DOSSIER, logging.INFO, event, fields)
+
+
+def log_hearing_series_event(
+    event: HearingSeriesEvent,
+    serie_id: str,
+    **extra: Any,
+) -> None:
+    """Emit a recurring-series lifecycle event at INFO.
+
+    IDs and COUNTS only — never the title. The redaction filter scrubs emails,
+    phones, postal codes and court file numbers, but NOT names or free text,
+    and a hearing title routinely carries a client's name.
+    """
+    fields: dict[str, Any] = {
+        "event": event,
+        "serie_id": serie_id,
+        **extra,
+    }
+    _emit(_PALLAS_HEARING, logging.INFO, event, fields)
 
 
 def log_dav_operation(

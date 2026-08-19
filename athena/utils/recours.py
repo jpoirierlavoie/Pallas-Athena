@@ -152,6 +152,22 @@ def _add_period(moment: datetime, amount: int, unit: str) -> datetime:
     raise ValueError(f"Unité de délai inconnue : {unit!r}")
 
 
+# Public alias. ``utils/recurrence.py`` expands a recurring calendar series
+# with this same arithmetic, so the month/year clamping stays defined in ONE
+# place: 31 janvier + 1 mois is 28/29 février, and 29 février + 1 an is
+# 28 février. It is deliberately a thin alias rather than a move — every
+# existing caller inside this module keeps using the private name.
+#
+# NOTE for aware datetimes: ``timedelta`` addition and ``.replace()`` both
+# preserve the tzinfo object, so on a ZoneInfo("America/Montreal") value this
+# is WALL-CLOCK arithmetic (the UTC offset is recomputed for the new date).
+# That is exactly what a recurring series needs across a DST switch, and it is
+# why a series must be expanded in Montréal civil time, never on stored UTC.
+def add_period(moment: datetime, amount: int, unit: str) -> datetime:
+    """Add a period, dispatching on its unit. See ``_add_period``."""
+    return _add_period(moment, amount, unit)
+
+
 def compute_date_pour_agir(
     droit_action_date: "datetime | None", prescription_type: str
 ) -> "datetime | None":

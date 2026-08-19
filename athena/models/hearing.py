@@ -2,8 +2,8 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import date, datetime, timezone, timedelta
+from typing import NamedTuple, Optional
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -13,6 +13,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
+from tz import mtl_to_utc, to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,10 @@ def _migrate_hearing(doc: dict) -> dict:
     doc.setdefault("client_nom", "")
     doc.setdefault("bookings_divergence", None)
     doc.setdefault("partie_id", "")
+    # Séries récurrentes. Additifs, sans migration : un document hérité lit
+    # serie_id == "" — « autonome » — ce qui est vrai.
+    doc.setdefault("serie_id", "")
+    doc.setdefault("serie_rule", None)
     return doc
 
 
@@ -278,6 +283,24 @@ def _default_doc() -> dict:
         "client_nom": "",
         "bookings_divergence": None,
         "partie_id": "",
+        # ── Séries récurrentes ────────────────────────────────────────────
+        # serie_id : UUIDv4 partagé par toutes les occurrences d'une chaîne.
+        # "" = occurrence autonome. Toutes les occurrences sont ÉGALES — pas
+        # de maître, pas d'index : un index se périmerait au premier
+        # détachement, et un maître ferait du détachement une promotion au
+        # lieu d'une écriture d'un champ.
+        #
+        # ATTENTION : "" est une VALEUR STOCKÉE, pas une sentinelle. Une
+        # égalité Firestore sur "" ramène TOUTE audience autonome du cabinet,
+        # d'où le refus en tête de list_series / delete_series.
+        #
+        # serie_rule : le motif TEL QU'ENGENDRÉ (dates ISO), un constat qu'on
+        # ne réétend jamais à la lecture. Il existe parce qu'après le premier
+        # détachement ou la première suppression les dates ne déterminent plus
+        # la règle. Les DEUX champs appartiennent au serveur : jamais lus
+        # d'une charge DAV, jamais émis dans un VEVENT.
+        "serie_id": "",
+        "serie_rule": None,
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -477,6 +500,64 @@ def list_bookings_all() -> list[dict]:
         return []
 
 
+class HearingWindow(NamedTuple):
+    """A bounded hearing fetch together with what the caller cannot re-derive.
+
+    ``rows`` alone loses two facts that a destructive consumer needs:
+
+    * ``window_full`` is measured on the RAW window, BEFORE the confirmation
+      filter shrinks it. Measuring it on ``rows`` is wrong and dangerous: one
+      ``refusée`` Bookings import inside the window makes a genuinely truncated
+      fetch look complete, and the Outlook mirror then treats every hearing
+      beyond the cut as an orphan and deletes real court dates from Exchange.
+    * ``ok`` distinguishes "nothing matched" from "the query failed". Both
+      yield an empty ``rows``, and a consumer that conflates them deletes every
+      mirror it has on a transient Firestore hiccup.
+    """
+
+    rows: list[dict]
+    window_full: bool
+    ok: bool
+
+
+def list_hearings_in_range_state(
+    date_from: datetime,
+    date_to: datetime,
+    limit: int = 100,
+    include_unconfirmed: bool = False,
+) -> HearingWindow:
+    """:func:`list_hearings_in_range` plus the truncation and failure signals.
+
+    Callers that only render a list want the plain variant. A caller that
+    DELETES on the strength of an absence (the Outlook mirror) must use this
+    one — see :class:`HearingWindow` for why each field exists.
+    """
+    try:
+        query = (
+            db.collection(COLLECTION)
+            .where(filter=FieldFilter("start_datetime", ">=", date_from))
+            .where(filter=FieldFilter("start_datetime", "<=", date_to))
+            .order_by("start_datetime")
+            .limit(limit)
+        )
+        raw = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+        # Measured on the RAW window before the confirmation filter shrinks it,
+        # so a truncated fetch is still detected even when some rows are
+        # dropped. This value is the whole reason this function exists.
+        window_full = len(raw) >= limit
+        if window_full:
+            logger.warning(
+                "list_hearings_in_range: result window full (limit=%d) — "
+                "some hearings may be hidden", limit,
+            )
+        return HearingWindow(
+            _filter_confirmation(raw, include_unconfirmed), window_full, True
+        )
+    except Exception as exc:
+        logger.warning("list_hearings_in_range: query failed: %s", exc)
+        return HearingWindow([], False, False)
+
+
 def list_hearings_in_range(
     date_from: datetime,
     date_to: datetime,
@@ -496,28 +577,13 @@ def list_hearings_in_range(
     imports, applied in Python over the bounded window (same accepted
     limitation as the existing caller-side status filtering).
 
-    Returns [] on failure (the dashboard degrades gracefully).
+    Returns [] on failure (the dashboard degrades gracefully). A caller that
+    would DESTROY something on the strength of an empty result must call
+    :func:`list_hearings_in_range_state` instead and honour its ``ok`` flag.
     """
-    try:
-        query = (
-            db.collection(COLLECTION)
-            .where(filter=FieldFilter("start_datetime", ">=", date_from))
-            .where(filter=FieldFilter("start_datetime", "<=", date_to))
-            .order_by("start_datetime")
-            .limit(limit)
-        )
-        raw = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
-        # Warn on the RAW window before the confirmation filter shrinks it, so
-        # a truncated fetch is still detected even when some rows are dropped.
-        if len(raw) >= limit:
-            logger.warning(
-                "list_hearings_in_range: result window full (limit=%d) — "
-                "some hearings may be hidden", limit,
-            )
-        return _filter_confirmation(raw, include_unconfirmed)
-    except Exception as exc:
-        logger.warning("list_hearings_in_range: query failed: %s", exc)
-        return []
+    return list_hearings_in_range_state(
+        date_from, date_to, limit, include_unconfirmed
+    ).rows
 
 
 def list_hearings_window(
@@ -623,6 +689,267 @@ def delete_hearing(hearing_id: str) -> tuple[bool, str]:
         return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
+# ── Séries récurrentes ────────────────────────────────────────────────────
+# Une série est MATÉRIALISÉE : N audiences ordinaires partageant un serie_id.
+# Aucun lecteur existant ne change — tableau de bord, grille du mois, onglet
+# du dossier, collection DAV, MCP, exports, miroir Outlook voient N audiences
+# ordinaires. Le contraire (un document porteur d'une RRULE, étendu à la
+# lecture) obligerait chacun d'eux à savoir étendre : toutes les requêtes
+# bornées filtrent ET trient sur start_datetime, dont un document à règle n'a
+# qu'un seul exemplaire.
+
+
+def occurrence_day(hearing: dict) -> "date | None":
+    """Le jour civil d'une audience, dans le bon référentiel.
+
+    Une audience all-day est stockée à minuit UTC (convention _parse_date) —
+    sa date UTC EST son jour. Une audience horodatée est stockée en UTC après
+    conversion depuis Montréal : à 21 h le 15, l'UTC tombe le 16, donc lire
+    ``.date()`` sur la valeur stockée désignerait le mauvais jour.
+    """
+    start = hearing.get("start_datetime")
+    if not isinstance(start, datetime):
+        return None
+    if hearing.get("all_day"):
+        return start.date()
+    return to_mtl(start).date()
+
+
+def _occurrence_slots(
+    prototype: dict, dates: list["date"]
+) -> list[tuple[datetime, datetime]]:
+    """(début, fin) UTC de chaque occurrence, à durée constante.
+
+    Pour une audience horodatée, l'heure MURALE de Montréal est tenue fixe et
+    chaque occurrence est convertie SÉPARÉMENT par ``mtl_to_utc`` : c'est ce
+    qui maintient « 9 h » à 9 h de part et d'autre d'un changement d'heure.
+    Ajouter des timedelta à la valeur UTC stockée décalerait en silence toutes
+    les occurrences postérieures à la bascule de mars ou de novembre.
+    """
+    start = prototype["start_datetime"]
+    end = prototype.get("end_datetime") or (start + timedelta(hours=1))
+    duree = end - start
+
+    slots: list[tuple[datetime, datetime]] = []
+    if prototype.get("all_day"):
+        for jour in dates:
+            debut = datetime(
+                jour.year, jour.month, jour.day, tzinfo=timezone.utc
+            )
+            slots.append((debut, debut + duree))
+        return slots
+
+    heure = to_mtl(start).time()
+    for jour in dates:
+        debut = mtl_to_utc(datetime.combine(jour, heure))
+        slots.append((debut, debut + duree))
+    return slots
+
+
+def create_hearing_series(
+    data: dict,
+    frequency: str,
+    *,
+    count: Optional[int] = None,
+    until: "date | None" = None,
+) -> tuple[list[dict], list[str]]:
+    """Créer une série : N audiences liées, écrites en UN SEUL lot.
+
+    Le prototype est validé UNE fois (les occurrences ne diffèrent que par
+    leurs dates), puis les N documents et le bump de CTag sont mis dans le
+    même ``db.batch()`` — voir ``dav.sync.bump_ctag_in_batch`` pour pourquoi
+    le bump ne peut pas venir après le commit.
+
+    Retourne (occurrences, erreurs). La liste est vide si quoi que ce soit a
+    été refusé : rien n'est écrit partiellement.
+    """
+    from dav.sync import (
+        _BATCH_CHUNK,
+        bump_ctag_in_batch,
+        collection_for,
+    )
+    from utils import recurrence
+
+    merged = {**_default_doc(), **_sanitize_data(data)}
+    if merged.get("start_datetime") and not merged.get("end_datetime"):
+        merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
+
+    # L'appelant ne nomme JAMAIS l'identité d'une occurrence. create_hearing
+    # honore un id fourni (l'affordance CalDAV), donc laisser passer un id ou
+    # un vevent_uid ici ferait N batch.set() sur LA MÊME référence : Firestore
+    # garde le dernier, en silence, et 59 occurrences sur 60 disparaissent
+    # avec un retour de succès. Idem pour les champs appartenant au serveur.
+    for cle in ("id", "vevent_uid", "dav_href", "serie_id", "serie_rule"):
+        merged.pop(cle, None)
+    merged = {**_default_doc(), **merged}
+
+    errors = _validate(merged)
+    if errors:
+        return [], errors
+
+    depart = occurrence_day(merged)
+    if depart is None:
+        return [], ["La date et l'heure de début sont requises."]
+
+    errors = recurrence.validate_rule(
+        frequency, count=count, until=until, start=depart
+    )
+    if errors:
+        return [], errors
+
+    dates = recurrence.occurrence_dates(
+        depart, frequency, count=count, until=until
+    )
+    slots = _occurrence_slots(merged, dates)
+
+    # Ceinture : le plafond vit dans utils.recurrence, mais un lot doit rester
+    # atomique quoi qu'il arrive à cette constante. N + 1 opérations ici.
+    if len(slots) + 1 > _BATCH_CHUNK:
+        return [], [
+            "Cette série est trop longue pour être écrite d'un seul bloc."
+        ]
+
+    serie_id = str(uuid.uuid4())
+    rule = recurrence.build_rule(
+        frequency, depart, count=count, until=until
+    )
+    now = datetime.now(timezone.utc)
+    dossier_id = merged.get("dossier_id", "")
+
+    occurrences: list[dict] = []
+    for debut, fin in slots:
+        hearing_id = str(uuid.uuid4())
+        occ = {
+            **merged,
+            "id": hearing_id,
+            "start_datetime": debut,
+            "end_datetime": fin,
+            "serie_id": serie_id,
+            "serie_rule": rule,
+            "created_at": now,
+            "updated_at": now,
+            "etag": str(uuid.uuid4()),
+            "vevent_uid": str(uuid.uuid4()),
+            "dav_href": dav_href_for(dossier_id, hearing_id),
+        }
+        occurrences.append(occ)
+
+    try:
+        batch = db.batch()
+        for occ in occurrences:
+            batch.set(db.collection(COLLECTION).document(occ["id"]), occ)
+        bump_ctag_in_batch(batch, collection_for(dossier_id))
+        batch.commit()
+    except Exception:
+        log_unexpected("hearing series write failed")
+        return [], ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+
+    return occurrences, []
+
+
+def list_series(serie_id: str) -> list[dict]:
+    """Les occurrences d'une série, dans l'ordre chronologique.
+
+    REFUSE un identifiant vide. "" est une VALEUR STOCKÉE : une égalité
+    Firestore dessus ramènerait toute audience autonome du cabinet, et le
+    déclencheur ne demande aucun attaquant — « Détacher » pose serie_id = ""
+    et un onglet resté ouvert affiche encore « Supprimer la série ».
+
+    PROPAGE une erreur de lecture, contrairement à list_hearings qui rend [].
+    Un dialogue destructeur ne doit jamais sous-estimer ce qu'il détruira
+    (doctrine subtree_members contre list_folders).
+    """
+    if not serie_id:
+        return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("serie_id", "==", serie_id)
+    )
+    rows = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+    rows.sort(
+        key=lambda h: (
+            h.get("start_datetime")
+            or datetime.min.replace(tzinfo=timezone.utc),
+            h.get("id") or "",
+        )
+    )
+    return rows
+
+
+def delete_series(
+    serie_id: str, *, from_date: "date | None" = None
+) -> tuple[list[dict], list[str]]:
+    """Supprimer une série — les occurrences, leurs pierres tombales et le
+    bump de CTag dans UN SEUL lot.
+
+    ``from_date`` borne la portée « cette occurrence et les suivantes » : une
+    occurrence dont le jour civil précède cette date n'est jamais touchée.
+    Une occurrence passée est le constat de ce qui a eu lieu.
+
+    Retourne (occurrences supprimées, erreurs).
+    """
+    from dav.sync import (
+        _BATCH_CHUNK,
+        bump_ctag_in_batch,
+        collection_for,
+        record_tombstones_in_batch,
+    )
+
+    if not serie_id:
+        return [], ["Série introuvable."]
+
+    try:
+        rows = list_series(serie_id)
+    except Exception:
+        log_unexpected("hearing series read failed")
+        return [], ["Erreur lors de la lecture de la série. Veuillez réessayer."]
+
+    if from_date is not None:
+        rows = [
+            h for h in rows
+            if (occurrence_day(h) or from_date) >= from_date
+        ]
+    if not rows:
+        return [], []
+
+    # 2N + 1 opérations (N suppressions + N pierres tombales + 1 bump).
+    if 2 * len(rows) + 1 > _BATCH_CHUNK:
+        return [], [
+            "Cette série est trop longue pour être supprimée d'un seul bloc."
+        ]
+
+    dossier_id = rows[0].get("dossier_id", "")
+    sync_name = collection_for(dossier_id)
+    ids = [h["id"] for h in rows]
+
+    try:
+        batch = db.batch()
+        for hid in ids:
+            batch.delete(db.collection(COLLECTION).document(hid))
+        token = bump_ctag_in_batch(batch, sync_name)
+        record_tombstones_in_batch(batch, sync_name, ids, token)
+        batch.commit()
+    except Exception:
+        log_unexpected("hearing series delete failed")
+        return [], ["Erreur lors de la suppression. Veuillez réessayer."]
+
+    return rows, []
+
+
+def unlink_hearing(hearing_id: str) -> tuple[Optional[dict], list[str]]:
+    """Détacher une occurrence : elle devient une audience ordinaire.
+
+    Un seul champ change de part et d'autre — il n'y a ni maître à promouvoir
+    ni index à renuméroter, ce qui est précisément pourquoi toutes les
+    occurrences sont égales.
+    """
+    existing = get_hearing(hearing_id)
+    if not existing:
+        return None, ["Audience introuvable."]
+    if not existing.get("serie_id"):
+        return None, ["Cette audience ne fait pas partie d'une série."]
+    return update_hearing(hearing_id, {"serie_id": "", "serie_rule": None})
+
+
 # ── Summary ──────────────────────────────────────────────────────────────
 
 
@@ -674,10 +1001,24 @@ def hearing_to_vevent(hearing: dict) -> str:
     start = hearing.get("start_datetime")
     end = hearing.get("end_datetime")
     if hearing.get("all_day"):
+        # DTEND is EXCLUSIVE for a DATE value (RFC 5545 §3.8.2.2), so a
+        # one-day event ends on the NEXT day. Emitting end.date() raw was
+        # wrong in both directions: create_hearing defaults end to
+        # start + 1 h, which for a midnight-UTC all-day gives 01:00 the SAME
+        # day, so DTEND equalled DTSTART (a zero-length all-day event, which
+        # RFC 5545 forbids); and a genuine multi-day span dropped its last
+        # day on the phone. utils/graph_miroir._dates_journee has patched
+        # this on the Outlook side since the mirror shipped — the DAV side
+        # never was, and a series multiplies the defect by N.
         if start and hasattr(start, "date"):
-            event.add("dtstart", start.date())
-        if end and hasattr(end, "date"):
-            event.add("dtend", end.date())
+            debut = start.date()
+            event.add("dtstart", debut)
+            fin = (
+                end.date()
+                if end and hasattr(end, "date") and end.date() > debut
+                else debut + timedelta(days=1)
+            )
+            event.add("dtend", fin)
     else:
         if start:
             if start.tzinfo is None or start.tzinfo == timezone.utc:

@@ -134,6 +134,80 @@ def record_tombstone(collection_name: str, resource_id: str) -> None:
     })
 
 
+# Firestore caps a batch at 500 operations; 450 is the repo's safety chunk
+# (models/folder.py uses the same value for the same reason).
+_BATCH_CHUNK = 450
+
+
+def bump_ctag_in_batch(batch, collection_name: str) -> str:
+    """Stage a CTag bump into a caller-owned batch. Returns the new token.
+
+    A bulk write that commits its documents and THEN bumps has a fatal gap:
+    if the bump raises, the resources exist and are visible in the web UI
+    while DavX5 silently never re-syncs any of them — ``_handle_sync_collection``
+    short-circuits on an unchanged token. Firestore batches span collections,
+    so staging the bump alongside the writes closes it for good.
+    """
+    ctag = str(uuid.uuid4())
+    batch.set(_sync_ref(collection_name), {
+        "ctag": ctag,
+        "sync_token": ctag,
+        "updated_at": datetime.now(timezone.utc),
+    })
+    return ctag
+
+
+def record_tombstones_in_batch(
+    batch, collection_name: str, resource_ids: list[str], sync_token: str
+) -> None:
+    """Stage tombstones into a caller-owned batch, under *sync_token*.
+
+    Pair with :func:`bump_ctag_in_batch` so the deletions, their tombstones
+    and the bump commit together or not at all. Tombstones are the ONLY
+    removal signal in this sync model: a delete that commits without them
+    leaves the resources on the phone permanently, and the documents are gone
+    so nothing can re-derive the list.
+    """
+    tombstones = _sync_ref(collection_name).collection("tombstones")
+    now = datetime.now(timezone.utc)
+    for rid in resource_ids:
+        batch.set(
+            tombstones.document(rid),
+            {"deleted_at": now, "sync_token": sync_token},
+        )
+
+
+def record_tombstones_bulk(
+    collection_name: str, resource_ids: list[str]
+) -> None:
+    """Record many tombstones with ONE ctag read and chunked batch writes.
+
+    ``record_tombstone`` calls ``get_ctag`` inline, so it costs TWO serialized
+    round trips per resource. Draining a hearing-heavy dossier that way — or
+    deleting a recurring series — walks straight into the gunicorn 60 s
+    timeout, and a SIGKILL there is unrecoverable: the resources are gone from
+    the collection listing, the CTag was never bumped, and nothing remains to
+    tell DavX5 to look. One read plus ``ceil(N / 450)`` commits instead.
+
+    Read-side sibling of :func:`get_ctags_bulk`. Failures propagate — a caller
+    deleting on the strength of this must not mistake a write failure for a
+    completed drain.
+    """
+    if not resource_ids:
+        return
+    token = get_ctag(collection_name)
+    now = datetime.now(timezone.utc)
+    tombstones = _sync_ref(collection_name).collection("tombstones")
+    for start in range(0, len(resource_ids), _BATCH_CHUNK):
+        batch = db.batch()
+        for rid in resource_ids[start:start + _BATCH_CHUNK]:
+            batch.set(
+                tombstones.document(rid),
+                {"deleted_at": now, "sync_token": token},
+            )
+        batch.commit()
+
+
 def remove_tombstone(collection_name: str, resource_id: str) -> None:
     """Remove a tombstone when a resource (re)enters a collection.
 

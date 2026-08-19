@@ -1,6 +1,6 @@
 """Hearing / calendar routes — list, detail, create, edit, delete."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from markupsafe import escape
 
@@ -19,6 +19,9 @@ from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
+from utils import recurrence
+from utils.deadlines import today_mtl
+from utils.logging_setup import log_hearing_series_event
 from models.hearing import (
     FORUM_LABELS,
     HEARING_TYPE_COLORS,
@@ -35,12 +38,17 @@ from models.hearing import (
     VALID_REMINDER_MINUTES,
     VALID_STATUSES,
     create_hearing,
+    create_hearing_series,
     delete_hearing,
+    delete_series,
     forum_of,
     get_hearing,
     list_hearings,
     list_hearings_in_range,
     list_hearings_window,
+    list_series,
+    occurrence_day,
+    unlink_hearing,
     update_hearing,
 )
 from models.dossier import (
@@ -120,6 +128,15 @@ def _template_context() -> dict:
         "valid_reminder_minutes": VALID_REMINDER_MINUTES,
         "valid_courts": VALID_COURTS,
         "quick_locations": QUICK_LOCATIONS,
+        # Séries récurrentes. FREQUENCY_LABELS porte "" en tête (« Ne se
+        # répète pas »), donc le select s'ouvre sur le cas non récurrent.
+        "frequency_labels": recurrence.FREQUENCY_LABELS,
+        "max_serie_occurrences": recurrence.MAX_SERIE_OCCURRENCES,
+        "serie_id": "",
+        "serie_rule": None,
+        "serie_label": "",
+        "message": "",
+        "erreur": "",
     }
 
 
@@ -173,6 +190,32 @@ def _form_data() -> dict:
         "modalite": f.get("modalite", "présentiel"),
         "conference_uri": f.get("conference_uri", "").strip(),
     }
+
+
+def _parse_day(value: str) -> "date | None":
+    """A ``YYYY-MM-DD`` form value as a plain calendar date."""
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _recurrence_from_form() -> tuple[str, "int | None", "date | None"]:
+    """(fréquence, nombre, date de fin) — ("", None, None) si non récurrent.
+
+    Exactement UNE borne est transmise, l'autre reste None : c'est
+    ``recurrence.validate_rule`` qui refuse zéro ou deux bornes, en français,
+    côté serveur. Le formulaire pose la même règle, mais un formulaire n'est
+    pas une garde — ``_parse_int`` accepte les négatifs et les valeurs
+    astronomiques, que le modèle borne indépendamment.
+    """
+    f = request.form
+    frequence = f.get("frequence", "").strip()
+    if not frequence:
+        return "", None, None
+    if f.get("fin_mode", "count") == "date":
+        return frequence, None, _parse_day(f.get("fin_date", ""))
+    return frequence, _parse_int(f.get("fin_count", ""), 0), None
 
 
 # ── Dossier search (for autocomplete in forms) ───────────────────────────
@@ -253,9 +296,47 @@ def hearing_list() -> str:
     hearing_type_filter = request.args.get("type", "").strip()
     status_filter = request.args.get("status", "").strip()
     month_str = request.args.get("month", "")
+    serie_id = request.args.get("serie", "").strip()
 
     now = datetime.now(timezone.utc)
     now_mtl = to_mtl(now)
+
+    if serie_id:
+        # Vue d'une seule chaîne : sans elle il n'y a aucun moyen de vérifier
+        # qu'une action de série a fait ce qu'on lui a demandé, et la liste
+        # ordinaire se coupe à 100 lignes sans commande pour aller plus loin.
+        # Le contenu n'est pas filtré : on veut la chaîne ENTIÈRE.
+        try:
+            rows = list_series(serie_id)
+        except Exception:
+            rows = []
+        aujourd_hui = today_mtl()
+        upcoming = [
+            r for r in rows if (occurrence_day(r) or aujourd_hui) >= aujourd_hui
+        ]
+        past = [
+            r for r in rows if (occurrence_day(r) or aujourd_hui) < aujourd_hui
+        ]
+        past.reverse()
+        ctx = _template_context()
+        ctx.update(
+            upcoming=upcoming,
+            past=past,
+            view="list",
+            hearing_type_filter="",
+            status_filter="",
+            now=now,
+            serie_id=serie_id,
+            serie_rule=(rows[0].get("serie_rule") if rows else None),
+            serie_label=recurrence.describe(
+                rows[0].get("serie_rule") if rows else None
+            ),
+            message=request.args.get("message", ""),
+            erreur=request.args.get("erreur", ""),
+        )
+        if _is_htmx():
+            return render_template("hearings/_hearing_rows.html", **ctx)
+        return render_template("hearings/list.html", **ctx)
 
     if view == "month":
         # Parse month param (YYYY-MM) or use current month (in Montreal tz)
@@ -399,6 +480,8 @@ def hearing_list() -> str:
             hearing_type_filter=hearing_type_filter,
             status_filter=status_filter,
             now=now,
+            message=request.args.get("message", ""),
+            erreur=request.args.get("erreur", ""),
         )
 
         if _is_htmx():
@@ -436,15 +519,52 @@ def hearing_create() -> str:
     data = _form_data()
     data = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
+    frequence, count, until = _recurrence_from_form()
+
+    def _reject(errors: list[str]) -> str:
+        ctx = _template_context()
+        data["dossier_file_number"] = data.get(
+            "dossier_file_number", request.form.get("dossier_display", "")
+        )
+        data["dossier_title"] = data.get("dossier_title", "")
+        ctx.update(hearing=data, errors=errors, return_to=return_to)
+        return render_template("hearings/form.html", **ctx)
+
+    if frequence:
+        occurrences, errors = create_hearing_series(
+            data, frequence, count=count, until=until
+        )
+        if errors:
+            return _reject(errors)
+        # Le CTag est bumpé DANS le lot (models.hearing.create_hearing_series)
+        # — commit puis bump laisserait N audiences vivantes que DavX5 ne
+        # resynchroniserait jamais.
+        serie_id = occurrences[0]["serie_id"]
+        log_hearing_series_event(
+            "series_created",
+            serie_id,
+            occurrences=len(occurrences),
+            dossier_id=occurrences[0].get("dossier_id", ""),
+            frequence=frequence,
+            ctag_bumped=True,
+        )
+        # Vers la chaîne elle-même : la seule façon de VOIR ce qui vient
+        # d'être créé, et la vérification que le lot a fait ce qu'on a demandé.
+        target = url_for(
+            "hearings.hearing_list",
+            serie=serie_id,
+            message=f"Série créée — {len(occurrences)} occurrences.",
+        )
+        if _is_htmx():
+            resp = redirect(target)
+            resp.headers["HX-Redirect"] = target
+            return resp
+        return redirect(target)
 
     hearing, errors = create_hearing(data)
 
     if errors:
-        ctx = _template_context()
-        data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
-        data["dossier_title"] = data.get("dossier_title", "")
-        ctx.update(hearing=data, errors=errors, return_to=return_to)
-        return render_template("hearings/form.html", **ctx)
+        return _reject(errors)
 
     bump_ctag(collection_for(hearing.get("dossier_id")))
 
@@ -471,6 +591,9 @@ def hearing_detail(hearing_id: str) -> str:
     ctx = _template_context()
     ctx["hearing"] = hearing
     ctx["return_to"] = request.args.get("return_to", "")
+    ctx["serie_label"] = recurrence.describe(hearing.get("serie_rule"))
+    ctx["message"] = request.args.get("message", "")
+    ctx["erreur"] = request.args.get("erreur", "")
     return render_template("hearings/detail.html", **ctx)
 
 
@@ -536,13 +659,110 @@ def hearing_update(hearing_id: str) -> str:
 # ── Delete ────────────────────────────────────────────────────────────────
 
 
+def _delete_chain_from(hearing: dict, return_to: str) -> str:
+    """« Cette occurrence et les suivantes » — jamais une occurrence passée.
+
+    Une occurrence déjà tenue est le constat de ce qui a eu lieu ; le pivot
+    est donc le plus TARDIF entre le jour de cette occurrence et aujourd'hui.
+    """
+    serie_id = hearing["serie_id"]
+    pivot = max(occurrence_day(hearing) or today_mtl(), today_mtl())
+
+    rows, errors = delete_series(serie_id, from_date=pivot)
+    target = safe_internal_redirect(
+        return_to, url_for("hearings.hearing_list")
+    )
+    if errors:
+        # 2xx obligatoire : htmx n'échange que les 2xx, un fragment 4xx ne
+        # paraîtrait jamais et le bouton semblerait mort.
+        return redirect(f"{target}{'&' if '?' in target else '?'}"
+                        f"erreur={escape(errors[0])}")
+
+    if rows:
+        # UNE ligne au journal, jamais N : list_recent lit une fenêtre dure de
+        # 200 filtrée en Python, donc N lignes évinceraient tout l'historique
+        # de suppression du cabinet. Légitime parce que le lot est atomique.
+        record_deletion(
+            "hearing_series", serie_id,
+            dossier_id=rows[0].get("dossier_id", "") or "",
+            title=f"{len(rows)} occurrences",
+            status=rows[0].get("status", ""),
+        )
+        log_hearing_series_event(
+            "series_deleted",
+            serie_id,
+            occurrences=len(rows),
+            dossier_id=rows[0].get("dossier_id", ""),
+            ctag_bumped=True,
+        )
+
+    message = (
+        f"Série supprimée — {len(rows)} occurrences."
+        if rows else "Aucune occurrence à venir à supprimer."
+    )
+    target = f"{target}{'&' if '?' in target else '?'}message={escape(message)}"
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)
+
+
+@hearings_bp.route("/<hearing_id>/detacher", methods=["POST"])
+@login_required
+def hearing_unlink(hearing_id: str) -> str:
+    """Détacher une occurrence de sa série — elle devient autonome."""
+    return_to = request.form.get("return_to", "")
+    existing = get_hearing(hearing_id)
+    serie_id = (existing or {}).get("serie_id", "")
+
+    updated, errors = unlink_hearing(hearing_id)
+    fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
+    if errors:
+        target = safe_internal_redirect(return_to, fallback)
+        return redirect(f"{target}{'&' if '?' in target else '?'}"
+                        f"erreur={escape(errors[0])}")
+
+    # L'appartenance a changé : la charge DAV n'émet pas serie_id, mais la
+    # collection doit repasser au téléphone pour que l'etag suive.
+    bump_ctag(collection_for(updated.get("dossier_id")))
+    log_hearing_series_event(
+        "series_unlinked",
+        serie_id,
+        hearing_id=hearing_id,
+        dossier_id=updated.get("dossier_id", ""),
+        ctag_bumped=True,
+    )
+    target = safe_internal_redirect(return_to, fallback)
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)
+
+
 @hearings_bp.route("/<hearing_id>/delete", methods=["POST"])
 @login_required
 def hearing_delete(hearing_id: str) -> str:
-    """Delete a hearing and redirect to the list (or back to the caller)."""
+    """Delete a hearing, or a whole chain from this occurrence onward.
+
+    ``scope`` is ``occurrence`` (default) or ``suivantes``. The serie_id is
+    re-read from the STORED hearing, never taken from the form: "" is a
+    stored value, so a stale page whose occurrence has since been detached
+    would otherwise ask to delete the chain "" — every standalone hearing in
+    the practice.
+    """
     return_to = request.form.get("return_to", "")
     existing_hearing = get_hearing(hearing_id)
     dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
+
+    if (
+        request.form.get("scope") == "suivantes"
+        and existing_hearing
+        and existing_hearing.get("serie_id")
+    ):
+        return _delete_chain_from(existing_hearing, return_to)
+
     success, error = delete_hearing(hearing_id)
 
     if success:

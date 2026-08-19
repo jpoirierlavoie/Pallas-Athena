@@ -146,3 +146,30 @@ def test_task_delete_route_records_the_trail(monkeypatch):
     with app.test_request_context("/taches/t1/delete", method="POST"):
         tr.task_delete.__wrapped__("t1")
     assert recorded == []
+
+
+# ── Parité modèle ↔ connecteur ──────────────────────────────────────────
+def test_the_mcp_entity_type_enum_mirrors_the_model_vocabulary():
+    """mcp/tools.py recopie VALID_ENTITY_TYPES À LA MAIN — l'interdit
+    d'importer models/* au démarrage l'y oblige. Sans cette épingle, une
+    valeur ajoutée d'un seul côté devient silencieusement infiltrable :
+    le connecteur refuse un filtre que le modèle écrit pourtant.
+    """
+    from mcp.tools import TOOLS
+    from models.audit_event import VALID_ENTITY_TYPES
+
+    enum = TOOLS["list_deletions"]["input_schema"]["properties"][
+        "entity_type"
+    ]["enum"]
+    assert set(enum) == set(VALID_ENTITY_TYPES)
+
+
+def test_a_deleted_series_is_journalled_as_one_row_not_one_per_occurrence():
+    """list_recent lit une fenêtre dure de 200 et filtre EN PYTHON après
+    coup : 60 lignes par chaîne évinceraient l'historique du cabinet, et
+    list_deletions répondrait alors vide avec truncated: false — une
+    affirmation de complétude fausse."""
+    from models.audit_event import VALID_ENTITY_TYPES
+
+    assert "hearing_series" in VALID_ENTITY_TYPES
+

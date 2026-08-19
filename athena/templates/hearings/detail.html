@@ -28,6 +28,29 @@
     </div>
   </div>
 
+  {# ── Série ───────────────────────────────────────────────────── #}
+  {% if hearing.serie_id %}
+  <div class="mb-4 bg-gray-50 border border-gray-200 rounded-lg px-4 py-3">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="text-sm text-gray-700">
+        <span class="font-medium text-gray-900">Série</span>
+        {% if serie_label %}<span class="text-gray-500"> — {{ serie_label }}</span>{% endif %}
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="{{ url_for('hearings.hearing_list', serie=hearing.serie_id) }}"
+           class="text-sm text-indigo-600 hover:text-indigo-700 whitespace-nowrap">Voir la série</a>
+        <form method="post" action="{{ url_for('hearings.hearing_unlink', hearing_id=hearing.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+          <button type="submit"
+                  title="Détacher de la série"
+                  class="text-sm text-gray-600 hover:text-gray-800 whitespace-nowrap">Détacher</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Header card ─────────────────────────────────────────────── #}
   {% set type_colors = {
     'conférence_de_gestion': 'bg-blue-50 text-blue-600',
@@ -177,6 +200,39 @@
          class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
       <div class="p-6">
         <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer cette audience ?</h3>
+        {% if hearing.serie_id %}
+        {# Une portée par formulaire — la forme du dialogue de suppression
+           d'un dossier de classement. Aucune portée n'atteint le passé :
+           une occurrence tenue est le constat de ce qui a eu lieu. #}
+        <p class="text-sm text-gray-600 mb-6">
+          Cette audience fait partie d'une série. Les occurrences déjà passées ne
+          sont jamais supprimées.
+        </p>
+        <div class="flex flex-col gap-3">
+          <form method="post" action="{{ url_for('hearings.hearing_delete', hearing_id=hearing.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+            <input type="hidden" name="scope" value="occurrence">
+            <button type="submit"
+                    class="w-full px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+              Cette occurrence seulement
+            </button>
+          </form>
+          <form method="post" action="{{ url_for('hearings.hearing_delete', hearing_id=hearing.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+            <input type="hidden" name="scope" value="suivantes">
+            <button type="submit"
+                    class="w-full px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+              Cette occurrence et les suivantes
+            </button>
+          </form>
+          <button @click="deleteOpen = false"
+                  class="w-full px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-50">
+            Annuler
+          </button>
+        </div>
+        {% else %}
         <p class="text-sm text-gray-600 mb-6">Cette action est irréversible.</p>
         <div class="flex gap-3 justify-end">
           <button @click="deleteOpen = false"
@@ -192,6 +248,7 @@
             </button>
           </form>
         </div>
+        {% endif %}
       </div>
     </div>
   </div>

@@ -22,7 +22,7 @@ from dav.sync import (
     bump_ctag,
     clear_tombstones,
     delete_sync_state,
-    record_tombstone,
+    record_tombstones_bulk,
     remove_tombstone,
 )
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
@@ -835,12 +835,21 @@ def _sync_dossier_dav_visibility(
     if is_active:
         # Reopened: resources re-enter the collection — drop stale tombstones
         # so one sync REPORT never reports an id as both live and deleted.
+        # Safe direction: remove_tombstone swallows per item, and a missed
+        # removal self-heals on the next write.
         for rid in resource_ids:
             remove_tombstone(sync_name, rid)
     else:
         # Closed/archived: tombstone every resource so DavX5 drains cleanly.
-        for rid in resource_ids:
-            record_tombstone(sync_name, rid)
+        #
+        # BULK, not a loop. record_tombstone costs two serialized round trips
+        # each (it calls get_ctag inline), so a dossier holding a recurring
+        # series plus its tasks and notes reaches the gunicorn 60 s timeout —
+        # and this is the UNRECOVERABLE direction: the status write has
+        # already committed, the dossier has dropped out of the root PROPFIND
+        # listing, so if the bump never runs there is no server-side way left
+        # to clear those court dates off the phone.
+        record_tombstones_bulk(sync_name, resource_ids)
     bump_ctag(sync_name)
 
 

@@ -1586,7 +1586,7 @@ TOOLS: dict[str, dict] = {
                         "task", "hearing", "note", "document", "expense",
                         "time_entry", "invoice", "partie", "protocol",
                         "protocol_step", "folder", "doc_template",
-                        "dossier", "admin_transaction",
+                        "dossier", "admin_transaction", "hearing_series",
                     ],
                     "description": "Filter to one entity type.",
                 },
