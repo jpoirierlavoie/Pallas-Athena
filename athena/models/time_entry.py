@@ -356,6 +356,98 @@ def update_time_entry(
     return merged, []
 
 
+def get_time_entries_bulk(entry_ids: list[str]) -> dict[str, dict]:
+    """Fetch many time entries in ONE round-trip. Returns {id: doc}.
+
+    Mirrors ``models.dossier.get_dossiers_bulk`` / ``partie.get_parties_bulk``
+    — document-ID lookups need no index. **Unlike those two, this one fails
+    CLOSED**: it propagates. Its caller is the bulk phase reclassification, a
+    WRITE path, and a read failure degraded to ``{}`` there would report every
+    single item « introuvable » — a batch of fabricated refusals the caller
+    would take at face value. Same reasoning as ``folder.subtree_members``
+    (fails closed) against ``folder.list_documents`` (fails open): a list on a
+    screen may degrade, a write's view of the world may not.
+    """
+    unique_ids = [e for e in dict.fromkeys(entry_ids) if e]
+    if not unique_ids:
+        return {}
+    refs = [db.collection(COLLECTION).document(eid) for eid in unique_ids]
+    return {
+        snap.id: snap.to_dict() for snap in db.get_all(refs) if snap.exists
+    }
+
+
+def set_time_entry_phase(
+    entry_id: str, phase: str, sous_phase: str
+) -> tuple[Optional[dict], list[str], bool]:
+    """Reclassify a time entry's litigation phase — INVOICED OR NOT.
+
+    The ONE writer allowed past the ``invoiced`` wall, and the reason it is
+    allowed is that the wall protects the invoice's MONEY figures and the
+    phase is not one of them: ``phase``/``sous_phase`` appear on no invoice,
+    no ``lineitems`` record, no gabarit placeholder and no DAV serializer —
+    they feed the budget's ``aggregate_actuals`` and the list badges, and
+    nothing else. ``invoiced`` is therefore never consulted here.
+
+    What keeps that claim true is the WRITE SHAPE, not a promise: a partial
+    ``update()`` of exactly four keys, never the merged full-document
+    ``set()`` that :func:`update_time_entry` performs. The function is
+    structurally incapable of moving hours, rate, amount or description, and
+    a test pins the key set. Never "simplify" this into ``update_time_entry``
+    with a relaxed guard — that guard's refusal is what makes the connector's
+    ``update_time_entry`` output schema (« invoiced: always false ») true.
+
+    Validation is ``phases.validate_pair`` ALONE, deliberately not the
+    module's ``_validate``: a legacy row with a blank description or zero
+    hours must stay reclassifiable, and none of those fields is written.
+
+    Returns ``(doc, errors, changed)``. The third member deviates from the
+    house ``(doc, errors)`` convention on purpose (the
+    ``folder.delete_folder`` precedent): the bulk caller must report
+    « applied » apart from « already carried that code », and deriving that
+    in each caller is how two callers drift. An unchanged pair writes
+    NOTHING — no updated_at churn, no etag churn — which is what makes a
+    reclassification pass replayable (the ``complete_task`` doctrine).
+    """
+    existing = get_time_entry(entry_id)
+    if not existing:
+        return None, ["Entrée de temps introuvable."], False
+
+    resolved, sous = phases.resolve_pair(phase, sous_phase)
+    pair = {"phase": resolved, "sous_phase": sous}
+    # Validate FIRST: an unknown sub-code leaves the parent underived, and
+    # reporting that as « phase requise » would send the caller to fix the
+    # wrong half.
+    errors = phases.validate_pair(pair)
+    if errors:
+        return None, errors, False
+    if not pair["phase"]:
+        # Reclassifying means ASSIGNING a code. « Hors phase » (HOR) is the
+        # vocabulary's own answer for unclassifiable work — blanking is a
+        # regression this path deliberately cannot perform.
+        return None, ["Une phase du litige est requise."], False
+
+    if (existing.get("phase", ""), existing.get("sous_phase", "")) == (
+        pair["phase"], pair["sous_phase"]
+    ):
+        return existing, [], False
+
+    now = datetime.now(timezone.utc)
+    etag = str(uuid.uuid4())
+    try:
+        db.collection(COLLECTION).document(entry_id).update({
+            "phase": pair["phase"],
+            "sous_phase": pair["sous_phase"],
+            "updated_at": now,
+            "etag": etag,
+        })
+    except Exception:
+        log_unexpected("time entry phase write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+
+    return {**existing, **pair, "updated_at": now, "etag": etag}, [], True
+
+
 def delete_time_entry(entry_id: str) -> tuple[bool, str]:
     """Delete a time entry. Returns (success, error_message)."""
     existing = get_time_entry(entry_id)

@@ -64,6 +64,18 @@
         <strong>remplace</strong> la valeur nommée&nbsp;; les champs qui ne
         sont pas nommés ne sont pas touchés.
       </p>
+      <p class="mt-3">
+        Et <strong>reclasser la phase du litige</strong> d'une entrée de
+        temps ou d'un déboursé — <strong>même déjà facturé</strong>, une à
+        une ou par lots de 50. C'est la seule exception au gel de la
+        facturation, et elle ne touche à aucun chiffre&nbsp;: la phase ne
+        figure sur <strong>aucune facture</strong> (les postes en sont des
+        copies indépendantes qui n'en portent pas), sur aucun gabarit et
+        dans aucune synchronisation DavX5 — elle ne sert qu'au
+        <strong>budget par phase</strong>. Ces outils-là ne peuvent
+        atteindre ni les heures, ni le taux, ni le montant, ni la
+        description.
+      </p>
       <p class="mt-3 font-medium">Ce que le connecteur ne peut
         <strong>jamais</strong> faire&nbsp;:</p>
       <ul class="list-disc list-inside mt-1 space-y-1">
@@ -86,7 +98,8 @@
         protocole entier se referme</strong> et ses échéances cessent de
         paraître au relevé quotidien. Et porter des entrées de temps ou des
         déboursés à une facture reprise les <strong>fige</strong>&nbsp;: plus
-        rien ici ne pourra les modifier.
+        rien ici ne pourra les modifier, <strong>sauf leur phase du
+        litige</strong>.
       </p>
       <p class="mt-2">
         <strong>Rien ne peut être supprimé</strong>, et rien ne s'annule
@@ -122,8 +135,10 @@
             Créer des notes, tâches, événements, temps, déboursés, contacts,
             dossiers et factures reprises (brouillon, numéro d'origine)&nbsp;;
             corriger un contact, un dossier, une entrée non facturée&nbsp;;
-            clore une tâche. Jamais de suppression, jamais de paiement,
-            jamais un nouveau numéro de
+            reclasser la phase du litige d'une entrée de temps ou d'un
+            déboursé, même facturé (la phase ne paraît sur aucune
+            facture)&nbsp;; clore une tâche. Jamais de suppression, jamais de
+            paiement, jamais un nouveau numéro de
             facture.{% if params.write_requested %} Le client a demandé
             cet accès.{% endif %}
           </span>

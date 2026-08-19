@@ -1006,6 +1006,93 @@ def test_billing_edits_conform_live_and_dry(monkeypatch):
               handlers.update_expense({**ex, "dry_run": True}))
 
 
+def _phase_world(monkeypatch):
+    """Two BILLED rows — the state these four tools exist to reach."""
+    entries = {
+        "e1": {"id": "e1", "dossier_id": "d1", "description": "Rédaction",
+               "hours": 1.5, "rate": 30000, "amount": 45000, "billable": True,
+               "invoiced": True, "invoice_id": "i1",
+               "phase": "", "sous_phase": "", "date": DT},
+        "e2": {"id": "e2", "dossier_id": "d1", "description": "Appel",
+               "hours": 0.5, "rate": 30000, "amount": 15000, "billable": True,
+               "invoiced": True, "invoice_id": "i1",
+               "phase": "CTS", "sous_phase": "CTS-02", "date": DT},
+    }
+    disbs = {
+        "x1": {"id": "x1", "dossier_id": "d1", "description": "Timbre",
+               "amount": 5000, "taxable": True, "invoiced": True,
+               "invoice_id": "i1", "category": "timbre_judiciaire",
+               "phase": "", "sous_phase": "", "date": DT},
+    }
+
+    def _set_time(i, p, s):
+        doc = entries[i]
+        changed = (doc["phase"], doc["sous_phase"]) != (p, s)
+        doc.update(phase=p, sous_phase=s)
+        return dict(doc), [], changed
+
+    def _set_exp(i, p, s):
+        doc = disbs[i]
+        changed = (doc["phase"], doc["sous_phase"]) != (p, s)
+        doc.update(phase=p, sous_phase=s)
+        return dict(doc), [], changed
+
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_entries_bulk",
+                        lambda ids: {i: dict(entries[i]) for i in ids
+                                     if i in entries})
+    monkeypatch.setattr(handlers.time_entry_model, "set_time_entry_phase",
+                        _set_time)
+    monkeypatch.setattr(handlers.expense_model, "get_expenses_bulk",
+                        lambda ids: {i: dict(disbs[i]) for i in ids
+                                     if i in disbs})
+    monkeypatch.setattr(handlers.expense_model, "set_expense_phase", _set_exp)
+
+
+def test_phase_single_conforms_live_and_dry(monkeypatch):
+    _phase_world(monkeypatch)
+
+    te = {"time_entry_id": "e1", "sous_phase": "INT-01"}
+    _conforms("set_time_entry_phase",
+              handlers.set_time_entry_phase({**te, "dry_run": True}))
+    _conforms("set_time_entry_phase", handlers.set_time_entry_phase(dict(te)))
+    # …and the « unchanged » branch, which writes nothing at all.
+    _conforms("set_time_entry_phase", handlers.set_time_entry_phase(dict(te)))
+
+    ex = {"expense_id": "x1", "phase": "PRE"}
+    _conforms("set_expense_phase",
+              handlers.set_expense_phase({**ex, "dry_run": True}))
+    _conforms("set_expense_phase", handlers.set_expense_phase(dict(ex)))
+
+
+def test_phase_bulk_conforms_across_every_outcome(monkeypatch):
+    """One call carrying all three outcomes — applied, unchanged, refused —
+    because `reason`, `dossier_id` and `invoiced` are null on exactly one of
+    them and the schema has to accept the mixture."""
+    _phase_world(monkeypatch)
+
+    args = {"entries": [
+        {"time_entry_id": "e1", "sous_phase": "INT-01"},   # applied
+        {"time_entry_id": "e2", "sous_phase": "CTS-02"},   # unchanged
+        {"time_entry_id": "absent", "sous_phase": "PRE-01"},  # refused
+        {"time_entry_id": "e3"},                           # refused, no code
+    ]}
+    dry = handlers.set_time_entry_phase_bulk(
+        {"entries": [dict(i) for i in args["entries"]], "dry_run": True}
+    )
+    _conforms("set_time_entry_phase_bulk", dry)
+
+    live = handlers.set_time_entry_phase_bulk(
+        {"entries": [dict(i) for i in args["entries"]]}
+    )
+    _conforms("set_time_entry_phase_bulk", live)
+    assert live["applied"] == 1 and live["unchanged"] == 1
+    assert live["refused"] == 2 and live["requested"] == 4
+
+    _conforms("set_expense_phase_bulk", handlers.set_expense_phase_bulk(
+        {"entries": [{"expense_id": "x1", "phase": "PRE"}]}
+    ))
+
+
 def test_dossier_writes_conform_live_and_dry(monkeypatch):
     import models
 

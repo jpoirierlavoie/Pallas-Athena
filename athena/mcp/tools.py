@@ -393,6 +393,12 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     "create_dossier", "update_dossier",
     "update_time_entry", "update_expense",
     "import_invoice",
+    # Reclassement de phase (août 2026) — les SEULES écritures qui passent
+    # le mur `invoiced`, et elles ne peuvent toucher que phase/sous_phase :
+    # ce couple ne figure sur aucune facture, aucun gabarit, aucun
+    # sérialiseur DAV. Les update_* ci-dessus gardent leur refus intact.
+    "set_time_entry_phase", "set_expense_phase",
+    "set_time_entry_phase_bulk", "set_expense_phase_bulk",
 })
 
 # Writes that REPLACE a stored value rather than adding one. Lot Q ended the
@@ -410,6 +416,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # outil du connecteur ne peut défaire (seule l'application le peut, en
     # annulant la facture), donc sous-avertir ici serait le pire endroit.
     "import_invoice",
+    # Un reclassement REMPLACE le code stocké. Qu'il ne puisse pas déplacer
+    # un montant ne le rend pas additif : le client se sert de l'indice pour
+    # décider s'il confirme, et sous-avertir reste le mauvais côté de
+    # l'erreur.
+    "set_time_entry_phase", "set_expense_phase",
+    "set_time_entry_phase_bulk", "set_expense_phase_bulk",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -728,6 +740,40 @@ def _phase_props() -> dict:
             "type": "string",
             "enum": _SOUS_PHASE_CODES,
             "description": _SOUS_PHASE_DESCRIPTION,
+        },
+    }
+
+
+# Items per bulk reclassification call. Sized in the MAX_ZIP_FILES tradition
+# — against gunicorn's 60 s SIGKILL, not against a round number: one batched
+# read plus at most 50 serialized single-key updates is a few seconds. It
+# also equals one `list_time_entries` page, so the read and write cadences
+# line up. `minItems`/`maxItems` below are declared for the CLIENT's benefit;
+# this module's subset validator does not implement them (as with
+# `multipleOf` on hours), so the real enforcement is in the handler.
+PHASE_BULK_MAX = 50
+
+
+def _phase_bulk_items(id_key: str, id_description: str) -> dict:
+    """The `entries` array of a bulk phase reclassification."""
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": PHASE_BULK_MAX,
+        "description": (
+            f"The rows to reclassify, 1 to {PHASE_BULK_MAX} per call. Each "
+            "item carries its own phase code; an item naming neither `phase` "
+            "nor `sous_phase` is refused (unlike the correction tools, "
+            "omitting a code here would mean nothing)."
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                id_key: _id(id_description),
+                **_phase_props(),
+            },
+            "required": [id_key],
+            "additionalProperties": False,
         },
     }
 
@@ -2512,6 +2558,123 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "update_expense",
         "scope": SCOPE_WRITE,
+    },
+    "set_time_entry_phase": {
+        "title": "Reclasser la phase d'une entrée de temps",
+        "description": (
+            "WRITE — sets ONLY the litigation phase (`phase`/`sous_phase`) "
+            "of a time entry, and it is the only tool that can do so once "
+            "the entry has been carried to an invoice. That is safe because "
+            "the phase appears on NO invoice: line items are independent "
+            "copies with no phase field, and nothing on the client's note "
+            "d'honoraires reads it. It feeds the dossier's budget-vs-actuals "
+            "view, which counts billed work too. Hours, rate, amount, "
+            "description, billable and invoiced are not addressable here and "
+            "cannot move. When the entry is NOT yet invoiced, "
+            "`update_time_entry` can set the phase as well, alongside other "
+            "corrections — prefer it there. Give `sous_phase` alone and the "
+            "parent phase is derived from its prefix; give `phase` alone and "
+            "it imputes to that phase's « -00 » (Général). Re-sending the "
+            "code the entry already carries writes nothing at all."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "time_entry_id": _id(
+                    "The entry to reclassify (UUIDv4). Required."
+                ),
+                **_phase_props(),
+                **_write_protocol_props(),
+            },
+            "required": ["time_entry_id"],
+            "additionalProperties": False,
+        },
+        "handler": "set_time_entry_phase",
+        "scope": SCOPE_WRITE,
+        # A second identical call writes nothing: the model compares the
+        # stored pair first. Declared per tool, like complete_task.
+        "annotations": {"idempotentHint": True},
+    },
+    "set_expense_phase": {
+        "title": "Reclasser la phase d'un déboursé",
+        "description": (
+            "WRITE — the disbursement twin of `set_time_entry_phase`: sets "
+            "ONLY `phase`/`sous_phase`, invoiced or not, because the phase "
+            "appears on no invoice. Amount, category, taxable, description "
+            "and invoiced cannot move here. Disbursements carry the "
+            "« frais » half of a phase's actuals, so a budget is only right "
+            "when both halves are classified. Re-sending the stored code "
+            "writes nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "expense_id": _id(
+                    "The disbursement to reclassify. Required."
+                ),
+                **_phase_props(),
+                **_write_protocol_props(),
+            },
+            "required": ["expense_id"],
+            "additionalProperties": False,
+        },
+        "handler": "set_expense_phase",
+        "scope": SCOPE_WRITE,
+        "annotations": {"idempotentHint": True},
+    },
+    "set_time_entry_phase_bulk": {
+        "title": "Reclasser la phase de plusieurs entrées de temps",
+        "description": (
+            "WRITE — the batch form of `set_time_entry_phase`: reclassify a "
+            "whole page of `list_time_entries` in one call instead of one "
+            "call per row. `results` comes back in the SAME ORDER as "
+            "`entries`, one row each, saying whether the entry was applied, "
+            "left alone because it already carried that code, or refused and "
+            "why — a refused item never blocks its neighbours, and nothing "
+            "is ever changed without being named. Naming the same id twice "
+            "refuses the WHOLE call: two codes for one row means the plan is "
+            "ambiguous. A retry with the same `idempotency_key` replays the "
+            "stored report rather than re-attempting the refusals — fix them "
+            "and send a NEW key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entries": _phase_bulk_items(
+                    "time_entry_id", "A time entry to reclassify."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        },
+        "handler": "set_time_entry_phase_bulk",
+        "scope": SCOPE_WRITE,
+        "annotations": {"idempotentHint": True},
+    },
+    "set_expense_phase_bulk": {
+        "title": "Reclasser la phase de plusieurs déboursés",
+        "description": (
+            "WRITE — the batch form of `set_expense_phase`, same contract as "
+            "`set_time_entry_phase_bulk`: ordered per-item results, a refusal "
+            "that stops nothing else, a duplicated id that refuses the whole "
+            "call, and a replayed `idempotency_key` that returns the stored "
+            "report."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entries": _phase_bulk_items(
+                    "expense_id", "A disbursement to reclassify."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["entries"],
+            "additionalProperties": False,
+        },
+        "handler": "set_expense_phase_bulk",
+        "scope": SCOPE_WRITE,
+        "annotations": {"idempotentHint": True},
     },
     "import_invoice": {
         "title": "Importer une facture du système précédent",

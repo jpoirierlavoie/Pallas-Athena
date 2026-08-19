@@ -483,6 +483,11 @@ DossierEvent = Literal[
     "court_file_parsed",
     "budget_saved",
     "budget_exported",
+    # Reclassement de phase (août 2026). La SEULE écriture que
+    # l'application accepte sur une ligne déjà facturée — donc la seule
+    # dont une trace vaut d'être gardée, même si la phase ne porte aucun
+    # chiffre. Codes et identifiants uniquement.
+    "phase_reclassified",
 ]
 # Séries récurrentes d'audiences. Un seul clic y crée ou détruit jusqu'à 60
 # documents, frappe autant de pierres tombales et pousse autant de VEVENT vers
@@ -535,6 +540,10 @@ McpEvent = Literal[
     # this Literal lied, so a reader checking the type concluded the event
     # did not exist.
     "mcp_write",
+    # Le lot de reclassement de phase. `mcp_write` se déclenche bien, mais
+    # avec `entity_id: None` — honnête, un lot n'a pas d'entité unique —,
+    # d'où cette ligne de COMPTES à côté. Jamais de liste d'identifiants.
+    "mcp_phase_bulk",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 TemplateEvent = Literal[

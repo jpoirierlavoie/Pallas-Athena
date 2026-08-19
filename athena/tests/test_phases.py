@@ -106,6 +106,43 @@ def test_default_sous_phase():
     assert phases.default_sous_phase("ZZZ") == ""
 
 
+# ── resolve_pair — l'ergonomie partagee des chemins d'ecriture ───────────
+
+
+def test_resolve_pair_derives_the_parent_from_the_prefix():
+    assert phases.resolve_pair("", "CTS-02") == ("CTS", "CTS-02")
+
+
+def test_resolve_pair_imputes_the_00_from_a_phase_alone():
+    assert phases.resolve_pair("MEE", "") == ("MEE", "MEE-00")
+
+
+def test_resolve_pair_leaves_a_complete_pair_alone():
+    assert phases.resolve_pair("EXP", "EXP-03") == ("EXP", "EXP-03")
+    # …y compris un couple INCOHERENT : completer n'est pas valider, et
+    # c'est validate_pair qui doit pouvoir le refuser en le voyant tel quel.
+    assert phases.resolve_pair("INS", "CTS-02") == ("INS", "CTS-02")
+
+
+def test_resolve_pair_ne_valide_jamais():
+    """Un sous-code inconnu ressort TEL QUEL, parent non derive.
+
+    Deriver ici et valider la-bas est ce qui empeche « sous-phase
+    invalide » d'etre rapporte comme « phase requise » : le modele
+    validerait un couple vide et enverrait l'appelant reparer la mauvaise
+    moitie."""
+    assert phases.resolve_pair("", "XXX-99") == ("", "XXX-99")
+    assert phases.validate_pair(
+        {"phase": "", "sous_phase": "XXX-99"}
+    ) == ["Sous-phase invalide."]
+    assert phases.resolve_pair("ZZZ", "") == ("ZZZ", "")
+    assert phases.resolve_pair("", "") == ("", "")
+
+
+def test_resolve_pair_trims_and_tolerates_blanks():
+    assert phases.resolve_pair("  CTS  ", "  CTS-02 ") == ("CTS", "CTS-02")
+
+
 # ── Derived constants (Annexe B) ────────────────────────────────────────────
 
 

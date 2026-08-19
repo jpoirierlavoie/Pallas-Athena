@@ -28,6 +28,7 @@ from models.time_entry import (
     get_time_entry,
     list_time_entries,
     list_time_entries_page,
+    set_time_entry_phase,
     update_time_entry,
 )
 from models.expense import (
@@ -39,6 +40,7 @@ from models.expense import (
     get_filtered_expense_totals,
     list_expenses,
     list_expenses_page,
+    set_expense_phase,
     update_expense,
 )
 from models.dossier import (
@@ -47,6 +49,7 @@ from models.dossier import (
 )
 from models.protocol import get_current_phase_for_dossier
 from utils import phases
+from utils.logging_setup import log_dossier_event
 
 time_expenses_bp = Blueprint(
     "time_expenses", __name__, url_prefix="/temps"
@@ -124,13 +127,24 @@ def _phase_prefill(dossier_id: str, recent_rows: list[dict]) -> dict:
         return {"phase_default": "", "sous_phase_default": "",
                 "phase_recents": []}
     phase, sous = get_current_phase_for_dossier(dossier_id)
+    return {"phase_default": phase, "sous_phase_default": sous,
+            "phase_recents": _recent_codes(recent_rows)}
+
+
+def _recent_codes(recent_rows: list[dict]) -> list[str]:
+    """The dossier's recently-used sub-codes, in order, deduplicated.
+
+    Shared with the reclassification form, which offers the same chips but
+    deliberately NOT the protocol-derived default: suggesting the dossier's
+    CURRENT phase for a two-year-old billed entry would propose the wrong
+    answer with the authority of a default.
+    """
     recents: list[str] = []
     for row in recent_rows:
         code = row.get("sous_phase") or ""
         if code and code not in recents:
             recents.append(code)
-    return {"phase_default": phase, "sous_phase_default": sous,
-            "phase_recents": recents[:8]}
+    return recents[:8]
 
 
 def _enrich_dossier_info(data: dict) -> dict:
@@ -566,6 +580,149 @@ def expense_delete(expense_id: str) -> str:
 
 
 # ── Export ───────────────────────────────────────────────────────────────
+
+
+# ── Reclassement de phase (août 2026) ────────────────────────────────────
+#
+# La SEULE écriture que l'application autorise sur une ligne déjà facturée,
+# et elle ne porte que sur `phase`/`sous_phase` : ce couple ne figure sur
+# aucune facture (les postes en sont des copies indépendantes qui n'en
+# portent pas), sur aucun gabarit, dans aucun sérialiseur DAV — il ne sert
+# qu'au budget par phase, lequel compte le travail FACTURÉ. Le formulaire
+# d'édition ordinaire garde donc son refus intact : c'est une porte étroite
+# à côté du mur, jamais une brèche dedans.
+
+
+def _phase_form_context(
+    item: dict, *, kind: str, recent_rows: list[dict]
+) -> dict:
+    """Shared context of the reclassification form."""
+    ctx = _template_context()
+    ctx.update(
+        item=item,
+        kind=kind,
+        errors=[],
+        phase_recents=_recent_codes(recent_rows),
+    )
+    return ctx
+
+
+def _phase_form_data() -> tuple[str, str, str]:
+    """(phase, sous_phase, return_to) from the submitted form."""
+    f = request.form
+    return (
+        f.get("phase", "").strip(),
+        f.get("sous_phase", "").strip(),
+        f.get("return_to", ""),
+    )
+
+
+def _log_reclassement(item: dict, kind: str, sous_phase: str) -> None:
+    """Codes and ids only — never a description, never an amount."""
+    log_dossier_event(
+        "phase_reclassified",
+        item.get("dossier_id", ""),
+        entity_type=kind,
+        entity_id=item.get("id", ""),
+        from_sous_phase=item.get("sous_phase", ""),
+        to_sous_phase=sous_phase,
+        invoiced=bool(item.get("invoiced")),
+    )
+
+
+@time_expenses_bp.route("/<entry_id>/phase")
+@login_required
+def time_entry_phase_edit(entry_id: str) -> str:
+    """Render the phase-only form for a time entry (billed or not)."""
+    entry = get_time_entry(entry_id)
+    if not entry:
+        return redirect(url_for("time_expenses.time_list"))
+
+    recent_rows, _ = list_time_entries_page(
+        dossier_id=entry.get("dossier_id", ""), limit=10
+    )
+    ctx = _phase_form_context(entry, kind="time_entry", recent_rows=recent_rows)
+    ctx.update(return_to=request.args.get("return_to", ""))
+    return render_template("time_expenses/phase_form.html", **ctx)
+
+
+@time_expenses_bp.route("/<entry_id>/phase", methods=["POST"])
+@login_required
+def time_entry_phase_update(entry_id: str) -> str:
+    """Apply a phase reclassification to a time entry."""
+    phase, sous_phase, return_to = _phase_form_data()
+    existing = get_time_entry(entry_id)
+    entry, errors, changed = set_time_entry_phase(entry_id, phase, sous_phase)
+
+    if errors:
+        recent_rows, _ = list_time_entries_page(
+            dossier_id=(existing or {}).get("dossier_id", ""), limit=10
+        )
+        ctx = _phase_form_context(
+            {**(existing or {"id": entry_id}), "phase": phase,
+             "sous_phase": sous_phase},
+            kind="time_entry", recent_rows=recent_rows,
+        )
+        ctx.update(errors=errors, return_to=return_to)
+        return render_template("time_expenses/phase_form.html", **ctx)
+
+    if changed:
+        _log_reclassement(existing or {}, "time_entry", sous_phase or phase)
+
+    target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)
+
+
+@time_expenses_bp.route("/depenses/<expense_id>/phase")
+@login_required
+def expense_phase_edit(expense_id: str) -> str:
+    """Render the phase-only form for a disbursement (billed or not)."""
+    expense = get_expense(expense_id)
+    if not expense:
+        return redirect(url_for("time_expenses.time_list", tab="depenses"))
+
+    recent_rows, _ = list_expenses_page(
+        dossier_id=expense.get("dossier_id", ""), limit=10
+    )
+    ctx = _phase_form_context(expense, kind="expense", recent_rows=recent_rows)
+    ctx.update(return_to=request.args.get("return_to", ""))
+    return render_template("time_expenses/phase_form.html", **ctx)
+
+
+@time_expenses_bp.route("/depenses/<expense_id>/phase", methods=["POST"])
+@login_required
+def expense_phase_update(expense_id: str) -> str:
+    """Apply a phase reclassification to a disbursement."""
+    phase, sous_phase, return_to = _phase_form_data()
+    existing = get_expense(expense_id)
+    expense, errors, changed = set_expense_phase(expense_id, phase, sous_phase)
+
+    if errors:
+        recent_rows, _ = list_expenses_page(
+            dossier_id=(existing or {}).get("dossier_id", ""), limit=10
+        )
+        ctx = _phase_form_context(
+            {**(existing or {"id": expense_id}), "phase": phase,
+             "sous_phase": sous_phase},
+            kind="expense", recent_rows=recent_rows,
+        )
+        ctx.update(errors=errors, return_to=return_to)
+        return render_template("time_expenses/phase_form.html", **ctx)
+
+    if changed:
+        _log_reclassement(existing or {}, "expense", sous_phase or phase)
+
+    fallback = url_for("time_expenses.time_list", tab="depenses")
+    target = safe_internal_redirect(return_to, fallback)
+    if _is_htmx():
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
+    return redirect(target)
 
 
 _TIME_EXPORT_COLUMNS_CSV = [

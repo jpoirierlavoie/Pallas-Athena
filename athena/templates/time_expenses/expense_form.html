@@ -24,6 +24,10 @@
   {% if expense and expense.invoiced %}
   <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
     <p class="text-sm text-amber-700 font-medium">Cette dépense est liée à une facture et ne peut pas être modifiée ni supprimée.</p>
+    <p class="text-sm text-amber-700 mt-1">
+      Sa <strong>phase du litige</strong> reste corrigeable&nbsp;: elle ne
+      figure sur aucune facture et ne sert qu'au budget par phase.
+    </p>
   </div>
   {% endif %}
 
@@ -131,8 +135,13 @@
     {# Actions #}
     <div class="flex gap-3 pt-2">
       {% if expense and expense.invoiced %}
+      {# The one narrow door beside the wall: phase only, its own route. #}
+      <a href="{{ url_for('time_expenses.expense_phase_edit', expense_id=expense.id, return_to=return_to or '') }}"
+         class="flex-1 px-4 py-2.5 text-sm font-medium text-center text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        Reclasser la phase
+      </a>
       <a href="{{ return_to or url_for('time_expenses.time_list', tab='depenses') }}"
-         class="flex-1 px-4 py-2.5 text-sm font-medium text-center text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
         Retour
       </a>
       {% else %}

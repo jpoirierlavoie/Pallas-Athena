@@ -136,7 +136,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 43  # 26 lectures + 17 ecritures
+    assert len(tools.TOOLS) == 47  # 26 lectures + 21 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -146,6 +146,15 @@ def test_registry_shape():
 
 
 # ── Write-tool registry invariants ──────────────────────────────────────
+
+# Pinned in ONE place and read by both annotation tests: two copies of a
+# membership list is one copy that drifts.
+_IDEMPOTENT_WRITES = frozenset({
+    "complete_task",
+    "set_time_entry_phase", "set_expense_phase",
+    "set_time_entry_phase_bulk", "set_expense_phase_bulk",
+})
+
 
 def test_write_tools_set_is_pinned():
     """A third write tool must not be able to ship unnoticed."""
@@ -161,6 +170,10 @@ def test_write_tools_set_is_pinned():
         "create_dossier", "update_dossier",
         "update_time_entry", "update_expense",
         "import_invoice",
+        # Reclassement de phase : les seules ecritures qui franchissent le
+        # mur `invoiced`, et elles ne touchent que phase/sous_phase.
+        "set_time_entry_phase", "set_expense_phase",
+        "set_time_entry_phase_bulk", "set_expense_phase_bulk",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -175,7 +188,7 @@ def test_annotations_split_both_directions():
     # writes nothing at all. A single family value would misdescribe one of
     # them, and the hint is what a client uses to decide whether a retry is
     # safe.
-    idempotent = {"complete_task"}
+    idempotent = _IDEMPOTENT_WRITES
     for name, d in descriptors.items():
         ann = d["annotations"]
         assert ann["openWorldHint"] is False
@@ -3735,12 +3748,16 @@ def test_a_ctag_failure_still_reports_the_write_as_committed(ct, monkeypatch):
     assert any("Ne pas réessayer" in w for w in payload["warnings"])
 
 
-def test_complete_task_is_the_only_idempotent_write():
+def test_idempotent_writes_are_declared_per_tool():
     """The hint is what a client uses to decide whether a retry is safe:
-    every creator appends again, complete_task writes nothing."""
+    every creator appends again, while these write nothing when the state
+    they ask for is already the stored one. It was `complete_task` alone
+    until the phase reclassifiers shipped, each of which compares the
+    stored code first and skips the write — which is exactly what makes a
+    reclassification pass over a year of history safe to re-run."""
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
     for name in tools.WRITE_TOOLS:
-        expected = name == "complete_task"
+        expected = name in _IDEMPOTENT_WRITES
         assert descriptors[name]["annotations"]["idempotentHint"] is expected, name
 
 

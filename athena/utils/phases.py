@@ -343,6 +343,26 @@ def validate_pair(data: dict) -> list[str]:
     return errors
 
 
+def resolve_pair(phase: str, sous_phase: str) -> tuple[str, str]:
+    """Complete a phase pair from whichever half the caller supplied.
+
+    The ergonomics every phased WRITE path offers: a sub-code alone derives
+    its parent from the prefix (the prefix IS the relationship), a phase
+    alone imputes to its « -00 ». Deliberately does NOT validate — a pair it
+    cannot complete comes back exactly as given, so :func:`validate_pair`
+    refuses it with the message that names the real problem. Deriving here
+    and validating there is what keeps « sous-phase invalide » from being
+    reported as « phase requise ».
+    """
+    phase = (phase or "").strip()
+    sous = (sous_phase or "").strip()
+    if sous and not phase:
+        phase = phase_of(sous)
+    doc = {"phase": phase, "sous_phase": sous}
+    apply_sous_phase_default(doc)
+    return doc["phase"], doc["sous_phase"]
+
+
 def apply_sous_phase_default(doc: dict) -> None:
     """D-4: a phased document with no sub-code imputes to the phase's ``-00``.
 

@@ -324,6 +324,71 @@ def update_expense(
     return merged, []
 
 
+def get_expenses_bulk(expense_ids: list[str]) -> dict[str, dict]:
+    """Fetch many disbursements in ONE round-trip. Returns {id: doc}.
+
+    Twin of ``models.time_entry.get_time_entries_bulk``, and it **fails
+    CLOSED** for the same reason: its caller is a write path, where a read
+    failure degraded to ``{}`` would manufacture a refusal for every item.
+    """
+    unique_ids = [e for e in dict.fromkeys(expense_ids) if e]
+    if not unique_ids:
+        return {}
+    refs = [db.collection(COLLECTION).document(eid) for eid in unique_ids]
+    return {
+        snap.id: snap.to_dict() for snap in db.get_all(refs) if snap.exists
+    }
+
+
+def set_expense_phase(
+    expense_id: str, phase: str, sous_phase: str
+) -> tuple[Optional[dict], list[str], bool]:
+    """Reclassify a disbursement's litigation phase — INVOICED OR NOT.
+
+    Twin of ``models.time_entry.set_time_entry_phase``; read that docstring
+    for why the ``invoiced`` wall does not apply to this pair and why the
+    write is a four-key partial ``update()`` rather than a merged ``set()``.
+    Returns ``(doc, errors, changed)``; an unchanged pair writes nothing.
+    """
+    existing = get_expense(expense_id)
+    if not existing:
+        return None, ["Dépense introuvable."], False
+
+    resolved, sous = phases.resolve_pair(phase, sous_phase)
+    pair = {"phase": resolved, "sous_phase": sous}
+    # Validate FIRST: an unknown sub-code leaves the parent underived, and
+    # reporting that as « phase requise » would send the caller to fix the
+    # wrong half.
+    errors = phases.validate_pair(pair)
+    if errors:
+        return None, errors, False
+    if not pair["phase"]:
+        # Reclassifying means ASSIGNING a code. « Hors phase » (HOR) is the
+        # vocabulary's own answer for unclassifiable work — blanking is a
+        # regression this path deliberately cannot perform.
+        return None, ["Une phase du litige est requise."], False
+
+    if (existing.get("phase", ""), existing.get("sous_phase", "")) == (
+        pair["phase"], pair["sous_phase"]
+    ):
+        return existing, [], False
+
+    now = datetime.now(timezone.utc)
+    etag = str(uuid.uuid4())
+    try:
+        db.collection(COLLECTION).document(expense_id).update({
+            "phase": pair["phase"],
+            "sous_phase": pair["sous_phase"],
+            "updated_at": now,
+            "etag": etag,
+        })
+    except Exception:
+        log_unexpected("expense phase write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+
+    return {**existing, **pair, "updated_at": now, "etag": etag}, [], True
+
+
 def delete_expense(expense_id: str) -> tuple[bool, str]:
     """Delete an expense. Returns (success, error_message)."""
     existing = get_expense(expense_id)

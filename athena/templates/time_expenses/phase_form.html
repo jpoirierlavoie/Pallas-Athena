@@ -1,0 +1,116 @@
+{# Phase-only reclassification form — time entry OR disbursement, BILLED OR
+   NOT. Deliberately separate from time_form.html / expense_form.html: those
+   two keep refusing a billed row, and the narrowness here is the point. The
+   only writable control on this page is the phase selector, so nothing that
+   prints on a client's invoice is even reachable.
+   Context: item, kind ("time_entry" | "expense"), errors, return_to,
+   phase_recents + the shared _template_context(). #}
+{% extends "base.html" %}
+{% block title %}Reclasser la phase — Pallas Athena{% endblock %}
+
+{% block content %}
+{% set is_time = kind == 'time_entry' %}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <a href="{{ return_to or url_for('time_expenses.time_list', tab='heures' if is_time else 'depenses') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    {{ ms('chevron_left', 16) }}
+    {{ 'Retour' if return_to else 'Temps & Dépenses' }}
+  </a>
+
+  <h1 class="text-xl font-semibold text-gray-900 mb-2">Reclasser la phase du litige</h1>
+  <p class="text-sm text-gray-500 mb-6">
+    {{ "Cette entrée de temps" if is_time else "Ce déboursé" }} garde
+    {{ "ses heures, son taux, son montant" if is_time else "son montant, sa catégorie" }}
+    et sa description&nbsp;: seule la phase change.
+  </p>
+
+  {% if item.invoiced %}
+  <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    <p class="text-sm text-amber-700 font-medium">
+      {{ "Cette entrée est déjà portée à une facture." if is_time else "Ce déboursé est déjà porté à une facture." }}
+    </p>
+    <p class="text-sm text-amber-700 mt-1">
+      Sa phase reste corrigeable&nbsp;: elle ne figure sur aucune facture et
+      ne sert qu'au budget par phase du dossier.
+    </p>
+  </div>
+  {% endif %}
+
+  {% if errors %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Read-only recap: what this form does NOT touch ─────────── #}
+  <div class="p-4 bg-gray-50 rounded-xl space-y-2 mb-6">
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Dossier</span>
+      <span class="text-sm text-gray-900 truncate">{{ item.dossier_file_number or '—' }}</span>
+    </div>
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Date</span>
+      <span class="text-sm text-gray-900">
+        {{ item.date.strftime('%Y-%m-%d') if item.date and item.date.strftime is defined else '—' }}
+      </span>
+    </div>
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Description</span>
+      <span class="text-sm text-gray-900 truncate">{{ item.description or '—' }}</span>
+    </div>
+    {% if is_time %}
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Heures</span>
+      <span class="text-sm text-gray-900">{{ item.hours }} h</span>
+    </div>
+    {% else %}
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Catégorie</span>
+      <span class="text-sm text-gray-900">{{ category_labels.get(item.category, item.category or '—') }}</span>
+    </div>
+    {% endif %}
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Montant</span>
+      <span class="text-sm text-gray-900">{{ item.amount | cents_fr }}</span>
+    </div>
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-sm font-medium text-gray-700">Phase actuelle</span>
+      <span class="text-sm text-gray-900">
+        {{ sous_phase_labels.get(item.sous_phase) or phase_labels.get(item.phase, 'Non renseignée') }}
+      </span>
+    </div>
+  </div>
+
+  <form method="post"
+        action="{{ url_for('time_expenses.time_entry_phase_update', entry_id=item.id) if is_time else url_for('time_expenses.expense_phase_update', expense_id=item.id) }}"
+        class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="return_to" value="{{ return_to or '' }}">
+
+    {# The cascading picker, shared with every other phased form.
+       is_edit = false: reclassifying means ASSIGNING a code, so the select
+       is required and offers no « Non renseignée ». « Hors phase » (HOR) is
+       the vocabulary's own answer for unclassifiable work. #}
+    {% set phase_value = item.phase or '' %}
+    {% set sous_phase_value = item.sous_phase or '' %}
+    {% set is_edit = False %}
+    {% include "components/_phase_selector.html" %}
+
+    <div class="flex gap-3 pt-2">
+      <button type="submit"
+              class="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        Enregistrer la phase
+      </button>
+      <a href="{{ return_to or url_for('time_expenses.time_list', tab='heures' if is_time else 'depenses') }}"
+         class="px-4 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Annuler
+      </a>
+    </div>
+  </form>
+</div>
+{% endblock %}

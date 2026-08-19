@@ -83,7 +83,13 @@ from utils.taxonomie import DOMAINE_LABELS
 from utils.template_fields import selected_address
 from utils.validators import format_phone_display
 
-from mcp.tools import ToolArgumentError, date_str, format_cents, iso_mtl
+from mcp.tools import (
+    PHASE_BULK_MAX,
+    ToolArgumentError,
+    date_str,
+    format_cents,
+    iso_mtl,
+)
 
 # Bounded superset size for Python-side post-filtering (§10.1): never more
 # than 200 docs fetched per tool call, never a new composite index.
@@ -2973,18 +2979,15 @@ def _resolve_phase_pair(args: dict) -> tuple[str, str]:
     a contradictory pair is refused in French BEFORE anything is written.
     Both omitted → ``("", "")`` = non renseignée.
     """
-    phase = (args.get("phase") or "").strip()
-    sous = (args.get("sous_phase") or "").strip()
-    if sous and not phase:
-        phase = phases.phase_of(sous)
+    phase, sous = phases.resolve_pair(
+        args.get("phase") or "", args.get("sous_phase") or ""
+    )
     if phase and sous and phases.phase_of(sous) != phase:
         raise ToolArgumentError(
             f"La sous-phase « {sous} » n'appartient pas à la phase "
             f"« {phase} ». Corrigez le couple ou omettez `phase` pour "
             "qu'elle soit déduite du préfixe."
         )
-    if phase and not sous:
-        sous = phases.default_sous_phase(phase)
     return phase, sous
 
 
@@ -4073,6 +4076,291 @@ def update_expense(args: dict) -> dict:
             legacy_collection="expenses",
             entity_builder=_expense_entity,
         ),
+    )
+
+
+# ── 44-47. set_*_phase (+_bulk) (WRITE — reclassement de phase) ─────────
+#
+# The ONLY writes in the connector that pass the `invoiced` wall, and the
+# reason they may is that the wall protects the invoice's MONEY figures
+# while `phase`/`sous_phase` appear on NO invoice: line items are
+# independent copies with no phase field, no gabarit placeholder resolves
+# one, no DAV serializer emits one. They feed `budget.aggregate_actuals`,
+# which counts billed work — which is precisely why a billed entry left
+# unphased skews the dossier's budget-vs-actuals view.
+#
+# `update_time_entry` / `update_expense` keep their refusal INTACT. That is
+# not timidity: their refusal is what makes their own output schemas
+# (« invoiced: always false ») true, and it is what keeps a money field one
+# guard away from a caller that only meant to retag.
+
+
+_PHASE_NO_CODE = (
+    "Aucun code de phase fourni : indiquez `phase`, `sous_phase`, ou les "
+    "deux."
+)
+
+
+def _phase_request_rows(items: list, id_key: str) -> list[dict]:
+    """One normalized request row per item, IN ORDER.
+
+    ``reason`` set means the item is refused before anything is read — a
+    blank id, no code at all, or a pair whose sub-code belongs to another
+    phase. These are per-ITEM refusals on purpose: they name exactly what
+    to fix and let the other rows through. The one whole-call refusal is
+    the duplicate id below, because a row named twice with two codes has no
+    single intended outcome to report.
+    """
+    rows: list[dict] = []
+    for item in items:
+        row_id = str((item or {}).get(id_key) or "").strip()
+        row: dict[str, Any] = {
+            "id": row_id, "phase": "", "sous_phase": "", "reason": None,
+        }
+        if not row_id:
+            row["reason"] = f"`{id_key}` est requis."
+            rows.append(row)
+            continue
+        if not (item.get("phase") or item.get("sous_phase")):
+            row["reason"] = _PHASE_NO_CODE
+            rows.append(row)
+            continue
+        try:
+            # Same resolution as every other phased write: sous_phase alone
+            # derives its parent, phase alone imputes to « -00 », and a
+            # contradictory pair is refused BEFORE anything is written.
+            row["phase"], row["sous_phase"] = _resolve_phase_pair(item)
+        except ToolArgumentError as exc:
+            row["reason"] = str(exc)
+            rows.append(row)
+            continue
+        # The model validates too — but `run_write` short-circuits a dry run
+        # WITHOUT calling it, so a code the schema enum happens not to cover
+        # (a direct call, a widened enum) would be previewed as « applied »
+        # and refused for real. Repeating the model's own check here is what
+        # keeps the two answers identical.
+        invalid = phases.validate_pair(row)
+        if invalid:
+            row["reason"] = "; ".join(invalid)
+        elif not row["phase"]:
+            row["reason"] = "Une phase du litige est requise."
+        rows.append(row)
+    return rows
+
+
+def _refuse_duplicate_ids(rows: list[dict], id_key: str) -> None:
+    seen: set[str] = set()
+    for row in rows:
+        row_id = row["id"]
+        if not row_id:
+            continue
+        if row_id in seen:
+            raise ToolArgumentError(
+                f"`{id_key}` « {row_id} » figure deux fois dans le même "
+                "appel. Un lot ne peut pas porter deux codes pour la même "
+                "ligne : corrigez la liste et renvoyez-la."
+            )
+        seen.add(row_id)
+
+
+def _phase_result_row(row: dict, doc: Optional[dict], outcome: str) -> dict:
+    """One reported outcome. Codes echo the REQUEST when nothing was read."""
+    pair = (
+        _phase_pair(doc) if doc is not None
+        else _phase_pair({"phase": row["phase"], "sous_phase": row["sous_phase"]})
+    )
+    return {
+        "id": row["id"],
+        "outcome": outcome,
+        "reason": row["reason"],
+        # null, never a default: asserting « not invoiced » about a row we
+        # could not read would be inventing a fact about it.
+        "dossier_id": doc.get("dossier_id", "") if doc is not None else None,
+        "invoiced": bool(doc.get("invoiced")) if doc is not None else None,
+        **pair,
+    }
+
+
+def _set_phase_impl(
+    args: dict,
+    dry_run: bool,
+    *,
+    id_key: str,
+    entity_type: str,
+    bulk_getter,
+    setter,
+    entity_builder,
+    bulk: bool,
+) -> dict:
+    """Shared body of the four reclassification tools.
+
+    Every guard runs BEFORE the caller's ``dry_run`` branch can matter:
+    ``run_write`` short-circuits a dry call without ever reaching the model,
+    so a simulation that skipped these would announce successes the live
+    call refuses.
+    """
+    if bulk:
+        items = args.get("entries") or []
+        if not items:
+            raise ToolArgumentError(
+                "`entries` doit contenir au moins une ligne."
+            )
+        if len(items) > PHASE_BULK_MAX:
+            raise ToolArgumentError(
+                f"`entries` est plafonné à {PHASE_BULK_MAX} lignes par appel "
+                f"({len(items)} reçues). Découpez le lot."
+            )
+    else:
+        items = [args]
+
+    rows = _phase_request_rows(items, id_key)
+    _refuse_duplicate_ids(rows, id_key)
+
+    readable = [r["id"] for r in rows if r["id"] and r["reason"] is None]
+    # Fails CLOSED by design (models.*.get_*_bulk propagates): degraded to
+    # {} it would manufacture « introuvable » for every single row.
+    fetched = bulk_getter(readable) if readable else {}
+
+    results: list[dict] = []
+    applied = unchanged = refused = 0
+    for row in rows:
+        if row["reason"] is not None:
+            refused += 1
+            results.append(_phase_result_row(row, None, "refused"))
+            continue
+        doc = fetched.get(row["id"])
+        if doc is None:
+            # The getters swallow a read error into a missing key, so the
+            # model cannot tell « absent » from « unreadable » — and saying
+            # only one of the two would be a guess.
+            row["reason"] = f"Ligne introuvable ou illisible : {row['id']}."
+            refused += 1
+            results.append(_phase_result_row(row, None, "refused"))
+            continue
+        already = (doc.get("phase", ""), doc.get("sous_phase", "")) == (
+            row["phase"], row["sous_phase"]
+        )
+        if already:
+            unchanged += 1
+            results.append(_phase_result_row(row, doc, "unchanged"))
+            continue
+        if dry_run:
+            applied += 1
+            preview = {**doc, "phase": row["phase"],
+                       "sous_phase": row["sous_phase"]}
+            results.append(_phase_result_row(row, preview, "applied"))
+            continue
+        written, errors, changed = setter(
+            row["id"], row["phase"], row["sous_phase"]
+        )
+        if errors:
+            row["reason"] = "; ".join(errors)
+            refused += 1
+            results.append(_phase_result_row(row, doc, "refused"))
+            continue
+        if changed:
+            applied += 1
+        else:
+            unchanged += 1
+        results.append(
+            _phase_result_row(row, written, "applied" if changed else "unchanged")
+        )
+
+    warnings: list[str] = []
+    if dry_run:
+        warnings.append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+    if refused:
+        warnings.append(
+            f"{refused} ligne(s) refusée(s) — voir `reason`. Corrigez-les et "
+            "renvoyez-les avec une NOUVELLE idempotency_key : rejouer la "
+            "même clé rendrait ce rapport tel quel."
+        )
+
+    if not bulk:
+        # The single tools raise on a refusal, like every other corrector —
+        # a caller that named one row wants an error, not a report of one.
+        if results[0]["outcome"] == "refused":
+            raise ToolArgumentError(results[0]["reason"])
+        doc = fetched.get(rows[0]["id"]) or {}
+        entity_source = (
+            {**doc, "phase": rows[0]["phase"],
+             "sous_phase": rows[0]["sous_phase"]}
+            if results[0]["outcome"] == "applied" else doc
+        )
+        return {
+            "updated": True,
+            "entity_type": entity_type,
+            "outcome": results[0]["outcome"],
+            "entity": entity_builder(entity_source),
+            "warnings": warnings,
+        }
+
+    from utils.logging_setup import log_mcp_event
+
+    # `mcp_write` fires from the endpoint with entity_id: None — honest, a
+    # batch has no single entity — so the audit trail gets its counts here.
+    # COUNTS ONLY: no id list, no description, no amount.
+    log_mcp_event(
+        "mcp_phase_bulk", "success",
+        entity_type=entity_type, requested=len(rows), applied=applied,
+        unchanged=unchanged, refused=refused, dry_run=dry_run,
+    )
+    return {
+        "updated": True,
+        "entity_type": entity_type,
+        "requested": len(rows),
+        "applied": applied,
+        "unchanged": unchanged,
+        "refused": refused,
+        "results": results,
+        "warnings": warnings,
+    }
+
+
+_TIME_PHASE_KW = {
+    "id_key": "time_entry_id",
+    "entity_type": "time_entry",
+    "bulk_getter": lambda ids: time_entry_model.get_time_entries_bulk(ids),
+    "setter": lambda i, p, s: time_entry_model.set_time_entry_phase(i, p, s),
+    "entity_builder": _time_entry_entity,
+}
+_EXPENSE_PHASE_KW = {
+    "id_key": "expense_id",
+    "entity_type": "expense",
+    "bulk_getter": lambda ids: expense_model.get_expenses_bulk(ids),
+    "setter": lambda i, p, s: expense_model.set_expense_phase(i, p, s),
+    "entity_builder": _expense_entity,
+}
+
+
+def set_time_entry_phase(args: dict) -> dict:
+    return run_write(
+        "set_time_entry_phase", args,
+        lambda dry: _set_phase_impl(args, dry, bulk=False, **_TIME_PHASE_KW),
+    )
+
+
+def set_expense_phase(args: dict) -> dict:
+    return run_write(
+        "set_expense_phase", args,
+        lambda dry: _set_phase_impl(args, dry, bulk=False, **_EXPENSE_PHASE_KW),
+    )
+
+
+def set_time_entry_phase_bulk(args: dict) -> dict:
+    return run_write(
+        "set_time_entry_phase_bulk", args,
+        lambda dry: _set_phase_impl(args, dry, bulk=True, **_TIME_PHASE_KW),
+    )
+
+
+def set_expense_phase_bulk(args: dict) -> dict:
+    return run_write(
+        "set_expense_phase_bulk", args,
+        lambda dry: _set_phase_impl(args, dry, bulk=True, **_EXPENSE_PHASE_KW),
     )
 
 

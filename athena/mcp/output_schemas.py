@@ -600,6 +600,64 @@ def _write_result(verb: str, extra: Optional[dict[str, Any]] = None) -> dict:
 
 # ── The registry ────────────────────────────────────────────────────────
 
+def _phase_bulk_result(entity_type: str) -> dict:
+    """The report a bulk phase reclassification returns.
+
+    ``results`` mirrors the request's ``entries`` ONE-FOR-ONE AND IN ORDER,
+    so a caller can zip the two. That ordering is the whole contract: a
+    batch that applied some rows and refused others must be readable line by
+    line, or it degrades into the silent partial success this codebase
+    treats as the worst available failure.
+
+    ``reason`` is the one conditional key — non-null only on a refusal — so
+    it is typed and deliberately NOT required, per the output-schema rule
+    that ``required`` lists only always-present keys.
+    """
+    label = "time entry" if entity_type == "time_entry" else "disbursement"
+    return _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str(f"Always « {entity_type} »."),
+        "requested": _int("Rows received — always len(results)."),
+        "applied": _int("Rows whose code actually changed."),
+        "unchanged": _int(
+            "Rows that already carried the requested code. NOTHING was "
+            "written for these — no updated_at, no etag — which is what "
+            "makes a reclassification pass safe to re-run."),
+        "refused": _int(
+            "Rows refused, each with its `reason`. A refusal never blocks "
+            "the rest of the batch."),
+        "results": _arr(
+            _obj({
+                "id": _str(f"The {label}'s id, echoed."),
+                "outcome": {
+                    "type": "string",
+                    "enum": ["applied", "unchanged", "refused"],
+                    "description": "What happened to THIS row.",
+                },
+                "reason": _nstr(
+                    "French explanation; null unless outcome is « refused »."),
+                "dossier_id": _nstr(
+                    "null when the row could not be read — never '' , which "
+                    "would read as « no dossier »."),
+                "invoiced": {
+                    "type": ["boolean", "null"],
+                    "description": (
+                        "null when the row could not be read: asserting « not "
+                        "invoiced » about a row we never saw would be "
+                        "inventing a fact. MAY be true — that is the point of "
+                        "this tool."),
+                },
+                **_phase_pair(),
+            }, required=["id", "outcome", "dossier_id", "invoiced",
+                         "phase", "sous_phase", "phase_label",
+                         "sous_phase_label"]),
+            "One row per requested entry, SAME ORDER as the request.",
+        ),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    })
+
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -1196,6 +1254,69 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
     }),
+
+    # ── Reclassement de phase (août 2026) ──────────────────────────────
+    # The one write family whose entity may come back with
+    # ``invoiced: true`` — the phase is on no invoice, so the wall that
+    # freezes the money figures does not apply to it. The two `update_*`
+    # schemas above still say « always false », and they still tell the
+    # truth: their handlers refuse an invoiced row.
+
+    "set_time_entry_phase": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « time_entry »."),
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = the entry already carried that exact code "
+                "and NOTHING was written (no updated_at, no etag). A refusal "
+                "is an error, never an outcome here."),
+        },
+        "entity": _obj({
+            "id": _str(),
+            "dossier_id": _str(),
+            "label": _str("The billing narrative — echoed, never changed."),
+            "date": _nstr("YYYY-MM-DD."),
+            "hours": _num("Echoed unchanged: this tool cannot move it."),
+            "billable": _bool("Echoed unchanged."),
+            "invoiced": _bool(
+                "MAY be true — the phase is correctable on a billed entry."),
+            **_phase_pair(),
+            **_money("rate", "Echoed unchanged."),
+            **_money("amount", "Echoed unchanged — no figure moves here."),
+        }),
+        "warnings": _arr(_str(), "French; empty when nothing is amiss."),
+        **_write_protocol_keys(),
+    }),
+
+    "set_expense_phase": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « expense »."),
+        "outcome": {
+            "type": "string", "enum": ["applied", "unchanged"],
+            "description": (
+                "« unchanged » = the disbursement already carried that code; "
+                "nothing was written."),
+        },
+        "entity": _obj({
+            "id": _str(),
+            "dossier_id": _str(),
+            "label": _str("Echoed, never changed."),
+            "date": _nstr("YYYY-MM-DD."),
+            "category": _str(
+                "The DISBURSEMENT category — a different, orthogonal "
+                "vocabulary from the litigation phase. Echoed unchanged."),
+            "taxable": _bool("Echoed unchanged."),
+            "invoiced": _bool("MAY be true."),
+            **_phase_pair(),
+            **_money("amount", "Echoed unchanged."),
+        }),
+        "warnings": _arr(_str()),
+        **_write_protocol_keys(),
+    }),
+
+    "set_time_entry_phase_bulk": _phase_bulk_result("time_entry"),
+    "set_expense_phase_bulk": _phase_bulk_result("expense"),
 
     "import_invoice": _obj({
         "created": {"type": "boolean", "enum": [True]},
