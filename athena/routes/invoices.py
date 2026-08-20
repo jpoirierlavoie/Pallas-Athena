@@ -168,6 +168,13 @@ def invoice_list() -> str:
             target="#invoice-rows",
         )
 
+    # Le solde VIVANT, annoté côté route — jamais calculé dans le gabarit :
+    # une facture héritée peut n'avoir NI `amount_due` NI `amount_paid`, et une
+    # soustraction en Jinja lèverait là où `balance_of` tolère l'absence.
+    # (Le patron est celui de routes/admin_ledger._balance.)
+    for inv in invoices:
+        inv["_balance"] = balance_of(inv)
+
     ctx = _template_context()
     ctx.update(
         invoices=invoices,

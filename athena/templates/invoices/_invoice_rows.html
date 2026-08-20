@@ -32,8 +32,21 @@
       </div>
     </div>
 
-    {# Total #}
-    <span class="text-sm font-semibold text-gray-900 flex-shrink-0">{{ inv.total | cents_fr }}</span>
+    {# Le SOLDE en principal, le total en second (decision 2026-08-18).
+       `inv.total` est ce qui a ete facture ; `inv._balance` est ce qui reste
+       du — annote cote route, jamais soustrait ici (une facture heritee peut
+       n'avoir aucun des deux champs). Une facture annulee ne doit RIEN : on
+       n'affiche alors que son total. #}
+    <div class="flex flex-col items-end leading-tight flex-shrink-0">
+      {% if inv.status == 'annulée' %}
+      <span class="text-sm font-semibold text-gray-400">{{ inv.total | cents_fr }}</span>
+      {% else %}
+      <span class="text-sm font-semibold text-gray-900">{{ inv._balance | cents_fr }}</span>
+      {% if inv._balance != inv.total %}
+      <span class="text-xs text-gray-500">sur {{ inv.total | cents_fr }}</span>
+      {% endif %}
+      {% endif %}
+    </div>
   </a>
   {% endfor %}
 </div>
