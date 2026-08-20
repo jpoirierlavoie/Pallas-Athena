@@ -20,9 +20,10 @@ pointing firebase.json at firestore.indexes.json):
   timeentries (billable ASC, invoiced ASC, amount ASC): defensive single-SUM
   variants of the same query, in case the two SUMs are ever issued separately
   or the planner requires per-field indexes.
-- invoices (status ASC, amount_due ASC): serves ``get_outstanding_total`` —
-  SUM(amount_due) over status in (envoyée, en_retard); ``in`` counts as an
-  equality for index purposes.
+- invoices (status ASC, amount_due ASC): ne sert PLUS ``get_outstanding_total``
+  depuis le 2026-08-18 — aucune agrégation ne sait soustraire deux champs, et
+  la fonction somme désormais le solde vivant en Python. L'index demeure pour
+  les listes filtrées par statut.
 - tasks (status ASC, due_date ASC): serves ``list_urgent_tasks`` —
   status in (à_faire, en_cours) AND due_date <= cutoff, order_by due_date.
 - dossiers (status ASC, prescription_date ASC): serves
@@ -300,12 +301,36 @@ def test_count_open_failure_returns_zero(monkeypatch):
     assert dossier_model.count_open() == 0
 
 
-def test_outstanding_total_sums_cents(monkeypatch):
-    stub = _ChainQueryStub(get_result=[[_AggResult("outstanding", 250075)]])
-    monkeypatch.setattr(invoice_model, "db", stub)
+def test_outstanding_total_sums_the_LIVE_balance(monkeypatch):
+    """Σ (amount_due − amount_paid), jamais Σ amount_due : ce dernier est figé
+    à l'émission et reste à pleine valeur sur une facture réglée.
+
+    Somme Python bornée, plus d'agrégation Firestore — deux agrégations
+    exigeraient un index (status, amount_due, amount_paid) inexistant, dont
+    l'absence rend 0 EN SILENCE, indiscernable de « rien n'est dû »."""
+    par_statut = {
+        "envoyée": [{"amount_due": 114975, "amount_paid": 0},
+                    {"amount_due": 200000, "amount_paid": 50000}],
+        "en_retard": [{"amount_due": 100000, "amount_paid": 100000}],
+    }
+    monkeypatch.setattr(invoice_model, "list_invoices",
+                        lambda status_filter=None, **kw: par_statut.get(status_filter, []))
     result = invoice_model.get_outstanding_total()
-    assert result == 250075
+    assert result == 114975 + 150000 + 0
     assert isinstance(result, int)
+
+
+def test_outstanding_total_ignores_the_unissued(monkeypatch):
+    """Un brouillon ne doit rien, une annulée non plus : la fonction ne
+    demande QUE les deux statuts émis."""
+    demandes = []
+
+    def _liste(status_filter=None, **kw):
+        demandes.append(status_filter)
+        return []
+    monkeypatch.setattr(invoice_model, "list_invoices", _liste)
+    invoice_model.get_outstanding_total()
+    assert demandes == list(invoice_model._ISSUED_STATUSES)
 
 
 def test_outstanding_total_failure_returns_zero(monkeypatch):

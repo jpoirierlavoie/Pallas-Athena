@@ -714,7 +714,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "unbilled_hours": _num(),
             **_money("unbilled"),
             **_money("unbilled_expenses"),
-            **_money("outstanding"),
+            **_money("outstanding",
+                     "Σ of the LIVE balance (amount_due − amount_paid) over "
+                     "invoices in status envoyée or en_retard. A derived "
+                     "figure, not a stored one: `amount_due` alone is frozen "
+                     "at issuance and would overstate this by everything "
+                     "already collected."),
         }),
     }),
 
@@ -1075,7 +1080,12 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "unbilled_hours": _num(),
             **_money("unbilled"),
             **_money("unbilled_expenses"),
-            **_money("outstanding"),
+            **_money("outstanding",
+                     "Σ of the LIVE balance (amount_due − amount_paid) over "
+                     "invoices in status envoyée or en_retard. A derived "
+                     "figure, not a stored one: `amount_due` alone is frozen "
+                     "at issuance and would overstate this by everything "
+                     "already collected."),
             "by_dossier": _arr(_obj({
                 "dossier_id": _str(),
                 "file_number": _str(),

@@ -2928,20 +2928,30 @@ def test_status_and_status_group_are_mutually_exclusive(monkeypatch):
 def test_the_unpaid_pair_matches_the_billing_snapshot_definition():
     """The mandate's reconciliation criterion, enforced structurally: the
     register and get_outstanding_total must sum the SAME statuses, or the
-    two surfaces disagree about money."""
-    import inspect
+    two surfaces disagree about money.
+
+    La comparaison porte sur la CONSTANTE, plus sur un littéral dans le
+    source : depuis le 2026-08-18 la fonction somme `balance_of` en Python
+    et lit ses statuts de `_ISSUED_STATUSES`. Un balayage de texte se serait
+    contenté d'exiger une orthographe, là où c'est l'identité des deux
+    ensembles qui porte la promesse."""
     from models import invoice as imod
 
-    source = inspect.getsource(imod.get_outstanding_total)
-    assert '"envoyée", "en_retard"' in source
-    assert handlers._INVOICE_UNPAID == ("envoyée", "en_retard")
+    assert imod._ISSUED_STATUSES == ("envoyée", "en_retard")
+    assert handlers._INVOICE_UNPAID == imod._ISSUED_STATUSES
 
 
 def test_outstanding_reconciles_to_the_cent(monkeypatch):
-    """Σ amount_due over the impayée group == get_billing_snapshot's
-    outstanding_cents, by construction."""
+    """Σ **balance_cents** sur le groupe impayé == outstanding_cents de
+    get_billing_snapshot, par construction.
+
+    C'est `balance_cents` et non `amount_due_cents` depuis le 2026-08-18 :
+    `amount_due` est figé à l'émission et reste à pleine valeur sur une
+    facture réglée. La facture partiellement payée ci-dessous est ce qui
+    distingue les deux définitions — sous l'ancienne, elle comptait pour
+    2 000,00 $ alors que 500,00 $ avaient déjà été reçus."""
     rows = [_inv(0, 1, "envoyée", amount_due=114975),
-            _inv(1, 2, "en_retard", amount_due=200000),
+            _inv(1, 2, "en_retard", amount_due=200000, amount_paid=50000),
             _inv(2, 3, "payée", amount_due=50000)]      # excluded both sides
     monkeypatch.setattr(
         handlers.invoice_model, "list_invoices_page",
@@ -2949,10 +2959,12 @@ def test_outstanding_reconciles_to_the_cent(monkeypatch):
             [r for r in rows if r["status"] == status_filter], None),
     )
     register = handlers.list_invoices({"status_group": "impayée", "limit": 50})
-    total = sum(r["amount_due_cents"] for r in register["items"])
+    total = sum(r["balance_cents"] for r in register["items"])
 
-    monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
-                        lambda: 114975 + 200000)
+    # PAS de bouchon sur get_outstanding_total : l'instantané somme désormais
+    # ses PROPRES lignes, si bien que le total et le détail ne peuvent plus
+    # se contredire. Le bouchonner masquerait précisément ce que le test
+    # cherche à prouver.
     monkeypatch.setattr(handlers.invoice_model, "list_invoices",
                         lambda **kw: list(rows))
     monkeypatch.setattr(handlers.time_entry_model, "get_unbilled_totals",
@@ -2962,7 +2974,7 @@ def test_outstanding_reconciles_to_the_cent(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "list_dossiers_page",
                         lambda **kw: ([], None))
     snapshot = handlers.get_billing_snapshot({})
-    assert total == snapshot["outstanding_cents"] == 314975
+    assert total == snapshot["outstanding_cents"] == 264975
 
 
 def test_payment_basis_never_reads_silence_as_payment(monkeypatch):

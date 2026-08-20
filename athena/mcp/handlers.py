@@ -1583,7 +1583,13 @@ def get_billing_snapshot(args: dict) -> dict:
         _money(
             payload, "unbilled_expenses", expense_unbilled.get("amount", 0)
         )
-        _money(payload, "outstanding", invoice_model.get_outstanding_total())
+        # Le total vient des MÊMES lignes que `outstanding_invoices`, et de
+        # leur solde vivant : appeler get_outstanding_total ici referait la
+        # lecture pour rien, et surtout laisserait deux mécanismes se
+        # contredire dans une seule charge. La somme porte sur TOUTES les
+        # lignes, jamais sur les 50 affichées — un total tronqué serait faux.
+        _money(payload, "outstanding",
+               sum(invoice_model.balance_of(inv) for inv in outstanding_rows))
         by_dossier, by_dossier_truncated = _unbilled_by_dossier()
         payload["by_dossier"] = by_dossier
         payload["by_dossier_truncated"] = by_dossier_truncated

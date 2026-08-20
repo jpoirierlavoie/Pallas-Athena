@@ -43,6 +43,12 @@ class _DuplicateNumberError(Exception):
 # Valid statuses and their French labels
 VALID_STATUSES = ("brouillon", "envoyée", "payée", "en_retard", "annulée")
 
+#: Les statuts d'une facture ÉMISE — celle qui peut encore recevoir un
+#: paiement, et dont le solde constitue une créance. Recopié plutôt
+#: qu'importé de `models.admin_ledger` / `models.trust`, qui en tiennent
+#: chacun le leur : doctrine du vocabulaire du dépôt.
+_ISSUED_STATUSES = ("envoyée", "en_retard")
+
 STATUS_LABELS = {
     "brouillon": "Brouillon",
     "envoyée": "Envoyée",
@@ -1321,25 +1327,36 @@ _aggregation_values = aggregation_values
 
 
 def get_outstanding_total() -> int:
-    """Return the total amount due (cents) on outstanding invoices.
+    """Le SOLDE total (cents) encore dû sur les factures émises.
 
-    A single server-side SUM aggregation over
-    ``status in (envoyée, en_retard)`` replaces the dashboard's two full
-    list scans. The ``in`` filter counts as an equality for index purposes,
-    so this requires the ``invoices`` composite index
-    (status ASC, amount_due ASC); see ``firestore.indexes.json``.
+    Σ ``balance_of`` — ``amount_due − amount_paid`` — sur les statuts
+    « envoyée » et « en retard ». Somme PYTHON sur une lecture bornée, jamais
+    une agrégation Firestore, et le choix est délibéré :
 
-    Returns 0 on failure (graceful degradation for the dashboard stat).
+    * ``amount_due`` est FIGÉ à l'émission et reste à pleine valeur sur une
+      facture réglée ; le sommer surestimait les créances de tout ce qui avait
+      été encaissé — invisible tant qu'aucun paiement n'était inscrit ;
+    * une agrégation ne sait pas soustraire deux champs. Il en faudrait deux,
+      donc un index ``(status, amount_due, amount_paid)`` qui n'existe pas, et
+      dont l'absence échoue en SILENCE : la fonction avale l'exception et rend
+      0, indiscernable de « rien n'est dû » (l'incident de juin 2026).
+
+    Le dépôt vote déjà pour la somme Python sur cette collection —
+    ``routes/admin_ledger._factures_impayees``,
+    ``routes/trust._factures_emises``, ``routes/invoices._journal_rows`` — et
+    ``models/trust`` en a fait sa doctrine. Le volume se compte en dizaines.
+
+    Rend 0 en cas d'échec (dégradation gracieuse de la tuile du tableau de
+    bord), la posture d'origine.
     """
     try:
-        query = db.collection(COLLECTION).where(
-            filter=FieldFilter("status", "in", ["envoyée", "en_retard"])
-        )
-        agg_query = query.sum("amount_due", alias="outstanding")
-        values = _aggregation_values(agg_query.get())
-        return int(round(values.get("outstanding", 0) or 0))
+        total = 0
+        for statut in _ISSUED_STATUSES:
+            for inv in list_invoices(status_filter=statut):
+                total += balance_of(inv)
+        return total
     except Exception as exc:
-        logger.warning("get_outstanding_total: aggregation query failed: %s", exc)
+        logger.warning("get_outstanding_total: failed: %s", exc)
         return 0
 
 
