@@ -237,9 +237,9 @@ class Config:
     # (Fable-class, Mythos-class) are EXCLUDED: mandatory 30-day
     # prompt/response retention under the Advanced AI Safety Addendum —
     # disqualifying for privileged material. Adding ANY future model requires
-    # verifying its retention class FIRST. claude-opus-5 itself ships subject
-    # to that verification at the Model Garden enablement step (user decision
-    # D6, 2026-08-26); the documented fallback is claude-opus-4-8 — swap the
+    # verifying its retention class FIRST. claude-opus-5: VERIFIED 2026-08-26
+    # (Jason, Model Garden) — NOT a Covered Model, zero retention, it stays
+    # (user decision D6); the documented fallback is claude-opus-4-8 — swap the
     # entry, never widen the list. vertex_model_id values are overridable by
     # env because Model Garden may require the @-versioned id, recorded at
     # the same ops step.

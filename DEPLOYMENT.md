@@ -516,10 +516,13 @@ step 6 is load-bearing:
    `gcloud projects get-iam-policy $PROJECT --format=json` → `auditConfigs`.
    Mind the log-volume cost; enable BEFORE first real use.
 2. **Model Garden**: enable `claude-sonnet-5` and `claude-opus-5` (accept the
-   terms). **Verify Opus 5's retention class while you are there** — a Covered
-   Model (mandatory 30-day retention) is disqualifying; the documented fallback
-   is `claude-opus-4-8` (swap the `CHAT_MODELS` entry in `config.py`, never
-   widen the allowlist). Check the per-model quotas.
+   terms). **Opus 5's retention class: VERIFIED 2026-08-26 (Jason)** — NOT a
+   Covered Model, zero retention; it stays in the allowlist and the
+   `claude-opus-4-8` fallback was never needed. The check remains mandatory
+   for any FUTURE model addition — a Covered Model (mandatory 30-day
+   retention) is disqualifying for privileged material (swap the
+   `CHAT_MODELS` entry in `config.py`, never widen the allowlist). Check the
+   per-model quotas.
 3. **IAM**: `gcloud projects add-iam-policy-binding $PROJECT
    --member=serviceAccount:$PROJECT@appspot.gserviceaccount.com
    --role=roles/aiplatform.user` (the chat service runs under the DEFAULT SA —
