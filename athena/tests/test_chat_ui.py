@@ -316,6 +316,124 @@ def test_skills_list_states_the_no_delete_philosophy(web_rendu, monkeypatch):
     assert "la suppression, non" in html
 
 
+# ── Reference files on the skill screens ───────────────────────────────────
+
+_SKILL = {
+    "id": "s1", "name": "Rédaction", "description": "", "body": "corps",
+    "active": True, "current_version": 2,
+    "files": [
+        {"name": "Guide", "description": "Style.", "sha256": "a" * 64,
+         "chars": 12}
+    ],
+    "created_at": _NOW, "updated_at": _NOW, "etag": "e",
+}
+
+
+def test_skill_form_carries_json_seed_and_single_hidden_files_field(
+    web_rendu,
+):
+    html = web_rendu.get("/chat/competences/nouvelle").get_data(as_text=True)
+    assert 'id="competence-fichiers-initial"' in html
+    assert html.count('name="files_json"') == 1
+    # Row controls carry NO name attributes — the hidden field is the ONE
+    # serialization channel (the budgets lines_json pattern).
+    assert "Retirer" in html
+    assert "Importer un fichier texte" in html
+    assert "Ajouter un fichier" in html
+
+
+def test_skill_edit_seeds_current_file_contents(web_rendu, monkeypatch):
+    monkeypatch.setattr(rc.skill_model, "get_skill", lambda i: dict(_SKILL))
+    seeded = {}
+
+    def _fake_contents(skill_id, manifest):
+        seeded["manifest"] = manifest
+        return [
+            {"name": "Guide", "description": "Style.", "sha256": "a" * 64,
+             "chars": 12, "content": "Contenu seed", "missing": False}
+        ]
+
+    monkeypatch.setattr(rc.skill_model, "list_file_contents", _fake_contents)
+    html = web_rendu.get("/chat/competences/s1/modifier").get_data(as_text=True)
+    assert seeded["manifest"] == _SKILL["files"]
+    assert "Contenu seed" in html
+
+
+def test_skill_edit_seed_escapes_script_close(web_rendu, monkeypatch):
+    # Risk-6a pin: a file content containing a script-closing tag must not
+    # break out of the non-executable JSON seed block.
+    hostile = "avant </script><script>alert(1)</script> après"
+    monkeypatch.setattr(rc.skill_model, "get_skill", lambda i: dict(_SKILL))
+    monkeypatch.setattr(
+        rc.skill_model,
+        "list_file_contents",
+        lambda i, m: [
+            {"name": "Guide", "description": "", "sha256": "a" * 64,
+             "chars": len(hostile), "content": hostile, "missing": False}
+        ],
+    )
+    html = web_rendu.get("/chat/competences/s1/modifier").get_data(as_text=True)
+    seed_start = html.index("competence-fichiers-initial")
+    seed_region = html[seed_start : html.index("</script>", seed_start)]
+    # tojson escapes < and > to \u003c/\u003e — the raw sequence is absent
+    # from the seed block, the escaped one present.
+    assert "</script><script>" not in seed_region
+    assert "\\u003c/script\\u003e" in seed_region
+
+
+def test_skill_create_passes_parsed_files_and_rerenders_errors(
+    web_rendu, monkeypatch
+):
+    captured = {}
+
+    def _fake_create(data):
+        captured.update(data)
+        return None, ["Le fichier « Guide » est vide."]
+
+    monkeypatch.setattr(rc.skill_model, "create_skill", _fake_create)
+    rows = [{"name": "Guide", "description": "", "content": ""}]
+    resp = web_rendu.post(
+        "/chat/competences",
+        data={
+            "name": "Rédaction",
+            "description": "",
+            "body": "corps",
+            "files_json": _json.dumps(rows),
+        },
+    )
+    # French model error re-renders the form in 200 (existing shape) with
+    # the submitted rows re-seeded — the user's work survives.
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "est vide" in html
+    assert captured["files"] == rows
+    # Malformed JSON → the parse refusal, nothing reaches the model.
+    resp = web_rendu.post(
+        "/chat/competences",
+        data={"name": "X", "body": "c", "files_json": "{pas-du-json"},
+    )
+    assert resp.status_code == 200
+    assert "rechargez" in resp.get_data(as_text=True)
+
+
+def test_skill_detail_renders_files_autoescaped(web_rendu, monkeypatch):
+    monkeypatch.setattr(rc.skill_model, "get_skill", lambda i: dict(_SKILL))
+    monkeypatch.setattr(rc.skill_model, "list_versions", lambda i, limit=50: [])
+    monkeypatch.setattr(
+        rc.skill_model,
+        "list_file_contents",
+        lambda i, m: [
+            {"name": "Guide", "description": "Style.", "sha256": "a" * 64,
+             "chars": 12, "content": "corps <b>x</b>", "missing": False}
+        ],
+    )
+    html = web_rendu.get("/chat/competences/s1").get_data(as_text=True)
+    assert "Fichiers de référence (1)" in html
+    # Autoescape only — never |safe/|markdown on reference material.
+    assert "corps &lt;b&gt;x&lt;/b&gt;" in html
+    assert "corps <b>x</b>" not in html
+
+
 # ── Observability parity (the test_logging_setup Literal precedent) ────────
 
 def test_chat_event_vocabulary_and_emissions_agree_both_ways():

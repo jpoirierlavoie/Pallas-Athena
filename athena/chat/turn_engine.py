@@ -207,15 +207,23 @@ def _run_tools(
     turn: dict,
     *,
     refused_ids: frozenset = frozenset(),
+    skill_pairs: Optional[list] = None,
 ) -> list[dict]:
     unattended = turn.get("addendum") == "unattended"
     seed = (
         f"{conv.get('scheduled_task_id', '')}|{conv['id']}|"
         f"{turn['id']}|{int(turn.get('step') or 0)}"
     )
+    # THIS turn's (skill_id, version) pairs: the stamped turn doc when it
+    # has them (step 2+, resume-from-authorization — the pause commit
+    # stamped them), else the in-memory pairs the caller resolved for this
+    # very assembly (step 1, whose commit stamps the same list). The only
+    # route get_skill_file may resolve through, and what draft provenance
+    # records — never a re-read head.
+    effective_pairs = turn.get("skill_versions") or skill_pairs or []
     provenance_extra = {
         "model": conv.get("model", ""),
-        "skill_versions": turn.get("skill_versions") or [],
+        "skill_versions": effective_pairs,
         "charter_version": turn.get("charter_version"),
     }
     results: list[dict] = []
@@ -254,6 +262,7 @@ def _run_tools(
                 idempotency_seed=seed,
                 tool_use_id=tool_use_id,
                 provenance_extra=provenance_extra,
+                skill_pairs=effective_pairs,
             )
         results.append(
             {
@@ -613,9 +622,13 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
             return "paused"
 
         # Execute the whole batch now (the gated ones auto-refuse in
-        # unattended context inside the executor).
+        # unattended context inside the executor). skill_pairs: at step 1
+        # the turn doc is not yet stamped — the in-memory pairs of THIS
+        # assembly are the truth (the same list the commit below stamps).
         segment["tool_results"] = _store_blocks(
-            _run_tools(raw_tool_uses, conv, turn), conv, turn
+            _run_tools(raw_tool_uses, conv, turn, skill_pairs=skill_pairs),
+            conv,
+            turn,
         )
         if step + 1 >= Config.CHAT_CHAIN_MAX_CALLS:
             status, _tok = conv_model.commit_step(

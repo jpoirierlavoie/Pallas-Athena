@@ -259,7 +259,7 @@ Chat IA (Phase N) — the Claude-on-Vertex chat client. Events emit from **both 
 | `chat_turn_started` | success | User POST accepted (or occurrence dispatched); the first task enqueued; `scheduled: bool` |
 | `chat_enqueue_failed` | **failure** | The turn doc exists but the chain never started — lost work is possible until a retry or the dispatcher repair pass re-enqueues |
 | `chat_model_call` | success / failure | **One line per Vertex call** — the registre-completeness invariant made observable. `step`, `duration_ms`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `web_search_requests`, `stop_reason` (a `pause_turn` is a success with its stop_reason) |
-| `chat_tool_call` | success / failure | `tool`, `executor` ∈ `in_process`\|`http_worker`, `duration_ms`, `step` — NEVER arguments or results |
+| `chat_tool_call` | success / failure | `tool`, `executor` ∈ `in_process`\|`http_worker`\|`skill_file`, `duration_ms`, `step` — NEVER arguments or results |
 | `chat_tool_refused` | refused | Refusal before execution; `reason` ∈ `validation_failed`\|`gated_unattended`\|`unknown_tool`\|`write_disabled` |
 | `chat_duplicate_delivery` | success | The claim transaction observed an advanced step and exited **without calling Vertex** — queue-health signal; no other line fires for a suppressed duplicate |
 | `chat_block_offloaded` | success | A content block exceeded the offload threshold and went to Storage verbatim; `size_bytes`, `original_type` — never the content |
@@ -272,7 +272,7 @@ Chat IA (Phase N) — the Claude-on-Vertex chat client. Events emit from **both 
 | `chat_report_emailed` | success / refused / **failure** | `deliver_email` path; `refused` + `reason="graph_not_configured"`, `failure` + `reason="graph_error"` (the in-app copy remains — the accusé posture) |
 | `chat_draft_written` | success | `save_draft`/`revise_draft` through the CHAT (the connector path also emits `mcp_write`); `draft_id`, `version`, `dossier_id?`, `content_chars` |
 | `chat_draft_exported` | success / failure | « Verser en Word » ; `draft_id`, `version`, `document_id?`, `dossier_id?` |
-| `chat_skill_saved` | success | Create / edit-as-new-version / toggle; `skill_id`, `version`, `active: bool` |
+| `chat_skill_saved` | success | Create / edit-as-new-version / toggle; `skill_id`, `version`, `active: bool`, `files_count` (reference files on the saved version) |
 | `chat_task_saved` | success | Scheduled-task create / edit / toggle; `task_id`, `active: bool`, `recurrence` |
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`

@@ -91,12 +91,16 @@ def execute_tool(
     idempotency_seed: str = "",
     tool_use_id: str = "",
     provenance_extra: Optional[dict] = None,
+    skill_pairs: Optional[list] = None,
 ) -> ToolExecution:
     """Execute one tool call and return its tool_result material.
 
     ``provenance_extra`` lets the turn engine enrich the draft-provenance
     seam with what only it knows (model id, skill versions, charter
     version); it never overrides the identity keys set here.
+    ``skill_pairs`` is THIS turn's resolved ``[skill_id, version]`` list —
+    the only route through which ``get_skill_file`` resolves a file (a
+    skill outside the pairs was outside the prompt too).
 
     The INTERACTIVE authorization pause (``awaiting_authorization``) is the
     turn engine's decision, taken BEFORE this function; the unattended
@@ -155,6 +159,8 @@ def execute_tool(
     started = time.monotonic()
     if executor == registry.HTTP_WORKER:
         outcome = _execute_worker(name, arguments)
+    elif executor == registry.SKILL_FILE:
+        outcome = _execute_skill_file(arguments, skill_pairs=skill_pairs or [])
     else:
         outcome = _execute_in_process(
             name,
@@ -260,6 +266,74 @@ def _execute_worker(name: str, arguments: dict) -> ToolExecution:
             is_error=True,
         )
     return ToolExecution(content=_serialize(result.get("payload")), is_error=False)
+
+
+# ── get_skill_file (executor `skill_file`) ──────────────────────────────────
+#
+# A READ, and a sibling of _execute_in_process on purpose: none of the
+# in-process machinery applies — no idempotency-key injection (WRITE_TOOLS-
+# gated), no PROVENANCE ContextVar (_DRAFT_TOOLS-gated), no handler
+# resolution (the name is not in TOOLS — mcp_tools.TOOLS[name] would
+# KeyError). Version consistency is the point: the file is resolved at the
+# (skill_id, version) pair THIS turn's assembly used, never a re-read head.
+
+_SKILL_NOT_SELECTED_FR = (
+    "Compétence non sélectionnée pour ce tour : seuls les fichiers des "
+    "compétences listées dans le bloc système sont lisibles."
+)
+
+
+def _read_skill_file(skill_id: str, version: int, filename: str):
+    """Lazy-import seam (the _set_draft_provenance motif): models/__init__
+    builds the Firestore client at import, and test_chat_registry imports
+    this module without patching it."""
+    from models import chat_skill
+
+    return chat_skill.get_version_file(skill_id, version, filename)
+
+
+def _execute_skill_file(
+    arguments: dict, *, skill_pairs: list
+) -> ToolExecution:
+    errors = mcp_tools.validate_args(
+        registry.GET_SKILL_FILE_SPEC["input_schema"], arguments
+    )
+    if errors:
+        return ToolExecution(
+            content=(
+                f"Invalid arguments for {registry.GET_SKILL_FILE_NAME}: "
+                + "; ".join(errors)
+            ),
+            is_error=True,
+        )
+    skill_id = str(arguments.get("skill_id", ""))
+    version = next(
+        (
+            int(pair[1])
+            for pair in skill_pairs
+            if len(pair) >= 2 and str(pair[0]) == skill_id
+        ),
+        None,
+    )
+    if version is None:
+        # Never echoes the requested id — refusals quote nothing.
+        return ToolExecution(content=_SKILL_NOT_SELECTED_FR, is_error=True)
+    try:
+        content, reason = _read_skill_file(
+            skill_id, version, str(arguments.get("filename", ""))
+        )
+    except Exception:
+        log_unexpected(
+            "chat skill file read failed",
+            tool=registry.GET_SKILL_FILE_NAME,
+        )
+        return ToolExecution(content=_GENERIC_ERROR_FR, is_error=True)
+    if reason is not None:
+        return ToolExecution(content=reason, is_error=True)
+    # RAW text, no JSON envelope — reference material reads best as itself,
+    # and the indent=2 serialization would only inflate the block toward
+    # the offload threshold.
+    return ToolExecution(content=content or "", is_error=False)
 
 
 # ── Draft provenance (ContextVar seam — models/chat_draft.py) ───────────────

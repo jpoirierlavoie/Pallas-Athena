@@ -14,6 +14,7 @@ AUCUNE route de suppression n'existe dans ce blueprint, par conception
 from __future__ import annotations
 
 import io as _io
+import json
 from datetime import datetime
 
 from markupsafe import escape
@@ -499,6 +500,37 @@ def conversation_skills(conversation_id: str) -> Response:
 # ── Compétences (skills — §5) ───────────────────────────────────────────────
 
 
+def _parse_files_json() -> tuple[list[dict], list[str]]:
+    """The repeater's single hidden field (the budgets `lines_json`
+    pattern): reparse server-side and coerce to strings — the MODEL stays
+    the authority for every cap and duplicate rule."""
+    raw = request.form.get("files_json") or "[]"
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return [], [
+            "Le format des fichiers de référence est invalide — rechargez "
+            "la page et réessayez."
+        ]
+    if not isinstance(parsed, list):
+        return [], [
+            "Le format des fichiers de référence est invalide — rechargez "
+            "la page et réessayez."
+        ]
+    rows: list[dict] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            {
+                "name": str(entry.get("name", "")),
+                "description": str(entry.get("description", "")),
+                "content": str(entry.get("content", "")),
+            }
+        )
+    return rows, []
+
+
 @chat_bp.route("/competences")
 @login_required
 def skills_list() -> str:
@@ -512,6 +544,7 @@ def skills_list() -> str:
 def skill_new() -> str:
     ctx = _base_context()
     ctx["skill"] = None
+    ctx["files_seed"] = []
     return render_template("chat/skill_form.html", **ctx)
 
 
@@ -519,19 +552,36 @@ def skill_new() -> str:
 @login_required
 def skill_create() -> Response:
     f = request.form
+    files, parse_errors = _parse_files_json()
+    if parse_errors:
+        ctx = _base_context()
+        ctx.update(
+            {"skill": None, "erreurs": parse_errors, "form": f,
+             "files_seed": files}
+        )
+        return render_template("chat/skill_form.html", **ctx)
     skill, errors = skill_model.create_skill(
         {
             "name": f.get("name", "").strip(),
             "description": f.get("description", "").strip(),
             "body": f.get("body", "").strip(),
+            "files": files,
         }
     )
     if errors:
         ctx = _base_context()
-        ctx.update({"skill": None, "erreurs": errors, "form": f})
+        # files_seed = the submitted rows — the user's work survives the
+        # re-render (the form re-seeds its repeater from them).
+        ctx.update(
+            {"skill": None, "erreurs": errors, "form": f, "files_seed": files}
+        )
         return render_template("chat/skill_form.html", **ctx)
     log_chat_event(
-        "chat_skill_saved", skill_id=skill["id"], version=1, active=True
+        "chat_skill_saved",
+        skill_id=skill["id"],
+        version=1,
+        active=True,
+        files_count=len(skill.get("files") or []),
     )
     return redirect(url_for("chat.skill_detail", skill_id=skill["id"]))
 
@@ -550,12 +600,15 @@ def skill_detail(skill_id: str) -> Response | str:
             "version_affichee": request.args.get("version", ""),
         }
     )
+    manifest = skill.get("files") or []
     version = request.args.get("version", "")
     if version.isdigit():
         vdoc = skill_model.get_version(skill_id, int(version))
         if vdoc:
             ctx["corps_affiche"] = vdoc.get("body", "")
             ctx["version_affichee"] = version
+            manifest = vdoc.get("files") or []
+    ctx["fichiers"] = skill_model.list_file_contents(skill_id, manifest)
     return render_template("chat/skill_detail.html", **ctx)
 
 
@@ -567,6 +620,9 @@ def skill_edit(skill_id: str) -> Response | str:
         return redirect(url_for("chat.skills_list"))
     ctx = _base_context()
     ctx["skill"] = skill
+    ctx["files_seed"] = skill_model.list_file_contents(
+        skill_id, skill.get("files") or []
+    )
     return render_template("chat/skill_form.html", **ctx)
 
 
@@ -574,16 +630,26 @@ def skill_edit(skill_id: str) -> Response | str:
 @login_required
 def skill_revise(skill_id: str) -> Response | str:
     f = request.form
+    files, parse_errors = _parse_files_json()
+    if parse_errors:
+        ctx = _base_context()
+        ctx.update(
+            {"skill": skill_model.get_skill(skill_id), "erreurs": parse_errors,
+             "form": f, "files_seed": files}
+        )
+        return render_template("chat/skill_form.html", **ctx)
     skill, errors = skill_model.revise_skill(
         skill_id,
         body=f.get("body", "").strip(),
         name=f.get("name", "").strip() or None,
         description=f.get("description", "").strip() or None,
+        files=files,
     )
     if errors:
         ctx = _base_context()
         ctx.update(
-            {"skill": skill_model.get_skill(skill_id), "erreurs": errors, "form": f}
+            {"skill": skill_model.get_skill(skill_id), "erreurs": errors,
+             "form": f, "files_seed": files}
         )
         return render_template("chat/skill_form.html", **ctx)
     log_chat_event(
@@ -591,6 +657,7 @@ def skill_revise(skill_id: str) -> Response | str:
         skill_id=skill_id,
         version=skill["current_version"],
         active=bool(skill.get("active")),
+        files_count=len(skill.get("files") or []),
     )
     return redirect(url_for("chat.skill_detail", skill_id=skill_id))
 

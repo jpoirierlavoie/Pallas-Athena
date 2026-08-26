@@ -27,9 +27,41 @@
   </div>
   {% endif %}
 
+  {# Seed du répéteur de fichiers — bloc JSON non exécutable (le motif
+     budgets/form.html) : `tojson` échappe les chevrons en </>,
+     donc un contenu portant une balise de fermeture de script ne peut pas
+     clore le bloc. #}
+  <script type="application/json" id="competence-fichiers-initial">{{ files_seed | tojson }}</script>
+
   <form method="post"
         action="{{ url_for('chat.skill_revise', skill_id=skill.id) if skill else url_for('chat.skill_create') }}"
-        class="space-y-6">
+        class="space-y-6"
+        x-data="{
+          files: JSON.parse(document.getElementById('competence-fichiers-initial').textContent),
+          maxFiles: 6,
+          addFile() {
+            if (this.files.length < this.maxFiles) {
+              this.files.push({name: '', description: '', content: ''});
+            }
+          },
+          removeFile(i) { this.files.splice(i, 1); },
+          importFile(i, event) {
+            var self = this;
+            var f = event.target.files[0];
+            if (!f) { return; }
+            var reader = new FileReader();
+            reader.onload = function () {
+              self.files[i].content = String(reader.result || '');
+            };
+            reader.readAsText(f);
+            event.target.value = '';
+          },
+          payload() {
+            return JSON.stringify(this.files.map(function (r) {
+              return {name: r.name, description: r.description, content: r.content};
+            }));
+          }
+        }">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     <div>
@@ -54,6 +86,53 @@
                 placeholder="Le texte de la compétence, tel qu'il s'injecte dans le prompt…"
                 class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">{{ (form.body if form else (skill.body if skill else '')) }}</textarea>
     </div>
+
+    <div>
+      <div class="flex items-center justify-between mb-1">
+        <span class="block text-sm font-medium text-gray-700">Fichiers de référence</span>
+        <button type="button" x-show="files.length < maxFiles" @click="addFile()"
+                class="text-sm text-indigo-600 hover:text-indigo-700">
+          Ajouter un fichier
+        </button>
+      </div>
+      <p class="text-xs text-gray-500 mb-2">
+        Jusqu'à 6 fichiers de 40 000 caractères chacun. Seuls leurs noms
+        entrent dans le prompt — l'assistant n'en lit le contenu qu'au
+        besoin, à la demande. Retirer un fichier ne touche pas aux versions
+        antérieures.
+      </p>
+
+      <template x-for="(f, i) in files" :key="i">
+        <div class="border border-gray-200 rounded-xl p-4 mb-2 bg-gray-50">
+          <div class="mb-2">
+            <input type="text" maxlength="80" x-model="f.name"
+                   placeholder="Nom du fichier (ex : Modèle de mise en demeure)"
+                   class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          </div>
+          <div class="mb-2">
+            <input type="text" maxlength="200" x-model="f.description"
+                   placeholder="Description (facultative — guide la lecture à la demande)"
+                   class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          </div>
+          <textarea rows="8" maxlength="40000" x-model="f.content"
+                    placeholder="Le contenu de référence (texte ou markdown, verbatim)…"
+                    class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"></textarea>
+          <div class="flex items-center justify-between mt-1">
+            <label class="text-sm text-indigo-600 hover:text-indigo-700 cursor-pointer">
+              Importer un fichier texte
+              <input type="file" accept=".md,.txt,text/*" hidden
+                     @change="importFile(i, $event)">
+            </label>
+            <button type="button" @click="removeFile(i)"
+                    class="text-sm text-red-600 hover:text-red-700">
+              Retirer
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <input type="hidden" name="files_json" :value="payload()">
 
     <button type="submit"
             class="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">

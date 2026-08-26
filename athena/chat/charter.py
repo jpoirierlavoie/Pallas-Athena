@@ -98,6 +98,36 @@ def charter_text(*, scheduled: bool = False) -> str:
     return BASE_CHARTER
 
 
+def _file_listing(skill: dict) -> str:
+    """The progressive-disclosure listing appended INSIDE a skill's block.
+
+    Byte-stable by construction (the prompt-cache prefix depends on it):
+    manifest order preserved as saved (never sorted here), plain ``str``
+    ints, and the description segment OMITTED — not blank — when empty.
+    A skill without files returns "" and its block renders byte-identical
+    to the pre-files format. This format is charter.py CODE, not charter
+    text: CHARTER_VERSION does not move with it.
+    """
+    files = skill.get("files") or []
+    if not files:
+        return ""
+    lines = [
+        "",
+        "",
+        "FICHIERS DE RÉFÉRENCE — à lire seulement au besoin, via l'outil "
+        f"get_skill_file (skill_id : {str(skill.get('id', ''))}) :",
+    ]
+    for entry in files:
+        name = str(entry.get("name", ""))
+        description = str(entry.get("description", "")).strip()
+        chars = int(entry.get("chars") or 0)
+        if description:
+            lines.append(f"- {name} — {description} ({chars} caractères)")
+        else:
+            lines.append(f"- {name} ({chars} caractères)")
+    return "\n".join(lines)
+
+
 def system_blocks(
     skills: Optional[list[dict]] = None,
     *,
@@ -105,11 +135,14 @@ def system_blocks(
 ) -> list[dict[str, Any]]:
     """Assemble the Messages API ``system`` array for a turn.
 
-    ``skills`` entries are ``{"id": …, "name": …, "version": …, "body": …}``
-    (already resolved to the head version by the caller — the version used
-    is recorded on the turn, SPEC §5). Ordering is by skill id, STABLE:
-    the prompt-cache prefix depends on byte-identical assembly across the
-    turn chain. The LAST block carries the ``cache_control`` breakpoint.
+    ``skills`` entries are ``{"id": …, "name": …, "version": …, "body": …,
+    "files": […]}`` (already resolved to the head version by the caller —
+    the version used is recorded on the turn, SPEC §5). Ordering is by
+    skill id, STABLE: the prompt-cache prefix depends on byte-identical
+    assembly across the turn chain. The LAST block carries the
+    ``cache_control`` breakpoint. A skill's reference files are LISTED
+    inside its own block (never inlined) — the model reads them on demand
+    through ``get_skill_file``.
     """
     blocks: list[dict[str, Any]] = [
         {"type": "text", "text": charter_text(scheduled=scheduled)}
@@ -119,11 +152,7 @@ def system_blocks(
         if not body:
             continue
         name = str(skill.get("name", "")).strip()
-        blocks.append(
-            {
-                "type": "text",
-                "text": f"COMPÉTENCE — {name}\n\n{body}" if name else body,
-            }
-        )
+        text = f"COMPÉTENCE — {name}\n\n{body}" if name else body
+        blocks.append({"type": "text", "text": text + _file_listing(skill)})
     blocks[-1]["cache_control"] = {"type": "ephemeral"}
     return blocks

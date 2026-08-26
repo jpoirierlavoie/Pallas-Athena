@@ -42,6 +42,29 @@
     <div class="note-content text-sm">{{ (corps_affiche if corps_affiche is defined else skill.body) | markdown | safe }}</div>
   </div>
 
+  {% if fichiers %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-sm font-medium text-gray-700 mb-2">Fichiers de référence ({{ fichiers | length }})</h2>
+    <p class="text-xs text-gray-500 mb-2">
+      Lus à la demande par l'assistant (outil get_skill_file) — seuls les
+      noms entrent dans le prompt.
+    </p>
+    {% for f in fichiers %}
+    <details class="border-t border-gray-100 py-2">
+      <summary class="text-sm text-gray-700 cursor-pointer">
+        {{ f.name }}
+        {% if f.description %}<span class="text-gray-400">— {{ f.description }}</span>{% endif %}
+        <span class="text-xs text-gray-400">({{ f.chars }} caractères)</span>
+        {% if f.missing %}<span class="text-xs text-red-700">contenu introuvable</span>{% endif %}
+      </summary>
+      {# Autoescape seulement — jamais |safe ni |markdown : le contenu est
+         du matériel de référence VERBATIM, pas du HTML de confiance. #}
+      <pre class="mt-2 p-4 bg-gray-50 rounded-xl text-xs text-gray-700 whitespace-pre-wrap">{{ f.content }}</pre>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <details>
     <summary class="text-xs text-gray-500 cursor-pointer">Historique des versions ({{ versions | length }})</summary>
     <ul class="mt-2 space-y-1 text-xs text-gray-600">

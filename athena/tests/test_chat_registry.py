@@ -54,9 +54,13 @@ def test_toolset_is_tools_plus_workers_plus_web_search():
         assert (
             name in mcp_tools.TOOLS
             or name in worker_names
+            or name == registry.GET_SKILL_FILE_NAME
             or name == registry.WEB_SEARCH_NAME
         ), name
+    # web_search stays LAST (the trailing cache_control breakpoint lands on
+    # it); get_skill_file sits just before, after the workers.
     assert names[-1] == registry.WEB_SEARCH_NAME
+    assert names[-2] == registry.GET_SKILL_FILE_NAME
 
 
 def test_excluding_writes_removes_exactly_the_write_tools():
@@ -269,6 +273,141 @@ def test_unattended_write_gets_a_deterministic_idempotency_key(monkeypatch):
     assert captured["idempotency_key"] == "cle-fournie-12"  # never overridden
 
 
+# ── get_skill_file (executor skill_file) ────────────────────────────────────
+
+_PAIRS = [["s-1", 3], ["s-2", 1]]
+
+
+def test_get_skill_file_resolves_to_the_skill_file_executor():
+    assert registry.executor_for(registry.GET_SKILL_FILE_NAME) == registry.SKILL_FILE
+
+
+def test_get_skill_file_never_reaches_the_connector():
+    # The Workers' isolation mechanism: the external MCP surface is derived
+    # exclusively from mcp.tools.TOOLS — a name absent from it is
+    # structurally unreachable from claude.ai.
+    assert registry.GET_SKILL_FILE_NAME not in mcp_tools.TOOLS
+
+
+def test_get_skill_file_always_offered_even_without_writes():
+    # Unconditional inclusion — the tools-array prefix must never flap with
+    # the skill selection or the write switch (prompt-cache stability).
+    for include_writes in (True, False):
+        names = [
+            t["name"]
+            for t in registry.anthropic_tools(include_writes=include_writes)
+        ]
+        assert registry.GET_SKILL_FILE_NAME in names
+
+
+def test_get_skill_file_validates_arguments(monkeypatch):
+    _events(monkeypatch)
+    result = executors.execute_tool(
+        registry.GET_SKILL_FILE_NAME, {"skill_id": "s-1"}, **_CTX
+    )
+    assert result.is_error is True
+    assert "Invalid arguments for get_skill_file" in result.content
+    assert "filename" in result.content
+
+
+def test_get_skill_file_refuses_an_unselected_skill_in_french(monkeypatch):
+    events = _events(monkeypatch)
+    result = executors.execute_tool(
+        registry.GET_SKILL_FILE_NAME,
+        {"skill_id": "s-fantome", "filename": "Guide"},
+        skill_pairs=list(_PAIRS),
+        **_CTX,
+    )
+    assert result.is_error is True
+    assert result.content == executors._SKILL_NOT_SELECTED_FR
+    assert "s-fantome" not in result.content  # refusals quote nothing
+    calls = [e for e in events if e["event"] == "chat_tool_call"]
+    assert calls and calls[-1]["executor"] == "skill_file"
+
+
+def test_get_skill_file_returns_raw_content_without_envelope(monkeypatch):
+    _events(monkeypatch)
+    raw = 'Texte { "brut" } avec « guillemets » et <chevrons>'
+    seen = {}
+
+    def _fake_read(skill_id, version, filename):
+        seen.update(skill_id=skill_id, version=version, filename=filename)
+        return raw, None
+
+    monkeypatch.setattr(executors, "_read_skill_file", _fake_read)
+    result = executors.execute_tool(
+        registry.GET_SKILL_FILE_NAME,
+        {"skill_id": "s-2", "filename": "Guide"},
+        skill_pairs=list(_PAIRS),
+        **_CTX,
+    )
+    assert result.is_error is False
+    assert result.content == raw  # verbatim — no JSON envelope
+    # The version came from THIS turn's pairs, not any head read.
+    assert seen == {"skill_id": "s-2", "version": 1, "filename": "Guide"}
+
+
+def test_get_skill_file_surfaces_the_reader_reason(monkeypatch):
+    _events(monkeypatch)
+    monkeypatch.setattr(
+        executors,
+        "_read_skill_file",
+        lambda *a: (None, "Fichier inconnu. Fichiers disponibles : Guide."),
+    )
+    result = executors.execute_tool(
+        registry.GET_SKILL_FILE_NAME,
+        {"skill_id": "s-1", "filename": "Absent"},
+        skill_pairs=list(_PAIRS),
+        **_CTX,
+    )
+    assert result.is_error is True
+    assert "Fichiers disponibles" in result.content
+
+
+def test_get_skill_file_never_resolves_a_handler(monkeypatch):
+    # Risk-5 pin: the branch is a SIBLING of _execute_in_process — none of
+    # the in-process machinery (handler resolution included) may run.
+    _events(monkeypatch)
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_handler",
+        mock.Mock(side_effect=AssertionError("handler resolved")),
+    )
+    monkeypatch.setattr(
+        executors, "_read_skill_file", lambda *a: ("contenu", None)
+    )
+    result = executors.execute_tool(
+        registry.GET_SKILL_FILE_NAME,
+        {"skill_id": "s-1", "filename": "Guide"},
+        skill_pairs=list(_PAIRS),
+        **_CTX,
+    )
+    assert result.is_error is False
+    assert result.content == "contenu"
+
+
+def test_get_skill_file_unexpected_reader_error_is_generic(monkeypatch):
+    _events(monkeypatch)
+    logged = []
+    monkeypatch.setattr(
+        executors, "log_unexpected", lambda msg, **kw: logged.append(kw)
+    )
+    monkeypatch.setattr(
+        executors,
+        "_read_skill_file",
+        mock.Mock(side_effect=RuntimeError("firestore down")),
+    )
+    result = executors.execute_tool(
+        registry.GET_SKILL_FILE_NAME,
+        {"skill_id": "s-1", "filename": "Guide"},
+        skill_pairs=list(_PAIRS),
+        **_CTX,
+    )
+    assert result.is_error is True
+    assert "firestore down" not in result.content
+    assert logged and logged[0]["tool"] == registry.GET_SKILL_FILE_NAME
+
+
 # ── Worker client ───────────────────────────────────────────────────────────
 
 _SPEC = {"name": "legislation_chercher", "worker": "legislation", "path": "/q"}
@@ -392,3 +531,51 @@ def test_system_blocks_without_skills_marks_the_charter_block():
     assert len(blocks) == 1
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
     assert "SANS SURVEILLANCE" in blocks[0]["text"]
+
+
+_SKILL_WITH_FILES = {
+    "id": "s-files",
+    "name": "Rédaction",
+    "version": 3,
+    "body": "corps",
+    "files": [
+        {
+            "name": "Modèle",
+            "description": "Structure type.",
+            "sha256": "a" * 64,
+            "chars": 1200,
+        },
+        {"name": "Zéro-tri", "description": "", "sha256": "b" * 64, "chars": 8},
+    ],
+}
+
+
+def test_skill_block_lists_reference_files_inside_the_same_block():
+    blocks = charter.system_blocks([dict(_SKILL_WITH_FILES)])
+    # Same block COUNT as a files-less skill — the listing lives INSIDE.
+    assert len(blocks) == 2
+    text = blocks[1]["text"]
+    assert text.startswith("COMPÉTENCE — Rédaction\n\ncorps")
+    assert "FICHIERS DE RÉFÉRENCE" in text
+    assert "get_skill_file" in text
+    assert "skill_id : s-files" in text
+    assert "- Modèle — Structure type. (1200 caractères)" in text
+    # Empty description → segment OMITTED, not blank.
+    assert "- Zéro-tri (8 caractères)" in text
+    assert "Zéro-tri —" not in text
+    # A skill WITHOUT files renders byte-identical to the pre-files format
+    # (existing conversations' cache prefixes untouched).
+    bare = charter.system_blocks(
+        [{"id": "x", "name": "Nu", "version": 1, "body": "corps nu"}]
+    )
+    assert bare[1]["text"] == "COMPÉTENCE — Nu\n\ncorps nu"
+
+
+def test_skill_block_listing_is_byte_stable():
+    once = charter.system_blocks([dict(_SKILL_WITH_FILES)])
+    twice = charter.system_blocks([dict(_SKILL_WITH_FILES)])
+    assert once[1]["text"] == twice[1]["text"]
+    # Manifest order preserved as saved — never re-sorted (« Zéro-tri »
+    # would sort before « Modèle » neither alphabetically nor otherwise).
+    text = once[1]["text"]
+    assert text.index("- Modèle") < text.index("- Zéro-tri")

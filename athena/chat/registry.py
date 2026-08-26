@@ -1,6 +1,7 @@
 """The chat-side tool registry (Phase N).
 
-One registry maps tool name → executor. Three executors (SPEC §4.1):
+One registry maps tool name → executor. Four executors (SPEC §4.1 + the
+2026-08-26 reference-files lot):
 
 * ``in_process``       — the MCP tool set, called directly into
                          ``mcp/handlers.py`` (Flask-free, proven). Schemas
@@ -11,6 +12,13 @@ One registry maps tool name → executor. Three executors (SPEC §4.1):
                          (chat/worker_tools.py + worker_client.py).
                          CHAT-ONLY: these names never enter ``TOOLS`` and
                          never reach the external connector.
+* ``skill_file``       — ``get_skill_file``, the progressive-disclosure
+                         read of a compétence's reference files
+                         (models/chat_skill.py). CHAT-ONLY like the
+                         Workers: absent from ``TOOLS`` → structurally
+                         unreachable from claude.ai. Resolution goes
+                         through THIS turn's pinned ``(skill_id, version)``
+                         pairs, never a re-read head.
 * ``anthropic_native`` — ``web_search``, declared in the request body and
                          executed by Anthropic server-side (basic version
                          only on Vertex — no dynamic filtering).
@@ -43,12 +51,49 @@ from chat.worker_tools import WORKER_NAME_PREFIXES, WORKER_TOOLS
 # Executor identifiers (also the `executor` field of chat_tool_call events).
 IN_PROCESS = "in_process"
 HTTP_WORKER = "http_worker"
+SKILL_FILE = "skill_file"
 ANTHROPIC_NATIVE = "anthropic_native"
 
 # The one Anthropic-native tool. Basic web search only on Vertex (verified
 # 2026-08-26); its per-search cost lands in usage.server_tool_use.
 WEB_SEARCH_NAME = "web_search"
 WEB_SEARCH_TYPE = "web_search_20250305"
+
+# The chat-local reference-file read (never in mcp.tools.TOOLS — the
+# Workers' isolation mechanism). Offered UNCONDITIONALLY so the tools-array
+# prefix never flaps with the skill selection (prompt-cache stability); a
+# call with no selected files earns a French refusal, not an error.
+GET_SKILL_FILE_NAME = "get_skill_file"
+GET_SKILL_FILE_SPEC: dict[str, Any] = {
+    "name": GET_SKILL_FILE_NAME,
+    "description": (
+        "Read ONE reference file of a SELECTED compétence. The available "
+        "files are listed in the FICHIERS DE RÉFÉRENCE section of each "
+        "COMPÉTENCE block of the system prompt, with the skill_id to use. "
+        "Read a file only when the current task needs it — the listing "
+        "alone is enough to know it exists. Returns the file's raw text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "skill_id": {
+                "type": "string",
+                "description": (
+                    "The compétence's id, exactly as given in its "
+                    "FICHIERS DE RÉFÉRENCE listing."
+                ),
+            },
+            "filename": {
+                "type": "string",
+                "description": (
+                    "The file's name as listed (case-insensitive match)."
+                ),
+            },
+        },
+        "required": ["skill_id", "filename"],
+        "additionalProperties": False,
+    },
+}
 
 # D9 — full parity with the connector, BY DERIVATION (drift structurally
 # impossible; a conscious divergence edits this line).
@@ -94,6 +139,8 @@ def executor_for(name: str) -> Optional[str]:
         return ANTHROPIC_NATIVE
     if name in mcp_tools.TOOLS:
         return IN_PROCESS
+    if name == GET_SKILL_FILE_NAME:
+        return SKILL_FILE
     if name.startswith(WORKER_NAME_PREFIXES) and find_worker_spec(name):
         return HTTP_WORKER
     return None
@@ -120,9 +167,9 @@ def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, 
     the write tools keep their injected ``dry_run``/``idempotency_key``
     properties, which ARE the §4.6.2/§12.3 proposal mechanism. Order is
     stable: internal tools in TOOLS order, then Worker tools in declaration
-    order, then web_search — the trailing cache_control breakpoint
-    (chat/vertex.py) covers the whole array only because this order never
-    shifts between calls.
+    order, then get_skill_file, then web_search — the trailing
+    cache_control breakpoint (chat/vertex.py) covers the whole array only
+    because this order never shifts between calls.
 
     Nothing model-facing contains a secret: the array is built from schemas
     and descriptions only (pinned by test).
@@ -145,6 +192,16 @@ def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, 
                 "input_schema": worker_spec["input_schema"],
             }
         )
+    # get_skill_file sits between the workers and web_search — a FRESH
+    # wrapper dict (the schema shared by identity, like the internal
+    # entries) so the trailing cache_control stamp never mutates the spec.
+    tools.append(
+        {
+            "name": GET_SKILL_FILE_NAME,
+            "description": GET_SKILL_FILE_SPEC["description"],
+            "input_schema": GET_SKILL_FILE_SPEC["input_schema"],
+        }
+    )
     tools.append(
         {
             "type": WEB_SEARCH_TYPE,

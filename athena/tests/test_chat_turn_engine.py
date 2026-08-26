@@ -634,6 +634,120 @@ def test_gated_tool_is_not_paused_in_unattended_context(world, monkeypatch):
     assert _stored_turn(world)["state"] == "running"
 
 
+# ── Reference files: get_skill_file through the whole engine ───────────────
+
+_HEAD_WITH_FILES = {
+    "id": "s-doc",
+    "name": "Rédaction",
+    "current_version": 4,
+    "active": True,
+    "body": "corps",
+    "files": [
+        {"name": "Guide", "description": "Style.", "sha256": "a" * 64,
+         "chars": 5}
+    ],
+}
+
+
+def test_get_skill_file_end_to_end_pins_this_turns_version(world, monkeypatch):
+    # First engine test with NON-empty skill heads: the REAL execute_tool
+    # runs (only the Firestore reader is faked), so the step-1 in-memory
+    # pairs → executor → stamped skill_versions chain is exercised whole.
+    monkeypatch.setattr(
+        turn_engine.skill_model,
+        "get_heads",
+        lambda ids: [copy.deepcopy(_HEAD_WITH_FILES)],
+    )
+    monkeypatch.setattr(
+        turn_engine.executors, "log_chat_event", lambda *a, **k: None
+    )
+    reads = []
+
+    def _fake_read(skill_id, version, filename):
+        reads.append((skill_id, version, filename))
+        return "Contenu du guide.", None
+
+    monkeypatch.setattr(turn_engine.executors, "_read_skill_file", _fake_read)
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_skill_file",
+              "input": {"skill_id": "s-doc", "filename": "Guide"}}],
+            "tool_use",
+        ),
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    stored = _stored_turn(world)
+    # Step 1: the turn doc was NOT yet stamped when the tool ran — the
+    # in-memory pairs served the read, and the SAME pairs were stamped.
+    assert reads == [("s-doc", 4, "Guide")]
+    assert stored["skill_versions"] == [["s-doc", 4]]
+    result = stored["segments"][0]["tool_results"][0]
+    assert result["is_error"] is False
+    assert result["content"][0]["text"] == "Contenu du guide."
+    # The system prompt carried the listing INSIDE the COMPÉTENCE block.
+    system_1 = world.vertex.calls[0]["system"]
+    assert len(system_1) == 2
+    assert "FICHIERS DE RÉFÉRENCE" in system_1[1]["text"]
+    assert "skill_id : s-doc" in system_1[1]["text"]
+    assert "- Guide — Style. (5 caractères)" in system_1[1]["text"]
+
+    world.vertex.responses = [_response([{"type": "text", "text": "Fini."}])]
+    token = stored["continuation"]["token"]
+    assert turn_engine.process_task(_payload(world, token), 0) == "final"
+    # Cross-step byte stability of the cached prefix (no edit in between).
+    assert world.vertex.calls[1]["system"] == system_1
+
+
+def test_get_skill_file_resume_from_authorization_uses_stamped_pairs(
+    world, monkeypatch
+):
+    # Risk-1 pin: a skill REVISED during the human pause must not move the
+    # file read — the pause commit stamped the pairs, and resume resolves
+    # through the STAMPED version, not the fresh head.
+    monkeypatch.setattr(
+        turn_engine.registry, "GATED_TOOLS", frozenset({"create_note"})
+    )
+    monkeypatch.setattr(
+        turn_engine.skill_model,
+        "get_heads",
+        lambda ids: [copy.deepcopy(_HEAD_WITH_FILES)],
+    )
+    monkeypatch.setattr(
+        turn_engine.executors, "log_chat_event", lambda *a, **k: None
+    )
+    reads = []
+
+    def _fake_read(skill_id, version, filename):
+        reads.append((skill_id, version, filename))
+        return "Contenu.", None
+
+    monkeypatch.setattr(turn_engine.executors, "_read_skill_file", _fake_read)
+    calls = [
+        {"type": "tool_use", "id": "t-gated", "name": "create_note",
+         "input": {}},
+        {"type": "tool_use", "id": "t-file", "name": "get_skill_file",
+         "input": {"skill_id": "s-doc", "filename": "Guide"}},
+    ]
+    world.vertex.responses = [_response(calls, "tool_use")]
+    assert turn_engine.process_task(_payload(world), 0) == "paused"
+    assert _stored_turn(world)["skill_versions"] == [["s-doc", 4]]
+
+    # The compétence is revised while the lawyer deliberates…
+    revised = {**copy.deepcopy(_HEAD_WITH_FILES), "current_version": 5}
+    monkeypatch.setattr(
+        turn_engine.skill_model, "get_heads", lambda ids: [revised]
+    )
+    status, token = cc.decide_authorization(
+        world.conv["id"], world.turn["id"],
+        approved=["t-file"], refused=["t-gated"],
+    )
+    assert status == "ok"
+    world.vertex.responses = [_response([{"type": "text", "text": "Fini."}])]
+    assert turn_engine.process_task(_payload(world, token), 0) == "final"
+    # …and the file still resolved at the version stamped at the pause.
+    assert reads == [("s-doc", 4, "Guide")]
+
+
 # ── The native-PDF fallback (D2) ────────────────────────────────────────────
 
 def test_scanned_pdf_result_attaches_the_native_document(world, monkeypatch):
