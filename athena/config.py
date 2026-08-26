@@ -244,19 +244,27 @@ class Config:
     # env because Model Garden may require the @-versioned id, recorded at
     # the same ops step.
     #
-    # thinking_budget_tokens / max_tokens sizing: one task = one NON-STREAMED
-    # Vertex call bounded by CHAT_VERTEX_READ_TIMEOUT_S (540 s). At a
-    # conservative ~40 tok/s of generation, max_tokens is the worst-case
-    # duration knob: 20 480 tokens ≈ 512 s. Raising a budget past that
-    # arithmetic is how a turn starts dying on the platform's 10-minute task
-    # deadline — recompute before touching these.
+    # effort / max_tokens sizing (2026-08-26 — the ADAPTIVE-thinking repair).
+    # These models take `thinking: {"type": "adaptive"}` and are steered by
+    # `output_config.effort`; the fixed-budget form is REMOVED and returns a
+    # 400 (see chat/vertex.py's request-surface note). Consequence for
+    # sizing: the old « budget < max_tokens » arithmetic no longer bounds
+    # anything — an adaptive thinker spends against max_tokens, and EFFORT is
+    # the knob. What still holds: one task = one NON-STREAMED Vertex call
+    # bounded by CHAT_VERTEX_READ_TIMEOUT_S (540 s), and at a conservative
+    # ~40 tok/s max_tokens is the worst-case duration (20 480 ≈ 512 s).
+    # Raising max_tokens OR effort is how a turn starts dying on the
+    # platform's 10-minute task deadline — recompute before touching either.
+    VERTEX_EFFORTS: frozenset = frozenset(
+        {"low", "medium", "high", "xhigh", "max"}
+    )
     CHAT_MODELS: dict[str, dict] = {
         "claude-sonnet-5": {
             "vertex_model_id": os.environ.get(
                 "CHAT_SONNET_VERTEX_ID", "claude-sonnet-5"
             ),
             "label_fr": "Sonnet 5 — quotidien / administration",
-            "thinking_budget_tokens": 8192,
+            "effort": "high",
             "max_tokens": 16384,
         },
         "claude-opus-5": {
@@ -264,7 +272,7 @@ class Config:
                 "CHAT_OPUS_VERTEX_ID", "claude-opus-5"
             ),
             "label_fr": "Opus 5 — recherche / rédaction",
-            "thinking_budget_tokens": 12288,
+            "effort": "high",
             "max_tokens": 20480,
         },
     }

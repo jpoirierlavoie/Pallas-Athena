@@ -536,6 +536,15 @@ step 6 is load-bearing:
    `https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/anthropic/models/claude-sonnet-5:rawPredict`
    (a **429 quota** answer means the endpoint works and step 4b applies; a
    403/404 means Model Garden is not done).
+   ⚠ **The probe body must be the CURRENT request surface**, or a 400 will be
+   misread as an endpoint problem: `{"anthropic_version":"vertex-2023-10-16",
+   "max_tokens":1,"thinking":{"type":"adaptive"},"messages":[{"role":"user",
+   "content":"ping"}]}`. On this model generation
+   `thinking.budget_tokens` and every sampling parameter (`temperature`,
+   `top_p`, `top_k`) are **removed and return a 400** — the shape the app
+   shipped with until 2026-08-26, which nothing could catch while the quota
+   was zero. A **400 on this probe means the request shape is wrong**, not
+   the endpoint.
    **4b. Quota:** the default per-base-model quota can be ZERO even after
    enablement (`global_online_prediction_requests_per_base_model`, base
    models `anthropic-claude-sonnet` / `anthropic-claude-opus`). Submit the

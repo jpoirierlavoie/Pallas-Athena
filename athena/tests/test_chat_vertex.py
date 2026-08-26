@@ -68,12 +68,10 @@ def test_url_and_body_shape(transport):
     # The model goes in the URL, NEVER the body; the version in the body.
     assert "model" not in body
     assert body["anthropic_version"] == "vertex-2023-10-16"
-    assert body["temperature"] == 1
-    assert body["thinking"]["type"] == "enabled"
-    assert body["thinking"]["budget_tokens"] == (
-        Config.CHAT_MODELS["claude-sonnet-5"]["thinking_budget_tokens"]
+    assert body["thinking"]["type"] == "adaptive"
+    assert body["output_config"]["effort"] == (
+        Config.CHAT_MODELS["claude-sonnet-5"]["effort"]
     )
-    assert body["max_tokens"] > body["thinking"]["budget_tokens"]
     assert transport["headers"]["Authorization"] == "Bearer jeton-adc"
     assert transport["timeout"] == (
         Config.CHAT_VERTEX_CONNECT_TIMEOUT_S,
@@ -81,19 +79,48 @@ def test_url_and_body_shape(transport):
     )
 
 
-def test_unknown_model_and_bad_budget_fail_preflight(monkeypatch):
+def test_body_carries_no_removed_parameter(transport):
+    """The 2026-08-26 repair, pinned in the negative.
+
+    `thinking.budget_tokens` and every sampling parameter are REMOVED on
+    this model generation and return a 400. The quota was zero from the day
+    the code landed, so the wrong body was never sent and nothing went red —
+    which is exactly why the guard has to be a test rather than a comment.
+    """
+    _call()
+    body = transport["body"]
+    assert "budget_tokens" not in body["thinking"]
+    for removed in ("temperature", "top_p", "top_k"):
+        assert removed not in body, removed
+
+
+def test_thinking_display_is_explicit(transport):
+    # The default became "omitted": left implicit, every thinking block
+    # returns empty text and the transcript's « Réflexion » renders blank.
+    _call()
+    assert transport["body"]["thinking"]["display"] == "summarized"
+
+
+def test_unknown_model_and_bad_effort_fail_preflight(monkeypatch):
     with pytest.raises(ChatVertexFatal) as excinfo:
         vertex.model_config("claude-fable-5")
     assert excinfo.value.reason == "unknown_model"
     monkeypatch.setitem(
         Config.CHAT_MODELS,
         "claude-sonnet-5",
-        {**Config.CHAT_MODELS["claude-sonnet-5"],
-         "max_tokens": 100, "thinking_budget_tokens": 200},
+        {**Config.CHAT_MODELS["claude-sonnet-5"], "effort": "enorme"},
     )
     with pytest.raises(ChatVertexFatal) as excinfo:
         vertex.model_config("claude-sonnet-5")
-    assert excinfo.value.reason == "config_thinking_budget"
+    assert excinfo.value.reason == "config_effort"
+
+
+def test_every_allowlisted_model_declares_a_valid_effort():
+    # Derived, not listed: a model added without an effort level fails here
+    # instead of at the first live call.
+    for key, cfg in Config.CHAT_MODELS.items():
+        assert cfg.get("effort") in Config.VERTEX_EFFORTS, key
+        assert int(cfg["max_tokens"]) > 0, key
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 529])

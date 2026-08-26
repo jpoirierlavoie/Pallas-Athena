@@ -5,11 +5,13 @@ zero new dependencies in this seam). The turn engine owns assembly, cache
 breakpoints and state; this module owns exactly: the URL, the auth, the
 body envelope, the timeouts, and the error taxonomy.
 
-Endpoint: multi-region ``us`` by default —
+Endpoint: ``global`` —
 ``https://{CHAT_VERTEX_HOST}/v1/projects/{p}/locations/{CHAT_VERTEX_LOCATION}
-/publishers/anthropic/models/{vertex_model_id}:rawPredict`` — VERIFIED at
-the ops step with a ``max_tokens=1`` call; the regional fallback
-(us-east5 host + location) is a config edit, never a code change. Not
+/publishers/anthropic/models/{vertex_model_id}:rawPredict``. Verified live
+2026-08-26: it is the ONLY location serving these models (the spec's
+multi-region ``us`` answers 501, ``us-east5`` 404s them), and it bills at
+the base rate. Host and location stay env-overridable so a regional
+endpoint, if these models ever gain one, is a config edit. Not
 ``streamRawPredict``: no streaming, by design (SPEC §2).
 
 Auth is ADC of the service account (refreshed PER CALL — the OTLP
@@ -92,15 +94,15 @@ def model_config(model_key: str) -> dict:
     """The allowlist entry for *model_key*, pre-flight validated.
 
     Raises :class:`ChatVertexFatal` on an unknown model (the allowlist is
-    CLOSED — SPEC §9) or an incoherent thinking config (temperature/max
-    rules are the API's; spending a multi-minute call to discover a config
-    error would be the expensive way to read this function).
+    CLOSED — SPEC §9) or an effort level outside the API's vocabulary;
+    spending a multi-minute call to discover a config error would be the
+    expensive way to read this function.
     """
     cfg = Config.CHAT_MODELS.get(model_key)
     if cfg is None:
         raise ChatVertexFatal("unknown_model")
-    if int(cfg["max_tokens"]) <= int(cfg["thinking_budget_tokens"]):
-        raise ChatVertexFatal("config_thinking_budget")
+    if cfg.get("effort") not in Config.VERTEX_EFFORTS:
+        raise ChatVertexFatal("config_effort")
     return cfg
 
 
@@ -124,18 +126,32 @@ def call_model(
     """One non-streamed Messages API call. Returns the parsed response.
 
     The model goes in the URL (never the body); ``anthropic_version`` in
-    the body; extended thinking always on (per-model budget) with the
-    temperature-1 requirement set explicitly.
+    the body; extended thinking always on.
+
+    **The request surface of this model generation (repaired 2026-08-26).**
+    ``thinking: {"type": "enabled", "budget_tokens": N}`` is REMOVED on
+    claude-sonnet-5 / claude-opus-5 and returns a **400**, and so does any
+    sampling parameter — ``temperature``, ``top_p``, ``top_k``. The current
+    shape is ``{"type": "adaptive"}``, steered by ``output_config.effort``.
+    This was shipped wrong and could not be observed: the Vertex quota was
+    zero from the day the code landed, so no request had ever been sent and
+    the whole suite (which mocks the transport) stayed green. Anything added
+    to this body must be checked against the CURRENT model generation, never
+    against a recalled pattern.
+
+    ``display: "summarized"`` is explicit because the default became
+    ``"omitted"`` on these models: left at the default, every thinking block
+    comes back with empty text and the transcript's « Réflexion » section
+    renders blank. Display never changes what is thought or billed, and the
+    replay rule is unaffected — blocks still go back verbatim, signatures
+    included.
     """
     cfg = model_config(model_key)
     body: dict[str, Any] = {
         "anthropic_version": ANTHROPIC_VERSION,
         "max_tokens": int(cfg["max_tokens"]),
-        "temperature": 1,
-        "thinking": {
-            "type": "enabled",
-            "budget_tokens": int(cfg["thinking_budget_tokens"]),
-        },
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": str(cfg["effort"])},
         "system": system,
         "messages": messages,
     }
