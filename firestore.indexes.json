@@ -45,24 +45,6 @@
       ]
     },
     {
-      "collectionGroup": "trust_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "dossier_id", "order": "ASCENDING" },
-        { "fieldPath": "client_id", "order": "ASCENDING" },
-        { "fieldPath": "date", "order": "ASCENDING" },
-        { "fieldPath": "sequence", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "trust_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "invoice_id", "order": "ASCENDING" },
-        { "fieldPath": "sequence", "order": "ASCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "trust_reconciliations",
       "queryScope": "COLLECTION",
       "fields": [
@@ -98,14 +80,6 @@
       ]
     },
     {
-      "collectionGroup": "admin_transactions",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "account_id", "order": "ASCENDING" },
-        { "fieldPath": "sequence", "order": "DESCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "admin_reconciliations",
       "queryScope": "COLLECTION",
       "fields": [
@@ -121,24 +95,6 @@
         { "fieldPath": "invoiced", "order": "ASCENDING" },
         { "fieldPath": "amount", "order": "ASCENDING" },
         { "fieldPath": "hours", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "timeentries",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "billable", "order": "ASCENDING" },
-        { "fieldPath": "invoiced", "order": "ASCENDING" },
-        { "fieldPath": "hours", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "timeentries",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "billable", "order": "ASCENDING" },
-        { "fieldPath": "invoiced", "order": "ASCENDING" },
-        { "fieldPath": "amount", "order": "ASCENDING" }
       ]
     },
     {
@@ -314,14 +270,6 @@
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "opened_date", "order": "DESCENDING" },
         { "fieldPath": "id", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "invoices",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "amount_due", "order": "ASCENDING" }
       ]
     },
     {
