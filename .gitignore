@@ -63,3 +63,9 @@ venv/
 /Comptes recevables/
 /Comptes payables/
 *.xlsx
+
+# Sortie de scripts/exporter_competence_analyse.py — les fichiers de
+# référence de la compétence « Analyse documentaire », RÉGÉNÉRABLES depuis
+# utils/analyse_taxonomies.py. Les committer figerait une copie qui
+# dériverait de sa source : c'est précisément ce que la génération évite.
+/competence_analyse/
