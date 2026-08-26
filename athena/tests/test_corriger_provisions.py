@@ -17,6 +17,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import datetime, timezone
+
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
 os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
@@ -46,7 +48,11 @@ class _Col:
 def _facture(fid="fac1", **over):
     doc = {"invoice_number": "256501-01", "dossier_file_number": "2025-065",
            "status": "envoyée", "total": 114975, "retainer_applied": 75000,
-           "amount_due": 39975, "amount_paid": 0, "legacy_ref": ""}
+           "amount_due": 39975, "amount_paid": 0, "legacy_ref": "",
+           # Antérieure à DATE_CORRECTION : le cas prouvé de la reprise.
+           # La garde de rejeu (audit 2026-08-26) refuse toute facture créée
+           # après la séance — et, fail-closed, toute facture SANS date.
+           "created_at": datetime(2025, 6, 1, tzinfo=timezone.utc)}
     doc.update(over)
     return _Snap(fid, doc)
 
@@ -269,3 +275,24 @@ def test_l_arbitrage_ignore_les_lignes_qui_n_imputent_rien(base, tmp_path):
         "ttxC,2026-03-20,100,X,encaissement,,\n",
         encoding="utf-8-sig")
     assert corr.lire_arbitrage(str(csv)) == {}
+
+
+def test_une_facture_posterieure_a_la_seance_est_refusee(base):
+    """Garde de rejeu (audit 2026-08-26) : le cas prouvé ne couvre que les
+    factures ANTÉRIEURES au 2026-08-17. Une provision posée depuis relève du
+    système actuel — la retirer facturerait deux fois l'avance du client, et
+    aucun `update_invoice` n'existe pour la rétablir. Une facture SANS
+    created_at est refusée aussi (fail-closed)."""
+    base["invoices"] = [
+        _facture("f1", created_at=datetime(2026, 9, 1, tzinfo=timezone.utc)),
+    ]
+    base["trust"] = [_virement()]
+    cibles, refus = corr._collect()
+    assert cibles == []
+    assert refus and "postérieure au 2026-08-17" in refus[0]
+
+    sans_date = _facture("f2")
+    sans_date._d.pop("created_at")
+    base["invoices"] = [sans_date]
+    cibles, refus = corr._collect()
+    assert cibles == [] and "postérieure au 2026-08-17" in refus[0]

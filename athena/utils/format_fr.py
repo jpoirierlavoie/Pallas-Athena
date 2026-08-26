@@ -73,9 +73,44 @@ def parse_cents_fr(raw: str) -> int:
         raise ValueError("empty amount")
     try:
         value = Decimal(text)
+        return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     except (InvalidOperation, ArithmeticError) as exc:
+        # The quantize is inside the try on purpose: Decimal("nan")
+        # CONSTRUCTS fine and only its quantize raises — outside the try,
+        # "nan" leaked an InvalidOperation past the documented ValueError
+        # contract.
         raise ValueError(f"invalid amount: {raw!r}") from exc
-    return int((value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def parse_cents_or_none(raw: object) -> "int | None":
+    """Form-input variant of :func:`parse_cents_fr`: ``None`` when
+    blank/invalid, never an exception and never a silent 0 (« champ vide »
+    and « montant nul » are load-bearing distinctions in the two ledgers).
+
+    One tolerance beyond the raising parser, kept in ONE place because two
+    supposedly-identical route copies had already drifted apart on
+    narrow-NBSP handling: grouping DOTS (``"1.234.56"``) are folded so an
+    en-style paste parses instead of failing.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    for junk in ("$", _NBSP, " ", " "):  # narrow NBSP too
+        text = text.replace(junk, "")
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    if text.count(".") > 1:  # e.g. "1.234.56" — drop grouping dots
+        head, _, tail = text.rpartition(".")
+        text = head.replace(".", "") + "." + tail
+    try:
+        return int(
+            (Decimal(text) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        )
+    except (InvalidOperation, ArithmeticError, ValueError):
+        # ValueError too: quantize of a QUIET NaN returns NaN without
+        # trapping, and it is int() that then refuses it.
+        return None
 
 
 def format_rate_fr(rate: int, scale: int) -> str:

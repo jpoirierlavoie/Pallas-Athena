@@ -46,7 +46,7 @@ def _token_response(token: str = "tok-1", expires_in: int = 3600):
 
 
 def test_token_cached_then_renewed_once_on_expiry():
-    with mock.patch.object(graph.requests, "post", return_value=_token_response()) as post:
+    with mock.patch.object(graph._session, "post", return_value=_token_response()) as post:
         assert graph.jeton_application() == "tok-1"
         assert graph.jeton_application() == "tok-1"  # cache hit — no 2nd POST
         assert post.call_count == 1
@@ -60,7 +60,7 @@ def test_token_cached_then_renewed_once_on_expiry():
 
 
 def test_token_request_shape():
-    with mock.patch.object(graph.requests, "post", return_value=_token_response()) as post:
+    with mock.patch.object(graph._session, "post", return_value=_token_response()) as post:
         graph.jeton_application()
     url = post.call_args.args[0]
     data = post.call_args.kwargs["data"]
@@ -75,7 +75,7 @@ def test_network_failure_raises_graph_error_without_url():
     exc = graph.requests.exceptions.ConnectionError(
         "HTTPSConnectionPool(host='login.microsoftonline.com'...)"
     )
-    with mock.patch.object(graph.requests, "post", side_effect=exc):
+    with mock.patch.object(graph._session, "post", side_effect=exc):
         with pytest.raises(graph.GraphError) as info:
             graph.jeton_application()
     assert "ConnectionError" in str(info.value)
@@ -92,7 +92,7 @@ def test_token_failure_message_has_status_never_body():
     resp = mock.Mock()
     resp.status_code = 401
     resp.text = "AADSTS-secret-detail"
-    with mock.patch.object(graph.requests, "post", return_value=resp):
+    with mock.patch.object(graph._session, "post", return_value=resp):
         with pytest.raises(graph.GraphError) as exc:
             graph.jeton_application()
     assert "401" in str(exc.value)
@@ -110,8 +110,8 @@ def test_graph_get_follows_next_link():
     }
     page2 = mock.Mock(status_code=200)
     page2.json.return_value = {"value": [3]}
-    with mock.patch.object(graph.requests, "post", return_value=_token_response()):
-        with mock.patch.object(graph.requests, "get", side_effect=[page1, page2]) as get:
+    with mock.patch.object(graph._session, "post", return_value=_token_response()):
+        with mock.patch.object(graph._session, "get", side_effect=[page1, page2]) as get:
             merged = graph.graph_get("/x")
     assert merged["value"] == [1, 2, 3]
     assert "@odata.nextLink" not in merged
@@ -123,7 +123,7 @@ def test_graph_get_follows_next_link():
 
 def test_envoyer_sendmail_payload_conforme():
     send = mock.Mock(status_code=202, content=b"")
-    with mock.patch.object(graph.requests, "post", side_effect=[_token_response(), send]) as post:
+    with mock.patch.object(graph._session, "post", side_effect=[_token_response(), send]) as post:
         courriel.envoyer("client@exemple.com", "Objet test", "<p>Bonjour</p>")
 
     url = post.call_args.args[0]
@@ -151,7 +151,7 @@ def test_envoyer_porte_le_nom_d_affichage_configure(monkeypatch):
     monkeypatch.setattr(Config, "GRAPH_SENDER_NAME",
                         "Réception — Poirier Lavoie, avocat")
     send = mock.Mock(status_code=202, content=b"")
-    with mock.patch.object(graph.requests, "post",
+    with mock.patch.object(graph._session, "post",
                            side_effect=[_token_response(), send]) as post:
         courriel.envoyer("client@exemple.com", "Objet", "<p>x</p>")
     body = post.call_args.kwargs["json"]
@@ -165,6 +165,6 @@ def test_envoyer_porte_le_nom_d_affichage_configure(monkeypatch):
 
 def test_envoyer_raises_on_http_failure():
     send = mock.Mock(status_code=500, content=b"boom")
-    with mock.patch.object(graph.requests, "post", side_effect=[_token_response(), send]):
+    with mock.patch.object(graph._session, "post", side_effect=[_token_response(), send]):
         with pytest.raises(graph.GraphError):
             courriel.envoyer("client@exemple.com", "x", "y")

@@ -295,13 +295,16 @@ def test_table_separator_matches_engine():
 
 
 def test_screen_pipeline_uses_shared_constants():
-    """main.py's markdown filter must consume THESE constants (single source
-    of truth) — pinned by identity, not equality, after the refactor."""
-    import importlib
+    """main.py's markdown filter must BE the shared pipeline function.
 
+    Strengthened 2026-08-26: the constants were already shared, but the
+    two-call markdown()+bleach.clean() composition had been copied three
+    times (screen filter, this module, the chat email report). The Jinja
+    filter is now markdown_to_safe_html itself, so screen and paper cannot
+    drift even in the composition."""
     main_src = open(
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"),
         encoding="utf-8",
     ).read()
-    assert "from utils.markdown_docx import" in main_src
-    assert "MD_EXTENSION_CONFIGS" in main_src
+    assert "from utils.markdown_docx import markdown_to_safe_html" in main_src
+    assert 'app.jinja_env.filters["markdown"] = markdown_to_safe_html' in main_src

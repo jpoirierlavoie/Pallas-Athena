@@ -17,7 +17,6 @@ messages only — the bytes go browser→GCS (32 MB platform cap doctrine).
 import logging
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
 
 from firebase_admin import storage
 from flask import (
@@ -29,7 +28,6 @@ from flask import (
     session,
     url_for,
 )
-from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from auth import login_required
@@ -57,11 +55,13 @@ from models.admin_ledger import (
 )
 from models.audit_event import record_deletion
 from models.document import _sniff_header, build_attachment_disposition, sign_blob_url
-from models.dossier import get_dossier, list_dossiers
+from models.dossier import get_dossier
 from security import safe_internal_redirect
 from utils.deadlines import today_mtl
-from utils.format_fr import format_cents_fr
+from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_admin_ledger_event, log_unexpected
+from services.encaissements import projeter_paiement, reduire_paiement
+from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input
 
 logger = logging.getLogger(__name__)
 
@@ -78,35 +78,16 @@ _KIND_DIRECTION = {
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
-def _parse_date(value: str):
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
-def _parse_cents(raw):
-    """Parse a fr-CA / en amount string into integer cents, or None when
-    blank/invalid (None, never 0 — the trust load-bearing distinction)."""
-    if raw is None:
-        return None
-    s = str(raw).strip().replace(" ", " ").replace(" ", "").replace(" ", "").replace("$", "")
-    if not s:
-        return None
-    s = s.replace(",", ".")
-    if s.count(".") > 1:  # e.g. "1.234.56" — drop grouping dots
-        head, _, tail = s.rpartition(".")
-        s = head.replace(".", "") + "." + tail
-    try:
-        return int((Decimal(s) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    except Exception:
-        return None
+# Amount parsing lives in utils.format_fr (None when blank/invalid, never
+# 0 — the trust load-bearing distinction). This module's copy and trust's
+# had silently DRIFTED on narrow-NBSP handling (audit 2026-08-26).
+_parse_cents = parse_cents_or_none
 
 
 def _labels() -> dict:
@@ -201,24 +182,7 @@ def _factures_impayees() -> list[dict]:
 @admin_bp.route("/dossier-search")
 @login_required
 def dossier_search() -> str:
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères…</div>'
-    dossiers = list_dossiers(search=q)[:10]
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
-    parts = ['<ul class="divide-y divide-gray-100">']
-    for d in dossiers:
-        parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f' data-dossier-id="{escape(d["id"])}"'
-            f' data-dossier-file-number="{escape(d.get("file_number", ""))}"'
-            f' data-dossier-title="{escape(d.get("title", ""))}">'
-            f'<span class="font-medium text-gray-900">{escape(d.get("file_number", ""))}</span>'
-            f'<span class="text-gray-500 ml-1">{escape(d.get("title", ""))}</span></li>'
-        )
-    parts.append("</ul>")
-    return "\n".join(parts)
+    return dossier_search_fragment(request.args.get("q", ""))
 
 
 # ── Journal ────────────────────────────────────────────────────────────────
@@ -329,78 +293,6 @@ def _form_context(entry, errors: list[str], mode: str = "create") -> dict:
     )
 
 
-def _projeter_paiement(entry: dict) -> bool:
-    """Lot P projection: an encaissement entry also records the payment on
-    its invoice — ``record_payment`` stays the SINGLE writer of
-    ``amount_paid``, and this always writes *current + delta* (re-read just
-    before the call) so a manual correction on the invoice side is
-    preserved. Returns True on success; on failure the ENTRY STANDS (the
-    register is the book of record) and the caller shows a banner."""
-    from models.invoice import get_invoice, record_payment
-
-    try:
-        inv = get_invoice(entry["invoice_id"])
-        if inv is None:
-            raise RuntimeError("invoice unreadable")
-        new_total = int(inv.get("amount_paid", 0)) + int(entry["amount"])
-        updated, errs = record_payment(
-            entry["invoice_id"], new_total, paid_date=entry.get("date")
-        )
-        if errs:
-            raise RuntimeError(errs[0])
-    except Exception:
-        log_unexpected("admin: invoice payment projection failed")
-        log_admin_ledger_event(
-            "admin_invoice_payment_projected", "failure",
-            transaction_id=entry.get("id"), invoice_id=entry.get("invoice_id"),
-        )
-        return False
-    log_admin_ledger_event(
-        "admin_invoice_payment_projected", transaction_id=entry.get("id"),
-        invoice_id=entry.get("invoice_id"),
-    )
-    return True
-
-
-def _reduire_paiement(entry: dict) -> bool:
-    """Reversal counterpart of :func:`_projeter_paiement`: reduce the
-    invoice's recorded payment by the reversed entry's amount. Passes the
-    EXISTING paid_date through so a partial reduction does not stamp today
-    (record_payment nulls it itself at zero). The narrow payée→envoyée undo
-    is exactly the model behaviour this exists to trigger."""
-    from models.invoice import get_invoice, record_payment
-
-    try:
-        inv = get_invoice(entry["invoice_id"])
-        if inv is None:
-            raise RuntimeError("invoice unreadable")
-        new_total = int(inv.get("amount_paid", 0)) - int(entry["amount"])
-        if new_total < 0:
-            # An inconsistency between the register and the invoice (a
-            # projection that never committed, a manual correction in
-            # between). A max(0, …) clamp here would convert it into
-            # SILENT data loss — other recorded payments erased with no
-            # signal. Surface it instead: banner → manual correction.
-            raise RuntimeError("recorded payment below the reversed amount")
-        updated, errs = record_payment(
-            entry["invoice_id"], new_total, paid_date=inv.get("paid_date")
-        )
-        if errs:
-            raise RuntimeError(errs[0])
-    except Exception:
-        log_unexpected("admin: invoice payment reduction failed")
-        log_admin_ledger_event(
-            "admin_invoice_payment_projected", "failure",
-            transaction_id=entry.get("id"), invoice_id=entry.get("invoice_id"),
-        )
-        return False
-    log_admin_ledger_event(
-        "admin_invoice_payment_projected", transaction_id=entry.get("id"),
-        invoice_id=entry.get("invoice_id"), reduced=True,
-    )
-    return True
-
-
 @admin_bp.route("/nouvelle")
 @login_required
 def entry_new():
@@ -431,7 +323,7 @@ def entry_create():
             log_unexpected("admin: auto-clear after create failed", exc_info=False)
             params["avertissement"] = "compensation"
 
-    if entry.get("invoice_id") and not _projeter_paiement(entry):
+    if entry.get("invoice_id") and not projeter_paiement(entry):
         params["avertissement"] = "facture"
     return redirect(url_for("admin_ledger.entry_detail", tx_id=entry["id"], **params))
 
@@ -597,7 +489,7 @@ def entry_reverse(tx_id: str):
             **_labels(),
         ), 400
     params = {}
-    if original.get("invoice_id") and not _reduire_paiement(original):
+    if original.get("invoice_id") and not reduire_paiement(original):
         params["avertissement"] = "facture"
     return redirect(url_for("admin_ledger.entry_detail", tx_id=reversal["id"], **params))
 

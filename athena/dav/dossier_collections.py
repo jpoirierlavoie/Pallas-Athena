@@ -562,6 +562,11 @@ def _handle_sync_collection(
     return Response(xml, status=207, content_type="application/xml; charset=utf-8")
 
 
+# Above this many hrefs, _handle_multiget enumerates the collection once
+# instead of resolving each href with up to three point reads.
+_MULTIGET_BULK_THRESHOLD = 3
+
+
 def _handle_multiget(
     dossier_id: str, body_root: ET.Element, active: bool = True
 ) -> Response:
@@ -569,17 +574,41 @@ def _handle_multiget(
 
     A drained (inactive) collection exposes no live resources, so every
     requested href is reported as 404.
+
+    Past a few hrefs, ONE collection enumeration (the same three bounded
+    queries PROPFIND Depth:1 pays) replaces the per-href resolution, which
+    costs up to three serialized point reads EACH (``_resolve_resource``) —
+    DavX5's initial sync (and the account re-adds the doctrine mandates)
+    multigets every member of a loaded collection, which used to mean
+    hundreds of serialized Firestore reads inside one phone poll. The bulk
+    path also makes multiget agree by construction with what PROPFIND and
+    sync-collection advertise; small requests keep the point-read path.
     """
     multistatus = make_multistatus()
 
-    for href_el in body_root.findall(dav_tag("href")):
-        href = href_el.text or ""
+    hrefs = [href_el.text or "" for href_el in body_root.findall(dav_tag("href"))]
+
+    members_by_id: dict | None = None
+    if active and len(hrefs) > _MULTIGET_BULK_THRESHOLD:
+        hearings, tasks, notes = _collection_members(dossier_id)
+        members_by_id = {}
+        for obj in tasks:
+            members_by_id[obj.get("id", "")] = (obj, task_to_vtodo)
+        for obj in notes:
+            members_by_id[obj.get("id", "")] = (obj, note_to_vjournal)
+        for obj in hearings:
+            members_by_id[obj.get("id", "")] = (obj, hearing_to_vevent)
+
+    for href in hrefs:
         resource_id = _extract_resource_id(href)
         if not resource_id or not active:
             add_status_response(multistatus, href, 404, "Not Found")
             continue
 
-        resolved = _resolve_resource(dossier_id, resource_id)
+        if members_by_id is not None:
+            resolved = members_by_id.get(resource_id)
+        else:
+            resolved = _resolve_resource(dossier_id, resource_id)
         if resolved is None:
             add_status_response(multistatus, href, 404, "Not Found")
             continue

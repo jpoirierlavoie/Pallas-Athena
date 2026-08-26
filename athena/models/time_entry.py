@@ -238,7 +238,18 @@ def _filtered_query(
     supported server-side (each pairing would need its own composite index);
     callers route that rare combination through the legacy
     :func:`list_time_entries` full scan.
+
+    The refusal is ENFORCED here, not only documented (audit 2026-08-26):
+    every failure path on this collection swallows FAILED_PRECONDITION into
+    an empty list or a zero total, so a third caller that skipped the
+    routing guard would render a silently empty billing list with a $0
+    total — the June 2026 incident's shape. Raising is the honest failure.
     """
+    if dossier_id and billable_filter:
+        raise ValueError(
+            "combinaison dossier_id + billable_filter non indexée — "
+            "passer par list_time_entries (balayage legacy)"
+        )
     query = db.collection(COLLECTION)
     if dossier_id:
         query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))

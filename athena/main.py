@@ -95,38 +95,14 @@ def create_app() -> Flask:
 
     app.jinja_env.filters["jsattr"] = _jsattr
 
-    import markdown as _markdown_lib
-    import bleach as _bleach
+    # The whole pipeline lives in utils/markdown_docx.py — the SAME
+    # extensions/allowlist (incl. use_align_attribute=True, which restores
+    # table alignment on screen) drive the .docx conversion of a note's
+    # body and the chat email report, so screen, paper and mail can never
+    # drift.
+    from utils.markdown_docx import markdown_to_safe_html
 
-    # The pipeline constants live in utils/markdown_docx.py — the SAME
-    # extensions/allowlist drive the .docx conversion of a note's body
-    # (kind « note » printing), so screen and paper can never drift.
-    # MD_EXTENSION_CONFIGS carries use_align_attribute=True: markdown 3.x
-    # otherwise emits style="text-align: …", which bleach strips (style is
-    # not allowlisted) — the allowlist's `align` on th/td was always the
-    # intent, so this RESTORES table alignment on screen.
-    from utils.markdown_docx import (
-        ALLOWED_ATTRS as _ALLOWED_ATTRS,
-        ALLOWED_TAGS as _ALLOWED_TAGS,
-        MD_EXTENSION_CONFIGS as _MD_EXTENSION_CONFIGS,
-        MD_EXTENSIONS as _MD_EXTENSIONS,
-    )
-
-    def render_markdown(text: str) -> str:
-        """Convert markdown to sanitized HTML."""
-        html = _markdown_lib.markdown(
-            text,
-            extensions=_MD_EXTENSIONS,
-            extension_configs=_MD_EXTENSION_CONFIGS,
-        )
-        return _bleach.clean(
-            html,
-            tags=_ALLOWED_TAGS,
-            attributes=_ALLOWED_ATTRS,
-            strip=True,
-        )
-
-    app.jinja_env.filters["markdown"] = render_markdown
+    app.jinja_env.filters["markdown"] = markdown_to_safe_html
 
     # Material Symbols (icônes en ligatures) — global plutôt que macro Jinja :
     # ~65 gabarits appelants, et utils/icons.py est aussi le lieu de la liste

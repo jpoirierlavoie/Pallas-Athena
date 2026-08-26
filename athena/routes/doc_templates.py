@@ -57,7 +57,7 @@ from models.document import (
     upload_document,
 )
 from models.folder import get_or_create_folder
-from models.dossier import get_dossier, list_dossiers
+from models.dossier import get_dossier
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
 from models.partie import display_name, get_partie, list_parties
 from tz import MTL
@@ -71,6 +71,7 @@ from utils.template_fields import (
 )
 from utils.tracing_setup import add_attributes, span
 from utils.validators import format_phone_display
+from routes._helpers import dossier_search_fragment, is_htmx
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
 
@@ -78,8 +79,7 @@ _SCALAR_MAX_CHARS = 2000
 _FIELD_PREFIX = "champ__"
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
 def _champs_error(message: str) -> str:
@@ -343,22 +343,12 @@ def _modal_reload_url(dossier_id: str) -> str:
 @login_required
 def dossier_search() -> str:
     """Autocomplete for the generation popup: rows re-render the modal."""
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères…</div>'
-    dossiers = list_dossiers(search=q)[:10]
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
 
-    parts = [
-        '<ul class="border border-gray-200 rounded-lg overflow-hidden '
-        'divide-y divide-gray-100 bg-white max-h-48 overflow-y-auto">'
-    ]
-    for d in dossiers:
+    def _row(d: dict) -> str:
         url = escape(_modal_reload_url(d["id"]))
         file_number = escape(d.get("file_number", ""))
         title = escape(d.get("title", ""))
-        parts.append(
+        return (
             f'<li><button type="button"'
             f' class="w-full text-left px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
             f' hx-get="{url}" hx-target="#gabarit-modal" hx-swap="innerHTML"'
@@ -367,8 +357,15 @@ def dossier_search() -> str:
             f'  <span class="text-gray-500 ml-1">{title}</span>'
             f'</button></li>'
         )
-    parts.append("</ul>")
-    return "\n".join(parts)
+
+    return dossier_search_fragment(
+        request.args.get("q", ""),
+        _row,
+        list_class=(
+            "border border-gray-200 rounded-lg overflow-hidden "
+            "divide-y divide-gray-100 bg-white max-h-48 overflow-y-auto"
+        ),
+    )
 
 
 @doc_templates_bp.route("/partie-search")

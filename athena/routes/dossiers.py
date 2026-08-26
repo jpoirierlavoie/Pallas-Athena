@@ -1,7 +1,6 @@
 """Dossier management routes — list, detail, create, edit, delete."""
 
 import json
-import math
 from datetime import datetime, timezone
 
 from flask import (
@@ -56,7 +55,6 @@ from models.protocol import (
     PROTOCOL_TYPE_SHORT_LABELS,
     check_overdue_steps,
     get_protocol,
-    get_protocol_for_dossier,
     get_protocol_summary,
     list_protocols_for_dossier,
 )
@@ -94,27 +92,22 @@ from models.reference import list_forums
 from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires_parts, retention_date
+from routes._helpers import is_htmx, parse_date_input
+from utils.format_fr import parse_cents_or_none
 
 dossiers_bp = Blueprint(
     "dossiers", __name__, url_prefix="/dossiers"
 )
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
 def _parse_cents(value: str) -> int:
-    """Parse a dollar string (e.g., '250.00') into integer cents."""
-    if not value or not value.strip():
-        return 0
-    try:
-        cents = float(value.strip().replace(",", ".")) * 100
-        if not math.isfinite(cents):
-            return 0
-        return int(round(cents))
-    except (ValueError, TypeError):
-        return 0
+    """Parse a dollar string (e.g., '250.00') into integer cents; 0 when
+    blank/invalid. Via utils.format_fr — the local copy used float money
+    math (audit 2026-08-26)."""
+    return parse_cents_or_none(value) or 0
 
 
 def _parse_percent(value: str) -> int:
@@ -122,16 +115,7 @@ def _parse_percent(value: str) -> int:
     return _parse_cents(value)  # same ×100 transform: 25 → 2500
 
 
-def _parse_date(value: str) -> datetime | None:
-    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
 def _parse_parties_json(raw: str) -> list[dict]:
@@ -590,15 +574,23 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["task_category_labels"] = TASK_CATEGORY_LABELS
         ctx["task_status_labels"] = TASK_STATUS_LABELS
 
-    # Load protocol data for the protocole tab
+    # Load protocol data for the protocole tab. ONE dossier-scoped protocol
+    # query serves the active lookup, the history AND the summary below —
+    # this render used to re-read the same protocol document and its whole
+    # steps subcollection four times (query → check_overdue_steps → reload →
+    # get_protocol_summary, each with its own reads).
     if tab_name == "protocole":
-        active_protocol = get_protocol_for_dossier(dossier_id, active_only=True)
-        if active_protocol:
-            check_overdue_steps(active_protocol["id"])
-            active_protocol = get_protocol(active_protocol["id"])
+        all_protocols = list_protocols_for_dossier(dossier_id)
+        active_meta = next(
+            (p for p in all_protocols if p.get("status") == "actif"), None
+        )
+        active_protocol = None
+        if active_meta:
+            # Flips first (check_overdue_steps writes), then ONE fresh read.
+            check_overdue_steps(active_meta["id"])
+            active_protocol = get_protocol(active_meta["id"])
 
         # Historical protocols (completed/suspended)
-        all_protocols = list_protocols_for_dossier(dossier_id)
         historical_protocols = [
             p for p in all_protocols
             if p.get("status") in ("complété", "suspendu")
@@ -617,7 +609,9 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
 
         ctx["protocol"] = active_protocol
         ctx["historical_protocols"] = historical_protocols
-        ctx["protocol_summary"] = get_protocol_summary(dossier_id)
+        ctx["protocol_summary"] = get_protocol_summary(
+            dossier_id, protocol=active_protocol, protocols=all_protocols
+        )
         ctx["protocol_type_colors"] = PROTOCOL_TYPE_COLORS
         ctx["protocol_type_short_labels"] = PROTOCOL_TYPE_SHORT_LABELS
 

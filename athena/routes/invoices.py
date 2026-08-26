@@ -1,7 +1,6 @@
 """Invoice management routes — list, create, detail, status updates."""
 
 import io
-import math
 from datetime import datetime, timezone
 
 from flask import (
@@ -20,7 +19,7 @@ from auth import login_required
 from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
 from security import safe_internal_redirect
 from config import Config
-from utils.format_fr import format_rate_fr
+from utils.format_fr import format_rate_fr, parse_cents_or_none
 from models.invoice import (
     STATUS_LABELS,
     VALID_STATUSES,
@@ -60,39 +59,27 @@ from utils.invoice_docx import build_invoice_context
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import MANUAL_FIELDS, classify_placeholders, fallback_value
 from utils.tracing_setup import add_attributes, span
-from utils.validators import format_phone_display
+from routes._helpers import is_htmx, parse_date_input
 
 invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
-def _parse_date(value: str) -> datetime | None:
-    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
 def _parse_cents(value: str) -> int:
-    """Parse a dollar string (e.g., '250.00') into integer cents."""
-    if not value or not value.strip():
-        return 0
-    try:
-        cents = float(value.strip().replace(",", ".")) * 100
-        # Reject NaN/Infinity ("nan"/"inf" parse as floats but corrupt totals)
-        if not math.isfinite(cents):
-            return 0
-        return int(round(cents))
-    except (ValueError, TypeError):
-        return 0
+    """Parse a dollar string (e.g., '250.00') into integer cents; 0 when
+    blank/invalid (the retainer field's historical contract).
+
+    Via utils.format_fr — the old local copy did ``float(...) * 100``,
+    the one money parser in the tree violating the integer-cents/Decimal
+    house rule (audit 2026-08-26). NaN/Infinity now fail Decimal
+    quantization and land on 0 as before.
+    """
+    return parse_cents_or_none(value) or 0
 
 
 def _template_context() -> dict:
@@ -663,21 +650,11 @@ _EXPORT_COLUMNS_CSV = [
 
 def _export_filters() -> tuple[str, str, "datetime | None", "datetime | None"]:
     """The list filters an export must honour: (status, dossier_id, from, to)."""
-    def _parse_date_local(value: str) -> datetime | None:
-        if not value or not value.strip():
-            return None
-        try:
-            return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            return None
-
     return (
         request.args.get("status", ""),
         request.args.get("dossier_id", "").strip(),
-        _parse_date_local(request.args.get("date_from", "")),
-        _parse_date_local(request.args.get("date_to", "")),
+        _parse_date(request.args.get("date_from", "")),
+        _parse_date(request.args.get("date_to", "")),
     )
 
 
@@ -710,8 +687,15 @@ def _journal_rows(invoices: list[dict]) -> list[dict]:
     """
     rows: list[dict] = []
     for inv in invoices:
-        items = list_line_items(inv.get("id", ""))
-        debours_tx, debours_ntx = expense_split(inv, items)
+        # Fee-only invoice: the split is (0, 0) by construction
+        # (expense_split only carves the non-taxable part out of the stored
+        # subtotal_expenses), so the subcollection read would be pure waste
+        # on the most common row.
+        if int(inv.get("subtotal_expenses") or 0) == 0:
+            debours_tx, debours_ntx = 0, 0
+        else:
+            items = list_line_items(inv.get("id", ""))
+            debours_tx, debours_ntx = expense_split(inv, items)
         date = inv.get("date")
         rows.append({
             "date": date.strftime("%Y-%m-%d")

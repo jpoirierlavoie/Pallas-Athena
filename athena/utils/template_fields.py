@@ -37,8 +37,6 @@ from utils.validators import format_phone_display
 
 # ── Vocabulary ──────────────────────────────────────────────────────────
 
-SLOTS = ("dossier", "client", "adverse", "destinataire")
-
 # Feminine forms of the litigation roles (PARTY_ROLES vocabulary, July
 # 2026). "autre"/"requérant"? — requérant DOES inflect; "autre" does not
 # and is deliberately absent (an unmapped role leaves the placeholder

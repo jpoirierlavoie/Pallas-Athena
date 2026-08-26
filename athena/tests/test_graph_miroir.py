@@ -343,15 +343,15 @@ def _jeton(monkeypatch):
 def test_graph_patch_statuts(_jeton):
     ok = mock.Mock(status_code=200, content=b"{}")
     ok.json.return_value = {"id": "EVT-1"}
-    with mock.patch.object(graph.requests, "patch", return_value=ok):
+    with mock.patch.object(graph._session, "patch", return_value=ok):
         assert graph.graph_patch("/x", {}) == {"id": "EVT-1"}
 
     vide = mock.Mock(status_code=204, content=b"")
-    with mock.patch.object(graph.requests, "patch", return_value=vide):
+    with mock.patch.object(graph._session, "patch", return_value=vide):
         assert graph.graph_patch("/x", {}) is None
 
     refus = mock.Mock(status_code=404, text="corps-secret")
-    with mock.patch.object(graph.requests, "patch", return_value=refus):
+    with mock.patch.object(graph._session, "patch", return_value=refus):
         with pytest.raises(graph.GraphError) as exc:
             graph.graph_patch("/x", {})
     assert "404" in str(exc.value) and "corps-secret" not in str(exc.value)
@@ -359,11 +359,11 @@ def test_graph_patch_statuts(_jeton):
 
 def test_graph_delete_statuts(_jeton):
     ok = mock.Mock(status_code=204)
-    with mock.patch.object(graph.requests, "delete", return_value=ok):
+    with mock.patch.object(graph._session, "delete", return_value=ok):
         assert graph.graph_delete("/x") is None
 
     refus = mock.Mock(status_code=403, text="corps-secret")
-    with mock.patch.object(graph.requests, "delete", return_value=refus):
+    with mock.patch.object(graph._session, "delete", return_value=refus):
         with pytest.raises(graph.GraphError) as exc:
             graph.graph_delete("/x")
     assert "403" in str(exc.value) and "corps-secret" not in str(exc.value)
@@ -373,7 +373,7 @@ def test_graph_patch_reseau_sans_url(_jeton):
     exc_reseau = graph.requests.exceptions.ConnectionError(
         "HTTPSConnectionPool(host='graph.microsoft.com'...)"
     )
-    with mock.patch.object(graph.requests, "patch", side_effect=exc_reseau):
+    with mock.patch.object(graph._session, "patch", side_effect=exc_reseau):
         with pytest.raises(graph.GraphError) as info:
             graph.graph_patch("/x", {})
     assert "ConnectionError" in str(info.value)

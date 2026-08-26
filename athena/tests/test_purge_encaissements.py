@@ -99,13 +99,27 @@ def test_une_facture_deja_adossee_au_registre_est_epargnee(monde):
     assert cibles == [] and erreurs == []
 
 
-def test_un_paiement_partiellement_adosse_reste_retenu(monde):
-    """Un cumul INFÉRIEUR au montant encaissé trahit encore une saisie hors
-    comptabilité — l'écart, lui, est le trou dans le compte d'opérations."""
+def test_un_paiement_partiellement_adosse_est_refuse_pas_purge(monde):
+    """RENVERSÉ par la garde de rejeu (audit 2026-08-26) : record_payment(id, 0)
+    efface TOUT le montant, alors qu'un adossement partiel signifie qu'une
+    part est légitimement au registre (une réduction fail-open qui a échoué,
+    une écriture hors application). La purger déplacerait le trou au lieu de
+    le fermer — la facture est nommée et laissée intacte."""
     monde([_facture("001")], cumuls={"001": 20000})
-    cibles, _ = purge._collect()
-    assert len(cibles) == 1
-    assert cibles[0]["registre"] == 20000
+    cibles, erreurs = purge._collect()
+    assert cibles == []
+    assert len(erreurs) == 1 and "NON purgée" in erreurs[0]
+    assert "part légitime" in erreurs[0]
+
+
+def test_un_paiement_posterieur_a_la_seance_est_refuse(monde):
+    """La comptabilité est seule écrivain d'un paiement depuis le 2026-08-17 :
+    un paiement daté d'après n'est pas un vestige de l'ancien formulaire, et
+    un --apply périmé ne doit pas pouvoir l'effacer (garde de rejeu)."""
+    monde([_facture("001", paid_date=datetime(2026, 9, 1, tzinfo=UTC))])
+    cibles, erreurs = purge._collect()
+    assert cibles == []
+    assert len(erreurs) == 1 and "postérieur au 2026-08-17" in erreurs[0]
 
 
 def test_les_dix_neuf_payees_sans_montant_ne_sont_pas_touchees(monde):

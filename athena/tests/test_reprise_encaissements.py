@@ -311,7 +311,7 @@ def test_une_projection_ratee_arrete_TOUT(monkeypatch, base):
                             "invoice_id": d["invoice_id"], "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
-    monkeypatch.setattr("routes.admin_ledger._projeter_paiement", lambda e: False)
+    monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: False)
 
     actions = [
         {"virement": _virement("t1"), "facture": _facture(), "mode": "encaissement",
@@ -333,7 +333,7 @@ def test_l_execution_n_ecrit_JAMAIS_au_fideicommis(monkeypatch, base):
                                     "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
-    monkeypatch.setattr("routes.admin_ledger._projeter_paiement", lambda e: True)
+    monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: True)
 
     class _Piege:
         def collection(self, name):
@@ -358,7 +358,7 @@ def test_l_ecriture_porte_le_virement_et_la_facture(monkeypatch, base):
                             "invoice_id": d["invoice_id"], "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
-    monkeypatch.setattr("routes.admin_ledger._projeter_paiement", lambda e: True)
+    monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: True)
 
     rep.appliquer("cpt1", [{
         "virement": _virement(invoice_external_ref="WP1820000001-01"),
@@ -383,7 +383,7 @@ def test_une_recette_autre_ne_porte_aucune_facture(monkeypatch, base):
                             "id": "adm1", "status": "compensée",
                             "invoice_id": None, "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
-    monkeypatch.setattr("routes.admin_ledger._projeter_paiement",
+    monkeypatch.setattr("services.encaissements.projeter_paiement",
                         lambda e: pytest.fail("aucune projection attendue"))
 
     rep.appliquer("cpt1", [{"virement": _virement(), "facture": None,
@@ -622,3 +622,37 @@ def test_un_rejeu_apres_une_application_partielle_ne_se_refuse_pas(
     ], None)
     assert actions == [], "une ligne déjà faite ne doit rien réécrire"
     assert refus == [], f"le rejeu s'est refusé lui-même : {refus}"
+
+
+# ── Garde de rejeu (audit 2026-08-26) ────────────────────────────────────
+
+
+class _Sentinelle(Exception):
+    """Marque que main() a dépassé la garde et atteint lire_csv."""
+
+
+def test_appliquer_refuse_quand_la_reprise_est_deja_au_registre(monkeypatch):
+    """Un --appliquer sur un fichier ancien décrit un état qui a bougé : dès
+    que le registre porte l'empreinte de la reprise (« — reprise
+    historique »), l'application est refusée avant toute lecture du CSV."""
+    monkeypatch.setattr(rep.al, "list_register", lambda cid: (
+        [{"description": "Virement X — reprise historique"}], False))
+    monkeypatch.setattr(
+        rep, "lire_csv",
+        lambda chemin: (_ for _ in ()).throw(_Sentinelle()))
+    assert rep.main(["--compte", "c1", "--appliquer", "vieux.csv"]) == 2
+
+
+def test_seulement_ouvre_le_passage_pour_un_virement_jamais_ecrit(monkeypatch):
+    """L'échappatoire est étroite : --seulement ne passe la garde que si ce
+    virement ne porte encore AUCUNE écriture d'administration — le cas
+    resté en souffrance, celui pour lequel l'option existe."""
+    monkeypatch.setattr(rep.al, "list_register", lambda cid: (
+        [{"description": "Virement X — reprise historique"}], False))
+    monkeypatch.setattr(rep.al, "list_by_trust_transaction", lambda t: [])
+    monkeypatch.setattr(
+        rep, "lire_csv",
+        lambda chemin: (_ for _ in ()).throw(_Sentinelle()))
+    with pytest.raises(_Sentinelle):
+        rep.main(["--compte", "c1", "--appliquer", "neuf.csv",
+                  "--seulement", "t99"])

@@ -91,8 +91,6 @@ PARTY_ROLES = (
     "requérant",
     "autre",
 )
-# The derived dossier-level field shares the SAME vocabulary — one source.
-VALID_ROLES = PARTY_ROLES
 VALID_FEE_TYPES = (
     "hourly", "flat", "contingency", "mixed", "pro_bono", "aide_juridique",
 )
@@ -166,7 +164,6 @@ _MATTER_TYPE_TO_DOMAINE = {
     "litige_commercial": "",
     "familial": "",
 }
-COURT_LABELS = {c: c for c in VALID_COURTS}
 STATUS_LABELS = {
     "actif": "Actif",
     "en_attente": "En attente",
@@ -1518,20 +1515,8 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
         return []
 
 
-def count_dossiers_for_partie(partie_id: str) -> int:
-    """Count how many dossiers reference a given partie (as client or opposing).
-
-    Returns 0 on query failure — display-only callers degrade gracefully.
-    Safety checks must use :func:`count_dossiers_for_partie_strict`.
-    """
-    try:
-        return count_dossiers_for_partie_strict(partie_id)
-    except Exception:
-        return 0
-
-
 def count_dossiers_for_partie_strict(partie_id: str) -> int:
-    """Like :func:`count_dossiers_for_partie` but propagates query errors.
+    """Count how many dossiers reference a partie, propagating query errors.
 
     Used by FK safety checks (e.g. partie deletion) that must fail CLOSED
     when the count cannot be established.

@@ -48,6 +48,17 @@ taches_outlook_bp = Blueprint(
 # de la fenêtre que par le bord passé.
 _LIMITE_FENETRE = 1500
 
+# Plafond de MUTATIONS Graph par balayage (créations + corrections +
+# suppressions). Chaque mutation est un aller-retour HTTPS sérialisé
+# (~300-600 ms, poignée de main TLS comprise) et le cron cible le service
+# default (gunicorn --timeout 60) : ~100-200 mutations — première
+# activation, rattrapage, série volumineuse — franchissaient le mur et le
+# worker était SIGKILLé en plein balayage, sans compteurs ni journal. Le
+# balayage étant incrémental et idempotent (dédup par marqueur), le reste
+# part au cycle suivant, 10 minutes plus tard ; le reliquat est compté
+# (`restants`) et journalisé, jamais tu.
+_PLAFOND_MUTATIONS = 80
+
 
 def _retenir(h: dict) -> bool:
     """Une audience méritant un miroir : confirmée, ni import Bookings, ni
@@ -116,7 +127,14 @@ def _synchroniser() -> dict | None:
         "supprimes": 0,
         "ignores": len(rows) - len(desired),
         "erreurs": 0,
+        "restants": 0,
     }
+    mutations = 0
+
+    def _budget_epuise() -> bool:
+        # Une tentative compte, réussie ou non — c'est l'aller-retour qui
+        # coûte, pas le résultat.
+        return mutations >= _PLAFOND_MUTATIONS
 
     miroirs = graph_miroir.lister_miroirs(debut, fin)
     counters["miroirs"] = len(miroirs)
@@ -132,6 +150,10 @@ def _synchroniser() -> dict | None:
         evs.sort(key=lambda e: e.get("id") or "")
         garde, doublons = evs[0], evs[1:]
         for ev in doublons:
+            if _budget_epuise():
+                counters["restants"] += 1
+                continue
+            mutations += 1
             try:
                 graph_miroir.supprimer_miroir(ev.get("id") or "")
                 counters["supprimes"] += 1
@@ -144,12 +166,20 @@ def _synchroniser() -> dict | None:
             # audience au-delà de la coupe en « orpheline » à supprimer.
             if fenetre_pleine:
                 continue
+            if _budget_epuise():
+                counters["restants"] += 1
+                continue
+            mutations += 1
             try:
                 graph_miroir.supprimer_miroir(garde.get("id") or "")
                 counters["supprimes"] += 1
             except GraphError:
                 counters["erreurs"] += 1
         elif graph_miroir.doit_corriger(h, garde):
+            if _budget_epuise():
+                counters["restants"] += 1
+                continue
+            mutations += 1
             try:
                 graph_miroir.corriger_miroir(garde.get("id") or "", h)
                 counters["corriges"] += 1
@@ -159,11 +189,20 @@ def _synchroniser() -> dict | None:
     for hid, h in desired.items():
         if hid in par_audience:
             continue
+        if _budget_epuise():
+            counters["restants"] += 1
+            continue
+        mutations += 1
         try:
             graph_miroir.creer_miroir(h)
             counters["crees"] += 1
         except GraphError:
             counters["erreurs"] += 1
+
+    # Le reliquat au-delà du plafond voyage dans la ligne de compteurs
+    # (`restants` dans miroir_outlook_execute) : rien de perdu — le balayage
+    # est idempotent et le cycle suivant reprend dans 10 minutes — et jamais
+    # muet, un arriéré qui ne se résorbe pas se lit à chaque cycle.
 
     if fenetre_pleine:
         # ERROR, jamais muet : tant que la fenêtre déborde, les suppressions

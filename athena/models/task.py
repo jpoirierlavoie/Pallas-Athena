@@ -4,7 +4,6 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 # Circular sync guard — prevents infinite task↔protocol sync loops
 _SYNCING: set[str] = set()
@@ -13,6 +12,7 @@ import icalendar
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
+from tz import MTL
 from security import sanitize
 from utils import deadlines, phases
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -400,16 +400,26 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
             _check_protocol_completion,
         )
 
-        # Search active protocols for a step linked to this task
-        protocols = db.collection(PROTO_COLLECTION).stream()
+        # Search active protocols for a step linked to this task. Both
+        # filters are pushed server-side (each single-field, auto-indexed —
+        # no firestore.indexes.json entry needed): the old shape streamed
+        # EVERY protocol (closed ones accumulate for ever) plus every step
+        # of each active one, on every status change — web toggle, DAV
+        # VTODO PUT and MCP complete_task alike — and the common case (a
+        # task linked to no step) scanned everything to find nothing.
+        protocols = (
+            db.collection(PROTO_COLLECTION)
+            .where(filter=FieldFilter("status", "==", "actif"))
+            .stream()
+        )
         for proto_doc in protocols:
-            proto = proto_doc.to_dict()
-            if proto.get("status") != "actif":
-                continue
             steps_ref = db.collection(PROTO_COLLECTION).document(
                 proto_doc.id
             ).collection(STEPS_SUBCOLLECTION)
-            for step_doc in steps_ref.stream():
+            linked = steps_ref.where(
+                filter=FieldFilter("linked_task_id", "==", task_id)
+            ).limit(1).stream()
+            for step_doc in linked:
                 step = step_doc.to_dict()
                 if step.get("linked_task_id") == task_id:
                     now = datetime.now(timezone.utc)
@@ -520,7 +530,7 @@ def task_to_vtodo(task: dict) -> str:
     todo.add("status", status_map.get(task.get("status", ""), "NEEDS-ACTION"))
 
     # DUE — emit in America/Montreal for datetime values
-    mtl = ZoneInfo("America/Montreal")
+    mtl = MTL  # the one tz authority (tz.py)
     due = task.get("due_date")
     if due:
         if hasattr(due, "hour") and due.hour == 0 and due.minute == 0:

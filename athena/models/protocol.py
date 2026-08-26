@@ -945,16 +945,6 @@ def complete_step(
     return step, []
 
 
-def uncomplete_step(
-    protocol_id: str, step_id: str
-) -> tuple[Optional[dict], list[str]]:
-    """Revert a completed step back to à_venir."""
-    return update_step(protocol_id, step_id, {
-        "status": "à_venir",
-        "completed_date": None,
-    })
-
-
 def recompute_deadlines(
     protocol_id: str, new_start_date: datetime
 ) -> tuple[Optional[dict], list[str]]:
@@ -1133,8 +1123,15 @@ def list_urgent_steps(cutoff: datetime, limit: int = 50) -> list[dict]:
 # ── Summary ─────────────────────────────────────────────────────────────
 
 
+_SUMMARY_UNSET = object()
+
+
 def get_protocol_summary(
-    dossier_id: str, today: Optional[date] = None
+    dossier_id: str,
+    today: Optional[date] = None,
+    *,
+    protocol: object = _SUMMARY_UNSET,
+    protocols: Optional[list[dict]] = None,
 ) -> dict:
     """Return protocol summary for a dossier (active protocol only).
 
@@ -1142,10 +1139,22 @@ def get_protocol_summary(
     against the PROROGUED deadline. The web caller (the dossier's Protocole
     tab tiles) aligns through the default; the MCP passes the same value
     explicitly so one response shares one clock read.
+
+    ``protocol``/``protocols`` let a caller that already holds the active
+    protocol (with steps) and the dossier's protocol list reuse them instead
+    of re-reading — the Protocole tab was paying the same document + steps
+    stream four times per render. ``protocol`` distinguishes « not supplied »
+    (sentinel → read here) from « supplied as None » (caller affirmed no
+    active protocol exists).
     """
-    protocol = get_protocol_for_dossier(dossier_id, active_only=True)
+    if protocol is _SUMMARY_UNSET:
+        protocol = get_protocol_for_dossier(dossier_id, active_only=True)
     if not protocol:
-        all_protos = list_protocols_for_dossier(dossier_id)
+        all_protos = (
+            protocols
+            if protocols is not None
+            else list_protocols_for_dossier(dossier_id)
+        )
         return {
             "has_protocol": False,
             "has_history": len(all_protos) > 0,
@@ -1178,7 +1187,11 @@ def get_protocol_summary(
     upcoming = [s for s, d in open_dated if today <= d <= window_end]
     next_deadline = min((d for _, d in open_dated), default=None)
 
-    all_protos = list_protocols_for_dossier(dossier_id)
+    all_protos = (
+        protocols
+        if protocols is not None
+        else list_protocols_for_dossier(dossier_id)
+    )
     return {
         "has_protocol": True,
         "has_history": len(all_protos) > 1,

@@ -112,7 +112,7 @@ def test_projeter_paiement_writes_current_plus_delta(monkeypatch):
 
     entry = {"id": "t1", "invoice_id": "fac1", "amount": 60000,
              "date": datetime(2026, 7, 10, tzinfo=timezone.utc)}
-    assert ra._projeter_paiement(entry) is True
+    assert ra.projeter_paiement(entry) is True
     assert calls["args"][0] == "fac1"
     assert calls["args"][1] == 100000            # 40000 + 60000, never SET(60000)
     assert calls["args"][2] == entry["date"]
@@ -121,7 +121,7 @@ def test_projeter_paiement_writes_current_plus_delta(monkeypatch):
 def test_projeter_paiement_failure_leaves_the_entry_standing(monkeypatch):
     monkeypatch.setattr(invoice_model, "get_invoice", lambda iid: None)
     entry = {"id": "t1", "invoice_id": "fac1", "amount": 60000, "date": None}
-    assert ra._projeter_paiement(entry) is False  # banner, never an exception
+    assert ra.projeter_paiement(entry) is False  # banner, never an exception
 
 
 def test_reduire_paiement_passes_the_existing_paid_date_through(monkeypatch):
@@ -140,7 +140,7 @@ def test_reduire_paiement_passes_the_existing_paid_date_through(monkeypatch):
     monkeypatch.setattr(invoice_model, "record_payment", _rp)
 
     entry = {"id": "t1", "invoice_id": "fac1", "amount": 60000}
-    assert ra._reduire_paiement(entry) is True
+    assert ra.reduire_paiement(entry) is True
     assert calls["args"][1] == 40000
     assert calls["args"][2] == paid_date
 
@@ -159,10 +159,10 @@ def test_reduire_paiement_refuses_a_negative_result_instead_of_clamping(monkeypa
         called["amount"] = amount
         return {"id": iid}, []
     monkeypatch.setattr(invoice_model, "record_payment", _rp)
-    assert ra._reduire_paiement({"id": "t1", "invoice_id": "f", "amount": 60000}) is False
+    assert ra.reduire_paiement({"id": "t1", "invoice_id": "f", "amount": 60000}) is False
     assert "amount" not in called            # record_payment never touched
     # Exact zero is the legitimate full reversal of the only payment.
-    assert ra._reduire_paiement({"id": "t1", "invoice_id": "f", "amount": 30000}) is True
+    assert ra.reduire_paiement({"id": "t1", "invoice_id": "f", "amount": 30000}) is True
     assert called["amount"] == 0
 
 
@@ -281,7 +281,9 @@ def test_creer_recette_administration_invoice_backed(monkeypatch):
         created.update(data)
         return {**data, "id": "adm1"}, []
     monkeypatch.setattr(al, "create_transaction", _ct)
-    monkeypatch.setattr(ra, "_projeter_paiement", lambda e: True)
+    monkeypatch.setattr(
+        "services.encaissements.projeter_paiement", lambda e: True
+    )
 
     assert rt._creer_recette_administration(_virement(), "ops1") is True
     assert created["kind"] == "encaissement_facture"
@@ -329,7 +331,9 @@ def test_contrepasser_recette_reverses_and_reduces(monkeypatch):
         calls["reversed"] = (tx_id, allow_linked)
         return {"id": "rev1"}, []
     monkeypatch.setattr(al, "reverse_transaction", _rev)
-    monkeypatch.setattr(ra, "_reduire_paiement", lambda e: True)
+    monkeypatch.setattr(
+        "services.encaissements.reduire_paiement", lambda e: True
+    )
 
     assert rt._contrepasser_recette_administration("ttx1", "erreur") is True
     assert calls["reversed"] == ("adm1", True)   # allow_linked — the trust side calls

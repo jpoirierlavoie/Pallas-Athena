@@ -37,14 +37,14 @@ from models.dossier import (
     DOMAINE_LABELS as DOSSIER_DOMAINE_LABELS,
     list_dossiers_for_partie,
 )
+from routes._helpers import is_htmx
 
 parties_bp = Blueprint(
     "parties", __name__, url_prefix="/parties"
 )
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
 def _form_data() -> dict:

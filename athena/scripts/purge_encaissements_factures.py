@@ -45,11 +45,19 @@ after the historical reprise is over.
 
 import argparse
 import sys
+from datetime import datetime, timezone
 
 from models import admin_ledger as al
 from models import db
 from models.invoice import record_payment
 from utils.format_fr import format_cents_fr
+
+#: La séance de purge (2026-08-17). Un paiement inscrit APRÈS cette date
+#: n'est pas un vestige de l'ancien formulaire : la comptabilité est seule
+#: écrivain depuis ce jour, et un écart récent signifie une écriture qui a
+#: mal tourné (une réduction fail-open, une écriture hors application) —
+#: à examiner, jamais à purger en bloc (garde de rejeu, audit 2026-08-26).
+DATE_PURGE = datetime(2026, 8, 17, tzinfo=timezone.utc)
 
 
 def _date_str(value) -> str:
@@ -79,6 +87,31 @@ def _collect() -> tuple[list[dict], list[str]]:
             continue
         if registre >= paye:
             continue  # déjà adossée à la comptabilité
+        # ── Gardes de rejeu (audit 2026-08-26) ──────────────────────────
+        # (1) Un paiement daté d'APRÈS la séance de purge n'est pas un
+        # vestige : record_payment(id, 0) effacerait une saisie du système
+        # actuel dont l'écart s'explique autrement.
+        paid = inv.get("paid_date")
+        if paid is not None and paid >= DATE_PURGE:
+            erreurs.append(
+                f"{inv.get('invoice_number', snap.id)} : paiement daté du "
+                f"{_date_str(paid)}, postérieur au 2026-08-17 — ce n'est pas "
+                f"un vestige de l'ancien formulaire. NON purgée : faites "
+                f"examiner l'écart (verify_admin_integrity, contrôle nº 8)."
+            )
+            continue
+        # (2) Un adossement PARTIEL n'est plus le cas de 2026-08-17 (tout ou
+        # rien) : remettre à zéro effacerait AUSSI la part que le registre
+        # adosse légitimement — le trou changerait de côté, sans se fermer.
+        if registre > 0:
+            erreurs.append(
+                f"{inv.get('invoice_number', snap.id)} : le registre en "
+                f"adosse {format_cents_fr(registre)} sur "
+                f"{format_cents_fr(paye)} — remettre à zéro effacerait AUSSI "
+                f"la part légitime. NON purgée : contre-passez l'écriture "
+                f"fautive dans « Administration »."
+            )
+            continue
         cibles.append({
             "id": snap.id,
             "numero": inv.get("invoice_number", snap.id),

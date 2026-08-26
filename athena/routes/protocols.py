@@ -39,24 +39,15 @@ from models.protocol import (
     update_protocol,
     update_step,
 )
+from routes._helpers import is_htmx, parse_date_input
 
 protocols_bp = Blueprint("protocols", __name__, url_prefix="/protocoles")
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
-def _parse_date(value: str) -> datetime | None:
-    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
 def _template_context() -> dict:
@@ -196,14 +187,13 @@ def protocol_create() -> str:
 @login_required
 def protocol_detail(protocol_id: str) -> str:
     """Render the protocol detail view with timeline."""
+    # Flips first (check_overdue_steps reads + writes internally), then ONE
+    # fresh read — the old read→check→reload chain streamed the whole steps
+    # subcollection three times per detail view.
+    check_overdue_steps(protocol_id)
     protocol = get_protocol(protocol_id)
     if not protocol:
         return redirect(url_for("dossiers.dossier_list"))
-
-    # Check overdue steps
-    check_overdue_steps(protocol_id)
-    # Reload after overdue check
-    protocol = get_protocol(protocol_id)
 
     ctx = _template_context()
     ctx["protocol"] = protocol

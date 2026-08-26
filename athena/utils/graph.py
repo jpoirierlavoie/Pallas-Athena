@@ -28,6 +28,14 @@ _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _TOKEN_MARGIN_SECONDS = 300
 _HTTP_TIMEOUT = 30
 
+# One Session per worker: bare module-level ``requests.post`` creates and
+# discards a transient connection per call, so every Graph call paid a fresh
+# TCP+TLS handshake (~100-250 ms) — multiplied by the Outlook-mirror and
+# Bookings-sync loops. urllib3's pooling is thread-safe for this usage; the
+# timeouts and the GraphError taxonomy are unchanged. Tests patch
+# ``graph._session`` (they used to patch ``graph.requests``).
+_session = requests.Session()
+
 
 class GraphError(RuntimeError):
     """A Graph or token-endpoint call failed (status code in the message)."""
@@ -65,7 +73,7 @@ def jeton_application() -> str:
             return _cached_token
 
         try:
-            response = requests.post(
+            response = _session.post(
                 _TOKEN_URL.format(tenant=Config.GRAPH_TENANT_ID),
                 data={
                     "grant_type": "client_credentials",
@@ -110,7 +118,7 @@ def graph_get(path: str, params: Optional[dict[str, Any]] = None) -> dict:
     merged: Optional[dict] = None
     while url:
         try:
-            response = requests.get(
+            response = _session.get(
                 url,
                 params=params if merged is None else None,
                 headers=_auth_headers(),
@@ -138,7 +146,7 @@ def graph_get(path: str, params: Optional[dict[str, Any]] = None) -> dict:
 def graph_post(path: str, json_body: dict) -> Optional[dict]:
     """POST to a Graph endpoint; returns the JSON body, or None on 202/204."""
     try:
-        response = requests.post(
+        response = _session.post(
             _GRAPH_BASE + path,
             json=json_body,
             headers=_auth_headers(),
@@ -160,7 +168,7 @@ def graph_patch(path: str, json_body: dict) -> Optional[dict]:
     PATCH on an event with 200 + the updated resource.
     """
     try:
-        response = requests.patch(
+        response = _session.patch(
             _GRAPH_BASE + path,
             json=json_body,
             headers=_auth_headers(),
@@ -178,7 +186,7 @@ def graph_patch(path: str, json_body: dict) -> Optional[dict]:
 def graph_delete(path: str) -> None:
     """DELETE a Graph resource (204 expected)."""
     try:
-        response = requests.delete(
+        response = _session.delete(
             _GRAPH_BASE + path,
             headers=_auth_headers(),
             timeout=_HTTP_TIMEOUT,

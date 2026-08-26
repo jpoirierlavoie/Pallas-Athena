@@ -35,8 +35,6 @@ from utils.template_fields import CATALOG, FLAT_ALIASES, resolve_values
 _GST_SCALE = 100
 _QST_SCALE = 1000
 
-REGIONS = ("ligne_honoraire", "ligne_debours_tx", "ligne_debours_ntx")
-
 
 @dataclass
 class InvoiceContext:

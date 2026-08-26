@@ -53,27 +53,17 @@ from models.hearing import (
 )
 from models.dossier import (
     get_dossier,
-    list_dossiers,
     VALID_COURTS,
 )
+from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input
 
 hearings_bp = Blueprint("hearings", __name__, url_prefix="/audiences")
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
-def _parse_date(value: str) -> datetime | None:
-    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
 def _parse_datetime(date_str: str, time_str: str) -> datetime | None:
@@ -141,24 +131,15 @@ def _template_context() -> dict:
 
 
 def _enrich_dossier_info(data: dict) -> dict:
-    """Look up dossier and attach denormalized file_number + title.
+    """Attach the denormalized dossier labels (shared helper).
 
-    Hearings may be standalone agenda events (no dossier). When the dossier
-    field is empty — or references a dossier that no longer exists — clear the
-    id and its denormalized file_number/title so no stale label lingers on a
-    hearing that was detached from its dossier.
+    Hearings may be standalone agenda events (no dossier). An empty — or
+    unresolvable — dossier_id is blanked to "" along with the labels, so no
+    stale label lingers on a hearing detached from its dossier.
     """
-    dossier_id = data.get("dossier_id", "")
-    if dossier_id:
-        dossier = get_dossier(dossier_id)
-        if dossier:
-            data["dossier_file_number"] = dossier.get("file_number", "")
-            data["dossier_title"] = dossier.get("title", "")
-            return data
-        # Invalid dossier ID — fall through and clear it.
-    data["dossier_id"] = ""
-    data["dossier_file_number"] = ""
-    data["dossier_title"] = ""
+    data, _ = enrich_dossier_labels(
+        data, blank_value="", resolver=get_dossier
+    )
     return data
 
 
@@ -225,31 +206,7 @@ def _recurrence_from_form() -> tuple[str, "int | None", "date | None"]:
 @login_required
 def dossier_search() -> str:
     """HTMX autocomplete endpoint for dossier selection."""
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères…</div>'
-
-    dossiers = list_dossiers(search=q)[:10]
-
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
-
-    html_parts = ['<ul class="divide-y divide-gray-100">']
-    for d in dossiers:
-        dossier_id = escape(d["id"])
-        file_number = escape(d.get("file_number", ""))
-        title = escape(d.get("title", ""))
-        html_parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{dossier_id}"'
-            f'    data-dossier-file-number="{file_number}"'
-            f'    data-dossier-title="{title}">'
-            f'  <span class="font-medium text-gray-900">{file_number}</span>'
-            f'  <span class="text-gray-500 ml-1">{title}</span>'
-            f'</li>'
-        )
-    html_parts.append("</ul>")
-    return "\n".join(html_parts)
+    return dossier_search_fragment(request.args.get("q", ""))
 
 
 # ── List (Calendar view) ─────────────────────────────────────────────────

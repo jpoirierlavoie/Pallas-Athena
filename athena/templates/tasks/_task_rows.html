@@ -1,5 +1,12 @@
 {# Task list rows — grouped by status #}
 
+{# Rebond d'erreur de task_toggle (2xx + ?erreur= — la règle htmx :
+   un fragment 4xx ne serait jamais échangé). Se dissipe à la
+   navigation, comme la bannière de documents/_browser.html. #}
+{% if erreur %}
+<div class="text-red-600 text-sm mb-4">{{ erreur }}</div>
+{% endif %}
+
 {% set priority_dot = {
   'haute': 'bg-red-500',
   'normale': 'bg-orange-400',

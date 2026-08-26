@@ -5,7 +5,6 @@ import uuid
 from datetime import date, datetime, timezone, timedelta
 from typing import NamedTuple, Optional
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 import icalendar
 
@@ -13,7 +12,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db
 from security import sanitize
-from tz import mtl_to_utc, to_mtl
+from tz import MTL, mtl_to_utc, to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -966,15 +965,6 @@ def get_hearing_summary(dossier_id: str) -> dict:
     }
 
 
-def get_upcoming_hearings(days: int = 30) -> list[dict]:
-    """Return hearings within the next N days, across all dossiers."""
-    now = datetime.now(timezone.utc)
-    cutoff = now + timedelta(days=days)
-    hearings = list_hearings(date_from=now, date_to=cutoff)
-    # Exclude cancelled
-    return [h for h in hearings if h.get("status") not in ("annulée",)]
-
-
 # ── RFC-5545 VEVENT serialization ─────────────────────────────────────────
 
 
@@ -997,7 +987,7 @@ def hearing_to_vevent(hearing: dict) -> str:
 
     # DTSTART / DTEND — emit in America/Montreal so CalDAV clients
     # display the correct local time and include a VTIMEZONE component.
-    mtl = ZoneInfo("America/Montreal")
+    mtl = MTL  # the one tz authority (tz.py)
     start = hearing.get("start_datetime")
     end = hearing.get("end_datetime")
     if hearing.get("all_day"):

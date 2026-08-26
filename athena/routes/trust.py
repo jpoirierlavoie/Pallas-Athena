@@ -9,7 +9,6 @@ exemption is needed (ordinary form POSTs).
 
 import json
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
 
 from flask import (
     Blueprint,
@@ -21,7 +20,7 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
-from models.dossier import get_dossier, list_dossiers
+from models.dossier import get_dossier
 from models import trust
 from models.trust import (
     ACCOUNT_STATUS_LABELS,
@@ -40,8 +39,9 @@ from models.trust import (
 )
 from pagination import PAGE_SIZE, cursor_pagination, parse_trail
 from security import safe_internal_redirect
-from utils.format_fr import format_cents_fr
+from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
+from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input, standard_dossier_row
 
 trust_bp = Blueprint("trust", __name__, url_prefix="/fideicommis")
 
@@ -49,36 +49,15 @@ trust_bp = Blueprint("trust", __name__, url_prefix="/fideicommis")
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
-def _parse_date(value: str):
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
-def _parse_cents(raw):
-    """Parse a fr-CA / en amount string ("1 234,56", "1234.56", "$1,000") into
-    integer cents, or None when blank/invalid."""
-    if raw is None:
-        return None
-    s = str(raw).strip().replace(" ", " ").replace(" ", "").replace("$", "")
-    if not s:
-        return None
-    # Treat comma as decimal separator (fr-CA), tolerate a trailing/removed one.
-    s = s.replace(",", ".")
-    if s.count(".") > 1:  # e.g. "1.234.56" — drop grouping dots
-        head, _, tail = s.rpartition(".")
-        s = head.replace(".", "") + "." + tail
-    try:
-        return int((Decimal(s) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    except Exception:
-        return None
+# Amount parsing lives in utils.format_fr — this module's copy and admin
+# ledger's had silently DRIFTED on narrow-NBSP handling (audit 2026-08-26).
+_parse_cents = parse_cents_or_none
 
 
 def _labels() -> dict:
@@ -133,31 +112,20 @@ def _account_header(account: dict) -> dict:
 @trust_bp.route("/dossier-search")
 @login_required
 def dossier_search() -> str:
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères…</div>'
-    dossiers = list_dossiers(search=q)[:10]
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
-    parts = ['<ul class="divide-y divide-gray-100">']
-    for d in dossiers:
-        # The dossier's clients ride along on the row so the client <select> can
-        # be populated with no second request (a dossier has one or two clients).
+    def _row(d: dict) -> str:
+        # The dossier's clients ride along on the row so the client
+        # <select> can be populated with no second request (a dossier
+        # has one or two clients).
         clients = [
             {"id": c.get("id", ""), "name": c.get("name", "")}
             for c in d.get("clients", [])
         ]
-        parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f' data-dossier-id="{escape(d["id"])}"'
-            f' data-dossier-file-number="{escape(d.get("file_number", ""))}"'
-            f' data-dossier-title="{escape(d.get("title", ""))}"'
-            f' data-clients="{escape(json.dumps(clients, ensure_ascii=False))}">'
-            f'<span class="font-medium text-gray-900">{escape(d.get("file_number", ""))}</span>'
-            f'<span class="text-gray-500 ml-1">{escape(d.get("title", ""))}</span></li>'
+        extra = (
+            f' data-clients="{escape(json.dumps(clients, ensure_ascii=False))}"'
         )
-    parts.append("</ul>")
-    return "\n".join(parts)
+        return standard_dossier_row(d, extra_attrs=extra)
+
+    return dossier_search_fragment(request.args.get("q", ""), _row)
 
 
 @trust_bp.route("/client-search")
@@ -376,7 +344,7 @@ def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
     number. Fail-open: the trust write is already committed and NEVER
     blocked; a failure surfaces as a banner."""
     from models import admin_ledger
-    from routes.admin_ledger import _projeter_paiement
+    from services.encaissements import projeter_paiement
 
     comptes, _lisible = _comptes_administration()
     if not any(a["id"] == admin_account_id for a in comptes):
@@ -408,7 +376,7 @@ def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
             transaction_id=entry.get("id"), reason="recette_administration_echec",
         )
         return False
-    if recette.get("invoice_id") and not _projeter_paiement(recette):
+    if recette.get("invoice_id") and not projeter_paiement(recette):
         return False
     return True
 
@@ -569,7 +537,7 @@ def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
     or everything followed; False → banner."""
     try:
         from models import admin_ledger
-        from routes.admin_ledger import _reduire_paiement
+        from services.encaissements import reduire_paiement
 
         recette = admin_ledger.find_by_trust_transaction(trust_tx_id)
         if recette is None or recette.get("reversed_by_id"):
@@ -581,7 +549,7 @@ def _contrepasser_recette_administration(trust_tx_id: str, reason: str) -> bool:
         )
         if errors:
             return False
-        if recette.get("invoice_id") and not _reduire_paiement(recette):
+        if recette.get("invoice_id") and not reduire_paiement(recette):
             return False
         return True
     except Exception:

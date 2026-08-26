@@ -55,6 +55,14 @@ from utils.format_fr import format_cents_fr as f
 #: on recopie un privé, on ne l'importe pas).
 STATUTS_EMIS = ("envoyée", "en_retard")
 
+#: La séance d'application (2026-08-17). Une facture créée APRÈS n'entre pas
+#: dans le cas prouvé de la reprise : sa provision relève du système ACTUEL,
+#: où elle est légitime (formulaire de création, import_invoice) — et où il
+#: n'existe aucun `update_invoice` pour la rétablir une fois effacée. La
+#: retirer facturerait au client une seconde fois l'argent qu'il a déjà
+#: avancé (garde de rejeu, audit 2026-08-26).
+DATE_CORRECTION = datetime(2026, 8, 17, tzinfo=timezone.utc)
+
 _NON_ALNUM = re.compile(r"[^0-9a-zA-Z]")
 
 
@@ -145,6 +153,13 @@ def _collect(arbitrage: Optional[dict[str, str]] = None) -> tuple[list[dict], li
         if prov <= 0:
             continue
         num = inv.get("invoice_number", inv["id"])
+        # Garde de rejeu : le cas prouvé ne couvre que les factures
+        # ANTÉRIEURES à la séance du 2026-08-17 (voir DATE_CORRECTION).
+        if (inv.get("created_at") or DATE_CORRECTION) >= DATE_CORRECTION:
+            refus.append(
+                f"{num} : facture postérieure au 2026-08-17 — sa provision "
+                f"relève du système actuel, où elle est légitime. NON corrigée")
+            continue
         total = int(inv.get("total", 0) or 0)
         du = int(inv.get("amount_due", 0) or 0)
         paye = int(inv.get("amount_paid", 0) or 0)

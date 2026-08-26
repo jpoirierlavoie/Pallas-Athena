@@ -1,4 +1,10 @@
-"""One-shot: recalculer un solde de grand livre qui a dérivé.
+"""Réparation PERMANENTE : recalculer un solde de grand livre qui a dérivé.
+
+(Longtemps intitulé « One-shot » — l'audit du 2026-08-26 a corrigé le mot :
+la valeur écrite est RECALCULÉE des écritures vivantes à chaque exécution,
+il n'y a aucune prémisse figée qui puisse se périmer. Le script est
+convergent par construction et se relance sans danger tant qu'aucun second
+écrivain légitime de `ledger_balance` n'existe — il n'en existe aucun.)
 
 `admin_accounts.ledger_balance` est le SEUL chiffre dénormalisé du registre
 d'administration ; tout le reste se calcule à la lecture. Quand il diverge de

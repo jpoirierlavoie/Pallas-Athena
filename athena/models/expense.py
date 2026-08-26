@@ -213,7 +213,17 @@ def _filtered_query(
     :func:`list_expenses`); the dossier_id + billable_filter combination is
     NOT supported server-side — callers route it through the legacy
     :func:`list_expenses` full scan.
+
+    The refusal is ENFORCED here, not only documented (audit 2026-08-26) —
+    same rationale as time_entry._filtered_query: every failure path
+    swallows FAILED_PRECONDITION into empty/zero, so an unguarded caller
+    would produce a silently empty list with a $0 total.
     """
+    if dossier_id and billable_filter:
+        raise ValueError(
+            "combinaison dossier_id + billable_filter non indexée — "
+            "passer par list_expenses (balayage legacy)"
+        )
     query = db.collection(COLLECTION)
     if dossier_id:
         query = query.where(filter=FieldFilter("dossier_id", "==", dossier_id))

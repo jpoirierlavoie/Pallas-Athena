@@ -107,6 +107,14 @@ _FETCH_CAP = 200
 _UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
 _NOTE_PREVIEW_CHARS = 280
 _UNBILLED_ROW_CAP = 50
+# The standard dry_run preview warning — one constant for the 8 write
+# handlers that used to repeat the literal (import_invoice keeps its own
+# reconciliation-specific variant). The wording is part of the emitted
+# payload: byte-identical to the former literals.
+_DRY_RUN_WARNING = (
+    "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+    "dry_run pour enregistrer."
+)
 
 
 # ── Shared serialization helpers ────────────────────────────────────────
@@ -2526,8 +2534,7 @@ def _write_result(
     }
     if dry_run:
         payload["warnings"].append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
         return payload
     if not bumped:
@@ -2762,22 +2769,20 @@ def create_note(args: dict) -> dict:
 
 
 def _create_note_impl(args: dict, dry_run: bool) -> dict:
-    dossier_id = (args.get("dossier_id") or "").strip()
     # An ABSENT dossier_id means « Général ». A SUPPLIED one must resolve:
     # models/note._validate no longer requires a dossier, so a hallucinated
     # UUID would otherwise be silently downgraded to a general note instead
-    # of erroring — research filed where nobody will look for it.
-    if dossier_id:
-        dossier = dossier_model.get_dossier(dossier_id)
-        if dossier is None:
-            raise ToolArgumentError(
-                f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
-                "ou get_dossier pour obtenir un dossier_id valide. N'omettez "
-                "pas dossier_id pour contourner cette erreur : une note sans "
-                "dossier va dans « Général »."
-            )
-    else:
-        dossier = _general_scope()
+    # of erroring — research filed where nobody will look for it. The
+    # refusal message (advice tail included) is byte-identical to the
+    # pre-consolidation inline block.
+    dossier_id, dossier = _resolve_write_dossier(
+        args,
+        required=False,
+        advice=(
+            " N'omettez pas dossier_id pour contourner cette erreur : une "
+            "note sans dossier va dans « Général »."
+        ),
+    )
 
     title = _clean_note_text((args.get("title") or "").strip(), "title")
     body = _clean_note_text((args.get("content") or "").strip(), "content")
@@ -2953,18 +2958,20 @@ def _clean_entity_text(
 
 
 def _resolve_write_dossier(
-    args: dict, *, required: bool
+    args: dict, *, required: bool, advice: str = ""
 ) -> tuple[str, dict]:
     """Resolve the write target dossier; refuse an unknown id, never
     downgrade (the create_note rule). ``required=False`` allows the
-    « Général » fallback for agenda entities."""
+    « Général » fallback for agenda entities; ``advice`` appends a
+    tool-specific sentence to the refusal (create_note's « n'omettez
+    pas… » warning)."""
     dossier_id = (args.get("dossier_id") or "").strip()
     if dossier_id:
         dossier = dossier_model.get_dossier(dossier_id)
         if dossier is None:
             raise ToolArgumentError(
                 f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
-                "ou get_dossier pour obtenir un dossier_id valide."
+                "ou get_dossier pour obtenir un dossier_id valide." + advice
             )
         return dossier_id, dossier
     if required:
@@ -3059,8 +3066,7 @@ def _entity_write_result(
             )
     if dry_run:
         payload["warnings"].append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
     return payload
 
@@ -3519,8 +3525,7 @@ def _dossier_write_result(
     }
     if dry_run:
         payload["warnings"].append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
     return payload
 
@@ -3831,8 +3836,7 @@ def _partie_write_result(doc: dict, *, dry_run: bool, verb: str) -> dict:
         )
     if dry_run:
         payload["warnings"].append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
     return payload
 
@@ -4011,8 +4015,7 @@ def _billing_edit(
             "entity_type": entity_type,
             "entity": entity_builder(preview),
             "warnings": [
-                "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-                "dry_run pour enregistrer."
+                _DRY_RUN_WARNING
             ],
         }
 
@@ -4284,8 +4287,7 @@ def _set_phase_impl(
     warnings: list[str] = []
     if dry_run:
         warnings.append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
     if refused:
         warnings.append(
@@ -5368,8 +5370,7 @@ def _complete_dossier_impl(args: dict, dry_run: bool) -> dict:
         dossier_model._apply_prescription_deadline(preview)
         result = _payload(preview)
         result["warnings"].append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
         return result
 
@@ -6123,8 +6124,7 @@ def _draft_result(head: dict, verb: str, *, dry_run: bool = False) -> dict:
     }
     if dry_run:
         payload["warnings"].append(
-            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-            "dry_run pour enregistrer."
+            _DRY_RUN_WARNING
         )
     return payload
 

@@ -279,12 +279,18 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
     for chemin in list((racine / "routes").glob("*.py")) + \
             list((racine / "models").glob("*.py")) + \
             list((racine / "mcp").glob("*.py")) + \
+            list((racine / "services").glob("*.py")) + \
+            list((racine / "chat").glob("*.py")) + \
             list((racine / "scripts").glob("*.py")):
         texte = chemin.read_text(encoding="utf-8")
         if "record_payment(" in texte and chemin.name != "invoice.py":
             appelants.add(chemin.name)
+    # Depuis l'audit 2026-08-26 l'orchestration Lot P vit dans
+    # services/encaissements.py (routes/admin_ledger et routes/trust
+    # l'appellent) — le balayage couvre désormais services/ et chat/ aussi,
+    # pour que la portée du pin ne rétrécisse jamais en silence.
     assert appelants == {
-        "admin_ledger.py",
+        "encaissements.py",
         "purge_encaissements_factures.py",
         "reprise_encaissements.py",
     }, appelants
@@ -328,3 +334,47 @@ def test_a_ledger_backed_paid_invoice_offers_no_reopen():
     )
     assert "Rouvrir la facture" not in html
     assert "invoice_update_status" not in html
+
+
+# ── Journal des honoraires : la lecture des postes est payée seulement là
+#    où elle sert (audit 2026-08-26) ─────────────────────────────────────
+
+
+def test_journal_rows_skip_the_line_items_read_on_fee_only_invoices(monkeypatch):
+    """expense_split ne fait que tailler la part non taxable HORS du
+    subtotal_expenses stocké : a zéro, le partage est (0, 0) quel que soit
+    le contenu des postes, donc la lecture de la sous-collection était du
+    pur gaspillage sur la ligne la plus courante — sérialisée, non
+    plafonnée, sur un export qui grandit pour toujours. Le saut doit rester
+    invisible dans la feuille : mêmes colonnes, au cent près."""
+    from routes import invoices as invoices_routes
+
+    calls = []
+
+    def _spy(invoice_id):
+        calls.append(invoice_id)
+        return [
+            {"type": "expense", "amount": 4000, "taxable": True},
+            {"type": "expense", "amount": 1500, "taxable": False},
+        ]
+
+    monkeypatch.setattr(invoices_routes, "list_line_items", _spy)
+
+    fee_only = {
+        "id": "f1", "date": datetime(2026, 3, 1, tzinfo=timezone.utc),
+        "invoice_number": "2026-F001", "subtotal_fees": 150000,
+        "subtotal_expenses": 0, "subtotal": 150000, "gst_amount": 7500,
+        "qst_amount": 14963, "total": 172463, "amount_paid": 0,
+        "amount_due": 172463, "status": "envoyée",
+    }
+    with_expenses = dict(
+        fee_only, id="f2", invoice_number="2026-F002",
+        subtotal_expenses=5500, subtotal=155500,
+    )
+
+    rows = invoices_routes._journal_rows([fee_only, with_expenses])
+
+    assert calls == ["f2"]  # the fee-only invoice never pays the read
+    assert (rows[0]["debours_tx"], rows[0]["debours_ntx"]) == (0, 0)
+    assert (rows[1]["debours_tx"], rows[1]["debours_ntx"]) == (4000, 1500)
+    assert rows[1]["debours_tx"] + rows[1]["debours_ntx"] == 5500

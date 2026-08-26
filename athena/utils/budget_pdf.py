@@ -224,7 +224,7 @@ def _build_story(
 ) -> list:
     """The flowable list — separated from doc.build so tests can inspect
     the pre-formatted fr-CA strings (PDF streams are compressed)."""
-    from models.budget import budget_totals, group_lines_by_phase
+    from utils.budget_math import budget_totals, group_lines_by_phase
 
     groups = group_lines_by_phase(
         budget.get("lines", []), int(budget.get("hourly_rate") or 0)

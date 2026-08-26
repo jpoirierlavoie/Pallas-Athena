@@ -77,14 +77,6 @@ def _sanitize_data(data: dict) -> dict:
 # ── Pure layer (no Firestore — carries the test suite) ─────────────────────
 
 
-def _line_fees_cents(hours: float, rate: int) -> int:
-    """hours × rate in integer cents (mirror of time_entry._compute_amount)."""
-    product = hours * rate
-    if not math.isfinite(product):
-        return 0
-    return int(round(product))
-
-
 def _normalize_lines(raw_lines: list) -> tuple[list[dict], list[str]]:
     """Coerce and validate budget lines.
 
@@ -166,74 +158,16 @@ def _next_version(existing: list[dict]) -> int:
     return 1 + max(int(b.get("version") or 0) for b in existing)
 
 
-def budget_totals(budget: dict) -> dict:
-    """Whole-budget totals: hours, fees, frais, grand total (cents)."""
-    rate = int(budget.get("hourly_rate") or 0)
-    hours = 0.0
-    fees = 0
-    frais = 0
-    for line in budget.get("lines", []):
-        h = float(line.get("hours") or 0)
-        hours += h
-        fees += _line_fees_cents(h, rate)
-        frais += int(line.get("frais_cents") or 0)
-    return {
-        "hours": round(hours, 2),
-        "fees_cents": fees,
-        "frais_cents": frais,
-        "total_cents": fees + frais,
-    }
-
-
-def _phase_order() -> list[str]:
-    """Display order: the ordered tronc, then modules in PHASES order."""
-    ordered = list(phases.TRONC_ORDONNE)
-    ordered += [
-        code for code, p in phases.PHASES.items()
-        if p.categorie == "module"
-    ]
-    return ordered
-
-
-def group_lines_by_phase(lines: list[dict], hourly_rate: int) -> list[dict]:
-    """Budget lines grouped by parent phase, with per-line fees and subtotals.
-
-    Group order: TRONC_ORDONNE first, then modules in PHASES insertion
-    order. Only phases that actually have lines appear.
-    """
-    by_phase: dict[str, list[dict]] = {}
-    for line in lines:
-        code = line.get("sous_phase", "")
-        parent = phases.phase_of(code)
-        row = {
-            "sous_phase": code,
-            "label": phases.SOUS_PHASE_LABELS.get(code, code),
-            "hours": float(line.get("hours") or 0),
-            "fees_cents": _line_fees_cents(
-                float(line.get("hours") or 0), hourly_rate
-            ),
-            "frais_cents": int(line.get("frais_cents") or 0),
-        }
-        by_phase.setdefault(parent, []).append(row)
-
-    groups: list[dict] = []
-    for code in _phase_order():
-        rows = by_phase.get(code)
-        if not rows:
-            continue
-        rows.sort(key=lambda r: r["sous_phase"])
-        groups.append({
-            "phase": code,
-            "libelle": phases.PHASE_LABELS.get(code, code),
-            "categorie": phases.PHASES[code].categorie,
-            "lines": rows,
-            "subtotal": {
-                "hours": round(sum(r["hours"] for r in rows), 2),
-                "fees_cents": sum(r["fees_cents"] for r in rows),
-                "frais_cents": sum(r["frais_cents"] for r in rows),
-            },
-        })
-    return groups
+# Pure budget arithmetic lives in utils/budget_math.py since the audit of
+# 2026-08-26 (utils/budget_pdf.py was the tree's only utils->models import).
+# Re-exported here so every existing models.budget import path and test
+# survives -- the taxonomie/phases re-export shape.
+from utils.budget_math import (  # noqa: E402,F401  (re-exports)
+    _phase_order,
+    budget_totals,
+    group_lines_by_phase,
+    line_fees_cents as _line_fees_cents,
+)
 
 
 def aggregate_actuals(time_entries: list[dict], expenses: list[dict]) -> dict:

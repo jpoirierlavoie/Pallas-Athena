@@ -515,7 +515,7 @@ def _depayer(actions: list[dict]) -> list[str]:
 
 def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
     """Exécute, virement par virement, dans l'ordre chronologique."""
-    from routes.admin_ledger import _projeter_paiement
+    from services.encaissements import projeter_paiement
 
     echecs = _depayer(actions)
     if echecs:
@@ -558,7 +558,7 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
             if erreurs:
                 return [f"{v.get('id')} : compensation refusée — {erreurs[0]}"]
 
-        if ecriture.get("invoice_id") and not _projeter_paiement(ecriture):
+        if ecriture.get("invoice_id") and not projeter_paiement(ecriture):
             # ARRÊT DUR. L'écriture est COMMISE et la facture n'est pas
             # créditée ; elle porte invoice_id et trust_transaction_id, donc
             # elle est incorrigible depuis l'application. Continuer la boucle
@@ -588,6 +588,38 @@ def main(argv: list[str]) -> int:
     p.add_argument("--seulement", metavar="TRUST_TX_ID",
                    help="Restreint à un seul virement — la PREMIÈRE exécution.")
     args = p.parse_args(argv)
+
+    if args.appliquer:
+        # ── GARDE DE REJEU (audit 2026-08-26) ───────────────────────────
+        # L'empreinte de la reprise est portée par ses propres écritures
+        # (« — reprise historique », posé à la création). Un fichier ancien
+        # décrit un état qui a bougé depuis — et une écriture d'encaissement
+        # liée ne se corrige plus depuis l'application. L'échappatoire est
+        # étroite : --seulement N'OUVRE le passage que pour un virement qui
+        # ne porte encore AUCUNE écriture d'administration (le cas resté en
+        # souffrance) ; tout le reste exige un fichier NEUF (--proposer →
+        # --verifier → --appliquer). Les deux lectures échouent FERMÉ.
+        deja, _tronque = al.list_register(args.compte)
+        empreinte = [
+            t for t in deja
+            if (t.get("description") or "").endswith("reprise historique")
+        ]
+        cible_neuve = bool(
+            args.seulement
+            and not al.list_by_trust_transaction(args.seulement)
+        )
+        if empreinte and not cible_neuve:
+            print(
+                f"REFUS — la reprise historique est déjà portée au registre "
+                f"({len(empreinte)} écriture(s)). Un fichier ancien décrit un "
+                f"état qui a bougé depuis, et une écriture d'encaissement ne "
+                f"se corrige plus depuis l'application. Les virements "
+                f"postérieurs au 2026-08-17 s'inscrivent d'eux-mêmes depuis "
+                f"le fidéicommis. Pour un cas isolé resté en souffrance : "
+                f"relancez --proposer sur un fichier NEUF, --verifier, puis "
+                f"--appliquer avec --seulement."
+            )
+            return 2
 
     if args.proposer:
         return proposer(args.proposer, args.seulement)

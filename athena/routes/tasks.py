@@ -19,7 +19,7 @@ from auth import login_required
 from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
 from models.audit_event import record_deletion
 from utils import deadlines
-from security import safe_internal_redirect
+from security import safe_internal_redirect, sanitize
 from models.task import (
     CATEGORY_LABELS,
     PRIORITY_COLORS,
@@ -40,10 +40,10 @@ from models.task import (
 from models.dossier import (
     get_dossier,
     get_dossiers_bulk,
-    list_dossiers,
 )
 from models.protocol import get_current_phase_for_dossier
 from utils import phases
+from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input
 
 tasks_bp = Blueprint("tasks", __name__, url_prefix="/taches")
 
@@ -76,20 +76,10 @@ def _stamp_overdue(*task_lists: list[dict]) -> None:
             ) and deadlines.is_past_due(t.get("due_date"), today=today)
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
-def _parse_date(value: str) -> datetime | None:
-    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
 def _template_context() -> dict:
@@ -111,22 +101,11 @@ def _template_context() -> dict:
 
 
 def _enrich_dossier_info(data: dict) -> dict:
-    """Look up dossier and attach denormalized file_number + title."""
-    dossier_id = data.get("dossier_id", "")
-    if dossier_id:
-        dossier = get_dossier(dossier_id)
-        if dossier:
-            data["dossier_file_number"] = dossier.get("file_number", "")
-            data["dossier_title"] = dossier.get("title", "")
-        else:
-            # Invalid dossier ID — clear it
-            data["dossier_id"] = None
-            data["dossier_file_number"] = ""
-            data["dossier_title"] = ""
-    else:
-        data["dossier_id"] = None
-        data["dossier_file_number"] = ""
-        data["dossier_title"] = ""
+    """Attach the denormalized dossier labels (shared helper — an
+    unresolvable or empty id becomes None, tasks' « no dossier » value)."""
+    data, _ = enrich_dossier_labels(
+        data, blank_value=None, resolver=get_dossier
+    )
     return data
 
 
@@ -154,31 +133,7 @@ def _form_data() -> dict:
 @login_required
 def dossier_search() -> str:
     """HTMX autocomplete endpoint for dossier selection."""
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères\u2026</div>'
-
-    dossiers = list_dossiers(search=q)[:10]
-
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
-
-    html_parts = ['<ul class="divide-y divide-gray-100">']
-    for d in dossiers:
-        dossier_id = escape(d["id"])
-        file_number = escape(d.get("file_number", ""))
-        title = escape(d.get("title", ""))
-        html_parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{dossier_id}"'
-            f'    data-dossier-file-number="{file_number}"'
-            f'    data-dossier-title="{title}">'
-            f'  <span class="font-medium text-gray-900">{file_number}</span>'
-            f'  <span class="text-gray-500 ml-1">{title}</span>'
-            f'</li>'
-        )
-    html_parts.append("</ul>")
-    return "\n".join(html_parts)
+    return dossier_search_fragment(request.args.get("q", ""))
 
 
 # ── List ─────────────────────────────────────────────────────────────────
@@ -287,6 +242,8 @@ def task_list() -> str:
         status_filter=status_filter,
         priority_filter=priority_filter,
         category_filter=category_filter,
+        # Bannière du refus de task_toggle (2xx + ?erreur= — la règle htmx).
+        erreur=sanitize(request.args.get("erreur", ""), max_length=300),
     )
 
     if _is_htmx():
@@ -502,7 +459,26 @@ def task_toggle(task_id: str) -> str:
     task, errors = toggle_task_complete(task_id)
 
     if errors:
-        return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
+        # Jamais un fragment 4xx : htmx 2.0.4 n'échange que les 2xx, donc
+        # « Tâche introuvable. » — le cas ORDINAIRE d'une liste restée
+        # ouverte pendant qu'une tâche partait par DavX5, un second onglet
+        # ou le connecteur — mourait à l'écran : case morte, l'utilisateur
+        # re-tape (audit 2026-08-26, catégorie b). 200 + HX-Redirect vers
+        # la liste, filtres conservés (postés via hx-include), bannière
+        # ?erreur= rendue par _task_rows.html. La branche non-htmx (le
+        # formulaire de la page détail) recevait de surcroît un 422 dont
+        # le corps entier était le seul <div> rouge — une page cassée.
+        target = url_for(
+            "tasks.task_list", erreur=errors[0],
+            dossier=request.form.get("dossier", "").strip(),
+            status=request.form.get("status", "").strip(),
+            priority=request.form.get("priority", "").strip(),
+            category=request.form.get("category", "").strip(),
+        )
+        resp = redirect(target)
+        if _is_htmx():
+            resp.headers["HX-Redirect"] = target
+        return resp
 
     bump_ctag(collection_for(task.get("dossier_id")))
 

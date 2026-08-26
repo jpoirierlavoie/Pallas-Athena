@@ -29,6 +29,7 @@ from models.partie import display_name, get_partie
 from services import portail_emission as emission
 from tz import to_mtl
 from utils import courriel
+from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_portail_event
@@ -69,10 +70,17 @@ def _sha512_blob(blob) -> str:
 
 # ── Accusé de réception « bordereau » (spec A.2) ─────────────────────────
 
-# Bloc DESTINATAIRE (cabinet) — coordonnées statiques du bordereau fourni,
-# SANS le cellulaire (décision utilisateur 2026-07-25). Migration vers
-# config.FIRM_* (partagé avec les factures) = suite possible.
-_CABINET = {
+# Bloc DESTINATAIRE (cabinet) — composé depuis utils.cabinet.cabinet_dict(),
+# l'UNE autorité des coordonnées du cabinet (audit 2026-08-26 : ce bloc les
+# recopiait en dur, et son propre commentaire nommait la dette). Toujours
+# SANS le cellulaire (décision utilisateur 2026-07-25 — cabinet_dict n'en a
+# pas) ; « organisation » reste local, cabinet_dict n'a pas ce champ ; le
+# bordereau garde son format de téléphone local (sans le préfixe « +1 »).
+# Repli intégral quand les FIRM_* ne sont pas configurés (défaut "" —
+# tests, poste local sans .env) : un bloc DESTINATAIRE VIDE sur un courriel
+# client serait pire que ces littéraux ; en production app.yaml les fournit
+# et l'autorité s'applique.
+_CABINET_REPLI = {
     "nom": "Me Jason Poirier Lavoie",
     "organisation": "Poirier Lavoie, avocat",
     "adresse_lignes": [
@@ -82,6 +90,25 @@ _CABINET = {
     "telephone": "(514) 737-2525",
     "telecopieur": "(514) 737-6565",
 }
+
+
+def _composer_cabinet() -> dict:
+    cab = cabinet_dict()
+    if not cab["nom"]:
+        return dict(_CABINET_REPLI)
+    return {
+        "nom": cab["nom"],
+        "organisation": _CABINET_REPLI["organisation"],
+        "adresse_lignes": [
+            cab["adresse_civique"],
+            f"{cab['ville']} ({cab['province']}) {cab['code_postal']}",
+        ],
+        "telephone": cab["telephone"].removeprefix("+1 "),
+        "telecopieur": cab["telecopieur"].removeprefix("+1 "),
+    }
+
+
+_CABINET = _composer_cabinet()
 
 
 def _taille_lisible(octets: int) -> str:

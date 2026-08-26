@@ -287,10 +287,6 @@ TRONC_ORDONNE: tuple[str, ...] = tuple(
 # ── Pure helpers ───────────────────────────────────────────────────────────
 
 
-def get_phase(code: str) -> Optional[Phase]:
-    return PHASES.get(code or "")
-
-
 def phase_of(sous_code: str) -> str:
     """The parent phase code of a sub-code, or "" when unknown.
 

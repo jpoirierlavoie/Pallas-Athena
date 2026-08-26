@@ -57,7 +57,6 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from models import db
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
-from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
 from utils.deadlines import today_mtl
@@ -1740,28 +1739,6 @@ def book_balance_as_of(account_id: str, as_of) -> int:
     return sum(
         admin_delta(r.get("direction", ""), int(r.get("amount", 0))) for r in rows
     )
-
-
-def list_recent_page(
-    account_id: str, cursor: Optional[str] = None, limit: int = PAGE_SIZE
-) -> tuple[list[dict], Optional[str]]:
-    """« Dernières écritures » widget: newest INSERTIONS first (sequence
-    DESC — the audit order, deliberately not the ledger order; no running
-    balance is shown here). Fails CLOSED."""
-    query = (
-        db.collection(TRANSACTIONS_COLLECTION)
-        .where(filter=FieldFilter("account_id", "==", account_id))
-        .order_by("sequence", direction=firestore.Query.DESCENDING)
-    )
-    values = decode_cursor(cursor)
-    if values and len(values) == 1:
-        query = query.start_after({"sequence": values[0]})
-    docs = [d.to_dict() for d in query.limit(limit + 1).stream()]
-    next_cursor = None
-    if len(docs) > limit:
-        docs = docs[:limit]
-        next_cursor = encode_cursor([docs[-1].get("sequence")])
-    return docs, next_cursor
 
 
 def find_by_trust_transaction(trust_tx_id: str) -> Optional[dict]:

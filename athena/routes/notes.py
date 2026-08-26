@@ -34,7 +34,8 @@ from models.note import (
     toggle_pin,
     update_note,
 )
-from models.dossier import get_dossier, list_dossiers
+from models.dossier import get_dossier
+from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx
 
 # Reserved filter value: items belonging to no dossier. Not a dossier id
 # (those are UUIDv4), so it can never collide with a real one.
@@ -43,8 +44,7 @@ GENERAL_FILTER = "general"
 notes_bp = Blueprint("notes", __name__, url_prefix="/notes")
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
 def _template_context() -> dict:
@@ -65,22 +65,15 @@ def _enrich_dossier_info(data: dict) -> tuple[dict, list[str]]:
     Général instead. « Aucun dossier choisi » and « dossier introuvable »
     must stay distinguishable, so the second returns an error.
     """
-    dossier_id = (data.get("dossier_id") or "").strip()
-    data["dossier_id"] = dossier_id
-    if not dossier_id:
-        data["dossier_file_number"] = ""
-        data["dossier_title"] = ""
-        return data, []
-
-    dossier = get_dossier(dossier_id)
-    if not dossier:
-        return data, [
+    return enrich_dossier_labels(
+        data,
+        strict=True,
+        resolver=get_dossier,
+        not_found_error=(
             "Dossier introuvable. Choisissez un dossier existant, ou laissez "
             "le champ vide pour classer la note dans « Général »."
-        ]
-    data["dossier_file_number"] = dossier.get("file_number", "")
-    data["dossier_title"] = dossier.get("title", "")
-    return data, []
+        ),
+    )
 
 
 def _form_data() -> dict:
@@ -102,31 +95,7 @@ def _form_data() -> dict:
 @login_required
 def dossier_search() -> str:
     """HTMX autocomplete endpoint for dossier selection."""
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères\u2026</div>'
-
-    dossiers = list_dossiers(search=q)[:10]
-
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
-
-    html_parts = ['<ul class="divide-y divide-gray-100">']
-    for d in dossiers:
-        dossier_id = escape(d["id"])
-        file_number = escape(d.get("file_number", ""))
-        title = escape(d.get("title", ""))
-        html_parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{dossier_id}"'
-            f'    data-dossier-file-number="{file_number}"'
-            f'    data-dossier-title="{title}">'
-            f'  <span class="font-medium text-gray-900">{file_number}</span>'
-            f'  <span class="text-gray-500 ml-1">{title}</span>'
-            f'</li>'
-        )
-    html_parts.append("</ul>")
-    return "\n".join(html_parts)
+    return dossier_search_fragment(request.args.get("q", ""))
 
 
 # ── List ─────────────────────────────────────────────────────────────────

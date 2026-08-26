@@ -45,19 +45,18 @@ from models.expense import (
 )
 from models.dossier import (
     get_dossier,
-    list_dossiers,
 )
 from models.protocol import get_current_phase_for_dossier
 from utils import phases
 from utils.logging_setup import log_dossier_event
+from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input, standard_dossier_row
 
 time_expenses_bp = Blueprint(
     "time_expenses", __name__, url_prefix="/temps"
 )
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
 def _parse_cents(value: str) -> int:
@@ -74,16 +73,7 @@ def _parse_cents(value: str) -> int:
         return 0
 
 
-def _parse_date(value: str) -> datetime | None:
-    """Parse an HTML date input (YYYY-MM-DD) into a UTC datetime."""
-    if not value or not value.strip():
-        return None
-    try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
+_parse_date = parse_date_input
 
 
 def _parse_hours(value: str) -> float:
@@ -148,13 +138,16 @@ def _recent_codes(recent_rows: list[dict]) -> list[str]:
 
 
 def _enrich_dossier_info(data: dict) -> dict:
-    """Look up dossier and attach denormalized file_number + title."""
-    dossier_id = data.get("dossier_id", "")
-    if dossier_id:
-        dossier = get_dossier(dossier_id)
-        if dossier:
-            data["dossier_file_number"] = dossier.get("file_number", "")
-            data["dossier_title"] = dossier.get("title", "")
+    """Attach the denormalized dossier labels (shared helper).
+
+    Conscious behavior change (audit 2026-08-26): an UNRESOLVABLE id used
+    to be KEPT silently — the entry saved referencing a dead dossier with
+    blank labels. It is now blanked, so the models' « Un dossier doit être
+    associé… » validation refuses the save instead.
+    """
+    data, _ = enrich_dossier_labels(
+        data, blank_value="", resolver=get_dossier
+    )
     return data
 
 
@@ -165,34 +158,15 @@ def _enrich_dossier_info(data: dict) -> dict:
 @login_required
 def dossier_search() -> str:
     """HTMX autocomplete endpoint for dossier selection."""
-    q = request.args.get("q", "").strip()
-    if len(q) < 2:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Tapez au moins 2 caractères…</div>'
 
-    dossiers = list_dossiers(search=q)[:10]
-
-    if not dossiers:
-        return '<div class="px-3 py-2 text-sm text-gray-500">Aucun dossier trouvé</div>'
-
-    html_parts = ['<ul class="divide-y divide-gray-100">']
-    for d in dossiers:
-        # Escape stored values: this fragment bypasses Jinja autoescaping
-        dossier_id = escape(d["id"])
-        file_number = escape(d.get("file_number", ""))
-        title = escape(d.get("title", ""))
+    def _row(d: dict) -> str:
+        # The dossier's rate rides along so the form can prefill it.
         rate = escape(d.get("hourly_rate", 0))
-        html_parts.append(
-            f'<li class="px-3 py-2 cursor-pointer hover:bg-gray-50 text-sm"'
-            f'    data-dossier-id="{dossier_id}"'
-            f'    data-dossier-file-number="{file_number}"'
-            f'    data-dossier-title="{title}"'
-            f'    data-dossier-rate="{rate}">'
-            f'  <span class="font-medium text-gray-900">{file_number}</span>'
-            f'  <span class="text-gray-500 ml-1">{title}</span>'
-            f'</li>'
+        return standard_dossier_row(
+            d, extra_attrs=f' data-dossier-rate="{rate}"'
         )
-    html_parts.append('</ul>')
-    return "\n".join(html_parts)
+
+    return dossier_search_fragment(request.args.get("q", ""), _row)
 
 
 # ── Standalone list ──────────────────────────────────────────────────────

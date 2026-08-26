@@ -55,6 +55,25 @@ ALLOWED_ATTRS = {
     "td": ["align"],
 }
 
+
+def markdown_to_safe_html(text: str) -> str:
+    """Markdown → bleach-sanitized HTML, the ONE composed pipeline.
+
+    The constants above were already shared, but the two-call composition
+    itself had been copied verbatim three times (the screen's Jinja filter
+    in main.py, this module's .docx conversion, and the chat email report)
+    — audit 2026-08-26. Screen, paper and mail render through this exact
+    function so they can never drift.
+    """
+    html = _markdown_lib.markdown(
+        text,
+        extensions=MD_EXTENSIONS,
+        extension_configs=MD_EXTENSION_CONFIGS,
+    )
+    return bleach.clean(
+        html, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, strip=True
+    )
+
 # ── Bounds ───────────────────────────────────────────────────────────────
 MAX_MARKDOWN_CHARS = 120_000   # notes cap at 100k; headroom, hard bound
 MAX_NESTING_DEPTH = 32         # element-stack ceiling (real content ≤ ~8)
@@ -660,14 +679,7 @@ def markdown_to_ooxml(
     if len(md_text) > MAX_MARKDOWN_CHARS:
         raise MarkdownDocxError("Le contenu de la note est trop volumineux.")
 
-    html = _markdown_lib.markdown(
-        md_text or "",
-        extensions=MD_EXTENSIONS,
-        extension_configs=MD_EXTENSION_CONFIGS,
-    )
-    html = bleach.clean(
-        html, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRS, strip=True
-    )
+    html = markdown_to_safe_html(md_text or "")
 
     parser = _HtmlToOoxml(base_ppr, base_rpr, max(usable_width, 1440))
     parser.feed(html)

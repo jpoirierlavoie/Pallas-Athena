@@ -10,6 +10,7 @@ import pytest
 
 from utils.format_fr import (
     parse_cents_fr,
+    parse_cents_or_none,
     format_cents_fr,
     format_cents_fr_parens,
     format_date_fr,
@@ -111,5 +112,45 @@ def test_parse_cents_fr_raises_rather_than_returning_zero():
     """A silent 0 would record an invoice as unpaid while telling the lawyer
     the payment was saved — the worst possible outcome for this field."""
     for bad in ("", "   ", "beaucoup", "--", "12,34,56", "$"):
+        with pytest.raises(ValueError):
+            parse_cents_fr(bad)
+
+
+# -- parse_cents_or_none: the form-input variant (audit 2026-08-26) --------
+
+
+def test_parse_cents_or_none_accepts_every_space_variant():
+    """The consolidation's motivating drift: routes/trust.py stripped two
+    space variants while its admin_ledger copy-paste twin stripped three
+    (narrow NBSP included) -- the SAME amount parsed on one screen and
+    silently failed on the other. One implementation now serves all."""
+    assert parse_cents_or_none("1 150,00") == 115000       # NBSP
+    assert parse_cents_or_none("1 150,00") == 115000      # narrow NBSP
+    assert parse_cents_or_none("1 150,00 $") == 115000
+    assert parse_cents_or_none("2874.37") == 287437
+
+
+def test_parse_cents_or_none_folds_grouping_dots():
+    # The tolerance the route copies added, now in ONE place.
+    assert parse_cents_or_none("1.234.56") == 123456
+
+
+def test_parse_cents_or_none_none_never_zero():
+    """None when blank/invalid, never 0: << champ vide >> and
+    << montant nul >> are load-bearing distinctions in the two ledgers."""
+    assert parse_cents_or_none(None) is None
+    assert parse_cents_or_none("") is None
+    assert parse_cents_or_none("   ") is None
+    assert parse_cents_or_none("beaucoup") is None
+    assert parse_cents_or_none("nan") is None    # Decimal("nan") CONSTRUCTS;
+    assert parse_cents_or_none("inf") is None    # only quantize refuses it
+    assert parse_cents_or_none("0,00") == 0      # a real zero stays 0
+
+
+def test_parse_cents_fr_nan_raises_valueerror_not_invalidoperation():
+    """Decimal("nan") constructs fine and only its quantize raises -- with
+    the quantize outside the try, "nan" leaked an InvalidOperation past the
+    documented ValueError contract (fixed with the audit consolidation)."""
+    for bad in ("nan", "inf", "-inf"):
         with pytest.raises(ValueError):
             parse_cents_fr(bad)

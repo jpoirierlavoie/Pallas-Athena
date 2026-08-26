@@ -1359,11 +1359,6 @@ def action_label(action_code: str) -> str:
     return f"{action.libelle} [{action.code}]" if action else ""
 
 
-def action_choices(domaine_code: str) -> list[tuple[str, str]]:
-    """Return [(code, « Libellé [CODE] »)] for a domaine's select options."""
-    return [(a.code, f"{a.libelle} [{a.code}]") for a in actions_for(domaine_code)]
-
-
 def requires_precision(action_code: str) -> bool:
     """True for the « Autre (préciser) » rows, which carry no delay of their own.
 

@@ -42,6 +42,7 @@ from models.document import (
     move_documents_bulk,
     update_metadata,
 )
+from routes._helpers import is_htmx
 
 logger = logging.getLogger(__name__)
 from models.folder import (
@@ -69,8 +70,7 @@ _PREVIEWABLE_TYPES = {
 }
 
 
-def _is_htmx() -> bool:
-    return request.headers.get("HX-Request") == "true"
+_is_htmx = is_htmx
 
 
 def _attach_computed_fields(documents: list[dict]) -> None:
@@ -587,16 +587,23 @@ def folder_create() -> str:
 
     folder, errors = create_folder(dossier_id, name, parent_folder_id)
 
+    # Succès comme échec : 200 + redirection vers le navigateur, qui relit
+    # ?erreur= dans sa bannière (_browser.html) — jamais un fragment 4xx,
+    # htmx 2.0.4 n'échange que les 2xx (la règle de folder_delete_route
+    # ci-dessous). Un « / » dans le nom ou un doublon de nom — les refus
+    # ORDINAIRES de create_folder — mourait à l'écran : bouton ✓ mort,
+    # l'utilisateur re-clique (audit 2026-08-26, catégorie b).
+    target = url_for(
+        "documents.document_list", dossier_id=dossier_id,
+        folder_id=parent_folder_id or "",
+        **({"erreur": errors[0]} if errors else {}),
+    )
     if _is_htmx():
-        if errors:
-            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
-        # Refresh the browser at the current folder location
-        target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_folder_id or "")
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_folder_id or ""))
+    return redirect(target)
 
 
 @documents_bp.route("/folders/<folder_id>/rename", methods=["POST"])
@@ -611,18 +618,26 @@ def folder_rename(folder_id: str) -> str:
             return '<div class="text-red-600 text-sm">Dossier juridique requis.</div>', 422
         return redirect(url_for("documents.document_list"))
 
+    # Parent lu AVANT la mutation : sur un refus, rename_folder rend
+    # folder=None et le navigateur doit revenir au MÊME niveau.
+    existing = get_folder(dossier_id, folder_id)
     folder, errors = rename_folder(dossier_id, folder_id, new_name)
 
+    # Même discipline 2xx + ?erreur= que folder_create ci-dessus : renommer
+    # vers un nom déjà pris — l'erreur la plus banale — mourait en 422
+    # silencieux (audit 2026-08-26, catégorie b).
+    parent_id = (folder or existing or {}).get("parent_folder_id")
+    target = url_for(
+        "documents.document_list", dossier_id=dossier_id,
+        folder_id=parent_id or "",
+        **({"erreur": errors[0]} if errors else {}),
+    )
     if _is_htmx():
-        if errors:
-            return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
-        parent_id = folder.get("parent_folder_id") if folder else None
-        target = url_for("documents.document_list", dossier_id=dossier_id, folder_id=parent_id or "")
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
         return resp
 
-    return redirect(url_for("documents.document_list", dossier_id=dossier_id))
+    return redirect(target)
 
 
 @documents_bp.route("/folders/<folder_id>/move", methods=["POST"])

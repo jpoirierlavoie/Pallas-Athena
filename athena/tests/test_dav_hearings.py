@@ -780,3 +780,78 @@ def test_addressbook_display_name():
 
     assert ADDRESSBOOK_DISPLAY_NAME == "Clients et parties impliqués"
     assert "Pallas Athena" not in ADDRESSBOOK_DISPLAY_NAME
+
+
+# ══════════════════════════════════════════════════════════════════════
+# calendar-multiget — bulk path parity (audit 2026-08-26)
+# ══════════════════════════════════════════════════════════════════════
+
+def _multiget_body(hrefs):
+    xml = (
+        '<C:calendar-multiget xmlns:D="DAV:" '
+        'xmlns:C="urn:ietf:params:xml:ns:caldav">'
+        + "".join(f"<D:href>{h}</D:href>" for h in hrefs)
+        + "</C:calendar-multiget>"
+    )
+    return safe_fromstring(xml)
+
+
+def test_multiget_bulk_path_is_byte_identical_to_the_point_path(monkeypatch):
+    """Past _MULTIGET_BULK_THRESHOLD hrefs, _handle_multiget enumerates the
+    collection once (_collection_members) instead of up to three point reads
+    per href — DavX5's initial sync multigets EVERY member, which used to
+    cost hundreds of serialized Firestore reads in one phone poll. The two
+    paths must answer byte-identically for the same membership, or what the
+    phone stores depends on how many hrefs it batched."""
+    hearings = [_hearing(f"h{i}") for i in range(1, 6)]
+    by_id = {h["id"]: h for h in hearings}
+
+    monkeypatch.setattr(dc, "list_hearings", lambda **kw: list(hearings))
+    monkeypatch.setattr(dc, "list_tasks", lambda **kw: [])
+    monkeypatch.setattr(dc, "list_notes", lambda **kw: [])
+    monkeypatch.setattr(dc, "get_hearing", lambda rid: by_id.get(rid))
+    monkeypatch.setattr(dc, "get_task", lambda rid: None)
+    monkeypatch.setattr(dc, "get_note", lambda rid: None)
+
+    hrefs = [f"/dav/dossier-d1/{h['id']}.ics" for h in hearings]
+    hrefs.append("/dav/dossier-d1/absent.ics")  # a 404 row on both paths
+
+    app = Flask(__name__)
+    with app.test_request_context():
+        bulk = dc._handle_multiget("d1", _multiget_body(hrefs))
+        # Force the per-href point path by raising the threshold.
+        monkeypatch.setattr(dc, "_MULTIGET_BULK_THRESHOLD", 10_000)
+        point = dc._handle_multiget("d1", _multiget_body(hrefs))
+
+    assert bulk.status_code == point.status_code == 207
+    assert bulk.get_data() == point.get_data()
+    # And the bodies really carry the five events + one 404.
+    root = safe_fromstring(bulk.get_data(as_text=True))
+    assert len(root.findall(f"{{{DAVNS}}}response")) == 6
+
+
+def test_multiget_bulk_path_agrees_with_the_advertised_membership(monkeypatch):
+    """The bulk path resolves from _collection_members — what PROPFIND and
+    sync-collection advertise. A hearing the listing DROPS (an unconfirmed
+    Bookings import) must therefore 404 on the bulk path: multiget cannot
+    serve a body for a member the collection never listed."""
+    confirmed = _hearing("h1")
+    # "h2" exists in storage but the listing DROPS it — the bulk path must
+    # answer 404 for it, never leak its body.
+
+    monkeypatch.setattr(dc, "list_hearings", lambda **kw: [confirmed])
+    monkeypatch.setattr(dc, "list_tasks", lambda **kw: [])
+    monkeypatch.setattr(dc, "list_notes", lambda **kw: [])
+
+    hrefs = [
+        "/dav/dossier-d1/h1.ics",
+        "/dav/dossier-d1/h2.ics",
+        "/dav/dossier-d1/x3.ics",
+        "/dav/dossier-d1/x4.ics",
+    ]
+    app = Flask(__name__)
+    with app.test_request_context():
+        resp = dc._handle_multiget("d1", _multiget_body(hrefs))
+    body = resp.get_data(as_text=True)
+    assert "uid-h1" in body
+    assert "uid-h2" not in body
