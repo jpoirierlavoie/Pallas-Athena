@@ -96,6 +96,33 @@ class _FakeSnapshot:
         return copy.deepcopy(self._data) if self._data is not None else None
 
 
+def _refuser_tableaux_imbriques(valeur, chemin="") -> None:
+    """Firestore REFUSE un tableau qui contient un tableau.
+
+    Ajouté le 2026-08-26, après que la contrainte a fait échouer le tout
+    premier vrai tour du clavardage : ``skill_versions`` était écrit
+    ``[[skill_id, version], …]``, et le commit mourait sur
+    ``INVALID_ARGUMENT: Nested arrays are not allowed``. Aucun test ne
+    pouvait le voir — ce harnais acceptait ce que le vrai magasin refuse,
+    et une épingle affirmait même la forme fautive.
+
+    Le harnais modélise donc désormais la contrainte. C'est la moitié qui
+    compte : sans elle, la prochaine structure imbriquée repasserait tout
+    aussi silencieusement.
+    """
+    if isinstance(valeur, dict):
+        for cle, v in valeur.items():
+            _refuser_tableaux_imbriques(v, f"{chemin}.{cle}" if chemin else str(cle))
+    elif isinstance(valeur, (list, tuple)):
+        for i, v in enumerate(valeur):
+            if isinstance(v, (list, tuple)):
+                raise ValueError(
+                    f"Nested arrays are not allowed: {chemin}[{i}] "
+                    f"(Firestore INVALID_ARGUMENT)"
+                )
+            _refuser_tableaux_imbriques(v, f"{chemin}[{i}]")
+
+
 class _FakeDocRef:
     def __init__(self, store, coll, doc_id):
         self._store = store
@@ -110,9 +137,11 @@ class _FakeDocRef:
         return _FakeSnapshot(self.id, self._store.get(self._coll, {}).get(self.id))
 
     def set(self, data):
+        _refuser_tableaux_imbriques(data)
         self._store.setdefault(self._coll, {})[self.id] = copy.deepcopy(data)
 
     def update(self, fields):
+        _refuser_tableaux_imbriques(fields)
         doc = self._store.setdefault(self._coll, {}).get(self.id)
         if doc is None:
             raise KeyError(f"update on missing {self._coll}/{self.id}")

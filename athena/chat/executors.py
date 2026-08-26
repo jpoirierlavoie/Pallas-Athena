@@ -98,7 +98,9 @@ def execute_tool(
     ``provenance_extra`` lets the turn engine enrich the draft-provenance
     seam with what only it knows (model id, skill versions, charter
     version); it never overrides the identity keys set here.
-    ``skill_pairs`` is THIS turn's resolved ``[skill_id, version]`` list —
+    ``skill_pairs`` is THIS turn's resolved version list — entries are
+    DICTS ``{skill_id, version}``, never pairs (Firestore refuses nested
+    arrays; see turn_engine._resolve_skills) —
     the only route through which ``get_skill_file`` resolves a file (a
     skill outside the pairs was outside the prompt too).
 
@@ -309,9 +311,10 @@ def _execute_skill_file(
     skill_id = str(arguments.get("skill_id", ""))
     version = next(
         (
-            int(pair[1])
-            for pair in skill_pairs
-            if len(pair) >= 2 and str(pair[0]) == skill_id
+            int(entree.get("version") or 0)
+            for entree in skill_pairs
+            if isinstance(entree, dict)
+            and str(entree.get("skill_id", "")) == skill_id
         ),
         None,
     )

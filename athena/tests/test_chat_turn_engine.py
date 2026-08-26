@@ -103,13 +103,36 @@ class _FakeDocRef:
         return _FakeSnapshot(self.id, self._store.get(self._coll, {}).get(self.id))
 
     def set(self, data):
+        _refuser_tableaux_imbriques(data)
         self._store.setdefault(self._coll, {})[self.id] = copy.deepcopy(data)
 
     def update(self, fields):
+        _refuser_tableaux_imbriques(fields)
         doc = self._store.setdefault(self._coll, {}).get(self.id)
         if doc is None:
             raise KeyError(f"update on missing {self._coll}/{self.id}")
         doc.update(copy.deepcopy(fields))
+
+
+def _refuser_tableaux_imbriques(valeur, chemin=""):
+    """Firestore REFUSE un tableau qui contient un tableau.
+
+    Copié de tests/test_chat_draft.py — ce fichier porte sa PROPRE copie du
+    harnais, et c'est exactement pourquoi le défaut du 2026-08-26 est passé :
+    la contrainte ajoutée à un seul des deux harnais n'aurait rien gardé ici.
+    Les deux doivent la modéliser, sinon le premier vrai tour la découvre en
+    production (INVALID_ARGUMENT: Nested arrays are not allowed).
+    """
+    if isinstance(valeur, dict):
+        for cle, v in valeur.items():
+            _refuser_tableaux_imbriques(v, f"{chemin}.{cle}" if chemin else str(cle))
+    elif isinstance(valeur, (list, tuple)):
+        for i, v in enumerate(valeur):
+            if isinstance(v, (list, tuple)):
+                raise ValueError(
+                    f"Nested arrays are not allowed: {chemin}[{i}]"
+                )
+            _refuser_tableaux_imbriques(v, f"{chemin}[{i}]")
 
 
 class _FakeQuery:
@@ -680,7 +703,7 @@ def test_get_skill_file_end_to_end_pins_this_turns_version(world, monkeypatch):
     # Step 1: the turn doc was NOT yet stamped when the tool ran — the
     # in-memory pairs served the read, and the SAME pairs were stamped.
     assert reads == [("s-doc", 4, "Guide")]
-    assert stored["skill_versions"] == [["s-doc", 4]]
+    assert stored["skill_versions"] == [{"skill_id": "s-doc", "version": 4}]
     result = stored["segments"][0]["tool_results"][0]
     assert result["is_error"] is False
     assert result["content"][0]["text"] == "Contenu du guide."
@@ -730,7 +753,8 @@ def test_get_skill_file_resume_from_authorization_uses_stamped_pairs(
     ]
     world.vertex.responses = [_response(calls, "tool_use")]
     assert turn_engine.process_task(_payload(world), 0) == "paused"
-    assert _stored_turn(world)["skill_versions"] == [["s-doc", 4]]
+    assert _stored_turn(world)["skill_versions"] == [
+        {"skill_id": "s-doc", "version": 4}]
 
     # The compétence is revised while the lawyer deliberates…
     revised = {**copy.deepcopy(_HEAD_WITH_FILES), "current_version": 5}

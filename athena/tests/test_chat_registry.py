@@ -275,7 +275,10 @@ def test_unattended_write_gets_a_deterministic_idempotency_key(monkeypatch):
 
 # ── get_skill_file (executor skill_file) ────────────────────────────────────
 
-_PAIRS = [["s-1", 3], ["s-2", 1]]
+# Des DICTS, jamais des paires : Firestore refuse un tableau
+# imbriqué, et cette forme est celle qui est réellement écrite.
+_PAIRS = [{"skill_id": "s-1", "version": 3},
+          {"skill_id": "s-2", "version": 1}]
 
 
 def test_get_skill_file_resolves_to_the_skill_file_executor():

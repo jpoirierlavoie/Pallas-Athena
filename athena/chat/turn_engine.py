@@ -177,12 +177,23 @@ def _assemble_messages(turns: list[dict], current_turn_id: str) -> list[dict]:
     return messages
 
 
-def _resolve_skills(conv: dict) -> tuple[list[dict], list[list]]:
+def _resolve_skills(conv: dict) -> tuple[list[dict], list[dict]]:
+    """Les têtes des compétences sélectionnées, et les versions à épingler.
+
+    ⚠ Les versions sont des DICTS, jamais des paires ``[id, version]`` :
+    **Firestore refuse un tableau qui contient un tableau**, et une liste
+    de paires est exactement cela. Écrite ainsi, elle a fait échouer le
+    tout premier vrai tour du clavardage — `INVALID_ARGUMENT: Nested
+    arrays are not allowed` — sur le commit, donc APRÈS l'appel de modèle,
+    déjà payé. Les deux faux Firestore de la suite acceptaient la forme
+    fautive ; ils modélisent la contrainte depuis.
+    """
     heads = skill_model.get_heads(conv.get("skill_selection") or [])
-    pairs = [
-        [h.get("id", ""), int(h.get("current_version") or 0)] for h in heads
+    versions = [
+        {"skill_id": h.get("id", ""), "version": int(h.get("current_version") or 0)}
+        for h in heads
     ]
-    return heads, pairs
+    return heads, versions
 
 
 def _build_tools() -> list[dict]:
