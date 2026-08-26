@@ -14,6 +14,13 @@ service cloud.firestore {
     // Phase I (MCP): the OAuth collections (oauth_clients, oauth_codes,
     // oauth_tokens) hold credential hashes and are likewise Admin-SDK-only —
     // they are intentionally covered by this same deny-all.
+    //
+    // Phase N (chat): chat_conversations (+turns), chat_drafts/chat_skills
+    // (+versions), chat_scheduled_tasks and chat_usage_dossier hold
+    // privileged legal work product and are Admin-SDK-only too — same
+    // deny-all. The registre's compensating control is the project-level
+    // Firestore Data Access audit logging (DEPLOYMENT.md §11b step 1),
+    // not a rule here.
     match /{document=**} {
       allow read, write: if false;
     }

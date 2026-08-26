@@ -51,6 +51,7 @@ OWNER_LITERALS: dict[str, str] = {
 # tests are excluded on purpose — they reference the owner's ids as examples.
 _SCAN_FILES = [
     os.path.join(_ATHENA_DIR, "app.yaml"),
+    os.path.join(_ATHENA_DIR, "chat.yaml"),
     os.path.join(_ATHENA_DIR, "config.py"),
     os.path.join(_ATHENA_DIR, "main.py"),
 ]
@@ -168,6 +169,11 @@ def _check_prod_secrets(rpt: Report) -> None:
         ("firebase-api-key", False, "the login page cannot init Firebase"),
         ("dav-password-hash", False, "DAV Basic Auth cannot succeed — DavX5 sync is unavailable"),
         ("cf-origin-secret", False, "the Cloudflare origin-secret check is disabled (direct-to-App-Engine access not blocked)"),
+        # Phase N (chat) — a bearer token with surrounding whitespace never
+        # matches what the Worker compares, so the whitespace check below is
+        # load-bearing for these two, not just cosmetic.
+        ("legislation-worker-token", False, "the chat's legislation_* tools are disabled"),
+        ("jurisprudence-worker-token", False, "the chat's jurisprudence_* tools are disabled (citations degrade to « non vérifiée »)"),
     ):
         name = f"projects/{project}/secrets/{secret_id}/versions/latest"
         try:

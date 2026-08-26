@@ -136,7 +136,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 47  # 26 lectures + 21 ecritures
+    assert len(tools.TOOLS) == 52  # 29 lectures + 23 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -174,6 +174,10 @@ def test_write_tools_set_is_pinned():
         # mur `invoiced`, et elles ne touchent que phase/sous_phase.
         "set_time_entry_phase", "set_expense_phase",
         "set_time_entry_phase_bulk", "set_expense_phase_bulk",
+        # Phase N — brouillons versionnes (les deux surfaces, decision
+        # D3/D8 2026-08-26). revise_draft est dans EDIT_TOOLS ; save_draft
+        # reste un createur additif.
+        "save_draft", "revise_draft",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 

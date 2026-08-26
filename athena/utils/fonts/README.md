@@ -47,7 +47,7 @@ gstatic **v364** :
 
 | Fichier | SHA-256 |
 |---|---|
-| `material-symbols-outlined-v364-15c3a869.woff2` | `15c3a8697a1c9152ca13ed2f10e27011d38731b606e40ed31d5b7e5c2314790b` |
+| `material-symbols-outlined-v368-390acc0f.woff2` | `390acc0f2b3dde6e99813e50f60e067013412caddac7e37304da7766db5a05b2` |
 
 URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
 
@@ -64,7 +64,7 @@ woff2 pointé par le `@font-face` de la réponse ; 3) sha256 → **NOUVEAU nom**
 (gabarits ×3, Early Hints ×2, PRECACHE + bump `STATIC_CACHE`, test des
 en-têtes) ; 5) mettre à jour ce tableau ; 6) `pytest`.
 
-Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v364-Apache-2.0.txt`.
+Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v368-Apache-2.0.txt`.
 
 ## License (Noto)
 

@@ -175,14 +175,14 @@ def _add_security_headers(response: Response) -> Response:
 # base.html / auth/login.html and the PRECACHE list in static/sw.js — the
 # CSS regeneration recipe in CLAUDE.md lists every touch point.
 _EARLY_HINTS_BASE = (
-    "</static/vendor/app.0346c0c3.css>; rel=preload; as=style",
+    "</static/vendor/app.21501045.css>; rel=preload; as=style",
     # Font preloads MUST carry `crossorigin` (fonts are always fetched in CORS
     # mode) — without it the browser fetches the file TWICE. Sans roman only
     # for the text faces (serif loads on demand on note pages, italics too
     # rare); the Material Symbols subset is render-critical on EVERY page
     # (navigation icons) and font-display: block hides them until it loads.
     '</static/vendor/noto-sans-v42-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
-    '</static/vendor/material-symbols-outlined-v364-15c3a869.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
+    '</static/vendor/material-symbols-outlined-v368-390acc0f.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/htmx-2.0.4.min.js>; rel=preload; as=script",
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
 )
@@ -197,9 +197,9 @@ _EARLY_HINTS_APPCHECK = (
 # the auth SDK — the heaviest script on the cold-start path this feature
 # exists for) and uses reCAPTCHA for phone MFA regardless of App Check.
 _EARLY_HINTS_LOGIN = (
-    "</static/vendor/app.0346c0c3.css>; rel=preload; as=style",
+    "</static/vendor/app.21501045.css>; rel=preload; as=style",
     '</static/vendor/noto-sans-v42-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
-    '</static/vendor/material-symbols-outlined-v364-15c3a869.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
+    '</static/vendor/material-symbols-outlined-v368-390acc0f.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
     "</static/vendor/firebase-app-compat-10.12.2.js>; rel=preload; as=script",
     "</static/vendor/firebase-auth-compat-10.12.2.js>; rel=preload; as=script",

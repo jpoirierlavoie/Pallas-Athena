@@ -1274,3 +1274,210 @@ def test_complete_task_conforms(write_world, monkeypatch):
     cascaded = handlers.complete_task({"task_id": "t1"})
     _conforms("complete_task", cascaded)
     assert cascaded["protocol_step_effect"]["protocol_closed"] is True
+
+
+# ── Phase N — document content + versioned drafts ───────────────────────
+
+
+def _pdf_bytes(pages):
+    from io import BytesIO
+
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    for content in pages:
+        if content:
+            c.drawString(72, 720, content)
+        c.showPage()
+    c.save()
+    return buffer.getvalue()
+
+
+def _docx_bytes(xml):
+    import zipfile
+    from io import BytesIO
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", xml)
+    return buffer.getvalue()
+
+
+def _doc_meta(file_type, size=1234):
+    return {"id": "doc1", "display_name": "Pièce P-1",
+            "file_type": file_type, "file_size": size,
+            "storage_path": "users/u/x"}
+
+
+def test_get_document_text_pdf_conforms(monkeypatch):
+    data = _pdf_bytes(["Premier contrat", ""])  # a text page + a blank page
+    monkeypatch.setattr(
+        handlers.document_model, "get_document",
+        lambda i: _doc_meta("application/pdf", len(data)))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_bytes",
+        lambda i, **kw: (data, ""))
+    payload = handlers.get_document_text({"document_id": "doc1"})
+    _conforms("get_document_text", payload)
+    assert payload["pagination_unit"] == "page"
+    assert payload["pages_without_text"] == [2]
+    assert payload["next_page"] is None
+
+
+def test_get_document_text_docx_segments_conform(monkeypatch):
+    xml = ("<w:document><w:body>"
+           "<w:p><w:r><w:t>Alpha</w:t></w:r></w:p>"
+           "<w:p><w:r><w:t>Beta</w:t></w:r></w:p>"
+           "</w:body></w:document>")
+    data = _docx_bytes(xml)
+    docx_mime = ("application/vnd.openxmlformats-officedocument"
+                 ".wordprocessingml.document")
+    monkeypatch.setattr(
+        handlers.document_model, "get_document",
+        lambda i: _doc_meta(docx_mime, len(data)))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_bytes",
+        lambda i, **kw: (data, ""))
+    payload = handlers.get_document_text({"document_id": "doc1"})
+    _conforms("get_document_text", payload)
+    assert payload["pagination_unit"] == "segment"
+    assert "Alpha" in payload["pages"][0]["text"]
+
+
+def test_get_document_text_truncation_paging_conforms(monkeypatch):
+    data = _pdf_bytes(["A" * 50, "B" * 50, "C" * 50])
+    monkeypatch.setattr(
+        handlers.document_model, "get_document",
+        lambda i: _doc_meta("application/pdf", len(data)))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_bytes",
+        lambda i, **kw: (data, ""))
+    monkeypatch.setattr(handlers, "DOCUMENT_TEXT_MAX_CHARS", 80)
+    payload = handlers.get_document_text({"document_id": "doc1"})
+    _conforms("get_document_text", payload)
+    assert payload["truncated"] is True
+    assert payload["next_page"] == 3
+
+
+def test_get_document_text_unreadable_branches_conform(monkeypatch):
+    # too_large — refused on metadata, before any byte moves.
+    monkeypatch.setattr(
+        handlers.document_model, "get_document",
+        lambda i: _doc_meta("application/pdf", 300 * 1024 * 1024))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_bytes",
+        lambda i, **kw: (None, "too_large"))
+    payload = handlers.get_document_text({"document_id": "doc1"})
+    _conforms("get_document_text", payload)
+    assert payload["reason"] == "too_large"
+    assert "40" in payload["message"]
+    # unsupported_type — never even reaches the byte seam.
+    monkeypatch.setattr(
+        handlers.document_model, "get_document",
+        lambda i: _doc_meta("image/png"))
+    payload = handlers.get_document_text({"document_id": "doc1"})
+    _conforms("get_document_text", payload)
+    assert payload["reason"] == "unsupported_type"
+    # encrypted — via the real extractor on a pypdf-encrypted fixture.
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(_pdf_bytes(["secret"]))))
+    writer.encrypt("mdp")
+    out = BytesIO()
+    writer.write(out)
+    encrypted = out.getvalue()
+    monkeypatch.setattr(
+        handlers.document_model, "get_document",
+        lambda i: _doc_meta("application/pdf", len(encrypted)))
+    monkeypatch.setattr(
+        handlers.document_model, "get_document_bytes",
+        lambda i, **kw: (encrypted, ""))
+    payload = handlers.get_document_text({"document_id": "doc1"})
+    _conforms("get_document_text", payload)
+    assert payload["reason"] == "encrypted"
+
+
+def test_get_document_text_not_found_conforms(monkeypatch):
+    monkeypatch.setattr(
+        handlers.document_model, "get_document", lambda i: None)
+    payload = handlers.get_document_text({"document_id": "absent"})
+    _conforms("get_document_text", payload)
+    assert payload["found"] is False
+
+
+_DRAFT_HEAD = {
+    "id": "b1", "dossier_id": "d1", "dossier_file_number": "2026-001",
+    "dossier_title": "Tremblay", "title": "Projet de lettre",
+    "content": "# Version courante", "content_length": 18,
+    "current_version": 3, "created_at": DT, "updated_at": DT,
+}
+
+
+def test_get_draft_conforms_head_version_and_absent(monkeypatch):
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "get_draft",
+        lambda i: dict(_DRAFT_HEAD))
+    payload = handlers.get_draft({"draft_id": "b1"})
+    _conforms("get_draft", payload)
+    assert payload["version_shown"] == 3
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "get_version",
+        lambda i, v: {"version": 1, "content": "# Première version"})
+    payload = handlers.get_draft({"draft_id": "b1", "version": 1})
+    _conforms("get_draft", payload)
+    assert payload["content"] == "# Première version"
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "get_draft", lambda i: None)
+    payload = handlers.get_draft({"draft_id": "absent"})
+    _conforms("get_draft", payload)
+    assert payload["found"] is False
+
+
+def test_list_drafts_conforms(monkeypatch):
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "list_drafts",
+        lambda dossier_id=None: [dict(_DRAFT_HEAD)])
+    payload = handlers.list_drafts({})
+    _conforms("list_drafts", payload)
+    assert payload["count"] == 1
+
+
+def test_save_draft_conforms_live_and_dry(write_world, monkeypatch):
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "create_draft",
+        lambda data: ({**data, "id": "b-new", "content_length":
+                       len(data["content"]), "current_version": 1,
+                       "created_at": DT, "updated_at": DT}, []))
+    args = {"dossier_id": "d1", "title": "Projet", "content": "# Corps"}
+    payload = handlers.save_draft(dict(args))
+    _conforms("save_draft", payload)
+    assert payload["created"] is True
+    dry = handlers.save_draft({**args, "dry_run": True})
+    _conforms("save_draft", dry)
+    assert dry["dry_run"] is True
+    assert dry["draft"]["id"] == ""
+
+
+def test_revise_draft_conforms_live_and_dry(monkeypatch):
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "get_draft",
+        lambda i: dict(_DRAFT_HEAD))
+    monkeypatch.setattr(
+        handlers.chat_draft_model, "revise_draft",
+        lambda i, **kw: ({**_DRAFT_HEAD, "content": kw["content"],
+                          "current_version": 4, "updated_at": DT}, []))
+    args = {"draft_id": "b1", "content": "# Version révisée"}
+    payload = handlers.revise_draft(dict(args))
+    _conforms("revise_draft", payload)
+    assert payload["revised"] is True
+    assert payload["draft"]["current_version"] == 4
+    dry = handlers.revise_draft({**args, "dry_run": True})
+    _conforms("revise_draft", dry)
+    assert dry["draft"]["current_version"] == 4
+    assert dry["dry_run"] is True

@@ -1,18 +1,25 @@
-"""The 43 MCP tool handlers — 26 read-only, plus 17 writes.
+"""The 52 MCP tool handlers — 29 read-only, plus 23 writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
-Handlers call EXISTING model/util functions only.
+Handlers call EXISTING model/util functions only. Since Phase N the same
+handlers also serve the internal chat client IN-PROCESS
+(``chat/executors.py`` — which reproduces the endpoint-side validation
+itself), so nothing here may assume a Flask request context.
 
 **Read handlers must never write to Firestore.** Only the handlers named in
-:data:`mcp.tools.WRITE_TOOLS` mutate anything. Since lot Q they fall in
-three families — CREATE (note, task, hearing, time entry, expense, partie,
-dossier, an appended register entry, a fill-only-if-empty dossier field),
-CORRECT (``update_partie``, ``update_dossier``, ``update_time_entry``,
-``update_expense``, and ``complete_task``'s status change), and IMPORT
-(``import_invoice``) — and the writable collections are ``notes``,
-``tasks``, ``hearings``, ``timeentries``, ``expenses``, ``parties``,
-``invoices`` (with its ``lineitems`` subcollection) and ``dossiers``.
+:data:`mcp.tools.WRITE_TOOLS` mutate anything. They fall in five families —
+CREATE (note, task, hearing, time entry, expense, partie, dossier, an
+appended register entry, a fill-only-if-empty dossier field), CORRECT
+(``update_partie``, ``update_dossier``, ``update_time_entry``,
+``update_expense``, and ``complete_task``'s status change), RECLASSIFY
+(the four ``set_*_phase`` tools), IMPORT (``import_invoice``), and since
+Phase N DRAFTS (``save_draft`` creates a versioned draft, ``revise_draft``
+appends version n+1 and moves the head — every prior version stays stored)
+— and the writable collections are ``notes``, ``tasks``, ``hearings``,
+``timeentries``, ``expenses``, ``parties``, ``invoices`` (with its
+``lineitems`` subcollection), ``dossiers`` and ``chat_drafts`` (with its
+``versions`` subcollection).
 **NOTHING is ever deleted**, no invoice status is ever set and no payment is
 ever recorded. That is why, for example, ``list_protocol_steps`` derives
 overdue status by date comparison instead of calling
@@ -61,6 +68,7 @@ from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
+from models import chat_draft as chat_draft_model
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -76,7 +84,7 @@ from models import time_entry as time_entry_model
 from models import trust as trust_model
 from security import sanitize
 from tz import MTL
-from utils import deadlines, phases, taxonomie
+from utils import deadlines, pdf_text, phases, taxonomie
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
@@ -84,6 +92,7 @@ from utils.template_fields import selected_address
 from utils.validators import format_phone_display
 
 from mcp.tools import (
+    DOCUMENT_TEXT_MAX_CHARS,
     PHASE_BULK_MAX,
     ToolArgumentError,
     date_str,
@@ -5794,3 +5803,428 @@ def _complete_task_payload(
             "voulu."
         )
     return payload
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Phase N — document content + versioned drafts (2026-08)
+# ════════════════════════════════════════════════════════════════════════
+
+# ── 48. get_document_text (read) ────────────────────────────────────────
+
+_DOCX_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+_PAGE_RANGE_RE = re.compile(r"^(\d{1,5})(?:-(\d{1,5}))?$")
+
+
+def _parse_page_range(args: dict) -> tuple[int, Optional[int]]:
+    """"4" = from page 4 onward; "2-6" = that inclusive range; absent = 1.."""
+    raw = (args.get("page_range") or "").strip()
+    if not raw:
+        return 1, None
+    match = _PAGE_RANGE_RE.match(raw)
+    if not match:
+        raise ToolArgumentError(
+            f"page_range invalide : « {raw} ». Formats admis : « 4 » "
+            "(à partir de la page 4) ou « 2-6 » (plage inclusive, base 1)."
+        )
+    first = int(match.group(1))
+    last = int(match.group(2)) if match.group(2) else None
+    if first < 1 or (last is not None and last < first):
+        raise ToolArgumentError(
+            f"page_range invalide : « {raw} » (base 1, borne de fin ≥ début)."
+        )
+    return first, last
+
+
+_UNREADABLE_MESSAGES_FR = {
+    "too_large": (
+        "Ce document fait {size} — au-delà du plafond de "
+        "{cap} pour l'extraction de texte par cet outil. Consultez-le "
+        "dans l'application (fiche du document)."
+    ),
+    "unsupported_type": (
+        "Type « {file_type} » : l'extraction de texte couvre le PDF et le "
+        ".docx seulement. Consultez ce document dans l'application."
+    ),
+    "encrypted": (
+        "Ce PDF est chiffré (protégé par mot de passe) — son texte ne peut "
+        "pas être extrait. Consultez-le dans l'application."
+    ),
+    "invalid_pdf": (
+        "Ce fichier ne se lit pas comme un PDF valide. Consultez-le dans "
+        "l'application."
+    ),
+    "invalid_docx": (
+        "Ce fichier ne se lit pas comme un .docx valide. Consultez-le dans "
+        "l'application."
+    ),
+    "download_failed": (
+        "Le fichier n'a pas pu être lu depuis le stockage. Réessayez ; si "
+        "l'erreur persiste, vérifiez le document dans l'application."
+    ),
+    "no_storage_path": (
+        "La fiche du document ne référence aucun fichier stocké — un "
+        "enregistrement incomplet. Vérifiez-le dans l'application."
+    ),
+}
+
+
+def _unreadable(doc: dict, reason: str) -> dict:
+    size = document_model.format_file_size(int(doc.get("file_size") or 0))
+    message = _UNREADABLE_MESSAGES_FR[reason].format(
+        size=size,
+        cap=document_model.format_file_size(
+            document_model.DOCUMENT_TEXT_MAX_BYTES
+        ),
+        file_type=doc.get("file_type", ""),
+    )
+    return {
+        "found": True,
+        "readable": False,
+        "document_id": doc.get("id", ""),
+        "file_type": doc.get("file_type", ""),
+        "reason": reason,
+        "file_size_display": size,
+        "message": message,
+    }
+
+
+def _docx_segments(paragraphs: list[str], cap: int) -> list[str]:
+    """Greedy-pack paragraphs into segments of at most *cap* characters.
+
+    A .docx has no native page concept the stdlib can see, so the
+    « pages » of a .docx are these computed segments — deterministic for a
+    given document, which is what makes page_range/next_page paging honest.
+    A single paragraph longer than the cap is hard-split so every segment
+    is ≤ cap by construction.
+    """
+    segments: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        while len(paragraph) > cap:
+            if current:
+                segments.append(current)
+                current = ""
+            segments.append(paragraph[:cap])
+            paragraph = paragraph[cap:]
+        candidate = f"{current}\n{paragraph}" if current else paragraph
+        if len(candidate) > cap:
+            segments.append(current)
+            current = paragraph
+        else:
+            current = candidate
+    if current:
+        segments.append(current)
+    return segments
+
+
+def get_document_text(args: dict) -> dict:
+    document_id = (args.get("document_id") or "").strip()
+    first, last = _parse_page_range(args)
+    doc = document_model.get_document(document_id)
+    if doc is None:
+        return {"found": False, "document_id": document_id}
+
+    file_type = doc.get("file_type", "")
+    if file_type not in ("application/pdf", _DOCX_MIME):
+        return _unreadable(doc, "unsupported_type")
+
+    data, reason = document_model.get_document_bytes(document_id)
+    if data is None:
+        # `not_found` cannot happen here (the metadata read above succeeded
+        # moments ago); everything else maps onto the honest-refusal branch.
+        return _unreadable(doc, reason if reason != "not_found" else "download_failed")
+
+    base = {
+        "found": True,
+        "readable": True,
+        "document_id": document_id,
+        "display_name": doc.get("display_name", ""),
+        "file_type": file_type,
+    }
+
+    if file_type == "application/pdf":
+        result = pdf_text.extract_pdf_pages(
+            data,
+            first_page=first,
+            last_page=last,
+            char_cap=DOCUMENT_TEXT_MAX_CHARS,
+        )
+        if not result.readable:
+            return _unreadable(doc, result.reason)
+        return {
+            **base,
+            "pagination_unit": "page",
+            "page_count": result.page_count,
+            "pages": [
+                {
+                    "page": p.page,
+                    "text": p.text,
+                    "has_text": p.has_text,
+                    "page_truncated": p.page_truncated,
+                }
+                for p in result.pages
+            ],
+            "pages_without_text": result.pages_without_text,
+            "truncated": result.truncated,
+            "next_page": result.next_page,
+            "warnings": result.warnings,
+        }
+
+    # .docx — computed segments (each ≤ the per-call cap by construction, so
+    # exactly one segment is returned per call past the first small ones).
+    try:
+        paragraphs = pdf_text.extract_docx_text(data)
+    except pdf_text.DocumentTextError as exc:
+        return _unreadable(doc, exc.reason)
+    segments = _docx_segments(
+        [p for p in paragraphs], DOCUMENT_TEXT_MAX_CHARS
+    )
+    count = len(segments)
+    warnings: list[str] = []
+    if first > count:
+        window: list[str] = []
+        start = first
+        warnings.append(f"first_page_beyond_document:{count}")
+    else:
+        start = first
+        window = segments[first - 1 : (last if last is not None else count)]
+    pages = []
+    remaining = DOCUMENT_TEXT_MAX_CHARS
+    stopped_before: Optional[int] = None
+    for offset, text in enumerate(window):
+        number = start + offset
+        if len(text) > remaining:
+            stopped_before = number
+            break
+        remaining -= len(text)
+        pages.append(
+            {
+                "page": number,
+                "text": text,
+                "has_text": bool(text.strip()),
+                "page_truncated": False,
+            }
+        )
+    end_covered = stopped_before - 1 if stopped_before else (
+        start + len(window) - 1 if window else first - 1
+    )
+    requested_end = last if last is not None else count
+    truncated = stopped_before is not None and end_covered < min(
+        requested_end, count
+    )
+    next_page = (
+        stopped_before
+        if truncated
+        else (end_covered + 1 if end_covered < count else None)
+    )
+    return {
+        **base,
+        "pagination_unit": "segment",
+        "page_count": count,
+        "pages": pages,
+        "pages_without_text": [
+            p["page"] for p in pages if not p["has_text"]
+        ],
+        "truncated": truncated,
+        "next_page": next_page,
+        "warnings": warnings,
+    }
+
+
+# ── 49-50. get_draft / list_drafts (read) ───────────────────────────────
+
+
+def _draft_row(head: dict) -> dict:
+    return {
+        "id": head.get("id", ""),
+        "dossier_id": head.get("dossier_id", ""),
+        "dossier_file_number": head.get("dossier_file_number", ""),
+        "dossier_title": head.get("dossier_title", ""),
+        "title": head.get("title", ""),
+        "current_version": int(head.get("current_version") or 0),
+        "content_length": int(head.get("content_length") or 0),
+        "created_at": iso_mtl(_as_utc(head.get("created_at"))),
+        "updated_at": iso_mtl(_as_utc(head.get("updated_at"))),
+    }
+
+
+def get_draft(args: dict) -> dict:
+    draft_id = (args.get("draft_id") or "").strip()
+    head = chat_draft_model.get_draft(draft_id)
+    if head is None:
+        return {"found": False, "draft_id": draft_id}
+    current = int(head.get("current_version") or 0)
+    version = args.get("version")
+    if version is None or int(version) == current:
+        shown, content = current, head.get("content", "") or ""
+    else:
+        requested = int(version)
+        if requested < 1 or requested > current:
+            raise ToolArgumentError(
+                f"Version inconnue : {requested}. Ce brouillon compte "
+                f"{current} version(s) (1 à {current})."
+            )
+        version_doc = chat_draft_model.get_version(draft_id, requested)
+        if version_doc is None:
+            raise ToolArgumentError(
+                f"La version {requested} n'a pas pu être lue. Réessayez, ou "
+                "consultez l'historique du brouillon dans l'application."
+            )
+        shown, content = requested, version_doc.get("content", "") or ""
+    return {
+        "found": True,
+        "draft": _draft_row(head),
+        "version_shown": shown,
+        "content": content,
+    }
+
+
+def list_drafts(args: dict) -> dict:
+    dossier_id = (args.get("dossier_id") or "").strip()
+    floating = bool(args.get("floating"))
+    if dossier_id and floating:
+        raise ToolArgumentError(
+            "dossier_id et floating sont mutuellement exclusifs : un "
+            "brouillon flottant n'a pas de dossier."
+        )
+    limit = _limit_arg(args, 20)
+    if dossier_id:
+        scope: Optional[str] = dossier_id
+    elif floating:
+        scope = ""
+    else:
+        scope = None
+    rows = chat_draft_model.list_drafts(dossier_id=scope)
+    items = [_draft_row(r) for r in rows[:limit]]
+    return _list_payload(items, truncated=len(rows) > limit)
+
+
+# ── 51-52. save_draft / revise_draft (WRITE) ────────────────────────────
+
+
+def _clean_draft_text(raw: str, field: str, limit: int) -> str:
+    """The note-tools chevron discipline, at the draft caps."""
+    cleaned = _normalize_markdown(raw)
+    if not _survives_storage(cleaned, limit):
+        raise ToolArgumentError(
+            f"« {field} » contient du texte entre chevrons qui serait "
+            f"supprimé à l'enregistrement. {_CHEVRON_ADVICE}"
+        )
+    return cleaned
+
+
+def _draft_result(head: dict, verb: str, *, dry_run: bool = False) -> dict:
+    payload: dict[str, Any] = {
+        verb: True,
+        "draft": _draft_row(head),
+        "warnings": [],
+    }
+    if dry_run:
+        payload["warnings"].append(
+            "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
+            "dry_run pour enregistrer."
+        )
+    return payload
+
+
+def save_draft(args: dict) -> dict:
+    return run_write("save_draft", args, lambda dry: _save_draft_impl(args, dry))
+
+
+def _save_draft_impl(args: dict, dry_run: bool) -> dict:
+    dossier_id = (args.get("dossier_id") or "").strip()
+    if dossier_id:
+        dossier = dossier_model.get_dossier(dossier_id)
+        if dossier is None:
+            raise ToolArgumentError(
+                f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
+                "pour obtenir un dossier_id valide. N'omettez pas dossier_id "
+                "pour contourner cette erreur : un brouillon sans dossier "
+                "est flottant, et le rattachement est PERMANENT."
+            )
+    else:
+        dossier = None
+
+    title = _clean_draft_text(
+        (args.get("title") or "").strip(),
+        "title",
+        chat_draft_model.TITLE_MAX_LENGTH,
+    )
+    content = _clean_draft_text(
+        (args.get("content") or "").strip(),
+        "content",
+        chat_draft_model.CONTENT_MAX_LENGTH,
+    )
+
+    # EXPLICIT whitelist — never **args (the create_note doctrine: the model
+    # honours a caller-supplied id and set()s the full document).
+    data = {
+        "dossier_id": dossier_id,
+        "dossier_file_number": (dossier or {}).get("file_number", ""),
+        "dossier_title": (dossier or {}).get("title", ""),
+        "title": title,
+        "content": content,
+    }
+    if dry_run:
+        errors = chat_draft_model.validate_payload(data)
+        if errors:
+            raise ToolArgumentError("; ".join(errors))
+        preview = {
+            **data,
+            "id": "",
+            "content_length": len(content),
+            "current_version": 1,
+            "created_at": None,
+            "updated_at": None,
+        }
+        return _draft_result(preview, "created", dry_run=True)
+    head, errors = chat_draft_model.create_draft(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _draft_result(head, "created")
+
+
+def revise_draft(args: dict) -> dict:
+    return run_write(
+        "revise_draft", args, lambda dry: _revise_draft_impl(args, dry)
+    )
+
+
+def _revise_draft_impl(args: dict, dry_run: bool) -> dict:
+    draft_id = (args.get("draft_id") or "").strip()
+    existing = chat_draft_model.get_draft(draft_id)
+    if existing is None:
+        raise ToolArgumentError(
+            f"Brouillon introuvable : {draft_id}. L'identifiant provient de "
+            "list_drafts ou d'un save_draft antérieur — une révision ne crée "
+            "jamais un brouillon."
+        )
+
+    content = _clean_draft_text(
+        (args.get("content") or "").strip(),
+        "content",
+        chat_draft_model.CONTENT_MAX_LENGTH,
+    )
+    title = args.get("title")
+    if title is not None:
+        title = _clean_draft_text(
+            title.strip(), "title", chat_draft_model.TITLE_MAX_LENGTH
+        )
+
+    if dry_run:
+        preview = {
+            **existing,
+            "content": content,
+            "content_length": len(content),
+            "title": title if title is not None else existing.get("title", ""),
+            "current_version": int(existing.get("current_version") or 0) + 1,
+        }
+        return _draft_result(preview, "revised", dry_run=True)
+    head, errors = chat_draft_model.revise_draft(
+        draft_id, content=content, title=title
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _draft_result(head, "revised")

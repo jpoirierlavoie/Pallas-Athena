@@ -503,6 +503,41 @@ def _written_note() -> dict:
     })
 
 
+def _draft_summary(id_note: str = "") -> dict:
+    """The draft snapshot both write tools and get_draft emit (Phase N).
+
+    NO ctag/dav keys anywhere in the draft family: chat_drafts is not a DAV
+    collection, and this module's rule is never to declare a sync key a
+    write cannot honour.
+    """
+    return _obj({
+        "id": _str(id_note or "Draft UUIDv4."),
+        "dossier_id": _str("Empty string for a floating draft. PERMANENT — "
+                           "a draft never moves between dossiers."),
+        "dossier_file_number": _str(),
+        "dossier_title": _str(),
+        "title": _str(),
+        "current_version": _int("Versions are 1..current_version, all "
+                                "stored, none deletable."),
+        "content_length": _int("Stored length AFTER sanitization — compare "
+                               "against what was sent to detect any loss."),
+        "created_at": _nstr(),
+        "updated_at": _nstr(),
+    })
+
+
+def _draft_write_result(verb: str) -> dict:
+    """save_draft / revise_draft success payload (Phase N)."""
+    return _obj({
+        verb: {"type": "boolean", "enum": [True]},
+        "draft": _draft_summary(
+            "Empty on a dry run — nothing was written."
+        ),
+        "warnings": _arr(_str(), "French, human-readable; empty when clean."),
+        **_write_protocol_keys(),
+    })
+
+
 def _write_protocol_keys() -> dict[str, Any]:
     """dry_run + idempotent_replay — emitted by EVERY write result (WP15)."""
     return {
@@ -1792,4 +1827,94 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     }, dav=False, verb="recorded"),
 
     "record_prescription_event": _record_prescription_event_result(),
+
+    # ── Phase N — document content + versioned drafts ───────────────────
+
+    "get_document_text": {
+        # Root type BESIDE the anyOf — the wire-mandated shape (see
+        # _found_or_not). Three branches, enum-discriminated: readable,
+        # honestly-unreadable, not-found.
+        "type": "object",
+        "anyOf": [
+            _obj({
+                "found": _found(True),
+                "readable": {"type": "boolean", "enum": [True]},
+                "document_id": _str(),
+                "display_name": _str(),
+                "file_type": _str("MIME type as stored."),
+                "pagination_unit": {
+                    "type": "string",
+                    "enum": ["page", "segment"],
+                    "description": "PDF pages, or computed .docx segments.",
+                },
+                "page_count": _int("Total units in the document."),
+                "pages": _arr(_obj({
+                    "page": _int("1-based unit number."),
+                    "text": _str("Extracted text; empty when has_text is "
+                                 "false."),
+                    "has_text": _bool(
+                        "false = NO text layer on this unit (scan, image "
+                        "page) — never « the page is blank on paper », and "
+                        "nothing was OCR'd."),
+                    "page_truncated": _bool(
+                        "true = this unit alone overflowed the per-call "
+                        "ceiling and was cut; its tail is not retrievable "
+                        "through this tool."),
+                })),
+                "pages_without_text": _arr(
+                    _int(),
+                    "Units of THIS response with no text layer — the "
+                    "scanned-document signal (window-scoped, not "
+                    "document-wide)."),
+                "truncated": _bool(
+                    "true = the requested window was cut short by the "
+                    "per-call ceiling."),
+                "next_page": _nint(
+                    "Resume here with page_range; null when the document "
+                    "is exhausted."),
+                "warnings": _arr(_str(), "Machine-stable tokens."),
+            }),
+            _obj({
+                "found": _found(True),
+                "readable": {"type": "boolean", "enum": [False]},
+                "document_id": _str(),
+                "file_type": _str(),
+                "reason": {
+                    "type": "string",
+                    "enum": [
+                        "too_large", "unsupported_type", "encrypted",
+                        "invalid_pdf", "invalid_docx", "download_failed",
+                        "no_storage_path",
+                    ],
+                    "description": "Why the content cannot be extracted.",
+                },
+                "file_size_display": _str("Human-readable size."),
+                "message": _str("French explanation, incl. what to do "
+                                "instead."),
+            }, description="The document exists but its content cannot be "
+                           "extracted — said honestly, never faked."),
+            _obj({
+                "found": _found(False),
+                "document_id": _str(),
+            }, description="No such document — absence is data."),
+        ],
+    },
+
+    "get_draft": _found_or_not(
+        _obj({
+            "found": _found(True),
+            "draft": _draft_summary(),
+            "version_shown": _int(
+                "Which version `content` carries — current_version unless "
+                "a specific one was requested."),
+            "content": _str("The FULL Markdown text of that version."),
+        }),
+        {"draft_id": _str()},
+    ),
+
+    "list_drafts": _list_envelope(_draft_summary()),
+
+    "save_draft": _draft_write_result("created"),
+
+    "revise_draft": _draft_write_result("revised"),
 }

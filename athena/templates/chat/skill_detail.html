@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ skill.name }} — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('chat.skills_list') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4">
+    {{ ms('chevron_left', 16) }} Compétences
+  </a>
+
+  <div class="flex items-center justify-between gap-3 mb-2">
+    <h1 class="text-xl font-semibold text-gray-900">{{ skill.name }}</h1>
+    <div class="flex items-center gap-2">
+      <a href="{{ url_for('chat.skill_edit', skill_id=skill.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Modifier (nouvelle version)
+      </a>
+      <form method="post" action="{{ url_for('chat.skill_toggle', skill_id=skill.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if not skill.active %}<input type="hidden" name="actif" value="on">{% endif %}
+        <button type="submit"
+                class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+          {{ 'Activer' if not skill.active else 'Désactiver' }}
+        </button>
+      </form>
+    </div>
+  </div>
+  <p class="text-xs text-gray-400 mb-6">
+    Version courante v{{ skill.current_version }} ·
+    {{ 'active' if skill.active else 'inactive' }}
+    {% if version_affichee and version_affichee | string != skill.current_version | string %}
+    · <span class="text-amber-700">affichage de la version v{{ version_affichee }} (lecture seule)</span>
+    {% endif %}
+  </p>
+
+  {% if skill.description %}
+  <p class="text-sm text-gray-500 mb-4">{{ skill.description }}</p>
+  {% endif %}
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+    <div class="note-content text-sm">{{ (corps_affiche if corps_affiche is defined else skill.body) | markdown | safe }}</div>
+  </div>
+
+  <details>
+    <summary class="text-xs text-gray-500 cursor-pointer">Historique des versions ({{ versions | length }})</summary>
+    <ul class="mt-2 space-y-1 text-xs text-gray-600">
+      {% for v in versions %}
+      {% set cree = v.created_at | to_mtl %}
+      <li>
+        <a href="{{ url_for('chat.skill_detail', skill_id=skill.id, version=v.version) }}"
+           class="text-indigo-600 hover:text-indigo-700">v{{ v.version }}</a>
+        — {{ cree.strftime('%Y-%m-%d %H:%M') if cree else '' }} — {{ v.name }}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+</div>
+{% endblock %}

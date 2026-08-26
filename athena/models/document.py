@@ -94,6 +94,18 @@ EXTENSION_MIME_TYPES = {
 # so uploads go browser→GCS direct and ingestion is a GCS-side rewrite).
 MAX_FILE_SIZE = 200 * 1024 * 1024
 
+# Phase N — the ONE whole-object read-to-memory path for documents
+# (get_document_bytes), and its ceiling. 40 MB, from arithmetic, not taste:
+# the tool that consumes it (get_document_text) runs on the DEFAULT service
+# too (external MCP connector — F2, ~512 MB RAM, gunicorn --timeout 60), and
+# pypdf's parse memory peaks around 2-3x file size on object-stream-heavy
+# PDFs; 40 MB × 3 ≈ 120 MB over the ~200 MB baseline stays comfortably
+# inside the instance, and the parse time stays inside the 60 s SIGKILL
+# ceiling. A 200 MB (MAX_FILE_SIZE) document would OOM the instance
+# mid-request — hence the refusal happens on the Firestore SIZE METADATA,
+# BEFORE any byte moves (the ingest_blob_as_document doctrine).
+DOCUMENT_TEXT_MAX_BYTES = 40 * 1024 * 1024
+
 # Valid document categories. NOTE (spec §6): « facture » and « déboursé »
 # here mean DOCUMENTS (the PDF of a received invoice, a disbursement receipt),
 # NOT the Honoraires / Dépenses records — a deliberate name overlap.
@@ -824,6 +836,50 @@ def sign_blob_url(blob, query_params: dict[str, str],
         service_account_email=signing_creds.service_account_email,
         access_token=signing_creds.token,
     )
+
+
+def get_document_bytes(
+    document_id: str,
+    *,
+    max_bytes: int = DOCUMENT_TEXT_MAX_BYTES,
+) -> tuple[Optional[bytes], str]:
+    """Read a stored document's BYTES into memory, bounded — Phase N.
+
+    Returns ``(data, "")`` on success or ``(None, reason)`` with a
+    machine-stable reason: ``not_found`` | ``no_storage_path`` |
+    ``too_large`` | ``download_failed``. The size gate runs on the
+    Firestore ``file_size`` metadata BEFORE any byte is downloaded, and is
+    re-checked on the actual byte count afterwards (stale metadata must not
+    smuggle an oversized object past the gate). Mirrors
+    ``doc_template.get_template_bytes`` — the only other whole-object read
+    in the app — with the bound that module never needed (gabarits are
+    ≤ 10 MB by upload policy; documents reach 200 MB).
+
+    Callers turn ``reason`` into French; logs carry the exception TYPE only
+    (a storage path embeds the dossier's file number).
+    """
+    doc = get_document(document_id)
+    if not doc:
+        return None, "not_found"
+    storage_path = doc.get("storage_path", "")
+    if not storage_path:
+        return None, "no_storage_path"
+    declared = int(doc.get("file_size") or 0)
+    if declared > max_bytes:
+        return None, "too_large"
+    try:
+        bucket = storage.bucket()
+        data = bucket.blob(storage_path).download_as_bytes()
+    except Exception as exc:
+        logger.warning(
+            "get_document_bytes failed for %s: %s",
+            sanitize_log_value(document_id),
+            type(exc).__name__,
+        )
+        return None, "download_failed"
+    if len(data) > max_bytes:
+        return None, "too_large"
+    return data, ""
 
 
 def get_signed_url(

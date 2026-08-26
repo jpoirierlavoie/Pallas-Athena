@@ -98,6 +98,14 @@ defusedxml==0.7.1
 cryptography==50.0.0
 msgpack==1.2.1
 h2==4.4.1
+# Chat IA (Phase N) — the ONE deliberate exception to the zero-new-dependencies
+# rule (user decision D2, 2026-08-26): get_document_text extracts a PDF's text
+# layer server-side, and the stdlib cannot read a PDF. Pure Python (no native
+# libs — App Engine Standard safe). Sole consumer: utils/pdf_text.py, which
+# caps input at models/document.DOCUMENT_TEXT_MAX_BYTES BEFORE any byte is
+# downloaded (pypdf's parse memory runs ~2-3x file size) and isolates each
+# page's extract_text() so one malformed page never kills the call.
+pypdf==6.16.2
 # NOTE: the `setuptools<81` constraint that used to live here is GONE, and
 # with it setuptools itself — `opentelemetry-instrumentation` dropped its
 # pkg_resources dependency at 0.49b0, so nothing pulls setuptools into the

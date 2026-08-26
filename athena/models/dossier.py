@@ -1346,6 +1346,12 @@ _CHILD_COLLECTIONS = (
     # trust_transactions rows are never hard-deleted, the same count>0 refusal
     # enforces "ever existed" (spec §6.3). Archive the dossier instead.
     ("trust_transactions", "opération fiduciaire", "opérations fiduciaires"),
+    # Chat (Phase N): conversations are the append-only registre and drafts
+    # are versioned work product — neither has ANY delete path in the app,
+    # so, as with trust, count>0 means "ever existed" and the dossier can
+    # only be archived. Fail-closed like every other entry.
+    ("chat_conversations", "conversation d'assistant", "conversations d'assistant"),
+    ("chat_drafts", "brouillon", "brouillons"),
 )
 
 

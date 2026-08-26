@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Compétences — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('chat.chat_index') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4">
+    {{ ms('chevron_left', 16) }} Assistant
+  </a>
+
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-gray-900">Compétences</h1>
+    <a href="{{ url_for('chat.skill_new') }}"
+       class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+      Nouvelle compétence
+    </a>
+  </div>
+
+  <p class="text-sm text-gray-500 mb-6">
+    Les compétences s'injectent dans les conversations qui les sélectionnent.
+    Modifier = enregistrer une <strong>nouvelle version</strong> — chaque tour
+    consigne la version exacte qui l'a gouverné. La désactivation existe ;
+    la suppression, non.
+  </p>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+    {% for s in skills %}
+    <a href="{{ url_for('chat.skill_detail', skill_id=s.id) }}"
+       class="flex items-center justify-between gap-3 px-4 py-3 hover:bg-gray-50 {{ 'border-t border-gray-100' if not loop.first }}">
+      <div class="min-w-0">
+        <p class="text-sm font-medium text-gray-900 truncate">{{ s.name }}</p>
+        {% if s.description %}<p class="text-xs text-gray-500 truncate">{{ s.description }}</p>{% endif %}
+      </div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">v{{ s.current_version }}</span>
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ 'bg-green-100 text-green-700' if s.active else 'bg-gray-100 text-gray-600' }}">
+          {{ 'active' if s.active else 'inactive' }}
+        </span>
+      </div>
+    </a>
+    {% else %}
+    <p class="px-4 py-6 text-sm text-gray-500">
+      Aucune compétence. Créez-en une, puis collez-y le contenu de vos skills Claude.ai.
+    </p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

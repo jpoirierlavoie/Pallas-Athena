@@ -218,6 +218,149 @@ class Config:
         os.environ.get("FEATURE_INTAKE", "false").lower() == "true"
     )
 
+    # ── Chat IA (Phase N) — Claude on Vertex AI ─────────────────────────────
+    # The turn worker runs on the dedicated « chat » App Engine service
+    # (chat.yaml, default service account — roles/aiplatform.user is its ONE
+    # extra grant); the UI lives on default. Auth is ADC — no API key exists
+    # anywhere. Endpoint host/location live here because the multi-region
+    # « us » endpoint must be VERIFIED at the ops step (a max_tokens=1 curl);
+    # the documented fallback is a regional endpoint, e.g.
+    # CHAT_VERTEX_HOST=us-east5-aiplatform.googleapis.com +
+    # CHAT_VERTEX_LOCATION=us-east5 — a config edit, never a code change.
+    CHAT_VERTEX_HOST: str = os.environ.get(
+        "CHAT_VERTEX_HOST", "aiplatform.googleapis.com"
+    )
+    CHAT_VERTEX_LOCATION: str = os.environ.get("CHAT_VERTEX_LOCATION", "us")
+
+    # CLOSED model allowlist (SPEC_PHASE_N_CHAT.md §9). Covered Models
+    # (Fable-class, Mythos-class) are EXCLUDED: mandatory 30-day
+    # prompt/response retention under the Advanced AI Safety Addendum —
+    # disqualifying for privileged material. Adding ANY future model requires
+    # verifying its retention class FIRST. claude-opus-5 itself ships subject
+    # to that verification at the Model Garden enablement step (user decision
+    # D6, 2026-08-26); the documented fallback is claude-opus-4-8 — swap the
+    # entry, never widen the list. vertex_model_id values are overridable by
+    # env because Model Garden may require the @-versioned id, recorded at
+    # the same ops step.
+    #
+    # thinking_budget_tokens / max_tokens sizing: one task = one NON-STREAMED
+    # Vertex call bounded by CHAT_VERTEX_READ_TIMEOUT_S (540 s). At a
+    # conservative ~40 tok/s of generation, max_tokens is the worst-case
+    # duration knob: 20 480 tokens ≈ 512 s. Raising a budget past that
+    # arithmetic is how a turn starts dying on the platform's 10-minute task
+    # deadline — recompute before touching these.
+    CHAT_MODELS: dict[str, dict] = {
+        "claude-sonnet-5": {
+            "vertex_model_id": os.environ.get(
+                "CHAT_SONNET_VERTEX_ID", "claude-sonnet-5"
+            ),
+            "label_fr": "Sonnet 5 — quotidien / administration",
+            "thinking_budget_tokens": 8192,
+            "max_tokens": 16384,
+        },
+        "claude-opus-5": {
+            "vertex_model_id": os.environ.get(
+                "CHAT_OPUS_VERTEX_ID", "claude-opus-5"
+            ),
+            "label_fr": "Opus 5 — recherche / rédaction",
+            "thinking_budget_tokens": 12288,
+            "max_tokens": 20480,
+        },
+    }
+    CHAT_DEFAULT_MODEL: str = "claude-sonnet-5"
+
+    # Chat-side write kill switch — DISTINCT from MCP_WRITE_ENABLED, which is
+    # connector-scoped (its consent-screen semantics do not transfer). False →
+    # the write tools leave the chat's tool array; reads unaffected.
+    CHAT_WRITE_ENABLED: bool = (
+        os.environ.get("CHAT_WRITE_ENABLED", "true").lower() == "true"
+    )
+
+    # Turn-chain sizing. CHAT_CHAIN_MAX_CALLS is the hard ceiling of model
+    # calls per turn (hitting it finalizes the turn `failed`, loudly).
+    # CHAT_TASK_RETRY_TERMINAL is the X-AppEngine-TaskRetryCount at which the
+    # worker finalizes `failed` and consumes the task — it must stay BELOW the
+    # queue's max-attempts (8) so the terminalization write itself has retries.
+    CHAT_CHAIN_MAX_CALLS: int = int(os.environ.get("CHAT_CHAIN_MAX_CALLS", "12"))
+    CHAT_TASK_RETRY_TERMINAL: int = int(
+        os.environ.get("CHAT_TASK_RETRY_TERMINAL", "5")
+    )
+    CHAT_VERTEX_CONNECT_TIMEOUT_S: int = 10
+    # 540 < gunicorn --timeout 570 (chat.yaml) < the 600 s App Engine deadline
+    # for auto-scaled task requests: each guard fires before the next.
+    CHAT_VERTEX_READ_TIMEOUT_S: int = int(
+        os.environ.get("CHAT_VERTEX_READ_TIMEOUT_S", "540")
+    )
+
+    # Firestore 1 MiB/doc guard: a content block whose serialized JSON exceeds
+    # the offload threshold is stored VERBATIM in Storage
+    # (users/{uid}/chat/{conversation}/{turn}/{uuid}.json) and replaced by a
+    # storage_ref pointer; the budget is the belt — at commit, the largest
+    # remaining inline blocks offload until the projected doc size fits.
+    # Assembly ALWAYS rehydrates from Storage (sha256-verified): thinking
+    # signatures and web_search encrypted_content must be replayed byte-exact
+    # or Vertex refuses the continuation with a 400.
+    CHAT_BLOCK_OFFLOAD_BYTES: int = 100_000
+    CHAT_TURN_DOC_BUDGET_BYTES: int = 900_000
+    CHAT_MESSAGE_MAX_CHARS: int = 50_000
+    CHAT_WEB_SEARCH_MAX_USES: int = int(
+        os.environ.get("CHAT_WEB_SEARCH_MAX_USES", "5")
+    )
+
+    # Pricing snapshot (SPEC §7) — CONFIG, never code. USD per million tokens
+    # at Vertex list prices; multiregion_multiplier is the +10 % premium of
+    # regional/multi-region endpoints over global (re-verify alongside the
+    # endpoint check). Sonnet 5 introductory pricing (2 $/10 $) ended
+    # 2026-08-31 — this snapshot starts at the standard rate. Opus 5 rates: to
+    # confirm at the Model Garden step (seeded at the Opus-4.8 tier).
+    # web_search: 10 $ per 1 000 searches, billed via server_tool_use counts.
+    # `version` is stamped on every recorded segment so a later rate change
+    # never silently re-prices history.
+    CHAT_PRICING: dict = {
+        "version": "2026-08-26",
+        "multiregion_multiplier": 1.10,
+        "web_search_usd_per_1000": 10.0,
+        "models": {
+            "claude-sonnet-5": {
+                "input_usd_per_mtok": 3.00,
+                "output_usd_per_mtok": 15.00,
+                "cache_write_usd_per_mtok": 3.75,
+                "cache_read_usd_per_mtok": 0.30,
+            },
+            "claude-opus-5": {
+                "input_usd_per_mtok": 5.00,
+                "output_usd_per_mtok": 25.00,
+                "cache_write_usd_per_mtok": 6.25,
+                "cache_read_usd_per_mtok": 0.50,
+            },
+        },
+    }
+
+    # Legal-research Cloudflare Workers (chat tools legislation_* /
+    # jurisprudence_*). Plain server-to-server REST with a bearer token per
+    # Worker (user decision D10: two DISTINCT secrets — independent
+    # revocation). All optional: an unconfigured Worker's tools are simply
+    # absent from the chat's tool array (French degrade via the charter's
+    # citation rule — never a crash). These tools NEVER appear on the external
+    # MCP connector: claude.ai reaches the Workers directly already.
+    LEGISLATION_WORKER_URL: str = os.environ.get("LEGISLATION_WORKER_URL", "")
+    JURISPRUDENCE_WORKER_URL: str = os.environ.get("JURISPRUDENCE_WORKER_URL", "")
+    LEGISLATION_WORKER_TOKEN: str = _secret(
+        "legislation-worker-token", "LEGISLATION_WORKER_TOKEN", required=False
+    )
+    JURISPRUDENCE_WORKER_TOKEN: str = _secret(
+        "jurisprudence-worker-token", "JURISPRUDENCE_WORKER_TOKEN", required=False
+    )
+
+    @classmethod
+    def worker_configured(cls, worker: str) -> bool:
+        """True when the named Worker ("legislation"/"jurisprudence") is callable."""
+        if worker == "legislation":
+            return bool(cls.LEGISLATION_WORKER_URL and cls.LEGISLATION_WORKER_TOKEN)
+        if worker == "jurisprudence":
+            return bool(cls.JURISPRUDENCE_WORKER_URL and cls.JURISPRUDENCE_WORKER_TOKEN)
+        return False
+
     # Firm info (displayed on invoices)
     FIRM_NAME: str = os.environ.get("FIRM_NAME", "")
     FIRM_STREET: str = os.environ.get("FIRM_STREET", "")

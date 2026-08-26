@@ -1,0 +1,66 @@
+# App Engine config of the THIRD service « chat » (Phase N) — the turn
+# worker of the Claude-on-Vertex chat client. Deployed from athena/ like
+# portail.yaml; reached ONLY by Cloud Tasks (queue « chat-turns »,
+# app_engine_routing service: chat) — no hostname, no dispatch.yaml rule,
+# no browser traffic. The UI lives on the default service.
+service: chat
+runtime: python313
+
+# F2, not F1 — deliberate (contrast portail.yaml's F1): the worker parses
+# PDFs with pypdf (peaks ~2-3x file size), assembles multi-MB message
+# arrays, and holds a full Vertex response; F1's 384 MB would OOM mid-turn,
+# the worst failure mode for an at-least-once chain. min_instances 0 costs
+# nothing while idle; concurrency is bounded by the queue
+# (max-concurrent-dispatches=2), not by scaling.
+instance_class: F2
+automatic_scaling:
+  min_instances: 0
+  max_instances: 2
+  target_cpu_utilization: 0.65
+
+inbound_services:
+  - warmup
+
+# NO service_account line → the DEFAULT App Engine SA. Deliberate, and the
+# opposite of portail.yaml: this worker must import models/config (default
+# Firestore DB, Secret Manager at import) and call Vertex — the portail's
+# import ban was a property of its least-privilege SA, not of being a
+# second service. The one EXTRA grant this service relies on:
+# roles/aiplatform.user on the default SA (ops step).
+
+# One task = at most ONE non-streamed Vertex call. --timeout 570 sits under
+# the 600 s App Engine deadline for auto-scaled task requests, and above
+# the Vertex client's 540 s read timeout — each guard fires before the
+# next. --workers 1: this process serves only Cloud Tasks dispatches
+# (concurrency 2 at the queue), and one worker keeps the F2 memory margin;
+# 4 threads absorb overlapping dispatch + warmup + retry probes.
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 4 --timeout 570 --graceful-timeout 30 chat.wsgi:app
+
+env_variables:
+  ENV: "production"
+  FIREBASE_PROJECT_ID: "athena-pallas"
+  FIREBASE_APP_ID: "1:1073430388324:web:6d60d0d67d74ce1b730971"
+  FIREBASE_STORAGE_BUCKET: "athena-pallas.firebasestorage.app"
+  AUTHORIZED_USER_EMAIL: "jason@poirierlavoie.ca"
+  # Microsoft Graph — the deliver_email path of scheduled runs (§12.4)
+  # sends the finalized report from the worker. Same non-secret identifiers
+  # as app.yaml; graph-client-secret resolves from Secret Manager.
+  GRAPH_TENANT_ID: "4c5c39a5-2e63-4b04-8408-973c58cd88c7"
+  GRAPH_CLIENT_ID: "988bf117-3aef-463b-8062-7dac226e50d9"
+  GRAPH_SENDER_UPN: "reception@poirierlavoie.ca"
+  GRAPH_SENDER_NAME: "Réception — Poirier Lavoie, avocat"
+  # Vertex endpoint — multi-region us by default (config.py); the ids and
+  # the regional fallback are recorded here at the ops verification step:
+  #   CHAT_VERTEX_HOST / CHAT_VERTEX_LOCATION /
+  #   CHAT_SONNET_VERTEX_ID / CHAT_OPUS_VERTEX_ID
+  OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
+  OTEL_EXPORTER_OTLP_TIMEOUT: "5"
+  PIP_REQUIRE_HASHES: "1"
+  PIP_NO_DEPS: "1"
+  # Secrets (SECRET_KEY, GRAPH_CLIENT_SECRET, worker tokens) come from
+  # Google Cloud Secret Manager at runtime — see config.py.
+
+handlers:
+  - url: /.*
+    script: auto
+    secure: always

@@ -1,0 +1,735 @@
+"""L'orchestrateur de tour (Phase N) — claim → work → commit.
+
+One worker task = at most ONE Vertex model call (SPEC §2.2), plus whatever
+tool work the previous call requested. The transactional guards live in
+``models/chat_conversation.py``; this module owns assembly, the Vertex
+call, tool execution, the offload/rehydration policy, and the outcome
+taxonomy the machine route maps onto HTTP statuses:
+
+* ``ChatVertexRetryable`` propagates — the route answers 5xx and Cloud
+  Tasks retries on the queue's backoff (enqueue failures ride the same
+  class: the retry lands in the claim's REPAIR branch).
+* everything else terminalizes the turn LOUDLY (``failed`` + reason) and
+  answers 200 — retrying a deterministic failure would re-pay expensive
+  model calls to reproduce it (the taches_portail malformed-payload
+  doctrine, priced in tokens).
+
+VERBATIM rule (the review's hard finding): thinking blocks carry
+``signature``s and web_search results carry ``encrypted_content`` that must
+be replayed BYTE-EXACT or Vertex refuses the continuation with a 400.
+Assembly therefore always rehydrates ``storage_ref`` blocks from Storage
+(sha256-verified — a mismatch fails the turn, never a silent divergence);
+the inline ``preview`` is UI-only and never enters a request.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from firebase_admin import storage
+
+from config import Config
+from models import chat_conversation as conv_model
+from models import chat_skill as skill_model
+from models import document as document_model
+from utils.logging_setup import log_chat_event, log_unexpected
+from utils.tracing_setup import span
+
+from chat import charter, executors, registry, taches, vertex
+
+# The native-PDF fallback (decision D2): when get_document_text reports a
+# fully scanned window, the engine attaches the document itself as a
+# base64 `document` block so the model reads it visually. Bounded well
+# under the API's request ceiling (base64 inflates ~4/3) and under the
+# native-PDF 100-page limit.
+_NATIVE_PDF_MAX_BYTES = 20 * 1024 * 1024
+_NATIVE_PDF_MAX_PAGES = 100
+
+_REFUSED_BY_LAWYER_FR = "Refusé par l'avocat."
+
+
+class _StorageRefCorrupt(Exception):
+    pass
+
+
+# ── Storage offload / rehydration ───────────────────────────────────────────
+
+
+def _serialize_block(block: dict) -> str:
+    return json.dumps(block, ensure_ascii=False)
+
+
+def _offload_block(block: dict, raw: str, conv: dict, turn: dict) -> dict:
+    path = (
+        f"users/{conv.get('owner_uid', '')}/chat/{conv['id']}/"
+        f"{turn['id']}/{uuid.uuid4().hex}.json"
+    )
+    data = raw.encode("utf-8")
+    # Upload BEFORE the Firestore commit that references it — a pointer
+    # never dangles; an orphaned object from a lost race is inert.
+    storage.bucket().blob(path).upload_from_string(
+        data, content_type="application/json"
+    )
+    digest = hashlib.sha256(data).hexdigest()
+    log_chat_event(
+        "chat_block_offloaded",
+        conversation_id=conv["id"],
+        turn_id=turn["id"],
+        size_bytes=len(data),
+        original_type=str(block.get("type", "")),
+    )
+    return {
+        "type": "storage_ref",
+        "original_type": str(block.get("type", "")),
+        "path": path,
+        "size_bytes": len(data),
+        "sha256": digest,
+        # UI-only. NEVER enters an API request — assembly rehydrates.
+        "preview": raw[:400],
+    }
+
+
+def _store_blocks(blocks: list[dict], conv: dict, turn: dict) -> list[dict]:
+    """Offload any block whose serialization exceeds the threshold, plus
+    the budget belt: the largest remaining inline blocks offload until the
+    lot fits the turn-doc budget (Firestore's 1 MiB ceiling, with margin
+    for the segments already committed)."""
+    sized: list[tuple[int, str, dict]] = []
+    for block in blocks:
+        raw = _serialize_block(block)
+        sized.append((len(raw.encode("utf-8")), raw, block))
+
+    threshold = Config.CHAT_BLOCK_OFFLOAD_BYTES
+    total_inline = sum(s for s, _r, b in sized if s <= threshold)
+    budget = Config.CHAT_TURN_DOC_BUDGET_BYTES // 2  # margin for history
+    force: set[int] = set()
+    if total_inline > budget:
+        for index in sorted(
+            range(len(sized)), key=lambda i: sized[i][0], reverse=True
+        ):
+            size = sized[index][0]
+            if size <= threshold and total_inline > budget:
+                force.add(index)
+                total_inline -= size
+
+    out: list[dict] = []
+    for index, (size, raw, block) in enumerate(sized):
+        if block.get("type") == "storage_ref":
+            out.append(block)
+        elif size > threshold or index in force:
+            out.append(_offload_block(block, raw, conv, turn))
+        else:
+            out.append(block)
+    return out
+
+
+def _rehydrate_block(block: dict) -> dict:
+    if block.get("type") != "storage_ref":
+        return block
+    raw = storage.bucket().blob(block["path"]).download_as_bytes()
+    if hashlib.sha256(raw).hexdigest() != block.get("sha256"):
+        raise _StorageRefCorrupt(block.get("path", ""))
+    return json.loads(raw.decode("utf-8"))
+
+
+def _rehydrate_all(blocks: list[dict]) -> list[dict]:
+    return [_rehydrate_block(b) for b in blocks or []]
+
+
+# ── Assembly ────────────────────────────────────────────────────────────────
+
+
+def _assemble_messages(turns: list[dict], current_turn_id: str) -> list[dict]:
+    """The Messages array: prior FINAL turns verbatim (thinking included —
+    signatures must survive), failed/pending assistant turns skipped, then
+    the current turn's own segments and tool phases."""
+    messages: list[dict] = []
+    for turn in turns:
+        role = turn.get("role")
+        if role == "user":
+            messages.append(
+                {"role": "user", "content": _rehydrate_all(turn.get("content"))}
+            )
+            continue
+        if role != "assistant":
+            continue
+        is_current = turn.get("id") == current_turn_id
+        if not is_current and turn.get("state") != "final":
+            continue  # a failed chain is not replayable history
+        for segment in turn.get("segments") or []:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": _rehydrate_all(segment.get("blocks")),
+                }
+            )
+            tool_results = segment.get("tool_results")
+            if tool_results:
+                messages.append(
+                    {"role": "user", "content": _rehydrate_all(tool_results)}
+                )
+    return messages
+
+
+def _resolve_skills(conv: dict) -> tuple[list[dict], list[list]]:
+    heads = skill_model.get_heads(conv.get("skill_selection") or [])
+    pairs = [
+        [h.get("id", ""), int(h.get("current_version") or 0)] for h in heads
+    ]
+    return heads, pairs
+
+
+def _build_tools() -> list[dict]:
+    tools = registry.anthropic_tools()
+    if tools:
+        # The entry dicts are fresh per call (only input_schema is shared by
+        # identity), so the trailing cache breakpoint never mutates TOOLS.
+        tools[-1]["cache_control"] = {"type": "ephemeral"}
+    return tools
+
+
+# ── Tool phase ──────────────────────────────────────────────────────────────
+
+
+def _tool_use_blocks(blocks: list[dict]) -> list[dict]:
+    return [b for b in blocks if b.get("type") == "tool_use"]
+
+
+def _run_tools(
+    tool_uses: list[dict],
+    conv: dict,
+    turn: dict,
+    *,
+    refused_ids: frozenset = frozenset(),
+) -> list[dict]:
+    unattended = turn.get("addendum") == "unattended"
+    seed = (
+        f"{conv.get('scheduled_task_id', '')}|{conv['id']}|"
+        f"{turn['id']}|{int(turn.get('step') or 0)}"
+    )
+    provenance_extra = {
+        "model": conv.get("model", ""),
+        "skill_versions": turn.get("skill_versions") or [],
+        "charter_version": turn.get("charter_version"),
+    }
+    results: list[dict] = []
+    attachments: list[dict] = []
+    for block in tool_uses:
+        tool_use_id = str(block.get("id", ""))
+        name = str(block.get("name", ""))
+        if tool_use_id in refused_ids:
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": [
+                        {"type": "text", "text": _REFUSED_BY_LAWYER_FR}
+                    ],
+                    "is_error": True,
+                }
+            )
+            log_chat_event(
+                "chat_authorization",
+                "refused",
+                conversation_id=conv["id"],
+                turn_id=turn["id"],
+                tool=name,
+                decision="refuse",
+            )
+            continue
+        with span("chat.tool", tool=name):
+            execution = executors.execute_tool(
+                name,
+                block.get("input") or {},
+                conversation_id=conv["id"],
+                turn_id=turn["id"],
+                step=int(turn.get("step") or 0),
+                unattended=unattended,
+                idempotency_seed=seed,
+                tool_use_id=tool_use_id,
+                provenance_extra=provenance_extra,
+            )
+        results.append(
+            {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": [{"type": "text", "text": execution.content}],
+                "is_error": execution.is_error,
+            }
+        )
+        attachments.extend(_native_pdf_fallback(block, execution, conv, turn))
+    # Attachments FOLLOW the tool_results inside the same user message —
+    # tool_result blocks must come first in a user turn.
+    return results + attachments
+
+
+def _native_pdf_fallback(
+    tool_use: dict, execution, conv: dict, turn: dict
+) -> list[dict]:
+    """Decision D2's second half: a fully scanned PDF window comes back
+    with every returned page textless — attach the document itself as a
+    native base64 block so the model reads it visually. Narrow by design:
+    PDFs only, bounded size and page count, never on an error result."""
+    if tool_use.get("name") != "get_document_text" or execution.is_error:
+        return []
+    try:
+        payload = json.loads(execution.content)
+    except ValueError:
+        return []
+    if not (
+        payload.get("found")
+        and payload.get("readable")
+        and payload.get("pagination_unit") == "page"
+        and payload.get("pages")
+        and all(not p.get("has_text") for p in payload["pages"])
+    ):
+        return []
+    if int(payload.get("page_count") or 0) > _NATIVE_PDF_MAX_PAGES:
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "(Pièce entièrement numérisée, trop longue pour la "
+                    "lecture native — consultez-la dans l'application.)"
+                ),
+            }
+        ]
+    document_id = str((tool_use.get("input") or {}).get("document_id", ""))
+    data, reason = document_model.get_document_bytes(
+        document_id, max_bytes=_NATIVE_PDF_MAX_BYTES
+    )
+    if data is None:
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "(Pièce entièrement numérisée ; la lecture native n'est "
+                    f"pas possible ici — {reason}.)"
+                ),
+            }
+        ]
+    return [
+        {
+            "type": "text",
+            "text": (
+                "(Pièce jointe en PDF natif — les pages retournées n'ont "
+                "aucune couche texte ; lisez le document ci-joint.)"
+            ),
+        },
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.b64encode(data).decode("ascii"),
+            },
+        },
+    ]
+
+
+# ── The task driver ─────────────────────────────────────────────────────────
+
+
+def process_task(payload: dict, retry_count: int) -> str:
+    """Drive one Cloud Tasks delivery. Returns a machine-stable outcome
+    (for the route's logging); raises :class:`vertex.ChatVertexRetryable`
+    when the delivery should be retried."""
+    conversation_id = str(payload.get("conversation_id") or "")
+    turn_id = str(payload.get("turn_id") or "")
+    step_token = str(payload.get("step_token") or "")
+    if not (conversation_id and turn_id and step_token):
+        return "malformed"
+
+    if retry_count >= Config.CHAT_TASK_RETRY_TERMINAL:
+        conv_model.fail_turn(
+            conversation_id, turn_id, reason="retry_exhausted"
+        )
+        log_chat_event(
+            "chat_turn_failed",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            reason="retry_exhausted",
+            retry_count=retry_count,
+        )
+        return "terminalized"
+
+    status, turn, repair_token = conv_model.claim_step(
+        conversation_id, turn_id, step_token
+    )
+    if status == "skip":
+        log_chat_event(
+            "chat_duplicate_delivery",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
+        return "skip"
+    if status == "repair":
+        _enqueue(conversation_id, turn_id, repair_token)
+        log_chat_event(
+            "chat_duplicate_delivery",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            repaired=True,
+        )
+        return "repair"
+
+    conv = conv_model.get_conversation(conversation_id)
+    if conv is None:
+        # get_conversation swallows read errors into None, so a transient
+        # outage is indistinguishable from a missing doc here. Retry: the
+        # transient heals; the truly-missing terminalizes at the retry
+        # ceiling with `retry_exhausted`.
+        raise vertex.ChatVertexRetryable("conversation_unreadable")
+
+    try:
+        with span(
+            "chat.turn",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            step=int(turn.get("step") or 0),
+            model=conv.get("model", ""),
+            scheduled=turn.get("addendum") == "unattended",
+        ):
+            return _advance(conv, turn, step_token)
+    except vertex.ChatVertexRetryable:
+        raise
+    except _StorageRefCorrupt:
+        conv_model.fail_turn(
+            conversation_id, turn_id, reason="storage_ref_corrupt"
+        )
+        log_chat_event(
+            "chat_turn_failed",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            reason="storage_ref_corrupt",
+        )
+        return "failed"
+    except vertex.ChatVertexFatal as exc:
+        conv_model.commit_step(
+            conversation_id,
+            turn_id,
+            step_token,
+            next_state="failed",
+            error={
+                "code": exc.reason,
+                "http_status": exc.status,
+                "excerpt": exc.excerpt,  # turn doc only — never logged
+            },
+        )
+        log_chat_event(
+            "chat_turn_failed",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            reason=exc.reason,
+        )
+        return "failed"
+    except Exception:
+        # A deterministic code fault retried five times would re-pay up to
+        # five model calls to reproduce itself — terminalize instead
+        # (loud; recovery is a new user turn, SPEC §2.2).
+        log_unexpected(
+            "chat turn engine failed",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+        )
+        conv_model.fail_turn(
+            conversation_id, turn_id, reason="internal_error"
+        )
+        log_chat_event(
+            "chat_turn_failed",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            reason="internal_error",
+        )
+        return "failed"
+
+
+def _advance(conv: dict, turn: dict, step_token: str) -> str:
+    conversation_id = conv["id"]
+    turn_id = turn["id"]
+    step = int(turn.get("step") or 0)
+
+    # Pre-call ceiling: a crash loop must never buy calls past the cap.
+    if step >= Config.CHAT_CHAIN_MAX_CALLS:
+        conv_model.commit_step(
+            conversation_id,
+            turn_id,
+            step_token,
+            next_state="failed",
+            error={"code": "chain_ceiling"},
+        )
+        log_chat_event(
+            "chat_turn_failed",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            reason="chain_ceiling",
+            model_calls=step,
+        )
+        return "failed"
+
+    # Pending tool work from an authorization decision (§4.6.3): the last
+    # segment stopped on tool_use, no results yet, decision recorded.
+    pending_results: Optional[list[dict]] = None
+    segments = turn.get("segments") or []
+    if segments:
+        last = segments[-1]
+        if (
+            last.get("stop_reason") == "tool_use"
+            and last.get("tool_results") is None
+        ):
+            decision = (turn.get("authorization") or {}).get("decision") or {}
+            refused = frozenset(decision.get("refused") or [])
+            tool_uses = _tool_use_blocks(_rehydrate_all(last.get("blocks")))
+            pending_results = _store_blocks(
+                _run_tools(tool_uses, conv, turn, refused_ids=refused),
+                conv,
+                turn,
+            )
+
+    # Assembly — skills resolved at THIS turn's head (FLAG 4), charter
+    # versioned, stable order end to end (the cache prefix depends on it).
+    heads, skill_pairs = _resolve_skills(conv)
+    scheduled = turn.get("addendum") == "unattended"
+    system = charter.system_blocks(heads, scheduled=scheduled)
+    tools = _build_tools()
+
+    turns = conv_model.list_turns(conversation_id)
+    if pending_results is not None and turns:
+        # The just-computed results are not committed yet — splice them
+        # into the assembly copy of the current turn.
+        for candidate in turns:
+            if candidate.get("id") == turn_id and candidate.get("segments"):
+                candidate["segments"][-1] = {
+                    **candidate["segments"][-1],
+                    "tool_results": pending_results,
+                }
+    messages = _assemble_messages(turns, turn_id)
+
+    started = time.monotonic()
+    response = vertex.call_model(
+        conv.get("model", ""), system=system, messages=messages, tools=tools
+    )
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    usage = response.get("usage") or {}
+    stop_reason = str(response.get("stop_reason") or "")
+    log_chat_event(
+        "chat_model_call",
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        model=conv.get("model", ""),
+        step=step + 1,
+        duration_ms=duration_ms,
+        stop_reason=stop_reason,
+        input_tokens=int(usage.get("input_tokens") or 0),
+        output_tokens=int(usage.get("output_tokens") or 0),
+        cache_creation_input_tokens=int(
+            usage.get("cache_creation_input_tokens") or 0
+        ),
+        cache_read_input_tokens=int(usage.get("cache_read_input_tokens") or 0),
+        web_search_requests=int(
+            (usage.get("server_tool_use") or {}).get("web_search_requests") or 0
+        ),
+    )
+
+    blocks = _store_blocks(list(response.get("content") or []), conv, turn)
+    segment: dict[str, Any] = {
+        "step": step + 1,
+        "model": conv.get("model", ""),
+        "blocks": blocks,
+        "stop_reason": stop_reason,
+        "usage": usage,
+        "pricing": {
+            "version": Config.CHAT_PRICING.get("version", ""),
+            "usd_micros": vertex.segment_cost_usd_micros(
+                usage, conv.get("model", "")
+            ),
+        },
+        "tool_results": None,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    stamps: Optional[dict] = None
+    if not turn.get("skill_versions"):
+        stamps = {
+            "skill_versions": skill_pairs,
+            "charter_version": charter.CHARTER_VERSION,
+        }
+
+    common = dict(
+        segment=segment,
+        last_segment_tool_results=pending_results,
+        stamps=stamps,
+    )
+
+    if stop_reason == "tool_use":
+        raw_tool_uses = _tool_use_blocks(list(response.get("content") or []))
+        gated = [
+            b for b in raw_tool_uses if registry.is_gated(str(b.get("name", "")))
+        ]
+        if gated and not scheduled:
+            authorization = {
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "calls": [
+                    {
+                        "tool_use_id": str(b.get("id", "")),
+                        "name": str(b.get("name", "")),
+                        "gated": registry.is_gated(str(b.get("name", ""))),
+                        "input_preview": _serialize_block(
+                            b.get("input") or {}
+                        )[:400],
+                    }
+                    for b in raw_tool_uses
+                ],
+                "decision": None,
+            }
+            status, _tok = conv_model.commit_step(
+                conversation_id,
+                turn_id,
+                step_token,
+                next_state="awaiting_authorization",
+                authorization=authorization,
+                **common,
+            )
+            if status == "lost_race":
+                return _lost_race(conversation_id, turn_id)
+            log_chat_event(
+                "chat_authorization",
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                decision="demandee",
+                calls=len(raw_tool_uses),
+            )
+            return "paused"
+
+        # Execute the whole batch now (the gated ones auto-refuse in
+        # unattended context inside the executor).
+        segment["tool_results"] = _store_blocks(
+            _run_tools(raw_tool_uses, conv, turn), conv, turn
+        )
+        if step + 1 >= Config.CHAT_CHAIN_MAX_CALLS:
+            status, _tok = conv_model.commit_step(
+                conversation_id,
+                turn_id,
+                step_token,
+                next_state="failed",
+                error={"code": "chain_ceiling"},
+                **common,
+            )
+            if status == "lost_race":
+                return _lost_race(conversation_id, turn_id)
+            log_chat_event(
+                "chat_turn_failed",
+                "failure",
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                reason="chain_ceiling",
+                model_calls=step + 1,
+            )
+            return "failed"
+        return _commit_and_continue(conversation_id, turn_id, step_token, common)
+
+    if stop_reason == "pause_turn":
+        # Commit the paused assistant message verbatim and continue — on
+        # the next call it is replayed unchanged as the last message
+        # (falls out of the generic assembly rule; the review's finding).
+        return _commit_and_continue(conversation_id, turn_id, step_token, common)
+
+    # Terminal stops: end_turn / stop_sequence / max_tokens (the last is
+    # surfaced as `truncated` — honest, still useful).
+    status, _tok = conv_model.commit_step(
+        conversation_id,
+        turn_id,
+        step_token,
+        next_state="final",
+        truncated=(stop_reason == "max_tokens"),
+        **common,
+    )
+    if status == "lost_race":
+        return _lost_race(conversation_id, turn_id)
+    all_segments = list(turn.get("segments") or []) + [segment]
+    totals = conv_model.sum_segments(all_segments)
+    log_chat_event(
+        "chat_turn_finalized",
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        model_calls=totals["model_calls"],
+        total_input_tokens=totals["input_tokens"],
+        total_output_tokens=totals["output_tokens"],
+        usd_micros=totals["usd_micros"],
+    )
+    # §12.4 — deliver_email of a scheduled run. AFTER the committed
+    # finalize, best-effort by contract: livrer_rapport owns its at-most-
+    # once marker and swallows its own failures; a delivery problem must
+    # never fail (or retry) a committed turn.
+    if conv.get("origin") == "planifiee":
+        try:
+            from chat import planification
+
+            planification.livrer_rapport(conv)
+        except Exception:
+            log_unexpected(
+                "chat report delivery failed",
+                conversation_id=conversation_id,
+            )
+    return "final"
+
+
+def _commit_and_continue(
+    conversation_id: str, turn_id: str, step_token: str, common: dict
+) -> str:
+    status, new_token = conv_model.commit_step(
+        conversation_id,
+        turn_id,
+        step_token,
+        next_state="running",
+        **common,
+    )
+    if status == "lost_race":
+        return _lost_race(conversation_id, turn_id)
+    _enqueue(conversation_id, turn_id, new_token)
+    return "continue"
+
+
+def _enqueue(conversation_id: str, turn_id: str, token: Optional[str]) -> None:
+    """Enqueue the continuation; failure raises RETRYABLE so the same task
+    redelivers and lands in the claim's REPAIR branch (the token is already
+    rotated with ``enqueued: False``)."""
+    if not token:
+        return
+    try:
+        taches.enfiler_tour(conversation_id, turn_id, token)
+    except Exception as exc:
+        log_chat_event(
+            "chat_enqueue_failed",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            reason=type(exc).__name__,
+        )
+        raise vertex.ChatVertexRetryable("enqueue_failed") from exc
+    conv_model.mark_enqueued(conversation_id, turn_id, token)
+
+
+def _lost_race(conversation_id: str, turn_id: str) -> str:
+    # A strictly concurrent duplicate double-paid one model call; the
+    # loser's result is discarded. ERROR by doctrine — it must be SEEN
+    # (bounded by the queue's max-concurrent-dispatches=2).
+    log_chat_event(
+        "chat_duplicate_delivery",
+        "failure",
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        reason="doublon_vertex",
+    )
+    return "lost_race"

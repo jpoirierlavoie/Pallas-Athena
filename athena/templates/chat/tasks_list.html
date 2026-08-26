@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Tâches planifiées — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('chat.chat_index') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4">
+    {{ ms('chevron_left', 16) }} Assistant
+  </a>
+
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-semibold text-gray-900">Tâches planifiées</h1>
+    <a href="{{ url_for('chat.task_new') }}"
+       class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+      Nouvelle tâche
+    </a>
+  </div>
+
+  <p class="text-sm text-gray-500 mb-6">
+    Chaque occurrence crée une conversation flottante marquée « nouveau »,
+    reprenable comme n'importe quelle autre. Les modifications prennent effet
+    à la prochaine occurrence. La désactivation existe ; la suppression, non.
+  </p>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+    {% for t in tasks %}
+    <div class="flex items-center justify-between gap-3 px-4 py-3 {{ 'border-t border-gray-100' if not loop.first }}">
+      <div class="min-w-0">
+        <a href="{{ url_for('chat.task_edit', task_id=t.id) }}"
+           class="text-sm font-medium text-gray-900 hover:text-gray-700">{{ t.name }}</a>
+        <p class="text-xs text-gray-500">
+          {{ recurrence_labels.get(t.recurrence.kind, t.recurrence.kind) }}
+          {%- if t.recurrence.kind == 'hebdomadaire' %} ({{ weekday_labels[t.recurrence.day] }}){% endif %}
+          · {{ '%02d' | format(t.hour_local) }} h (Montréal)
+          {% if t.last_occurrence %}· dernière : {{ t.last_occurrence }}{% endif %}
+          {% if t.deliver_email %}· courriel{% endif %}
+        </p>
+      </div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ 'bg-green-100 text-green-700' if t.active else 'bg-gray-100 text-gray-600' }}">
+          {{ 'active' if t.active else 'inactive' }}
+        </span>
+        <form method="post" action="{{ url_for('chat.task_toggle', task_id=t.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {% if not t.active %}<input type="hidden" name="actif" value="on">{% endif %}
+          <button type="submit"
+                  class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+            {{ 'Activer' if not t.active else 'Désactiver' }}
+          </button>
+        </form>
+      </div>
+    </div>
+    {% else %}
+    <p class="px-4 py-6 text-sm text-gray-500">
+      Aucune tâche planifiée. Recréez ici vos trois tâches Claude.ai
+      (relevé du matin, veille de fin de journée…).
+    </p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

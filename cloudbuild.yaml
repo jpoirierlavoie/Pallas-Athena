@@ -23,6 +23,14 @@ steps:
     args: ['app', 'deploy', 'portail.yaml', '--quiet', '--version=$SHORT_SHA']
     dir: 'athena'
 
+  # Step 2b': Deploy the « chat » service (Phase N) — the Vertex turn worker.
+  # Same source dir, own yaml, DEFAULT service account (deliberate — see
+  # chat.yaml). Reached only by Cloud Tasks (queue « chat-turns »); no
+  # dispatch rule needed (service-level routing, no hostname).
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args: ['app', 'deploy', 'chat.yaml', '--quiet', '--version=$SHORT_SHA']
+    dir: 'athena'
+
   # Step 2c: Dispatch rules — AFTER the portail service exists (a rule naming
   # an undeployed service is refused). ⚠ deploy REPLACES the whole table;
   # dispatch.yaml at the repo root is the single source of truth.
@@ -44,7 +52,7 @@ steps:
     args:
       - '-c'
       - |
-        for SERVICE in default portail; do
+        for SERVICE in default portail chat; do
           OLD_VERSIONS=$$(gcloud app versions list \
             --service="$$SERVICE" \
             --filter="traffic_split=0" \

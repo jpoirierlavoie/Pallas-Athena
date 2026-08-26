@@ -501,6 +501,71 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 
 ---
 
+## 11b. Optional — Assistant IA (chat Claude sur Vertex, Phase N)
+
+The in-app chat client (« Assistant » in the nav) runs Claude on **Vertex AI**
+under YOUR project — the point is that privileged material never transits a
+consumer AI product. The turn worker is the third App Engine service
+(`athena/chat.yaml`, deployed by the CI). Ordered prerequisites — the ORDER of
+step 6 is load-bearing:
+
+1. **Firestore Data Access audit logging** (the registre's compensating
+   control — SPEC N §6.2; append-only is a code convention, not a storage
+   control): IAM & Admin → Audit Logs → *Cloud Firestore/Datastore API* →
+   enable **Data Read** + **Data Write**. Verify with
+   `gcloud projects get-iam-policy $PROJECT --format=json` → `auditConfigs`.
+   Mind the log-volume cost; enable BEFORE first real use.
+2. **Model Garden**: enable `claude-sonnet-5` and `claude-opus-5` (accept the
+   terms). **Verify Opus 5's retention class while you are there** — a Covered
+   Model (mandatory 30-day retention) is disqualifying; the documented fallback
+   is `claude-opus-4-8` (swap the `CHAT_MODELS` entry in `config.py`, never
+   widen the allowlist). Check the per-model quotas.
+3. **IAM**: `gcloud projects add-iam-policy-binding $PROJECT
+   --member=serviceAccount:$PROJECT@appspot.gserviceaccount.com
+   --role=roles/aiplatform.user` (the chat service runs under the DEFAULT SA —
+   deliberate; see chat.yaml).
+4. **Verify the multi-region endpoint** before relying on it: a `max_tokens=1`
+   curl against `https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/us/publishers/anthropic/models/claude-sonnet-5:rawPredict`
+   with `gcloud auth print-access-token`. If the bare model alias is refused,
+   pin the `@`-versioned Model Garden id via `CHAT_SONNET_VERTEX_ID` /
+   `CHAT_OPUS_VERTEX_ID`; if the `us` multi-region is refused, fall back to a
+   regional endpoint via `CHAT_VERTEX_HOST` + `CHAT_VERTEX_LOCATION` (env —
+   never a code change) and re-check the +10 % premium in `CHAT_PRICING`.
+5. **Queue**: `gcloud tasks queues create chat-turns --location=<region>` then
+   `gcloud tasks queues update chat-turns --location=<region> --max-attempts=8
+   --min-backoff=10s --max-backoff=300s --max-concurrent-dispatches=2
+   --max-dispatches-per-second=1` (concurrency 2 bounds worst-case parallel
+   Vertex spend AND the duplicate-call race window). Verify the App Engine
+   firewall still allows `0.1.0.2/32` (cron + tasks).
+6. **The connector re-consent train** — Phase N widened the external MCP
+   connector too (52 tools, incl. `get_document_text`, which reads FULL
+   document content). `get_document_text` is a READ tool: **no kill switch can
+   hide it from an already-issued token** (`MCP_WRITE_ENABLED` covers writes
+   only), so the order is: **revoke every token FIRST**
+   (`python -m scripts.revoke_mcp_tokens`), then deploy, then re-add the
+   connector under the NEW consent screen (which names document-content
+   reading) and tick « Autoriser les écritures ». Fail-closed if the deploy
+   goes wrong: the connector is merely revoked, never over-granted.
+7. **Workers juridiques** (optional): create the two secrets with `printf`
+   (never `echo` — the trailing-newline trap): `legislation-worker-token`,
+   `jurisprudence-worker-token`; grant the default SA `secretAccessor`; set
+   `LEGISLATION_WORKER_URL`/`JURISPRUDENCE_WORKER_URL` in `app.yaml` and
+   `chat.yaml`. Unset = those chat tools are simply absent (citations then
+   read « non vérifiée » per the charter).
+8. **Cron**: the CI deploys the complete 4-entry `cron.yaml` (the dispatcher
+   of scheduled runs is the 4th). Never deploy a partial cron table.
+9. **First-use verification**: `python -m scripts.check_config`; open `/chat`
+   (nav entry in both renders); a dry conversation (the poller stops on
+   HTTP 286, the cost indicator moves, `chat_model_call`/`chat_turn_finalized`
+   in Cloud Logging); a tool conversation (`get_dossier` chip); a forced
+   failure (`gcloud tasks queues pause chat-turns` mid-turn → the turn shows
+   `failed` loudly after the retry ceiling; `resume` after); a scheduled run
+   end-to-end (create it in the UI — decision D7, no seeds in code); the two
+   skills pasted into « Compétences » via the UI; one « Verser en Word »
+   opened in Word without repair.
+
+---
+
 ## 12. Optional — Android TWA
 
 Only if you want an installable Android app. Build the TWA (e.g. with
@@ -581,6 +646,21 @@ Notes:
   `static/src/app.input.css` → `static/vendor/app.<hash>.css` and fan the new
   hash out to `base.html`, `auth/login.html`, `sw.js` PRECACHE, and the Early
   Hints lists in `security.py` (full recipe in [CLAUDE.md](CLAUDE.md) → Tech Stack).
+- **Effacement Loi 25 d'une conversation d'assistant (runbook, hors
+  application — BY DESIGN no in-app path exists):** the chat registre
+  (`chat_conversations` + its `turns` subcollection) is append-only by code
+  convention precisely so erasure stays TECHNICALLY possible when the law
+  requires it. Manual procedure, performed by the lawyer, logged by the
+  platform (the Data Access audit logs enabled in §11b step 1 are the record
+  of the act): 1) note the conversation id; 2) delete the turn documents then
+  the conversation document (console, or a `gcloud firestore` /
+  Admin-SDK one-off — the `turns` subcollection does not cascade); 3) delete
+  the offloaded blocks under `users/{uid}/chat/{conversation_id}/` in Firebase
+  Storage; 4) if the conversation was dossier-bound, remember
+  `chat_usage_dossier/{dossier_id}` keeps its aggregate counters (tokens/US$ —
+  no content); leave them: they are accounting, not personal information.
+  Drafts (`chat_drafts` + `versions`) follow the same shape when erasure is
+  legally required. Never script this into the app.
 
 ---
 
