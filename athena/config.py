@@ -222,15 +222,16 @@ class Config:
     # The turn worker runs on the dedicated « chat » App Engine service
     # (chat.yaml, default service account — roles/aiplatform.user is its ONE
     # extra grant); the UI lives on default. Auth is ADC — no API key exists
-    # anywhere. Endpoint host/location live here because the multi-region
-    # « us » endpoint must be VERIFIED at the ops step (a max_tokens=1 curl);
-    # the documented fallback is a regional endpoint, e.g.
-    # CHAT_VERTEX_HOST=us-east5-aiplatform.googleapis.com +
-    # CHAT_VERTEX_LOCATION=us-east5 — a config edit, never a code change.
+    # anywhere. Location is GLOBAL — verified live 2026-08-26: the spec's
+    # multi-region « us » answers 501 UNIMPLEMENTED for these models and
+    # us-east5 404s them; global is the ONLY serving location, and it bills
+    # at the BASE rate (accepted residency trade-off, user decision — global
+    # routes worldwide). Host/location stay env-overridable so a regional
+    # endpoint, if these models ever gain one, is a config edit.
     CHAT_VERTEX_HOST: str = os.environ.get(
         "CHAT_VERTEX_HOST", "aiplatform.googleapis.com"
     )
-    CHAT_VERTEX_LOCATION: str = os.environ.get("CHAT_VERTEX_LOCATION", "us")
+    CHAT_VERTEX_LOCATION: str = os.environ.get("CHAT_VERTEX_LOCATION", "global")
 
     # CLOSED model allowlist (SPEC_PHASE_N_CHAT.md §9). Covered Models
     # (Fable-class, Mythos-class) are EXCLUDED: mandatory 30-day
@@ -308,17 +309,19 @@ class Config:
     )
 
     # Pricing snapshot (SPEC §7) — CONFIG, never code. USD per million tokens
-    # at Vertex list prices; multiregion_multiplier is the +10 % premium of
-    # regional/multi-region endpoints over global (re-verify alongside the
-    # endpoint check). Sonnet 5 introductory pricing (2 $/10 $) ended
-    # 2026-08-31 — this snapshot starts at the standard rate. Opus 5 rates: to
-    # confirm at the Model Garden step (seeded at the Opus-4.8 tier).
+    # at Vertex list prices. multiregion_multiplier is 1.0: the GLOBAL
+    # endpoint bills at the base rate — the +10 % premium applies only to
+    # regional/multi-region endpoints, which do not serve these models
+    # (verified 2026-08-26); restore 1.10 if a regional fallback is ever
+    # configured. Sonnet 5 introductory pricing (2 $/10 $) ended 2026-08-31 —
+    # this snapshot starts at the standard rate. Opus 5 rates: to confirm at
+    # the Model Garden step (seeded at the Opus-4.8 tier).
     # web_search: 10 $ per 1 000 searches, billed via server_tool_use counts.
     # `version` is stamped on every recorded segment so a later rate change
     # never silently re-prices history.
     CHAT_PRICING: dict = {
         "version": "2026-08-26",
-        "multiregion_multiplier": 1.10,
+        "multiregion_multiplier": 1.0,
         "web_search_usd_per_1000": 10.0,
         "models": {
             "claude-sonnet-5": {

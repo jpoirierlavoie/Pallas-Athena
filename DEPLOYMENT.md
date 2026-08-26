@@ -524,13 +524,20 @@ step 6 is load-bearing:
    --member=serviceAccount:$PROJECT@appspot.gserviceaccount.com
    --role=roles/aiplatform.user` (the chat service runs under the DEFAULT SA —
    deliberate; see chat.yaml).
-4. **Verify the multi-region endpoint** before relying on it: a `max_tokens=1`
-   curl against `https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/us/publishers/anthropic/models/claude-sonnet-5:rawPredict`
-   with `gcloud auth print-access-token`. If the bare model alias is refused,
-   pin the `@`-versioned Model Garden id via `CHAT_SONNET_VERTEX_ID` /
-   `CHAT_OPUS_VERTEX_ID`; if the `us` multi-region is refused, fall back to a
-   regional endpoint via `CHAT_VERTEX_HOST` + `CHAT_VERTEX_LOCATION` (env —
-   never a code change) and re-check the +10 % premium in `CHAT_PRICING`.
+4. **Endpoint: GLOBAL** (verified live 2026-08-26 on the original
+   deployment): the multi-region `us` answers **501 UNIMPLEMENTED** for
+   these models and `us-east5` 404s them — `locations/global` is the only
+   serving location, bills at the BASE rate (`multiregion_multiplier` 1.0),
+   and accepts the bare model aliases. Re-verify on YOUR project with a
+   `max_tokens=1` curl against
+   `https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/anthropic/models/claude-sonnet-5:rawPredict`
+   (a **429 quota** answer means the endpoint works and step 4b applies; a
+   403/404 means Model Garden is not done).
+   **4b. Quota:** the default per-base-model quota can be ZERO even after
+   enablement (`global_online_prediction_requests_per_base_model`, base
+   models `anthropic-claude-sonnet` / `anthropic-claude-opus`). Submit the
+   increase in IAM & Admin → Quotas (modest values — 15-30 req/min — for a
+   single-user practice) and wait for the grant before first use.
 5. **Queue**: `gcloud tasks queues create chat-turns --location=<region>` then
    `gcloud tasks queues update chat-turns --location=<region> --max-attempts=8
    --min-backoff=10s --max-backoff=300s --max-concurrent-dispatches=2

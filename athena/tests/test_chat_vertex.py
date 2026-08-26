@@ -62,7 +62,7 @@ def test_url_and_body_shape(transport):
     _call(tools=[{"name": "t", "description": "d", "input_schema": {}}])
     assert transport["url"] == (
         "https://aiplatform.googleapis.com/v1/projects/test-project/"
-        "locations/us/publishers/anthropic/models/claude-sonnet-5:rawPredict"
+        "locations/global/publishers/anthropic/models/claude-sonnet-5:rawPredict"
     )
     body = transport["body"]
     # The model goes in the URL, NEVER the body; the version in the body.
@@ -147,8 +147,9 @@ def test_pricing_math_in_usd_micros():
         "server_tool_use": {"web_search_requests": 100},
     }
     micros = vertex.segment_cost_usd_micros(usage, "claude-sonnet-5")
-    # (3 + 15) USD × 1.10 + 100 × 10/1000 USD × … searches are unmultiplied.
-    expected = int(round(((3.00 + 15.00) * 1.10 + 1.00) * 1_000_000))
+    # (3 + 15) USD au tarif de base du global (multiplicateur 1.0) +
+    # 100 recherches × 10 $/1000 — les recherches ne sont jamais multipliées.
+    expected = int(round(((3.00 + 15.00) * 1.0 + 1.00) * 1_000_000))
     assert micros == expected
     # Unknown model → 0, honestly under-reporting rather than inventing.
     assert vertex.segment_cost_usd_micros(usage, "modele-inconnu") == 0

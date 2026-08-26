@@ -49,10 +49,14 @@ env_variables:
   GRAPH_CLIENT_ID: "988bf117-3aef-463b-8062-7dac226e50d9"
   GRAPH_SENDER_UPN: "reception@poirierlavoie.ca"
   GRAPH_SENDER_NAME: "Réception — Poirier Lavoie, avocat"
-  # Vertex endpoint — multi-region us by default (config.py); the ids and
-  # the regional fallback are recorded here at the ops verification step:
-  #   CHAT_VERTEX_HOST / CHAT_VERTEX_LOCATION /
-  #   CHAT_SONNET_VERTEX_ID / CHAT_OPUS_VERTEX_ID
+  # Vertex endpoint — GLOBAL, verified live 2026-08-26 (user decision): the
+  # spec's multi-region « us » answers 501 UNIMPLEMENTED for these models
+  # and us-east5 404s them — global is the ONLY location that serves
+  # claude-sonnet-5 / claude-opus-5, and it bills at the BASE rate (no
+  # regional premium; CHAT_PRICING.multiregion_multiplier is 1.0). The
+  # bare model aliases are valid there (probed — a 429 quota answer, not a
+  # 404), so no @-versioned CHAT_*_VERTEX_ID override is needed.
+  CHAT_VERTEX_LOCATION: "global"
   OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
   OTEL_EXPORTER_OTLP_TIMEOUT: "5"
   PIP_REQUIRE_HASHES: "1"
