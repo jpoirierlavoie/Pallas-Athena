@@ -56,7 +56,11 @@ env_variables:
   # regional premium; CHAT_PRICING.multiregion_multiplier is 1.0). The
   # bare model aliases are valid there (probed — a 429 quota answer, not a
   # 404), so no @-versioned CHAT_*_VERTEX_ID override is needed.
+  # Anthropic : « global » est la SEULE localisation qui les serve.
   CHAT_VERTEX_LOCATION: "global"
+  # Gemini : Montréal — l'inférence reste en province, donc aucun
+  # transfert hors Québec sur ce chemin (art. 17 Loi 25 sans objet).
+  CHAT_GEMINI_LOCATION: "northamerica-northeast1"
   OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
   OTEL_EXPORTER_OTLP_TIMEOUT: "5"
   PIP_REQUIRE_HASHES: "1"

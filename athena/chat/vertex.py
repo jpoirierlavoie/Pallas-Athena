@@ -44,6 +44,8 @@ import requests
 
 from config import Config
 
+from chat import gemini
+
 ANTHROPIC_VERSION = "vertex-2023-10-16"
 _ERROR_EXCERPT_CHARS = 2000
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
@@ -101,17 +103,40 @@ def model_config(model_key: str) -> dict:
     cfg = Config.CHAT_MODELS.get(model_key)
     if cfg is None:
         raise ChatVertexFatal("unknown_model")
-    if cfg.get("effort") not in Config.VERTEX_EFFORTS:
-        raise ChatVertexFatal("config_effort")
+    provider = cfg.get("provider")
+    if provider == Config.PROVIDER_ANTHROPIC:
+        if cfg.get("effort") not in Config.VERTEX_EFFORTS:
+            raise ChatVertexFatal("config_effort")
+    elif provider == Config.PROVIDER_GOOGLE:
+        budget = cfg.get("thinking_budget")
+        if budget is not None and int(budget) >= int(cfg["max_tokens"]):
+            raise ChatVertexFatal("config_thinking_budget")
+    else:
+        raise ChatVertexFatal("config_provider")
     return cfg
 
 
 def endpoint_url(model_key: str) -> str:
+    """L'URL du modèle — fournisseur, localisation et VERBE en dépendent.
+
+    Anthropic : ``:rawPredict`` en ``global`` (la seule localisation qui
+    les serve). Google : ``:generateContent`` sur l'hôte RÉGIONAL, à
+    Montréal par défaut — oublier le préfixe régional donne un 404 qui se
+    lit à tort comme « modèle absent ».
+    """
     cfg = model_config(model_key)
+    location = str(cfg.get("location") or "global")
+    if cfg.get("provider") == Config.PROVIDER_GOOGLE:
+        return gemini.endpoint_url(
+            host=gemini.host_for(location, Config.CHAT_VERTEX_HOST),
+            project=Config.FIREBASE_PROJECT_ID,
+            location=location,
+            model=cfg["vertex_model_id"],
+        )
     return (
         f"https://{Config.CHAT_VERTEX_HOST}/v1/projects/"
         f"{Config.FIREBASE_PROJECT_ID}/locations/"
-        f"{Config.CHAT_VERTEX_LOCATION}/publishers/anthropic/models/"
+        f"{location}/publishers/anthropic/models/"
         f"{cfg['vertex_model_id']}:rawPredict"
     )
 
@@ -147,16 +172,28 @@ def call_model(
     included.
     """
     cfg = model_config(model_key)
-    body: dict[str, Any] = {
-        "anthropic_version": ANTHROPIC_VERSION,
-        "max_tokens": int(cfg["max_tokens"]),
-        "thinking": {"type": "adaptive", "display": "summarized"},
-        "output_config": {"effort": str(cfg["effort"])},
-        "system": system,
-        "messages": messages,
-    }
-    if tools:
-        body["tools"] = tools
+    google = cfg.get("provider") == Config.PROVIDER_GOOGLE
+    if google:
+        # Gemini : chat/gemini.py traduit dans les DEUX sens, si bien que
+        # le moteur de tour ignore quel fournisseur a répondu.
+        body = gemini.build_body(
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_tokens=int(cfg["max_tokens"]),
+            thinking_budget=cfg.get("thinking_budget"),
+        )
+    else:
+        body = {
+            "anthropic_version": ANTHROPIC_VERSION,
+            "max_tokens": int(cfg["max_tokens"]),
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": str(cfg["effort"])},
+            "system": system,
+            "messages": messages,
+        }
+        if tools:
+            body["tools"] = tools
 
     try:
         response = requests.post(
@@ -204,6 +241,13 @@ def call_model(
         parsed = response.json()
     except ValueError as exc:
         raise ChatVertexFatal("vertex_bad_response", 200) from exc
+    if google:
+        # Normalisé AVANT la validation de forme : celle-ci reste UNE
+        # seule, et le moteur ne voit qu'un contrat.
+        try:
+            parsed = gemini.parse_response(parsed)
+        except Exception as exc:
+            raise ChatVertexFatal("vertex_bad_response", 200) from exc
     if (
         not isinstance(parsed, dict)
         or not isinstance(parsed.get("content"), list)

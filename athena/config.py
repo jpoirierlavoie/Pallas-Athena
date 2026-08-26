@@ -258,8 +258,36 @@ class Config:
     VERTEX_EFFORTS: frozenset = frozenset(
         {"low", "medium", "high", "xhigh", "max"}
     )
+
+    # Le FOURNISSEUR est une propriété du modèle, pas du déploiement : les
+    # deux familles ne partagent ni la forme de requête, ni le verbe
+    # d'endpoint, ni la localisation servie. chat/vertex.py aiguille
+    # dessus ; chat/gemini.py traduit dans les deux sens pour que le
+    # moteur de tour ne sache pas qui a répondu.
+    PROVIDER_ANTHROPIC: str = "anthropic"
+    PROVIDER_GOOGLE: str = "google"
+
+    # ⚠ LA LOCALISATION EST PAR MODÈLE, et ce n'est pas cosmétique.
+    # Anthropic n'est servi qu'en « global » (vérifié : us → 501,
+    # us-east5 → 404) — donc hors Québec, avec l'analyse de transfert de
+    # l'art. 17 Loi 25 que cela déclenche. Gemini, lui, répond à
+    # « northamerica-northeast1 » — MONTRÉAL (vérifié en direct
+    # 2026-08-26, gemini-2.5-pro et 2.5-flash) : l'inférence reste en
+    # province, et le transfert devient sans objet sur ce chemin. C'est le
+    # bénéfice de résidence que la Phase N visait et que Vertex-Claude
+    # n'a jamais pu livrer.
     CHAT_MODELS: dict[str, dict] = {
+        # ── Anthropic — actuellement SANS QUOTA sur ce projet ───────────
+        # Le seau de quota est « anthropic-claude-sonnet » / « -opus », par
+        # FAMILLE et non par version : Sonnet 4, 4.5, 4.6 et 5 tombent tous
+        # dans le même seau, à zéro, et les six demandes d'augmentation ont
+        # été refusées (2026-08-26). Se rabattre sur une génération
+        # antérieure ne contourne donc rien. Les entrées restent — elles
+        # redeviennent utilisables le jour où le quota est accordé, sans
+        # changement de code.
         "claude-sonnet-5": {
+            "provider": PROVIDER_ANTHROPIC,
+            "location": CHAT_VERTEX_LOCATION,
             "vertex_model_id": os.environ.get(
                 "CHAT_SONNET_VERTEX_ID", "claude-sonnet-5"
             ),
@@ -268,6 +296,8 @@ class Config:
             "max_tokens": 16384,
         },
         "claude-opus-5": {
+            "provider": PROVIDER_ANTHROPIC,
+            "location": CHAT_VERTEX_LOCATION,
             "vertex_model_id": os.environ.get(
                 "CHAT_OPUS_VERTEX_ID", "claude-opus-5"
             ),
@@ -275,8 +305,44 @@ class Config:
             "effort": "high",
             "max_tokens": 20480,
         },
+        # ── Google — servis, et servis à Montréal ───────────────────────
+        # ⚠ Ces entrées demandent la MÊME vérification que celle faite pour
+        # Opus 5 : la gouvernance des données du fournisseur. Pour Vertex,
+        # c'est celle de Google (pas d'entraînement sur les données client,
+        # et AUCUNE journalisation requête-réponse — que nous avons
+        # explicitement déclinée). À confirmer à la source avant tout
+        # document réel ; le budget de réflexion, lui, est le levier de
+        # profondeur (l'équivalent d'« effort » chez Anthropic).
+        "gemini-2.5-pro": {
+            "provider": PROVIDER_GOOGLE,
+            "location": os.environ.get(
+                "CHAT_GEMINI_LOCATION", "northamerica-northeast1"
+            ),
+            "vertex_model_id": os.environ.get(
+                "CHAT_GEMINI_PRO_ID", "gemini-2.5-pro"
+            ),
+            "label_fr": "Gemini 2.5 Pro — Montréal (recherche / rédaction)",
+            "thinking_budget": 8192,
+            "max_tokens": 16384,
+        },
+        "gemini-2.5-flash": {
+            "provider": PROVIDER_GOOGLE,
+            "location": os.environ.get(
+                "CHAT_GEMINI_LOCATION", "northamerica-northeast1"
+            ),
+            "vertex_model_id": os.environ.get(
+                "CHAT_GEMINI_FLASH_ID", "gemini-2.5-flash"
+            ),
+            "label_fr": "Gemini 2.5 Flash — Montréal (quotidien)",
+            "thinking_budget": 4096,
+            "max_tokens": 12288,
+        },
     }
-    CHAT_DEFAULT_MODEL: str = "claude-sonnet-5"
+    # Le défaut est le modèle qui RÉPOND aujourd'hui. Le remettre sur
+    # Anthropic est une ligne, le jour où le quota est accordé.
+    CHAT_DEFAULT_MODEL: str = os.environ.get(
+        "CHAT_DEFAULT_MODEL", "gemini-2.5-pro"
+    )
 
     # Chat-side write kill switch — DISTINCT from MCP_WRITE_ENABLED, which is
     # connector-scoped (its consent-screen semantics do not transfer). False →
@@ -343,6 +409,25 @@ class Config:
                 "output_usd_per_mtok": 25.00,
                 "cache_write_usd_per_mtok": 6.25,
                 "cache_read_usd_per_mtok": 0.50,
+            },
+            # Gemini — tarifs Vertex du palier ≤ 200 k jetons de contexte,
+            # À CONFIRMER à la page de tarification de Google : au-delà de
+            # ce palier, le tarif d'entrée monte, et une facture calculée
+            # sous-estimerait alors la dépense. Aucun coût de recherche web
+            # ici — l'ancrage Google n'est pas câblé (chat/gemini.py). Le
+            # cache implicite de Gemini n'a pas d'écriture facturée : la
+            # clé d'écriture est à zéro, ce qui est vrai et non un oubli.
+            "gemini-2.5-pro": {
+                "input_usd_per_mtok": 1.25,
+                "output_usd_per_mtok": 10.00,
+                "cache_write_usd_per_mtok": 0.0,
+                "cache_read_usd_per_mtok": 0.31,
+            },
+            "gemini-2.5-flash": {
+                "input_usd_per_mtok": 0.30,
+                "output_usd_per_mtok": 2.50,
+                "cache_write_usd_per_mtok": 0.0,
+                "cache_read_usd_per_mtok": 0.075,
             },
         },
     }

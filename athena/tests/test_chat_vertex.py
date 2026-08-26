@@ -115,12 +115,45 @@ def test_unknown_model_and_bad_effort_fail_preflight(monkeypatch):
     assert excinfo.value.reason == "config_effort"
 
 
-def test_every_allowlisted_model_declares_a_valid_effort():
-    # Derived, not listed: a model added without an effort level fails here
-    # instead of at the first live call.
+def test_every_allowlisted_model_is_completely_declared():
+    """Dérivé, jamais listé : un modèle ajouté sans son bouton de
+    profondeur échoue ici plutôt qu'au premier appel réel. La règle est
+    PAR FOURNISSEUR — « effort » chez Anthropic, « thinking_budget » chez
+    Google — parce que les deux surfaces de requête n'ont rien en commun.
+    """
     for key, cfg in Config.CHAT_MODELS.items():
-        assert cfg.get("effort") in Config.VERTEX_EFFORTS, key
+        assert cfg["provider"] in (
+            Config.PROVIDER_ANTHROPIC,
+            Config.PROVIDER_GOOGLE,
+        ), key
         assert int(cfg["max_tokens"]) > 0, key
+        assert cfg.get("location"), key
+        assert cfg.get("vertex_model_id"), key
+        assert key in Config.CHAT_PRICING["models"], key
+        if cfg["provider"] == Config.PROVIDER_ANTHROPIC:
+            assert cfg.get("effort") in Config.VERTEX_EFFORTS, key
+        else:
+            assert int(cfg["thinking_budget"]) < int(cfg["max_tokens"]), key
+
+
+def test_le_modele_par_defaut_est_dans_l_allowlist():
+    assert Config.CHAT_DEFAULT_MODEL in Config.CHAT_MODELS
+
+
+def test_anthropic_reste_en_global_et_gemini_a_montreal():
+    """La localisation est PAR MODÈLE, et c'est porteur juridiquement.
+
+    Anthropic n'est servi qu'en « global » — hors Québec, donc transfert
+    au sens de l'art. 17 Loi 25. Gemini répond à Montréal : l'inférence
+    reste en province, et le transfert devient sans objet sur ce chemin.
+    Un modèle Gemini basculé en « global » perdrait ce bénéfice EN
+    SILENCE — d'où l'épingle.
+    """
+    for key, cfg in Config.CHAT_MODELS.items():
+        if cfg["provider"] == Config.PROVIDER_ANTHROPIC:
+            assert cfg["location"] == "global", key
+        else:
+            assert cfg["location"] == "northamerica-northeast1", key
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 529])
