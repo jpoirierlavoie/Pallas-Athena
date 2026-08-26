@@ -44,6 +44,7 @@ from dav.sync import (
 from models import portail_invitation as pi
 from models.document import (
     ALLOWED_EXTENSIONS,
+    CATEGORY_CHOICES,
     CATEGORY_LABELS,
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
@@ -487,7 +488,8 @@ def index():
     return render_template(
         "reception/index.html",
         dossiers=list_dossiers(status_filter="actif") if onglet == "documents" else [],
-        category_labels=CATEGORY_LABELS,
+        # The versement select is an INPUT: CHOICES, not LABELS.
+        category_choices=CATEGORY_CHOICES,
         **contexte,
     )
 

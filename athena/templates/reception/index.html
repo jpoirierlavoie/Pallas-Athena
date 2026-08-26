@@ -146,7 +146,7 @@
                   <div>
                     <label class="block text-xs text-gray-500 mb-1">Catégorie</label>
                     <select name="category" class="rounded-lg border border-gray-300 px-2 py-1.5 text-sm">
-                      {% for cle, libelle in category_labels.items() %}
+                      {% for cle, libelle in category_choices.items() %}
                       <option value="{{ cle }}" {% if cle == "pièce" %}selected{% endif %}>{{ libelle }}</option>
                       {% endfor %}
                     </select>

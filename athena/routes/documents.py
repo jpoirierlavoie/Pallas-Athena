@@ -27,6 +27,7 @@ from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
 from models.document import (
     ALLOWED_EXTENSIONS,
+    CATEGORY_CHOICES,
     CATEGORY_LABELS,
     MAX_FILE_SIZE,
     VALID_CATEGORIES,
@@ -278,7 +279,10 @@ def document_upload_form() -> str:
         "documents/upload.html",
         dossier=dossier,
         dossiers=list_dossiers(),
-        category_labels=CATEGORY_LABELS,
+        # CHOICES, not LABELS: this is an INPUT form, and the legacy
+        # « procès_verbal » is no longer offered at creation. The edit form
+        # and the list filter keep the complete map — see the constant.
+        category_choices=CATEGORY_CHOICES,
         folder_id=folder_id,
         folder_breadcrumb=folder_breadcrumb,
         errors=[],

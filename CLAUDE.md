@@ -1209,8 +1209,24 @@ A dossier may have **multiple protocols** over its lifetime, but **at most one `
     "file_type": str,                     # MIME type
     "file_size": int,                     # bytes (max 200 MB since 2026-08-12)
     "storage_path": "users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}",
-    "category": "procédure" | "pièce" | "correspondance" | "preuve"
-              | "jugement" | "entente" | "note" | "autre",
+    # 13 valeurs (models/document.VALID_CATEGORIES fait foi — cette liste
+    # était périmée jusqu'au 2026-08-26 : « entente » et « note » ne sont
+    # PAS des valeurs, ce sont les deux SOURCES de _CATEGORY_MIGRATION,
+    # repliées sur « autre » à la lecture).
+    "category": "procédure" | "pièce" | "jugement" | "correspondance"
+              | "déboursé" | "facture" | "preuve"
+              # « procès_verbal » est HÉRITÉ depuis la scission du
+              # 2026-08-26 : toujours valide, lisible et filtrable, mais
+              # retiré des sélecteurs de SAISIE (CATEGORY_CHOICES). Les
+              # deux successeurs ont des mentions obligatoires disjointes
+              # — art. 119 C.p.c. pour l'un, aucune disposition pour
+              # l'autre, qui peut en revanche PORTER le jugement.
+              # ⚠ « procès_verbal » est un PRÉFIXE STRICT des deux :
+              # égalité stricte / accès par dict SEULEMENT (le piège
+              # « conférence » de hearing_type).
+              | "procès_verbal"
+              | "procès_verbal_signification" | "procès_verbal_audience"
+              | "transcription" | "mandat" | "autre",
     "description": str,
     "tags": list[str],
     "document_date": datetime | None,     # July 2026 — the DOCUMENT's own

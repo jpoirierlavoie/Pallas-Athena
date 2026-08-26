@@ -118,6 +118,8 @@ VALID_CATEGORIES = (
     "facture",
     "preuve",
     "procès_verbal",
+    "procès_verbal_signification",
+    "procès_verbal_audience",
     "transcription",
     "mandat",
     "autre",
@@ -133,9 +135,38 @@ CATEGORY_LABELS = {
     "facture": "Facture",
     "preuve": "Preuve",
     "procès_verbal": "Procès-verbal",
+    "procès_verbal_signification": "Procès-verbal de signification",
+    "procès_verbal_audience": "Procès-verbal d'audience",
     "transcription": "Transcription",
     "mandat": "Mandat",
     "autre": "Autre",
+}
+
+# The categories OFFERED AT INPUT — the labels minus the legacy
+# « procès_verbal », split in two on 2026-08-26 because the two documents
+# share nothing: a signification PV is drawn by a huissier under oath and
+# art. 119 C.p.c. closes its list of mentions; an audience PV is the
+# clerk's record of what happened and may CARRY the judgment itself. One
+# key could not express two disjoint sets of expected fields.
+#
+# ⚠ This is NOT the render vocabulary. `CATEGORY_LABELS` stays complete
+# and is what the EDIT form and the list filter iterate: a legacy document
+# still carrying « procès_verbal » must keep a selected option, or the
+# browser falls back to the first one (« procédure ») and the next
+# innocuous metadata save REWRITES the category in silence — the exact
+# reclassification this split exists to avoid, introduced by the split
+# itself. Reclassing is a human gesture, one document at a time, for ever
+# (no bulk pass: « aucune capacité de suppression » forbids overwriting a
+# classification the lawyer made).
+#
+# The legacy key is deliberately NOT in `_CATEGORY_MIGRATION`: folding it
+# would have to GUESS between signification and audience, and the
+# migration table's own invariant (a source key is never still valid)
+# forbids it anyway.
+CATEGORY_CHOICES = {
+    key: label
+    for key, label in CATEGORY_LABELS.items()
+    if key != "procès_verbal"
 }
 
 # Removed category keys → live key, applied ON READ (_migrate_category),

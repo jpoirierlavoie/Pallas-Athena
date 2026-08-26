@@ -45,6 +45,85 @@ def test_mcp_document_enum_matches_model():
     )
 
 
+# ── La scission de « procès_verbal » (2026-08-26) ───────────────────────
+
+_LEGACY_PV = "procès_verbal"
+_NOUVEAUX_PV = ("procès_verbal_signification", "procès_verbal_audience")
+
+
+def test_les_deux_nouveaux_proces_verbaux_sont_vivants():
+    for cle in _NOUVEAUX_PV:
+        assert cle in doc.VALID_CATEGORIES, cle
+        assert cle in doc.CATEGORY_LABELS, cle
+
+
+def test_le_selecteur_de_saisie_exclut_la_valeur_heritee():
+    # « plus offert à la création, toujours lisible et filtrable ».
+    assert _LEGACY_PV not in doc.CATEGORY_CHOICES
+    for cle in _NOUVEAUX_PV:
+        assert cle in doc.CATEGORY_CHOICES, cle
+
+
+def test_la_valeur_heritee_reste_valide_et_filtrable():
+    # Elle n'est PAS repliée : replier exigerait de deviner entre
+    # signification et audience, et test_migration_table_is_well_formed
+    # interdit qu'une source de migration soit encore valide.
+    assert _LEGACY_PV in doc.VALID_CATEGORIES
+    assert _LEGACY_PV in doc.CATEGORY_LABELS
+    assert _LEGACY_PV not in doc._CATEGORY_MIGRATION
+    assert doc._migrate_category({"category": _LEGACY_PV})["category"] == _LEGACY_PV
+
+
+def test_choices_est_labels_moins_la_seule_valeur_heritee():
+    # Dérivé, pas recopié : une valeur ajoutée à LABELS entre dans CHOICES
+    # sans qu'on y pense, et l'écart reste exactement d'une clé.
+    assert set(doc.CATEGORY_LABELS) - set(doc.CATEGORY_CHOICES) == {_LEGACY_PV}
+
+
+def test_le_formulaire_d_edition_rend_toutes_les_categories_valides():
+    """Le piège mortel de la scission, épinglé.
+
+    `edit.html` construit son <select> en itérant la map qu'on lui passe.
+    Servi avec la liste amputée, un document héritant de « procès_verbal »
+    n'aurait AUCUNE option sélectionnée — le navigateur retiendrait la
+    première (« procédure ») et la prochaine sauvegarde anodine réécrirait
+    la catégorie EN SILENCE : la reclassification que la scission existe
+    pour éviter, introduite par la scission elle-même.
+    """
+    import re
+    from pathlib import Path
+
+    gabarits = Path(__file__).resolve().parent.parent / "templates"
+    rend_tout = ("documents/edit.html", "documents/list.html")
+    saisie = ("documents/upload.html", "reception/index.html")
+    for nom in rend_tout:
+        src = (gabarits / nom).read_text(encoding="utf-8")
+        assert re.search(r"category_labels\.items\(\)", src), nom
+        assert "category_choices.items()" not in src, nom
+    for nom in saisie:
+        src = (gabarits / nom).read_text(encoding="utf-8")
+        assert re.search(r"category_choices\.items\(\)", src), nom
+        assert "category_labels.items()" not in src, nom
+
+
+def test_les_trois_dicts_de_couleurs_couvrent_le_vocabulaire():
+    """Les trois `category_colors` sont écrits à la main et aucun test ne
+    les couvrait : une valeur neuve rendait un badge gris avec le bon
+    libellé, et la suite restait verte."""
+    import re
+    from pathlib import Path
+
+    gabarits = Path(__file__).resolve().parent.parent / "templates"
+    for nom in ("documents/detail.html",
+                "documents/_browser.html",
+                "dossiers/_tab_documents.html"):
+        src = (gabarits / nom).read_text(encoding="utf-8")
+        bloc = src.split("category_colors", 1)[1].split("%}", 1)[0]
+        cles = set(re.findall(r"'([^']+)':", bloc))
+        manquantes = set(doc.VALID_CATEGORIES) - cles
+        assert not manquantes, f"{nom}: {sorted(manquantes)}"
+
+
 # ── document_date (PA-G03) ──────────────────────────────────────────────
 
 

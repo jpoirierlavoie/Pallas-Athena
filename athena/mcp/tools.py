@@ -474,6 +474,7 @@ _TASK_STATUSES = ["à_faire", "en_cours", "terminée", "annulée"]
 _DOCUMENT_CATEGORIES = [
     "procédure", "pièce", "jugement", "correspondance",
     "déboursé", "facture", "preuve", "procès_verbal",
+    "procès_verbal_signification", "procès_verbal_audience",
     "transcription", "mandat", "autre",
 ]
 _CONTACT_ROLES = [
