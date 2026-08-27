@@ -360,7 +360,7 @@ def test_end_turn_finalizes_with_counters_and_stamps(world):
     # The request itself: charter first in system, tools carry the trailing
     # cache breakpoint, the user message closes the array.
     request = world.vertex.calls[0]
-    assert request["system"][0]["text"].startswith("Tu es l'assistant")
+    assert request["system"][0]["text"].startswith(turn_engine.charter.SOCLE.strip())
     assert request["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert request["messages"][-1] == {
         "role": "user",

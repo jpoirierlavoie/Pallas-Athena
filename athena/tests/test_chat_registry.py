@@ -539,7 +539,7 @@ def test_system_blocks_stable_order_and_trailing_cache_control():
     ]
     blocks = charter.system_blocks(skills)
     # Charter first; skills sorted by id; blank-bodied skill dropped.
-    assert blocks[0]["text"].startswith("Tu es l'assistant juridique")
+    assert blocks[0]["text"].startswith(charter.SOCLE.strip())
     assert "corps A" in blocks[1]["text"]
     assert "corps B" in blocks[2]["text"]
     assert len(blocks) == 3
@@ -610,65 +610,73 @@ _SHA_ADDENDUM = "9f4d69b1c64952db84ec2a55b8f1944566f6e8dd8c85cdfe5035ab2fad5c352
 
 
 
-def test_the_source_charter_bytes_are_frozen():
-    """« 1 » identifie CES octets, pour tous les tours déjà au registre.
+def test_the_fallback_text_mirrors_the_socle_and_the_seed():
+    """Le repli ne peut plus contredire la charte en vigueur.
 
-    Un test de sous-chaîne (« markdown in BASE_CHARTER ») ne l'attraperait
-    pas : seule une empreinte le fait. Le texte source n'est plus versionné
-    à la main — il est le plancher du repli, et l'éditer ferait mentir le
-    registre sur son passé. Une correction se fait à l'écran, ce qui frappe
-    une version Firestore.
+    BASE_CHARTER était un littéral gelé par sha, pour que
+    « charter_version: 1 » identifie des octets fixes. Il est DÉRIVÉ
+    depuis le 2026-08-27 : un repli qui sert un texte périmé — ancien
+    registre, anciennes règles — dégrade en silence sur le FOND, pas
+    seulement sur le numéro. Le prix a été mesuré avant d'être payé :
+    quatre tours du registre portent 1, tous antérieurs au lot.
+
+    Ce qui reste vrai de « 1 » : c'est le texte source du commit
+    déployé, résoluble par git — pas par un hachage épinglé ici.
     """
-    import hashlib
-
     assert charter.SOURCE_CHARTER_VERSION == 1
-    assert (
-        hashlib.sha256(charter.BASE_CHARTER.encode("utf-8")).hexdigest()
-        == _SHA_BASE
-    )
-    assert (
-        hashlib.sha256(charter.SCHEDULED_ADDENDUM.encode("utf-8")).hexdigest()
-        == _SHA_ADDENDUM
-    )
+    assert charter.SOCLE.strip() in charter.BASE_CHARTER
+    assert charter.SEED_CORPS.strip() in charter.BASE_CHARTER
+    # Le repli est un texte COMPLET : socle + règles de travail.
+    for section in ("DEVOIRS ÉPISTÉMIQUES", "DONNÉES PRIVILÉGIÉES",
+                    "RÈGLES DE SORTIE", "DISCIPLINE D'ÉCRITURE"):
+        assert section in charter.BASE_CHARTER, section
 
 
 def _sections(texte):
-    """{TITRE EN CAPITALES: [puces]} — la structure, pas la prose."""
+    """{TITRE EN CAPITALES: corps} — la structure, pas la prose.
+
+    Le socle est passé en PROSE le 2026-08-27 : compter des puces ne
+    veut plus rien dire. On mesure la LONGUEUR de chaque section, ce
+    qui attrape encore la suppression d'une règle sur deux — ce
+    qu'une simple sous-chaîne laisse passer.
+    """
     out, courante = {}, None
     for ligne in texte.splitlines():
         depouille = ligne.strip()
         if not depouille:
             continue
-        if depouille.startswith("- "):
-            if courante is not None:
-                out[courante].append(depouille[2:])
-        elif depouille == depouille.upper():
+        if depouille == depouille.upper() and len(depouille) > 3:
             courante = depouille
             out[courante] = []
-    return out
+        elif courante is not None:
+            out[courante].append(depouille)
+    return {k: " ".join(v) for k, v in out.items()}
+
 
 def test_the_socle_still_carries_every_guarantee_it_exists_for():
     """L'égalité avec BASE_CHARTER a été retirée le 2026-08-27, à dessein.
 
-    Elle prouvait que la SCISSION ne changeait aucune règle ; cette preuve
-    est faite. Le socle a ensuite commencé à évoluer pour son compte — ce
-    qui est exactement ce à quoi sert un texte sous revue de code, et ce
-    qu'une égalité figée aurait interdit.
+    Elle prouvait que la SCISSION ne changeait aucune règle ; cette
+    preuve est faite. Le socle a ensuite évolué pour son compte — ce
+    qui est exactement ce à quoi sert un texte sous revue de code, et
+    ce qu'une égalité figée aurait interdit.
 
     Reste ce pour quoi le socle existe : il ne peut pas être vide (sans
     quoi le bloc 0 le serait, et Vertex répondrait 400 sur TOUTES les
     conversations), et il porte encore les garanties qu'un lapsus à
-    l'écran ne doit pas pouvoir retirer. Les ancres sont des IDENTIFIANTS
-    d'outils et des titres de section, pas la prose autour — celle-ci peut
-    se retoucher sans faire rougir la suite.
+    l'écran ne doit pas pouvoir retirer.
     """
     assert len(charter.SOCLE.strip()) > 500
     sections = _sections(charter.SOCLE)
     assert set(sections) == {"DEVOIRS ÉPISTÉMIQUES", "DONNÉES PRIVILÉGIÉES"}
-    # Le COMPTE de règles par section, pas seulement leur présence : une
-    # sous-chaîne survit à la suppression d'une puce sur deux.
-    assert len(sections["DEVOIRS ÉPISTÉMIQUES"]) == 4
-    assert len(sections["DONNÉES PRIVILÉGIÉES"]) == 3
+    # La LONGUEUR par section attrape une perte MASSIVE — une section
+    # vidée, une règle entière tombée. Elle n'attrape PAS le retrait
+    # d'une phrase (mesuré : −42 caractères passent), et rien ici ne le
+    # peut sans épingler la prose, ce qui interdirait au socle d'être
+    # retouché. Le contrôle premier reste la revue de code ; ceci en est
+    # le filet, pas le juge.
+    assert len(sections["DEVOIRS ÉPISTÉMIQUES"]) > 400
+    assert len(sections["DONNÉES PRIVILÉGIÉES"]) > 400
     for ancre in ("legislation_*", "jurisprudence_*", "web_search",
                   "get_document_text", "suppression"):
         assert ancre in charter.SOCLE, ancre
@@ -689,20 +697,25 @@ def test_the_socle_vouvoie_throughout():
         assert tutoiement not in charter.SOCLE, tutoiement
 
 
-def test_the_source_path_is_never_normalised():
-    """Deux chemins de jointure, et c'est délibéré.
+def test_one_join_path_for_every_version():
+    """Il y en a eu DEUX, tant que les octets de la v1 étaient gelés.
 
-    Normaliser le joint sur le chemin SOURCE changerait les octets de la
-    v1 — et « 1 » cesserait d'identifier ce que les tours déjà au registre
-    ont réellement vu.
+    Ils ne le sont plus : un seul joint explicite sert les deux, et un
+    corps sans saut final ne colle plus l'addendum à son dernier
+    paragraphe — des deux côtés.
     """
     source = charter.source_charter()
     assert charter.charter_text(source) == charter.BASE_CHARTER
-    assert charter.charter_text(source, scheduled=True) == (
-        charter.BASE_CHARTER + charter.SCHEDULED_ADDENDUM
-    )
-    # Sans argument : le texte source, comme avant le lot.
     assert charter.charter_text() == charter.BASE_CHARTER
+    autre = {"version": 9, "body": "CORPS", "addendum": "PLANIFIÉ",
+             "files": []}
+    for resolue in (source, autre):
+        texte = charter.charter_text(resolue, scheduled=True)
+        corps = str(resolue["body"]).rstrip()
+        assert texte.startswith(corps)
+        # Exactement une ligne blanche entre le corps et l'addendum.
+        reste = texte[len(corps):]
+        assert reste.startswith(chr(10) * 2) and reste[2] != chr(10)
 
 
 def test_a_firestore_charter_gets_the_socle_and_an_explicit_join():

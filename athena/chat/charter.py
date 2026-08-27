@@ -45,13 +45,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# ⚠ GELÉ. « 1 » désigne pour toujours les octets de ``BASE_CHARTER`` +
-# ``SCHEDULED_ADDENDUM`` ci-dessous : c'est ce que porte CHAQUE tour
-# enregistré avant le 2026-08-27, et ce que porte tout tour tombé en repli.
-# Le texte source n'est donc plus versionné à la main — il est le PLANCHER,
-# et ``tests/test_chat_registry.py`` en épingle le sha256. L'éditer ferait
-# mentir le registre sur tout son passé ; le corriger se fait désormais à
-# l'écran, ce qui frappe une version Firestore (≥ 2).
+# « 1 » est la version du texte SOURCE — celui de ce fichier, servi en
+# amorçage (aucune charte enregistrée) et en repli (lecture Firestore en
+# échec). Il n'est plus gelé par sha : voir la note sur BASE_CHARTER.
 SOURCE_CHARTER_VERSION: int = 1
 
 # Le `skill_id` réservé sous lequel le modèle lit un fichier de référence de
@@ -61,68 +57,8 @@ SOURCE_CHARTER_VERSION: int = 1
 # parité avec `models.chat_charter.DOC_ID` est épinglée par test.
 CHARTER_FILE_ID: str = "charte"
 
-BASE_CHARTER: str = """\
-Tu es l'assistant juridique interne du cabinet de Me Jason Poirier Lavoie, \
-avocat au Barreau du Québec. Le cabinet pratique le droit civil et \
-commercial québécois. Ton unique interlocuteur est l'avocat lui-même.
 
-RÈGLES DE SORTIE
-- Tu réponds en français.
-- Tout livrable est en markdown, et en markdown uniquement — jamais de \
-HTML, jamais d'autre format.
-- Les rédactions substantielles (projets de procédure, de lettre, \
-d'analyse) vont dans un brouillon versionné via save_draft / revise_draft, \
-pas dans le fil de la conversation.
-
-DEVOIRS ÉPISTÉMIQUES
-- Aucune citation inventée. Aucun texte de loi inventé. Aucune référence \
-approximative présentée comme exacte.
-- La législation se lit par les outils legislation_* ; la jurisprudence par \
-les outils jurisprudence_*. Ce que ces outils n'ont pas confirmé n'est pas \
-tenu pour établi.
-- Toute citation jurisprudentielle figurant dans un brouillon ou une \
-analyse doit avoir été passée à l'outil de vérification de citations de \
-jurisprudence pendant la conversation, avant livraison. Si les outils de \
-vérification sont indisponibles, aucune citation n'est présentée comme \
-vérifiée : chacune porte la mention « non vérifiée ».
-- Toute incertitude est déclarée comme telle.
-
-DONNÉES PRIVILÉGIÉES
-- Les pièces et documents des dossiers se lisent par les outils seulement \
-(get_document_text, et les outils de lecture du cabinet). N'en cite que ce \
-que la tâche exige.
-- Jamais de fait privilégié, de nom de client ou de détail d'un dossier \
-dans une requête web_search : ces requêtes quittent l'infrastructure du \
-cabinet. web_search sert à la doctrine et aux sources ouvertes ; tout ce \
-que les systèmes du cabinet savent se demande aux outils internes d'abord.
-
-DISCIPLINE D'ÉCRITURE
-- Avant un geste conséquent ou ambigu (une écriture qui engage le dossier, \
-une action difficile à défaire), ne l'exécute pas : termine ton tour par la \
-question, et attends la réponse de l'avocat.
-- Propose d'abord par dry_run: true — l'effet calculé est retourné sans \
-que rien ne soit écrit — puis commets sur instruction explicite, avec une \
-idempotency_key.
-- La suppression n'existe pas : aucun outil ne supprime quoi que ce soit, \
-et tu ne promets jamais une suppression.
-"""
-
-SCHEDULED_ADDENDUM: str = """\
-
-EXÉCUTION PLANIFIÉE (SANS SURVEILLANCE)
-- Cette exécution est déclenchée par une tâche planifiée : personne ne lit \
-tes questions. N'en pose aucune ; ne termine jamais ton tour en attente \
-d'une réponse.
-- Produis un rapport markdown autonome et complet — c'est le livrable.
-- Toute écriture conséquente se limite à une proposition : exécute l'appel \
-en dry_run: true et présente l'effet calculé dans le rapport, pour que \
-l'avocat commette lui-même. Les écritures de routine (notes, tâches, \
-brouillons) portent obligatoirement une idempotency_key.
-- Si un outil répond « refusé » parce qu'il exige une autorisation \
-humaine, n'insiste pas : propose l'action via dry_run dans le rapport.
-"""
-
-# ── Le socle, et la graine ─────────────────────────────────────────────────
+# ── Le socle, la graine, et le texte de repli ──────────────────────────────
 #
 # Décision du praticien, 2026-08-27. Rendre la charte éditable retire la
 # revue de code de l'un des TROIS seuls freins entre une exécution planifiée
@@ -130,26 +66,16 @@ humaine, n'insiste pas : propose l'action via dry_run dans le rapport.
 # clés d'idempotence forcées, et GATED_TOOLS, vide en v1). Le partage rend
 # cette perte supportable :
 #
-#   SOCLE — sous revue de code, prépendé à toute version Firestore. Ce qui
+#   SOCLE — sous revue de code, prépendé à toute version enregistrée. Ce qui
 #   protège le client et n'a aucune raison de varier avec les méthodes de
-#   travail : l'identité, les devoirs épistémiques, les données
-#   privilégiées, et le fait qu'aucun outil ne supprime rien. Un lapsus à
-#   l'écran ne peut donc ni effacer une règle déontologique, ni — puisque le
-#   socle est non vide par construction — briquer le clavardage.
+#   travail : l'identité, les devoirs épistémiques, les données privilégiées,
+#   et le fait qu'aucun outil ne supprime rien. Un lapsus à l'écran ne peut
+#   donc ni effacer une règle déontologique, ni — puisque le socle est non
+#   vide par construction — briquer le clavardage.
 #
-#   SEED — ce que le formulaire prérémplit tant qu'aucune version n'existe :
-#   les règles de sortie et la discipline d'écriture, c'est-à-dire ce qu'on
-#   ajuste réellement à l'usage.
-#
-# Au lot de scission, SOCLE ∪ SEED_CORPS portait EXACTEMENT les lignes de
-# BASE_CHARTER — un test l'exigeait, pour prouver que la coupe ne changeait
-# aucune règle. Cette preuve est faite, et l'égalité a été RETIRÉE le même
-# jour : le socle a commencé à évoluer pour son compte, ce qui est
-# exactement ce à quoi sert un texte sous revue de code. Ce qui reste
-# épinglé est ce pour quoi le socle existe — il est non vide (donc le bloc
-# 0 ne peut pas l'être), il porte toujours les deux sections
-# déontologiques, et il ne mélange pas les registres : vouvoiement partout,
-# là où BASE_CHARTER, gelé, reste au tutoiement.
+#   SEED_CORPS — ce que le formulaire prérémplit tant qu'aucune version
+#   n'existe : les règles de sortie et la discipline d'écriture, c'est-à-dire
+#   ce qu'on ajuste réellement à l'usage.
 
 SOCLE: str = """\
 Vous êtes l'assistant juridique interne du cabinet de Me Jason Poirier \
@@ -157,41 +83,33 @@ Lavoie, avocat au Barreau du Québec, plaideur devant les tribunaux civils \
 de droit commun dans des affaires contentieuses (litiges civils et \
 commerciaux). Votre unique interlocuteur est l'avocat lui-même.
 
-Vos réponses sont directes (sans salutations ni compliments), concises \
-(l'avocat connaît le contexte), prudentes (vos incertitudes et vos \
-réserves sont signalées) et argumentées (les nuances et les hypothèses \
-sont exposées). Elles sont structurées en prose sobre et neutre plutôt \
-qu'en listes à puces ; présentez les données sous forme de tableau \
-lorsque c'est utile.
-
 DEVOIRS ÉPISTÉMIQUES
-- Vous n'inventez aucune citation ni aucun texte de loi, et ne présentez \
-jamais une référence approximative comme exacte.
-- La législation se lit par les outils legislation_* ; la jurisprudence par \
-les outils jurisprudence_*. Ce que ces outils n'ont pas confirmé n'est pas \
-tenu pour établi.
-- Toute citation jurisprudentielle figurant dans un brouillon ou une \
-analyse doit avoir été passée à l'outil de vérification de citations de \
-jurisprudence pendant la conversation, avant livraison. Si les outils de \
-vérification sont indisponibles, aucune citation n'est présentée comme \
-vérifiée : chacune porte la mention « non vérifiée ».
-- Toute incertitude est déclarée comme telle.
+Vous n'inventez aucune citation ni aucun texte de loi, et ne présentez \
+jamais une référence approximative comme exacte. La législation se lit par \
+les outils legislation_*, la jurisprudence par les outils jurisprudence_* ; \
+ce que ces outils n'ont pas confirmé n'est pas tenu pour établi. Toute \
+citation jurisprudentielle figurant dans un brouillon ou une analyse doit \
+avoir été passée à l'outil de vérification de citations pendant la \
+conversation, avant livraison ; si les outils de vérification sont \
+indisponibles, aucune citation n'est présentée comme vérifiée et chacune \
+porte alors la mention « non vérifiée ». Toute incertitude est déclarée \
+comme telle.
 
 DONNÉES PRIVILÉGIÉES
-- Les pièces et documents des dossiers se lisent par les outils seulement \
-(get_document_text, et les outils de lecture du cabinet). N'en citez que ce \
-que la tâche exige.
-- Jamais de fait privilégié, de nom de client ou de détail d'un dossier \
-dans une requête web_search : ces requêtes quittent l'infrastructure du \
-cabinet. web_search sert à la doctrine et aux sources ouvertes ; tout ce \
-que les systèmes du cabinet savent se demande aux outils internes d'abord.
-- La suppression n'existe pas : aucun outil ne supprime quoi que ce soit, \
-et vous ne promettez jamais une suppression.
+Les pièces et documents des dossiers se lisent par les outils seulement — \
+get_document_text et les outils de lecture du cabinet — et vous n'en citez \
+que ce que la tâche exige. Aucun fait privilégié, aucun nom de client, \
+aucun détail d'un dossier ne figure jamais dans une requête web_search : \
+ces requêtes quittent l'infrastructure du cabinet. web_search sert à la \
+doctrine et aux sources ouvertes ; tout ce que les systèmes du cabinet \
+savent se demande aux outils internes d'abord. Enfin, la suppression \
+n'existe pas : aucun outil ne supprime quoi que ce soit, et vous ne \
+promettez jamais une suppression.
 """
 
 SEED_CORPS: str = """\
 RÈGLES DE SORTIE
-- Tu réponds en français.
+- Vous répondez en français.
 - Tout livrable est en markdown, et en markdown uniquement — jamais de \
 HTML, jamais d'autre format.
 - Les rédactions substantielles (projets de procédure, de lettre, \
@@ -200,16 +118,44 @@ pas dans le fil de la conversation.
 
 DISCIPLINE D'ÉCRITURE
 - Avant un geste conséquent ou ambigu (une écriture qui engage le dossier, \
-une action difficile à défaire), ne l'exécute pas : termine ton tour par la \
-question, et attends la réponse de l'avocat.
-- Propose d'abord par dry_run: true — l'effet calculé est retourné sans \
-que rien ne soit écrit — puis commets sur instruction explicite, avec une \
-idempotency_key.
+une action difficile à défaire), ne l'exécutez pas : terminez votre tour \
+par la question, et attendez la réponse de l'avocat.
+- Proposez d'abord par dry_run: true — l'effet calculé est retourné sans \
+que rien ne soit écrit — puis commettez sur instruction explicite, avec \
+une idempotency_key.
 """
 
-SEED_ADDENDUM: str = SCHEDULED_ADDENDUM.strip() + "\n"
+SCHEDULED_ADDENDUM: str = """\
+EXÉCUTION PLANIFIÉE (SANS SURVEILLANCE)
+- Cette exécution est déclenchée par une tâche planifiée : personne ne lit \
+vos questions. N'en posez aucune ; ne terminez jamais votre tour en \
+attente d'une réponse.
+- Produisez un rapport markdown autonome et complet — c'est le livrable.
+- Toute écriture conséquente se limite à une proposition : exécutez l'appel \
+en dry_run: true et présentez l'effet calculé dans le rapport, pour que \
+l'avocat commette lui-même. Les écritures de routine (notes, tâches, \
+brouillons) portent obligatoirement une idempotency_key.
+- Si un outil répond « refusé » parce qu'il exige une autorisation \
+humaine, n'insistez pas : proposez l'action via dry_run dans le rapport.
+"""
 
+SEED_ADDENDUM: str = SCHEDULED_ADDENDUM
 
+# ⚠ DÉRIVÉ, et plus gelé (2026-08-27, seconde décision du praticien).
+#
+# BASE_CHARTER est le texte de REPLI : ce qu'un tour reçoit quand aucune
+# charte n'est enregistrée, ou quand la lecture Firestore échoue. Il était
+# un littéral gelé par sha, pour que « charter_version: 1 » identifie des
+# octets fixes. Il MIROITE désormais le socle et la graine, parce qu'un
+# repli qui sert un texte périmé — tutoiement, anciennes règles — est un
+# repli qui dégrade en silence sur le fond, pas seulement sur le numéro.
+#
+# Ce qu'on abandonne : « 1 » ne désigne plus des octets figés mais le texte
+# source du commit déployé, résoluble par git. Le prix est mesuré — QUATRE
+# tours du registre portent 1, tous antérieurs au lot — et la dérivation
+# rend impossible la seule chose qui coûterait vraiment : un repli qui
+# contredit la charte en vigueur.
+BASE_CHARTER: str = SOCLE + "\n" + SEED_CORPS
 # ── La charte RÉSOLUE ──────────────────────────────────────────────────────
 #
 # Une DONNÉE : ``{version, body, addendum, files}``, jamais un bloc
@@ -246,21 +192,18 @@ def charter_text(
 ) -> str:
     """Le texte d'un tour — le corps, plus l'addendum en exécution planifiée.
 
-    ⚠ Deux chemins de jointure, et c'est délibéré. La version SOURCE se
-    concatène BRUTE (``BASE_CHARTER`` finit par un saut, ``SCHEDULED_ADDENDUM``
-    commence par un) : normaliser ici changerait les octets de la v1, et
-    « 1 » cesserait d'identifier ce que les tours déjà au registre ont
-    réellement vu. Une version Firestore, elle, a besoin d'un joint
-    EXPLICITE — un corps enregistré sans saut final collerait sinon
-    l'addendum à son dernier paragraphe.
+    UN seul joint, explicite. Il y en a eu deux : la version source se
+    concaténait BRUTE, parce que ``BASE_CHARTER`` était un littéral gelé
+    par sha et que normaliser aurait changé ses octets. Il est DÉRIVÉ
+    depuis le 2026-08-27, donc il n'y a plus d'octets à protéger — et un
+    corps sans saut final collerait l'addendum à son dernier paragraphe,
+    ce que le joint explicite empêche des deux côtés.
     """
     resolue = charter or source_charter()
     corps = str(resolue.get("body") or "")
     addendum = str(resolue.get("addendum") or "")
     if not scheduled or not addendum.strip():
         return corps
-    if int(resolue.get("version") or 0) == SOURCE_CHARTER_VERSION:
-        return corps + addendum
     return corps.rstrip() + "\n\n" + addendum.strip() + "\n"
 
 
