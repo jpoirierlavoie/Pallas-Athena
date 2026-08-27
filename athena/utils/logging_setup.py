@@ -690,6 +690,10 @@ ChatEvent = Literal[
     # L'AMORÇAGE (aucune charte enregistrée) n'émet rien : c'est l'état
     # normal d'un déploiement neuf, pas un incident.
     "chat_charter_repli",
+    # Une version de charte a été enregistrée. Les compteurs
+    # seulement — JAMAIS le texte : il gouverne le cabinet, il
+    # n'a rien à faire dans les journaux.
+    "chat_charter_saved",
 ]
 ChatOutcome = Literal["success", "failure", "refused"]
 

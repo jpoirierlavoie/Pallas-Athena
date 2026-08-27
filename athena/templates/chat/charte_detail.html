@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Charte — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('chat.chat_index') }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-4">
+    {{ ms('chevron_left', 16) }} Assistant
+  </a>
+
+  <div class="flex items-center justify-between gap-3 mb-2">
+    <h1 class="text-xl font-semibold text-gray-900">Charte</h1>
+    <a href="{{ url_for('chat.charter_edit') }}"
+       class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+      Modifier (nouvelle version)
+    </a>
+  </div>
+
+  <p class="text-xs text-gray-400 mb-6">
+    {% if charte %}
+    Version courante v{{ charte.current_version }}
+    {% if version_affichee and version_affichee | string != charte.current_version | string %}
+    · <span class="text-amber-700">affichage de la version v{{ version_affichee }} (lecture seule)</span>
+    {% endif %}
+    {% else %}
+    <span class="text-amber-700">Aucune version enregistrée — la charte de référence gouverne.</span>
+    {% endif %}
+  </p>
+
+  <p class="text-sm text-gray-500 mb-6">
+    Ce texte gouverne <strong>chaque tour de chaque conversation</strong>.
+    Modifier = enregistrer une <strong>nouvelle version</strong> ; chaque tour
+    consigne celle qui l'a gouverné. Les versions antérieures restent
+    consultables pour toujours. Compter environ
+    <strong>250 jetons par 1 000 caractères</strong>, payés à chaque tour.
+  </p>
+
+  {% if statut == 'erreur' %}
+  <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+    La charte enregistrée est illisible. Les tours en cours utilisent la
+    charte de référence ci-dessous — enregistrez une nouvelle version pour
+    rétablir la vôtre.
+  </div>
+  {% endif %}
+
+  {# Le socle : sous revue de code, prépendé à toute version enregistrée.
+     Affiché ici pour qu'on lise la charte ENTIÈRE, pas seulement sa moitié
+     éditable. #}
+  <details class="mb-6">
+    <summary class="text-sm font-medium text-gray-700 cursor-pointer">
+      {{ ms('lock', 16) }} Socle — non modifiable
+    </summary>
+    <p class="mt-1 mb-2 text-xs text-gray-500">
+      L'identité, les devoirs épistémiques, les données privilégiées et
+      l'absence de suppression restent sous revue de code : ils précèdent
+      toujours le texte ci-dessous, et aucune saisie ne peut les retirer.
+    </p>
+    <pre class="p-4 bg-gray-50 rounded-xl text-xs text-gray-700 whitespace-pre-wrap">{{ socle }}</pre>
+  </details>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-sm font-medium text-gray-700 mb-2">Corps</h2>
+    <pre class="p-4 bg-gray-50 rounded-xl text-xs text-gray-700 whitespace-pre-wrap">{{ corps_affiche }}</pre>
+  </div>
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-sm font-medium text-gray-700 mb-2">Addendum — exécution planifiée</h2>
+    <p class="text-xs text-gray-500 mb-2">
+      Ajouté au texte uniquement lorsqu'une tâche planifiée s'exécute, sans
+      personne pour lire une question.
+    </p>
+    <pre class="p-4 bg-gray-50 rounded-xl text-xs text-gray-700 whitespace-pre-wrap">{{ addendum_affiche }}</pre>
+  </div>
+
+  {% if fichiers %}
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+    <h2 class="text-sm font-medium text-gray-700 mb-2">Fichiers de référence ({{ fichiers | length }})</h2>
+    <p class="text-xs text-gray-500 mb-2">
+      Lus à la demande par l'assistant (outil get_skill_file) — seuls les
+      noms entrent dans le prompt.
+    </p>
+    {% for f in fichiers %}
+    <details class="border-t border-gray-100 py-2">
+      <summary class="text-sm text-gray-700 cursor-pointer">
+        {{ f.name }}
+        {% if f.description %}<span class="text-gray-400">— {{ f.description }}</span>{% endif %}
+        <span class="text-xs text-gray-400">({{ f.chars }} caractères)</span>
+        {% if f.missing %}<span class="text-xs text-red-700">contenu introuvable</span>{% endif %}
+      </summary>
+      {# Autoescape seulement — jamais |safe ni |markdown : du matériel de
+         référence VERBATIM, pas du HTML de confiance. #}
+      <pre class="mt-2 p-4 bg-gray-50 rounded-xl text-xs text-gray-700 whitespace-pre-wrap">{{ f.content }}</pre>
+    </details>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if versions %}
+  <details>
+    <summary class="text-xs text-gray-500 cursor-pointer">Historique des versions ({{ versions | length }})</summary>
+    <ul class="mt-2 space-y-1 text-xs text-gray-600">
+      {% for v in versions %}
+      {% set cree = v.created_at | to_mtl %}
+      <li>
+        <a href="{{ url_for('chat.charter_detail', version=v.version) }}"
+           class="text-indigo-600 hover:text-indigo-700">v{{ v.version }}</a>
+        — {{ cree.strftime('%Y-%m-%d %H:%M') if cree else '' }}
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="mt-2 text-xs text-gray-400">
+      La version 1 est la charte de référence, sous contrôle de source —
+      elle n'apparaît pas ici, et c'est elle qui gouverne un tour dont la
+      charte enregistrée n'a pas pu être lue.
+    </p>
+  </details>
+  {% endif %}
+</div>
+{% endblock %}

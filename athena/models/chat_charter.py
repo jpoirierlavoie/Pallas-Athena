@@ -78,6 +78,20 @@ BODY_MAX_LENGTH = 30_000
 # The addendum only applies to unattended runs; it is ~700 chars today.
 ADDENDUM_MAX_LENGTH = 10_000
 
+# Re-exported: the form template mirrors them in maxlength attributes.
+#
+# The budget, redone for this carrier: 30 000 (body) + 10 000 (addendum)
+# + 6 × 40 000 (files) = 280 000 chars. The form posts MULTIPART, where a
+# character costs 1 byte in ASCII, 2 accented, 3 for an em dash — so
+# ~297 KB worst case against the 1 MB `_enforce_request_size` ceiling,
+# 47 % of margin whatever the alphabet. Urlencoded it would be 1.6 MiB at
+# a true ×6 and abort 413 into a raw error page, losing every character
+# typed. Raising a cap means redoing this, not editing the number.
+MAX_FILES = reference_files.MAX_FILES
+FILE_MAX_CHARS = reference_files.FILE_MAX_CHARS
+FILE_NAME_MAX_LENGTH = reference_files.FILE_NAME_MAX_LENGTH
+FILE_DESCRIPTION_MAX_LENGTH = reference_files.FILE_DESCRIPTION_MAX_LENGTH
+
 
 def is_source_version(version: object) -> bool:
     """True for the version numbers Firestore does NOT hold.

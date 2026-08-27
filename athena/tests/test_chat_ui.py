@@ -593,3 +593,109 @@ def test_the_charter_version_is_readable_on_the_turn(web_rendu, monkeypatch):
         lambda i, limit=500: [_final_turn(charter_version=7)],
     )
     assert "charte v7" in web_rendu.get("/chat/c1").get_data(as_text=True)
+
+
+# ── L'écran de la charte (lot 5) ───────────────────────────────────────────
+
+_CHARTE = {
+    "id": "charte", "body": "RÈGLES\n- Une règle ANANAS.",
+    "addendum": "PLANIFIÉ\n- Sans surveillance.", "files": [],
+    "current_version": 4, "created_at": _NOW, "updated_at": _NOW, "etag": "e",
+}
+
+
+def test_charter_detail_shows_the_socle_the_body_and_the_addendum(
+    web_rendu, monkeypatch
+):
+    monkeypatch.setattr(rc.charter_model, "get_head", lambda: (dict(_CHARTE), "ok"))
+    monkeypatch.setattr(rc.charter_model, "list_versions", lambda limit=50: [])
+    monkeypatch.setattr(rc.charter_model, "list_file_contents", lambda m: [])
+    html = web_rendu.get("/chat/charte").get_data(as_text=True)
+    assert "Une règle ANANAS." in html
+    assert "Sans surveillance." in html
+    assert "v4" in html
+    # Le socle est MONTRÉ : on doit pouvoir lire la charte entière, pas
+    # seulement sa moitié éditable.
+    assert "DEVOIRS ÉPISTÉMIQUES" in html
+    assert "non modifiable" in html
+
+
+def test_charter_detail_without_a_saved_version_says_so_and_seeds(
+    web_rendu, monkeypatch
+):
+    monkeypatch.setattr(rc.charter_model, "get_head", lambda: (None, "absent"))
+    html = web_rendu.get("/chat/charte").get_data(as_text=True)
+    assert "Aucune version enregistrée" in html
+    assert "RÈGLES DE SORTIE" in html          # la graine est affichée
+
+
+def test_charter_detail_says_when_the_saved_charter_is_unreadable(
+    web_rendu, monkeypatch
+):
+    monkeypatch.setattr(rc.charter_model, "get_head", lambda: (None, "erreur"))
+    html = web_rendu.get("/chat/charte").get_data(as_text=True)
+    assert "illisible" in html
+
+
+def test_charter_form_posts_multipart_and_seeds_from_the_head(
+    web_rendu, monkeypatch
+):
+    monkeypatch.setattr(rc.charter_model, "get_head", lambda: (dict(_CHARTE), "ok"))
+    monkeypatch.setattr(rc.charter_model, "list_file_contents", lambda m: [])
+    html = web_rendu.get("/chat/charte/modifier").get_data(as_text=True)
+    assert 'enctype="multipart/form-data"' in html
+    assert "Une règle ANANAS." in html
+    assert "version v5" in html                # la prochaine
+    assert html.count('name="files_json"') == 1
+
+
+def test_both_versioned_forms_post_multipart():
+    """Le formulaire des compétences a le MÊME défaut : en urlencodé, ses
+    plafonds dépassent 1 Mo sur un contenu tout accentué. N'en réparer
+    qu'une moitié serait pire que rien."""
+    for nom in ("charte_form.html", "skill_form.html"):
+        source = (_TEMPLATES / "chat" / nom).read_text(encoding="utf-8")
+        assert 'enctype="multipart/form-data"' in source, nom
+
+
+def test_charter_save_refuses_in_2xx_and_keeps_the_typing(web_rendu, monkeypatch):
+    """Un refus rendu en 4xx perdrait tout ce que l'avocat vient de taper."""
+    monkeypatch.setattr(rc.charter_model, "get_head", lambda: (dict(_CHARTE), "ok"))
+    monkeypatch.setattr(
+        rc.charter_model, "revise_charter",
+        lambda **kw: (None, ["Le corps de la charte est trop court."]),
+    )
+    reponse = web_rendu.post(
+        "/chat/charte",
+        data={"body": "Trop court.", "addendum": "", "files_json": "[]"},
+    )
+    assert reponse.status_code == 200
+    html = reponse.get_data(as_text=True)
+    assert "trop court" in html
+    assert "Trop court." in html               # la saisie survit
+
+
+def test_charter_save_redirects_and_logs_counters_only(web_rendu, monkeypatch):
+    emis = []
+    monkeypatch.setattr(rc, "log_chat_event",
+                        lambda e, o="success", **kw: emis.append({"e": e, **kw}))
+    monkeypatch.setattr(
+        rc.charter_model, "revise_charter",
+        lambda **kw: ({**_CHARTE, "current_version": 5}, []),
+    )
+    reponse = web_rendu.post(
+        "/chat/charte",
+        data={"body": "x" * 300, "addendum": "", "files_json": "[]"},
+    )
+    assert reponse.status_code == 302
+    assert reponse.headers["Location"].endswith("/chat/charte")
+    ligne = next(l for l in emis if l["e"] == "chat_charter_saved")
+    assert ligne["version"] == 5
+    # Des compteurs, JAMAIS le texte : il gouverne le cabinet.
+    assert "ANANAS" not in _json.dumps(ligne, default=str)
+    assert "body" not in ligne
+
+
+def test_the_charter_is_reachable_from_the_chat_index():
+    source = (_TEMPLATES / "chat" / "list.html").read_text(encoding="utf-8")
+    assert "chat.charter_detail" in source

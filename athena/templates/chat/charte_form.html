@@ -1,23 +1,21 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Modifier la compétence' if skill else 'Nouvelle compétence' }} — Pallas Athena{% endblock %}
+{% block title %}Modifier la charte — Pallas Athena{% endblock %}
 
 {% block content %}
 <div class="max-w-2xl mx-auto px-4 py-6">
 
-  <a href="{{ url_for('chat.skill_detail', skill_id=skill.id) if skill else url_for('chat.skills_list') }}"
+  <a href="{{ url_for('chat.charter_detail') }}"
      class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
-    {{ ms('chevron_left', 16) }} {{ skill.name if skill else 'Compétences' }}
+    {{ ms('chevron_left', 16) }} Charte
   </a>
 
-  <h1 class="text-xl font-semibold text-gray-900 mb-2">
-    {{ 'Modifier la compétence' if skill else 'Nouvelle compétence' }}
-  </h1>
-  {% if skill %}
+  <h1 class="text-xl font-semibold text-gray-900 mb-2">Modifier la charte</h1>
   <p class="text-sm text-gray-500 mb-6">
-    L'enregistrement crée la <strong>version v{{ skill.current_version + 1 }}</strong> —
-    la v{{ skill.current_version }} et toutes les précédentes restent consultables pour toujours.
+    L'enregistrement crée la <strong>version v{{ version_suivante }}</strong> —
+    les précédentes restent consultables pour toujours. Le texte gouverne
+    <strong>chaque tour de chaque conversation</strong>, et se paie à chaque
+    tour : environ 250 jetons par 1 000 caractères.
   </p>
-  {% endif %}
 
   {% if erreurs %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -27,24 +25,32 @@
   </div>
   {% endif %}
 
-  {# Seed du répéteur de fichiers — bloc JSON non exécutable (le motif
-     budgets/form.html) : `tojson` échappe les chevrons en </>,
-     donc un contenu portant une balise de fermeture de script ne peut pas
-     clore le bloc. #}
-  <script type="application/json" id="competence-fichiers-initial">{{ files_seed | tojson }}</script>
+  <details class="mb-6">
+    <summary class="text-sm font-medium text-gray-700 cursor-pointer">
+      {{ ms('lock', 16) }} Socle — non modifiable, toujours en tête
+    </summary>
+    <p class="mt-1 mb-2 text-xs text-gray-500">
+      Aucune saisie ci-dessous ne peut retirer ces règles : elles précèdent
+      votre texte dans chaque requête.
+    </p>
+    <pre class="p-4 bg-gray-50 rounded-xl text-xs text-gray-700 whitespace-pre-wrap">{{ socle }}</pre>
+  </details>
 
-  {# multipart, pas urlencoded : le même contenu y voyage brut. En
-     urlencodé, un accent coûte SIX octets et un tiret cadratin NEUF —
-     6 × 40 000 + 30 000 caractères tout accentués font 1,55 Mio, au-delà
-     du plafond de 1 Mo, qui rend une page d'erreur brute et perd toute
-     la saisie. L'ancienne note annonçait « ~816 Ko pessimiste » sous un
-     en-tête « ×6 » : c'était un chiffre ×3. #}
+  {# Seed du répéteur — bloc JSON non exécutable (le motif budgets/form.html) :
+     `tojson` échappe les chevrons, donc un contenu portant une balise de
+     fermeture de script ne peut pas clore le bloc. #}
+  <script type="application/json" id="charte-fichiers-initial">{{ files_seed | tojson }}</script>
+
+  {# multipart, et pas urlencoded : le même contenu y voyage brut (~297 Ko
+     au pire cas contre 1,55 Mio), là où l'encodage de formulaire coûte SIX
+     octets par accent et NEUF par tiret cadratin. Un dépassement du plafond
+     de 1 Mo rend une page d'erreur brute et perd toute la saisie. #}
   <form method="post" enctype="multipart/form-data"
-        action="{{ url_for('chat.skill_revise', skill_id=skill.id) if skill else url_for('chat.skill_create') }}"
+        action="{{ url_for('chat.charter_save') }}"
         class="space-y-6"
         x-data="{
-          files: JSON.parse(document.getElementById('competence-fichiers-initial').textContent),
-          maxFiles: 6,
+          files: JSON.parse(document.getElementById('charte-fichiers-initial').textContent),
+          maxFiles: {{ max_files }},
           addFile() {
             if (this.files.length < this.maxFiles) {
               this.files.push({name: '', description: '', content: ''});
@@ -71,26 +77,23 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     <div>
-      <label for="name" class="block text-sm font-medium text-gray-700 mb-1">Nom *</label>
-      <input type="text" id="name" name="name" maxlength="120" required
-             value="{{ (form.name if form else (skill.name if skill else '')) }}"
-             placeholder="Ex : redaction-juridique-quebecoise"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+      <label for="body" class="block text-sm font-medium text-gray-700 mb-1">Corps *</label>
+      <p class="text-xs text-gray-500 mb-1">
+        Les règles de sortie et la discipline d'écriture. S'ajoute au socle,
+        jamais à sa place.
+      </p>
+      <textarea id="body" name="body" rows="18" maxlength="{{ corps_max }}" required
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">{{ (form.body if form else corps) }}</textarea>
     </div>
 
     <div>
-      <label for="description" class="block text-sm font-medium text-gray-700 mb-1">Description</label>
-      <input type="text" id="description" name="description" maxlength="500"
-             value="{{ (form.description if form else (skill.description if skill else '')) }}"
-             placeholder="À quoi sert cette compétence…"
-             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-    </div>
-
-    <div>
-      <label for="body" class="block text-sm font-medium text-gray-700 mb-1">Contenu (markdown) *</label>
-      <textarea id="body" name="body" rows="16" maxlength="30000" required
-                placeholder="Le texte de la compétence, tel qu'il s'injecte dans le prompt…"
-                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">{{ (form.body if form else (skill.body if skill else '')) }}</textarea>
+      <label for="addendum" class="block text-sm font-medium text-gray-700 mb-1">Addendum — exécution planifiée</label>
+      <p class="text-xs text-gray-500 mb-1">
+        Ajouté seulement lorsqu'une tâche planifiée s'exécute, sans personne
+        pour lire une question.
+      </p>
+      <textarea id="addendum" name="addendum" rows="8" maxlength="{{ addendum_max }}"
+                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">{{ (form.addendum if form else addendum) }}</textarea>
     </div>
 
     <div>
@@ -102,17 +105,17 @@
         </button>
       </div>
       <p class="text-xs text-gray-500 mb-2">
-        Jusqu'à 6 fichiers de 40 000 caractères chacun. Seuls leurs noms
-        entrent dans le prompt — l'assistant n'en lit le contenu qu'au
-        besoin, à la demande. Retirer un fichier ne touche pas aux versions
-        antérieures.
+        Jusqu'à {{ max_files }} fichiers de {{ file_max_chars }} caractères
+        chacun. Seuls leurs noms entrent dans le prompt — l'assistant n'en
+        lit le contenu qu'au besoin. Retirer un fichier ne touche pas aux
+        versions antérieures.
       </p>
 
       <template x-for="(f, i) in files" :key="i">
         <div class="border border-gray-200 rounded-xl p-4 mb-2 bg-gray-50">
           <div class="mb-2">
             <input type="text" maxlength="80" x-model="f.name"
-                   placeholder="Nom du fichier (ex : Modèle de mise en demeure)"
+                   placeholder="Nom du fichier (ex : Grille de conflits d'intérêts)"
                    class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
           </div>
           <div class="mb-2">
@@ -120,7 +123,7 @@
                    placeholder="Description (facultative — guide la lecture à la demande)"
                    class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
           </div>
-          <textarea rows="8" maxlength="40000" x-model="f.content"
+          <textarea rows="8" :maxlength="{{ file_max_chars }}" x-model="f.content"
                     placeholder="Le contenu de référence (texte ou markdown, verbatim)…"
                     class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"></textarea>
           <div class="flex items-center justify-between mt-1">
@@ -142,7 +145,7 @@
 
     <button type="submit"
             class="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
-      {{ 'Enregistrer comme nouvelle version' if skill else 'Créer la compétence' }}
+      Enregistrer comme nouvelle version
     </button>
   </form>
 </div>

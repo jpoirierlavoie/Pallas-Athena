@@ -31,12 +31,15 @@ from flask import (
 
 from auth import login_required
 from config import Config
+from models import chat_charter as charter_model
 from models import chat_conversation as conv_model
 from models import chat_draft as draft_model
 from models import chat_skill as skill_model
 from models import chat_scheduled_task as task_model
 from models.dossier import get_dossier, list_dossiers
 from utils.logging_setup import log_chat_event, log_unexpected
+
+from chat import charter as charter_source
 
 chat_bp = Blueprint("chat", __name__, url_prefix="/chat")
 
@@ -569,6 +572,121 @@ def _parse_files_json() -> tuple[list[dict], list[str]]:
             }
         )
     return rows, []
+
+
+# ── La charte ──────────────────────────────────────────────────────────────
+#
+# La constitution du clavardage. Le SOCLE reste sous revue de code
+# (chat/charter.py) ; le corps et l'addendum planifié s'éditent ici.
+# UNE seule action d'enregistrement, création comprise : le modèle mint la
+# v2 dans sa transaction, si bien que deux onglets ouverts sur un
+# formulaire vierge ne peuvent pas écraser une version write-once.
+
+
+def _charter_form(*, corps, addendum, files_seed, erreurs=None, form=None):
+    """Le formulaire, en 200 — au succès comme au refus.
+
+    Un refus rendu en 4xx ne s'afficherait pas sous htmx et, ici, perdrait
+    en plus tout ce que l'avocat vient de taper.
+    """
+    tete, _statut = charter_model.get_head()
+    ctx = _base_context()
+    ctx.update(
+        {
+            "socle": charter_source.SOCLE,
+            "corps": corps,
+            "addendum": addendum,
+            "files_seed": files_seed,
+            "erreurs": erreurs,
+            "form": form,
+            "version_suivante": max(
+                int((tete or {}).get("current_version") or 0) + 1,
+                charter_model.FIRST_FIRESTORE_VERSION,
+            ),
+            "corps_max": charter_model.BODY_MAX_LENGTH,
+            "addendum_max": charter_model.ADDENDUM_MAX_LENGTH,
+            "max_files": charter_model.MAX_FILES,
+            "file_max_chars": charter_model.FILE_MAX_CHARS,
+        }
+    )
+    return render_template("chat/charte_form.html", **ctx)
+
+
+@chat_bp.route("/charte")
+@login_required
+def charter_detail() -> str:
+    tete, statut = charter_model.get_head()
+    ctx = _base_context()
+    ctx.update(
+        {
+            "socle": charter_source.SOCLE,
+            "statut": statut,
+            "charte": tete,
+            "versions": charter_model.list_versions() if tete else [],
+            "version_affichee": "",
+            "corps_affiche": (tete or {}).get("body")
+            or charter_source.SEED_CORPS,
+            "addendum_affiche": (tete or {}).get("addendum")
+            or charter_source.SEED_ADDENDUM,
+        }
+    )
+    manifeste = (tete or {}).get("files") or []
+    version = request.args.get("version", "")
+    if tete and version.isdigit():
+        vdoc = charter_model.get_version(int(version))
+        if vdoc:
+            ctx["corps_affiche"] = vdoc.get("body", "")
+            ctx["addendum_affiche"] = vdoc.get("addendum", "")
+            ctx["version_affichee"] = version
+            manifeste = vdoc.get("files") or []
+    ctx["fichiers"] = (
+        charter_model.list_file_contents(manifeste) if tete else []
+    )
+    return render_template("chat/charte_detail.html", **ctx)
+
+
+@chat_bp.route("/charte/modifier")
+@login_required
+def charter_edit() -> str:
+    tete, _statut = charter_model.get_head()
+    return _charter_form(
+        corps=(tete or {}).get("body") or charter_source.SEED_CORPS,
+        addendum=(tete or {}).get("addendum") or charter_source.SEED_ADDENDUM,
+        files_seed=(
+            charter_model.list_file_contents(tete.get("files") or [])
+            if tete
+            else []
+        ),
+    )
+
+
+@chat_bp.route("/charte", methods=["POST"])
+@login_required
+def charter_save() -> Response | str:
+    f = request.form
+    files, parse_errors = _parse_files_json()
+    corps = f.get("body", "").strip()
+    addendum = f.get("addendum", "").strip()
+    if parse_errors:
+        return _charter_form(
+            corps=corps, addendum=addendum, files_seed=files,
+            erreurs=parse_errors, form=f,
+        )
+    doc, errors = charter_model.revise_charter(
+        body=corps, addendum=addendum, files=files
+    )
+    if errors:
+        return _charter_form(
+            corps=corps, addendum=addendum, files_seed=files,
+            erreurs=errors, form=f,
+        )
+    log_chat_event(
+        "chat_charter_saved",
+        version=int(doc["current_version"]),
+        files_count=len(doc.get("files") or []),
+        body_chars=len(doc.get("body") or ""),
+    )
+    return redirect(url_for("chat.charter_detail"))
 
 
 @chat_bp.route("/competences")
