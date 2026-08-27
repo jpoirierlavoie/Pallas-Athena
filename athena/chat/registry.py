@@ -27,13 +27,18 @@ One registry maps tool name → executor. Four executors (SPEC §4.1 + the
                          executed by Anthropic server-side (basic version
                          only on Vertex — no dynamic filtering).
 
-Write parity (user decision D9, 2026-08-26): the chat exposes the SAME
-write set as the external connector — ``CHAT_WRITE_TOOLS`` is DERIVED from
-``mcp.tools.WRITE_TOOLS``, so parity holds by construction and a future
-divergence is a one-line edit of this module, made consciously. The
-guard-rails for unattended runs are the charter's dry_run discipline, the
-forced idempotency keys (executors.py), and the ``GATED_TOOLS`` mechanism
-below.
+Write parity (user decision D9, 2026-08-26), AMENDED 2026-08-27:
+``CHAT_WRITE_TOOLS`` is still DERIVED from ``mcp.tools.WRITE_TOOLS``, so
+the POLICY cannot drift — but ``CHAT_EXCLUDED_TOOLS`` now withholds part
+of that set from the chat's tool array, for prompt budget. The chat can
+therefore no longer create a dossier or a contact, while the external
+connector still can. This is exactly the « one-line edit, made
+consciously » the original note anticipated, and the divergence is
+pinned name by name rather than left to be discovered.
+
+The guard-rails for unattended runs are unchanged: the charter's dry_run
+discipline, the forced idempotency keys (executors.py), and the
+``GATED_TOOLS`` mechanism below.
 
 ``GATED_TOOLS`` (SPEC §4.6.3): a ``tool_use`` on a member pauses the turn
 into ``awaiting_authorization`` (interactive) or is auto-refused with the
@@ -104,6 +109,53 @@ GET_SKILL_FILE_SPEC: dict[str, Any] = {
 # impossible; a conscious divergence edits this line).
 CHAT_WRITE_TOOLS: frozenset[str] = frozenset(mcp_tools.WRITE_TOOLS)
 
+# Outils que le CLAVARDAGE n'expose pas (2026-08-27, décision du
+# praticien). Le connecteur externe les garde tous : cette liste ne
+# touche que le tableau d'outils du chat.
+#
+# Le motif est le budget de prompt, et il est massif : les schémas
+# d'outils font ~29 500 jetons, soit 98 % du prompt, RENVOYÉS À CHAQUE
+# APPEL DE MODÈLE (pas par tour ni par conversation). Ces quinze-là en
+# valent 11 100, et aucun n'est de nature conversationnelle.
+#
+# Le critère est STRUCTUREL, jamais statistique : au moment de la coupe le
+# registre comptait 26 tours et 11 appels d'outil, ce qui ne prouve rien
+# sur ce qui sert. On retire ce dont la raison d'être n'est pas une
+# conversation — une migration, une passe de nettoyage, un audit — pas ce
+# qui n'a pas encore été appelé.
+#
+# ⚠ Cela DIVERGE de la parité d'écriture D9, à dessein : dix de ces noms
+# sont des écritures, et le clavardage ne peut donc plus créer un dossier
+# ni un contact. C'est la « édition d'une ligne, faite consciemment » que
+# la note D9 ci-dessus prévoyait. La parité subsiste sur le reste, et un
+# test l'épingle avec l'écart, nom par nom.
+CHAT_EXCLUDED_TOOLS: frozenset[str] = frozenset(
+    {
+        # Reprise de données historiques (lot Q) — un travail de migration
+        # mené depuis claude.ai, pas depuis une conversation. Ce sont
+        # aussi les quatre outils les plus coûteux du système.
+        "create_partie",
+        "update_partie",
+        "create_dossier",
+        "update_dossier",
+        "complete_dossier",
+        "import_invoice",
+        "find_imported",
+        "get_import_audit",
+        "get_reference_vocabulary",
+        # Reclassement de phase — une passe sur des dizaines de lignes,
+        # dont les variantes _bulk (50 par appel) n'ont aucun sens dans un
+        # échange.
+        "set_time_entry_phase",
+        "set_expense_phase",
+        "set_time_entry_phase_bulk",
+        "set_expense_phase_bulk",
+        # Audit et vérification — des rapports qu'on lit à froid.
+        "get_coverage_report",
+        "list_deletions",
+    }
+)
+
 # §4.6.3 — requires_authorization. EMPTY in v1 (FLAG 3), pinned by test;
 # widening it is config-by-code, one name per line, with a reason.
 GATED_TOOLS: frozenset[str] = frozenset()
@@ -157,6 +209,8 @@ def chat_tool_names(*, include_writes: Optional[bool] = None) -> list[str]:
     writes = writes_enabled() if include_writes is None else include_writes
     names = []
     for name in mcp_tools.TOOLS:
+        if name in CHAT_EXCLUDED_TOOLS:
+            continue
         if name in mcp_tools.WRITE_TOOLS:
             if not writes or name not in CHAT_WRITE_TOOLS:
                 continue

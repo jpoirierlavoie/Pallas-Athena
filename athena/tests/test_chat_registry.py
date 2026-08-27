@@ -29,8 +29,41 @@ from chat.worker_tools import WORKER_NAME_PREFIXES, WORKER_TOOLS  # noqa: E402
 # ── Registry pins ───────────────────────────────────────────────────────────
 
 def test_write_parity_is_derived_not_copied():
-    # D9 (2026-08-26): full parity with the connector, BY DERIVATION.
+    # D9 (2026-08-26): la POLITIQUE reste dérivée, donc elle ne peut pas
+    # dériver. Ce que le chat EXPOSE est une autre question — voir
+    # test_the_chat_withholds_exactly_the_named_tools.
     assert registry.CHAT_WRITE_TOOLS == mcp_tools.WRITE_TOOLS
+
+
+def test_the_chat_withholds_exactly_the_named_tools():
+    """L'écart avec le connecteur, épinglé nom par nom.
+
+    Une liste tenue à la main dérive : un outil renommé dans TOOLS y
+    resterait sous son ancien nom, silencieusement réexposé. D'où la
+    première assertion — chaque nom exclu doit EXISTER.
+    """
+    inconnus = registry.CHAT_EXCLUDED_TOOLS - set(mcp_tools.TOOLS)
+    assert not inconnus, f"noms exclus qui n'existent plus : {sorted(inconnus)}"
+
+    exposes = set(registry.chat_tool_names(include_writes=True))
+    assert exposes == set(mcp_tools.TOOLS) - registry.CHAT_EXCLUDED_TOOLS
+    # L'écart d'écriture assumé : le chat ne crée plus ni dossier ni
+    # contact, le connecteur le peut toujours.
+    retenues = registry.CHAT_EXCLUDED_TOOLS & set(mcp_tools.WRITE_TOOLS)
+    assert "create_dossier" in retenues and "create_partie" in retenues
+
+    # Et ce qui fait le travail de conversation reste offert.
+    for indispensable in ("create_note", "append_to_note", "create_task",
+                          "complete_task", "create_hearing", "save_draft",
+                          "revise_draft", "get_document_text", "get_dossier"):
+        assert indispensable in exposes, indispensable
+
+
+def test_the_exclusion_never_touches_the_connector():
+    """Le connecteur externe garde ses 52 outils : c'est là que la reprise
+    de données se fait, et elle en a besoin."""
+    assert registry.CHAT_EXCLUDED_TOOLS <= set(mcp_tools.TOOLS)
+    assert len(mcp_tools.TOOLS) == 52
 
 
 def test_gated_set_is_empty_in_v1():
@@ -64,9 +97,18 @@ def test_toolset_is_tools_plus_workers_plus_web_search():
 
 
 def test_excluding_writes_removes_exactly_the_write_tools():
+    """Le coupe-circuit retire les écritures OFFERTES, ni plus ni moins.
+
+    Depuis CHAT_EXCLUDED_TOOLS (2026-08-27) une partie des écritures
+    n'est jamais offerte : le coupe-circuit ne peut pas retirer ce qui
+    n'est pas là, et l'écart attendu se mesure sur le reste. La
+    soustraction est ce qui garde le test exact plutôt que permissif.
+    """
     with_writes = {t["name"] for t in registry.anthropic_tools(include_writes=True)}
     without = {t["name"] for t in registry.anthropic_tools(include_writes=False)}
-    assert with_writes - without == set(mcp_tools.WRITE_TOOLS)
+    attendu = set(mcp_tools.WRITE_TOOLS) - registry.CHAT_EXCLUDED_TOOLS
+    assert with_writes - without == attendu
+    assert attendu, "le coupe-circuit ne garderait plus rien à retirer"
 
 
 def test_web_search_entry_is_the_basic_vertex_version():
