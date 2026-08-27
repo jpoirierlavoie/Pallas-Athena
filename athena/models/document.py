@@ -1522,9 +1522,27 @@ def record_analyse(
         ),
     })
 
+    # L'analyse ALIMENTE les champs natifs du document — c'est ce qui la
+    # rend utile hors de sa propre carte : le résumé devient la
+    # description, la date lue devient la date du document, et le
+    # formulaire d'édition les montre et les laisse corriger.
+    #
+    # ⚠ REMPLIR-SI-VIDE, jamais écraser (la doctrine `complete_dossier`).
+    # La catégorie est un code d'une table fermée : l'écraser se répare
+    # d'un clic. La description est de la PROSE que le juriste a écrite —
+    # une réanalyse qui l'efface détruit un travail qu'aucun journal ne
+    # rend au formulaire.
+    natifs: dict = {}
+    if champ.get("resume") and not (existing.get("description") or "").strip():
+        natifs["description"] = champ["resume"]
+    if champ.get("date_document_str") and not existing.get("document_date"):
+        lue = _coerce_document_date(champ["date_document_str"])
+        if lue is not None:
+            natifs["document_date"] = lue
+
     merged = {**existing, "analyse": champ, "category": nouvelle,
               "category_source": "analyse", "updated_at": now,
-              "etag": str(uuid.uuid4())}
+              "etag": str(uuid.uuid4()), **natifs}
     try:
         ref = db.collection(COLLECTION).document(document_id)
         # Le journal AVANT le cache : une entrée orpheline est inerte, un

@@ -598,3 +598,44 @@ def test_the_block_is_mobile_first():
         assert g.startswith("grid-cols-1"), g
     for prefixe in ('sm:', 'md:', 'lg:'):
         assert prefixe not in html, prefixe
+
+
+# ── L'analyse alimente les champs natifs (2026-08-27) ──────────────────────
+
+def test_the_analysis_fills_description_and_date(monde):
+    """Ce qui la rend utile hors de sa propre carte : le résumé devient la
+    description, la date lue devient la date du document — et le formulaire
+    d'édition les montre alors, et les laisse corriger."""
+    maj, err = doc.record_analyse("doc-1", _SORTIE)
+    assert err == []
+    assert maj["description"] == _SORTIE["resume"]
+    assert maj["document_date"].strftime("%Y-%m-%d") == "2026-03-14"
+    # Date-seule à minuit UTC (convention document_date).
+    assert (maj["document_date"].hour, maj["document_date"].minute) == (0, 0)
+
+
+def test_a_reanalysis_never_overwrites_the_lawyers_prose(monde):
+    """REMPLIR-SI-VIDE, jamais écraser (doctrine `complete_dossier`).
+
+    La catégorie est un code d'une table fermée : l'écraser se répare d'un
+    clic. La description est de la PROSE — une réanalyse qui l'efface
+    détruit un travail qu'aucun journal ne rend au formulaire.
+    """
+    monde["store"]["doc-1"]["description"] = "Ma note à moi."
+    monde["store"]["doc-1"]["document_date"] = datetime(
+        2020, 1, 1, tzinfo=timezone.utc
+    )
+    maj, err = doc.record_analyse("doc-1", _SORTIE)
+    assert err == []
+    assert maj["description"] == "Ma note à moi."
+    assert maj["document_date"].year == 2020
+    # …mais la catégorie, elle, est bien remplacée.
+    assert maj["category"] == "procédure"
+
+
+def test_a_blank_description_counts_as_empty(monde):
+    """Les 93 documents du portail repris ont une description vide — pas
+    absente. Un espace résiduel ne doit pas bloquer le remplissage."""
+    monde["store"]["doc-1"]["description"] = "   "
+    maj, _ = doc.record_analyse("doc-1", _SORTIE)
+    assert maj["description"] == _SORTIE["resume"]
