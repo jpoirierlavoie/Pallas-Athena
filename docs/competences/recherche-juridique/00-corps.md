@@ -86,7 +86,7 @@ Le web francophone juridique est dominé par la France, et **votre propre mémoi
 
 Le droit canadien de common law n'est pas à écarter mais à qualifier : une discussion ontarienne d'une *limitation period* ne transpose pas. Les arrêts de la Cour suprême et le droit fédéral demeurent pertinents.
 
-Les tables complètes de marqueurs et d'exclusions sont dans `sources-doctrinales.md`.
+La liste blanche des sources et la procédure d'exclusion sont dans `sources-doctrinales.md`. Les tables complètes de marqueurs — français, common law, faux amis — vivent dans le `contamination.md` de la CHARTE (`skill_id="charte"`), lisible en tout temps.
 
 ## Le budget : l'autorité idéale, pas le ratissage
 

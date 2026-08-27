@@ -85,7 +85,7 @@ Le plus rapide et le plus fiable. Si la source traite :
 
 Un seul marqueur suffit : **la source entière est écartée, pas seulement le passage.** Une source qui se trompe de système ne devient pas fiable sur le reste.
 
-*La compétence de rédaction porte ses propres tables complètes de marqueurs et un lexique de substitution, dans un fichier qui lui appartient. La règle y est différente : en rédaction, un marqueur déclenche une réécriture; ici, il écarte la source. ⚠ Ces tables ne vous sont lisibles que si cette compétence est **cochée sur le tour en cours** — sinon, dites qu'elles sont hors d'atteinte plutôt que d'en inventer le contenu.*
+*Les tables complètes — marqueurs français et de common law, faux amis, lexique de substitution — vivent dans le fichier `contamination.md` de la CHARTE, lisible en tout temps par `get_skill_file(skill_id="charte", filename="contamination.md")`. ⚠ La règle y est DIFFÉRENTE selon ce qu'on fait, et sa section 8 le dit : en recherche, un marqueur écarte la source entière; en rédaction, il déclenche une réécriture. Lire la bonne ligne.*
 
 ### Autres marqueurs français
 

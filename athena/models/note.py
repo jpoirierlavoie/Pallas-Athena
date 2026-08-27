@@ -421,10 +421,16 @@ Voie procédurale envisagée : …
 
 ## Bloc C — Le fondement juridique et ses éléments constitutifs
 
-### Fondement(s) invoqué(s)
+### Fondement principal
 
-Cause d'action (ou, en défense, moyens opposés) : …
+Cause d'action (ou, en défense, moyen principal opposé) : …
 Sources : ☐ législation … ☐ jurisprudence … ☐ doctrine …
+
+### Fondements subsidiaires
+
+(fondements de rechange, et pourquoi chacun est subsidiaire) …
+
+*Un fondement subsidiaire qui survit à la chute du principal est un actif : le noter comme tel.*
 
 ### Éléments constitutifs à réunir
 
@@ -440,7 +446,7 @@ Sources : ☐ législation … ☐ jurisprudence … ☐ doctrine …
 
 (les miens et ceux de l'adversaire) …
 
-*Questions-repères : ai-je isolé chacune des conditions que la loi exige ? Chaque condition est-elle appuyée par un fait et par une preuve ? Une seule condition non établie fait-elle échouer le recours ?*
+*Questions-repères : ai-je isolé chacune des conditions que la loi exige ? Chaque condition est-elle appuyée par un fait et par une preuve ? Une seule condition non établie fait-elle échouer le recours ? Si le fondement principal tombe, que reste-t-il ?*
 
 ---
 

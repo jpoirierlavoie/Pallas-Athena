@@ -104,6 +104,53 @@ def test_seed_has_the_eight_blocks_and_fits_the_cap():
                     max_length=note.CONTENT_MAX_LENGTH) == note._ANALYSE_SEED
 
 
+def test_seed_rubric_inventory_is_pinned():
+    """L'ossature de la note, rubrique par rubrique.
+
+    La compétence « Rédaction juridique » DÉCRIT cette ossature dans son
+    fichier notes-internes.md, pour que le texte produit se colle dans la
+    note sans reformatage. Ce fichier vit dans Firestore, collé à la main :
+    aucun test ne peut le comparer à la graine. Cette épingle est donc ce
+    qui rend un changement de graine DÉLIBÉRÉ — et rappelle qu'il faut
+    recoller la compétence. Mesuré : sans elle, renommer une rubrique
+    laissait les 3 011 tests verts.
+    """
+    import re
+    s = note._ANALYSE_SEED
+    blocs = re.findall(r"^## (Bloc [A-H]) — (.+)$", s, re.M)
+    assert [b for b, _ in blocs] == [f"Bloc {c}" for c in "ABCDEFGH"]
+
+    def rubriques(bloc):
+        i = s.index(f"## {bloc} —")
+        j = s.find(chr(10) + "## Bloc", i + 3)
+        return re.findall(r"^### (.+)$", s[i:j if j > 0 else len(s)], re.M)
+
+    # Bloc D : Majeure / Mineure / Conclusion sont en PROSE GRASSE, pas des
+    # rubriques — la compétence le dit, et c'est ce qui se colle juste.
+    assert rubriques("Bloc D") == ["Qualification juridique retenue"]
+    for gras in ("**Majeure (la règle) :**", "**Mineure (les faits qualifiés) :**",
+                 "**Conclusion (l'application) :**"):
+        assert gras in s, gras
+
+    # Bloc C : le partage principal / subsidiaire est STRUCTUREL depuis le
+    # 2026-08-27 (décision du praticien) — un fondement subsidiaire qui
+    # survit à la chute du principal est un actif, et une rubrique le fait
+    # écrire plutôt que de compter sur une convention de prose.
+    assert rubriques("Bloc C")[:2] == ["Fondement principal", "Fondements subsidiaires"]
+
+    # Les cinq tableaux, et il n'y en a que cinq : G et H n'en ont aucun.
+    entetes = [l.strip() for l in s.split(chr(10))
+               if l.startswith("|") and "---" not in l and "…" not in l]
+    assert len(entetes) == 5
+    assert rubriques("Bloc H") == ["Conclusions recherchées", "Objectifs réels du client",
+                                   "Prochaines étapes et échéancier",
+                                   "Éléments encore à obtenir"]
+
+    # Les Questions-repères ferment les blocs : elles sont la liste de
+    # contrôle du bloc, pas un ornement.
+    assert s.count("*Questions-repères :") >= 6
+
+
 # ── create_analyse_note ──────────────────────────────────────────────────
 # The fakes live further down (the include_analyse section); the existence
 # check inside create_analyse_note queries db DIRECTLY (fail closed), so
