@@ -413,7 +413,23 @@ def test_get_skill_file_unexpected_reader_error_is_generic(monkeypatch):
 
 # ── Worker client ───────────────────────────────────────────────────────────
 
-_SPEC = {"name": "legislation_chercher", "worker": "legislation", "path": "/q"}
+_SPEC = {
+    "name": "legislation_chercher",
+    "worker": "legislation",
+    "tool": "chercher",
+    "path": "/mcp",
+    "transport": "mcp",
+}
+
+
+def _mcp(text, is_error=False):
+    """One MCP tools/call response, as the Workers frame it."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"content": [{"type": "text", "text": text}], "isError": is_error},
+    }
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
 
 def _configure_worker(monkeypatch):
@@ -448,9 +464,10 @@ def test_worker_timeout_and_connection_errors_are_machine_stable(monkeypatch):
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, chunks=(b"{}",)):
+    def __init__(self, status_code=200, chunks=(b"{}",), content_type="application/json"):
         self.status_code = status_code
         self._chunks = chunks
+        self.headers = {"Content-Type": content_type}
 
     def iter_content(self, chunk_size=65536):
         yield from self._chunks
@@ -467,6 +484,7 @@ def test_worker_http_error_and_bad_json(monkeypatch):
     monkeypatch.setattr(
         worker_client.requests, "post", lambda *a, **k: _FakeResponse(502)
     )
+    # A 502 must not be read as an empty result: it is a failure, loudly.
     assert worker_client.call_worker(_SPEC, {})["reason"] == "http_502"
     monkeypatch.setattr(
         worker_client.requests,
@@ -489,15 +507,16 @@ def test_worker_oversized_response_is_refused_not_truncated(monkeypatch):
     assert result["reason"] == "response_too_large"
 
 
-def test_worker_success_returns_payload(monkeypatch):
+def test_worker_success_returns_the_tools_text_verbatim(monkeypatch):
     _configure_worker(monkeypatch)
+    prose = "CONFIRMÉE — établit l'existence, jamais l'autorité actuelle."
     monkeypatch.setattr(
         worker_client.requests,
         "post",
-        lambda *a, **k: _FakeResponse(200, (b'{"resultat": 1}',)),
+        lambda *a, **k: _FakeResponse(200, (_mcp(prose),)),
     )
     result = worker_client.call_worker(_SPEC, {"q": "art. 2925"})
-    assert result == {"ok": True, "payload": {"resultat": 1}}
+    assert result == {"ok": True, "text": prose}
 
 
 # ── Charter ─────────────────────────────────────────────────────────────────

@@ -27,13 +27,16 @@ _spec = importlib.util.spec_from_file_location("athena_reference", _REFERENCE_PA
 reference = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(reference)
 
-# Greffes the MJQ publishes no civic address for: the four itinerant circuit
-# greffes, plus two absent from the July 2026 extraction.
-GREFFES_WITHOUT_ADDRESS = {"525", "614", "635", "640", "652", "715"}
+# Greffes with no resolvable civic address. Reconciled 2026-07-30 against the
+# MJQ listing: 635 LEFT this set (Kuujjuaq is its fixed seat) and 625 joined
+# it (Senneterre was missing from the table entirely). "No address" means
+# UNKNOWN, never "none exists".
+GREFFES_WITHOUT_ADDRESS = {"525", "614", "625", "640", "652", "715"}
 
-# A published courthouse that no greffe number in _GREFFES names. Kept in the
-# table unreferenced rather than guessed onto a Nunavik circuit greffe.
-ORPHAN_LOCATIONS = {"kuujjuaq"}
+# Courthouses no greffe number names. EMPTY since 2026-07-30: Kuujjuaq was
+# the last one, and the MJQ listing named its greffe. A new orphan here means
+# a real question — which greffe? — not a line to add.
+ORPHAN_LOCATIONS: set[str] = set()
 
 
 # ── Table shape ───────────────────────────────────────────────────────
@@ -113,6 +116,25 @@ def test_get_greffe_address_resolves_through_the_greffe_number():
 
 def test_get_greffe_address_is_none_for_an_itinerant_greffe():
     assert reference.get_greffe_address("614") is None
+
+
+def test_greffe_625_senneterre_exists():
+    """It did not, until 2026-07-30, and « 625-05-… » answered « greffe
+    inconnu » on a greffe that exists. The parser is the visible half."""
+    greffe = reference._GREFFES["625"]
+    assert greffe["palais_de_justice"] == "Senneterre"
+    assert greffe["district_judiciaire"] == "Abitibi"
+    result = reference.parse_court_file_number("625-05-123456-241")
+    assert result["parse_error"] is None
+    assert result["greffe"]["palais_de_justice"] == "Senneterre"
+
+
+def test_greffe_635_resolves_to_its_fixed_seat_at_kuujjuaq():
+    """Itinerant AND addressed: the circuit travels, the registry sits."""
+    palais = reference.get_greffe_address("635")
+    assert palais is not None
+    assert palais["name"] == "Kuujjuaq"
+    assert reference._GREFFES["635"]["point_de_service"] is True
 
 
 def test_get_greffe_address_is_none_for_an_unknown_greffe():

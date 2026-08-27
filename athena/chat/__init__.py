@@ -13,9 +13,15 @@ The package holds the chat client's own machinery:
                         validation reproduced), HTTP calls to the legal
                         Workers. A tool failure becomes an error tool_result;
                         nothing here ever raises out of a turn.
-* ``worker_tools.py`` — the legislation/jurisprudence Worker tool specs
-                        (data, late-bound).
-* ``worker_client.py``— the bounded HTTP client for those Workers.
+* ``worker_tools.py`` — the legislation/jurisprudence Worker tool specs.
+                        GENERATED from each Worker's ``tools/list`` by
+                        ``scripts/sync_worker_tools.py`` — never hand-edited,
+                        so descriptions and schemas cannot drift from the
+                        Workers they describe.
+* ``worker_client.py``— the bounded MCP client for those Workers: one
+                        JSON-RPC ``tools/call`` per invocation over
+                        ``POST /mcp``, and the tool's French text handed
+                        back verbatim.
 * ``vertex.py``       — the raw-``requests`` Messages API client on Vertex.
 * ``turn_engine.py``  — claim → work → commit orchestration of a turn.
 * ``taches.py``       — Cloud Tasks enqueue onto the ``chat-turns`` queue

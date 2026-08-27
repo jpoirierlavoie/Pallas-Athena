@@ -134,8 +134,14 @@ env_variables:
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
-  # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH, GRAPH_CLIENT_SECRET)
-  # are pulled from Google Cloud Secret Manager at runtime — see config.py.
+  # Jurisprudence Worker — the ORIGIN alone, no /mcp (the path lives on each
+  # generated tool spec). Set on BOTH services per DEPLOYMENT.md §7 so the two
+  # never disagree about whether the Worker is configured; the tools that use
+  # it run in the « chat » service only.
+  JURISPRUDENCE_WORKER_URL: "https://jurisprudence.poirierlavoie.ca"
+  # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH, GRAPH_CLIENT_SECRET,
+  # worker tokens) are pulled from Google Cloud Secret Manager at runtime —
+  # see config.py.
 
 # Static handlers bypass Flask's after_request security headers, so each one
 # repeats the baseline. The rule is deliberately TOTAL — every handler carries

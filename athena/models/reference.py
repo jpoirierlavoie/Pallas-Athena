@@ -13,17 +13,17 @@ from typing import Optional
 #
 # WHY A SEPARATE TABLE FROM _GREFFES: a location is a *building*; a
 # greffe is a *registry* that sits in one. The relationship is neither
-# 1:1 nor total — several greffes have no fixed building (itinerant
-# circuit court), and Kuujjuaq is a published courthouse that no greffe
-# number in _GREFFES currently names. Keying addresses by greffe number
-# would have to either drop or invent those. Greffes point here via
-# their "palais_key"; None means "no published address" (see below).
+# 1:1 nor total — several greffes have no fixed building at all
+# (itinerant circuit court), and one greffe can serve many localities,
+# which a single "palais_key" cannot express. Greffes point here via
+# their "palais_key"; None means "ADDRESS UNKNOWN" — never "no address
+# exists" (see below).
 #
 # `location_type` mirrors the MJQ's own split between a full palais de
 # justice and a point de service de justice. NOTE it is NOT the same
 # notion as the greffe-level `point_de_service` flag, which marks
-# itinerant circuit greffes (614/635/640/652) — the two disagree on the
-# eight MJQ points de service by design; don't conflate them.
+# itinerant circuit greffes (614/625/635/640/652) — the two disagree on
+# the eight MJQ points de service by design; don't conflate them.
 #
 # Address fields mirror the `parties` address convention (street holds
 # civic number + name, unit separate, full province/country names) so a
@@ -98,17 +98,31 @@ _PALAIS: dict[str, dict] = {
 # district_judiciaire, point_de_service, palais_key.
 #
 # `palais_key` indexes _PALAIS, or is None where the MJQ publishes no
-# civic address for that greffe: the four itinerant circuit greffes
-# (614/635/640/652, which sit wherever the court travels) plus 525 and
-# 715, absent from the July 2026 extraction. None means "unknown", never
-# "no address exists" — resolve before relying on it for a filing.
+# civic address we can resolve for that greffe: 525, 614, 625, 640, 652,
+# 715. None means "UNKNOWN", never "no address exists" — the exact
+# counterpart of the INTROUVABLE rule: the absence of a datum is not a
+# finding of absence. Resolve before relying on it for a filing.
+#
+# You leave that list by finding a SOURCE, never by loosening the
+# wording: greffe 635 left it on 2026-07-30 when the MJQ listing showed
+# Kuujjuaq as its fixed seat. Reconciled the same day with the
+# jurisprudence connector's src/qc/ tables, which hold the fuller MJQ
+# survey (a greffe → the several localities it serves); this table keeps
+# the 1:1 shape and records only the resolved seat.
 
 _GREFFES: dict[str, dict] = {
     "640": {"palais_de_justice": "Akulivik", "district_judiciaire": "Abitibi", "point_de_service": True, "palais_key": None},
     "160": {"palais_de_justice": "Alma", "district_judiciaire": "Alma", "point_de_service": False, "palais_key": "alma"},
     "605": {"palais_de_justice": "Amos", "district_judiciaire": "Abitibi", "point_de_service": False, "palais_key": "amos"},
     "120": {"palais_de_justice": "Amqui", "district_judiciaire": "Rimouski", "point_de_service": False, "palais_key": "amqui"},
-    "635": {"palais_de_justice": "Aupaluk", "district_judiciaire": "Abitibi", "point_de_service": True, "palais_key": None},
+    # Kuujjuaq is this greffe's FIXED seat, per the same MJQ listing: 635
+    # serves seven Nunavik localities, six of them on circuit, and Kuujjuaq
+    # is the one that is not. Itinerant AND addressed is not a contradiction
+    # — the circuit travels, the registry sits somewhere. Until 2026-07-30
+    # Kuujjuaq sat in _PALAIS unreferenced because no source said which
+    # greffe it belonged to; one now does, so it was linked rather than
+    # guessed. That is the only way out of an « unknown address ».
+    "635": {"palais_de_justice": "Aupaluk", "district_judiciaire": "Abitibi", "point_de_service": True, "palais_key": "kuujjuaq"},
     "655": {"palais_de_justice": "Baie-Comeau", "district_judiciaire": "Baie-Comeau", "point_de_service": False, "palais_key": "baie-comeau"},
     "652": {"palais_de_justice": "Blanc-Sablon", "district_judiciaire": "Mingan", "point_de_service": True, "palais_key": None},
     "555": {"palais_de_justice": "Campbell's Bay", "district_judiciaire": "Pontiac", "point_de_service": False, "palais_key": "campbells-bay"},
@@ -151,6 +165,10 @@ _GREFFES: dict[str, dict] = {
     "715": {"palais_de_justice": "Sainte-Agathe-des-Monts", "district_judiciaire": "Terrebonne", "point_de_service": False, "palais_key": None},
     "130": {"palais_de_justice": "Sainte-Anne-des-Monts", "district_judiciaire": "Gaspé", "point_de_service": False, "palais_key": "sainte-anne-des-monts"},
     "760": {"palais_de_justice": "Salaberry-de-Valleyfield", "district_judiciaire": "Beauharnois", "point_de_service": False, "palais_key": "salaberry-de-valleyfield"},
+    # Reconciled 2026-07-30 against the MJQ listing (updated 2026-07-22): 625
+    # was MISSING, so « 625-05-… » parsed to "greffe inconnu" on a greffe that
+    # exists. Itinerant circuit greffe; the MJQ publishes no address for it.
+    "625": {"palais_de_justice": "Senneterre", "district_judiciaire": "Abitibi", "point_de_service": True, "palais_key": None},
     "650": {"palais_de_justice": "Sept-Îles", "district_judiciaire": "Mingan", "point_de_service": False, "palais_key": "sept-iles"},
     "410": {"palais_de_justice": "Shawinigan", "district_judiciaire": "Saint-Maurice", "point_de_service": False, "palais_key": "shawinigan"},
     "450": {"palais_de_justice": "Sherbrooke", "district_judiciaire": "Saint-François", "point_de_service": False, "palais_key": "sherbrooke"},

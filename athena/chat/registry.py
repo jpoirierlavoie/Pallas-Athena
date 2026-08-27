@@ -8,8 +8,12 @@ One registry maps tool name → executor. Four executors (SPEC §4.1 + the
                          are referenced from ``mcp.tools.TOOLS`` BY
                          IDENTITY — never copied, so the two surfaces
                          cannot drift.
-* ``http_worker``      — the legislation/jurisprudence Workers
-                         (chat/worker_tools.py + worker_client.py).
+* ``http_worker``      — the legislation/jurisprudence Workers, which are
+                         MCP servers reached by JSON-RPC ``tools/call``
+                         (chat/worker_tools.py + worker_client.py). Their
+                         specs are GENERATED from the Workers' own
+                         ``tools/list``, so a description or a schema here
+                         cannot drift from the tool it describes.
                          CHAT-ONLY: these names never enter ``TOOLS`` and
                          never reach the external connector.
 * ``skill_file``       — ``get_skill_file``, the progressive-disclosure

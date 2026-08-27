@@ -260,6 +260,18 @@ def _execute_in_process(
 
 
 def _execute_worker(name: str, arguments: dict) -> ToolExecution:
+    """A Worker tool call. The RAW text comes back, like get_skill_file.
+
+    Deliberately NOT `_serialize`: an MCP tool result is French prose
+    written to be read, and the connectors carry their reliability
+    warnings inside it (« établit l'existence, jamais l'autorité
+    actuelle »). Wrapping it in a JSON envelope would hide a verdict and
+    its reserve behind a quoting layer, for no gain — the model reads the
+    prose, and the reserve must arrive with the assurance it qualifies.
+
+    A refusal (`ok: False`, reason `tool_error`) carries that same text:
+    the model has to read WHY in order to correct itself.
+    """
     spec = registry.find_worker_spec(name)
     result = call_worker(spec or {}, arguments)
     if not result.get("ok"):
@@ -267,7 +279,7 @@ def _execute_worker(name: str, arguments: dict) -> ToolExecution:
             content=str(result.get("message", _GENERIC_ERROR_FR)),
             is_error=True,
         )
-    return ToolExecution(content=_serialize(result.get("payload")), is_error=False)
+    return ToolExecution(content=str(result.get("text", "")), is_error=False)
 
 
 # ── get_skill_file (executor `skill_file`) ──────────────────────────────────

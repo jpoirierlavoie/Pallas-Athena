@@ -433,9 +433,12 @@ class Config:
     }
 
     # Legal-research Cloudflare Workers (chat tools legislation_* /
-    # jurisprudence_*). Plain server-to-server REST with a bearer token per
-    # Worker (user decision D10: two DISTINCT secrets — independent
-    # revocation). All optional: an unconfigured Worker's tools are simply
+    # jurisprudence_*). They are MCP servers: one JSON-RPC tools/call per
+    # invocation over POST /mcp, with a bearer token per Worker (D10: two
+    # DISTINCT secrets — independent revocation; D5 amended 2026-08-26, the
+    # Workers speak MCP, not plain REST). The URL is the ORIGIN alone —
+    # « https://jurisprudence.poirierlavoie.ca », no /mcp: the path lives on
+    # each tool spec. All optional: an unconfigured Worker's tools are simply
     # absent from the chat's tool array (French degrade via the charter's
     # citation rule — never a crash). These tools NEVER appear on the external
     # MCP connector: claude.ai reaches the Workers directly already.

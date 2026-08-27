@@ -65,6 +65,13 @@ env_variables:
   OTEL_EXPORTER_OTLP_TIMEOUT: "5"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
+  # Jurisprudence Worker — the ORIGIN alone, no /mcp: the path lives on each
+  # generated tool spec (chat/worker_tools.py). Non-secret; its bearer token
+  # is jurisprudence-worker-token in Secret Manager, and until that secret
+  # exists the 13 jurisprudence_* tools are simply absent from the model's
+  # tool array — the charter then marks citations « non vérifiée » instead of
+  # letting the model call into a wall.
+  JURISPRUDENCE_WORKER_URL: "https://jurisprudence.poirierlavoie.ca"
   # Secrets (SECRET_KEY, GRAPH_CLIENT_SECRET, worker tokens) come from
   # Google Cloud Secret Manager at runtime — see config.py.
 
