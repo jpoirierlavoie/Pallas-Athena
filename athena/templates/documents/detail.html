@@ -169,6 +169,18 @@
      signature — tombent sur le repli Télécharger. #}
   <div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4">
     {% if document.file_type == 'application/pdf' and signed_url %}
+    {# ⚠ Un <iframe> ne rend PAS un PDF sur téléphone : ni iOS Safari ni
+       Chrome Android ne le font, et le cadre reste blanc — sans erreur, sans
+       repli (le contenu d'un <iframe> ne s'affiche que si l'élément lui-même
+       n'est pas supporté, ce qui n'est jamais le cas). Ce lien est donc le
+       SEUL chemin qui marche sur un téléphone, et il est visible partout
+       plutôt que caché derrière une variante responsive : l'artefact compilé
+       n'en contient aucune. #}
+    <div class="p-3 border-b border-gray-100">
+      <a href="{{ signed_url }}" target="_blank" rel="noopener"
+         class="text-sm text-indigo-600">Ouvrir le PDF dans un nouvel onglet</a>
+      <span class="text-xs text-gray-400">— nécessaire sur téléphone, où le cadre ci-dessous reste blanc</span>
+    </div>
     <div class="w-full" style="height: 80vh;">
       <iframe src="{{ signed_url }}"
               class="w-full h-full border-0"

@@ -316,8 +316,8 @@ def _env():
     from jinja2 import Environment, FileSystemLoader
     racine = Path(__file__).resolve().parent.parent / "templates"
     e = Environment(loader=FileSystemLoader(str(racine)))
-    e.globals.update(ms=lambda n, **k: "", url_for=lambda *a, **k: "#",
-                     csrf_token=lambda: "x")
+    e.globals.update(ms=lambda *a, **k: "", url_for=lambda *a, **k: "#",
+                     csrf_token=lambda *a, **k: "x")
     e.filters["to_mtl"] = lambda d: d
     return e
 
@@ -639,3 +639,80 @@ def test_a_blank_description_counts_as_empty(monde):
     monde["store"]["doc-1"]["description"] = "   "
     maj, _ = doc.record_analyse("doc-1", _SORTIE)
     assert maj["description"] == _SORTIE["resume"]
+
+
+# ── La page de détail rend TOUT (2026-08-27) ───────────────────────────────
+
+def _detail(**over):
+    """Rend le bloc `content` de detail.html, sans base.html."""
+    from datetime import datetime, timezone
+    e = _env()
+    src = e.loader.get_source(e, "documents/detail.html")[0]
+    i = src.index("{% block content %}") + len("{% block content %}")
+    j = src.rindex("{% endblock %}")
+    doc = {
+        "id": "d1", "filename": "x.pdf", "display_name": "D.pdf",
+        "file_type": "application/pdf", "category": "jugement",
+        "category_source": "analyse", "_file_size_fmt": "1 Mo",
+        "_file_icon": "pdf", "dossier_id": "dd",
+        "dossier_file_number": "2026-034", "description": "Desc.",
+        "tags": ["portail"], "portail_invitation_id": "inv",
+        "created_at": datetime(2026, 8, 26, tzinfo=timezone.utc),
+        "analyse": {"sous_nature": "JUG_JUGEMENT", "nature_detectee": "jugement",
+                    "famille": "JUDICIAIRE", "niveau_protection": 0,
+                    "confirme": True},
+    }
+    doc.update(over)
+    return e.from_string(src[i:j]).render(
+        document=doc, signed_url="https://x/y.pdf", folder_breadcrumb=[],
+        folder_tree=[], analyses=[], category_colors={"jugement": "bg-red-100"},
+        category_labels={"jugement": "Jugement"}, return_to="",
+    )
+
+
+def test_the_detail_page_renders_every_section():
+    """La PRÉSENCE, pas l'équilibre des balises.
+
+    Vécu le 2026-08-27 : en remontant la carte d'aperçu, un script a mal
+    borné le bloc et emporté la structure de la carte suivante. Le compte
+    de `<div>` restait ÉQUILIBRÉ — 15/15 — et j'avais vérifié l'équilibre
+    et l'ordre, jamais ce qui SORTAIT. Rendu, il ne restait que le
+    visualiseur et le titre; le praticien l'a vu en production.
+    """
+    html = _detail()
+    for nom, marqueur in (
+        ("titre", "D.pdf"),
+        ("catégorie", "Jugement"),
+        ("dossier", "2026-034"),
+        ("bloc d'analyse", ">Analyse<"),
+        ("provenance du portail", "Reçu du portail"),
+        ("description", "Desc."),
+        ("étiquettes", ">portail<"),
+        ("dates", "Ajouté le"),
+        ("visualiseur", "<iframe"),
+    ):
+        assert marqueur in html, f"section absente du rendu : {nom}"
+
+
+def test_a_pdf_offers_a_path_that_works_on_a_phone():
+    """Un <iframe> ne rend PAS un PDF sur téléphone.
+
+    Ni iOS Safari ni Chrome Android ne le font, et le cadre reste blanc —
+    sans erreur, et sans repli : le contenu d'un `<iframe>` ne s'affiche
+    que si l'ÉLÉMENT n'est pas supporté, ce qui n'arrive jamais. Le lien
+    est donc le seul chemin qui marche, et il est visible PARTOUT — le
+    cacher derrière une variante responsive ne marcherait pas non plus,
+    puisque l'artefact compilé n'en contient aucune.
+    """
+    html = _detail()
+    assert "Ouvrir le PDF" in html
+    i_lien, i_frame = html.index("Ouvrir le PDF"), html.index("<iframe")
+    assert i_lien < i_frame, "le lien doit précéder le cadre"
+    for prefixe in ("sm:", "md:", "lg:"):
+        bloc = html[i_lien - 400:i_frame]
+        assert prefixe not in bloc, prefixe
+
+
+def test_a_non_pdf_gets_no_pdf_link():
+    html = _detail(file_type="image/png")
+    assert "Ouvrir le PDF" not in html
