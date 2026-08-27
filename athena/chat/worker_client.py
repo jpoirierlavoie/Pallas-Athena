@@ -60,14 +60,28 @@ CLIENT_INFO = {"name": "pallas-athena-chat", "version": "1"}
 # because one of its tools is a CHAIN: canlii_verify_citations takes up to
 # 25 citations and makes a throttled outbound call for each, so a lawful
 # slow answer is not the same thing as a hung service.
+#
+# `legislation` gets 45 s on a MEASUREMENT, not a guess: its worst case in
+# production was 8.9 s (2026-08-27) — qclaw_search_text on the EN->FR semantic
+# bridge, which embeds the query with bge-m3, queries Vectorize and fuses with
+# FTS5. That was a COLD call, and cold is exactly what a scaled-up instance or a
+# freshly recycled Durable Object serves. 30 s would leave barely 3x headroom on
+# the one path most likely to be cold; 45 s stays far inside the turn budget
+# (gunicorn --timeout 570).
 _DEFAULT_READ_TIMEOUT_S = 30
-_READ_TIMEOUT_S: dict[str, int] = {"jurisprudence": 60}
+_READ_TIMEOUT_S: dict[str, int] = {"jurisprudence": 60, "legislation": 45}
 
 # Workers whose transport requires an `initialize` handshake and a session
-# header before `tools/call` (the official-SDK framing). EMPTY in v1:
-# `jurisprudence` is stateless and needs none. The `legislation` lot flips
-# its entry to True — the mechanism below is already written and tested.
-_REQUIRES_HANDSHAKE: dict[str, bool] = {}
+# header before `tools/call` (the official-SDK framing). `jurisprudence` is
+# stateless and needs none; `legislation` is built on McpAgent (official SDK),
+# so it issues an Mcp-Session-Id and REFUSES a tools/call that never initialised.
+# Measured against production on 2026-08-27: GET /mcp with a bearer answers 200
+# (the SSE stream is real) and DELETE /mcp answers 204 (session close works).
+#
+# NOTE, and it is not a detail: this client never sends that DELETE, so each
+# process leaks one Durable Object session until the DO idles out. Bounded by
+# max_instances, but it is a real cost and the server side knows it.
+_REQUIRES_HANDSHAKE: dict[str, bool] = {"legislation": True}
 
 # Session ids handed out by a stateful Worker, one per worker name. Kept
 # per PROCESS: a Cloud Run instance reuses its session across turns, and a

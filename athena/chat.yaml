@@ -72,6 +72,12 @@ env_variables:
   # tool array — the charter then marks citations « non vérifiée » instead of
   # letting the model call into a wall.
   JURISPRUDENCE_WORKER_URL: "https://jurisprudence.poirierlavoie.ca"
+  # Twin Worker, same contract: ORIGIN ONLY — the /mcp path lives on each tool spec.
+  # Its token is legislation-worker-token in Secret Manager; until that secret exists the
+  # legislation_* tools are simply absent from the model's tool array, exactly like the
+  # jurisprudence ones. Distinct token from the claude.ai connector's, so either bearer
+  # can be revoked without taking the other down.
+  LEGISLATION_WORKER_URL: "https://legislation.poirierlavoie.ca"
   # Secrets (SECRET_KEY, GRAPH_CLIENT_SECRET, worker tokens) come from
   # Google Cloud Secret Manager at runtime — see config.py.
 
