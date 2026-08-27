@@ -412,6 +412,72 @@ _FICHIERS = (
 )
 
 
+def deplier(texte: str) -> str:
+    """Rendre au Markdown ses paragraphes d'un seul tenant.
+
+    Les littéraux de ce fichier sont coupés à ~72 colonnes, ce qui est la
+    bonne forme pour de la SOURCE Python : ça se lit, ça se relit en revue,
+    et un diff montre la phrase modifiée plutôt que le paragraphe entier.
+
+    Ce n'est pas la bonne forme pour la DESTINATION. Le corps atterrit dans
+    un champ de texte que le juriste édite lui-même, et du texte pré-coupé
+    y est pénible : ajouter un mot oblige à recouper tout le paragraphe à
+    la main, sans quoi la mesure part en accordéon. Le Markdown se replie
+    tout seul sur la fenêtre — la coupure ne lui apporte rien.
+
+    Ce qui garde ses retours, et pourquoi :
+
+    * une ligne VIDE — c'est la seule frontière de paragraphe du Markdown ;
+    * un titre (``#``) — un titre est une ligne, jamais un paragraphe ;
+    * un bloc INDENTÉ de 4 espaces ou plus — c'est du code au sens du
+      Markdown, où chaque retour est significatif (l'exemple de compte
+      rendu en lot en est un) ;
+    * une ligne de TABLEAU (``|``) — une rangée est une ligne ;
+    * une ligne de CITATION (``>``) — joindre deux lignes de citation
+      laisserait un ``>`` littéral au MILIEU de la phrase, que le
+      rendu affiche tel quel. Le contrôle « mêmes mots » ne voit pas
+      ce défaut : le mot est là, c'est la mise en forme qui casse ;
+    * un séparateur (``---``, ``***``).
+
+    Un item de liste (``-``, ``*``, ``1.``) OUVRE une ligne : ses
+    continuations indentées de 2 espaces le rejoignent, mais l'item suivant
+    en commence une nouvelle.
+    """
+    sortie: list[str] = []
+    tampon: list[str] = []
+
+    def vider() -> None:
+        if tampon:
+            sortie.append(" ".join(tampon))
+            tampon.clear()
+
+    for ligne in texte.split("\n"):
+        nu = ligne.strip()
+        # Bloc indenté : du code. Chaque retour compte, on ne touche à rien.
+        if ligne.startswith("    ") and nu:
+            vider()
+            sortie.append(ligne)
+            continue
+        if not nu:
+            vider()
+            sortie.append("")
+            continue
+        if (nu.startswith("#") or nu.startswith("|") or nu.startswith(">")
+                or set(nu) <= set("-*_= ")):
+            vider()
+            sortie.append(ligne)
+            continue
+        # Un item de liste ouvre sa propre ligne ; ce qui suit, indenté de
+        # deux espaces, le continue et le rejoint.
+        est_item = (nu[:2] in ("- ", "* ", "+ ")
+                    or (nu[:1].isdigit() and ". " in nu[:4]))
+        if est_item:
+            vider()
+        tampon.append(nu)
+    vider()
+    return "\n".join(sortie)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -440,9 +506,10 @@ def main() -> int:
     sortie = os.path.abspath(args.sortie)
     os.makedirs(sortie, exist_ok=True)
 
-    documents = [("corps.md", CORPS, "Corps de la compétence", BODY_MAX)]
+    documents = [("corps.md", deplier(CORPS), "Corps de la compétence",
+                  BODY_MAX)]
     for titre, nom, rendu in _FICHIERS:
-        documents.append((nom, rendu(), titre, FILE_MAX))
+        documents.append((nom, deplier(rendu()), titre, FILE_MAX))
 
     if len(_FICHIERS) > MAX_FILES:
         print(f"ERREUR : {len(_FICHIERS)} fichiers, plafond {MAX_FILES}.")

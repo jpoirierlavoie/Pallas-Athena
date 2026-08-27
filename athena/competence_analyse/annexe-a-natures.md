@@ -74,6 +74,5 @@ Le vocabulaire de classification. La `nature` est la catégorie du document dans
 
 ## Deux pièges de lecture
 
-- `PV_AUDIENCE` est un préfixe de `PV_AUDIENCE_JUGEMENT`, et
-  `PV_SIGNIFICATION` de `PV_SIGNIFICATION_DESIGNEE` : ce sont **quatre codes distincts**, jamais des variantes.
+- `PV_AUDIENCE` est un préfixe de `PV_AUDIENCE_JUGEMENT`, et `PV_SIGNIFICATION` de `PV_SIGNIFICATION_DESIGNEE` : ce sont **quatre codes distincts**, jamais des variantes.
 - La catégorie héritée `procès_verbal` (sans suffixe) existe encore sur d'anciens documents de l'application. **Ne la produis jamais** : choisis `procès_verbal_signification` ou `procès_verbal_audience`, et signale la divergence.
