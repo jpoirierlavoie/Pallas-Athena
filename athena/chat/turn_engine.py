@@ -178,8 +178,23 @@ def _assemble_messages(turns: list[dict], current_turn_id: str) -> list[dict]:
     return messages
 
 
-def _resolve_skills(conv: dict) -> tuple[list[dict], list[dict]]:
-    """Les têtes des compétences sélectionnées, et les versions à épingler.
+def _resolve_skills(conv: dict, turn: dict) -> tuple[list[dict], list[dict]]:
+    """Les compétences de CE tour, et les versions à épingler.
+
+    Même règle que la charte : **au pas 1** les têtes, **aux pas ≥ 2** les
+    versions ÉPINGLÉES sur le tour. Sans cela le corps d'une compétence
+    révisée en cours de chaîne changeait le prompt sans changer
+    l'estampille — le registre affirmait alors une version que le modèle
+    n'avait pas vue. Le fichier de référence, lui, se résolvait DÉJÀ à la
+    paire épinglée : les deux moitiés d'une même compétence pouvaient donc
+    venir de deux versions différentes dans le même tour.
+
+    Une version épinglée illisible lève un RETRYABLE, là où ``get_heads``
+    échoue OUVERT. Ce n'est pas une incohérence : dégrader est honnête à
+    la PREMIÈRE résolution, puisque l'estampille enregistre ensuite ce qui
+    a réellement été chargé. Au pas 2 l'estampille est déjà posée — sauter
+    une compétence ferait mentir le registre, et un document de version
+    est write-once : son absence est une anomalie, pas un état.
 
     ⚠ Les versions sont des DICTS, jamais des paires ``[id, version]`` :
     **Firestore refuse un tableau qui contient un tableau**, et une liste
@@ -189,6 +204,26 @@ def _resolve_skills(conv: dict) -> tuple[list[dict], list[dict]]:
     déjà payé. Les deux faux Firestore de la suite acceptaient la forme
     fautive ; ils modélisent la contrainte depuis.
     """
+    epingles = turn.get("skill_versions") or []
+    if epingles:
+        heads: list[dict] = []
+        for paire in epingles:
+            if not isinstance(paire, dict):
+                continue
+            skill_id = str(paire.get("skill_id", ""))
+            doc = skill_model.get_version(
+                skill_id, int(paire.get("version") or 0)
+            )
+            if doc is None:
+                raise vertex.ChatVertexRetryable("skill_version_unreadable")
+            # `_version_doc` ne porte NI `id` NI `current_version` ; l'un
+            # sert au tri stable de l'assemblage, l'autre au listing des
+            # fichiers. Réinjectés depuis la paire, jamais relus.
+            heads.append(
+                {**doc, "id": skill_id, "current_version": doc.get("version")}
+            )
+        return heads, list(epingles)
+
     heads = skill_model.get_heads(conv.get("skill_selection") or [])
     versions = [
         {"skill_id": h.get("id", ""), "version": int(h.get("current_version") or 0)}
@@ -580,7 +615,7 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
     # `unattended`), so a raise after them would have Cloud Tasks redeliver
     # and replay every write: duplicate notes, duplicate drafts. Nothing
     # below may move above this line.
-    heads, skill_pairs = _resolve_skills(conv)
+    heads, skill_pairs = _resolve_skills(conv, turn)
     scheduled = turn.get("addendum") == "unattended"
     charte, charter_version, charter_source = _resolve_charter(turn)
     if charter_source == "repli":

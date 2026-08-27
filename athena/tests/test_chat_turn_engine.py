@@ -679,15 +679,38 @@ _HEAD_WITH_FILES = {
 }
 
 
-def test_get_skill_file_end_to_end_pins_this_turns_version(world, monkeypatch):
-    # First engine test with NON-empty skill heads: the REAL execute_tool
-    # runs (only the Firestore reader is faked), so the step-1 in-memory
-    # pairs → executor → stamped skill_versions chain is exercised whole.
+def _competence_epinglee(monkeypatch):
+    """Les têtes ET les versions.
+
+    Depuis que le pas 2 relit la version ÉPINGLÉE plutôt que la tête,
+    n'injecter que `get_heads` laisse la chaîne sans compétence au
+    deuxième appel — et l'assertion de stabilité inter-pas devient la
+    preuve que la relecture reconstruit un bloc octet-identique, `id`
+    et `current_version` réinjectés depuis la paire compris (le doc de
+    version ne les porte pas).
+    """
     monkeypatch.setattr(
         turn_engine.skill_model,
         "get_heads",
         lambda ids: [copy.deepcopy(_HEAD_WITH_FILES)],
     )
+    monkeypatch.setattr(
+        turn_engine.skill_model,
+        "get_version",
+        lambda sid, v: {
+            "version": v,
+            "name": _HEAD_WITH_FILES["name"],
+            "body": _HEAD_WITH_FILES["body"],
+            "files": copy.deepcopy(_HEAD_WITH_FILES["files"]),
+            "created_at": None,
+        },
+    )
+
+def test_get_skill_file_end_to_end_pins_this_turns_version(world, monkeypatch):
+    # First engine test with NON-empty skill heads: the REAL execute_tool
+    # runs (only the Firestore reader is faked), so the step-1 in-memory
+    # pairs → executor → stamped skill_versions chain is exercised whole.
+    _competence_epinglee(monkeypatch)
     monkeypatch.setattr(
         turn_engine.executors, "log_chat_event", lambda *a, **k: None
     )
@@ -737,11 +760,7 @@ def test_get_skill_file_resume_from_authorization_uses_stamped_pairs(
     monkeypatch.setattr(
         turn_engine.registry, "GATED_TOOLS", frozenset({"create_note"})
     )
-    monkeypatch.setattr(
-        turn_engine.skill_model,
-        "get_heads",
-        lambda ids: [copy.deepcopy(_HEAD_WITH_FILES)],
-    )
+    _competence_epinglee(monkeypatch)
     monkeypatch.setattr(
         turn_engine.executors, "log_chat_event", lambda *a, **k: None
     )
@@ -1167,3 +1186,78 @@ def test_a_charter_file_request_gets_a_charter_shaped_refusal(monkeypatch):
     )
     assert "non sélectionnée" in autre.content
     assert "s-inconnue" not in autre.content      # un refus ne cite rien
+
+
+def test_a_skill_revised_mid_chain_does_not_change_the_prompt(world, monkeypatch):
+    """La symétrie avec la charte, et le défaut qu'elle répare.
+
+    Le CORPS d'une compétence se relisait à la tête à chaque pas, alors
+    que son FICHIER de référence se résolvait déjà à la paire épinglée :
+    les deux moitiés d'une même compétence pouvaient donc venir de deux
+    versions différentes dans le même tour, et l'estampille — posée au
+    pas 1 — affirmait une version que le modèle n'avait pas vue.
+    """
+    tete = {"id": "s-1", "name": "Rédaction", "current_version": 4,
+            "active": True, "body": "corps v4", "files": []}
+    monkeypatch.setattr(
+        turn_engine.skill_model, "get_heads", lambda ids: [dict(tete)]
+    )
+    monkeypatch.setattr(
+        turn_engine.skill_model,
+        "get_version",
+        lambda sid, v: {"version": v, "name": "Rédaction",
+                        "body": f"corps v{v}", "files": [], "created_at": None},
+    )
+    _outils_muets(monkeypatch)
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_dossier", "input": {}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Fini."}]),
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    assert "corps v4" in world.vertex.calls[0]["system"][1]["text"]
+
+    # L'avocat révise la compétence entre les deux pas.
+    tete["current_version"] = 9
+    tete["body"] = "corps v9"
+    jeton = _stored_turn(world)["step_token"]
+    assert turn_engine.process_task(_payload(world, jeton), 0) == "final"
+    # Le pas 2 a tourné sur la v4 épinglée — et l'estampille dit vrai.
+    assert "corps v4" in world.vertex.calls[1]["system"][1]["text"]
+    assert "corps v9" not in world.vertex.calls[1]["system"][1]["text"]
+    assert _stored_turn(world)["skill_versions"] == [
+        {"skill_id": "s-1", "version": 4}
+    ]
+
+
+def test_an_unreadable_pinned_skill_version_retries(world, monkeypatch):
+    """`get_heads` échoue OUVERT ; ici non. Dégrader est honnête à la
+    PREMIÈRE résolution — l'estampille enregistre ensuite ce qui a
+    réellement été chargé. Au pas 2 l'estampille est posée : sauter une
+    compétence ferait mentir le registre, et un document de version est
+    write-once, donc son absence est une anomalie."""
+    tete = {"id": "s-1", "name": "R", "current_version": 4, "active": True,
+            "body": "corps", "files": []}
+    monkeypatch.setattr(
+        turn_engine.skill_model, "get_heads", lambda ids: [dict(tete)]
+    )
+    monkeypatch.setattr(
+        turn_engine.skill_model, "get_version", lambda sid, v: {"version": v,
+        "name": "R", "body": "corps", "files": [], "created_at": None}
+    )
+    _outils_muets(monkeypatch)
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_dossier", "input": {}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Fini."}]),
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    jeton = _stored_turn(world)["step_token"]
+    monkeypatch.setattr(turn_engine.skill_model, "get_version", lambda sid, v: None)
+    with pytest.raises(turn_engine.vertex.ChatVertexRetryable) as excinfo:
+        turn_engine.process_task(_payload(world, jeton), 0)
+    assert excinfo.value.reason == "skill_version_unreadable"
