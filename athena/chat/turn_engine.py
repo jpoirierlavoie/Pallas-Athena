@@ -219,6 +219,7 @@ def _run_tools(
     *,
     refused_ids: frozenset = frozenset(),
     skill_pairs: Optional[list] = None,
+    charter_version: Optional[int] = None,
 ) -> list[dict]:
     unattended = turn.get("addendum") == "unattended"
     seed = (
@@ -232,10 +233,20 @@ def _run_tools(
     # route get_skill_file may resolve through, and what draft provenance
     # records — never a re-read head.
     effective_pairs = turn.get("skill_versions") or skill_pairs or []
+    # Same rule for the charter, which had no in-memory fallback: at step 1
+    # the doc still reads None (the stamp lands on the commit that FOLLOWS
+    # the tools), so the most common case of all — a save_draft in the very
+    # first tool batch — recorded provenance without the charter that
+    # governed it. `is not None`, never `or`: version 0 does not exist, and
+    # the `or` habit is precisely what made the stamp guard below unable to
+    # guard a conversation with no skills.
+    stamped_charter = turn.get("charter_version")
     provenance_extra = {
         "model": conv.get("model", ""),
         "skill_versions": effective_pairs,
-        "charter_version": turn.get("charter_version"),
+        "charter_version": (
+            stamped_charter if stamped_charter is not None else charter_version
+        ),
     }
     results: list[dict] = []
     attachments: list[dict] = []
@@ -498,6 +509,22 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
         )
         return "failed"
 
+    # Assembly — skills resolved at THIS turn's head (FLAG 4), charter
+    # versioned, stable order end to end (the cache prefix depends on it).
+    #
+    # ⚠ ORDER IS LOAD-BEARING: this sits ABOVE the pending-tool block on
+    # purpose. Resolution is the only part of _advance that may raise a
+    # RETRYABLE, and the pending block RUNS APPROVED TOOL CALLS — an
+    # interactive turn injects no idempotency_key (executors.py, gated on
+    # `unattended`), so a raise after them would have Cloud Tasks redeliver
+    # and replay every write: duplicate notes, duplicate drafts. Nothing
+    # below may move above this line.
+    heads, skill_pairs = _resolve_skills(conv)
+    scheduled = turn.get("addendum") == "unattended"
+    charter_version = charter.CHARTER_VERSION
+    system = charter.system_blocks(heads, scheduled=scheduled)
+    tools = _build_tools()
+
     # Pending tool work from an authorization decision (§4.6.3): the last
     # segment stopped on tool_use, no results yet, decision recorded.
     pending_results: Optional[list[dict]] = None
@@ -512,17 +539,16 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
             refused = frozenset(decision.get("refused") or [])
             tool_uses = _tool_use_blocks(_rehydrate_all(last.get("blocks")))
             pending_results = _store_blocks(
-                _run_tools(tool_uses, conv, turn, refused_ids=refused),
+                _run_tools(
+                    tool_uses,
+                    conv,
+                    turn,
+                    refused_ids=refused,
+                    charter_version=charter_version,
+                ),
                 conv,
                 turn,
             )
-
-    # Assembly — skills resolved at THIS turn's head (FLAG 4), charter
-    # versioned, stable order end to end (the cache prefix depends on it).
-    heads, skill_pairs = _resolve_skills(conv)
-    scheduled = turn.get("addendum") == "unattended"
-    system = charter.system_blocks(heads, scheduled=scheduled)
-    tools = _build_tools()
 
     turns = conv_model.list_turns(conversation_id)
     if pending_results is not None and turns:
@@ -579,11 +605,18 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
         "tool_results": None,
         "at": datetime.now(timezone.utc).isoformat(),
     }
+    # Stamped ONCE per turn, at the first commit. The guard reads
+    # `charter_version` — which `prepare_turn_pair` initialises to None —
+    # and NOT `skill_versions`: a conversation with no skills selected has
+    # `[]`, which is falsy, so the old guard let the stamp be rewritten at
+    # every step of the chain. Harmless while the charter was a constant;
+    # a silent mid-chain move of the registre's provenance the moment it
+    # stops being one.
     stamps: Optional[dict] = None
-    if not turn.get("skill_versions"):
+    if turn.get("charter_version") is None:
         stamps = {
             "skill_versions": skill_pairs,
-            "charter_version": charter.CHARTER_VERSION,
+            "charter_version": charter_version,
         }
 
     common = dict(
@@ -637,7 +670,13 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
         # the turn doc is not yet stamped — the in-memory pairs of THIS
         # assembly are the truth (the same list the commit below stamps).
         segment["tool_results"] = _store_blocks(
-            _run_tools(raw_tool_uses, conv, turn, skill_pairs=skill_pairs),
+            _run_tools(
+                raw_tool_uses,
+                conv,
+                turn,
+                skill_pairs=skill_pairs,
+                charter_version=charter_version,
+            ),
             conv,
             turn,
         )

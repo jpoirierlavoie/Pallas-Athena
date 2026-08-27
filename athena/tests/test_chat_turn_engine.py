@@ -809,3 +809,126 @@ def test_scanned_pdf_result_attaches_the_native_document(world, monkeypatch):
     assert "document" in kinds
     document = next(r for r in results if r.get("type") == "document")
     assert document["source"]["media_type"] == "application/pdf"
+
+
+# ── Le socle du versionnement de la charte (lot 0) ──────────────────────────
+#
+# Trois défauts latents, invisibles tant que la charte est une constante et
+# fatals dès qu'elle varie. Ils sont réparés AVANT que la charte devienne
+# éditable, précisément pour qu'aucun d'eux ne soit imputé au lot suivant.
+
+
+def test_stamp_is_written_once_even_with_zero_skills(world, monkeypatch):
+    """La garde d'estampille lit `charter_version`, jamais `skill_versions`.
+
+    Une conversation sans aucune compétence a `skill_versions == []`, qui
+    est falsy : l'ancienne garde ne gardait donc RIEN, et l'estampille se
+    réécrivait à chaque pas de la chaîne. Inoffensif tant que la charte
+    est une constante ; un déplacement silencieux de la provenance du
+    registre en milieu de chaîne dès qu'elle ne l'est plus.
+    """
+    # Zéro compétence — c'est le défaut de la fixture, et c'est le cas.
+    assert turn_engine.skill_model.get_heads([]) == []
+    versions_vues = []
+    vrai_commit = cc.commit_step
+
+    def _espion(cid, tid, token, **kw):
+        versions_vues.append(("stamps" in kw and kw["stamps"] is not None))
+        return vrai_commit(cid, tid, token, **kw)
+
+    monkeypatch.setattr(turn_engine.conv_model, "commit_step", _espion)
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_dossier",
+              "input": {"dossier_id": "d1"}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Voici."}]),
+    ]
+    monkeypatch.setattr(
+        turn_engine.executors,
+        "execute_tool",
+        lambda name, args, **kw: SimpleNamespace(content="{}", is_error=False),
+    )
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    jeton = _stored_turn(world)["step_token"]
+    assert turn_engine.process_task(_payload(world, jeton), 0) == "final"
+    # Deux commits, UNE seule estampille — la première.
+    assert versions_vues == [True, False]
+    assert _stored_turn(world)["charter_version"] == turn_engine.charter.CHARTER_VERSION
+
+
+def test_draft_written_at_step_one_records_the_charter_version(world, monkeypatch):
+    """Le cas le plus fréquent de tous : un save_draft au premier lot.
+
+    L'estampille arrive sur le commit qui SUIT les outils, donc au pas 1 le
+    document de tour lit encore None. Les compétences avaient déjà leur
+    repli en mémoire ; la charte non — sa provenance partait vide.
+    """
+    vus = {}
+    monkeypatch.setattr(
+        turn_engine.executors,
+        "execute_tool",
+        lambda name, args, **kw: (
+            vus.update(kw.get("provenance_extra") or {}),
+            SimpleNamespace(content="{}", is_error=False),
+        )[1],
+    )
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "save_draft", "input": {}}],
+            "tool_use",
+        ),
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    # Le document de tour lisait None à cet instant précis…
+    assert vus["charter_version"] == turn_engine.charter.CHARTER_VERSION
+
+
+def test_charter_resolution_precedes_pending_tool_execution(world, monkeypatch):
+    """L'ordre dans `_advance` est porteur, pas cosmétique.
+
+    La résolution de la charte est la seule partie d'`_advance` qui pourra
+    lever un RETRYABLE, et le bloc des outils en attente exécute des appels
+    APPROUVÉS — sans clé d'idempotence en interactif. Une levée après eux
+    ferait rejouer chaque écriture à la redélivrance : notes en double,
+    brouillons en double. La mutation qui remet la résolution sous le bloc
+    fait tomber ce test.
+    """
+    monkeypatch.setattr(
+        turn_engine.registry, "GATED_TOOLS", frozenset({"create_note"})
+    )
+    executes = []
+    monkeypatch.setattr(
+        turn_engine.executors,
+        "execute_tool",
+        lambda name, args, **kw: (
+            executes.append(name),
+            SimpleNamespace(content="{}", is_error=False),
+        )[1],
+    )
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t-note", "name": "create_note",
+              "input": {}}],
+            "tool_use",
+        )
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "paused"
+    assert executes == []
+
+    status, token = cc.decide_authorization(
+        world.conv["id"], world.turn["id"], approved=["t-note"], refused=[]
+    )
+    assert status == "ok"
+
+    # L'assemblage échoue à la reprise, comme le fera une lecture Firestore
+    # de la charte en panne.
+    def _panne(*a, **kw):
+        raise turn_engine.vertex.ChatVertexRetryable("charter_unreadable")
+
+    monkeypatch.setattr(turn_engine.charter, "system_blocks", _panne)
+    with pytest.raises(turn_engine.vertex.ChatVertexRetryable):
+        turn_engine.process_task(_payload(world, token), 0)
+    # L'écriture approuvée n'a PAS eu lieu : la redélivrance ne la doublera pas.
+    assert executes == []
