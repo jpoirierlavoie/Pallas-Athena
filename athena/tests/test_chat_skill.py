@@ -57,6 +57,7 @@ if not _module_available("google.cloud.firestore"):
     _install_stub("google.cloud.firestore", _firestore_stub)
 
 with mock.patch("google.cloud.firestore.Client"):
+    import models.chat_reference_files as ref
     import models.chat_skill as cs
 
 from tests.test_chat_draft import (  # noqa: E402 — the shared fake harness
@@ -208,14 +209,14 @@ def test_duplicate_content_across_files_dedupes_to_one_write():
     # fake harness (which applies writes immediately) stays green.
     from datetime import datetime, timezone
 
-    entries, errors = cs._validate_files(
+    entries, errors = ref.validate_files(
         [
             {"name": "a", "description": "", "content": "même contenu"},
             {"name": "b", "description": "", "content": "même contenu"},
         ]
     )
     assert errors == []
-    writes = cs._content_writes(entries, datetime.now(timezone.utc))
+    writes = ref.content_writes(entries, datetime.now(timezone.utc))
     assert len(writes) == 1
     assert set(writes) == {_sha("même contenu")}
 
@@ -237,13 +238,13 @@ def test_file_validation_rules():
         ([["pas-un-dict"]], "invalide"),
     ]
     for files, fragment in cases:
-        _, errors = cs._validate_files(files)
+        _, errors = ref.validate_files(files)
         assert errors and fragment in errors[0], (files, errors)
     too_many = [
         {"name": f"f{i}", "description": "", "content": "c"}
         for i in range(cs.MAX_FILES + 1)
     ]
-    _, errors = cs._validate_files(too_many)
+    _, errors = ref.validate_files(too_many)
     assert any("Au plus" in e for e in errors)
 
 
