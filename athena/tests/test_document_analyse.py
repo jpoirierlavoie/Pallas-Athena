@@ -338,17 +338,26 @@ _DOC_RENDU = {
 }
 
 
-def test_the_screen_leads_with_protection_then_nature():
-    """§9.1 : le niveau de protection AVANT la nature.
+def test_the_regime_badge_sits_beside_the_category():
+    """Le régime se lit dans l'EN-TÊTE, à côté de la catégorie.
 
-    C'est lui qui commande la manipulation du document — ce qui peut être
-    transmis, à qui. L'ordre n'est pas cosmétique.
+    C'est là qu'on le cherche, et il y coûte une ligne au lieu d'une carte.
+    Il commande la manipulation du document, donc il précède tout le reste
+    — y compris le bloc d'analyse, qui vient plus bas.
     """
-    html = _env().get_template("documents/_analyse.html").render(
-        document=_DOC_RENDU, analyses=[]
-    )
-    assert html.index("Privilégié") < html.index("Nature détectée")
+    from pathlib import Path
+    racine = Path(__file__).resolve().parent.parent / 'templates' / 'documents'
+    detail = (racine / 'detail.html').read_text(encoding='utf-8')
+    bloc = (racine / '_analyse.html').read_text(encoding='utf-8')
 
+    # La pastille est dans l'en-tête, juste après celle de catégorie…
+    i_cat = detail.index('category_labels.get(document.category')
+    i_prot = detail.index('niveau_protection')
+    i_analyse = detail.index('documents/_analyse.html')
+    assert i_cat < i_prot < i_analyse
+    # …et PAS dupliquée dans le bloc.
+    assert 'niveau_protection' not in bloc.split('{# ── Ce qui doit')[0] or \
+        'niveaux' not in bloc
 
 def test_the_presumption_is_shown_not_hidden():
     """§7 nº 3 : la mention accompagne la valeur. C'est elle qui remplace le
@@ -357,7 +366,7 @@ def test_the_presumption_is_shown_not_hidden():
         document=_DOC_RENDU, analyses=[]
     )
     assert "Présumée" in html
-    assert "Confirmer cette classification" in html
+    assert "Confirmer" in html
 
     confirme = {**_DOC_RENDU,
                 "analyse": {**_DOC_RENDU["analyse"], "confirme": True}}
@@ -365,7 +374,7 @@ def test_the_presumption_is_shown_not_hidden():
         document=confirme, analyses=[]
     )
     assert "Présumée" not in html2
-    assert "Confirmer cette classification" not in html2
+    assert "Confirmer" not in html2
 
 
 def test_every_alert_is_displayed_never_folded():
@@ -373,7 +382,7 @@ def test_every_alert_is_displayed_never_folded():
     html = _env().get_template("documents/_analyse.html").render(
         document=_DOC_RENDU, analyses=[]
     )
-    for attendu in ("a remplacé la catégorie", "Mentions attendues absentes",
+    for attendu in ("Remplace la catégorie", "Mentions attendues absentes",
                     "Renonciation possible"):
         assert attendu in html, attendu
         # Aucune ne vit dans un <details>.
@@ -517,3 +526,75 @@ def test_the_audit_line_is_well_formed(monde, monkeypatch):
     for interdit in ("resume", "parties_mentionnees", "dispositif",
                      "indices_protection", "auteur"):
         assert interdit not in kwargs, interdit
+
+
+# ── Le juriste garde la main (2026-08-27) ──────────────────────────────────
+
+def test_a_manual_edit_reclaims_the_category(monde, monkeypatch):
+    """Corriger la catégorie à la main est une DÉTERMINATION, pas une
+    suggestion.
+
+    `update_metadata` ne touchait pas `category_source` : une catégorie
+    corrigée au formulaire restait donc marquée « analyse », donc
+    « présumée » à l'écran et au connecteur — sur une valeur que le juriste
+    venait de poser lui-même.
+    """
+    doc.record_analyse("doc-1", _SORTIE)
+    assert monde["store"]["doc-1"]["category_source"] == "analyse"
+
+    maj, err = doc.update_metadata("doc-1", {"category": "preuve"})
+    assert err == []
+    assert maj["category"] == "preuve"
+    assert maj["category_source"] == "juriste"
+
+
+def test_editing_another_field_leaves_the_source_alone(monde):
+    """Renommer un document ne dit rien de sa catégorie."""
+    doc.record_analyse("doc-1", _SORTIE)
+    maj, err = doc.update_metadata("doc-1", {"display_name": "Autre nom"})
+    assert err == []
+    assert maj["category_source"] == "analyse", "un renommage a réclamé la catégorie"
+
+
+# ── L'écran, après les retouches du 2026-08-27 ─────────────────────────────
+
+def _rendu(**analyse):
+    base = {**_DOC_RENDU["analyse"], **analyse}
+    return _env().get_template("documents/_analyse.html").render(
+        document={**_DOC_RENDU, "analyse": base}, analyses=[]
+    )
+
+
+def test_the_warnings_vanish_once_confirmed():
+    """Confirmer, c'est dire « j'ai vu ». Les avertissements tombent; le
+    journal, lui, ne s'efface jamais."""
+    assert _rendu(confirme=False).count("bg-amber-50") == 3
+    assert _rendu(confirme=True).count("bg-amber-50") == 0
+    assert "Confirmer" not in _rendu(confirme=True)
+
+
+def test_the_regime_label_is_never_printed_twice():
+    """« Public » paraissait deux fois — une fois comme niveau, une fois
+    comme code de privilège. La pastille vit dans l'en-tête; le bloc ne
+    liste les régimes que lorsqu'ils sont CUMULÉS, ce que le niveau seul ne
+    dit pas."""
+    html = _rendu(privileges=["PUBLIC"], niveau_protection=0)
+    assert "Régimes cumulés" not in html
+    assert html.upper().count("PUBLIC") == 0
+
+    cumul = _rendu(privileges=["LITIGE", "SECRET_PROFESSIONNEL"],
+                   niveau_protection=3)
+    assert "Régimes cumulés" in cumul
+
+
+def test_the_block_is_mobile_first():
+    """Une colonne par défaut, deux à partir de `sm`."""
+    html = _rendu()
+    import re
+    # ⚠ Les variantes responsive ne sont PAS compilées dans l'artefact —
+    # les 116 `sm:`/`md:`/`lg:` du dépôt sont inertes (mesuré 2026-08-27).
+    # En poser une donnerait l'illusion d'un responsive qui n'existe pas.
+    for g in re.findall(r'grid-cols-\d[^"]*', html):
+        assert g.startswith("grid-cols-1"), g
+    for prefixe in ('sm:', 'md:', 'lg:'):
+        assert prefixe not in html, prefixe

@@ -71,6 +71,21 @@
           <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ category_colors.get(document.category, 'bg-gray-100 text-gray-600') }}">
             {{ category_labels.get(document.category, document.category) }}
           </span>
+          {%- set niv = (document.analyse or {}).niveau_protection %}
+          {%- if niv is not none %}
+          {%- set prot = {3: ('bg-red-100 text-red-700', 'Secret professionnel'),
+                          2: ('bg-amber-100 text-amber-700', 'Privilégié'),
+                          1: ('bg-gray-200 text-gray-500', 'Confidentiel'),
+                          0: ('bg-green-100 text-green-700', 'Public')} %}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ prot.get(niv, ('bg-gray-100 text-gray-600',''))[0] }}"
+                title="Régime de protection — il commande ce qui peut être transmis">
+            {{ prot.get(niv, ('','Non déterminé'))[1] }}
+          </span>
+          {%- endif %}
+          {%- if document.category_source == 'analyse'
+                 and not (document.analyse or {}).confirme %}
+          <span class="text-xs text-gray-400" title="Classification présumée — à confirmer">présumé</span>
+          {%- endif %}
           <span class="text-xs text-gray-500">{{ document._file_size_fmt }}</span>
           <span class="text-xs text-gray-400">{{ document.filename }}</span>
         </div>
@@ -92,6 +107,35 @@
     </div>
 
     {% include "documents/_analyse.html" %}
+
+  {# Provenance du portail — champs DISTINCTS depuis le 2026-08-27.
+     Elle squattait `description`, le seul champ libre offert au juriste. #}
+  {% if document.portail_invitation_id or document.portail_sha512 %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+    <dl class="grid grid-cols-1 gap-2 text-xs">
+      {% if document.portail_invitation_id %}
+      <div>
+        <dt class="text-gray-400">Reçu du portail — invitation</dt>
+        <dd class="text-gray-700 break-all">{{ document.portail_invitation_id }}</dd>
+      </div>
+      {% endif %}
+      {% if document.portail_lot %}
+      <div>
+        <dt class="text-gray-400">Lot</dt>
+        <dd class="text-gray-700">{{ document.portail_lot }}</dd>
+      </div>
+      {% endif %}
+      {% if document.portail_sha512 %}
+      <div>
+        <dt class="text-gray-400">SHA-512</dt>
+        <dd class="text-gray-700 break-all" title="{{ document.portail_sha512 }}">
+          {{ document.portail_sha512[:32] }}…
+        </dd>
+      </div>
+      {% endif %}
+    </dl>
+  </div>
+  {% endif %}
 
   {# Description & tags #}
     {% if document.description %}

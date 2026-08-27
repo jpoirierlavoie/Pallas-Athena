@@ -250,6 +250,13 @@ def _default_doc() -> dict:
         # upload date).
         "document_date": None,
         "folder_id": None,
+        # Provenance du portail, en champs DÉDIÉS (2026-08-27). Elle vivait
+        # dans `description` — le seul champ de texte libre offert au
+        # juriste —, qu'elle rendait inutilisable. Vides sur tout document
+        # qui ne vient pas du portail.
+        "portail_invitation_id": "",
+        "portail_lot": "",
+        "portail_sha512": "",
         "version": 1,
         "parent_document_id": None,
         "created_at": None,
@@ -770,6 +777,13 @@ def update_metadata(
     }
     sanitized = _sanitize_data({k: v for k, v in data.items() if k in allowed_fields})
     merged = {**existing, **sanitized}
+    if "category" in sanitized:
+        # Le juriste reprend la main. Sans cette ligne, une catégorie
+        # corrigée À LA MAIN restait marquée « analyse », donc « présumée »
+        # à l'écran et au connecteur — sur une valeur que le juriste venait
+        # de poser lui-même. Le formulaire est une détermination, pas une
+        # suggestion.
+        merged["category_source"] = "juriste"
     if "document_date" in sanitized:
         # Presence-gated: a caller that does not carry the key never touches
         # the stored date; a carried empty string clears it deliberately.

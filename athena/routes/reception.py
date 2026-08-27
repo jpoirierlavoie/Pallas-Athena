@@ -848,12 +848,14 @@ def verser(inv_id: str, batch: str, seq: int):
         "category": request.form.get("category", "autre"),
         "display_name": sanitize(request.form.get("display_name", ""),
                                  max_length=200) or entree.get("name", ""),
-        # Provenance dans les champs EXISTANTS (décision 2026-07-25 — aucun
-        # champ nouveau) : description + tag « portail ».
-        "description": (
-            f"Reçu via le portail — invitation {inv_id}, lot {batch}. "
-            f"SHA-512 : {entree.get('sha512') or ''}"
-        ),
+        # Provenance dans des champs DÉDIÉS (2026-08-27, renversant la
+        # décision de 2026-07-25 « aucun champ nouveau »). Elle squattait
+        # `description` — le SEUL champ de texte libre que le formulaire
+        # d'édition offre au juriste —, si bien qu'il ne pouvait décrire un
+        # document reçu sans effacer sa traçabilité, ou l'inverse.
+        "portail_invitation_id": inv_id,
+        "portail_lot": batch,
+        "portail_sha512": entree.get("sha512") or "",
         "tags": ["portail"],
         "folder_id": folder["id"] if folder else None,
     }

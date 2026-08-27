@@ -158,8 +158,15 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     assert args[3] == "piece.pdf" and args[5] == "u1"
     metadata = args[4]
     assert metadata["tags"] == ["portail"]
-    assert "invitation inv1" in metadata["description"]
-    assert _SHA_PDF in metadata["description"]
+    # La provenance vit dans des champs DÉDIÉS depuis le 2026-08-27,
+    # renversant la décision de 2026-07-25 « aucun champ nouveau » : elle
+    # squattait `description`, le SEUL champ de texte libre que le
+    # formulaire d'édition offre au juriste, si bien qu'il ne pouvait pas
+    # décrire un document reçu sans effacer sa traçabilité.
+    assert metadata["portail_invitation_id"] == "inv1"
+    assert metadata["portail_sha512"] == _SHA_PDF
+    assert metadata["portail_lot"]
+    assert "description" not in metadata, "la description reste au juriste"
     assert metadata["folder_id"] == "f-portail"
     blob.download_as_bytes.assert_not_called()
     # Manifest entry flipped to « versé » and persisted.
