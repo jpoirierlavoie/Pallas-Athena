@@ -1,0 +1,165 @@
+{# ── Analyse documentaire (SPEC Phase K §9.1) ────────────────────────────
+   Le NIVEAU DE PROTECTION vient en tête, avant la nature : c'est lui qui
+   commande la manipulation du document. Les alertes sont AFFICHÉES, jamais
+   repliées — une alerte qu'il faut déplier est une alerte qu'on ne lit pas.
+
+   La mention « présumé » accompagne la valeur tant que `confirme` est faux.
+   C'est l'exigence §7 nº 3, et c'est ce qui remplace le second clic que le
+   praticien ne voulait pas : la catégorie est écrite tout de suite, mais
+   jamais présentée comme une détermination de l'avocat. #}
+
+{% set a = document.analyse or {} %}
+{% if a.sous_nature %}
+{% set niveaux = {
+  3: ('bg-red-100 text-red-700', 'Secret professionnel'),
+  2: ('bg-amber-100 text-amber-700', 'Privilégié'),
+  1: ('bg-gray-200 text-gray-500', 'Confidentiel'),
+  0: ('bg-green-100 text-green-700', 'Public')
+} %}
+{% set niveau = niveaux.get(a.niveau_protection, ('bg-gray-100 text-gray-600', 'Non déterminé')) %}
+
+<div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
+  <div class="flex items-start justify-between gap-4 mb-4">
+    <div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="inline-flex px-2.5 py-1 text-xs font-semibold rounded-full {{ niveau[0] }}">
+          {{ niveau[1] }}
+        </span>
+        {% if a.privileges %}
+        {% for p in a.privileges %}
+        <span class="inline-flex px-2 py-0.5 text-[10px] bg-gray-100 text-gray-600 rounded-full">{{ p }}</span>
+        {% endfor %}
+        {% endif %}
+      </div>
+      <p class="mt-2 text-xs text-gray-400">Régime de protection — il commande ce qui peut être transmis.</p>
+    </div>
+    {% if a.confirme %}
+    <span class="inline-flex items-center gap-1 px-2 py-0.5 text-xs text-green-700 bg-green-100 rounded-full whitespace-nowrap">
+      {{ ms('check') }} Confirmée
+    </span>
+    {% else %}
+    <span class="inline-flex px-2 py-0.5 text-xs text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
+      Présumée
+    </span>
+    {% endif %}
+  </div>
+
+  <div class="pt-4 border-t border-gray-100">
+    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+      <div>
+        <dt class="text-xs text-gray-400">Nature détectée</dt>
+        <dd class="text-gray-900">
+          {{ a.nature_detectee }}
+          <span class="text-gray-400">({{ a.sous_nature }})</span>
+        </dd>
+      </div>
+      <div>
+        <dt class="text-xs text-gray-400">Famille</dt>
+        <dd class="text-gray-900">{{ a.famille }}</dd>
+      </div>
+      {% if a.numero_dossier_cour %}
+      <div>
+        <dt class="text-xs text-gray-400">N° de dossier de cour</dt>
+        <dd class="text-gray-900">{{ a.numero_dossier_cour }}</dd>
+      </div>
+      {% endif %}
+      {% if a.auteur %}
+      <div>
+        <dt class="text-xs text-gray-400">Auteur</dt>
+        <dd class="text-gray-900">{{ a.auteur }}</dd>
+      </div>
+      {% endif %}
+      {% if a.parties_mentionnees %}
+      <div class="sm:col-span-2">
+        <dt class="text-xs text-gray-400">Parties mentionnées</dt>
+        {# Chaînes libres — jamais rattachées à un contact. #}
+        <dd class="text-gray-900">{{ a.parties_mentionnees | join(', ') }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+
+    {% if a.resume %}
+    <p class="mt-4 text-sm text-gray-700">{{ a.resume }}</p>
+    {% endif %}
+  </div>
+
+  {# ── Ce qui doit être VU, non replié ─────────────────────────────── #}
+  {% if a.remplace_un_choix_du_juriste %}
+  <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+    Cette analyse a remplacé la catégorie « {{ a.categorie_precedente }} », que vous
+    aviez posée. La précédente reste au journal ci-dessous.
+  </div>
+  {% endif %}
+
+  {% if a.champs_attendus_absents %}
+  <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+    Mentions attendues absentes : {{ a.champs_attendus_absents | join(', ') }}.
+    Une absence est un signal — un acte sans numéro de dossier est peut-être un
+    projet non déposé — jamais un trou à combler.
+  </div>
+  {% endif %}
+
+  {% if a.alerte_dispositif_detecte %}
+  <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+    Ce procès-verbal paraît porter le jugement lui-même. Un jugement rendu à
+    l'audience fait courir les délais d'appel — à vérifier.
+  </div>
+  {% endif %}
+
+  {% if a.alerte_renonciation_possible %}
+  <div class="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+    Renonciation possible : le document porte les marques d'un régime protégé
+    alors que sa nature le présume communiqué. Soit une erreur de classement,
+    soit une renonciation au privilège.
+  </div>
+  {% endif %}
+
+  {% if a.indices_protection %}
+  <p class="mt-3 text-xs text-gray-400">
+    Indices relevés : {{ a.indices_protection | join(' · ') }}
+  </p>
+  {% endif %}
+
+  <div class="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center gap-3">
+    {% if not a.confirme %}
+    <form method="POST" action="{{ url_for('documents.analyse_confirmer', document_id=document.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit"
+              class="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg">
+        Confirmer cette classification
+      </button>
+    </form>
+    <span class="text-xs text-gray-400">
+      Tant qu'elle n'est pas confirmée, elle est présentée comme présumée partout,
+      y compris au connecteur.
+    </span>
+    {% else %}
+    <span class="text-xs text-gray-400">
+      Confirmée{% if a.confirme_le and a.confirme_le.strftime is defined %}
+      le {{ (a.confirme_le|to_mtl).strftime('%d/%m/%Y') }}{% endif %}.
+    </span>
+    {% endif %}
+  </div>
+
+  {% if analyses and analyses | length > 1 %}
+  <details class="mt-4">
+    <summary class="text-xs text-gray-400 cursor-pointer">
+      Journal des analyses ({{ analyses | length }})
+    </summary>
+    <ul class="mt-2 space-y-1 text-xs text-gray-500">
+      {% for e in analyses %}
+      <li>
+        {% if e.genere_le and e.genere_le.strftime is defined %}
+        {{ (e.genere_le|to_mtl).strftime('%d/%m/%Y %H:%M') }} —
+        {% endif %}
+        {{ e.nature_detectee }} ({{ e.sous_nature }}),
+        niveau {{ e.niveau_protection if e.niveau_protection is not none else '—' }}
+        {%- if e.categorie_remplacee %}, remplaçait « {{ e.categorie_precedente }} »{% endif %}
+        {%- if e.modele %} · {{ e.modele }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}

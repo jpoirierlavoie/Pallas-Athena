@@ -286,7 +286,20 @@
       <div class="flex flex-wrap items-center gap-1.5">
         <span class="inline-flex px-2 py-0.5 text-[10px] font-medium rounded-full {{ category_colors.get(d.category, 'bg-gray-100 text-gray-600') }}">
           {{ category_labels.get(d.category, d.category) }}
+          {%- if d.category_source == 'analyse' and not (d.analyse or {}).confirme %}
+          <span class="ml-1 opacity-60" title="Classification présumée — à confirmer">?</span>
+          {%- endif %}
         </span>
+        {%- set niv = (d.analyse or {}).niveau_protection %}
+        {%- if niv is not none %}
+        {%- set prot = {3: ('bg-red-100 text-red-700', 'Secret prof.'),
+                        2: ('bg-amber-100 text-amber-700', 'Privilégié'),
+                        1: ('bg-gray-200 text-gray-500', 'Confidentiel'),
+                        0: ('bg-green-100 text-green-700', 'Public')} %}
+        <span class="inline-flex px-2 py-0.5 text-[10px] font-medium rounded-full {{ prot.get(niv, ('bg-gray-100 text-gray-600', ''))[0] }}">
+          {{ prot.get(niv, ('', 'Non déterminé'))[1] }}
+        </span>
+        {%- endif %}
         <span class="text-xs text-gray-500">{{ d._file_size_fmt }}</span>
         {% if search and d.dossier_file_number %}
         <span class="text-xs text-gray-400">{{ d.dossier_file_number }}</span>

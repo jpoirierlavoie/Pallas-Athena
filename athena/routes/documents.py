@@ -25,6 +25,7 @@ from models.audit_event import record_deletion
 from security import safe_internal_redirect, sanitize
 from pagination import paginate
 from models.dossier import get_dossier, list_dossiers
+from models import document as document_model
 from models.document import (
     ALLOWED_EXTENSIONS,
     CATEGORY_CHOICES,
@@ -212,8 +213,13 @@ def document_detail(document_id: str) -> str:
     # Folder tree for the move modal
     folder_tree = get_folder_tree(dossier_id) if dossier_id else []
 
+    # Le journal des analyses (SPEC Phase K §8.2). Échoue OUVERT — c'est
+    # un historique d'affichage, jamais une garde.
+    analyses = document_model.list_analyses(document_id)
+
     return render_template(
         "documents/detail.html",
+        analyses=analyses,
         document=doc,
         signed_url=signed_url,
         category_labels=CATEGORY_LABELS,
@@ -779,3 +785,23 @@ def folder_tree_partial() -> str:
         folder_tree=tree,
         dossier_id=dossier_id,
     )
+
+@documents_bp.route("/<document_id>/analyse/confirmer", methods=["POST"])
+@login_required
+def analyse_confirmer(document_id: str):
+    """Confirme la classification présumée (SPEC Phase K §7).
+
+    Le SEUL chemin levant `confirme`. Aucun automatisme, jamais : une
+    qualification de « public » ou d'« acte authentique » a des
+    conséquences, et une supposition de modèle ne doit pas se présenter
+    avec l'autorité d'une détermination de l'avocat.
+    """
+    _, erreurs = document_model.confirmer_analyse(
+        document_id, session.get("user_email") or ""
+    )
+    # Un refus voyage sur une redirection 2xx : htmx n'échange que les 2xx,
+    # et un fragment rendu en 4xx ne paraîtrait jamais.
+    return redirect(url_for(
+        "documents.document_detail", document_id=document_id,
+        **({"erreur": erreurs[0]} if erreurs else {}),
+    ))

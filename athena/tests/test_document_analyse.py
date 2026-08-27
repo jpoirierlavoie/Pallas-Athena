@@ -306,3 +306,120 @@ def test_the_dry_branch_writes_nothing_and_conforms(monde, monkeypatch):
     # L'avertissement de présomption est TOUJOURS là — c'est ce qui remplace
     # le second clic que la §5.3 exigeait.
     assert any("PRÉSUMÉE" in w for w in r["warnings"])
+
+
+# ── L'écran (SPEC Phase K §9.1) ────────────────────────────────────────────
+
+def _env():
+    from pathlib import Path
+
+    from jinja2 import Environment, FileSystemLoader
+    racine = Path(__file__).resolve().parent.parent / "templates"
+    e = Environment(loader=FileSystemLoader(str(racine)))
+    e.globals.update(ms=lambda n, **k: "", url_for=lambda *a, **k: "#",
+                     csrf_token=lambda: "x")
+    e.filters["to_mtl"] = lambda d: d
+    return e
+
+
+_DOC_RENDU = {
+    "id": "d1", "display_name": "PV.pdf", "category": "procédure",
+    "category_source": "analyse",
+    "analyse": {
+        "sous_nature": "PROC_DEM_INTRO", "nature_detectee": "procédure",
+        "famille": "JUDICIAIRE", "privileges": ["LITIGE"],
+        "niveau_protection": 2, "confirme": False,
+        "resume": "Demande introductive.",
+        "categorie_precedente": "correspondance",
+        "remplace_un_choix_du_juriste": True,
+        "champs_attendus_absents": ["date_document_str"],
+        "alerte_renonciation_possible": True,
+    },
+}
+
+
+def test_the_screen_leads_with_protection_then_nature():
+    """§9.1 : le niveau de protection AVANT la nature.
+
+    C'est lui qui commande la manipulation du document — ce qui peut être
+    transmis, à qui. L'ordre n'est pas cosmétique.
+    """
+    html = _env().get_template("documents/_analyse.html").render(
+        document=_DOC_RENDU, analyses=[]
+    )
+    assert html.index("Privilégié") < html.index("Nature détectée")
+
+
+def test_the_presumption_is_shown_not_hidden():
+    """§7 nº 3 : la mention accompagne la valeur. C'est elle qui remplace le
+    second clic que la §5.3 exigeait."""
+    html = _env().get_template("documents/_analyse.html").render(
+        document=_DOC_RENDU, analyses=[]
+    )
+    assert "Présumée" in html
+    assert "Confirmer cette classification" in html
+
+    confirme = {**_DOC_RENDU,
+                "analyse": {**_DOC_RENDU["analyse"], "confirme": True}}
+    html2 = _env().get_template("documents/_analyse.html").render(
+        document=confirme, analyses=[]
+    )
+    assert "Présumée" not in html2
+    assert "Confirmer cette classification" not in html2
+
+
+def test_every_alert_is_displayed_never_folded():
+    """Une alerte qu'il faut déplier est une alerte qu'on ne lit pas."""
+    html = _env().get_template("documents/_analyse.html").render(
+        document=_DOC_RENDU, analyses=[]
+    )
+    for attendu in ("a remplacé la catégorie", "Mentions attendues absentes",
+                    "Renonciation possible"):
+        assert attendu in html, attendu
+        # Aucune ne vit dans un <details>.
+        avant = html[:html.index(attendu)]
+        assert avant.count("<details") == avant.count("</details>"), attendu
+
+
+def test_a_document_without_analysis_renders_nothing():
+    html = _env().get_template("documents/_analyse.html").render(
+        document={"id": "d1"}, analyses=[]
+    )
+    assert html.strip() == ""
+
+
+def test_the_screen_uses_only_compiled_classes():
+    """Une classe absente de l'artefact ne s'applique pas — en silence."""
+    import re
+    from pathlib import Path
+    racine = Path(__file__).resolve().parent.parent
+    css = next(racine.glob("static/vendor/app.*.css")).read_text(encoding="utf-8")
+    html = _env().get_template("documents/_analyse.html").render(
+        document=_DOC_RENDU, analyses=[]
+    )
+    classes = set()
+    for bloc in re.findall(r'class="([^"]+)"', html):
+        classes.update(c for c in bloc.split() if c and not c.startswith("{"))
+    # Tailwind v4 échappe le POINT autant que les deux-points : `py-0.5`
+    # sort en `.py-0\.5`. Un contrôleur qui l'oublie déclare absentes des
+    # classes que les gabarits existants emploient depuis toujours.
+    def echappe(c):
+        for brut, ech in ((chr(92), chr(92) * 2), (':', chr(92) + ':'),
+                          ('.', chr(92) + '.'), ('/', chr(92) + '/'),
+                          ('[', chr(92) + '['), (']', chr(92) + ']')):
+            c = c.replace(brut, ech)
+        return c
+
+    absentes = [c for c in sorted(classes) if ('.' + echappe(c)) not in css]
+    assert not absentes, f"classes absentes de l'artefact : {absentes}"
+
+
+def test_the_confirm_route_is_the_only_one_that_confirms():
+    """Un balayage : aucune autre route ne lève `confirme`."""
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "routes" / "documents.py").read_text(encoding="utf-8")
+    assert "def analyse_confirmer" in src
+    appels = re.findall(r"confirmer_analyse\(", src)
+    assert len(appels) == 1, "un second appelant confirmerait ailleurs"

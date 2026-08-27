@@ -91,7 +91,9 @@
       </div>
     </div>
 
-    {# Description & tags #}
+    {% include "documents/_analyse.html" %}
+
+  {# Description & tags #}
     {% if document.description %}
     <div class="mt-4 pt-4 border-t border-gray-100">
       <p class="text-sm text-gray-700">{{ document.description }}</p>
