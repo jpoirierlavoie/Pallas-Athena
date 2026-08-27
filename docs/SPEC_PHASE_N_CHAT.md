@@ -28,6 +28,21 @@ CLAUDE.md's Phase-N history entry is the canonical record.
 > **D9** toolset d'écriture du chat = parité complète avec le connecteur
 > (dérivée de WRITE_TOOLS). **D10** deux jetons Workers distincts.
 >
+> **AMENDEMENT À D5 (2026-08-26, à la liaison des specs) :** les deux Workers
+> n'exposent pas de REST — ce sont des serveurs **MCP**. Un `tools/call`
+> JSON-RPC par invocation sur `POST /mcp`, jeton porteur en
+> `Authorization: Bearer`. D5 tenait pour acquis un contrat qui n'a jamais
+> existé ; la liaison tardive qu'elle prévoyait a servi exactement à ça. Rien
+> n'a été ajouté côté Worker : la forme par en-tête et le mode JSON sans état
+> y étaient déjà. Deux conséquences dans le code : `chat/worker_client.py`
+> parle MCP (et sait lire les deux cadrages, JSON et SSE, parce que les deux
+> Workers n'en emploient pas le même), et `chat/worker_tools.py` est
+> **ENGENDRÉ** depuis le `tools/list` de chaque Worker par
+> `scripts/sync_worker_tools.py` plutôt que collé à la main — une description
+> ou un schéma recopié aurait péri en silence. D10 est inchangée et prend même
+> tout son sens : le jeton du chat est le `MCP_SHARED_SECRET_ATHENA` du Worker
+> jurisprudence, distinct de celui de claude.ai, révocable seul.
+>
 > **CORRECTION à §4.4 :** la « Phase K extraction pipeline » citée plus bas
 > N'A JAMAIS EXISTÉ dans ce dépôt — Phase K y est le fidéicommis. Le socle
 > réel est `models/document.get_document_bytes` (nouveau seam borné à 40 Mo)
@@ -164,7 +179,7 @@ One registry maps tool name → `{schema, executor, capability}`.
 | Executor | Tools | Transport |
 |---|---|---|
 | `in-process` | All existing Athéna read tools + new write/modify tools | Direct calls into `mcp/handlers.py`; `mcp/tools.py` remains the schema source of truth |
-| `http-worker` | `legislation` and `jurisprudence` Workers | HTTPS with a service credential (path token / header); no OAuth dance — this is server-to-server on the firm's own infrastructure |
+| `http-worker` | `legislation` and `jurisprudence` Workers | MCP over HTTPS: one JSON-RPC `tools/call` per invocation on `POST /mcp`, bearer token per Worker; no OAuth dance — this is server-to-server on the firm's own infrastructure |
 | `anthropic-native` | `web_search` | Declared in the request; executed by Anthropic server-side (supported on Vertex) |
 
 `capability ∈ {read, write, modify}`. **No delete verb is registered, importable, or
@@ -212,10 +227,22 @@ pièces is the central use case, so v1 adds:
 ### 4.5 External Workers and web_search
 
 - Worker tools are namespaced (`legislation_*`, `jurisprudence_*`) and forwarded with a
-  service credential from Secret Manager/env — never hardcoded.
-- Any tool failure (Worker HTTP error, timeout) returns an **error tool_result** to the
-  model; the loop continues and the error is visible in the transcript. Fail loud,
-  degrade never.
+  service credential from Secret Manager/env — never hardcoded. The namespace is the
+  chat's; the **remote** name (`canlii_verify_citations`) goes on the wire.
+- The specs are **generated** from each Worker's `tools/list` and committed
+  (`scripts/sync_worker_tools.py`), never transcribed. Committed rather than fetched per
+  turn because the tools array is the prompt-cache prefix and must be byte-stable — and
+  because a Worker deploy must not change the offered tool set without a human reading
+  the diff. `--check` turns drift into a failing command.
+- A Worker tool's result is **French prose, passed to the model verbatim**. These
+  connectors carry their reliability warnings inside that prose (« établit l'existence,
+  jamais l'autorité actuelle »); re-wrapping it in JSON or reporting only its verdict
+  would deliver an assurance stripped of its reserve, and no test would fail.
+- Any tool failure (Worker HTTP error, timeout, JSON-RPC protocol error) returns an
+  **error tool_result** to the model; the loop continues and the error is visible in the
+  transcript. Fail loud, degrade never. A tool that *refuses* (`isError: true`) is not a
+  failure of the service: its French reason travels intact, because that reason is what
+  lets the model correct itself.
 - `web_search` is enabled for doctrine. Per-search cost is real; it is counted in the
   turn's usage record (§7).
 
