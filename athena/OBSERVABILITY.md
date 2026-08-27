@@ -272,6 +272,8 @@ Chat IA (Phase N) — the Claude-on-Vertex chat client. Events emit from **both 
 | `chat_report_emailed` | success / refused / **failure** | `deliver_email` path; `refused` + `reason="graph_not_configured"`, `failure` + `reason="graph_error"` (the in-app copy remains — the accusé posture) |
 | `chat_draft_written` | success | `save_draft`/`revise_draft` through the CHAT (the connector path also emits `mcp_write`); `draft_id`, `version`, `dossier_id?`, `content_chars` |
 | `chat_draft_exported` | success / failure | « Verser en Word » ; `draft_id`, `version`, `document_id?`, `dossier_id?` |
+| `chat_charter_repli` | **failure** | Le tour a tourné sur le TEXTE SOURCE : la charte enregistrée était illisible. ERROR par doctrine — la constitution en vigueur n'a pas été appliquée, donc une restriction récemment ajoutée a pu ne pas s'appliquer. **Mérite une alerte log-based** : c'est le seul événement de la famille qui signale une gouvernance dégradée. `conversation_id`, `turn_id`, `step`. L'AMORÇAGE — aucune charte enregistrée — n'émet RIEN : c'est l'état normal d'un déploiement neuf, et crier au loup à chaque installation neuve rendrait l'alerte inutilisable |
+| `chat_charter_saved` | success | Une version de charte a été enregistrée ; `version`, `files_count`, `body_chars`. **Jamais le texte** : il gouverne le cabinet, il n'a rien à faire dans les journaux |
 | `chat_skill_saved` | success | Create / edit-as-new-version / toggle; `skill_id`, `version`, `active: bool`, `files_count` (reference files on the saved version) |
 | `chat_task_saved` | success | Scheduled-task create / edit / toggle; `task_id`, `active: bool`, `recurrence` |
 

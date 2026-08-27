@@ -2,8 +2,12 @@
 
 The package holds the chat client's own machinery:
 
-* ``charter.py``      — the versioned French system charter (+ the unattended
-                        addendum) and the system-block assembly.
+* ``charter.py``      — the charter's SOCLE (under code review), the frozen
+                        SOURCE text (= version 1, the fallback floor, pinned
+                        by sha256), and the system-block assembly. The
+                        editable BODY and scheduled addendum live in
+                        ``chat_charter`` since 2026-08-27 — the hot layer is
+                        no longer the skills alone.
 * ``registry.py``     — the chat-side tool registry: which tools the model
                         sees, by which executor each one runs. Internal tools
                         REFERENCE ``mcp.tools.TOOLS`` entries by identity —

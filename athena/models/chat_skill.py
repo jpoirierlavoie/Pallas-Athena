@@ -1,7 +1,10 @@
 """Compétences du clavardage (Phase N) — runtime-managed skills.
 
-Skills are DATA, not code (SPEC §5): the hot-editable layer above the
-source-controlled charter. Same append-only versioning as
+Skills are DATA, not code (SPEC §5). They were once the ONLY hot-editable
+layer, above a wholly source-controlled charter; since 2026-08-27 the
+charter's own body is editable too (``models/chat_charter.py``, same
+shape), and only its SOCLE stays under code review. Same append-only
+versioning as
 ``models/chat_draft.py`` — a head document (``chat_skills/{id}``, Rule 7
 complete) plus an append-only ``versions/{n:06d}`` subcollection (Rule-7
 exception: write-once, no etag). « Modifier » = append version n+1 and move

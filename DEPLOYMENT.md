@@ -680,6 +680,11 @@ Notes:
   no content); leave them: they are accounting, not personal information.
   Drafts (`chat_drafts` + `versions`) follow the same shape when erasure is
   legally required. Never script this into the app.
+- **`chat_charter` is NOT in scope for erasure.** The charter (head +
+  `versions` + `fichiers`) holds the firm's own governing text — no personal
+  information, no client content. It is append-only like the rest and stays
+  that way: a prior version is the proof of what governed a given turn, which
+  is precisely what the registre exists to show.
 
 ---
 
@@ -694,6 +699,9 @@ Notes:
 | Login rejected after password entry | `REQUIRE_MFA=true` but no second factor enrolled. |
 | Warning about App Check in prod logs | `RECAPTCHA_ENTERPRISE_SITE_KEY` unset — App Check is fail-open. |
 | DavX5 silently won't sync | A DAV Basic-Auth mismatch, or the account was not re-added after a DAV collection layout change. Test the endpoint with `curl` first — an anonymous `PROPFIND /dav/` must answer `401 WWW-Authenticate: Basic`. |
+| EVERY chat turn fails `vertex_invalid_request`, right after a charter save | A blank or whitespace-only charter body builds an EMPTY first system block, which Vertex rejects with a 400 — for all conversations at once. The write path refuses it and `get_head` treats it as unreadable, so this means an out-of-app write: re-save a real body from `/chat/charte/modifier`. |
+| A turn shows the amber « charte de référence » banner | `chat_charter_repli` in the **chat** service's logs: the saved charter could not be read, so the turn ran on the source text. A rule added since may not have applied. Not the same as the bootstrap state (`charter_source: "amorcage"`), which is silent and normal until the first save. |
+| A blank 404 page with status 413 when saving a charter or a compétence | The POST exceeded the 1 MB `_enforce_request_size` ceiling. Both forms post multipart precisely to avoid it; if one reverted to urlencoded, an accented run costs six bytes per character and blows the cap (see the CLAUDE.md caps gotcha — and redo the arithmetic before raising any cap). |
 | Word shows a "repair" prompt on a generated doc | A template-engine change introduced a `docxtpl`/`python-docx` round-trip — forbidden (see CLAUDE.md). |
 
 ---
