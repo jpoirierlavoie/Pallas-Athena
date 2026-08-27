@@ -536,6 +536,12 @@ McpEvent = Literal[
     # does not auto-scrub titles or free text).
     "mcp_note_written",
     "mcp_write_refused",
+
+    # Analyse documentaire (août 2026). Identifiants et CODES seulement —
+    # jamais le résumé, jamais un nom de partie extrait, jamais une ligne
+    # du document : le contenu est privilégié, et tout l'objet de l'outil
+    # est qu'il l'a lu.
+    "mcp_document_analysed",
     # The generalized write audit line. endpoint.py has emitted it since
     # July 2026 and OBSERVABILITY.md has documented it just as long — only
     # this Literal lied, so a reader checking the type concluded the event

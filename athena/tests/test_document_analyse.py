@@ -423,3 +423,97 @@ def test_the_confirm_route_is_the_only_one_that_confirms():
     assert "def analyse_confirmer" in src
     appels = re.findall(r"confirmer_analyse\(", src)
     assert len(appels) == 1, "un second appelant confirmerait ailleurs"
+
+
+def test_the_live_write_path_runs_end_to_end(monde, monkeypatch):
+    """Le chemin d'écriture RÉEL, pas seulement la branche sèche.
+
+    Vécu le 2026-08-27 : les 3 033 tests étaient verts et l'écriture
+    plantait en production. Aucun n'exécutait `dry_run: False` — la ligne
+    de journal posée APRÈS le commit appelait `log_mcp_event` sans son
+    argument `outcome`, et le juriste a lu « échec » sur une analyse
+    parfaitement enregistrée. Ce test parcourt la branche vivante.
+    """
+    h = _handlers()
+    monkeypatch.setattr(h.document_model, "get_document",
+                        lambda i: dict(monde["store"].get(i) or {}) or None)
+    monkeypatch.setattr(h.document_model, "record_analyse",
+                        doc.record_analyse)
+    monkeypatch.setattr(h.dossier_model, "get_dossier", lambda i: None)
+
+    r = h.record_document_analysis(dict(_ARGS))
+
+    assert r["recorded"] is True
+    assert r["category"] == "procédure"
+    assert r["category_source"] == "analyse"
+    assert monde["store"]["doc-1"]["category"] == "procédure"
+    assert len(monde["journaux"]["doc-1"][doc.ANALYSES_SUBCOLLECTION]) == 1
+
+    import mcp.output_schemas as o
+    import mcp.tools as t
+    assert t.validate_args(o.OUTPUT_SCHEMAS["record_document_analysis"], r) == []
+
+
+def test_a_broken_log_line_never_fails_a_committed_write(monde, monkeypatch):
+    """Rien de ce qui SUIT un commit ne peut faire échouer l'écriture.
+
+    `endpoint._tools_call` et `chat/executors` ont chacun un
+    `except Exception` de dernier recours : une levée après le commit
+    rapporte comme échouée une écriture commise, après quoi le modèle
+    réessaie et ajoute une SECONDE entrée au journal. C'est le piège que le
+    dépôt documente pour le bump de CTag — il vaut pour toute ligne posée
+    après une écriture.
+    """
+    h = _handlers()
+    monkeypatch.setattr(h.document_model, "get_document",
+                        lambda i: dict(monde["store"].get(i) or {}) or None)
+    monkeypatch.setattr(h.document_model, "record_analyse", doc.record_analyse)
+    monkeypatch.setattr(h.dossier_model, "get_dossier", lambda i: None)
+
+    import utils.logging_setup as ls
+
+    def _explose(*a, **k):
+        raise TypeError("journal cassé")
+
+    monkeypatch.setattr(ls, "log_mcp_event", _explose)
+
+    r = h.record_document_analysis(dict(_ARGS))
+    assert r["recorded"] is True, "un journal cassé a fait échouer l'écriture"
+    assert monde["store"]["doc-1"]["category"] == "procédure"
+
+
+def test_the_audit_line_is_well_formed(monde, monkeypatch):
+    """La garde protège l'écriture — elle ne doit pas cacher un appel cassé.
+
+    Mesuré : une fois la garde en place, retirer l'argument `outcome` ne
+    faisait plus rougir un seul test. La garde est bonne (l'écriture doit
+    survivre), mais elle rend la ligne d'audit silencieusement cassable.
+    Ce test l'inspecte directement, indépendamment de la garde — c'est lui
+    qui aurait attrapé le bogue du 2026-08-27.
+    """
+    h = _handlers()
+    monkeypatch.setattr(h.document_model, "get_document",
+                        lambda i: dict(monde["store"].get(i) or {}) or None)
+    monkeypatch.setattr(h.document_model, "record_analyse", doc.record_analyse)
+    monkeypatch.setattr(h.dossier_model, "get_dossier", lambda i: None)
+
+    import utils.logging_setup as ls
+    vus = []
+    vrai = ls.log_mcp_event
+
+    def _espion(*a, **k):
+        vus.append((a, k))
+        return vrai(*a, **k)          # la VRAIE signature, donc un appel
+                                      # malformé lève ici et se voit
+
+    monkeypatch.setattr(ls, "log_mcp_event", _espion)
+    h.record_document_analysis(dict(_ARGS))
+
+    assert vus, "aucune ligne d'audit émise"
+    args, kwargs = vus[0]
+    assert args[0] == "mcp_document_analysed"
+    assert args[1] == "success", "l'argument `outcome` est positionnel et requis"
+    # Identifiants et codes seulement — le contenu est privilégié.
+    for interdit in ("resume", "parties_mentionnees", "dispositif",
+                     "indices_protection", "auteur"):
+        assert interdit not in kwargs, interdit

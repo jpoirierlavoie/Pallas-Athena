@@ -6326,15 +6326,34 @@ def _record_document_analysis_impl(args: dict, dry_run: bool) -> dict:
         raise ToolArgumentError(" ".join(erreurs or ["Enregistrement refusé."]))
 
     stocke = updated.get("analyse") or {}
-    from utils.logging_setup import log_mcp_event
+    # ⚠ La ligne de journal est posée APRÈS un commit, donc elle ne doit
+    # JAMAIS pouvoir lever : `endpoint._tools_call` et `chat/executors`
+    # ont tous deux un `except Exception` de dernier recours, qui
+    # rapporterait comme ÉCHOUÉE une écriture déjà commise — après quoi
+    # le modèle réessaie et ajoute une SECONDE entrée au journal. C'est
+    # le piège que le dépôt documente pour le bump de CTag ; il vaut
+    # pour tout ce qui suit un commit. (Vécu le 2026-08-27 : un appel
+    # sans son argument `outcome`, et le juriste a lu « échec » sur une
+    # analyse parfaitement enregistrée.)
+    try:
+        from utils.logging_setup import log_mcp_event
 
-    log_mcp_event(
-        "mcp_document_analysed",
-        document_id=document_id,
-        sous_nature=stocke.get("sous_nature", ""),
-        niveau_protection=stocke.get("niveau_protection"),
-        categorie_remplacee=bool(stocke.get("categorie_remplacee")),
-    )
+        log_mcp_event(
+            "mcp_document_analysed",
+            "success",
+            tool="record_document_analysis",
+            document_id=document_id,
+            sous_nature=stocke.get("sous_nature", ""),
+            niveau_protection=stocke.get("niveau_protection"),
+            categorie_remplacee=bool(stocke.get("categorie_remplacee")),
+        )
+    except Exception:  # jamais au prix de l'écriture
+        # Mais jamais en silence non plus : une ligne d'audit qui
+        # disparaît sans trace est le second défaut, pas la réparation du
+        # premier.
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp_document_analysed logging failed")
     return {
         "recorded": True,
         "document_id": document_id,
