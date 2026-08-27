@@ -43,62 +43,6 @@
     </div>
   </div>
 
-  {# Le DOCUMENT d'abord. Les cartes de métadonnées le repoussaient sous
-     la ligne de flottaison sur un téléphone — et c'est le document qu'on
-     vient voir. #}
-  {# ── Preview area ── la carte se rend toujours ; les branches inline
-     exigent EN PLUS l'URL signé (routes/documents.py ne le mint que pour
-     les types prévisualisables), donc ZIP/.eml/.msg — et tout échec de
-     signature — tombent sur le repli Télécharger. #}
-  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4">
-    {% if document.file_type == 'application/pdf' and signed_url %}
-    <div class="w-full" style="height: 80vh;">
-      <iframe src="{{ signed_url }}"
-              class="w-full h-full border-0"
-              title="{{ document.display_name or document.filename }}">
-        <p class="p-4 text-sm text-gray-500">
-          Impossible d'afficher le PDF.
-          <a href="{{ url_for('documents.document_download', document_id=document.id) }}" class="text-indigo-600 hover:text-indigo-700">Télécharger le fichier</a>
-        </p>
-      </iframe>
-    </div>
-
-    {% elif document.file_type in ('image/jpeg', 'image/png', 'image/tiff') and signed_url %}
-    <div class="p-4">
-      <div class="flex items-center gap-2 mb-3">
-        <button @click="zoom = Math.max(0.25, zoom - 0.25)"
-                class="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
-          -
-        </button>
-        <span class="text-xs text-gray-500" x-text="Math.round(zoom * 100) + '%'">100%</span>
-        <button @click="zoom = Math.min(3, zoom + 0.25)"
-                class="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
-          +
-        </button>
-        <button @click="zoom = 1"
-                class="px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700">
-          Réinitialiser
-        </button>
-      </div>
-      <div class="overflow-auto max-h-[80vh] border border-gray-100 rounded-lg bg-gray-50 p-2">
-        <img :style="'transform: scale(' + zoom + '); transform-origin: top left;'"
-             src="{{ signed_url }}"
-             alt="{{ document.display_name or document.filename }}"
-             class="max-w-full transition-transform">
-      </div>
-    </div>
-
-    {% else %}
-    <div class="flex flex-col items-center justify-center py-12 text-center">
-      {{ ms('draft', 40, 'text-gray-300 mb-3') }}
-      <p class="text-sm text-gray-500 mb-3">L'aperçu n'est pas disponible pour ce type de fichier.</p>
-      <a href="{{ url_for('documents.document_download', document_id=document.id) }}"
-         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700">
-        {{ ms('download', 16) }}
-        Télécharger
-      </a>
-    </div>
-
   {# ── Metadata card ─────────────────────────────────────────── #}
   {% set category_colors = {
     'procédure': 'bg-blue-100 text-blue-700',
@@ -219,6 +163,58 @@
     </div>
   </div>
 
+  {# ── Preview area ── la carte se rend toujours ; les branches inline
+     exigent EN PLUS l'URL signé (routes/documents.py ne le mint que pour
+     les types prévisualisables), donc ZIP/.eml/.msg — et tout échec de
+     signature — tombent sur le repli Télécharger. #}
+  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4">
+    {% if document.file_type == 'application/pdf' and signed_url %}
+    <div class="w-full" style="height: 80vh;">
+      <iframe src="{{ signed_url }}"
+              class="w-full h-full border-0"
+              title="{{ document.display_name or document.filename }}">
+        <p class="p-4 text-sm text-gray-500">
+          Impossible d'afficher le PDF.
+          <a href="{{ url_for('documents.document_download', document_id=document.id) }}" class="text-indigo-600 hover:text-indigo-700">Télécharger le fichier</a>
+        </p>
+      </iframe>
+    </div>
+
+    {% elif document.file_type in ('image/jpeg', 'image/png', 'image/tiff') and signed_url %}
+    <div class="p-4">
+      <div class="flex items-center gap-2 mb-3">
+        <button @click="zoom = Math.max(0.25, zoom - 0.25)"
+                class="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+          -
+        </button>
+        <span class="text-xs text-gray-500" x-text="Math.round(zoom * 100) + '%'">100%</span>
+        <button @click="zoom = Math.min(3, zoom + 0.25)"
+                class="px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+          +
+        </button>
+        <button @click="zoom = 1"
+                class="px-2 py-1 text-xs font-medium text-gray-500 hover:text-gray-700">
+          Réinitialiser
+        </button>
+      </div>
+      <div class="overflow-auto max-h-[80vh] border border-gray-100 rounded-lg bg-gray-50 p-2">
+        <img :style="'transform: scale(' + zoom + '); transform-origin: top left;'"
+             src="{{ signed_url }}"
+             alt="{{ document.display_name or document.filename }}"
+             class="max-w-full transition-transform">
+      </div>
+    </div>
+
+    {% else %}
+    <div class="flex flex-col items-center justify-center py-12 text-center">
+      {{ ms('draft', 40, 'text-gray-300 mb-3') }}
+      <p class="text-sm text-gray-500 mb-3">L'aperçu n'est pas disponible pour ce type de fichier.</p>
+      <a href="{{ url_for('documents.document_download', document_id=document.id) }}"
+         class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700">
+        {{ ms('download', 16) }}
+        Télécharger
+      </a>
+    </div>
     {% endif %}
   </div>
 
