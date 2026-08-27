@@ -844,3 +844,53 @@ def test_the_reserved_charter_file_id_matches_the_model():
 
     assert charter.CHARTER_FILE_ID == charter_model.DOC_ID
     assert charter.SOURCE_CHARTER_VERSION == charter_model.SOURCE_VERSION
+
+
+# ── Le dossier de la conversation ──────────────────────────────────────────
+
+_CONV_DOSSIER = {
+    "id": "c1", "dossier_id": "d-42", "dossier_file_number": "2026-027",
+    "dossier_title": "Hraki c. Solo inc.",
+}
+
+
+def test_a_bound_conversation_names_its_dossier_to_the_model():
+    """Le rattachement existait — pour le regroupement à l'écran et la
+    comptabilité — mais n'atteignait JAMAIS le prompt, si bien que le
+    modèle demandait de quel dossier on parlait dans une conversation qui
+    en portait un depuis sa création."""
+    blocks = charter.system_blocks(None, conv=dict(_CONV_DOSSIER))
+    dernier = blocks[-1]["text"]
+    assert "DOSSIER DE CETTE CONVERSATION" in dernier
+    assert "2026-027" in dernier
+    assert "Hraki c. Solo inc." in dernier
+    assert "dossier_id : d-42" in dernier
+
+
+def test_a_floating_conversation_gets_no_dossier_block():
+    for conv in (None, {}, {"dossier_id": ""}, {"dossier_id": "   "}):
+        blocks = charter.system_blocks(None, conv=conv)
+        assert len(blocks) == 1, conv
+        assert "DOSSIER DE CETTE CONVERSATION" not in blocks[0]["text"]
+
+
+def test_the_dossier_block_sits_after_the_cache_breakpoint():
+    """Il VARIE d'une conversation à l'autre.
+
+    L'inclure au préfixe mis en cache ferait que deux conversations n'en
+    partagent plus rien — or ce préfixe (charte + compétences) vaut ~18 000
+    jetons et le cache implicite de Gemini y atteint 60 à 92 %. Le bloc de
+    dossier fait ~70 jetons : le relire à chaque appel coûte infiniment
+    moins que de perdre le partage du reste.
+    """
+    skills = [{"id": "a", "name": "A", "version": 1, "body": "corps A"}]
+    blocks = charter.system_blocks(skills, conv=dict(_CONV_DOSSIER))
+    marques = [i for i, b in enumerate(blocks) if "cache_control" in b]
+    assert marques == [len(blocks) - 2]
+    assert "DOSSIER DE CETTE CONVERSATION" in blocks[-1]["text"]
+    # Et le préfixe partagé est IDENTIQUE d'une conversation à l'autre.
+    autre = charter.system_blocks(
+        skills, conv={**_CONV_DOSSIER, "dossier_id": "d-99"}
+    )
+    assert blocks[:-1] == autre[:-1]
+    assert blocks[-1] != autre[-1]

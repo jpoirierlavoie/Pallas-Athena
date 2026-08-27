@@ -626,7 +626,9 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
             turn_id=turn_id,
             step=step + 1,
         )
-    system = charter.system_blocks(heads, scheduled=scheduled, charter=charte)
+    system = charter.system_blocks(
+        heads, scheduled=scheduled, charter=charte, conv=conv
+    )
     tools = _build_tools()
 
     # Pending tool work from an authorization decision (§4.6.3): the last

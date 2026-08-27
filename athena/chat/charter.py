@@ -45,6 +45,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+NL_BLOC = "\n"
+
 # « 1 » est la version du texte SOURCE — celui de ce fichier, servi en
 # amorçage (aucune charte enregistrée) et en repli (lecture Firestore en
 # échec). Il n'est plus gelé par sha : voir la note sur BASE_CHARTER.
@@ -258,11 +260,46 @@ def _file_listing(porteur: dict) -> str:
     return "\n".join(lines)
 
 
+def _dossier_block(conv: Optional[dict]) -> Optional[dict[str, Any]]:
+    """Le dossier auquel la conversation est rattachée, s'il y en a un.
+
+    Sans lui, le modèle demandait « de quel dossier parlez-vous ? » dans
+    une conversation qui EN PORTE un depuis sa création : le rattachement
+    servait le regroupement à l'écran et la comptabilité, jamais le
+    prompt. Une conversation flottante n'en produit aucun.
+
+    Le bloc reste MINCE — identifiants et intitulé — et renvoie aux
+    outils pour le reste. Y recopier l'état du dossier le ferait vieillir
+    dans le prompt pendant que get_dossier dit la vérité.
+    """
+    if not conv:
+        return None
+    dossier_id = str(conv.get("dossier_id") or "").strip()
+    if not dossier_id:
+        return None
+    numero = str(conv.get("dossier_file_number") or "").strip()
+    titre = str(conv.get("dossier_title") or "").strip()
+    designation = numero or dossier_id
+    if titre:
+        designation += f" — {titre.rstrip('.')}"
+    lignes = [
+        "DOSSIER DE CETTE CONVERSATION",
+        f"Cette conversation porte sur le dossier {designation}.",
+        f"dossier_id : {dossier_id}",
+        "Employez cet identifiant dans les outils qui en demandent un, et "
+        "ne demandez pas de quel dossier il s'agit. Pour ses données — "
+        "parties, échéances, budget, pièces — appelez get_dossier et les "
+        "outils de lecture plutôt que de supposer.",
+    ]
+    return {"type": "text", "text": NL_BLOC.join(lignes)}
+
+
 def system_blocks(
     skills: Optional[list[dict]] = None,
     *,
     scheduled: bool = False,
     charter: Optional[dict] = None,
+    conv: Optional[dict] = None,
 ) -> list[dict[str, Any]]:
     """Assemble the Messages API ``system`` array for a turn.
 
@@ -297,5 +334,14 @@ def system_blocks(
         name = str(skill.get("name", "")).strip()
         text = f"COMPÉTENCE — {name}\n\n{body}" if name else body
         blocks.append({"type": "text", "text": text + _file_listing(skill)})
+    # ⚠ Le point d'arrêt se pose sur le dernier bloc PARTAGÉ — charte et
+    # compétences —, jamais sur le bloc de dossier qui suit : celui-ci
+    # varie d'une conversation à l'autre, et l'inclure au préfixe mis en
+    # cache ferait que deux conversations n'en partagent plus rien. Il
+    # est mince (une soixantaine de jetons) : le relire à chaque appel
+    # coûte infiniment moins que de perdre le partage du reste.
     blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    dossier = _dossier_block(conv)
+    if dossier is not None:
+        blocks.append(dossier)
     return blocks

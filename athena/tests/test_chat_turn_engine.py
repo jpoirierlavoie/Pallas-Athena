@@ -738,8 +738,15 @@ def test_get_skill_file_end_to_end_pins_this_turns_version(world, monkeypatch):
     assert result["is_error"] is False
     assert result["content"][0]["text"] == "Contenu du guide."
     # The system prompt carried the listing INSIDE the COMPÉTENCE block.
+    # Trois blocs depuis le 2026-08-27 : charte, compétence, DOSSIER — la
+    # conversation du harnais en porte un. Assertion de STRUCTURE plutôt
+    # que de compte : un compte nu se contente d'être faux plus tard.
     system_1 = world.vertex.calls[0]["system"]
-    assert len(system_1) == 2
+    assert [b["text"].split(chr(10))[0] for b in system_1] == [
+        system_1[0]["text"].split(chr(10))[0],
+        "COMPÉTENCE — Rédaction",
+        "DOSSIER DE CETTE CONVERSATION",
+    ]
     assert "FICHIERS DE RÉFÉRENCE" in system_1[1]["text"]
     assert "skill_id : s-doc" in system_1[1]["text"]
     assert "- Guide — Style. (5 caractères)" in system_1[1]["text"]

@@ -699,3 +699,28 @@ def test_charter_save_redirects_and_logs_counters_only(web_rendu, monkeypatch):
 def test_the_charter_is_reachable_from_the_chat_index():
     source = (_TEMPLATES / "chat" / "list.html").read_text(encoding="utf-8")
     assert "chat.charter_detail" in source
+
+
+# ── Le fil se lit par le bas ───────────────────────────────────────────────
+
+def test_the_conversation_scrolls_to_the_bottom(web_rendu, monkeypatch):
+    """Un rechargement — et surtout le retour de redirection après l'envoi
+    d'un message — ramenait en haut du transcript, donc au message le plus
+    ancien."""
+    monkeypatch.setattr(rc.conv_model, "get_conversation", lambda i: _conv())
+    monkeypatch.setattr(rc.conv_model, "mark_read", lambda i: None)
+    monkeypatch.setattr(rc.conv_model, "list_turns",
+                        lambda i, limit=500: [_user_turn(), _final_turn()])
+    monkeypatch.setattr(rc.skill_model, "list_skills", lambda: [])
+    html = web_rendu.get("/chat/c1").get_data(as_text=True)
+    assert "document.body.scrollHeight" in html
+    assert "htmx:afterSettle" in html
+
+
+def test_the_scroll_script_carries_the_csp_nonce():
+    """script-src n'a pas 'unsafe-inline' : un script inline sans nonce est
+    refusé par le navigateur, sans erreur visible côté serveur."""
+    source = (_TEMPLATES / "chat" / "conversation.html").read_text(encoding="utf-8")
+    i = source.index("scrollHeight")
+    ouverture = source.rfind("<script", 0, i)
+    assert 'nonce="{{ csp_nonce }}"' in source[ouverture:i]

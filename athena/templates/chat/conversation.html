@@ -53,3 +53,36 @@
 
 </div>
 {% endblock %}
+{% block page_scripts %}
+{# Le fil se lit par le bas. Sans ceci, un rechargement — et surtout le
+   retour de redirection après l'envoi d'un message — ramenait en haut
+   du transcript, c'est-à-dire au message le plus ancien.
+
+   Ce bloc s'exécute AVANT htmx (base.html), ce qui est voulu : les
+   écouteurs sont posés avant qu'il ne tire quoi que ce soit. #}
+<script nonce="{{ csp_nonce }}">
+  (function () {
+    function aFond() {
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+    // À l'analyse : le transcript est déjà parsé (ce bloc est en fin de
+    // corps). Puis à « load », car images et polices changent la hauteur.
+    aFond();
+    window.addEventListener('load', aFond);
+
+    // Après un échange htmx — le sondage qui installe le tour final —,
+    // SEULEMENT si le lecteur était déjà en bas. L'arracher à ce qu'il
+    // est en train de relire serait pire que de ne rien faire.
+    var MARGE = 120;
+    var etaitEnBas = true;
+    function mesurer() {
+      etaitEnBas = (window.innerHeight + window.scrollY)
+        >= (document.body.scrollHeight - MARGE);
+    }
+    document.addEventListener('htmx:beforeSwap', mesurer);
+    document.addEventListener('htmx:afterSettle', function () {
+      if (etaitEnBas) aFond();
+    });
+  })();
+</script>
+{% endblock %}
