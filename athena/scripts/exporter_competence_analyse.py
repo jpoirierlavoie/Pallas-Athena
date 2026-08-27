@@ -173,6 +173,12 @@ inventer une.
   tu retiens moins de privilèges qu'une analyse antérieure, le code garde
   le niveau le plus élevé. C'est voulu.
 
+**La marche à suivre.** Lis le texte. Arrête la sous-nature — la catégorie
+du document en DÉRIVE, tu ne la choisis pas. Retiens les privilèges,
+cumulés. Note ce que tu as OBSERVÉ qui les fonde (`indices_protection`) :
+c'est par là que l'avocat vérifie ton raisonnement, et un régime sans
+indice n'est qu'une affirmation.
+
 **Sur UN document dont la nature est douteuse**, propose d'abord par
 `dry_run: true`, qui rend l'effet calculé sans rien écrire, et n'enregistre
 que sur instruction.

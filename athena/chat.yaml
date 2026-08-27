@@ -61,6 +61,20 @@ env_variables:
   # Gemini : Montréal — l'inférence reste en province, donc aucun
   # transfert hors Québec sur ce chemin (art. 17 Loi 25 sans objet).
   CHAT_GEMINI_LOCATION: "northamerica-northeast1"
+
+  # Plafond d'appels de modèle par tour (défaut du code : 12). Relevé à 24
+  # le 2026-08-27, après le premier lot d'analyse documentaire réel : douze
+  # appels n'avaient couvert que 4 documents sur 45, et le tour mourait sur
+  # `chain_ceiling`. Le plafond existe contre une chaîne qui part en boucle,
+  # pas contre un lot légitime — et une boucle se voit au registre (segments
+  # répétés, mêmes outils) bien avant d'avoir coûté cher.
+  #
+  # Ce qu'un relèvement achète, et ce qu'il coûte : une chaîne emballée
+  # dépense 24 appels au lieu de 12. À l'entrée mise en cache observée
+  # (~47 k lus sur 48 k) et sur Flash, cela reste de l'ordre du dixième de
+  # dollar. Sur Opus, non — c'est pourquoi le chiffre se relit quand le
+  # modèle par défaut change.
+  CHAT_CHAIN_MAX_CALLS: "24"
   OTEL_EXPERIMENTAL_RESOURCE_DETECTORS: "gcp"
   OTEL_EXPORTER_OTLP_TIMEOUT: "5"
   PIP_REQUIRE_HASHES: "1"
