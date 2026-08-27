@@ -49,9 +49,9 @@ _GENERIC_ERROR_FR = (
 
 _GATED_UNATTENDED_FR = (
     "Refusé : cet outil exige une autorisation humaine, et cette exécution "
-    "planifiée tourne sans surveillance. Proposez l'action dans votre "
-    "rapport en exécutant l'appel en dry_run: true, pour que l'avocat la "
-    "commette lui-même."
+    "planifiée tourne sans surveillance. N'appelez pas l'outil : décrivez "
+    "dans votre rapport l'action voulue et ses paramètres, pour que "
+    "l'avocat la commette lui-même."
 )
 
 
@@ -246,16 +246,15 @@ def _execute_in_process(
 
     if name in _DRAFT_TOOLS and isinstance(payload, dict):
         draft = payload.get("draft") or {}
-        if not payload.get("dry_run"):
-            log_chat_event(
-                "chat_draft_written",
-                conversation_id=conversation_id,
-                turn_id=turn_id,
-                draft_id=str(draft.get("id", "")),
-                version=int(draft.get("current_version") or 0),
-                dossier_id=str(draft.get("dossier_id", "")) or None,
-                content_chars=int(draft.get("content_length") or 0),
-            )
+        log_chat_event(
+            "chat_draft_written",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            draft_id=str(draft.get("id", "")),
+            version=int(draft.get("current_version") or 0),
+            dossier_id=str(draft.get("dossier_id", "")) or None,
+            content_chars=int(draft.get("content_length") or 0),
+        )
     return ToolExecution(content=_serialize(payload), is_error=False)
 
 

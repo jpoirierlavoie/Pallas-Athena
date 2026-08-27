@@ -36,13 +36,15 @@ connector still can. This is exactly the « one-line edit, made
 consciously » the original note anticipated, and the divergence is
 pinned name by name rather than left to be discovered.
 
-The guard-rails for unattended runs are unchanged: the charter's dry_run
-discipline, the forced idempotency keys (executors.py), and the
+The guard-rails for unattended runs are unchanged in KIND, though one
+changed in form on 2026-08-27: the charter's write discipline (propose by
+DESCRIBING the write, never by calling the tool — `dry_run` was removed
+from the protocol), the forced idempotency keys (executors.py), and the
 ``GATED_TOOLS`` mechanism below.
 
 ``GATED_TOOLS`` (SPEC §4.6.3): a ``tool_use`` on a member pauses the turn
-into ``awaiting_authorization`` (interactive) or is auto-refused with the
-dry_run directive (scheduled). The set ships EMPTY in v1 — the mechanism is
+into ``awaiting_authorization`` (interactive) or is auto-refused with a
+directive to describe the action in the report instead (scheduled). The set ships EMPTY in v1 — the mechanism is
 implemented, the policy is the practitioner's to widen, one name at a time.
 
 No capability named « delete » exists, can be registered, or is reachable.
@@ -223,7 +225,7 @@ def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, 
 
     Internal entries reuse ``TOOLS[name]["input_schema"]`` BY IDENTITY
     (clean subset JSON Schema — no $ref/$schema/format/default, verified);
-    the write tools keep their injected ``dry_run``/``idempotency_key``
+    the write tools keep their injected ``idempotency_key``
     properties, which ARE the §4.6.2/§12.3 proposal mechanism. Order is
     stable: internal tools in TOOLS order, then Worker tools in declaration
     order, then get_skill_file, then web_search — the trailing

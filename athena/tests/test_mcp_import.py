@@ -347,14 +347,6 @@ def test_create_partie_bumpe_exactement_le_carnet_d_adresses(contacts):
     assert payload["entity"]["label"] == "Jean Tremblay"
 
 
-def test_create_partie_en_simulation_n_ecrit_ni_ne_bumpe(contacts):
-    payload = handlers.create_partie({**_INDIV, "dry_run": True})
-    assert contacts["created"] == {}
-    assert contacts["bumps"] == []
-    assert payload["ctag_bumped"] is False
-    assert any("Simulation" in w for w in payload["warnings"])
-
-
 def test_un_bump_rate_ne_fait_pas_reessayer(contacts, monkeypatch):
     """Le contact est DÉJÀ écrit. Laisser filer l'exception le rapporterait
     comme un échec, et le modèle réessaierait — un doublon."""
@@ -368,19 +360,18 @@ def test_un_bump_rate_ne_fait_pas_reessayer(contacts, monkeypatch):
     assert any("Ne pas réessayer" in w for w in payload["warnings"])
 
 
-@pytest.mark.parametrize("dry", [False, True])
-def test_une_personne_physique_exige_un_nom_de_famille(contacts, dry):
-    """Le refus doit être IDENTIQUE en simulation : un dry_run qui annonce un
-    succès que l'appel réel refuse est un mensonge."""
+def test_une_personne_physique_exige_un_nom_de_famille(contacts):
+    """La garde vit dans le gestionnaire, AVANT le modèle : un contact sans
+    nom de famille n'atteint jamais l'écriture."""
     with pytest.raises(tools.ToolArgumentError, match="last_name"):
-        handlers.create_partie({"type": "individual", "first_name": "Jean",
-                                "dry_run": dry})
+        handlers.create_partie({"type": "individual", "first_name": "Jean"})
+    assert contacts["created"] == {}
 
 
-@pytest.mark.parametrize("dry", [False, True])
-def test_une_personne_morale_exige_un_nom_legal(contacts, dry):
+def test_une_personne_morale_exige_un_nom_legal(contacts):
     with pytest.raises(tools.ToolArgumentError, match="organization_name"):
-        handlers.create_partie({"type": "organization", "dry_run": dry})
+        handlers.create_partie({"type": "organization"})
+    assert contacts["created"] == {}
 
 
 def test_les_deux_familles_de_champs_ne_se_melangent_pas(contacts):
@@ -417,12 +408,6 @@ def test_un_bloc_d_adresse_partiel_est_refuse(contacts, missing):
     with pytest.raises(tools.ToolArgumentError, match="BLOC"):
         handlers.create_partie({**_INDIV, **partial})
     assert contacts["created"] == {}
-
-
-def test_un_bloc_partiel_est_refuse_aussi_en_simulation(contacts):
-    partial = {k: v for k, v in _FULL_ADDRESS.items() if k != "address_city"}
-    with pytest.raises(tools.ToolArgumentError, match="BLOC"):
-        handlers.create_partie({**_INDIV, **partial, "dry_run": True})
 
 
 def test_unit_et_code_postal_peuvent_rester_vides(contacts):
@@ -484,12 +469,13 @@ def test_les_vocabulaires_non_valides_par_le_modele_sont_bornes_au_schema():
 # ── update_partie ──────────────────────────────────────────────────────────
 
 
-def test_update_partie_refuse_un_id_inconnu_meme_en_simulation(contacts):
+def test_update_partie_refuse_un_id_inconnu(contacts):
+    """Le contact est résolu AVANT toute écriture : un id inconnu ne produit
+    jamais une fiche orpheline."""
     contacts["existing"] = None
-    for dry in (False, True):
-        with pytest.raises(tools.ToolArgumentError, match="introuvable"):
-            handlers.update_partie({"partie_id": "absent", "notes": "x",
-                                    "dry_run": dry})
+    with pytest.raises(tools.ToolArgumentError, match="introuvable"):
+        handlers.update_partie({"partie_id": "absent", "notes": "x"})
+    assert contacts["updated"] == {} and contacts["bumps"] == []
 
 
 def test_update_partie_ne_remet_que_ce_qui_change(contacts):
@@ -732,12 +718,6 @@ def test_une_date_pour_agir_calculee_est_annoncee(dossiers):
     assert any("CALCULÉE" in w for w in payload["warnings"])
 
 
-def test_create_dossier_en_simulation_n_ecrit_rien(dossiers):
-    payload = handlers.create_dossier(_mk(dry_run=True))
-    assert dossiers["created"] == {}
-    assert any("Simulation" in w for w in payload["warnings"])
-
-
 # ── update_dossier ─────────────────────────────────────────────────────────
 
 
@@ -792,12 +772,11 @@ def test_update_dossier_ne_remet_que_ce_qui_change(dossiers):
     assert set(dossiers["updated"]) == {"sommaire"}
 
 
-def test_update_dossier_refuse_un_id_inconnu_meme_en_simulation(dossiers):
+def test_update_dossier_refuse_un_id_inconnu(dossiers):
     dossiers["existing"] = None
-    for dry in (False, True):
-        with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
-            handlers.update_dossier({"dossier_id": "absent", "sommaire": "x",
-                                     "dry_run": dry})
+    with pytest.raises(tools.ToolArgumentError, match="Dossier introuvable"):
+        handlers.update_dossier({"dossier_id": "absent", "sommaire": "x"})
+    assert dossiers["updated"] == {}
 
 
 def test_update_dossier_sans_champ_est_refuse(dossiers):
@@ -849,16 +828,15 @@ def billing(monkeypatch):
     return world
 
 
-@pytest.mark.parametrize("dry", [False, True])
-def test_une_entree_deja_facturee_est_refusee_y_compris_en_simulation(billing, dry):
-    """LE contrôle de la famille. Le modèle refuse aussi, mais run_write
-    court-circuite sur dry_run sans jamais l'appeler : sans cette pré-lecture,
-    une simulation annoncerait un succès que l'appel réel refuse."""
+def test_une_entree_deja_facturee_est_refusee(billing):
+    """LE contrôle de la famille. Le modèle refuse aussi, mais le
+    gestionnaire refuse le PREMIER, sur sa propre pré-lecture : son refus est
+    en français et nomme la voie de retour, là où celui du modèle remonterait
+    nu à travers l'enveloppe."""
     billing["entry"]["invoiced"] = True
     billing["entry"]["invoice_id"] = "i1"
     with pytest.raises(tools.ToolArgumentError, match="déjà porté"):
-        handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0,
-                                    "dry_run": dry})
+        handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0})
     assert billing["written"] == {}
 
 
@@ -1069,39 +1047,24 @@ def test_sans_aucune_source_c_est_un_refus(facture):
         handlers.import_invoice(_imp(time_entry_ids=[], expense_ids=[]))
 
 
-def test_le_prevol_nomme_chaque_source_fautive(facture):
+def test_les_sources_fautives_sont_transmises_au_modele_telles_quelles(facture):
+    """Le refus qui NOMME chaque source fautive vit dans le modèle, sous
+    `require_all_sources` — épinglé par test_invoice_import.py::
+    test_une_source_manquante_facturee_ou_etrangere_est_refusee_avec_son_motif.
+    Ce refus n'existe que si le gestionnaire lui remet la liste ENTIÈRE :
+    un filtrage en amont — écarter l'introuvable, sauter la déjà facturée —
+    désarmerait la garde en silence et produirait une facture courte, que
+    seul le total attendu ferait échouer, sans dire pourquoi."""
     facture["entries"]["e2"] = {"id": "e2", "dossier_id": "d1",
                                 "amount": 1000, "invoiced": True,
                                 "description": "X"}
     facture["entries"]["e3"] = {"id": "e3", "dossier_id": "autre",
                                 "amount": 1000, "invoiced": False,
                                 "description": "Y"}
-    with pytest.raises(tools.ToolArgumentError) as exc:
-        handlers.import_invoice(_imp(
-            time_entry_ids=["e1", "e2", "e3", "e-absente"], dry_run=True))
-    msg = str(exc.value)
-    assert "e2" in msg and "déjà facturée" in msg
-    assert "e3" in msg and "autre dossier" in msg
-    assert "e-absente" in msg and "introuvable" in msg
-
-
-def test_la_simulation_calcule_vraiment_les_totaux(facture):
-    """Pas une estimation : la vraie compute_totals sur les vraies sources,
-    pour que le juriste réconcilie contre le PDF avant d'écrire."""
-    payload = handlers.import_invoice(_imp(dry_run=True))
-    assert facture["call"] == {}                     # rien n'a été écrit
-    entity = payload["entity"]
-    assert entity["subtotal_cents"] == 50000
-    assert entity["gst_amount_cents"] == 2500
-    assert entity["total_cents"] == 57488
-    assert entity["status"] == "brouillon"
-    assert {l["source_id"] for l in payload["line_preview"]} == {"e1", "x1"}
-
-
-def test_la_simulation_annonce_un_ecart_de_total(facture):
-    payload = handlers.import_invoice(_imp(expected_total_cents=57000,
-                                           dry_run=True))
-    assert any("REFUSERA" in w for w in payload["warnings"])
+    handlers.import_invoice(_imp(
+        time_entry_ids=["e1", "e2", "e3", "e-absente"]))
+    assert facture["call"]["entry_ids"] == ["e1", "e2", "e3", "e-absente"]
+    assert facture["call"]["require_all_sources"] is True
 
 
 def test_un_total_attendu_manquant_est_refuse(facture):
@@ -1111,21 +1074,39 @@ def test_un_total_attendu_manquant_est_refuse(facture):
         handlers.import_invoice(args)
 
 
-def test_l_ajustement_entre_dans_l_apercu_sans_source(facture):
+def test_l_ajustement_compte_dans_le_nombre_de_lignes(facture):
+    """`line_count` est un champ REQUIS du schéma de sortie, et
+    l'ajustement est la seule ligne qui ne vienne pas d'une source :
+    l'oublier annoncerait 2 lignes pour une facture qui en porte 3."""
     payload = handlers.import_invoice(_imp(
-        adjustment={"amount_cents": -5000, "description": "Remise"},
-        expected_total_cents=1, dry_run=True))
-    lignes = payload["line_preview"]
-    ajust = [l for l in lignes if not l["source_id"]]
-    assert len(ajust) == 1
-    assert ajust[0]["amount_cents"] == -5000
+        adjustment={"amount_cents": -5000, "description": "Remise"}))
     assert payload["line_count"] == 3
+    payload = handlers.import_invoice(_imp())
+    assert payload["line_count"] == 2
 
 
-def test_un_ajustement_mal_forme_est_refuse_des_la_simulation(facture):
-    with pytest.raises(tools.ToolArgumentError, match="description"):
-        handlers.import_invoice(_imp(
-            adjustment={"amount_cents": -5000}, dry_run=True))
+def test_l_ajustement_est_transmis_verbatim_au_modele(facture):
+    """Le gestionnaire ne valide PAS l'ajustement — `_adjustment_line_item`
+    le fait, et ses huit refus sont épinglés par test_invoice_import.py::
+    test_un_ajustement_mal_forme_est_refuse. Le gestionnaire doit donc le
+    remettre intact : un ajustement mangé en route ferait une facture
+    silencieusement amputée de son écart."""
+    ajust = {"amount_cents": -5000, "description": "Remise", "taxable": False}
+    handlers.import_invoice(_imp(adjustment=dict(ajust)))
+    assert facture["call"]["adjustment"] == ajust
+
+
+def test_un_refus_d_ajustement_du_modele_remonte_en_francais(facture,
+                                                            monkeypatch):
+    """Le modèle rend ses refus par `errors` ; le gestionnaire doit les
+    lever plutôt que rendre une facture `None` comme un succès."""
+    monkeypatch.setattr(
+        handlers.invoice_model, "create_invoice",
+        lambda *a, **kw: (None, ["`adjustment.description` est requise : "
+                                 "l'écart doit être nommé"]))
+    with pytest.raises(tools.ToolArgumentError,
+                       match="description` est requise"):
+        handlers.import_invoice(_imp(adjustment={"amount_cents": -5000}))
 
 
 def test_un_client_disparu_est_un_refus_pas_une_adresse_vide(facture):
@@ -1266,33 +1247,35 @@ def test_l_audit_ne_se_tait_pas_sur_une_facture_sans_source_citee(audit):
     assert payload["checks_skipped"] == []
 
 
-def test_la_simulation_refuse_un_numero_deja_pris(facture):
-    """CONSTAT 4. La branche sèche ne rejouait ni la validation du numéro ni
-    le contrôle d'unicité : elle annonçait « created: true » pour un numéro
-    que l'appel réel refuse — le refus le plus probable d'une reprise
-    relancée."""
+def test_un_numero_deja_pris_est_refuse_avant_le_modele(facture):
+    """CONSTAT 4. Le gestionnaire rejoue les gardes de numéro du modèle
+    pour que le refus s'explique : « ce numéro est déjà attribué » vaut
+    bien plus, sur une reprise relancée, que l'erreur nue du modèle
+    remontant par l'enveloppe."""
     facture["numeros_pris"].add("2019-F014")
-    with pytest.raises(tools.ToolArgumentError, match="existe déjà"):
-        handlers.import_invoice(_imp(dry_run=True))
-    # …et l'appel réel le refuse identiquement.
     with pytest.raises(tools.ToolArgumentError, match="existe déjà"):
         handlers.import_invoice(_imp())
     assert facture["call"] == {}
 
 
-def test_la_simulation_refuse_le_millesime_courant(facture):
+def test_le_millesime_courant_est_refuse_avant_le_modele(facture):
+    """Un numéro planté dans le millésime courant serait réattribué plus
+    tard à une vraie facture : le compteur de cette année existe déjà."""
     from utils.deadlines import today_mtl
 
     annee = today_mtl().strftime("%Y")
     with pytest.raises(tools.ToolArgumentError, match="millésime en cours"):
-        handlers.import_invoice(_imp(invoice_number=f"{annee}-F031",
-                                     dry_run=True))
+        handlers.import_invoice(_imp(invoice_number=f"{annee}-F031"))
+    assert facture["call"] == {}
 
 
-def test_la_simulation_refuse_une_source_en_double(facture):
+def test_une_source_en_double_est_refusee_avant_le_modele(facture):
+    """Deux fois le même id ajoute deux postes identiques et double les
+    honoraires : les boucles de construction du modèle ne dédoublonnent
+    pas."""
     with pytest.raises(tools.ToolArgumentError, match="double"):
-        handlers.import_invoice(_imp(time_entry_ids=["e1", "e1"],
-                                     dry_run=True))
+        handlers.import_invoice(_imp(time_entry_ids=["e1", "e1"]))
+    assert facture["call"] == {}
 
 
 def test_update_dossier_vide_un_champ_texte_au_lieu_de_l_ignorer(dossiers):

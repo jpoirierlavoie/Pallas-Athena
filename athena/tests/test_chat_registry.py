@@ -265,7 +265,17 @@ def test_write_kill_switch_refuses_before_execution(monkeypatch):
     assert events[0]["reason"] == "write_disabled"
 
 
-def test_gated_tool_is_auto_refused_unattended_with_dry_run_directive(monkeypatch):
+def test_gated_tool_is_auto_refused_unattended_and_told_to_describe_it(
+    monkeypatch,
+):
+    """The safeguard of every scheduled run: a gated tool never executes
+    unattended, and the refusal says what to do INSTEAD.
+
+    That directive used to be « re-run the call with dry_run: true ». Since
+    the removal of dry_run on 2026-08-27 it must NOT be — the argument is
+    now refused by validate_args, so the model would be sent into a call
+    that cannot succeed. The honest form is: do not call the tool at all,
+    describe the intended write in the report."""
     events = _events(monkeypatch)
     monkeypatch.setattr(registry, "GATED_TOOLS", frozenset({"create_note"}))
 
@@ -277,7 +287,9 @@ def test_gated_tool_is_auto_refused_unattended_with_dry_run_directive(monkeypatc
         "create_note", {"dossier_id": "d"}, unattended=True, **_CTX
     )
     assert result.is_error is True
-    assert "dry_run" in result.content
+    assert "dry_run" not in result.content
+    assert "N'appelez pas l'outil" in result.content
+    assert "rapport" in result.content
     assert events[0]["reason"] == "gated_unattended"
 
 

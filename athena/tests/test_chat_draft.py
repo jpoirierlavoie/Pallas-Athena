@@ -283,12 +283,6 @@ def test_create_requires_title_and_content(store):
     assert store.get("chat_drafts", {}) == {}
 
 
-def test_validate_payload_writes_nothing(store):
-    errors = cd.validate_payload(dict(_VALID))
-    assert errors == []
-    assert store.get("chat_drafts", {}) == {}
-
-
 # ── revise_draft — spec acceptance test 6 ───────────────────────────────────
 
 def test_revise_appends_version_moves_head_prior_intact(store):

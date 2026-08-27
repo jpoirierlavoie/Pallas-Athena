@@ -282,21 +282,40 @@ def _date(description: str) -> dict:
 
 
 def _write_protocol_props() -> dict:
-    """dry_run + idempotency_key — the shared write protocol (WP15).
+    """idempotency_key — the shared write protocol (WP15).
 
-    Fresh dicts per usage (module rule). Every write tool splats these
-    into its input schema; enforcement lives in mcp/write_support.run_write.
+    Fresh dict per usage (module rule). Every write tool splats this into
+    its input schema; enforcement lives in mcp/write_support.run_write.
+
+    ``dry_run`` used to sit here too and was REMOVED on 2026-08-27 (user
+    decision). It had never been a control — nothing required it, nothing
+    checked it, and a caller that omitted it simply wrote. It was a
+    courtesy the model extended or withheld, and the first real batch
+    showed both failure directions at once: the model previewed forty-five
+    documents nobody asked it to preview, while no mechanism could have
+    obliged it to preview anything else.
+
+    Its cost was measured, not supposed. It doubled every write into two
+    model calls, which is what killed a document-analysis batch on
+    `chain_ceiling` after six documents out of forty-five. And it carried
+    its own trap class: `run_write` short-circuited the dry branch WITHOUT
+    calling the model, so every model-side guard had to be repeated in the
+    handler ahead of it or a preview would promise a success the real call
+    refused. Those guards remain — they refuse early, in French, naming the
+    field — but the obligation that created them is gone.
+
+    Proposing without performing is now expressed the honest way: do not
+    call the tool, and describe the intended write. The charter and the
+    scheduled addendum say exactly that. A proposal that runs no code
+    cannot half-run.
+
+    Removal is fail-CLOSED, which is what makes it safe: every write input
+    schema carries ``additionalProperties: False``, so a caller still
+    sending `dry_run` is REFUSED by :func:`validate_args` on both paths
+    (the MCP endpoint and ``chat/executors``) rather than silently written
+    for — which would be the dangerous outcome.
     """
     return {
-        "dry_run": {
-            "type": "boolean",
-            "description": (
-                "true = full validation and the computed effect returned, "
-                "but NOTHING is written (no note, no sync, no idempotency "
-                "record). Use to propose an entry for approval before "
-                "committing it."
-            ),
-        },
         "idempotency_key": {
             "type": "string",
             "minLength": 8,
@@ -1996,9 +2015,8 @@ TOOLS: dict[str, dict] = {
             "last open step, THE WHOLE PROTOCOL closes and its deadlines "
             "stop appearing in get_agenda. `protocol_step_effect` reports "
             "what actually happened, re-read from the document after the "
-            "write, never predicted. Preview it with `dry_run: true` first "
-            "whenever the task belongs to a dossier under an active "
-            "protocol. "
+            "write, never predicted. The cascade fires whenever the task "
+            "belongs to a dossier under an active protocol. "
             "Two asymmetries worth knowing: « annulée » triggers NO cascade, "
             "so the linked step stays open and keeps appearing in the "
             "briefing; and « en_cours » on an already-completed task "
@@ -2051,7 +2069,7 @@ TOOLS: dict[str, dict] = {
             "can close it with complete_task but can never edit or delete "
             "it, and it syncs to the "
             "lawyer's phone. Confirm with the user before calling; use "
-            "dry_run to propose first, and an idempotency_key on every "
+            "an idempotency_key on every "
             "scheduled call."
         ),
         "input_schema": {
@@ -2112,7 +2130,7 @@ TOOLS: dict[str, dict] = {
             "(HH:MM); omitting start_time makes it an all-day event. The "
             "event is created with status à_confirmer and syncs to the "
             "lawyer's phone; this connector can never edit or delete it. "
-            "Confirm with the user before calling; dry_run to propose."
+            "Confirm with the user before calling."
         ),
         "input_schema": {
             "type": "object",
@@ -2198,7 +2216,7 @@ TOOLS: dict[str, dict] = {
             "entry is marked machine-created internally. rate_cents "
             "defaults to the dossier's hourly rate. This connector can "
             "never edit or delete the entry. Confirm with the user before "
-            "calling; dry_run shows the computed amount first."
+            "calling."
         ),
         "input_schema": {
             "type": "object",
@@ -2318,8 +2336,8 @@ TOOLS: dict[str, dict] = {
             "judicial metadata exactly as the web form does. Money in "
             "integer cents; contingency_percent in basis points "
             "(2500 = 25 %); dates YYYY-MM-DD. Confirm with the user "
-            "before calling; dry_run shows the resulting prescription "
-            "picture first."
+            "before calling; the response carries the resulting "
+            "prescription picture."
         ),
         "input_schema": {
             "type": "object",
@@ -2469,8 +2487,8 @@ TOOLS: dict[str, dict] = {
             "recomputed — the derived prescription_status and "
             "prescription_date_effective returned by this call (and by "
             "get_dossier) carry the picture. This connector can never "
-            "edit or remove a recorded event. Confirm with the user; "
-            "dry_run previews the resulting status."
+            "edit or remove a recorded event. Confirm with the user "
+            "before calling."
         ),
         "input_schema": {
             "type": "object",
@@ -2739,9 +2757,9 @@ TOOLS: dict[str, dict] = {
             "cannot be rebuilt from the lines (a courtesy write-down, a "
             "rounding), name the difference with `adjustment` so it is "
             "written ON the invoice instead of hidden. "
-            "ALWAYS dry_run first and compare the previewed subtotal, GST and "
-            "QST against the PDF: the preview runs the real computation over "
-            "the real sources, it does not estimate. "
+            "Compare the returned subtotal, GST and "
+            "QST against the PDF: the totals are computed over the real "
+            "sources, never estimated. "
             "The invoice lands in BROUILLON and stays there — this connector "
             "never sets an invoice status and never records a payment. "
             "Billing the sources freezes them: nothing here can modify them "

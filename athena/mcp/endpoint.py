@@ -32,7 +32,7 @@ from utils.tracing_setup import span
 # Verbatim §9.3 instructions surfaced to the client model at initialize.
 INSTRUCTIONS = (
     "Pallas Athena is a single-user Quebec civil litigation practice "
-    "manager. 29 tools read; 23 write, in six families. "
+    "manager. 29 tools read; 24 write, in six families. "
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT "
     "LAYER (PDF and .docx; take ids from list_documents; bounded per call "
     "— follow next_page). A scanned page has no text layer and is reported "
@@ -85,13 +85,12 @@ INSTRUCTIONS = (
     "every time entry and disbursement it billed, and frees the number. "
     "One indirect effect to know: completing a task that a "
     "protocol step is linked to also completes that step, and if it was the "
-    "last open one the whole protocol closes — preview it with dry_run. "
+    "last open one the whole protocol closes. "
     "A write is permanent and may sync "
     "to the lawyer's phone — read the dossier before writing to it, and "
     "confirm with the user unless a standing instruction (a scheduled "
     "job, for example) already authorizes the write. Every write tool "
-    "accepts `dry_run: true` (full validation, nothing persisted — "
-    "preview first when unsure) and `idempotency_key` (any stable string "
+    "accepts `idempotency_key` (any stable string "
     "you choose; retrying with the SAME key within 24 h returns the "
     "original result instead of duplicating). Always pass an "
     "idempotency_key; if a write without one appeared to fail, re-read "
@@ -330,9 +329,9 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
             "tool": name,
             "dossier_id": entity.get("dossier_id") or None,
             "entity_id": entity.get("id") or None,
-            # A dry run and a replay both mean « nothing new was written » —
-            # the audit line must say which kind of nothing.
-            "dry_run": bool((payload or {}).get("dry_run")),
+            # A replay means « nothing new was written » — the audit line
+            # must say so. (`dry_run` sat beside it until 2026-08-27, when
+            # the preview left the write protocol.)
             "idempotent_replay": bool((payload or {}).get("idempotent_replay")),
             # The bump itself, NOT dav_synced — a closed dossier bumps
             # correctly but is never advertised to DavX5, and conflating the

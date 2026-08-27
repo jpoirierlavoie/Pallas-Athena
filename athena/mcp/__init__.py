@@ -26,7 +26,7 @@ caller. **Every DAV-exposed write on a tool path MUST call
 ``bump_ctag(collection_for(dossier_id))``, or ``bump_ctag("parties")`` for a
 contact**, or the item lands in Firestore, shows up in the web UI, and DavX5
 silently never re-syncs it. All writes run through
-``mcp/write_support.run_write`` (``dry_run`` + ``idempotency_key``).
+``mcp/write_support.run_write`` (``idempotency_key``).
 
 Two independent kill switches, both defaulting to on:
 

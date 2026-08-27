@@ -531,7 +531,7 @@ def _draft_write_result(verb: str) -> dict:
     return _obj({
         verb: {"type": "boolean", "enum": [True]},
         "draft": _draft_summary(
-            "Empty on a dry run — nothing was written."
+            "Empty when nothing was written."
         ),
         "warnings": _arr(_str(), "French, human-readable; empty when clean."),
         **_write_protocol_keys(),
@@ -539,12 +539,16 @@ def _draft_write_result(verb: str) -> dict:
 
 
 def _write_protocol_keys() -> dict[str, Any]:
-    """dry_run + idempotent_replay — emitted by EVERY write result (WP15)."""
+    """idempotent_replay — emitted by EVERY write result (WP15).
+
+    ``dry_run`` was emitted here too until 2026-08-27, when the preview
+    was removed from the write protocol (see
+    ``mcp/write_support.run_write``). Both the key and its entry in every
+    ``required`` list went with it: an output schema is a MUST-conform
+    contract, so leaving a required key the handlers no longer emit would
+    have made a strict client reject every write response.
+    """
     return {
-        "dry_run": _bool(
-            "true = this was a SIMULATION: full validation ran and the "
-            "computed effect is shown, but nothing was written and no "
-            "sync fired."),
         "idempotent_replay": _bool(
             "true = this call replayed a previous write's stored result "
             "(same idempotency_key) — nothing was written twice."),
@@ -554,7 +558,7 @@ def _write_protocol_keys() -> dict[str, Any]:
 def _written_entity(extra: dict[str, Any]) -> dict:
     """The WP16 creators' entity snapshot — common core + per-tool keys."""
     props: dict[str, Any] = {
-        "id": _str("Empty on a dry run — nothing was written."),
+        "id": _str("The stored id."),
         "dossier_id": _str("Empty for a « Général » (standalone) entity."),
         "dossier_file_number": _str(),
         "dossier_title": _str(),
@@ -587,7 +591,7 @@ def _entity_write_result(
         props["ctag_bumped"] = _bool(
             "Whether the DavX5 sync trigger fired. false = the write "
             "COMMITTED but the phone will only catch up on the next "
-            "change; do not retry. Always false on a dry run.")
+            "change; do not retry.")
         props["dav_synced"] = _bool(
             "ctag_bumped AND the collection is visible to DavX5 (a "
             "fermé/archivé dossier's is not).")
@@ -622,7 +626,7 @@ def _write_result(verb: str, extra: Optional[dict[str, Any]] = None) -> dict:
         "ctag_bumped": _bool("Whether the DavX5 sync trigger fired. false = "
                              "the write COMMITTED but the phone will only "
                              "catch up on the next change; do not retry. "
-                             "Always false on a dry run."),
+                             "false when nothing was written."),
         "dav_synced": _bool("ctag_bumped AND the collection is visible to "
                             "DavX5 (a fermé/archivé dossier's is not)."),
         "warnings": _arr(_str(), "French, human-readable; empty when clean."),
@@ -1009,6 +1013,35 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "created_at is only the upload instant."),
             "description": _str(),
             "tags": _arr(_str()),
+        # ── L'état de l'analyse documentaire ─────────────────────────
+        # Aucun outil de lecture ne le disait, si bien qu'un appelant ne
+        # pouvait pas savoir ce qu'il avait déjà qualifié. Étroit à
+        # dessein : de quoi décider s'il reste du travail, pas de quoi
+        # dispenser d'ouvrir le document.
+        "analysee": _bool(
+            "true = ce document porte une analyse. Lisez-le AVANT de "
+            "relancer une qualification : une réanalyse écrit une "
+            "nouvelle entrée au journal."),
+        "sous_nature": _str("Code de la table fermée; '' si non analysé."),
+        "nature_detectee": _str("Dérivée du code; '' si non analysé."),
+        "famille": _str(
+            "JUDICIAIRE | CORRESPONDANCE | PREUVE | CABINET | INDETERMINE; "
+            "'' si non analysé."),
+        "niveau_protection": _nint(
+            "0 public … 3 secret professionnel. null si non analysé. Une "
+            "réanalyse ne l'abaisse JAMAIS — seul l'avocat le peut, dans "
+            "l'application."),
+        "privileges": _arr(_str("Codes cumulés qui fondent le niveau.")),
+        "analyse_confirmee": _bool(
+            "true = l'avocat a confirmé ou corrigé l'analyse. false = elle "
+            "reste PRÉSUMÉE."),
+        "divergence_protection": _bool(
+            "true = la dernière analyse concluait à un niveau PLUS BAS que "
+            "celui déjà retenu; le plus élevé a été tenu et l'avocat doit "
+            "trancher."),
+        "category_presumee": _bool(
+            "true = `category` vient d'une analyse et non d'une "
+            "détermination de l'avocat."),
             **_stamps(),
         }),
         # Present ONLY when the request carried folder_id — typed, never
@@ -1367,7 +1400,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "created": {"type": "boolean", "enum": [True]},
         "entity_type": _str("Always « invoice »."),
         "entity": _obj({
-            "id": _str("'' on a dry run — nothing was written."),
+            "id": _str("The stored id."),
             "dossier_id": _str(),
             "label": _str("The invoice number."),
             "invoice_number": _str("The number the previous system issued."),
@@ -1382,23 +1415,11 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_money("total", "Compare this to the paper invoice."),
         }),
         "line_count": _int("Line items, adjustment included."),
-        "line_preview": _arr(
-            _obj({
-                "source_id": _str("'' on the adjustment line — the only one "
-                                  "in the system tracing to no source."),
-                "type": _str("fee | expense."),
-                "description": _str(),
-                "taxable": _bool(),
-                **_money("amount"),
-            }),
-            "DRY RUN ONLY: the lines as they would be written, so the totals "
-            "can be reconciled line by line against the PDF.",
-        ),
         "warnings": _arr(_str("French; empty when nothing is amiss.")),
         **_write_protocol_keys(),
     }, required=[
         "created", "entity_type", "entity", "line_count", "warnings",
-        "dry_run", "idempotent_replay",
+        "idempotent_replay",
     ]),
 
     "create_dossier": _dossier_write_result("created"),

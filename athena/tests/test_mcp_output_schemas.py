@@ -648,10 +648,10 @@ def test_append_to_note_conforms(write_world, monkeypatch):
         {"note_id": "n1", "content": "Suite"}))
 
 
-# ── WP16 creators: conformance, live and dry ────────────────────────────
+# ── WP16 creators: conformance ──────────────────────────────────────────
 
 
-def test_create_task_conforms_live_and_dry(write_world, monkeypatch):
+def test_create_task_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.task_model, "create_task",
         lambda data: ({**data, "id": "t-new"}, []))
@@ -660,12 +660,12 @@ def test_create_task_conforms_live_and_dry(write_world, monkeypatch):
     payload = handlers.create_task(dict(args))
     _conforms("create_task", payload)
     assert payload["entity"]["status"] == "à_faire"
-    dry = handlers.create_task({**args, "dry_run": True})
-    _conforms("create_task", dry)
-    assert dry["dry_run"] is True and dry["entity"]["id"] == ""
+    # The entity echoes what was STORED — it is the caller's only handle
+    # on the new row.
+    assert payload["entity"]["id"] == "t-new"
 
 
-def test_create_hearing_conforms_live_and_dry(write_world, monkeypatch):
+def test_create_hearing_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.hearing_model, "create_hearing",
         lambda data: ({**data, "id": "h-new"}, []))
@@ -675,11 +675,9 @@ def test_create_hearing_conforms_live_and_dry(write_world, monkeypatch):
     payload = handlers.create_hearing(dict(args))
     _conforms("create_hearing", payload)
     assert payload["entity"]["forum"] == "extrajudiciaire"
-    dry = handlers.create_hearing({**args, "dry_run": True})
-    _conforms("create_hearing", dry)
 
 
-def test_create_time_entry_conforms_live_and_dry(write_world, monkeypatch):
+def test_create_time_entry_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.time_entry_model, "create_time_entry",
         lambda data: ({**data, "id": "e-new",
@@ -691,11 +689,9 @@ def test_create_time_entry_conforms_live_and_dry(write_world, monkeypatch):
     _conforms("create_time_entry", payload)
     assert payload["entity"]["amount_cents"] == 45000
     assert "ctag_bumped" not in payload      # not DAV-exposed — never faked
-    dry = handlers.create_time_entry({**args, "dry_run": True})
-    _conforms("create_time_entry", dry)
 
 
-def test_complete_dossier_conforms_live_and_dry(write_world, monkeypatch):
+def test_complete_dossier_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.dossier_model, "get_dossier",
         lambda i: _dossier_doc(domaine="", action="", valeur=None),
@@ -711,8 +707,6 @@ def test_complete_dossier_conforms_live_and_dry(write_world, monkeypatch):
     payload = handlers.complete_dossier(dict(args))
     _conforms("complete_dossier", payload)
     assert set(payload["fields_set"]) == {"domaine", "action", "valeur"}
-    dry = handlers.complete_dossier({**args, "dry_run": True})
-    _conforms("complete_dossier", dry)
 
 
 def test_record_signification_conforms(write_world, monkeypatch):
@@ -752,7 +746,7 @@ def test_record_prescription_event_conforms_and_derives(write_world, monkeypatch
     assert payload["prescription_date_effective"] is None
 
 
-def test_create_expense_conforms_live_and_dry(write_world, monkeypatch):
+def test_create_expense_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.expense_model, "create_expense",
         lambda data: ({**data, "id": "x-new"}, []))
@@ -762,8 +756,6 @@ def test_create_expense_conforms_live_and_dry(write_world, monkeypatch):
     payload = handlers.create_expense(dict(args))
     _conforms("create_expense", payload)
     assert "ctag_bumped" not in payload
-    dry = handlers.create_expense({**args, "dry_run": True})
-    _conforms("create_expense", dry)
 
 
 # ── Lot 4: the invoice register conforms ────────────────────────────────
@@ -899,7 +891,7 @@ def test_get_reference_vocabulary_conforms_filtered():
     ))
 
 
-def test_partie_writes_conform_live_and_dry(monkeypatch):
+def test_partie_writes_conform(monkeypatch):
     import models
 
     monkeypatch.setattr(handlers, "bump_ctag", lambda n: None)
@@ -916,11 +908,9 @@ def test_partie_writes_conform_live_and_dry(monkeypatch):
     args = {"type": "individual", "last_name": "Tremblay",
             "first_name": "Jean", "legacy_ref": "L-42"}
     _conforms("create_partie", handlers.create_partie(dict(args)))
-    _conforms("create_partie", handlers.create_partie({**args, "dry_run": True}))
 
     upd = {"partie_id": "p1", "notes": "corrigé"}
     _conforms("update_partie", handlers.update_partie(dict(upd)))
-    _conforms("update_partie", handlers.update_partie({**upd, "dry_run": True}))
 
 
 def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
@@ -940,9 +930,14 @@ def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
     _conforms("create_partie", payload)
 
 
-def test_import_invoice_conforms_live_and_dry(monkeypatch):
-    """Both branches: the dry run carries line_preview, the live one does
-    not — and the schema types it without requiring it."""
+def test_import_invoice_conforms(monkeypatch):
+    """The result of a real import conforms — and carries NO line_preview.
+
+    That key was the dry run's own half of the contract; the preview was
+    removed on 2026-08-27, so nothing emits it any more. The schema still
+    TYPES it (optional, never required), which is why the payload stays
+    valid — and why this assertion is kept: it is the only thing saying
+    out loud that the key is now dead surface."""
     import models
 
     entry = {"id": "e1", "dossier_id": "d1", "amount": 45000,
@@ -974,12 +969,8 @@ def test_import_invoice_conforms_live_and_dry(monkeypatch):
     _conforms("import_invoice", live)
     assert "line_preview" not in live
 
-    dry = handlers.import_invoice({**args, "dry_run": True})
-    _conforms("import_invoice", dry)
-    assert dry["line_preview"]
 
-
-def test_billing_edits_conform_live_and_dry(monkeypatch):
+def test_billing_edits_conform(monkeypatch):
     entry = {"id": "e1", "dossier_id": "d1", "description": "Rédaction",
              "hours": 1.5, "rate": 30000, "amount": 45000, "billable": True,
              "invoiced": False, "phase": "CTS", "sous_phase": "CTS-02",
@@ -997,13 +988,9 @@ def test_billing_edits_conform_live_and_dry(monkeypatch):
 
     te = {"time_entry_id": "e1", "hours": 0.25}
     _conforms("update_time_entry", handlers.update_time_entry(dict(te)))
-    _conforms("update_time_entry",
-              handlers.update_time_entry({**te, "dry_run": True}))
 
     ex = {"expense_id": "x1", "amount_cents": 5250}
     _conforms("update_expense", handlers.update_expense(dict(ex)))
-    _conforms("update_expense",
-              handlers.update_expense({**ex, "dry_run": True}))
 
 
 def _phase_world(monkeypatch):
@@ -1048,19 +1035,21 @@ def _phase_world(monkeypatch):
     monkeypatch.setattr(handlers.expense_model, "set_expense_phase", _set_exp)
 
 
-def test_phase_single_conforms_live_and_dry(monkeypatch):
+def test_phase_single_conforms_applied_and_unchanged(monkeypatch):
+    """Both outcomes of a single reclassification: the row that moves, then
+    the replay that writes nothing at all — the property that makes a
+    reclassification pass replayable."""
     _phase_world(monkeypatch)
 
     te = {"time_entry_id": "e1", "sous_phase": "INT-01"}
-    _conforms("set_time_entry_phase",
-              handlers.set_time_entry_phase({**te, "dry_run": True}))
-    _conforms("set_time_entry_phase", handlers.set_time_entry_phase(dict(te)))
-    # …and the « unchanged » branch, which writes nothing at all.
-    _conforms("set_time_entry_phase", handlers.set_time_entry_phase(dict(te)))
+    applied = handlers.set_time_entry_phase(dict(te))
+    _conforms("set_time_entry_phase", applied)
+    assert applied["outcome"] == "applied"
+    unchanged = handlers.set_time_entry_phase(dict(te))
+    _conforms("set_time_entry_phase", unchanged)
+    assert unchanged["outcome"] == "unchanged"
 
     ex = {"expense_id": "x1", "phase": "PRE"}
-    _conforms("set_expense_phase",
-              handlers.set_expense_phase({**ex, "dry_run": True}))
     _conforms("set_expense_phase", handlers.set_expense_phase(dict(ex)))
 
 
@@ -1076,11 +1065,6 @@ def test_phase_bulk_conforms_across_every_outcome(monkeypatch):
         {"time_entry_id": "absent", "sous_phase": "PRE-01"},  # refused
         {"time_entry_id": "e3"},                           # refused, no code
     ]}
-    dry = handlers.set_time_entry_phase_bulk(
-        {"entries": [dict(i) for i in args["entries"]], "dry_run": True}
-    )
-    _conforms("set_time_entry_phase_bulk", dry)
-
     live = handlers.set_time_entry_phase_bulk(
         {"entries": [dict(i) for i in args["entries"]]}
     )
@@ -1093,7 +1077,7 @@ def test_phase_bulk_conforms_across_every_outcome(monkeypatch):
     ))
 
 
-def test_dossier_writes_conform_live_and_dry(monkeypatch):
+def test_dossier_writes_conform(monkeypatch):
     import models
 
     parties = {"p1": {"id": "p1", "type": "individual", "last_name": "T"}}
@@ -1114,11 +1098,9 @@ def test_dossier_writes_conform_live_and_dry(monkeypatch):
             "clients": [{"partie_id": "p1", "roles": ["demandeur"]}],
             "status": "fermé"}
     _conforms("create_dossier", handlers.create_dossier(dict(args)))
-    _conforms("create_dossier", handlers.create_dossier({**args, "dry_run": True}))
 
     upd = {"dossier_id": "d1", "sommaire": "résumé"}
     _conforms("update_dossier", handlers.update_dossier(dict(upd)))
-    _conforms("update_dossier", handlers.update_dossier({**upd, "dry_run": True}))
 
 
 def test_get_import_audit_conforms_found_and_not_found(monkeypatch):
@@ -1249,8 +1231,6 @@ def test_complete_task_conforms(write_world, monkeypatch):
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda did, active_only=True: None)
     _conforms("complete_task", handlers.complete_task({"task_id": "t1"}))
-    _conforms("complete_task",
-              handlers.complete_task({"task_id": "t1", "dry_run": True}))
 
     # The already-closed branch writes nothing and has its own shape.
     task["status"] = "terminée"
@@ -1274,6 +1254,42 @@ def test_complete_task_conforms(write_world, monkeypatch):
     cascaded = handlers.complete_task({"task_id": "t1"})
     _conforms("complete_task", cascaded)
     assert cascaded["protocol_step_effect"]["protocol_closed"] is True
+
+
+def test_complete_task_already_closed_neither_bumps_nor_claims_a_sync(
+        write_world, monkeypatch):
+    """La seule sémantique réelle que le retrait du `dry_run` pouvait
+    emporter (2026-08-27).
+
+    Une tâche déjà dans l'état demandé n'écrit RIEN. Deux moitiés, et les
+    deux comptent : aucun bump de CTag — dire à DavX5 de relire une
+    collection inchangée est un mensonge, et c'est ce qui rend une tâche
+    planifiée rejouable — mais les deux clés restent ÉMISES à faux, parce
+    que le schéma de sortie les EXIGE. Les omettre ferait rejeter la
+    réponse par un client strict, sans rien dire côté serveur : la classe
+    de panne que ce fichier existe pour attraper. Le dossier est « actif »
+    ici, donc `dav_synced` ne peut être faux que pour la bonne raison.
+    """
+    bumps: list[str] = []
+    monkeypatch.setattr(handlers, "bump_ctag", lambda n: bumps.append(n))
+    task = {
+        "id": "t1", "title": "Produire", "description": "",
+        "status": "terminée", "priority": "normale", "category": "rédaction",
+        "dossier_id": "d1", "dossier_file_number": "2026-001",
+        "dossier_title": "T", "due_date": None, "completed_date": None,
+        "related_note_id": None,
+    }
+    monkeypatch.setattr(handlers.task_model, "get_task", lambda i: dict(task))
+    monkeypatch.setattr(handlers.task_model, "update_task",
+                        lambda tid, data: pytest.fail(
+                            "un no-op ne doit jamais écrire"))
+
+    payload = handlers.complete_task({"task_id": "t1"})
+    _conforms("complete_task", payload)
+    assert payload["already_completed"] is True
+    assert bumps == []
+    assert payload["ctag_bumped"] is False
+    assert payload["dav_synced"] is False
 
 
 # ── Phase N — document content + versioned drafts ───────────────────────
@@ -1448,7 +1464,7 @@ def test_list_drafts_conforms(monkeypatch):
     assert payload["count"] == 1
 
 
-def test_save_draft_conforms_live_and_dry(write_world, monkeypatch):
+def test_save_draft_conforms(write_world, monkeypatch):
     monkeypatch.setattr(
         handlers.chat_draft_model, "create_draft",
         lambda data: ({**data, "id": "b-new", "content_length":
@@ -1458,13 +1474,11 @@ def test_save_draft_conforms_live_and_dry(write_world, monkeypatch):
     payload = handlers.save_draft(dict(args))
     _conforms("save_draft", payload)
     assert payload["created"] is True
-    dry = handlers.save_draft({**args, "dry_run": True})
-    _conforms("save_draft", dry)
-    assert dry["dry_run"] is True
-    assert dry["draft"]["id"] == ""
+    # The stored id is the caller's only handle on the new draft.
+    assert payload["draft"]["id"] == "b-new"
 
 
-def test_revise_draft_conforms_live_and_dry(monkeypatch):
+def test_revise_draft_conforms(monkeypatch):
     monkeypatch.setattr(
         handlers.chat_draft_model, "get_draft",
         lambda i: dict(_DRAFT_HEAD))
@@ -1477,7 +1491,3 @@ def test_revise_draft_conforms_live_and_dry(monkeypatch):
     _conforms("revise_draft", payload)
     assert payload["revised"] is True
     assert payload["draft"]["current_version"] == 4
-    dry = handlers.revise_draft({**args, "dry_run": True})
-    _conforms("revise_draft", dry)
-    assert dry["draft"]["current_version"] == 4
-    assert dry["dry_run"] is True

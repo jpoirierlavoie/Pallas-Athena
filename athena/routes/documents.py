@@ -43,6 +43,8 @@ from models.document import (
     move_document,
     move_documents_bulk,
     update_metadata,
+    update_analyse,
+    ANALYSE_EDITABLE,
 )
 from routes._helpers import is_htmx
 
@@ -430,6 +432,67 @@ def api_finaliser():
 # ── Edit metadata ─────────────────────────────────────────────────────────
 
 
+def _analyse_form_context() -> dict:
+    """Les vocabulaires FERMÉS que le formulaire d'analyse propose.
+
+    Ils viennent des modules PURS (`utils/analyse_taxonomies`,
+    `utils/analyse_protection`), jamais d'un littéral recopié : le juriste
+    choisit exactement dans la table que le code valide, et une entrée
+    ajoutée à la table paraît au formulaire sans qu'on y touche.
+    """
+    from utils import analyse_protection as prot
+    from utils import analyse_taxonomies as tax
+
+    sous_natures = sorted(
+        (
+            {
+                "code": code,
+                "libelle": entree.libelle,
+                "nature": entree.nature,
+                "famille": entree.famille,
+            }
+            for code, entree in tax.SOUS_NATURES.items()
+        ),
+        key=lambda r: (r["famille"], r["libelle"]),
+    )
+    return {
+        "analyse_sous_natures": sous_natures,
+        "analyse_privileges": [
+            {"code": code, "libelle": getattr(p, "portee", "") or code,
+             "niveau": getattr(p, "niveau", None)}
+            for code, p in prot.PRIVILEGES.items()
+        ],
+        "analyse_niveaux": [
+            (n, tax.NIVEAU_LABELS.get(n, str(n))) for n in (0, 1, 2, 3)
+        ],
+    }
+
+
+def _analyse_from_form(f) -> dict:
+    """Ce que le formulaire porte de l'analyse, champ par champ.
+
+    Tout est TOUJOURS porté quand la section est présente — un champ vidé
+    efface, comme la date du document et les notes internes. C'est ce qui
+    permet de retirer une mention que l'analyse avait inventée.
+    """
+    from models.document import (
+        _ANALYSE_BOOLEENS, _ANALYSE_LISTES, _ANALYSE_TEXTES,
+    )
+
+    champs: dict = {
+        "sous_nature": f.get("analyse_sous_nature", "").strip(),
+        "privileges": f.getlist("analyse_privileges"),
+        "niveau_protection": f.get("analyse_niveau_protection", "").strip(),
+    }
+    for cle in _ANALYSE_TEXTES:
+        champs[cle] = f.get(f"analyse_{cle}", "").strip()
+    for cle in _ANALYSE_LISTES:
+        champs[cle] = f.get(f"analyse_{cle}", "").strip()
+    for cle in _ANALYSE_BOOLEENS:
+        champs[cle] = f.get(f"analyse_{cle}") == "1"
+    return champs
+
+
 @documents_bp.route("/<document_id>/edit")
 @login_required
 def document_edit(document_id: str) -> str:
@@ -444,6 +507,7 @@ def document_edit(document_id: str) -> str:
         category_labels=CATEGORY_LABELS,
         errors=[],
         return_to=request.args.get("return_to", ""),
+        **_analyse_form_context(),
     )
 
 
@@ -469,6 +533,18 @@ def document_update(document_id: str) -> str:
 
     doc, errors = update_metadata(document_id, data)
 
+    # L'analyse, si le formulaire la porte. Le drapeau `analyse_presente`
+    # distingue « le juriste n'a pas ouvert la section » de « il l'a vidée » :
+    # sans lui, tout enregistrement des seules métadonnées de base
+    # effacerait l'analyse entière, puisque le contrat de `update_analyse`
+    # est qu'une clé présente et vide efface.
+    if not errors and f.get("analyse_presente") == "1":
+        champs = _analyse_from_form(f)
+        _, erreurs_analyse = update_analyse(
+            document_id, champs, par=session.get("user_email", "")
+        )
+        errors = erreurs_analyse or []
+
     if errors:
         existing = get_document(document_id) or {}
         existing.update(data)
@@ -478,6 +554,7 @@ def document_update(document_id: str) -> str:
             category_labels=CATEGORY_LABELS,
             errors=errors,
             return_to=return_to,
+            **_analyse_form_context(),
         )
 
     fallback = url_for("documents.document_detail", document_id=document_id)

@@ -1400,6 +1400,11 @@ VALID_ANALYSE_STATUTS = (
 
 # Les champs d'extraction que le modèle fournit, et EUX SEULS. Une liste
 # blanche, jamais `**args` : `record_analyse` écrit un document complet.
+MOTIF_NON_DECLASSEMENT = (
+    "Niveau tenu : une analyse antérieure retenait une protection plus "
+    "élevée, et une réanalyse ne déclasse jamais."
+)
+
 _EXTRACTION_FIELDS = (
     "resume", "langue_detectee", "qualite_reconnaissance",
     "extraction_tronquee", "numero_dossier_cour", "tribunal",
@@ -1456,6 +1461,42 @@ def _analyse_derivee(
         ),
     )
 
+    # ── La règle de NON-DÉCLASSEMENT (§6.3 règle 2) ────────────────────
+    #
+    # Elle était PROMISE et pas implémentée. `appliquer_regime` ne monte
+    # qu'à l'intérieur d'UN appel : elle ne reçoit rien de l'analyse
+    # antérieure, si bien qu'une réanalyse retenant moins de privilèges
+    # faisait tomber le niveau — mesuré le 2026-08-27, 3 → 1, en silence,
+    # sur un document couvert par le secret professionnel. Pendant ce
+    # temps la description de l'outil MCP, la compétence et CLAUDE.md
+    # affirmaient toutes trois que le code gardait le plus élevé.
+    #
+    # Le sens de l'erreur décide : sous-estimer la protection peut mener à
+    # une divulgation par inadvertance (art. 60.4 du Code des professions),
+    # la surestimer fait perdre du temps. Un chemin AUTOMATIQUE ne descend
+    # donc jamais — il retient l'UNION des privilèges et le plus haut des
+    # deux niveaux, et lève `divergence_protection` pour que l'écart soit
+    # vu plutôt que subi.
+    #
+    # ⚠ La voie de descente existe, et c'est le JURISTE : `update_analyse`
+    # écrit ce qu'il pose, y compris plus bas. Sans elle la règle serait
+    # collante et une sur-protection fautive deviendrait définitive.
+    precedent = document.get("analyse") or {}
+    niveau_avant = precedent.get("niveau_protection")
+    niveau_analyse = niveau          # ce que CE passage a conclu, avant plancher
+    divergence = False
+    if isinstance(niveau_avant, int) and (niveau is None or niveau < niveau_avant):
+        divergence = True
+        anciens = {
+            c for c in (precedent.get("privileges") or []) if c in prot.PRIVILEGES
+        }
+        # L'union, pas seulement le niveau : garder un niveau 3 sans le
+        # privilège qui le fonde produirait une carte incohérente, où la
+        # protection ne s'expliquerait par rien.
+        retenus = tuple(sorted(set(retenus) | anciens))
+        niveau = max(niveau_avant, niveau or 0)
+        motifs = tuple(motifs) + (MOTIF_NON_DECLASSEMENT,)
+
     champ: dict = {
         "statut": "prete",
         "nature_detectee": nature,
@@ -1463,6 +1504,12 @@ def _analyse_derivee(
         "famille": tax.famille_of(sous_nature),
         "privileges": list(retenus),
         "niveau_protection": niveau,
+        # Ce que l'analyse a conclu AVANT le plancher — sans quoi la
+        # divergence serait invérifiable : on verrait un niveau tenu sans
+        # savoir de quoi il a été tenu.
+        "niveau_protection_analyse": niveau_analyse,
+        "niveau_protection_precedent": niveau_avant,
+        "divergence_protection": divergence,
         "motifs_protection": list(motifs),
         "champs_attendus_absents": list(absents),
         "alerte_dispositif_detecte": prot.alerte_dispositif_detecte(
@@ -1559,6 +1606,178 @@ def record_analyse(
         ref.set(merged)
     except Exception:
         log_unexpected("document analyse write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    return merged, []
+
+
+# Tout ce que l'analyse produit et que le juriste peut reprendre. La liste
+# est EXHAUSTIVE par décision (2026-08-27) : « whatever the analysis outputs
+# becomes an editable field ». Les trois premiers sont DÉRIVANTS — les
+# changer recalcule ce qui en dépend ; les autres sont l'extrait tel quel.
+_ANALYSE_DERIVANTS = ("sous_nature", "privileges", "niveau_protection")
+_ANALYSE_LISTES = (
+    "parties_mentionnees", "indices_protection", "motifs_protection",
+    "champs_attendus_absents",
+)
+_ANALYSE_BOOLEENS = (
+    "contient_dispositif", "extraction_tronquee", "parait_original",
+    "alerte_dispositif_detecte", "alerte_renonciation_possible",
+)
+_ANALYSE_TEXTES = (
+    "resume", "numero_dossier_cour", "tribunal", "district_judiciaire",
+    "auteur", "date_document_str", "date_signature_str", "dispositif",
+    "langue_detectee", "confiance", "qualite_reconnaissance", "moyen_preuve",
+    "qualification_ecrit",
+)
+ANALYSE_EDITABLE = (
+    _ANALYSE_DERIVANTS + _ANALYSE_LISTES + _ANALYSE_BOOLEENS + _ANALYSE_TEXTES
+)
+VALID_NIVEAUX = (0, 1, 2, 3)
+
+
+def update_analyse(
+    document_id: str, champs: dict, *, par: str
+) -> tuple[Optional[dict], list[str]]:
+    """Le juriste corrige l'analyse — et c'est la SEULE voie de déclassement.
+
+    Deux raisons de ne pas passer par `record_analyse` :
+
+    * Celui-là DÉRIVE tout d'une sortie de modèle et applique le plancher de
+      non-déclassement. Ici, la valeur posée est celle de l'avocat : elle
+      peut descendre, parce que c'est sa détermination et non une
+      supposition. Sans cette porte, la règle de non-déclassement serait
+      collante et une sur-protection fautive deviendrait définitive.
+    * Éditer, c'est CONFIRMER. Le juriste qui corrige un champ a vu la
+      carte ; lui redemander un second clic sur « Confirmer » serait lui
+      faire dire deux fois la même chose. `confirmer_analyse` reste la voie
+      de celui qui accepte SANS corriger.
+
+    Contrat de présence, comme partout dans ce modèle : une clé absente
+    laisse la valeur stockée intacte, une clé présente et vide l'efface.
+    Les vocabulaires restent FERMÉS — le juriste choisit dans la table, il
+    n'invente pas plus de code que le modèle.
+
+    L'entrée au journal porte ``declenche_par: "juriste"``, si bien que
+    l'historique distingue ce que le modèle a proposé de ce que l'avocat a
+    arrêté. Rien ne s'efface, ici comme ailleurs.
+    """
+    from utils import analyse_protection as prot
+    from utils import analyse_taxonomies as tax
+
+    existing = get_document(document_id)
+    if not existing:
+        return None, ["Document introuvable."]
+    champ = dict(existing.get("analyse") or {})
+    if not champ.get("sous_nature") and "sous_nature" not in champs:
+        return None, ["Aucune analyse à corriger."]
+
+    erreurs: list[str] = []
+    propose = {k: v for k, v in champs.items() if k in ANALYSE_EDITABLE}
+
+    if "sous_nature" in propose:
+        code = str(propose["sous_nature"] or "").strip()
+        if code not in tax.VALID_SOUS_NATURES:
+            erreurs.append(f"Sous-nature inconnue : {code}.")
+        else:
+            propose["sous_nature"] = code
+
+    if "privileges" in propose:
+        brut = propose["privileges"] or []
+        if isinstance(brut, str):
+            brut = [p.strip() for p in brut.split(",") if p.strip()]
+        inconnus = sorted({p for p in brut if p not in prot.PRIVILEGES})
+        if inconnus:
+            erreurs.append(f"Privilège inconnu : {', '.join(inconnus)}.")
+        else:
+            propose["privileges"] = sorted(set(brut))
+
+    if "niveau_protection" in propose:
+        brut = propose["niveau_protection"]
+        if brut in ("", None):
+            propose["niveau_protection"] = None
+        else:
+            try:
+                niveau = int(brut)
+            except (TypeError, ValueError):
+                niveau = -1
+            if niveau not in VALID_NIVEAUX:
+                erreurs.append(
+                    "Niveau de protection invalide : attendu 0, 1, 2 ou 3."
+                )
+            else:
+                propose["niveau_protection"] = niveau
+
+    for cle in _ANALYSE_LISTES:
+        if cle in propose:
+            brut = propose[cle] or []
+            if isinstance(brut, str):
+                brut = [x.strip() for x in brut.split(",") if x.strip()]
+            propose[cle] = [
+                sanitize(str(x), max_length=300) for x in brut if str(x).strip()
+            ]
+
+    for cle in _ANALYSE_BOOLEENS:
+        if cle in propose:
+            propose[cle] = bool(propose[cle])
+
+    for cle in _ANALYSE_TEXTES:
+        if cle in propose:
+            propose[cle] = sanitize(str(propose[cle] or ""), max_length=2000)
+
+    if erreurs:
+        return None, erreurs
+
+    champ.update(propose)
+
+    # La nature et la famille ne sont jamais saisies : elles DÉRIVENT du
+    # code, exactement comme sur le chemin du modèle. C'est ce qui rend
+    # impossible d'inventer une catégorie, à la main comme autrement.
+    sous_nature = str(champ.get("sous_nature") or "")
+    nature = tax.nature_of(sous_nature)
+    champ["nature_detectee"] = nature
+    champ["famille"] = tax.famille_of(sous_nature)
+
+    now = datetime.now(timezone.utc)
+    analyse_id = str(uuid.uuid4())
+    ancienne = str(existing.get("category") or "")
+    champ.update({
+        "declenche_par": "juriste",
+        "modifie_par": sanitize(str(par or ""), max_length=200),
+        "modele": "",
+        "genere_le": now,
+        "analyse_id": analyse_id,
+        "message_erreur": None,
+        # Le juriste a tranché : la divergence n'est plus en attente, et le
+        # niveau qu'il pose devient le plancher des analyses suivantes.
+        "divergence_protection": False,
+        "niveau_protection_analyse": champ.get("niveau_protection"),
+        "niveau_protection_precedent": (existing.get("analyse") or {}).get(
+            "niveau_protection"
+        ),
+        "categorie_precedente": ancienne,
+        "categorie_precedente_source": str(
+            existing.get("category_source") or "juriste"
+        ),
+        "categorie_remplacee": bool(ancienne and ancienne != nature),
+        # Jamais un avertissement contre le juriste lui-même.
+        "remplace_un_choix_du_juriste": False,
+        # Éditer, c'est confirmer.
+        "confirme": True,
+        "confirme_par": sanitize(str(par or ""), max_length=200),
+        "confirme_le": now,
+    })
+
+    merged = {
+        **existing, "analyse": champ, "category": nature,
+        "category_source": "juriste", "updated_at": now,
+        "etag": str(uuid.uuid4()),
+    }
+    try:
+        ref = db.collection(COLLECTION).document(document_id)
+        ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id).set(champ)
+        ref.set(merged)
+    except Exception:
+        log_unexpected("document analyse edit failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     return merged, []
 

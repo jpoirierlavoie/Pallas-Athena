@@ -1,19 +1,25 @@
-"""Le protocole d'écriture partagé (WP15) : dry_run + idempotence.
+"""Le protocole d'écriture partagé (WP15) : l'idempotence.
 
 Chaque outil d'écriture MCP passe par run_write. Invariants épinglés :
 
-1. dry_run exécute la validation complète et rend l'effet calculé SANS
-   rien écrire — ni modèle, ni CTag, ni enregistrement d'idempotence.
-2. Une idempotency_key rejouée rend le résultat STOCKÉ du premier appel
+1. Une idempotency_key rejouée rend le résultat STOCKÉ du premier appel
    (idempotent_replay: true) — jamais une seconde écriture.
-3. La même clé avec des arguments DIFFÉRENTS est refusée bruyamment — un
+2. La même clé avec des arguments DIFFÉRENTS est refusée bruyamment — un
    silence rendrait un résultat qui ne correspond pas à la demande.
-4. Un enregistrement expiré (>24 h) redevient une première écriture —
+3. Un enregistrement expiré (>24 h) redevient une première écriture —
    le TTL Firestore n'est que du ramassage, l'expiration vit dans le code.
-5. Le magasin échoue OUVERT dans les deux sens : une panne de lecture ne
+4. Le magasin échoue OUVERT dans les deux sens : une panne de lecture ne
    bloque pas une première écriture légitime ; une panne d'écriture de
    l'enregistrement ne fait pas échouer une écriture déjà commise.
-6. Un appel REFUSÉ (ToolArgumentError) n'enregistre jamais de clé.
+5. Un appel REFUSÉ (ToolArgumentError) n'enregistre jamais de clé.
+6. Le payload ne porte plus de clé dry_run.
+
+`dry_run` a été RETIRÉ du protocole le 2026-08-27 : il n'était pas un
+contrôle (rien ne l'exigeait, rien ne le vérifiait, un appelant qui
+l'omettait écrivait) et il doublait chaque écriture en deux appels de
+modèle. Le test qui l'éprouvait est parti avec lui ; le jeton ne survit
+que dans le tuple d'EXCLUSION de l'empreinte, pour qu'un enregistrement
+posé avant le retrait se rejoue encore pendant ses 24 h.
 """
 
 import os
@@ -69,28 +75,22 @@ def store(monkeypatch):
     return s
 
 
-def test_dry_run_never_touches_the_store_or_executes_the_write(store):
-    calls = []
-
-    def execute(dry):
-        calls.append(dry)
-        return {"created": True, "note": {"id": ""}}
-
+def test_the_payload_no_longer_carries_a_dry_run_key(store):
+    """Le retrait du 2026-08-27, épinglé : un appelant qui lirait encore
+    cette clé doit trouver son absence, jamais un False trompeur."""
     result = ws.run_write(
-        "create_note", {"dry_run": True, "idempotency_key": "cle-de-test"},
-        execute,
+        "create_note", {"idempotency_key": "cle-de-test"},
+        lambda: {"created": True, "note": {"id": "n-1"}},
     )
-    assert calls == [True]
-    assert result["dry_run"] is True
+    assert "dry_run" not in result
     assert result["idempotent_replay"] is False
-    assert store.docs == {}          # pas d'enregistrement d'idempotence
 
 
 def test_replay_returns_the_stored_result_without_rewriting(store):
     calls = []
 
-    def execute(dry):
-        calls.append(dry)
+    def execute():
+        calls.append("exécutée")
         return {"created": True, "note": {"id": "n-1"}}
 
     args = {"idempotency_key": "cle-stable", "title": "T"}
@@ -99,13 +99,13 @@ def test_replay_returns_the_stored_result_without_rewriting(store):
     assert len(store.docs) == 1
 
     second = ws.run_write("create_note", dict(args), execute)
-    assert calls == [False]                     # une seule exécution réelle
+    assert calls == ["exécutée"]                # une seule exécution réelle
     assert second["idempotent_replay"] is True
     assert second["note"]["id"] == "n-1"
 
 
 def test_same_key_different_args_is_refused(store):
-    execute = lambda dry: {"created": True, "note": {"id": "n-1"}}
+    execute = lambda: {"created": True, "note": {"id": "n-1"}}
     ws.run_write("create_note",
                  {"idempotency_key": "cle-stable", "title": "A"}, execute)
     with pytest.raises(ToolArgumentError):
@@ -114,8 +114,10 @@ def test_same_key_different_args_is_refused(store):
 
 
 def test_protocol_args_do_not_change_the_fingerprint(store):
-    """dry_run/idempotency_key paramètrent le PROTOCOLE, pas l'écriture —
-    un dry run préalable ne doit pas faire conclure au conflit."""
+    """idempotency_key paramètre le PROTOCOLE, pas l'écriture. `dry_run`
+    reste EXCLU de l'empreinte bien qu'aucun appelant ne puisse plus en
+    envoyer : un enregistrement posé avant le retrait du 2026-08-27 a été
+    empreint sans lui, et il doit se rejouer pendant ses 24 h."""
     a = ws.args_fingerprint({"title": "T", "idempotency_key": "k",
                              "dry_run": True})
     b = ws.args_fingerprint({"title": "T", "idempotency_key": "autre"})
@@ -125,8 +127,8 @@ def test_protocol_args_do_not_change_the_fingerprint(store):
 def test_expired_record_reads_as_a_first_write(store):
     execute_calls = []
 
-    def execute(dry):
-        execute_calls.append(dry)
+    def execute():
+        execute_calls.append("exécutée")
         return {"created": True, "note": {"id": f"n-{len(execute_calls)}"}}
 
     args = {"idempotency_key": "cle-perimee", "title": "T"}
@@ -147,7 +149,7 @@ def test_store_fails_open_both_ways(monkeypatch):
 
     result = ws.run_write(
         "create_note", {"idempotency_key": "cle-quand-meme", "title": "T"},
-        lambda dry: {"created": True, "note": {"id": "n-1"}},
+        lambda: {"created": True, "note": {"id": "n-1"}},
     )
     # L'écriture passe, le replay futur est simplement non couvert.
     assert result["idempotent_replay"] is False
@@ -155,7 +157,7 @@ def test_store_fails_open_both_ways(monkeypatch):
 
 
 def test_refused_write_records_nothing(store):
-    def execute(dry):
+    def execute():
         raise ToolArgumentError("refusé")
 
     with pytest.raises(ToolArgumentError):

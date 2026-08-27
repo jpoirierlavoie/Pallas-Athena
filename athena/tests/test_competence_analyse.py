@@ -71,14 +71,18 @@ def test_le_corps_exige_les_indices_de_protection():
     assert "indices_protection" in _corps()
 
 
-def test_le_corps_distingue_l_essai_a_blanc_du_lot():
-    # Un essai à blanc suivi d'un enregistrement DOUBLE le nombre d'appels
-    # de modèle, et ce nombre est plafonné par tour
-    # (`CHAT_CHAIN_MAX_CALLS`). Sur un lot, chaque doublon coûte donc un
-    # document que le tour n'atteindra pas — mesuré le 2026-08-27 : douze
-    # appels pour quatre documents sur quarante-cinq.
+def test_le_corps_impose_un_seul_appel_par_document():
+    # L'essai à blanc a été RETIRÉ du protocole d'écriture MCP le
+    # 2026-08-27 : `dry_run` n'est plus un paramètre, et les schémas
+    # portent `additionalProperties: False` — l'envoyer se fait donc
+    # REFUSER, jamais ignorer. Le corps ne doit pas l'enseigner.
+    #
+    # Ce qui reste vrai, et que ce contrôle garde : un appel par document,
+    # avec sa propre clé d'idempotence, parce que le nombre d'appels de
+    # modèle par tour est plafonné (`CHAT_CHAIN_MAX_CALLS`) — mesuré le
+    # 2026-08-27 : douze appels pour quatre documents sur quarante-cinq.
     corps = _corps()
-    assert "dry_run" in corps
+    assert "dry_run" not in corps
     assert "idempotency_key" in corps
     assert "LOT" in corps or "lot" in corps
 

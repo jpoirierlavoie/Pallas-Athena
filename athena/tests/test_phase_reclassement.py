@@ -377,23 +377,19 @@ def test_l_outil_simple_annonce_le_non_changement(db):
     assert db.store["_updates"] == []
 
 
-@pytest.mark.parametrize("dry", [False, True])
-def test_l_outil_simple_leve_sur_un_refus(db, dry):
+def test_l_outil_simple_leve_sur_un_refus(db):
     """Un appelant qui a nommé UNE ligne veut une erreur, pas un rapport
     d'une ligne."""
     with pytest.raises(tools.ToolArgumentError, match="introuvable"):
         handlers.set_time_entry_phase(
-            {"time_entry_id": "absent", "phase": "PRE", "dry_run": dry}
+            {"time_entry_id": "absent", "phase": "PRE"}
         )
     with pytest.raises(tools.ToolArgumentError, match="n'appartient pas"):
         handlers.set_time_entry_phase(
-            {"time_entry_id": "e1", "phase": "INS", "sous_phase": "CTS-02",
-             "dry_run": dry}
+            {"time_entry_id": "e1", "phase": "INS", "sous_phase": "CTS-02"}
         )
     with pytest.raises(tools.ToolArgumentError, match="Aucun code de phase"):
-        handlers.set_time_entry_phase(
-            {"time_entry_id": "e1", "dry_run": dry}
-        )
+        handlers.set_time_entry_phase({"time_entry_id": "e1"})
     assert db.store["_updates"] == []
 
 
@@ -496,51 +492,29 @@ def test_le_lot_n_altere_aucun_chiffre(many):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 8. dry_run — il doit refuser tout ce que l'appel réel refuse
+# 8. Le gestionnaire valide LUI-MÊME, sans se reposer sur le schéma
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_une_simulation_n_ecrit_rien_et_annonce_l_effet(many):
-    payload = handlers.set_time_entry_phase_bulk({
-        "entries": [
-            {"time_entry_id": "e2", "sous_phase": "AUD-01"},
-            {"time_entry_id": "e5", "sous_phase": "CTS-02"},
-        ],
-        "dry_run": True,
-    })
-    assert payload["dry_run"] is True
-    assert [r["outcome"] for r in payload["results"]] == [
-        "applied", "unchanged"
-    ]
-    assert any("Simulation" in w for w in payload["warnings"])
-    assert many.store["_updates"] == []
-    assert many.store["timeentries"]["e2"]["sous_phase"] == ""
-
-
-@pytest.mark.parametrize("dry", [False, True])
-def test_la_branche_seche_refuse_exactement_comme_l_appel_reel(many, dry):
-    """``run_write`` court-circuite le dry_run SANS appeler le modèle : une
-    garde qui ne vivrait que dans le modèle annoncerait un succès que
-    l'appel réel refuse."""
-    with pytest.raises(tools.ToolArgumentError, match="figure deux fois"):
-        handlers.set_time_entry_phase_bulk({"entries": [
-            {"time_entry_id": "e2", "sous_phase": "PRE-01"},
-            {"time_entry_id": "e2", "sous_phase": "AUD-01"},
-        ], "dry_run": dry})
-
+def test_les_quatre_familles_de_refus_coexistent_dans_un_lot(many):
+    """L'enum de sous-codes du schéma refuserait « XXX-99 », mais il
+    refuserait le LOT ENTIER : un rapport ligne par ligne n'existe que si
+    le gestionnaire valide chaque couple lui-même. C'est aussi la seule
+    garde qui survivrait à une dérive entre l'enum et `utils/phases` —
+    sans elle, un code inconnu partirait au modèle et le lot annoncerait
+    « applied » là où rien n'a été écrit."""
     payload = handlers.set_time_entry_phase_bulk({"entries": [
         {"time_entry_id": "absent", "sous_phase": "PRE-01"},
         {"time_entry_id": "e2", "phase": "INS", "sous_phase": "CTS-02"},
         {"time_entry_id": "e3"},
-        # Un code que l'enum du schéma ne laisse pas passer AUJOURD'HUI —
-        # mais le gestionnaire doit le refuser lui-même, sans quoi une
-        # simulation annoncerait « applied » là où le modèle refuse.
+        # Un code que l'enum du schéma ne laisse pas passer AUJOURD'HUI.
         {"time_entry_id": "e4", "sous_phase": "XXX-99"},
-    ], "dry_run": dry})
+    ]})
     assert payload["refused"] == 4
     assert [r["outcome"] for r in payload["results"]] == ["refused"] * 4
     assert "Sous-phase invalide" in payload["results"][3]["reason"]
     assert many.store["timeentries"]["e4"]["sous_phase"] == ""
+    assert many.store["_updates"] == []
 
 
 # ══════════════════════════════════════════════════════════════════════

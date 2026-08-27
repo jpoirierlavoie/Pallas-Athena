@@ -41,10 +41,12 @@ nothing errors, and only the phone is wrong.
 without an id raises an uncaught ``KeyError`` — an HTTP 500, not a
 validation error — and ``_validate`` never checks for the key.
 
-**A dry run that predicts a success the real call refuses is a lie.**
-``run_write`` short-circuits on ``dry_run`` WITHOUT calling the model, so
-every model-side guard a caller can trip (an invoiced entry, a missing name,
-an unknown id) must be repeated in the handler before that branch.
+**Guards run in the HANDLER, ahead of the model.** An invoiced entry, a
+missing name, an unknown id are refused here, in French, before any model
+function is reached. That started as a `dry_run` obligation — a preview
+that skipped them announced successes the live call refused — and the
+preview is gone since 2026-08-27, but the guards stay: refusing early with
+a message that names the field beats refusing late with a model error.
 
 Serialization rules (§10.1):
 * money → ``<field>_cents`` (int) + ``<field>_display`` (fr-CA string);
@@ -107,16 +109,6 @@ _FETCH_CAP = 200
 _UTC_MIN = datetime.min.replace(tzinfo=timezone.utc)
 _NOTE_PREVIEW_CHARS = 280
 _UNBILLED_ROW_CAP = 50
-# The standard dry_run preview warning — one constant for the 8 write
-# handlers that used to repeat the literal (import_invoice keeps its own
-# reconciliation-specific variant). The wording is part of the emitted
-# payload: byte-identical to the former literals.
-_DRY_RUN_WARNING = (
-    "Simulation (dry_run) : rien n'a été écrit. Relancez sans "
-    "dry_run pour enregistrer."
-)
-
-
 # ── Shared serialization helpers ────────────────────────────────────────
 
 def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
@@ -1261,6 +1253,37 @@ def _folder_paths(dossier_id: str) -> dict[str, str]:
     return paths
 
 
+def _analyse_apercu(doc: dict) -> dict:
+    """L'état d'analyse d'un document, pour une LIGNE de liste.
+
+    Étroit à dessein : de quoi décider s'il reste du travail, pas de quoi
+    dispenser d'ouvrir le document. Le résumé, l'extrait et les motifs
+    restent hors de l'index — les recopier par ligne ferait d'une liste de
+    cinquante documents une charge que le plafond ne tiendrait pas, et
+    l'appelant a `get_document_text` pour le fond.
+
+    `analysee` est le prédicat que le modèle lit : « ce document a-t-il
+    déjà été qualifié ? ». `category_presumee` porte la mention que
+    l'écran affiche, pour que le connecteur ne présente jamais une
+    supposition avec l'autorité d'une détermination.
+    """
+    a = doc.get("analyse") or {}
+    sous_nature = str(a.get("sous_nature") or "")
+    return {
+        "analysee": bool(sous_nature),
+        "sous_nature": sous_nature,
+        "nature_detectee": str(a.get("nature_detectee") or ""),
+        "famille": str(a.get("famille") or ""),
+        "niveau_protection": a.get("niveau_protection"),
+        "privileges": list(a.get("privileges") or []),
+        "analyse_confirmee": bool(a.get("confirme")),
+        "divergence_protection": bool(a.get("divergence_protection")),
+        # « analyse » = présumée, absente ou « juriste » = déterminée.
+        "category_presumee": str(doc.get("category_source") or "juriste")
+        == "analyse",
+    }
+
+
 def list_documents(args: dict) -> dict:
     limit = _limit_arg(args, 25)
     # Every document belongs to a dossier, so there is no « général » scope
@@ -1361,6 +1384,12 @@ def list_documents(args: dict) -> dict:
                 "document_date": date_str(_as_utc(doc.get("document_date"))),
                 "description": doc.get("description", ""),
                 "tags": doc.get("tags", []),
+                # L'état de l'analyse — sans quoi un appelant ne peut pas
+                # savoir ce qui a DÉJÀ été qualifié, et refait le travail à
+                # chaque reprise (le défaut qui a tué le premier lot réel).
+                # Une liste blanche étroite : le résumé, les motifs et
+                # l'extrait vivent dans le document, pas dans un index.
+                **_analyse_apercu(doc),
                 **_stamps(doc),
             }
         )
@@ -2486,7 +2515,6 @@ def _bump_note_ctag(dossier_id: str, note_id: str, *, created: bool) -> bool:
 
 def _write_result(
     note: dict, *, created: bool, dossier: Optional[dict],
-    dry_run: bool = False,
 ) -> dict:
     """Shared success payload for both write tools.
 
@@ -2496,16 +2524,14 @@ def _write_result(
     exists and carries a dossier_id, so the collection almost certainly
     exists too. Claim nothing about visibility in that case.
 
-    ``dry_run`` skips the CTag bump (nothing was written, nothing must
-    sync) and replaces the outcome warnings with the simulation notice.
+    The CTag bump belongs here and not to the model: ``models/note.py``
+    never imports ``dav/``, so a write that stops at the model is visible
+    in the application and never reaches the phone.
     """
     dossier_id = note.get("dossier_id", "")
-    if dry_run:
-        bumped = False
-    else:
-        bumped = _bump_note_ctag(
-            dossier_id, note.get("id", ""), created=created
-        )
+    bumped = _bump_note_ctag(
+        dossier_id, note.get("id", ""), created=created
+    )
     status = dossier.get("status", "") if dossier is not None else None
     # The per-dossier DAV collection only exposes live resources for
     # actif/en_attente dossiers, so a note on a closed file is stored and
@@ -2532,11 +2558,6 @@ def _write_result(
         "dav_synced": bumped and dav_visible,
         "warnings": [],
     }
-    if dry_run:
-        payload["warnings"].append(
-            _DRY_RUN_WARNING
-        )
-        return payload
     if not bumped:
         payload["warnings"].append(
             "La note est enregistrée, mais la synchronisation DavX5 n'a pas pu "
@@ -2765,10 +2786,10 @@ def _cross_finding(code: str, dossier: dict, detail: str) -> dict:
 # ── 18. create_note (WRITE) ─────────────────────────────────────────────
 
 def create_note(args: dict) -> dict:
-    return run_write("create_note", args, lambda dry: _create_note_impl(args, dry))
+    return run_write("create_note", args, lambda: _create_note_impl(args))
 
 
-def _create_note_impl(args: dict, dry_run: bool) -> dict:
+def _create_note_impl(args: dict) -> dict:
     # An ABSENT dossier_id means « Général ». A SUPPLIED one must resolve:
     # models/note._validate no longer requires a dossier, so a hallucinated
     # UUID would otherwise be silently downgraded to a general note instead
@@ -2814,14 +2835,6 @@ def _create_note_impl(args: dict, dry_run: bool) -> dict:
         "category": category,
         "pinned": False,
     }
-    if dry_run:
-        # Everything above ran — resolution, chevron checks, assembly. The
-        # preview carries the exact would-be content length; no id exists
-        # because nothing was written.
-        preview = {**data, "id": "", "created_at": None, "updated_at": None}
-        return _write_result(
-            preview, created=True, dossier=dossier, dry_run=True
-        )
     note, errors = note_model.create_note(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
@@ -2832,11 +2845,11 @@ def _create_note_impl(args: dict, dry_run: bool) -> dict:
 
 def append_to_note(args: dict) -> dict:
     return run_write(
-        "append_to_note", args, lambda dry: _append_to_note_impl(args, dry)
+        "append_to_note", args, lambda: _append_to_note_impl(args)
     )
 
 
-def _append_to_note_impl(args: dict, dry_run: bool) -> dict:
+def _append_to_note_impl(args: dict) -> dict:
     note_id = (args.get("note_id") or "").strip()
     existing = note_model.get_note(note_id)
     if existing is None:
@@ -2901,13 +2914,6 @@ def _append_to_note_impl(args: dict, dry_run: bool) -> dict:
     dossier = (
         dossier_model.get_dossier(dossier_id) if dossier_id else _general_scope()
     )
-    if dry_run:
-        preview = {**existing, "content": combined}
-        result = _write_result(
-            preview, created=False, dossier=dossier, dry_run=True
-        )
-        result["appended_chars"] = len(block)
-        return result
     # Whitelist of exactly one field: a stray dossier_id in the update would
     # move the note between dossiers — and between DAV collections, leaving
     # the origin collection un-bumped.
@@ -3019,9 +3025,9 @@ def _entity_write_result(
     *,
     dossier: Optional[dict],
     dav_exposed: bool,
-    dry_run: bool,
     verb: str = "created",
     created: bool = True,
+    wrote: bool = True,
 ) -> dict:
     """Success payload for the WP16 creators and WP17 recorders.
 
@@ -3029,6 +3035,22 @@ def _entity_write_result(
     the exact semantics of the note tools; time entries, expenses and
     dossier-array additions are not DAV-exposed and deliberately do NOT
     fake those keys.
+
+    ``wrote=False`` means the call reached a NO-OP — today only
+    ``complete_task`` on a task already in the requested state. Nothing
+    was stored, so nothing must sync: bumping a CTag there would tell
+    DavX5 to re-fetch a collection that did not change, and the two DAV
+    warnings would describe a write that never happened. This carried on
+    ``dry_run`` until 2026-08-27, which is why removing the preview would
+    have silently started bumping on a no-op — the parameter was doing
+    two unrelated jobs under one name. It has its own name now.
+
+    A no-op still EMITS ``ctag_bumped``/``dav_synced`` (both false) on a
+    DAV-exposed entity. The declared outputSchema REQUIRES them, so
+    skipping the whole block instead of skipping only the bump would ship
+    a payload a strict client rejects with nothing said on our side —
+    exactly what ``tests/test_mcp_output_schemas.py`` exists to catch, and
+    what it did catch the day ``wrote`` replaced ``dry_run`` here.
     """
     payload: dict[str, Any] = {
         verb: True,
@@ -3037,37 +3059,27 @@ def _entity_write_result(
         "warnings": [],
     }
     if dav_exposed:
-        if dry_run:
-            bumped = False
-        else:
-            # created=False for a status change: the row never left its
-            # collection, so clearing a tombstone would be meaningless work
-            # on a resource that was never deleted.
-            bumped = _bump_note_ctag(
-                entity.get("dossier_id") or "", entity.get("id", ""),
-                created=created,
-            )
+        bumped = wrote and _bump_note_ctag(
+            entity.get("dossier_id") or "", entity.get("id", ""),
+            created=created,
+        )
         status = dossier.get("status", "") if dossier is not None else None
         dav_visible = status is None or status in ("actif", "en_attente")
         payload["ctag_bumped"] = bumped
         payload["dav_synced"] = bumped and dav_visible
-        if not dry_run and not bumped:
+        if wrote and not bumped:
             payload["warnings"].append(
                 "L'écriture est enregistrée, mais la synchronisation DavX5 "
                 "n'a pas pu être déclenchée. Elle apparaîtra sur l'appareil "
                 "au prochain changement dans ce dossier. Ne pas réessayer."
             )
-        if not dry_run and not dav_visible:
+        if wrote and not dav_visible:
             payload["warnings"].append(
                 f"Le dossier est « {status} » : l'entrée est enregistrée et "
                 "visible dans l'application, mais les dossiers fermés ou "
                 "archivés ne sont pas exposés à DavX5 — elle n'apparaîtra "
                 "pas sur le téléphone."
             )
-    if dry_run:
-        payload["warnings"].append(
-            _DRY_RUN_WARNING
-        )
     return payload
 
 
@@ -3497,7 +3509,7 @@ def _forum_warnings(before: dict, after: dict) -> list[str]:
 
 
 def _dossier_write_result(
-    doc: dict, *, dry_run: bool, verb: str, warnings: list[str]
+    doc: dict, *, verb: str, warnings: list[str]
 ) -> dict:
     """Success payload of a dossier write.
 
@@ -3523,10 +3535,6 @@ def _dossier_write_result(
         "prescription_status": derived["status"],
         "warnings": list(warnings),
     }
-    if dry_run:
-        payload["warnings"].append(
-            _DRY_RUN_WARNING
-        )
     return payload
 
 
@@ -3574,11 +3582,12 @@ def _optional_phase_pair(args: dict) -> Optional[tuple[str, str]]:
 
 
 def _refuse_if_invoiced(row: dict, kind: str) -> None:
-    """Refuse an edit on an invoiced row — BEFORE the dry_run branch.
+    """Refuse an edit on an invoiced row, before the model is reached.
 
-    The model refuses too, but ``run_write`` short-circuits on ``dry_run``
-    without ever calling it: without this pre-read a simulation would announce
-    a success the live call refuses. Note the remedy named is real — voiding
+    The model refuses too; this pre-read exists so the refusal NAMES the
+    invoice and the way out instead of surfacing a bare model error. (It
+    was written for the `dry_run` contract, removed 2026-08-27, and is
+    kept for the message.) Note the remedy named is real — voiding
     the invoice in the application releases every source (``void_invoice``
     sets invoiced back to False), which is the ONE way back.
     """
@@ -3818,43 +3827,39 @@ def _partie_entity(doc: dict) -> dict:
     }
 
 
-def _partie_write_result(doc: dict, *, dry_run: bool, verb: str) -> dict:
+def _partie_write_result(doc: dict, *, verb: str) -> dict:
     payload: dict[str, Any] = {
         verb: True,
         "entity_type": "partie",
         "entity": _partie_entity(doc),
         "warnings": [],
     }
-    bumped = False if dry_run else _bump_parties_ctag()
+    bumped = _bump_parties_ctag()
     payload["ctag_bumped"] = bumped
     payload["dav_synced"] = bumped
-    if not dry_run and not bumped:
+    if not bumped:
         payload["warnings"].append(
             "Le contact est enregistré, mais la synchronisation CardDAV n'a "
             "pas pu être déclenchée. Il apparaîtra sur l'appareil au prochain "
             "changement du carnet d'adresses. Ne pas réessayer."
-        )
-    if dry_run:
-        payload["warnings"].append(
-            _DRY_RUN_WARNING
         )
     return payload
 
 
 def create_partie(args: dict) -> dict:
     return run_write(
-        "create_partie", args, lambda dry: _create_partie_impl(args, dry)
+        "create_partie", args, lambda: _create_partie_impl(args)
     )
 
 
-def _create_partie_impl(args: dict, dry_run: bool) -> dict:
+def _create_partie_impl(args: dict) -> dict:
     partie_type = args.get("type") or ""
     data = _partie_payload(args)
     data["type"] = partie_type
 
-    # XOR miroir : le validateur du connecteur ne connaît pas oneOf, et ce
-    # contrôle est REJOUÉ ici pour que la branche sèche refuse à l'identique.
-    # Un dry_run qui annonce un succès que l'appel réel refuse est un mensonge.
+    # XOR miroir : le validateur du connecteur ne connaît pas oneOf, donc le
+    # contrôle vit ici. Il refuse en français, en nommant le champ, avant
+    # que le modèle ne soit atteint.
     if partie_type == "individual" and not data.get("last_name", "").strip():
         raise ToolArgumentError(
             "Un contact « individual » exige `last_name`."
@@ -3880,14 +3885,10 @@ def _create_partie_impl(args: dict, dry_run: bool) -> dict:
 
     _refuse_legacy_ref_collision("parties", data.get("legacy_ref", ""))
 
-    if dry_run:
-        return _partie_write_result(
-            {**data, "id": ""}, dry_run=True, verb="created"
-        )
     partie, errors = partie_model.create_partie(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
-    return _partie_write_result(partie, dry_run=False, verb="created")
+    return _partie_write_result(partie, verb="created")
 
 
 # ── 38. update_partie (WRITE — remplace la valeur nommée) ───────────────
@@ -3895,11 +3896,11 @@ def _create_partie_impl(args: dict, dry_run: bool) -> dict:
 
 def update_partie(args: dict) -> dict:
     return run_write(
-        "update_partie", args, lambda dry: _update_partie_impl(args, dry)
+        "update_partie", args, lambda: _update_partie_impl(args)
     )
 
 
-def _update_partie_impl(args: dict, dry_run: bool) -> dict:
+def _update_partie_impl(args: dict) -> dict:
     partie_id = (args.get("partie_id") or "").strip()
     if not partie_id:
         raise ToolArgumentError("`partie_id` est requis.")
@@ -3926,14 +3927,10 @@ def _update_partie_impl(args: dict, dry_run: bool) -> dict:
     if "legacy_ref" in data and data["legacy_ref"] != existing.get("legacy_ref", ""):
         _refuse_legacy_ref_collision("parties", data["legacy_ref"])
 
-    if dry_run:
-        return _partie_write_result(
-            {**existing, **data}, dry_run=True, verb="updated"
-        )
     partie, errors = partie_model.update_partie(partie_id, data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
-    return _partie_write_result(partie, dry_run=False, verb="updated")
+    return _partie_write_result(partie, verb="updated")
 
 
 # ── 41-42. update_time_entry / update_expense (WRITE — remplacent) ──────
@@ -3941,7 +3938,6 @@ def _update_partie_impl(args: dict, dry_run: bool) -> dict:
 
 def _billing_edit(
     args: dict,
-    dry_run: bool,
     *,
     id_key: str,
     kind: str,
@@ -4008,16 +4004,6 @@ def _billing_edit(
             "Aucun champ à modifier : fournissez au moins un champ."
         )
 
-    if dry_run:
-        preview = {**existing, **data}
-        return {
-            "updated": True,
-            "entity_type": entity_type,
-            "entity": entity_builder(preview),
-            "warnings": [
-                _DRY_RUN_WARNING
-            ],
-        }
 
     row, errors = updater(row_id, data)
     if errors:
@@ -4068,8 +4054,8 @@ def _expense_entity(doc: dict) -> dict:
 def update_time_entry(args: dict) -> dict:
     return run_write(
         "update_time_entry", args,
-        lambda dry: _billing_edit(
-            args, dry,
+        lambda: _billing_edit(
+            args,
             id_key="time_entry_id", kind="Cette entrée de temps",
             entity_type="time_entry",
             getter=time_entry_model.get_time_entry,
@@ -4084,8 +4070,8 @@ def update_time_entry(args: dict) -> dict:
 def update_expense(args: dict) -> dict:
     return run_write(
         "update_expense", args,
-        lambda dry: _billing_edit(
-            args, dry,
+        lambda: _billing_edit(
+            args,
             id_key="expense_id", kind="Ce déboursé",
             entity_type="expense",
             getter=expense_model.get_expense,
@@ -4201,7 +4187,6 @@ def _phase_result_row(row: dict, doc: Optional[dict], outcome: str) -> dict:
 
 def _set_phase_impl(
     args: dict,
-    dry_run: bool,
     *,
     id_key: str,
     entity_type: str,
@@ -4212,10 +4197,10 @@ def _set_phase_impl(
 ) -> dict:
     """Shared body of the four reclassification tools.
 
-    Every guard runs BEFORE the caller's ``dry_run`` branch can matter:
-    ``run_write`` short-circuits a dry call without ever reaching the model,
-    so a simulation that skipped these would announce successes the live
-    call refuses.
+    Every guard runs in the handler, ahead of the model, so a refusal names
+    the offending row rather than surfacing a bare model error. The bulk
+    form reports line by line in the ORDER ASKED, which is what makes a
+    reclassification pass auditable against the request that produced it.
     """
     if bulk:
         items = args.get("entries") or []
@@ -4262,12 +4247,6 @@ def _set_phase_impl(
             unchanged += 1
             results.append(_phase_result_row(row, doc, "unchanged"))
             continue
-        if dry_run:
-            applied += 1
-            preview = {**doc, "phase": row["phase"],
-                       "sous_phase": row["sous_phase"]}
-            results.append(_phase_result_row(row, preview, "applied"))
-            continue
         written, errors, changed = setter(
             row["id"], row["phase"], row["sous_phase"]
         )
@@ -4285,10 +4264,6 @@ def _set_phase_impl(
         )
 
     warnings: list[str] = []
-    if dry_run:
-        warnings.append(
-            _DRY_RUN_WARNING
-        )
     if refused:
         warnings.append(
             f"{refused} ligne(s) refusée(s) — voir `reason`. Corrigez-les et "
@@ -4323,7 +4298,7 @@ def _set_phase_impl(
     log_mcp_event(
         "mcp_phase_bulk", "success",
         entity_type=entity_type, requested=len(rows), applied=applied,
-        unchanged=unchanged, refused=refused, dry_run=dry_run,
+        unchanged=unchanged, refused=refused,
     )
     return {
         "updated": True,
@@ -4356,28 +4331,28 @@ _EXPENSE_PHASE_KW = {
 def set_time_entry_phase(args: dict) -> dict:
     return run_write(
         "set_time_entry_phase", args,
-        lambda dry: _set_phase_impl(args, dry, bulk=False, **_TIME_PHASE_KW),
+        lambda: _set_phase_impl(args, bulk=False, **_TIME_PHASE_KW),
     )
 
 
 def set_expense_phase(args: dict) -> dict:
     return run_write(
         "set_expense_phase", args,
-        lambda dry: _set_phase_impl(args, dry, bulk=False, **_EXPENSE_PHASE_KW),
+        lambda: _set_phase_impl(args, bulk=False, **_EXPENSE_PHASE_KW),
     )
 
 
 def set_time_entry_phase_bulk(args: dict) -> dict:
     return run_write(
         "set_time_entry_phase_bulk", args,
-        lambda dry: _set_phase_impl(args, dry, bulk=True, **_TIME_PHASE_KW),
+        lambda: _set_phase_impl(args, bulk=True, **_TIME_PHASE_KW),
     )
 
 
 def set_expense_phase_bulk(args: dict) -> dict:
     return run_write(
         "set_expense_phase_bulk", args,
-        lambda dry: _set_phase_impl(args, dry, bulk=True, **_EXPENSE_PHASE_KW),
+        lambda: _set_phase_impl(args, bulk=True, **_EXPENSE_PHASE_KW),
     )
 
 
@@ -4386,11 +4361,11 @@ def set_expense_phase_bulk(args: dict) -> dict:
 
 def import_invoice(args: dict) -> dict:
     return run_write(
-        "import_invoice", args, lambda dry: _import_invoice_impl(args, dry)
+        "import_invoice", args, lambda: _import_invoice_impl(args)
     )
 
 
-def _import_invoice_impl(args: dict, dry_run: bool) -> dict:
+def _import_invoice_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=True)
     entry_ids = list(args.get("time_entry_ids") or [])
     expense_ids = list(args.get("expense_ids") or [])
@@ -4470,12 +4445,10 @@ def _import_invoice_impl(args: dict, dry_run: bool) -> dict:
 
     adjustment = args.get("adjustment")
 
-    # Replay the model's number guards HERE, so the dry branch refuses what
-    # the live call refuses. run_write short-circuits dry_run without ever
-    # calling the model, so a preview that skipped these would report
-    # « created: true » for a number the real call rejects — the precise
-    # failure the dry-run contract exists to prevent, and the likeliest one
-    # in a resumed import (the number is already taken).
+    # Replay the model's number guards HERE so the refusal explains itself.
+    # The likeliest failure of a resumed import is a number already taken,
+    # and « ce numéro est déjà attribué » is worth far more to the caller
+    # than the model's own error surfacing through the envelope.
     cleaned_number, number_errors = invoice_model._clean_imported_number(
         invoice_number
     )
@@ -4504,11 +4477,6 @@ def _import_invoice_impl(args: dict, dry_run: bool) -> dict:
     # invoice actually written (a source flipped between the two reads is
     # never RETAINED, therefore never in source_refs, therefore invisible to
     # _SourceConflictError).
-    if dry_run:
-        return _import_invoice_preview(
-            dossier_id, entry_ids, expense_ids, expected_total,
-            invoice_number, adjustment, data,
-        )
 
     invoice, errors = invoice_model.create_invoice(
         dossier_id, entry_ids, expense_ids, data,
@@ -4558,109 +4526,6 @@ def _import_invoice_entity(invoice: dict, dossier_id: str) -> dict:
     return row
 
 
-def _import_invoice_preview(
-    dossier_id: str,
-    entry_ids: list,
-    expense_ids: list,
-    expected_total: int,
-    invoice_number: str,
-    adjustment: Optional[dict],
-    data: dict,
-) -> dict:
-    """The dry run runs the REAL compute_totals over the REAL sources.
-
-    Not an estimate: the same pure function the model will use, over the same
-    documents, so the lawyer can reconcile the previewed subtotal / GST / QST
-    against the paper invoice BEFORE anything is written. Predicting instead
-    of computing is what makes a preview worthless.
-    """
-    line_items: list[dict] = []
-    problems: dict[str, list[str]] = {}
-
-    for eid in entry_ids:
-        row = time_entry_model.get_time_entry(eid)
-        reason = _source_problem(row, dossier_id, invoiced_label="déjà facturée")
-        if reason:
-            problems.setdefault(reason, []).append(eid)
-            continue
-        line_items.append({
-            "type": "fee", "source_id": eid, "amount": int(row.get("amount") or 0),
-            "taxable": True, "description": row.get("description", ""),
-        })
-    for xid in expense_ids:
-        row = expense_model.get_expense(xid)
-        reason = _source_problem(row, dossier_id, invoiced_label="déjà facturé")
-        if reason:
-            problems.setdefault(reason, []).append(xid)
-            continue
-        line_items.append({
-            "type": "expense", "source_id": xid,
-            "amount": int(row.get("amount") or 0),
-            "taxable": bool(row.get("taxable", True)),
-            "description": row.get("description", ""),
-        })
-
-    if problems:
-        details = " ; ".join(
-            f"{reason} : {', '.join(sorted(ids))}"
-            for reason, ids in sorted(problems.items())
-        )
-        raise ToolArgumentError(
-            f"Sources inutilisables (rien ne serait écrit) — {details}."
-        )
-
-    if adjustment is not None:
-        item, errors = invoice_model._adjustment_line_item(adjustment)
-        if errors:
-            raise ToolArgumentError("; ".join(errors))
-        line_items.append({
-            "type": "fee", "source_id": "", "amount": item["amount"],
-            "taxable": item["taxable"], "description": item["description"],
-        })
-
-    totals = invoice_model.compute_totals(line_items)
-    warnings: list[str] = [
-        "Simulation (dry_run) : rien n'a été écrit. Comparez ces totaux à la "
-        "facture papier AVANT de relancer sans dry_run."
-    ]
-    if totals["total"] != expected_total:
-        warnings.append(
-            f"Le total reconstitué ({totals['total']} ¢) ne correspond pas au "
-            f"total attendu ({expected_total} ¢) — l'appel réel REFUSERA."
-        )
-
-    preview = {
-        **data,
-        "id": "",
-        "invoice_number": invoice_number,
-        "status": "brouillon",
-        **totals,
-    }
-    return {
-        "created": True,
-        "entity_type": "invoice",
-        "entity": _import_invoice_entity(preview, dossier_id),
-        "line_count": len(line_items),
-        "line_preview": [
-            {
-                "source_id": i["source_id"],
-                "type": i["type"],
-                "description": i["description"],
-                "taxable": i["taxable"],
-                **{k: v for k, v in _money_pair("amount", i["amount"]).items()},
-            }
-            for i in line_items
-        ],
-        "warnings": warnings,
-    }
-
-
-def _money_pair(key: str, cents: int) -> dict:
-    row: dict = {}
-    _money(row, key, cents)
-    return row
-
-
 def _source_problem(
     row: Optional[dict], dossier_id: str, *, invoiced_label: str
 ) -> str:
@@ -4678,11 +4543,11 @@ def _source_problem(
 
 def create_dossier(args: dict) -> dict:
     return run_write(
-        "create_dossier", args, lambda dry: _create_dossier_impl(args, dry)
+        "create_dossier", args, lambda: _create_dossier_impl(args)
     )
 
 
-def _create_dossier_impl(args: dict, dry_run: bool) -> dict:
+def _create_dossier_impl(args: dict) -> dict:
     file_number = _clean_entity_text(args.get("file_number") or "", "file_number")
     title = _clean_entity_text(args.get("title") or "", "title")
     if not file_number:
@@ -4745,13 +4610,6 @@ def _create_dossier_impl(args: dict, dry_run: bool) -> dict:
     dossier_model.normalize_forum(data)
     warnings = _forum_warnings(before, data)
 
-    if dry_run:
-        preview = {**dossier_model.field_defaults(), **data, "id": ""}
-        dossier_model._apply_prescription_deadline(preview)
-        warnings.extend(_prescription_warnings(preview, data))
-        return _dossier_write_result(
-            preview, dry_run=True, verb="created", warnings=warnings
-        )
 
     dossier, errors = dossier_model.create_dossier(data)
     if errors:
@@ -4765,7 +4623,7 @@ def _create_dossier_impl(args: dict, dry_run: bool) -> dict:
             "existé."
         )
     return _dossier_write_result(
-        dossier, dry_run=False, verb="created", warnings=warnings
+        dossier, verb="created", warnings=warnings
     )
 
 
@@ -4792,11 +4650,11 @@ def _prescription_warnings(doc: dict, supplied: dict) -> list[str]:
 
 def update_dossier(args: dict) -> dict:
     return run_write(
-        "update_dossier", args, lambda dry: _update_dossier_impl(args, dry)
+        "update_dossier", args, lambda: _update_dossier_impl(args)
     )
 
 
-def _update_dossier_impl(args: dict, dry_run: bool) -> dict:
+def _update_dossier_impl(args: dict) -> dict:
     dossier_id = (args.get("dossier_id") or "").strip()
     if not dossier_id:
         raise ToolArgumentError("`dossier_id` est requis.")
@@ -4886,30 +4744,23 @@ def _update_dossier_impl(args: dict, dry_run: bool) -> dict:
         warnings = _forum_warnings(before, merged_forum)
         data.update(merged_forum)
 
-    if dry_run:
-        preview = {**existing, **data}
-        dossier_model._apply_prescription_deadline(preview)
-        warnings.extend(_prescription_warnings(preview, data))
-        return _dossier_write_result(
-            preview, dry_run=True, verb="updated", warnings=warnings
-        )
 
     dossier, errors = dossier_model.update_dossier(dossier_id, data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
     warnings.extend(_prescription_warnings(dossier, data))
     return _dossier_write_result(
-        dossier, dry_run=False, verb="updated", warnings=warnings
+        dossier, verb="updated", warnings=warnings
     )
 
 
 # ── 23. create_task (WRITE) ─────────────────────────────────────────────
 
 def create_task(args: dict) -> dict:
-    return run_write("create_task", args, lambda dry: _create_task_impl(args, dry))
+    return run_write("create_task", args, lambda: _create_task_impl(args))
 
 
-def _create_task_impl(args: dict, dry_run: bool) -> dict:
+def _create_task_impl(args: dict) -> dict:
     # Tasks store None for « no dossier » (notes/hearings store "") —
     # collection_for handles all three, but the stored value must match
     # the model's convention.
@@ -4956,17 +4807,11 @@ def _create_task_impl(args: dict, dry_run: bool) -> dict:
             "sous_phase": doc.get("sous_phase", ""),
         }
 
-    if dry_run:
-        return _entity_write_result(
-            "task", _entity({**data, "id": ""}),
-            dossier=dossier, dav_exposed=True, dry_run=True,
-        )
     task, errors = task_model.create_task(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
         "task", _entity(task), dossier=dossier, dav_exposed=True,
-        dry_run=False,
     )
 
 
@@ -4974,7 +4819,7 @@ def _create_task_impl(args: dict, dry_run: bool) -> dict:
 
 def create_hearing(args: dict) -> dict:
     return run_write(
-        "create_hearing", args, lambda dry: _create_hearing_impl(args, dry)
+        "create_hearing", args, lambda: _create_hearing_impl(args)
     )
 
 
@@ -4986,7 +4831,7 @@ def _parse_hhmm(raw: str, name: str) -> tuple[int, int]:
         raise ToolArgumentError(f"`{name}` doit être une heure HH:MM.")
 
 
-def _create_hearing_impl(args: dict, dry_run: bool) -> dict:
+def _create_hearing_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=False)
     title = _clean_entity_text(args.get("title") or "", "title")
     if not title:
@@ -5057,17 +4902,11 @@ def _create_hearing_impl(args: dict, dry_run: bool) -> dict:
             "all_day": d_all_day,
         }
 
-    if dry_run:
-        return _entity_write_result(
-            "hearing", _entity({**data, "id": ""}),
-            dossier=dossier, dav_exposed=True, dry_run=True,
-        )
     hearing, errors = hearing_model.create_hearing(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
         "hearing", _entity(hearing), dossier=dossier, dav_exposed=True,
-        dry_run=False,
     )
 
 
@@ -5076,11 +4915,11 @@ def _create_hearing_impl(args: dict, dry_run: bool) -> dict:
 def create_time_entry(args: dict) -> dict:
     return run_write(
         "create_time_entry", args,
-        lambda dry: _create_time_entry_impl(args, dry),
+        lambda: _create_time_entry_impl(args),
     )
 
 
-def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
+def _create_time_entry_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=True)
     description = _clean_entity_text(
         args.get("description") or "", "description"
@@ -5134,21 +4973,11 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
         _money(row, "amount", doc.get("amount", 0))
         return row
 
-    if dry_run:
-        preview = {
-            **data, "id": "",
-            "amount": int(round(hours * int(rate))) if billable else 0,
-        }
-        return _entity_write_result(
-            "time_entry", _entity(preview),
-            dossier=dossier, dav_exposed=False, dry_run=True,
-        )
     entry, errors = time_entry_model.create_time_entry(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
         "time_entry", _entity(entry), dossier=dossier, dav_exposed=False,
-        dry_run=False,
     )
 
 
@@ -5156,11 +4985,11 @@ def _create_time_entry_impl(args: dict, dry_run: bool) -> dict:
 
 def create_expense(args: dict) -> dict:
     return run_write(
-        "create_expense", args, lambda dry: _create_expense_impl(args, dry)
+        "create_expense", args, lambda: _create_expense_impl(args)
     )
 
 
-def _create_expense_impl(args: dict, dry_run: bool) -> dict:
+def _create_expense_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=True)
     description = _clean_entity_text(
         args.get("description") or "", "description"
@@ -5208,17 +5037,11 @@ def _create_expense_impl(args: dict, dry_run: bool) -> dict:
         _money(row, "amount", doc.get("amount", 0))
         return row
 
-    if dry_run:
-        return _entity_write_result(
-            "expense", _entity({**data, "id": ""}),
-            dossier=dossier, dav_exposed=False, dry_run=True,
-        )
     expense, errors = expense_model.create_expense(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _entity_write_result(
         "expense", _entity(expense), dossier=dossier, dav_exposed=False,
-        dry_run=False,
     )
 
 
@@ -5291,11 +5114,11 @@ def _is_unset(current: Any, default: Any) -> bool:
 
 def complete_dossier(args: dict) -> dict:
     return run_write(
-        "complete_dossier", args, lambda dry: _complete_dossier_impl(args, dry)
+        "complete_dossier", args, lambda: _complete_dossier_impl(args)
     )
 
 
-def _complete_dossier_impl(args: dict, dry_run: bool) -> dict:
+def _complete_dossier_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=True)
     defaults = dossier_model.field_defaults()
 
@@ -5365,14 +5188,6 @@ def _complete_dossier_impl(args: dict, dry_run: bool) -> dict:
             "warnings": [],
         }
 
-    if dry_run:
-        preview = {**dossier, **updates}
-        dossier_model._apply_prescription_deadline(preview)
-        result = _payload(preview)
-        result["warnings"].append(
-            _DRY_RUN_WARNING
-        )
-        return result
 
     updated, errors = dossier_model.update_dossier(dossier_id, updates)
     if errors:
@@ -5385,11 +5200,11 @@ def _complete_dossier_impl(args: dict, dry_run: bool) -> dict:
 def record_signification(args: dict) -> dict:
     return run_write(
         "record_signification", args,
-        lambda dry: _record_signification_impl(args, dry),
+        lambda: _record_signification_impl(args),
     )
 
 
-def _record_signification_impl(args: dict, dry_run: bool) -> dict:
+def _record_signification_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=True)
     # EXPLICIT whitelist entry; the model's _normalize_significations
     # validates partie-on-dossier / mode / date and the supersede chain.
@@ -5447,12 +5262,10 @@ def _record_signification_impl(args: dict, dry_run: bool) -> dict:
                 "mode": entry_doc.get("mode", ""),
                 "confirmee": bool(entry_doc.get("confirmee")),
             },
-            dossier=dossier, dav_exposed=False, dry_run=dry_run,
+            dossier=dossier, dav_exposed=False,
             verb="recorded",
         )
 
-    if dry_run:
-        return _payload(new_entry)
     updated, errors = dossier_model.update_dossier(
         dossier_id, {"significations": cleaned}
     )
@@ -5471,11 +5284,11 @@ def _record_signification_impl(args: dict, dry_run: bool) -> dict:
 def record_prescription_event(args: dict) -> dict:
     return run_write(
         "record_prescription_event", args,
-        lambda dry: _record_prescription_event_impl(args, dry),
+        lambda: _record_prescription_event_impl(args),
     )
 
 
-def _record_prescription_event_impl(args: dict, dry_run: bool) -> dict:
+def _record_prescription_event_impl(args: dict) -> dict:
     dossier_id, dossier = _resolve_write_dossier(args, required=True)
     entry = {
         "type": args.get("type") or "",
@@ -5515,7 +5328,7 @@ def _record_prescription_event_impl(args: dict, dry_run: bool) -> dict:
                 "type": entry_doc.get("type", ""),
                 "reference": entry_doc.get("reference", ""),
             },
-            dossier=dossier, dav_exposed=False, dry_run=dry_run,
+            dossier=dossier, dav_exposed=False,
             verb="recorded",
         )
         # The point of recording the event: what the delay looks like NOW.
@@ -5525,8 +5338,6 @@ def _record_prescription_event_impl(args: dict, dry_run: bool) -> dict:
         )
         return result
 
-    if dry_run:
-        return _payload(new_entry, {**dossier, "prescription_events": cleaned})
     updated, errors = dossier_model.update_dossier(
         dossier_id, {"prescription_events": cleaned}
     )
@@ -5598,11 +5409,11 @@ def _reread_step(protocol_id: str, step_id: str) -> tuple[str, bool]:
 
 def complete_task(args: dict) -> dict:
     return run_write(
-        "complete_task", args, lambda dry: _complete_task_impl(args, dry)
+        "complete_task", args, lambda: _complete_task_impl(args)
     )
 
 
-def _complete_task_impl(args: dict, dry_run: bool) -> dict:
+def _complete_task_impl(args: dict) -> dict:
     task_id = (args.get("task_id") or "").strip()
     if not task_id:
         raise ToolArgumentError("`task_id` is required.")
@@ -5628,7 +5439,7 @@ def _complete_task_impl(args: dict, dry_run: bool) -> dict:
     if current == new_status:
         return _complete_task_payload(
             task, task, new_status, current,
-            already=True, dry_run=dry_run, effect=_no_effect(),
+            already=True, effect=_no_effect(),
         )
 
     # Already in the OTHER terminal state: refuse. Silently converting a
@@ -5661,12 +5472,6 @@ def _complete_task_impl(args: dict, dry_run: bool) -> dict:
         raise ToolArgumentError("; ".join(errors))
 
     before = _linked_step(task)
-    if dry_run:
-        return _complete_task_payload(
-            task, preview, new_status, current,
-            already=False, dry_run=True,
-            effect=_predicted_effect(before, new_status),
-        )
 
     updated, errors = task_model.update_task(task_id, data)
     if errors:
@@ -5698,7 +5503,7 @@ def _complete_task_impl(args: dict, dry_run: bool) -> dict:
 
     return _complete_task_payload(
         task, updated, new_status, current,
-        already=False, dry_run=False, effect=effect,
+        already=False, effect=effect,
     )
 
 
@@ -5729,32 +5534,6 @@ def _no_effect() -> dict:
     }
 
 
-def _predicted_effect(before: Optional[dict], new_status: str) -> dict:
-    """What the cascade WOULD do — dry run only, and labelled as such."""
-    effect = _no_effect()
-    if before is None:
-        effect["checked"] = True
-        return effect
-    step = before["step"]
-    effect.update({
-        "checked": True,
-        "linked_step_found": True,
-        "protocol_id": before["protocol"].get("id", ""),
-        "step_id": step.get("id", ""),
-        "step_title": step.get("title", ""),
-        "step_status_before": step.get("status", ""),
-        "step_status_after": step.get("status", ""),
-        "note": (
-            "Simulation : « terminée » complèterait cette étape, et si "
-            "c'était la dernière ouverte, le protocole entier passerait à "
-            "« complété »."
-            if new_status == "terminée"
-            else "Simulation : ce statut ne complète pas l'étape liée."
-        ),
-    })
-    return effect
-
-
 def _complete_task_payload(
     original: dict,
     result: dict,
@@ -5762,7 +5541,6 @@ def _complete_task_payload(
     previous: str,
     *,
     already: bool,
-    dry_run: bool,
     effect: dict,
 ) -> dict:
     dossier = None
@@ -5786,7 +5564,7 @@ def _complete_task_payload(
     payload = _entity_write_result(
         "task", entity, dossier=dossier, dav_exposed=True,
         # An unchanged task is not a write: no CTag, no cascade, replayable.
-        dry_run=dry_run or already,
+        wrote=not already,
         verb="completed", created=False,
     )
     payload["already_completed"] = already
@@ -6116,24 +5894,20 @@ def _clean_draft_text(raw: str, field: str, limit: int) -> str:
     return cleaned
 
 
-def _draft_result(head: dict, verb: str, *, dry_run: bool = False) -> dict:
+def _draft_result(head: dict, verb: str) -> dict:
     payload: dict[str, Any] = {
         verb: True,
         "draft": _draft_row(head),
         "warnings": [],
     }
-    if dry_run:
-        payload["warnings"].append(
-            _DRY_RUN_WARNING
-        )
     return payload
 
 
 def save_draft(args: dict) -> dict:
-    return run_write("save_draft", args, lambda dry: _save_draft_impl(args, dry))
+    return run_write("save_draft", args, lambda: _save_draft_impl(args))
 
 
-def _save_draft_impl(args: dict, dry_run: bool) -> dict:
+def _save_draft_impl(args: dict) -> dict:
     dossier_id = (args.get("dossier_id") or "").strip()
     if dossier_id:
         dossier = dossier_model.get_dossier(dossier_id)
@@ -6167,19 +5941,6 @@ def _save_draft_impl(args: dict, dry_run: bool) -> dict:
         "title": title,
         "content": content,
     }
-    if dry_run:
-        errors = chat_draft_model.validate_payload(data)
-        if errors:
-            raise ToolArgumentError("; ".join(errors))
-        preview = {
-            **data,
-            "id": "",
-            "content_length": len(content),
-            "current_version": 1,
-            "created_at": None,
-            "updated_at": None,
-        }
-        return _draft_result(preview, "created", dry_run=True)
     head, errors = chat_draft_model.create_draft(data)
     if errors:
         raise ToolArgumentError("; ".join(errors))
@@ -6188,11 +5949,11 @@ def _save_draft_impl(args: dict, dry_run: bool) -> dict:
 
 def revise_draft(args: dict) -> dict:
     return run_write(
-        "revise_draft", args, lambda dry: _revise_draft_impl(args, dry)
+        "revise_draft", args, lambda: _revise_draft_impl(args)
     )
 
 
-def _revise_draft_impl(args: dict, dry_run: bool) -> dict:
+def _revise_draft_impl(args: dict) -> dict:
     draft_id = (args.get("draft_id") or "").strip()
     existing = chat_draft_model.get_draft(draft_id)
     if existing is None:
@@ -6213,15 +5974,6 @@ def _revise_draft_impl(args: dict, dry_run: bool) -> dict:
             title.strip(), "title", chat_draft_model.TITLE_MAX_LENGTH
         )
 
-    if dry_run:
-        preview = {
-            **existing,
-            "content": content,
-            "content_length": len(content),
-            "title": title if title is not None else existing.get("title", ""),
-            "current_version": int(existing.get("current_version") or 0) + 1,
-        }
-        return _draft_result(preview, "revised", dry_run=True)
     head, errors = chat_draft_model.revise_draft(
         draft_id, content=content, title=title
     )
@@ -6262,11 +6014,11 @@ def record_document_analysis(args: dict) -> dict:
     return run_write(
         "record_document_analysis",
         args,
-        lambda dry: _record_document_analysis_impl(args, dry),
+        lambda: _record_document_analysis_impl(args),
     )
 
 
-def _record_document_analysis_impl(args: dict, dry_run: bool) -> dict:
+def _record_document_analysis_impl(args: dict) -> dict:
     document_id = (args.get("document_id") or "").strip()
     existing = document_model.get_document(document_id)
     if existing is None:
@@ -6283,37 +6035,17 @@ def _record_document_analysis_impl(args: dict, dry_run: bool) -> dict:
     if existing.get("dossier_id"):
         dossier = dossier_model.get_dossier(existing["dossier_id"])
 
-    # ⚠ Toute garde du modèle qu'un appelant peut déclencher doit être
-    # rejouée ICI, avant la branche sèche : `run_write` court-circuite le
-    # dry_run SANS appeler le modèle, donc une simulation qui annonce un
-    # succès que l'appel réel refuse est un mensonge.
+    # ⚠ Les gardes du modèle sont rejouées ICI, avant qu'il ne soit
+    # atteint, pour que le refus nomme le code fautif — « sous-nature
+    # inconnue : X » plutôt qu'une erreur de modèle nue. Un appel EST une
+    # écriture — il n'existe aucun aperçu —, donc son refus doit être
+    # immédiatement réparable par l'appelant, sans second aller-retour.
     champ, erreurs = document_model._analyse_derivee(
         sortie, document=existing, dossier=dossier
     )
     if erreurs:
         raise ToolArgumentError(" ".join(erreurs))
 
-    if dry_run:
-        ancienne = str(existing.get("category") or "")
-        nouvelle = champ["nature_detectee"]
-        apercu = {k: champ.get(k) for k in _ANALYSE_ECHO if k in champ}
-        apercu.update({
-            "categorie_precedente": ancienne,
-            "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
-            "remplace_un_choix_du_juriste": bool(
-                ancienne
-                and ancienne != nouvelle
-                and str(existing.get("category_source") or "juriste") == "juriste"
-            ),
-            "analyse_id": None,
-        })
-        return {
-            "recorded": False,
-            "document_id": document_id,
-            "display_name": existing.get("display_name") or existing.get("filename") or "",
-            "analyse": apercu,
-            "warnings": _analyse_warnings(champ, existing),
-        }
 
     updated, erreurs = document_model.record_analyse(
         document_id,

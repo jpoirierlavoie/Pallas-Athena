@@ -265,16 +265,36 @@ def test_write_schemas_are_bounded_and_track_the_model():
 
 def test_every_write_tool_carries_the_write_protocol():
     """Generic invariants over WRITE_TOOLS — they hold for any FUTURE write
-    tool without naming it: SCOPE_WRITE + the dry_run/idempotency_key
-    protocol properties, and no identity-injection fields addressable."""
+    tool without naming it: SCOPE_WRITE + the idempotency_key protocol
+    property, and no identity-injection fields addressable.
+
+    `dry_run` was REMOVED from the protocol on 2026-08-27, so the assertion
+    is now the INVERSE one: no write tool may declare it. Paired with
+    `additionalProperties: False` below, that makes the removal
+    fail-CLOSED — a caller still sending `dry_run` is REFUSED by
+    validate_args rather than silently ignored, which would have written
+    while the caller believed it was previewing."""
     for name in tools.WRITE_TOOLS:
-        props = tools.TOOLS[name]["input_schema"]["properties"]
+        schema = tools.TOOLS[name]["input_schema"]
+        props = schema["properties"]
         assert tools.TOOLS[name].get("scope") == "athena:write", name
-        assert "dry_run" in props, name
+        assert "dry_run" not in props, name
+        assert schema.get("additionalProperties") is False, name
         assert "idempotency_key" in props, name
         assert props["idempotency_key"]["minLength"] >= 8, name
         for forbidden in ("id", "etag", "created_at", "updated_at"):
             assert forbidden not in props, (name, forbidden)
+
+
+def test_a_write_tool_refuses_a_dry_run_argument():
+    """The other half of fail-closed: the schema does not merely omit
+    `dry_run`, validate_args REFUSES it. Ignoring it would have been the
+    dangerous outcome — a caller asking for a preview and getting a
+    committed write, with no signal either way."""
+    for name in sorted(tools.WRITE_TOOLS):
+        schema = tools.TOOLS[name]["input_schema"]
+        errors = tools.validate_args(schema, {"dry_run": True})
+        assert any("dry_run" in e for e in errors), name
 
 
 def test_kill_switch_covers_every_write_tool(monkeypatch):
@@ -1706,23 +1726,6 @@ def test_create_task_refuses_the_2000_char_ceiling(monkeypatch, bumps):
                               "description": "x" * 2001})
 
 
-def test_create_task_dry_run_writes_nothing(monkeypatch, bumps):
-    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
-                        lambda i: _wdossier())
-
-    def _must_not_run(_data):
-        raise AssertionError("dry_run reached the model")
-
-    monkeypatch.setattr(handlers.task_model, "create_task", _must_not_run)
-    payload = handlers.create_task(
-        {"dossier_id": "d1", "title": "T", "dry_run": True}
-    )
-    assert payload["dry_run"] is True
-    assert payload["entity"]["id"] == ""
-    assert bumps["bump"] == []                     # no CTag on a simulation
-    assert any("Simulation" in w for w in payload["warnings"])
-
-
 def test_create_hearing_times_are_montreal_and_bump_fires(monkeypatch, bumps):
     monkeypatch.setattr(handlers.dossier_model, "get_dossier",
                         lambda i: _wdossier())
@@ -1935,23 +1938,6 @@ def test_complete_dossier_court_file_number_derives_fill_only(monkeypatch):
     assert "tribunal" not in written               # pre-filled → untouched
 
 
-def test_complete_dossier_dry_run_never_reaches_the_model(monkeypatch):
-    monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
-        lambda i: _wdossier_parties(domaine=""),
-    )
-
-    def _must_not_run(_did, _data):
-        raise AssertionError("dry_run reached update_dossier")
-
-    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
-    payload = handlers.complete_dossier(
-        {"dossier_id": "d1", "domaine": "REC", "dry_run": True}
-    )
-    assert payload["fields_set"] == ["domaine"]
-    assert any("Simulation" in w for w in payload["warnings"])
-
-
 def test_record_signification_refuses_a_stranger_partie(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "get_dossier",
                         lambda i: _wdossier_parties())
@@ -2018,27 +2004,31 @@ def test_record_prescription_event_validates_through_the_model(monkeypatch):
         })
 
 
-def test_record_prescription_event_dry_run_still_answers_the_question(
+def test_record_prescription_event_answers_the_question_it_was_called_for(
     monkeypatch,
 ):
-    """dry_run writes nothing but STILL derives the post-event status —
-    that derivation is the whole reason to call the tool."""
+    """Recording the event STILL derives the post-event status — that
+    derivation is the whole reason to call the tool, and it is read from
+    the dossier as UPDATED, never from the one that was read in."""
+    base = _wdossier_parties(prescription_events=[], prise_action_date=None)
     monkeypatch.setattr(
-        handlers.dossier_model, "get_dossier",
-        lambda i: _wdossier_parties(prescription_events=[],
-                                    prise_action_date=None),
+        handlers.dossier_model, "get_dossier", lambda i: dict(base),
     )
-
-    def _must_not_run(_did, _data):
-        raise AssertionError("dry_run reached update_dossier")
-
-    monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
+    written = {}
+    monkeypatch.setattr(
+        handlers.dossier_model, "update_dossier",
+        lambda did, data: (written.update(data) or ({**base, **data}, [])),
+    )
     payload = handlers.record_prescription_event({
         "dossier_id": "d1", "type": "interruption_depot",
-        "date": "2026-05-15", "dry_run": True,
+        "date": "2026-05-15",
     })
-    assert payload["dry_run"] is True
+    assert [e["type"] for e in written["prescription_events"]] == [
+        "interruption_depot"
+    ]
     assert payload["prescription_status"] == "interrompue"
+    # art. 2896: the interruption lasts until judgment — computing a date
+    # would be inventing one.
     assert payload["prescription_date_effective"] is None
 
 
@@ -3676,21 +3666,6 @@ def test_an_unknown_task_is_refused_explicitly(ct):
         handlers.complete_task({"task_id": "nope"})
 
 
-def test_dry_run_writes_nothing_but_shows_the_cascade(ct, bumps):
-    ct["protocol"] = {
-        "id": "p1", "status": "actif",
-        "steps": [{"id": "s1", "title": "Réponse", "status": "à_venir",
-                   "linked_task_id": "t1"}],
-    }
-    payload = handlers.complete_task({"task_id": "t1", "dry_run": True})
-    assert ct["updated"] is None
-    assert bumps["bump"] == []
-    effect = payload["protocol_step_effect"]
-    assert effect["linked_step_found"] is True
-    assert effect["step_id"] == "s1"
-    assert "protocole entier" in effect["note"]
-
-
 def test_the_cascade_is_verified_not_predicted(ct, bumps):
     """_sync_protocol_step swallows every exception, so a PREDICTED
     « complété » could be a lie. The step is re-read after the write."""
@@ -3701,6 +3676,8 @@ def test_the_cascade_is_verified_not_predicted(ct, bumps):
     }
     payload = handlers.complete_task({"task_id": "t1"})
     effect = payload["protocol_step_effect"]
+    assert effect["linked_step_found"] is True
+    assert effect["step_id"] == "s1"
     assert effect["step_status_before"] == "à_venir"
     # The fake protocol never changed, so the handler must report that —
     # not the completion it hoped for.
@@ -3747,14 +3724,19 @@ def test_a_note_that_would_truncate_is_refused(ct):
     assert ct["updated"] is None
 
 
-def test_dry_run_never_announces_a_success_the_write_would_refuse(ct, monkeypatch):
+def test_a_document_the_model_would_refuse_is_refused_before_the_write(
+    ct, monkeypatch,
+):
     """update_task re-validates the WHOLE merged document: a legacy task
     with an out-of-vocabulary category fails for a reason invisible in the
-    application. The dry run must surface it, not promise success."""
+    application. The handler surfaces that refusal on the merged preview
+    BEFORE calling the model, so the caller is told why rather than left
+    with a bare model error."""
     monkeypatch.setattr(handlers.task_model, "_validate",
                         lambda d: ["Catégorie invalide."])
     with pytest.raises(tools.ToolArgumentError, match="Catégorie invalide"):
-        handlers.complete_task({"task_id": "t1", "dry_run": True})
+        handlers.complete_task({"task_id": "t1"})
+    assert ct["updated"] is None
 
 
 def test_a_ctag_failure_still_reports_the_write_as_committed(ct, monkeypatch):

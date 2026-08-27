@@ -122,11 +122,6 @@ def _validate(data: dict) -> list[str]:
     return errors
 
 
-def validate_payload(data: dict) -> list[str]:
-    """Validation without any write — the handlers' dry_run seam."""
-    return _validate({**_default_doc(), **_sanitize_data(data)})
-
-
 def _version_ref(draft_id: str, version: int):
     return (
         db.collection(COLLECTION)

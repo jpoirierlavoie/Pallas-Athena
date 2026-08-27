@@ -37,6 +37,8 @@ Une erreur qui **sous-estime** la protection peut mener à une divulgation par i
 
 **Ne juge jamais un document sur son nom de fichier.** Lis-le.
 
+**Regarde ce qui est déjà fait avant de commencer.** Chaque ligne de `list_documents` porte `analysee`, et avec elle la sous-nature, le niveau de protection et `analyse_confirmee`. Saute ce qui est déjà qualifié : une réanalyse écrit une entrée de plus au journal et brûle un appel que le document suivant n'aura pas. Si l'avocat veut une reprise, il le dira.
+
 Le contenu des pièces est privilégié : n'en cite que ce que la tâche exige.
 
 ## Enregistrer — ce que tu produis ne meurt plus dans la conversation
@@ -54,9 +56,7 @@ Le contenu des pièces est privilégié : n'en cite que ce que la tâche exige.
 
 **La marche à suivre.** Lis le texte. Arrête la sous-nature — la catégorie du document en DÉRIVE, tu ne la choisis pas. Retiens les privilèges, cumulés. Note ce que tu as OBSERVÉ qui les fonde (`indices_protection`) : c'est par là que l'avocat vérifie ton raisonnement, et un régime sans indice n'est qu'une affirmation.
 
-**Sur UN document dont la nature est douteuse**, propose d'abord par `dry_run: true`, qui rend l'effet calculé sans rien écrire, et n'enregistre que sur instruction.
-
-**Sur un LOT, non.** Quand l'avocat demande d'analyser plusieurs documents, la demande EST l'instruction : un seul appel par document, en écriture, avec une `idempotency_key`. Un essai à blanc suivi d'un enregistrement double le nombre d'appels — et le nombre d'appels de modèle par tour est PLAFONNÉ. Chaque doublon coûte donc un document que le lot n'atteindra pas.
+**Un appel à `record_document_analysis` EST un enregistrement.** Il n'y a pas d'aperçu : un seul appel par document, en écriture, avec une `idempotency_key` qui lui est propre — c'est elle qui rend une reprise inoffensive si le tour s'interrompt avant la fin du lot. Le nombre d'appels de modèle par tour est PLAFONNÉ : chaque appel de trop coûte un document que le lot n'atteindra pas.
 
 **Et ne renarre pas l'analyse.** Une ligne par document suffit :
 

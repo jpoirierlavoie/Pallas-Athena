@@ -268,44 +268,36 @@ def test_the_tool_is_a_write_that_warns():
     assert d["annotations"]["idempotentHint"] is False
 
 
-def test_the_dry_branch_refuses_what_the_live_call_refuses(monde, monkeypatch):
-    """`run_write` court-circuite la branche sèche SANS appeler le modèle.
+def test_the_handler_refuses_before_it_writes(monde, monkeypatch):
+    """Le gestionnaire rejoue les gardes du modèle AVANT toute écriture.
 
-    Toute garde du modèle qu'un appelant peut déclencher doit donc être
-    rejouée dans le gestionnaire, AVANT cette branche — sans quoi une
-    simulation annonce un succès que l'appel réel refuse.
+    Ces gardes sont nées de la branche sèche — `run_write` la
+    court-circuitait sans appeler le modèle, donc une simulation aurait
+    annoncé un succès que l'appel réel refusait. La branche est partie le
+    2026-08-27 ; les gardes restent, et elles comptent toujours : un refus
+    nommé en français vaut mieux qu'une erreur de modèle, et surtout rien
+    ne doit être écrit ni journalisé.
     """
     h = _handlers()
     monkeypatch.setattr(h.document_model, "get_document",
                         lambda i: dict(monde["store"].get(i) or {}) or None)
+
+    def _interdit(*a, **k):
+        raise AssertionError("un refus a atteint le modèle")
+
+    monkeypatch.setattr(h.document_model, "record_analyse", _interdit)
+    avant = dict(monde["store"]["doc-1"])
+
     with pytest.raises(Exception) as exc:
-        h.record_document_analysis({**_ARGS, "sous_nature": "INVENTE",
-                                    "dry_run": True})
+        h.record_document_analysis({**_ARGS, "sous_nature": "INVENTE"})
     assert "Sous-nature inconnue" in str(exc.value)
 
     with pytest.raises(Exception) as exc2:
-        h.record_document_analysis({**_ARGS, "document_id": "inconnu",
-                                    "dry_run": True})
+        h.record_document_analysis({**_ARGS, "document_id": "inconnu"})
     assert "introuvable" in str(exc2.value)
 
-
-def test_the_dry_branch_writes_nothing_and_conforms(monde, monkeypatch):
-    import mcp.output_schemas as o
-    import mcp.tools as t
-    h = _handlers()
-    monkeypatch.setattr(h.document_model, "get_document",
-                        lambda i: dict(monde["store"].get(i) or {}) or None)
-    avant = dict(monde["store"]["doc-1"])
-    r = h.record_document_analysis({**_ARGS, "dry_run": True})
-
-    assert r["recorded"] is False
-    assert monde["store"]["doc-1"] == avant, "la simulation a écrit"
-    assert not monde["journaux"].get("doc-1"), "la simulation a journalisé"
-    # Le contrat outputSchema, sur la charge RÉELLE du gestionnaire.
-    assert t.validate_args(o.OUTPUT_SCHEMAS["record_document_analysis"], r) == []
-    # L'avertissement de présomption est TOUJOURS là — c'est ce qui remplace
-    # le second clic que la §5.3 exigeait.
-    assert any("PRÉSUMÉE" in w for w in r["warnings"])
+    assert monde["store"]["doc-1"] == avant
+    assert not monde["journaux"].get("doc-1")
 
 
 # ── L'écran (SPEC Phase K §9.1) ────────────────────────────────────────────
@@ -435,13 +427,15 @@ def test_the_confirm_route_is_the_only_one_that_confirms():
 
 
 def test_the_live_write_path_runs_end_to_end(monde, monkeypatch):
-    """Le chemin d'écriture RÉEL, pas seulement la branche sèche.
+    """Le chemin d'écriture RÉEL.
 
-    Vécu le 2026-08-27 : les 3 033 tests étaient verts et l'écriture
-    plantait en production. Aucun n'exécutait `dry_run: False` — la ligne
-    de journal posée APRÈS le commit appelait `log_mcp_event` sans son
-    argument `outcome`, et le juriste a lu « échec » sur une analyse
-    parfaitement enregistrée. Ce test parcourt la branche vivante.
+    Vécu le 2026-08-27, du temps où une branche sèche existait : les 3 033
+    tests étaient verts et l'écriture plantait en production, parce
+    qu'aucun ne parcourait la branche vivante — la ligne de journal posée
+    APRÈS le commit appelait `log_mcp_event` sans son argument `outcome`,
+    et le juriste a lu « échec » sur une analyse parfaitement enregistrée.
+    La branche sèche est partie ; ce test reste, il n'y a plus qu'un
+    chemin et c'est celui-ci.
     """
     h = _handlers()
     monkeypatch.setattr(h.document_model, "get_document",
@@ -457,6 +451,9 @@ def test_the_live_write_path_runs_end_to_end(monde, monkeypatch):
     assert r["category_source"] == "analyse"
     assert monde["store"]["doc-1"]["category"] == "procédure"
     assert len(monde["journaux"]["doc-1"][doc.ANALYSES_SUBCOLLECTION]) == 1
+    # L'avertissement de présomption — c'est ce qui remplace le second clic
+    # que la §5.3 exigeait.
+    assert any("PRÉSUMÉE" in w for w in r["warnings"])
 
     import mcp.output_schemas as o
     import mcp.tools as t

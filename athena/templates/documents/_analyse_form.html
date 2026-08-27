@@ -1,0 +1,178 @@
+{# ── Analyse documentaire — édition par le juriste ──────────────────────
+   Décision du praticien, 2026-08-27 : « whatever the analysis outputs
+   becomes an editable field that I can see and edit on the edit form ».
+   Les 25 champs de `models.document.ANALYSE_EDITABLE` sont ici, sans
+   exception ; les 9 autres (nature, famille, niveaux témoins, état de
+   confirmation) SE DÉRIVENT de ceux-ci et ne se saisissent donc pas.
+
+   Deux vocabulaires FERMÉS viennent des modules purs — le juriste choisit
+   dans la table que le code valide, il n'invente pas plus de code que le
+   modèle.
+
+   `analyse_presente` distingue « la section n'a pas été soumise » de
+   « le juriste a tout vidé » : sans ce drapeau, enregistrer les seules
+   métadonnées de base effacerait l'analyse entière, le contrat de
+   `update_analyse` étant qu'une clé présente et vide efface.
+
+   Mobile d'abord et SANS variante responsive : l'artefact compilé n'en
+   contient aucune (mesuré 2026-08-27) — une colonne partout. #}
+
+{% set a = document.analyse or {} %}
+
+<details class="border border-gray-200 rounded-xl bg-white" {% if a.sous_nature %}open{% endif %}>
+  <summary class="px-4 py-3 cursor-pointer text-sm font-medium text-gray-900">
+    Analyse documentaire
+    {% if a.sous_nature %}
+      <span class="text-gray-400">· {{ a.nature_detectee }} ({{ a.sous_nature }})</span>
+    {% else %}
+      <span class="text-gray-400">· aucune</span>
+    {% endif %}
+  </summary>
+
+  <div class="px-4 pb-3 space-y-4 border-t border-gray-100 pt-4">
+    <input type="hidden" name="analyse_presente" value="1">
+
+    <p class="text-xs text-gray-500">
+      Tout ce que l'analyse produit se corrige ici, y compris le niveau de
+      protection. Une réanalyse ne peut jamais l'abaisser — vous êtes la
+      seule voie de déclassement. Enregistrer vaut confirmation : la mention
+      « présumée » tombe, et la correction part au journal.
+    </p>
+
+    {# ── Ce dont tout le reste dérive ─────────────────────────────── #}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Sous-nature</label>
+      <select name="analyse_sous_nature"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">— aucune —</option>
+        {% for sn in analyse_sous_natures %}
+        <option value="{{ sn.code }}" {% if a.sous_nature == sn.code %}selected{% endif %}>
+          {{ sn.libelle }} ({{ sn.code }})
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-400 mt-1">
+        La catégorie du document en dérive — elle ne se choisit pas
+        séparément.
+      </p>
+    </div>
+
+    <div>
+      <span class="block text-sm font-medium text-gray-700 mb-1.5">Régimes de protection</span>
+      <div class="space-y-2">
+        {% for p in analyse_privileges %}
+        <label class="flex items-start gap-2 text-sm text-gray-700">
+          <input type="checkbox" name="analyse_privileges" value="{{ p.code }}"
+                 class="mt-1"
+                 {% if p.code in (a.privileges or []) %}checked{% endif %}>
+          <span>
+            {{ p.code }}
+            <span class="text-gray-400">· {{ p.libelle }}</span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+      <p class="text-xs text-gray-400 mt-1">
+        Cumulables : c'est le plus élevé qui gouverne.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Niveau de protection</label>
+      <select name="analyse_niveau_protection"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">— non déterminé —</option>
+        {% for n, libelle in analyse_niveaux %}
+        <option value="{{ n }}" {% if a.niveau_protection == n %}selected{% endif %}>
+          {{ n }} — {{ libelle }}
+        </option>
+        {% endfor %}
+      </select>
+      {% if a.divergence_protection %}
+      <p class="mt-1 text-xs text-amber-700">
+        La dernière analyse concluait au niveau
+        {{ a.niveau_protection_analyse if a.niveau_protection_analyse is not none else '—' }},
+        plus bas que le niveau {{ a.niveau_protection_precedent }} déjà retenu.
+        Le plus élevé a été tenu. À vous de trancher.
+      </p>
+      {% endif %}
+    </div>
+
+    {# ── L'extrait ────────────────────────────────────────────────── #}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Résumé</label>
+      <textarea name="analyse_resume" rows="3"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">{{ a.resume or '' }}</textarea>
+    </div>
+
+    {% for cle, libelle in [
+        ('numero_dossier_cour', 'N° de dossier de cour'),
+        ('tribunal', 'Tribunal'),
+        ('district_judiciaire', 'District judiciaire'),
+        ('auteur', 'Auteur'),
+        ('date_document_str', 'Date du document (texte lu)'),
+        ('date_signature_str', 'Date de signature (texte lu)'),
+        ('langue_detectee', 'Langue détectée'),
+        ('moyen_preuve', 'Moyen de preuve'),
+        ('qualification_ecrit', "Qualification de l'écrit"),
+        ('qualite_reconnaissance', 'Qualité de la reconnaissance'),
+        ('confiance', 'Confiance') ] %}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">{{ libelle }}</label>
+      <input type="text" name="analyse_{{ cle }}" value="{{ a[cle] or '' }}"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+    </div>
+    {% endfor %}
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Dispositif</label>
+      <textarea name="analyse_dispositif" rows="3"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">{{ a.dispositif or '' }}</textarea>
+    </div>
+
+    {# ── Les listes, en valeurs séparées par des virgules ─────────── #}
+    {% for cle, libelle, aide in [
+        ('parties_mentionnees', 'Parties mentionnées',
+         "Chaînes libres — jamais rattachées à un contact."),
+        ('indices_protection', 'Indices de protection',
+         "Ce qui, dans le document, fonde le régime retenu."),
+        ('motifs_protection', 'Motifs de protection',
+         "Ce que le code a conclu, et que vous pouvez corriger."),
+        ('champs_attendus_absents', 'Mentions attendues absentes',
+         "Une absence est un signal, jamais un trou à combler.") ] %}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">{{ libelle }}</label>
+      <input type="text" name="analyse_{{ cle }}"
+             value="{{ (a[cle] or []) | join(', ') }}"
+             placeholder="Séparées par des virgules…"
+             class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      <p class="text-xs text-gray-400 mt-1">{{ aide }}</p>
+    </div>
+    {% endfor %}
+
+    {# ── Les drapeaux ─────────────────────────────────────────────── #}
+    <div class="space-y-2">
+      {% for cle, libelle in [
+          ('contient_dispositif', 'Porte le dispositif du jugement'),
+          ('parait_original', "Paraît être l'original"),
+          ('extraction_tronquee', 'Extraction tronquée'),
+          ('alerte_dispositif_detecte', 'Alerte : dispositif détecté'),
+          ('alerte_renonciation_possible', 'Alerte : renonciation possible') ] %}
+      <label class="flex items-start gap-2 text-sm text-gray-700">
+        <input type="checkbox" name="analyse_{{ cle }}" value="1" class="mt-1"
+               {% if a[cle] %}checked{% endif %}>
+        <span>{{ libelle }}</span>
+      </label>
+      {% endfor %}
+    </div>
+
+    {% if a.genere_le %}
+    <p class="text-xs text-gray-400 pt-2 border-t border-gray-100">
+      Dernière écriture
+      {% if a.genere_le.strftime is defined %}le {{ (a.genere_le|to_mtl).strftime('%d/%m/%Y %H:%M') }}{% endif %}
+      {% if a.declenche_par %}par « {{ a.declenche_par }} »{% endif %}
+      {% if a.modele %}({{ a.modele }}){% endif %}.
+    </p>
+    {% endif %}
+  </div>
+</details>

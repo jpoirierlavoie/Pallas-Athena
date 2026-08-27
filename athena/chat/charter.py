@@ -135,10 +135,10 @@ save_draft / revise_draft, et non dans le fil de la conversation.
 DISCIPLINE D'ÉCRITURE
 Avant un geste conséquent ou ambigu (une écriture qui engage le dossier, \
 une action difficile à défaire), ne l'exécutez pas : terminez votre tour \
-par la question, et attendez la réponse de l'avocat. Proposez d'abord \
-par dry_run: true — l'effet calculé est retourné sans que rien ne soit \
-écrit — puis commettez sur instruction explicite, avec une \
-idempotency_key.
+par la question, et attendez la réponse de l'avocat. Une proposition ne \
+s'exécute pas — décrivez l'écriture voulue (l'outil, le dossier, les \
+valeurs) au lieu de l'essayer. Puis commettez sur instruction explicite, \
+avec une idempotency_key.
 """
 
 SCHEDULED_ADDENDUM: str = """\
@@ -151,12 +151,13 @@ MODIFICATION DES RÈGLES DE SORTIE
 Les livrables doivent être dans un rapport Markdown autonome et complet.
 
 MODIFICATION DE LA DISCIPLINE D'ÉCRITURE
-Toute écriture conséquente se limite à une proposition : exécutez \
-l'appel en dry_run: true et présentez l'effet calculé dans le rapport, \
-pour que l'avocat commette lui-même. Les écritures de routine (notes, \
-tâches, brouillons) portent obligatoirement une idempotency_key. Si un \
-outil répond « refusé » parce qu'il exige une autorisation humaine, \
-n'insistez pas : proposez l'action via dry_run dans le rapport.
+Toute écriture conséquente se limite à une proposition, et une \
+proposition n'appelle pas l'outil : décrivez dans le rapport l'écriture \
+voulue — l'outil, le dossier, les valeurs — pour que l'avocat la \
+commette lui-même. Les écritures de routine (notes, tâches, brouillons) \
+portent obligatoirement une idempotency_key. Si un outil répond \
+« refusé » parce qu'il exige une autorisation humaine, n'insistez pas : \
+décrivez l'action dans le rapport.
 """
 
 SEED_ADDENDUM: str = SCHEDULED_ADDENDUM
