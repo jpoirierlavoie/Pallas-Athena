@@ -727,8 +727,26 @@ def test_the_socle_still_carries_every_guarantee_it_exists_for():
     assert len(sections["DEVOIRS ÉPISTÉMIQUES"]) > 400
     assert len(sections["DONNÉES PRIVILÉGIÉES"]) > 400
     for ancre in ("legislation_*", "jurisprudence_*", "web_search",
-                  "get_document_text", "suppression"):
+                  "get_document_text", "suppression",
+                  # 2026-08-27 : le socle envoie lire les fichiers de la
+                  # charte. Sans cette phrase, le listing du bloc 0 dit
+                  # « à lire seulement au besoin » et rien ne dit que le
+                  # besoin EXISTE — un fichier qui documente les pièges des
+                  # données ne sert à rien s'il n'est jamais ouvert.
+                  "fichiers de référence", "plutôt que de supposer"):
         assert ancre in charter.SOCLE, ancre
+    # ⚠ Le socle ne NOMME aucun fichier, et ne doit jamais en nommer : il est
+    # sous revue de code et se déploie, alors que les fichiers de la charte
+    # s'éditent à l'écran. Y inscrire « dossier-athena.md » ferait mentir le
+    # socle le jour où il est renommé ou retiré — or le socle est justement
+    # la partie qui doit TOUJOURS être vraie.
+    assert ".md" not in charter.SOCLE
+    # ⚠ Le socle ne NOMME aucun fichier, et ne doit jamais en nommer : il
+    # est sous revue de code et se déploie, alors que les fichiers de la
+    # charte s'éditent à l'écran. Nommer « dossier-athena.md » ici ferait
+    # mentir le socle le jour où il est renommé ou retiré — or le socle
+    # est précisément la partie qui doit TOUJOURS être vraie.
+    assert ".md" not in charter.SOCLE
     # La graine garde les deux sections de travail.
     assert "RÈGLES DE SORTIE" in charter.SEED_CORPS
     assert "DISCIPLINE D'ÉCRITURE" in charter.SEED_CORPS
