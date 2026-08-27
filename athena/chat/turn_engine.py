@@ -521,7 +521,7 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
     # below may move above this line.
     heads, skill_pairs = _resolve_skills(conv)
     scheduled = turn.get("addendum") == "unattended"
-    charter_version = charter.CHARTER_VERSION
+    charter_version = charter.SOURCE_CHARTER_VERSION
     system = charter.system_blocks(heads, scheduled=scheduled)
     tools = _build_tools()
 

@@ -522,7 +522,7 @@ def test_worker_success_returns_the_tools_text_verbatim(monkeypatch):
 # ── Charter ─────────────────────────────────────────────────────────────────
 
 def test_charter_version_and_base_content():
-    assert charter.CHARTER_VERSION == 1
+    assert charter.SOURCE_CHARTER_VERSION == 1
     assert "markdown" in charter.BASE_CHARTER
     assert "jurisprudence" in charter.BASE_CHARTER
     assert "web_search" in charter.BASE_CHARTER
@@ -601,3 +601,151 @@ def test_skill_block_listing_is_byte_stable():
     # would sort before « Modèle » neither alphabetically nor otherwise).
     text = once[1]["text"]
     assert text.index("- Modèle") < text.index("- Zéro-tri")
+
+
+# ── La charte éditable : le socle, le gel, et le bloc jamais vide ──────────
+
+_SHA_BASE = "93df897e6dc940897c28c7579d77bcec57053a85c8cdaa54dbe0ada2163f7493"
+_SHA_ADDENDUM = "9f4d69b1c64952db84ec2a55b8f1944566f6e8dd8c85cdfe5035ab2fad5c3525"
+
+
+def _regles(texte):
+    """Les lignes porteuses de sens : titres et règles, tiret retiré."""
+    return {l.lstrip("- ").strip() for l in texte.splitlines() if l.strip()}
+
+
+def test_the_source_charter_bytes_are_frozen():
+    """« 1 » identifie CES octets, pour tous les tours déjà au registre.
+
+    Un test de sous-chaîne (« markdown in BASE_CHARTER ») ne l'attraperait
+    pas : seule une empreinte le fait. Le texte source n'est plus versionné
+    à la main — il est le plancher du repli, et l'éditer ferait mentir le
+    registre sur son passé. Une correction se fait à l'écran, ce qui frappe
+    une version Firestore.
+    """
+    import hashlib
+
+    assert charter.SOURCE_CHARTER_VERSION == 1
+    assert (
+        hashlib.sha256(charter.BASE_CHARTER.encode("utf-8")).hexdigest()
+        == _SHA_BASE
+    )
+    assert (
+        hashlib.sha256(charter.SCHEDULED_ADDENDUM.encode("utf-8")).hexdigest()
+        == _SHA_ADDENDUM
+    )
+
+
+def test_socle_and_seed_carry_exactly_the_source_rules():
+    """La première sauvegarde ne change AUCUNE règle — seulement l'ordre.
+
+    Le socle et la graine sont transcrits à la main pour rester lisibles à
+    la revue ; une transcription se trompe, et un commentaire ne l'attrape
+    pas. Celui-ci compare les ensembles de lignes.
+    """
+    assert _regles(charter.BASE_CHARTER) == (
+        _regles(charter.SOCLE) | _regles(charter.SEED_CORPS)
+    )
+    # Et le partage est bien un partage : rien en double.
+    assert not (_regles(charter.SOCLE) & _regles(charter.SEED_CORPS))
+    # Ce qui protège le client reste sous revue de code.
+    assert "DEVOIRS ÉPISTÉMIQUES" in charter.SOCLE
+    assert "DONNÉES PRIVILÉGIÉES" in charter.SOCLE
+    assert "La suppression n'existe pas" in charter.SOCLE
+    assert "RÈGLES DE SORTIE" in charter.SEED_CORPS
+    assert "DISCIPLINE D'ÉCRITURE" in charter.SEED_CORPS
+
+
+def test_the_source_path_is_never_normalised():
+    """Deux chemins de jointure, et c'est délibéré.
+
+    Normaliser le joint sur le chemin SOURCE changerait les octets de la
+    v1 — et « 1 » cesserait d'identifier ce que les tours déjà au registre
+    ont réellement vu.
+    """
+    source = charter.source_charter()
+    assert charter.charter_text(source) == charter.BASE_CHARTER
+    assert charter.charter_text(source, scheduled=True) == (
+        charter.BASE_CHARTER + charter.SCHEDULED_ADDENDUM
+    )
+    # Sans argument : le texte source, comme avant le lot.
+    assert charter.charter_text() == charter.BASE_CHARTER
+
+
+def test_a_firestore_charter_gets_the_socle_and_an_explicit_join():
+    resolue = charter.charter_from_head(
+        {"current_version": 7, "body": "RÈGLES\n- Une règle.",
+         "addendum": "PLANIFIÉ\n- Une autre.", "files": []}
+    )
+    assert resolue["version"] == 7
+    texte = charter.charter_text(resolue)
+    assert texte.startswith("Tu es l'assistant juridique")   # le socle d'abord
+    assert "DEVOIRS ÉPISTÉMIQUES" in texte
+    assert texte.rstrip().endswith("- Une règle.")
+    # Un corps enregistré sans saut final ne colle PAS l'addendum au
+    # dernier paragraphe : le joint est explicite.
+    planifie = charter.charter_text(resolue, scheduled=True)
+    assert "- Une règle.\n\nPLANIFIÉ" in planifie
+
+
+def test_a_blank_resolved_charter_falls_back_never_an_empty_block():
+    """`system_blocks` construisait le bloc 0 SANS garde — il ne pouvait
+    pas être vide tant qu'il était une constante. Un bloc texte vide fait
+    répondre 400 à Vertex, donc chaque tour de chaque conversation
+    finalise `failed` jusqu'à ré-édition."""
+    blanche = {"version": 9, "body": "   ", "addendum": "", "files": []}
+    blocks = charter.system_blocks(None, charter=blanche)
+    assert blocks[0]["text"].strip()
+    assert blocks[0]["text"] == charter.BASE_CHARTER
+
+
+def test_blocks_are_fresh_each_call_never_a_shared_cache_control():
+    """La charte résolue est une DONNÉE, jamais un bloc prêt-à-servir.
+
+    Mémoïser un bloc partagé y stamperait un `cache_control` persistant :
+    deux points d'arrêt dans `system`, le premier au mauvais endroit, sans
+    erreur — le jumeau du piège que `_build_tools` documente déjà.
+    """
+    resolue = charter.charter_from_head(
+        {"current_version": 3, "body": "RÈGLES\n- Une règle.", "files": []}
+    )
+    skills = [{"id": "a", "name": "A", "version": 1, "body": "corps A"}]
+    premier = charter.system_blocks(skills, charter=resolue)
+    second = charter.system_blocks(skills, charter=resolue)
+    assert premier == second
+    assert "cache_control" not in premier[0]
+    assert premier[-1]["cache_control"] == {"type": "ephemeral"}
+    # La donnée résolue n'a pas été mutée au passage.
+    assert "cache_control" not in resolue
+
+
+def test_the_charter_lists_its_own_reference_files_in_block_zero():
+    resolue = charter.charter_from_head(
+        {
+            "current_version": 4,
+            "body": "RÈGLES\n- Une règle.",
+            "files": [
+                {"name": "Grille", "description": "Aide-mémoire.",
+                 "sha256": "c" * 64, "chars": 900}
+            ],
+        }
+    )
+    blocks = charter.system_blocks(None, charter=resolue)
+    assert len(blocks) == 1                      # le listing vit DEDANS
+    texte = blocks[0]["text"]
+    assert "FICHIERS DE RÉFÉRENCE" in texte
+    assert f"skill_id : {charter.CHARTER_FILE_ID}" in texte
+    assert "- Grille — Aide-mémoire. (900 caractères)" in texte
+    # Sans fichier, le bloc 0 reste octet-identique au format d'avant.
+    nue = charter.system_blocks(None, charter=charter.source_charter())
+    assert nue[0]["text"] == charter.BASE_CHARTER
+
+
+def test_the_reserved_charter_file_id_matches_the_model():
+    """Littéral tenu à la main des deux côtés (chat/ ne doit pas tirer
+    models/ à l'import) — donc épinglé, comme les enums de mcp/tools.py."""
+    with mock.patch("google.cloud.firestore.Client"):
+        import models.chat_charter as charter_model
+
+    assert charter.CHARTER_FILE_ID == charter_model.DOC_ID
+    assert charter.SOURCE_CHARTER_VERSION == charter_model.SOURCE_VERSION

@@ -855,7 +855,7 @@ def test_stamp_is_written_once_even_with_zero_skills(world, monkeypatch):
     assert turn_engine.process_task(_payload(world, jeton), 0) == "final"
     # Deux commits, UNE seule estampille — la première.
     assert versions_vues == [True, False]
-    assert _stored_turn(world)["charter_version"] == turn_engine.charter.CHARTER_VERSION
+    assert _stored_turn(world)["charter_version"] == turn_engine.charter.SOURCE_CHARTER_VERSION
 
 
 def test_draft_written_at_step_one_records_the_charter_version(world, monkeypatch):
@@ -882,7 +882,7 @@ def test_draft_written_at_step_one_records_the_charter_version(world, monkeypatc
     ]
     assert turn_engine.process_task(_payload(world), 0) == "continue"
     # Le document de tour lisait None à cet instant précis…
-    assert vus["charter_version"] == turn_engine.charter.CHARTER_VERSION
+    assert vus["charter_version"] == turn_engine.charter.SOURCE_CHARTER_VERSION
 
 
 def test_charter_resolution_precedes_pending_tool_execution(world, monkeypatch):
