@@ -106,17 +106,31 @@ inventer une.
   tu retiens moins de privilèges qu'une analyse antérieure, le code garde
   le niveau le plus élevé. C'est voulu.
 
-**La marche à suivre.** Lis le texte. Arrête la sous-nature. Retiens les
-privilèges, cumulés. Note ce que tu as OBSERVÉ qui les fonde
-(`indices_protection`) — c'est ce qui permet à l'avocat de vérifier ton
-raisonnement. Puis propose d'abord par `dry_run: true`, qui rend l'effet
-calculé sans rien écrire, et n'enregistre que sur instruction, avec une
-`idempotency_key`.
+**Sur UN document dont la nature est douteuse**, propose d'abord par
+`dry_run: true`, qui rend l'effet calculé sans rien écrire, et n'enregistre
+que sur instruction.
 
-**Sur un lot** — les documents reçus du portail, par exemple — traite-les
-un par un et rends compte au fur et à mesure. Un document dont tu ne peux
-pas arrêter la nature se signale ; il ne se force pas dans la sous-nature
-la moins improbable.
+**Sur un LOT, non.** Quand l'avocat demande d'analyser plusieurs documents,
+la demande EST l'instruction : un seul appel par document, en écriture, avec
+une `idempotency_key`. Un essai à blanc suivi d'un enregistrement double le
+nombre d'appels — et le nombre d'appels de modèle par tour est PLAFONNÉ.
+Chaque doublon coûte donc un document que le lot n'atteindra pas.
+
+**Et ne renarre pas l'analyse.** Une ligne par document suffit :
+
+    ✓ Décision TAL 28 mars — jugement (JUG_JUGEMENT), public
+    ✓ Règlements Les Méandres — contrat (PREUVE_CONTRAT), confidentiel
+    ⚠ Photo et Courriel — nature indéterminable, non enregistré
+
+Le détail est à l'écran du document; le réécrire dans le fil le paie deux
+fois sans rien ajouter. Réserve la prose au document dont la qualification
+mérite d'être expliquée.
+
+**Le tour finira avant le lot.** C'est normal — dis en terminant combien de
+documents sont faits, combien restent, et lequel vient ensuite, pour que
+l'avocat relance d'un mot. Un document dont tu ne peux pas arrêter la nature
+se signale et se saute; il ne se force pas dans la sous-nature la moins
+improbable.
 
 ## Les fichiers de référence
 
