@@ -523,12 +523,19 @@ def test_worker_success_returns_the_tools_text_verbatim(monkeypatch):
 
 def test_charter_version_and_base_content():
     assert charter.SOURCE_CHARTER_VERSION == 1
-    assert "markdown" in charter.BASE_CHARTER
-    assert "jurisprudence" in charter.BASE_CHARTER
-    assert "web_search" in charter.BASE_CHARTER
+    # Structurel : les cinq sections du texte de repli, pas leur prose —
+    # celle-ci est éditable, et une épingle littérale la fige de fait.
+    for section in ("DEVOIRS ÉPISTÉMIQUES", "DONNÉES PRIVILÉGIÉES",
+                    "RÈGLES DE STYLE", "RÈGLES DE SORTIE",
+                    "DISCIPLINE D'ÉCRITURE"):
+        assert section in charter.BASE_CHARTER, section
     # The scheduled addendum only appears when asked for.
-    assert "SANS SURVEILLANCE" not in charter.charter_text()
-    assert "SANS SURVEILLANCE" in charter.charter_text(scheduled=True)
+    # L'addendum n'apparaît QUE sur demande — par son texte, pas par un
+    # titre que le praticien peut renommer.
+    assert charter.SCHEDULED_ADDENDUM.strip() not in charter.charter_text()
+    assert charter.SCHEDULED_ADDENDUM.strip() in charter.charter_text(
+        scheduled=True
+    )
 
 
 def test_system_blocks_stable_order_and_trailing_cache_control():
@@ -552,7 +559,7 @@ def test_system_blocks_without_skills_marks_the_charter_block():
     blocks = charter.system_blocks(None, scheduled=True)
     assert len(blocks) == 1
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
-    assert "SANS SURVEILLANCE" in blocks[0]["text"]
+    assert charter.SCHEDULED_ADDENDUM.strip() in blocks[0]["text"]
 
 
 _SKILL_WITH_FILES = {
