@@ -995,7 +995,7 @@ def test_a_saved_charter_governs_and_carries_the_socle(world):
     texte = world.vertex.calls[0]["system"][0]["text"]
     assert "ANANAS" in texte                       # le corps enregistré
     assert "DEVOIRS ÉPISTÉMIQUES" in texte         # le socle, prépendé
-    assert texte.startswith("Tu es l'assistant juridique")
+    assert texte.startswith(turn_engine.charter.SOCLE.strip())
 
 
 def test_an_unreadable_charter_falls_back_loudly(world, monkeypatch):

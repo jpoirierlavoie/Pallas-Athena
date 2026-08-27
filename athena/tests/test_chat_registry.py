@@ -609,10 +609,6 @@ _SHA_BASE = "93df897e6dc940897c28c7579d77bcec57053a85c8cdaa54dbe0ada2163f7493"
 _SHA_ADDENDUM = "9f4d69b1c64952db84ec2a55b8f1944566f6e8dd8c85cdfe5035ab2fad5c3525"
 
 
-def _regles(texte):
-    """Les lignes porteuses de sens : titres et règles, tiret retiré."""
-    return {l.lstrip("- ").strip() for l in texte.splitlines() if l.strip()}
-
 
 def test_the_source_charter_bytes_are_frozen():
     """« 1 » identifie CES octets, pour tous les tours déjà au registre.
@@ -636,24 +632,61 @@ def test_the_source_charter_bytes_are_frozen():
     )
 
 
-def test_socle_and_seed_carry_exactly_the_source_rules():
-    """La première sauvegarde ne change AUCUNE règle — seulement l'ordre.
+def _sections(texte):
+    """{TITRE EN CAPITALES: [puces]} — la structure, pas la prose."""
+    out, courante = {}, None
+    for ligne in texte.splitlines():
+        depouille = ligne.strip()
+        if not depouille:
+            continue
+        if depouille.startswith("- "):
+            if courante is not None:
+                out[courante].append(depouille[2:])
+        elif depouille == depouille.upper():
+            courante = depouille
+            out[courante] = []
+    return out
 
-    Le socle et la graine sont transcrits à la main pour rester lisibles à
-    la revue ; une transcription se trompe, et un commentaire ne l'attrape
-    pas. Celui-ci compare les ensembles de lignes.
+def test_the_socle_still_carries_every_guarantee_it_exists_for():
+    """L'égalité avec BASE_CHARTER a été retirée le 2026-08-27, à dessein.
+
+    Elle prouvait que la SCISSION ne changeait aucune règle ; cette preuve
+    est faite. Le socle a ensuite commencé à évoluer pour son compte — ce
+    qui est exactement ce à quoi sert un texte sous revue de code, et ce
+    qu'une égalité figée aurait interdit.
+
+    Reste ce pour quoi le socle existe : il ne peut pas être vide (sans
+    quoi le bloc 0 le serait, et Vertex répondrait 400 sur TOUTES les
+    conversations), et il porte encore les garanties qu'un lapsus à
+    l'écran ne doit pas pouvoir retirer. Les ancres sont des IDENTIFIANTS
+    d'outils et des titres de section, pas la prose autour — celle-ci peut
+    se retoucher sans faire rougir la suite.
     """
-    assert _regles(charter.BASE_CHARTER) == (
-        _regles(charter.SOCLE) | _regles(charter.SEED_CORPS)
-    )
-    # Et le partage est bien un partage : rien en double.
-    assert not (_regles(charter.SOCLE) & _regles(charter.SEED_CORPS))
-    # Ce qui protège le client reste sous revue de code.
-    assert "DEVOIRS ÉPISTÉMIQUES" in charter.SOCLE
-    assert "DONNÉES PRIVILÉGIÉES" in charter.SOCLE
-    assert "La suppression n'existe pas" in charter.SOCLE
+    assert len(charter.SOCLE.strip()) > 500
+    sections = _sections(charter.SOCLE)
+    assert set(sections) == {"DEVOIRS ÉPISTÉMIQUES", "DONNÉES PRIVILÉGIÉES"}
+    # Le COMPTE de règles par section, pas seulement leur présence : une
+    # sous-chaîne survit à la suppression d'une puce sur deux.
+    assert len(sections["DEVOIRS ÉPISTÉMIQUES"]) == 4
+    assert len(sections["DONNÉES PRIVILÉGIÉES"]) == 3
+    for ancre in ("legislation_*", "jurisprudence_*", "web_search",
+                  "get_document_text", "suppression"):
+        assert ancre in charter.SOCLE, ancre
+    # La graine garde les deux sections de travail.
     assert "RÈGLES DE SORTIE" in charter.SEED_CORPS
     assert "DISCIPLINE D'ÉCRITURE" in charter.SEED_CORPS
+
+
+def test_the_socle_vouvoie_throughout():
+    """Un seul registre dans le bloc 0.
+
+    Le socle vouvoie depuis le 2026-08-27 ; il a été mi-« vous » mi-« tu »
+    pendant une édition, ce que le modèle lisait dans le même bloc.
+    BASE_CHARTER, lui, reste au tutoiement — il est gelé, et c'est ce que
+    voit un tour tombé en repli.
+    """
+    for tutoiement in (" tu ", "Tu ", " te ", " ton ", " tes "):
+        assert tutoiement not in charter.SOCLE, tutoiement
 
 
 def test_the_source_path_is_never_normalised():
@@ -679,7 +712,7 @@ def test_a_firestore_charter_gets_the_socle_and_an_explicit_join():
     )
     assert resolue["version"] == 7
     texte = charter.charter_text(resolue)
-    assert texte.startswith("Tu es l'assistant juridique")   # le socle d'abord
+    assert texte.startswith(charter.SOCLE.strip())   # le socle d'abord
     assert "DEVOIRS ÉPISTÉMIQUES" in texte
     assert texte.rstrip().endswith("- Une règle.")
     # Un corps enregistré sans saut final ne colle PAS l'addendum au
