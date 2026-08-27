@@ -284,3 +284,99 @@ def test_la_tarification_couvre_les_modeles_google():
         tarifs = Config.CHAT_PRICING["models"][key]
         assert tarifs["input_usd_per_mtok"] > 0, key
         assert tarifs["output_usd_per_mtok"] > 0, key
+
+
+# ── Les schémas d'outils, contre le corpus RÉEL ────────────────────────────
+#
+# « Les schémas passent verbatim » était vrai d'un ÉCHANTILLON des outils
+# MCP, vérifié en direct le 2026-08-26. Ce n'était pas vrai du corpus : les
+# fiches des Workers juridiques sont ENGENDRÉES depuis le `tools/list` de
+# chaque Worker, donc elles portent ce que le Worker émet — `$schema`
+# compris. Personne ne l'avait vu parce qu'aucun Worker n'était branché ce
+# jour-là. Les 10 outils legislation_* ont fait échouer TOUS les tours
+# Gemini — le modèle par défaut — dès leur mise en ligne, en 400
+# INVALID_ARGUMENT « Unknown name "$schema" … Cannot find field ».
+#
+# D'où la forme de ce test : il balaie TOUTES les fiches que le dépôt peut
+# offrir, jamais la sélection qu'une configuration de test active — et il
+# procède par LISTE BLANCHE. Une clé inconnue échoue ici plutôt qu'en
+# production, ce qu'une liste noire (« ce qu'on a déjà vu casser ») ne peut
+# pas faire.
+
+# Le sous-ensemble d'OpenAPI que `functionDeclarations.parameters` accepte.
+# `additionalProperties` et `title` y sont : vérifiés en direct, HTTP 200.
+_CLES_ACCEPTEES = frozenset({
+    "type", "format", "title", "description", "nullable", "default",
+    "items", "minItems", "maxItems", "enum", "properties", "required",
+    "minProperties", "maxProperties", "minimum", "maximum",
+    "minLength", "maxLength", "pattern", "example", "anyOf",
+    "propertyOrdering", "additionalProperties",
+})
+
+
+def _toutes_les_fiches():
+    """Chaque outil que le dépôt peut déclarer — MCP, Workers, chat-local.
+
+    PAS `registry.anthropic_tools()` : celui-ci n'inclut les Workers que
+    s'ils sont configurés, et l'environnement de test ne les configure pas.
+    Un test qui lit la sélection active aurait été vert le jour où la
+    production est tombée.
+    """
+    import chat.registry as registry
+    import chat.worker_tools as worker_tools
+    import mcp.tools as mcp_tools
+
+    fiches = list(mcp_tools.TOOLS.values())
+    fiches += list(worker_tools.WORKER_TOOLS)
+    fiches.append(registry.GET_SKILL_FILE_SPEC)
+    return fiches
+
+
+def _cles(valeur, dedans_properties=False):
+    """Les clés STRUCTURELLES du schéma — jamais les noms de propriétés."""
+    trouvees = set()
+    if isinstance(valeur, dict):
+        for k, v in valeur.items():
+            if not dedans_properties:
+                trouvees.add(k)
+            trouvees |= _cles(v, dedans_properties=(k == "properties"))
+    elif isinstance(valeur, list):
+        for v in valeur:
+            trouvees |= _cles(v)
+    return trouvees
+
+
+def test_no_tool_schema_carries_a_key_gemini_refuses():
+    fiches = _toutes_les_fiches()
+    assert len(fiches) > 60, "le corpus n'a pas été chargé"
+    declarations = gemini.function_declarations(fiches)
+    assert len(declarations) == len(fiches)
+    for d in declarations:
+        inconnues = _cles(d["parameters"]) - _CLES_ACCEPTEES
+        assert not inconnues, f"{d['name']} : {sorted(inconnues)}"
+
+
+def test_the_filter_never_mutates_the_shared_schema():
+    """Le schéma d'entrée est partagé PAR IDENTITÉ avec mcp.tools.TOOLS.
+
+    Le filtrer en place l'amputerait aussi pour le connecteur externe et
+    pour le chemin Anthropic, qui l'acceptent tous deux tel quel.
+    """
+    import copy
+
+    fiches = _toutes_les_fiches()
+    avant = copy.deepcopy([f.get("input_schema") for f in fiches])
+    gemini.function_declarations(fiches)
+    assert [f.get("input_schema") for f in fiches] == avant
+
+
+def test_the_legislation_specs_still_declare_what_the_worker_emits():
+    """Les fiches restent FIDÈLES : le filtre vit chez Gemini, pas chez
+    elles. Le chemin Anthropic reçoit le schéma tel que le Worker l'a
+    annoncé, et le connecteur externe aussi."""
+    import chat.worker_tools as worker_tools
+
+    legislation = [t for t in worker_tools.WORKER_TOOLS
+                   if t["name"].startswith("legislation_")]
+    assert legislation, "aucune fiche legislation_*"
+    assert any("$schema" in _cles(t["input_schema"]) for t in legislation)

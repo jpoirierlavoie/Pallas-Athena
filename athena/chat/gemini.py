@@ -165,14 +165,54 @@ def contents_depuis_messages(messages: list[dict]) -> list[dict]:
     return contents
 
 
+# Méta-clés de JSON Schema que `functionDeclarations.parameters` REFUSE :
+# Gemini attend un sous-ensemble d'OpenAPI, pas du JSON Schema, et répond
+# 400 INVALID_ARGUMENT « Unknown name … Cannot find field ». Elles n'ont
+# aucune valeur sémantique pour une déclaration de fonction — ce sont des
+# clés de DOCUMENT, pas de type.
+#
+# ⚠ Ce filtre existe parce que « les schémas passent verbatim » était vrai
+# d'un ÉCHANTILLON, pas du corpus. Les fiches des Workers juridiques sont
+# ENGENDRÉES depuis le `tools/list` de chaque Worker : elles portent ce que
+# le Worker émet, `$schema` compris, et personne ne l'avait vu parce
+# qu'aucun Worker n'était encore branché le jour de la vérification. Les 10
+# outils legislation_* ont fait échouer TOUS les tours Gemini — le modèle
+# par défaut — dès leur mise en ligne. Une clé nouvelle chez un Worker
+# repassera ici : ne pas transformer ce jeu en liste de ce qu'on a vu
+# casser, mais y ranger toute clé qui décrit le document plutôt que le type.
+_CLES_HORS_TYPE = frozenset(
+    {"$schema", "$id", "$ref", "$defs", "$comment", "$anchor", "definitions"}
+)
+
+
+def _parametres(valeur):
+    """Le schéma, débarrassé des méta-clés, en profondeur.
+
+    Une copie : le schéma d'entrée est partagé PAR IDENTITÉ avec
+    ``mcp.tools.TOOLS`` (registry.py), donc le muter en place
+    l'amputerait aussi pour le connecteur externe et pour le chemin
+    Anthropic, qui l'acceptent tous deux tel quel.
+    """
+    if isinstance(valeur, dict):
+        return {
+            k: _parametres(v)
+            for k, v in valeur.items()
+            if k not in _CLES_HORS_TYPE
+        }
+    if isinstance(valeur, list):
+        return [_parametres(v) for v in valeur]
+    return valeur
+
+
 def function_declarations(tools: list[dict]) -> list[dict]:
     """Les outils du registre → ``functionDeclarations``.
 
-    Les schémas d'entrée passent **verbatim** : vérifié en direct le
-    2026-08-26 contre un échantillon des outils MCP réels (y compris
-    ``additionalProperties``), tous acceptés. Les outils serveur d'Anthropic
-    (``web_search``, qui n'a pas d'``input_schema``) sont écartés — Gemini a
-    son propre ancrage, qui n'est pas câblé.
+    Les schémas d'entrée passent tels quels À UNE EXCEPTION PRÈS : les
+    méta-clés de JSON Schema sont retirées (voir ``_CLES_HORS_TYPE``).
+    ``additionalProperties`` et ``title``, eux, sont acceptés — vérifié
+    en direct. Les outils serveur d'Anthropic (``web_search``, qui n'a
+    pas d'``input_schema``) sont écartés — Gemini a son propre ancrage,
+    qui n'est pas câblé.
     """
     declarations = []
     for outil in tools or []:
@@ -183,7 +223,7 @@ def function_declarations(tools: list[dict]) -> list[dict]:
             {
                 "name": outil.get("name", ""),
                 "description": outil.get("description", ""),
-                "parameters": schema,
+                "parameters": _parametres(schema),
             }
         )
     return declarations
