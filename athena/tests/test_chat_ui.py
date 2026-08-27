@@ -233,6 +233,101 @@ def test_pending_source_pins_the_poll_attributes():
     assert 'hx-swap="outerHTML"' in source
 
 
+# ── The composer comes back on its own (hors bande) ────────────────────────
+#
+# The poll swaps `#tour-{id}` and nothing else, so the composer — which
+# lives elsewhere on the page — used to stay frozen on « un tour est en
+# cours » until a reload, contradicting its own text.  Same class as the
+# documented stale-export-link gotcha; same remedy, the OOB re-emission.
+
+_DIV_TAGS = re.compile(r"<div\b[^>]*>")
+
+
+def _composer_tag(html: str) -> str:
+    """The OPENING TAG carrying the composer's id, or "".
+
+    The assertion has to bind `hx-swap-oob` to the same tag as the id:
+    two independent substring checks pass just as happily on a block
+    re-emitted WITHOUT the attribute, which is precisely the silent
+    failure (the composer would append itself at the end of the
+    transcript instead of replacing the stale one).
+    """
+    return next(
+        (t for t in _DIV_TAGS.findall(html) if 'id="chat-composer"' in t), ""
+    )
+
+
+def _patch_composer_reads(monkeypatch, conv):
+    monkeypatch.setattr(rc.conv_model, "get_conversation", lambda i: conv)
+    monkeypatch.setattr(rc.skill_model, "list_skills", lambda: [])
+
+
+def test_terminal_fragment_reopens_the_composer_out_of_band(web_rendu, monkeypatch):
+    monkeypatch.setattr(rc.conv_model, "get_turn", lambda c, t: _final_turn())
+    _patch_composer_reads(monkeypatch, _conv(active_turn_id=""))
+
+    response = web_rendu.get("/chat/c1/tour/000002/fragment")
+    assert response.status_code == 286
+    html = response.get_data(as_text=True)
+
+    assert "note-content" in html                      # the final turn, still
+    assert 'hx-swap-oob="true"' in _composer_tag(html)  # ON the id'd tag
+    assert 'name="message"' in html                     # the field is BACK
+    assert "Un tour est en cours" not in html
+
+
+def test_authorization_pause_keeps_the_composer_shut(web_rendu, monkeypatch):
+    """286 does not mean « done » — it means « stop polling ».
+
+    An awaiting_authorization turn answers 286 while the chain still holds
+    `active_turn_id`, so inferring « terminal therefore free » would hand
+    back a field whose next submit is refused in 409.  The lock is READ
+    from the conversation, never derived from the turn.
+    """
+    waiting = _final_turn(
+        state="awaiting_authorization",
+        authorization={
+            "calls": [{"tool_use_id": "t1", "name": "create_note",
+                       "gated": True, "input_preview": "{}"}],
+            "decision": None,
+        },
+    )
+    monkeypatch.setattr(rc.conv_model, "get_turn", lambda c, t: waiting)
+    _patch_composer_reads(monkeypatch, _conv(active_turn_id="000002"))
+
+    html = web_rendu.get("/chat/c1/tour/000002/fragment").get_data(as_text=True)
+
+    assert "Autorisation requise" in html
+    assert 'hx-swap-oob="true"' in _composer_tag(html)
+    assert 'name="message"' not in html                 # still shut
+    assert "Un tour est en cours" in html
+
+
+def test_full_page_composer_carries_no_out_of_band_attribute(web_rendu, monkeypatch):
+    """`oob` defaults off: the page hosts the container, the fragment
+    re-emits it.  A page-level hx-swap-oob would be a swap instruction
+    with nothing to swap into."""
+    monkeypatch.setattr(rc.conv_model, "get_conversation", lambda i: _conv())
+    monkeypatch.setattr(rc.conv_model, "mark_read", lambda i: None)
+    monkeypatch.setattr(rc.conv_model, "list_turns",
+                        lambda i, limit=500: [_user_turn(), _final_turn()])
+    monkeypatch.setattr(rc.skill_model, "list_skills", lambda: [])
+
+    html = web_rendu.get("/chat/c1").get_data(as_text=True)
+    tag = _composer_tag(html)
+    assert tag and "hx-swap-oob" not in tag
+
+
+def test_composer_lives_in_exactly_one_template():
+    """One definition, one id.  A second copy would drift — and the two
+    would disagree about the very state this feature exists to refresh."""
+    porteurs = [
+        p for p in (_TEMPLATES / "chat").glob("*.html")
+        if 'id="chat-composer"' in p.read_text(encoding="utf-8")
+    ]
+    assert [p.name for p in porteurs] == ["_composer.html"]
+
+
 def test_message_post_races_are_refused_in_2xx_discipline(web_rendu, monkeypatch):
     monkeypatch.setattr(rc.conv_model, "get_conversation", lambda i: _conv())
     monkeypatch.setattr(

@@ -1,0 +1,57 @@
+{# Le composeur — extrait de conversation.html le 2026-08-26 pour pouvoir
+   revenir TOUT SEUL à la fin d'un tour.
+
+   Le sondage remplace `#tour-{id}` et rien d'autre : le composeur, qui vit
+   ailleurs dans la page, restait donc figé sur « un tour est en cours »
+   jusqu'à un rechargement — alors même que son texte PROMETTAIT le
+   contraire. C'est le piège maison du lien qui vit hors de la cible
+   d'échange, et le remède maison est l'échange hors bande : la réponse
+   terminale du fragment ré-émet ce bloc avec `hx-swap-oob`.
+
+   UN seul fichier, UN seul id, et le drapeau `oob` explicite à chaque
+   appel — deux copies dériveraient, et l'attribut doit porter sur le MÊME
+   tag que l'id. #}
+<div id="chat-composer"
+     class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4"
+     {% if oob %}hx-swap-oob="true"{% endif %}>
+  {% if active_turn_id %}
+  <p class="text-sm text-gray-500">Un tour est en cours — le champ de saisie reviendra à la fin de la réponse.</p>
+  {% else %}
+  <form method="post"
+        action="{{ url_for('chat.message_post', conversation_id=conv.id) }}"
+        class="space-y-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <textarea name="message" rows="4" required
+              placeholder="Votre message…"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"></textarea>
+    <div class="flex items-center justify-between gap-3">
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">{{ model_label }}</span>
+      <button type="submit"
+              class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-xl hover:bg-gray-800">
+        Envoyer
+      </button>
+    </div>
+  </form>
+
+  <details class="mt-4">
+    <summary class="text-xs text-gray-500 cursor-pointer">Modifier les compétences (prochain tour)</summary>
+    <form method="post"
+          action="{{ url_for('chat.conversation_skills', conversation_id=conv.id) }}"
+          class="mt-2 space-y-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% for s in skills %}
+      <label class="flex items-start gap-3 p-2 bg-gray-50 rounded-xl cursor-pointer">
+        <input type="checkbox" name="skills" value="{{ s.id }}"
+               {{ 'checked' if s.id in conv.skill_selection }}
+               class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+        <span class="text-sm text-gray-700">{{ s.name }}</span>
+      </label>
+      {% endfor %}
+      <button type="submit"
+              class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50">
+        Enregistrer la sélection
+      </button>
+    </form>
+  </details>
+  {% endif %}
+</div>

@@ -406,6 +406,42 @@ def tour_relancer(conversation_id: str, turn_id: str) -> Response:
     )
 
 
+def _composeur_oob(conversation_id: str) -> str:
+    """Le composeur ré-émis hors bande, pour la réponse terminale du sondage.
+
+    L'état de verrouillage est RELU de la conversation, jamais déduit du
+    tour : ``awaiting_authorization`` répond 286 (htmx cesse de sonder)
+    alors que la chaîne tient toujours son ``active_turn_id`` — le
+    composeur doit y rester désactivé, et l'inférence « 286 donc fini »
+    rouvrirait le champ sur une conversation encore verrouillée, dont le
+    prochain envoi serait refusé en 409.
+
+    Échoue OUVERT : c'est une aide d'affichage, et la réponse qu'elle
+    accompagne porte le tour final. Un échec la prive du rafraîchissement
+    automatique (le rechargement le rétablit) ; le faire remonter
+    perdrait la réponse elle-même.
+    """
+    try:
+        conv = conv_model.get_conversation(conversation_id)
+        if conv is None:
+            return ""
+        modele = conv.get("model", "")
+        return render_template(
+            "chat/_composer.html",
+            oob=True,
+            conv=conv,
+            active_turn_id=conv.get("active_turn_id") or "",
+            skills=[s for s in skill_model.list_skills() if s.get("active")],
+            model_label=Config.CHAT_MODELS.get(modele, {}).get("label_fr", modele),
+        )
+    except Exception:  # pragma: no cover - aide d'affichage, jamais bloquante
+        log_unexpected(
+            "chat: composeur hors bande non rendu",
+            conversation_id=conversation_id,
+        )
+        return ""
+
+
 @chat_bp.route("/<conversation_id>/tour/<turn_id>/fragment")
 @login_required
 def tour_fragment(conversation_id: str, turn_id: str):
@@ -421,7 +457,11 @@ def tour_fragment(conversation_id: str, turn_id: str):
             t=_turn_view(turn),
             conv={"id": conversation_id},
         )
-        return (html, HTTP_STOP_POLLING)
+        # Le composeur vit HORS de la cible d'échange (le sondage remplace
+        # `#tour-{id}` et rien d'autre), donc sans ce ré-envoi hors bande il
+        # resterait figé sur « un tour est en cours » jusqu'à un
+        # rechargement — alors que ce texte PROMET le contraire.
+        return (html + _composeur_oob(conversation_id), HTTP_STOP_POLLING)
     return render_template(
         "chat/_pending.html",
         conv={"id": conversation_id},
