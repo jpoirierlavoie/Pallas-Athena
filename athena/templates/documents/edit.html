@@ -92,6 +92,17 @@
     </div>
 
     <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Notes internes</label>
+      <textarea name="notes_internes" rows="4"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                placeholder="Votre travail sur ce document">{{ document.notes_internes or "" }}</textarea>
+      <p class="mt-1 text-xs text-gray-400">
+        À vous. Rien ne les réécrit — contrairement à la description, que
+        l'analyse remplace à chaque exécution.
+      </p>
+    </div>
+
+    <div>
       <label class="block text-sm font-medium text-gray-700 mb-1.5">Étiquettes</label>
       <input type="text"
              name="tags"

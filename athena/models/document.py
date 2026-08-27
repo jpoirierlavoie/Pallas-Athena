@@ -240,6 +240,10 @@ def _default_doc() -> dict:
         "storage_path": "",
         "category": "autre",
         "description": "",
+        # Le champ du JURISTE. `description` appartient à l'analyse, qui
+        # la réécrit à chaque exécution : sans un second champ, écrire une
+        # note et relancer une analyse s'excluaient.
+        "notes_internes": "",
         "tags": [],
         # The DOCUMENT'S OWN date (a procès-verbal's service date, a
         # judgment's date…) — MANUAL, date-only at midnight UTC, never
@@ -774,6 +778,7 @@ def update_metadata(
     # Only allow updating specific metadata fields
     allowed_fields = {
         "display_name", "category", "description", "tags", "document_date",
+        "notes_internes",
     }
     sanitized = _sanitize_data({k: v for k, v in data.items() if k in allowed_fields})
     merged = {**existing, **sanitized}
@@ -1512,6 +1517,8 @@ def record_analyse(
         # Ce que l'écrasement remplace. Sans cela la divergence de classement
         # — « l'un des deux signalements qui valent le plus » — deviendrait
         # inobservable, puisqu'il n'y a plus deux valeurs à comparer.
+        "description_precedente": existing.get("description") or "",
+        "date_document_precedente": existing.get("document_date"),
         "categorie_precedente": ancienne,
         "categorie_precedente_source": ancienne_source,
         "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
@@ -1527,15 +1534,16 @@ def record_analyse(
     # description, la date lue devient la date du document, et le
     # formulaire d'édition les montre et les laisse corriger.
     #
-    # ⚠ REMPLIR-SI-VIDE, jamais écraser (la doctrine `complete_dossier`).
-    # La catégorie est un code d'une table fermée : l'écraser se répare
-    # d'un clic. La description est de la PROSE que le juriste a écrite —
-    # une réanalyse qui l'efface détruit un travail qu'aucun journal ne
-    # rend au formulaire.
+    # ⚠ Elle les ÉCRASE (décision du praticien, 2026-08-27, renversant le
+    # remplir-si-vide de la veille). C'est tenable parce que `description`
+    # cesse d'être partagée : le juriste écrit dans `notes_internes`, que
+    # rien ne réécrit jamais. Sans ce second champ, écrire une note et
+    # relancer une analyse s'excluaient. La valeur remplacée part au
+    # journal, comme celle de la catégorie — rien ne disparaît sans trace.
     natifs: dict = {}
-    if champ.get("resume") and not (existing.get("description") or "").strip():
+    if champ.get("resume"):
         natifs["description"] = champ["resume"]
-    if champ.get("date_document_str") and not existing.get("document_date"):
+    if champ.get("date_document_str"):
         lue = _coerce_document_date(champ["date_document_str"])
         if lue is not None:
             natifs["document_date"] = lue

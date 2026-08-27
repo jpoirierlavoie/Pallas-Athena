@@ -614,23 +614,15 @@ def test_the_analysis_fills_description_and_date(monde):
     assert (maj["document_date"].hour, maj["document_date"].minute) == (0, 0)
 
 
-def test_a_reanalysis_never_overwrites_the_lawyers_prose(monde):
-    """REMPLIR-SI-VIDE, jamais écraser (doctrine `complete_dossier`).
+def test_a_reanalysis_overwrites_and_journals_what_it_replaced():
+    """L'analyse POSSÈDE `description` et `document_date`.
 
-    La catégorie est un code d'une table fermée : l'écraser se répare d'un
-    clic. La description est de la PROSE — une réanalyse qui l'efface
-    détruit un travail qu'aucun journal ne rend au formulaire.
+    Décision du praticien du 2026-08-27, renversant le remplir-si-vide de
+    la veille. C'est tenable parce que `description` cesse d'être partagée
+    — le juriste écrit dans `notes_internes`, que rien ne réécrit. Sans ce
+    second champ, écrire une note et relancer une analyse s'excluaient.
     """
-    monde["store"]["doc-1"]["description"] = "Ma note à moi."
-    monde["store"]["doc-1"]["document_date"] = datetime(
-        2020, 1, 1, tzinfo=timezone.utc
-    )
-    maj, err = doc.record_analyse("doc-1", _SORTIE)
-    assert err == []
-    assert maj["description"] == "Ma note à moi."
-    assert maj["document_date"].year == 2020
-    # …mais la catégorie, elle, est bien remplacée.
-    assert maj["category"] == "procédure"
+    pass  # remplacé ci-dessous par la version à harnais
 
 
 def test_a_blank_description_counts_as_empty(monde):
@@ -716,3 +708,60 @@ def test_a_pdf_offers_a_path_that_works_on_a_phone():
 def test_a_non_pdf_gets_no_pdf_link():
     html = _detail(file_type="image/png")
     assert "Ouvrir le PDF" not in html
+
+
+def test_the_analysis_owns_description_and_date(monde):
+    """Elle les ÉCRASE, et le journal garde ce qu'elle a remplacé."""
+    monde["store"]["doc-1"]["description"] = "Ancienne description."
+    monde["store"]["doc-1"]["document_date"] = datetime(
+        2020, 1, 1, tzinfo=timezone.utc
+    )
+    maj, err = doc.record_analyse("doc-1", _SORTIE)
+    assert err == []
+    assert maj["description"] == _SORTIE["resume"]
+    assert maj["document_date"].strftime("%Y-%m-%d") == "2026-03-14"
+
+    a = maj["analyse"]
+    assert a["description_precedente"] == "Ancienne description."
+    assert a["date_document_precedente"].year == 2020
+
+
+def test_the_analysis_never_touches_the_internal_notes(monde):
+    """`notes_internes` est le champ du JURISTE. Que l'analyse ne puisse pas
+    l'atteindre est ce qui rend l'écrasement de `description` supportable —
+    et un test le vérifie sur le CODE, pas seulement sur un cas."""
+    monde["store"]["doc-1"]["notes_internes"] = "Mon travail à moi."
+    for _ in range(3):
+        maj, err = doc.record_analyse("doc-1", _SORTIE)
+        assert err == []
+        assert maj["notes_internes"] == "Mon travail à moi."
+
+    import inspect
+    code = [
+        l for l in inspect.getsource(doc.record_analyse).split(chr(10))
+        if "notes_internes" in l and not l.strip().startswith("#")
+    ]
+    assert not code, f"l'analyse écrit dans les notes du juriste : {code}"
+
+
+def test_the_internal_notes_are_editable(monde):
+    maj, err = doc.update_metadata("doc-1", {"notes_internes": "À relire."})
+    assert err == []
+    assert maj["notes_internes"] == "À relire."
+
+
+def test_the_edit_form_carries_the_internal_notes():
+    """Un champ affiché mais que la route ne lit pas ne s'enregistre
+    jamais — en silence, puisque le formulaire se soumet normalement."""
+    from pathlib import Path
+    racine = Path(__file__).resolve().parent.parent
+    form = (racine / "templates" / "documents" / "edit.html").read_text(encoding="utf-8")
+    route = (racine / "routes" / "documents.py").read_text(encoding="utf-8")
+    detail = (racine / "templates" / "documents" / "detail.html").read_text(encoding="utf-8")
+
+    assert 'name="notes_internes"' in form, "le formulaire ne porte pas le champ"
+    assert 'f.get("notes_internes"' in route, "la route ne le lit pas"
+    assert "document.notes_internes" in detail, "le détail ne l'affiche pas"
+
+    import models.document as m
+    assert "notes_internes" in m._default_doc()

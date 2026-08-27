@@ -460,6 +460,9 @@ def document_update(document_id: str) -> str:
         "category": f.get("category", "autre").strip(),
         "description": f.get("description", "").strip(),
         "tags": [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else [],
+        # Le champ du juriste. Toujours porté, comme la date : un champ vidé
+        # l'efface, sans quoi une note ne pourrait jamais être retirée.
+        "notes_internes": f.get("notes_internes", "").strip(),
         # Always carried by this form — an emptied input clears the date.
         "document_date": f.get("document_date", "").strip(),
     }
