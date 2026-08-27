@@ -17,6 +17,7 @@ from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
 # Pure module (no Firestore at import) — safe to derive enums from, unlike
 # models.* (see the literal-enum comment below).
+from utils import analyse_taxonomies as _tax
 from utils import phases
 
 # ── Money / date formatting (§10.1 conventions) ─────────────────────────
@@ -378,6 +379,7 @@ _WRITE_ANNOTATIONS = {
 # (mcp/endpoint.py) and advertisement (list_tool_descriptors) both derive
 # from it, so a new write tool cannot ship without declaring itself.
 WRITE_TOOLS: frozenset[str] = frozenset({
+    "record_document_analysis",
     "create_note", "append_to_note",
     # WP16 — the entity creators (create-only; no delete, no modify).
     "create_task", "create_hearing", "create_time_entry", "create_expense",
@@ -413,6 +415,11 @@ WRITE_TOOLS: frozenset[str] = frozenset({
 # client uses the hint to decide whether to confirm with the user first.
 # Derived into the annotations below, never restated per tool.
 EDIT_TOOLS: frozenset[str] = frozenset({
+    # Il REMPLACE la catégorie stockée du document — et cette catégorie
+    # est ce que l'explorateur affiche et ce sur quoi le juriste filtre.
+    # Le journal garde la précédente, mais un remplacement reste un
+    # remplacement : sous-avertir est le mauvais côté de l'erreur.
+    "record_document_analysis",
     "update_partie", "update_dossier",
     "update_time_entry", "update_expense",
     # import_invoice ne remplace aucune valeur, mais il BASCULE N sources à
@@ -728,6 +735,15 @@ _EXPENSE_CATEGORIES = [
     "signification", "expertise", "transcription", "deplacement",
     "photocopie", "timbre_judiciaire", "autre",
 ]
+
+# Analyse documentaire — DÉRIVÉS eux aussi, du même précédent.
+# `utils/analyse_taxonomies` est pur (aucun import de modèle, aucun client
+# Firestore au chargement), donc l'enum ne peut pas dériver du vocabulaire
+# que le modèle valide. ⚠ La CATÉGORIE n'est PAS un paramètre : elle est
+# dérivée de la sous-nature par `nature_of()`. L'ajouter ici rouvrirait
+# exactement ce que l'écart assumé avec la §5.3 rend supportable.
+_SOUS_NATURE_CODES = sorted(_tax.VALID_SOUS_NATURES)
+_PRIVILEGE_CODES = sorted(_tax.VALID_PRIVILEGES)
 
 # Phase O — DERIVED, not hand-copied (the _COVERAGE_CODES precedent):
 # utils/phases.py is pure (no model import, no Firestore at load), so the
@@ -3133,6 +3149,165 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "list_drafts",
+    },
+    "record_document_analysis": {
+        "title": "Enregistrer l'analyse d'un document",
+        "description": (
+            "WRITE — RECORDS a document analysis you have already performed, "
+            "and REPLACES the document's stored category. Read the text with "
+            "get_document_text FIRST; never analyse from a filename. You "
+            "supply a `sous_nature` from the CLOSED table and the CODE "
+            "derives the category — you cannot choose or invent one. The "
+            "result becomes visible in the application: category badge, "
+            "protection level, summary. It is marked PRESUMED until the "
+            "lawyer confirms it on screen; nothing you send here can confirm "
+            "it. Every run is journalled for ever and the previous category "
+            "is kept, so a replacement stays observable. Privileges are "
+            "CUMULATIVE and the code fails UPWARD: a protection level is "
+            "never lowered by a re-analysis. Never claim PUBLIC to fill a "
+            "gap — absence of a protection marker is not a marker of public "
+            "character. Names stay free strings; never resolve one to a "
+            "contact. A retry without idempotency_key records a SECOND "
+            "journal entry (nothing is lost, but it is noise)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": _id(
+                    "The document analysed (UUIDv4), from list_documents."
+                ),
+                "sous_nature": {
+                    "type": "string",
+                    "enum": _SOUS_NATURE_CODES,
+                    "description": (
+                        "Closed sub-nature code (Annexe A). The stored "
+                        "category is DERIVED from it — there is no category "
+                        "parameter, by design. Never invent a code: if none "
+                        "fits, say so instead of calling."
+                    ),
+                },
+                "privileges": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": _PRIVILEGE_CODES},
+                    "description": (
+                        "Protection regimes, CUMULATIVE (Annexe D). Under "
+                        "doubt between two, send BOTH — the highest governs. "
+                        "An empty list means « nothing established », which "
+                        "the code treats as confidential by default, never "
+                        "as public."
+                    ),
+                },
+                "resume": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": (
+                        "One short paragraph, in French, of what the "
+                        "document IS and says. Shown in the application."
+                    ),
+                },
+                "numero_dossier_cour": {
+                    "type": "string",
+                    "description": (
+                        "Court file number as it appears ON the document, "
+                        "verbatim. Omit when absent — an absence is a SIGNAL "
+                        "(a possibly undeposited draft), never a gap to fill "
+                        "by deduction."
+                    ),
+                },
+                "tribunal": {
+                    "type": "string",
+                    "description": (
+                        "Court named on the document. Omit if absent."
+                    ),
+                },
+                "district_judiciaire": {
+                    "type": "string",
+                    "description": (
+                        "Judicial district on the document. Omit if absent."
+                    ),
+                },
+                "auteur": {
+                    "type": "string",
+                    "description": (
+                        "Signatory, bailiff, judge, clerk or stenographer "
+                        "named on the document. Omit if absent."
+                    ),
+                },
+                "parties_mentionnees": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Party names as WRITTEN. FREE STRINGS — never "
+                        "resolve one to a contact of the dossier: linking "
+                        "the wrong contact is worse than not linking, and "
+                        "would propagate in silence."
+                    ),
+                },
+                "date_document_str": {
+                    "type": "string",
+                    "description": (
+                        "Date ON the document, YYYY-MM-DD. Omit if absent."
+                    ),
+                },
+                "date_signature_str": {
+                    "type": "string",
+                    "description": (
+                        "Signature date, YYYY-MM-DD. Omit if absent."
+                    ),
+                },
+                "contient_dispositif": {
+                    "type": "boolean",
+                    "description": (
+                        "True when a procès-verbal d'audience carries the "
+                        "judgment itself. SIGNAL it — a judgment rendered at "
+                        "the hearing starts appeal delays — but never "
+                        "compute the delay."
+                    ),
+                },
+                "dispositif": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": (
+                        "The operative wording, verbatim, when present."
+                    ),
+                },
+                "indices_protection": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "What you OBSERVED that grounds the privileges, in "
+                        "plain words (« en-tête d'avocat », « mention sous "
+                        "toutes réserves »). This is what lets the lawyer "
+                        "check your reasoning."
+                    ),
+                },
+                "langue_detectee": {
+                    "type": "string",
+                    "enum": ["fr", "en", "autre"],
+                    "description": "Main language of the document.",
+                },
+                "confiance": {
+                    "type": "string",
+                    "enum": ["haute", "moyenne", "faible"],
+                    "description": (
+                        "Your confidence in this classification. Say "
+                        "« faible » rather than guessing well."
+                    ),
+                },
+                "extraction_tronquee": {
+                    "type": "boolean",
+                    "description": (
+                        "True when you read only part of the text "
+                        "(pagination not followed to the end)."
+                    ),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["document_id", "sous_nature"],
+            "additionalProperties": False,
+        },
+        "scope": SCOPE_WRITE,
+        "handler": "record_document_analysis",
     },
     "save_draft": {
         "title": "Créer un brouillon de rédaction",

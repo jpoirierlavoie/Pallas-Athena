@@ -1914,6 +1914,25 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "list_drafts": _list_envelope(_draft_summary()),
 
+    "record_document_analysis": {
+        "type": "object",
+        "properties": {
+            "recorded": {"type": "boolean"},
+            "document_id": {"type": "string"},
+            "display_name": {"type": "string"},
+            "category": {"type": "string"},
+            "category_source": {"type": "string"},
+            "analyse": {"type": "object"},
+            "warnings": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        # `category` et `category_source` manquent en branche SÈCHE —
+        # rien n'est écrit, donc rien n'est stocké à rapporter. `required`
+        # ne porte donc que ce qui est TOUJOURS présent.
+        "required": ["recorded", "document_id", "analyse", "warnings"],
+    },
     "save_draft": _draft_write_result("created"),
 
     "revise_draft": _draft_write_result("revised"),

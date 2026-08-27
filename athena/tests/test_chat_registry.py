@@ -63,7 +63,7 @@ def test_the_exclusion_never_touches_the_connector():
     """Le connecteur externe garde ses 52 outils : c'est là que la reprise
     de données se fait, et elle en a besoin."""
     assert registry.CHAT_EXCLUDED_TOOLS <= set(mcp_tools.TOOLS)
-    assert len(mcp_tools.TOOLS) == 52
+    assert len(mcp_tools.TOOLS) == 53
 
 
 def test_gated_set_is_empty_in_v1():

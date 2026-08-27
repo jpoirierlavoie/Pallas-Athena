@@ -136,7 +136,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 52  # 29 lectures + 23 ecritures
+    assert len(tools.TOOLS) == 53  # 29 lectures + 24 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -178,6 +178,12 @@ def test_write_tools_set_is_pinned():
         # D3/D8 2026-08-26). revise_draft est dans EDIT_TOOLS ; save_draft
         # reste un createur additif.
         "save_draft", "revise_draft",
+        # Analyse documentaire (SPEC Phase K §8-9, 2026-08-27). Ecriture
+        # d'un genre nouveau : elle REMPLACE la categorie stockee du
+        # document, mais la valeur n'est jamais choisie par le modele --
+        # elle est DERIVEE d'une sous-nature d'une table fermee. Membre
+        # d'EDIT_TOOLS, donc destructiveHint.
+        "record_document_analysis",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 

@@ -6228,3 +6228,159 @@ def _revise_draft_impl(args: dict, dry_run: bool) -> dict:
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _draft_result(head, "revised")
+
+
+# ── Analyse documentaire (SPEC Phase K §8-9) ─────────────────────────────
+#
+# ⚠ ÉCART ASSUMÉ avec la §9.2 : elle décrivait `analyser_document`, qui
+# ENFILE une tâche et rend « en_attente ». Le clavardage (Phase N) n'existait
+# pas quand la spec a été écrite; il fait l'analyse lui-même. L'outil
+# ENREGISTRE donc, synchrone. Le champ garde son `statut` pour qu'un pipeline
+# asynchrone futur s'y branche sans migration.
+
+_ANALYSE_ECHO = (
+    "nature_detectee", "sous_nature", "famille", "privileges",
+    "niveau_protection", "confiance", "confirme", "categorie_precedente",
+    "categorie_remplacee", "remplace_un_choix_du_juriste",
+    "champs_attendus_absents", "alerte_dispositif_detecte",
+    "alerte_renonciation_possible", "analyse_id",
+)
+
+# Liste blanche EXPLICITE, jamais `**args` : `record_analyse` écrit un
+# document complet, et un `id` ou un `category` transmis corromprait le champ
+# sans changer le chemin du document (le piège du lot Q).
+_ANALYSE_INPUTS = (
+    "sous_nature", "privileges", "resume", "numero_dossier_cour", "tribunal",
+    "district_judiciaire", "auteur", "parties_mentionnees",
+    "date_document_str", "date_signature_str", "contient_dispositif",
+    "dispositif", "indices_protection", "langue_detectee", "confiance",
+    "extraction_tronquee",
+)
+
+
+def record_document_analysis(args: dict) -> dict:
+    return run_write(
+        "record_document_analysis",
+        args,
+        lambda dry: _record_document_analysis_impl(args, dry),
+    )
+
+
+def _record_document_analysis_impl(args: dict, dry_run: bool) -> dict:
+    document_id = (args.get("document_id") or "").strip()
+    existing = document_model.get_document(document_id)
+    if existing is None:
+        raise ToolArgumentError(
+            f"Document introuvable : {document_id}. L'identifiant provient "
+            "de list_documents."
+        )
+
+    # Construite PAR PRÉSENCE : une clé absente n'entre pas, donc elle ne
+    # peut pas écraser. Une clé présente et vide reste une instruction.
+    sortie = {k: args[k] for k in _ANALYSE_INPUTS if k in args}
+
+    dossier = None
+    if existing.get("dossier_id"):
+        dossier = dossier_model.get_dossier(existing["dossier_id"])
+
+    # ⚠ Toute garde du modèle qu'un appelant peut déclencher doit être
+    # rejouée ICI, avant la branche sèche : `run_write` court-circuite le
+    # dry_run SANS appeler le modèle, donc une simulation qui annonce un
+    # succès que l'appel réel refuse est un mensonge.
+    champ, erreurs = document_model._analyse_derivee(
+        sortie, document=existing, dossier=dossier
+    )
+    if erreurs:
+        raise ToolArgumentError(" ".join(erreurs))
+
+    if dry_run:
+        ancienne = str(existing.get("category") or "")
+        nouvelle = champ["nature_detectee"]
+        apercu = {k: champ.get(k) for k in _ANALYSE_ECHO if k in champ}
+        apercu.update({
+            "categorie_precedente": ancienne,
+            "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
+            "remplace_un_choix_du_juriste": bool(
+                ancienne
+                and ancienne != nouvelle
+                and str(existing.get("category_source") or "juriste") == "juriste"
+            ),
+            "analyse_id": None,
+        })
+        return {
+            "recorded": False,
+            "document_id": document_id,
+            "display_name": existing.get("display_name") or existing.get("filename") or "",
+            "analyse": apercu,
+            "warnings": _analyse_warnings(champ, existing),
+        }
+
+    updated, erreurs = document_model.record_analyse(
+        document_id,
+        sortie,
+        declenche_par="mcp",
+        modele=str(args.get("_modele") or ""),
+        dossier=dossier,
+    )
+    if erreurs or updated is None:
+        raise ToolArgumentError(" ".join(erreurs or ["Enregistrement refusé."]))
+
+    stocke = updated.get("analyse") or {}
+    from utils.logging_setup import log_mcp_event
+
+    log_mcp_event(
+        "mcp_document_analysed",
+        document_id=document_id,
+        sous_nature=stocke.get("sous_nature", ""),
+        niveau_protection=stocke.get("niveau_protection"),
+        categorie_remplacee=bool(stocke.get("categorie_remplacee")),
+    )
+    return {
+        "recorded": True,
+        "document_id": document_id,
+        "display_name": updated.get("display_name") or updated.get("filename") or "",
+        "category": updated.get("category", ""),
+        "category_source": updated.get("category_source", ""),
+        "analyse": {k: stocke.get(k) for k in _ANALYSE_ECHO if k in stocke},
+        "warnings": _analyse_warnings(stocke, existing),
+    }
+
+
+def _analyse_warnings(champ: dict, existing: dict) -> list[str]:
+    """Ce que l'appelant doit lire, en français, hors du champ."""
+    out: list[str] = []
+    ancienne = str(existing.get("category") or "")
+    nouvelle = str(champ.get("nature_detectee") or "")
+    if (
+        ancienne
+        and ancienne != nouvelle
+        and str(existing.get("category_source") or "juriste") == "juriste"
+    ):
+        out.append(
+            f"La catégorie « {ancienne} », posée dans l'application, est "
+            f"remplacée par « {nouvelle} ». La précédente reste au journal "
+            "des analyses."
+        )
+    absents = champ.get("champs_attendus_absents") or []
+    if absents:
+        out.append(
+            "Mentions attendues absentes : " + ", ".join(absents)
+            + ". Une absence est un signal, pas une lacune à combler."
+        )
+    if champ.get("alerte_dispositif_detecte"):
+        out.append(
+            "Ce procès-verbal paraît porter le jugement lui-même — un "
+            "jugement rendu à l'audience fait courir les délais d'appel. "
+            "Signalé, non calculé."
+        )
+    if champ.get("alerte_renonciation_possible"):
+        out.append(
+            "Renonciation possible : le document porte des marques d'un "
+            "régime protégé alors que sa nature le présume communiqué."
+        )
+    out.append(
+        "Classification PRÉSUMÉE. Elle est visible dans l'application avec "
+        "cette mention jusqu'à confirmation par l'avocat, qui est le seul "
+        "geste pouvant la lever."
+    )
+    return out

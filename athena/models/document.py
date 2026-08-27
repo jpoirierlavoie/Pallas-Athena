@@ -1343,3 +1343,224 @@ def get_document_summary(dossier_id: str) -> dict:
         "total_size": total_size,
         "total_size_formatted": format_file_size(total_size),
     }
+
+
+# ── Analyse documentaire (SPEC Phase K, §8) ──────────────────────────────
+#
+# La couche PURE existe déjà et fait foi : `utils/analyse_taxonomies` (le
+# vocabulaire fermé) et `utils/analyse_protection` (les dérivations, dont la
+# règle §6.3 d'échec vers le haut). Ce module ne DÉCIDE rien — il compose ces
+# deux-là, écrit le cache et appose au journal.
+#
+# ⚠ ÉCART ASSUMÉ avec la §5.3, décision du praticien du 2026-08-27 : l'analyse
+# écrit DIRECTEMENT dans `category`, là où la spec l'interdisait absolument et
+# réservait un geste « adopter la nature ». Trois choses rendent l'écart
+# tenable, et les retirer le rouvre :
+#
+#   1. La catégorie n'est JAMAIS choisie par le modèle. Il fournit une
+#      `sous_nature` — un code d'une table fermée — et `nature_of()` en dérive
+#      la catégorie. Une catégorie inventée est structurellement impossible.
+#   2. `category_source` porte la provenance, et c'est elle qui fait paraître
+#      la mention « présumé » à l'écran et dans la sortie MCP — les exigences
+#      2 et 3 de la §7, servies sans le second clic.
+#   3. Le journal garde `categorie_precedente` ET sa source. Écraser détruit
+#      la comparaison à deux valeurs dont vivait `divergence_categorie`; la
+#      garder au journal est ce qui laisse la divergence connaissable.
+#
+# Le journal `documents/{id}/analyses/{analyseId}` est WRITE-ONCE. Aucun verbe
+# ne le modifie ni ne l'efface — c'est la doctrine « aucune suppression », et
+# c'est aussi ce qui rend la règle de non-déclassement APPLICABLE : sans
+# historique, on ne peut pas constater qu'un niveau a baissé.
+
+ANALYSES_SUBCOLLECTION = "analyses"
+
+VALID_CATEGORY_SOURCES = ("juriste", "analyse")
+VALID_ANALYSE_STATUTS = (
+    "en_attente", "en_cours", "prete", "echec", "non_applicable",
+)
+
+# Les champs d'extraction que le modèle fournit, et EUX SEULS. Une liste
+# blanche, jamais `**args` : `record_analyse` écrit un document complet.
+_EXTRACTION_FIELDS = (
+    "resume", "langue_detectee", "qualite_reconnaissance",
+    "extraction_tronquee", "numero_dossier_cour", "tribunal",
+    "district_judiciaire", "auteur", "parties_mentionnees",
+    "date_signature_str", "date_document_str", "contient_dispositif",
+    "dispositif", "moyen_preuve", "qualification_ecrit", "parait_original",
+    "indices_protection", "confiance",
+)
+
+
+def _analyse_derivee(
+    sortie: dict, *, document: dict, dossier: Optional[dict] = None
+) -> tuple[dict, list[str]]:
+    """Le champ `analyse` complet — tout ce qui se dérive, dérivé.
+
+    Pur : aucune écriture, aucune lecture Firestore. C'est ce qui le rend
+    testable sans harnais, et c'est ici que vit la garantie que le modèle ne
+    choisit jamais une catégorie.
+    """
+    from utils import analyse_protection as prot
+    from utils import analyse_taxonomies as tax
+
+    sous_nature = str(sortie.get("sous_nature") or "").strip()
+    if sous_nature not in tax.VALID_SOUS_NATURES:
+        return {}, [f"Sous-nature inconnue : {sous_nature or '(vide)'}."]
+
+    # LA garantie : la nature est DÉRIVÉE du code, jamais reçue.
+    nature = tax.nature_of(sous_nature)
+    erreurs = tax.validate_pair(nature, sous_nature)
+    if erreurs:
+        return {}, erreurs
+
+    privileges = tuple(
+        str(p).strip() for p in (sortie.get("privileges") or []) if str(p).strip()
+    )
+    inconnus = [p for p in privileges if p not in tax.VALID_PRIVILEGES]
+    if inconnus:
+        return {}, [f"Privilège inconnu : {', '.join(sorted(inconnus))}."]
+
+    extrait = {k: sortie.get(k) for k in _EXTRACTION_FIELDS if k in sortie}
+    contient_dispositif = extrait.get("contient_dispositif")
+    absents = prot.champs_attendus_absents(
+        sous_nature, extrait, contient_dispositif=contient_dispositif
+    )
+    retenus, niveau, motifs = prot.appliquer_regime(
+        nature=nature,
+        sous_nature=sous_nature,
+        privileges=privileges,
+        champs_absents=absents,
+        domaine_dossier=str((dossier or {}).get("domaine") or ""),
+        numero_dossier_extrait=str(extrait.get("numero_dossier_cour") or ""),
+        numero_dossier_du_dossier=str(
+            (dossier or {}).get("court_file_number") or ""
+        ),
+    )
+
+    champ: dict = {
+        "statut": "prete",
+        "nature_detectee": nature,
+        "sous_nature": sous_nature,
+        "famille": tax.famille_of(sous_nature),
+        "privileges": list(retenus),
+        "niveau_protection": niveau,
+        "motifs_protection": list(motifs),
+        "champs_attendus_absents": list(absents),
+        "alerte_dispositif_detecte": prot.alerte_dispositif_detecte(
+            sous_nature, contient_dispositif
+        ),
+        "alerte_renonciation_possible": prot.alerte_renonciation_possible(
+            nature, retenus
+        ),
+        # §7 — jamais vrai par un chemin automatique. Seul
+        # `confirmer_analyse` le lève.
+        "confirme": False,
+        "confirme_par": None,
+        "confirme_le": None,
+    }
+    champ.update(_sanitize_data(extrait))
+    return champ, []
+
+
+def record_analyse(
+    document_id: str,
+    sortie: dict,
+    *,
+    declenche_par: str = "chat",
+    modele: str = "",
+    dossier: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Enregistre une analyse : le cache, la catégorie dérivée, le journal.
+
+    Rend le document mis à jour. N'ÉCRIT JAMAIS `confirme: true` — voir §7.
+    Aucun `bump_ctag` : `documents` n'est pas exposée en DAV.
+    """
+    existing = get_document(document_id)
+    if not existing:
+        return None, ["Document introuvable."]
+
+    champ, erreurs = _analyse_derivee(sortie, document=existing, dossier=dossier)
+    if erreurs:
+        return None, erreurs
+
+    ancienne = str(existing.get("category") or "")
+    ancienne_source = str(existing.get("category_source") or "juriste")
+    nouvelle = champ["nature_detectee"]
+
+    now = datetime.now(timezone.utc)
+    analyse_id = str(uuid.uuid4())
+    champ.update({
+        "declenche_par": str(declenche_par or "")[:40],
+        "modele": sanitize(str(modele or ""), max_length=120),
+        "genere_le": now,
+        "analyse_id": analyse_id,
+        "message_erreur": None,
+        # Ce que l'écrasement remplace. Sans cela la divergence de classement
+        # — « l'un des deux signalements qui valent le plus » — deviendrait
+        # inobservable, puisqu'il n'y a plus deux valeurs à comparer.
+        "categorie_precedente": ancienne,
+        "categorie_precedente_source": ancienne_source,
+        "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
+        # L'avertissement n'est levé que si l'on écrase un choix HUMAIN. Un
+        # « autre » posé par défaut au versement n'en mérite pas.
+        "remplace_un_choix_du_juriste": bool(
+            ancienne and ancienne != nouvelle and ancienne_source == "juriste"
+        ),
+    })
+
+    merged = {**existing, "analyse": champ, "category": nouvelle,
+              "category_source": "analyse", "updated_at": now,
+              "etag": str(uuid.uuid4())}
+    try:
+        ref = db.collection(COLLECTION).document(document_id)
+        # Le journal AVANT le cache : une entrée orpheline est inerte, un
+        # cache sans entrée est une analyse dont on ne saura jamais l'origine.
+        ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id).set(champ)
+        ref.set(merged)
+    except Exception:
+        log_unexpected("document analyse write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    return merged, []
+
+
+def confirmer_analyse(
+    document_id: str, par: str
+) -> tuple[Optional[dict], list[str]]:
+    """Le SEUL chemin passant `confirme` à vrai (§7). Aucun automatisme."""
+    existing = get_document(document_id)
+    if not existing:
+        return None, ["Document introuvable."]
+    champ = dict(existing.get("analyse") or {})
+    if not champ.get("sous_nature"):
+        return None, ["Aucune analyse à confirmer."]
+    now = datetime.now(timezone.utc)
+    champ.update({"confirme": True,
+                  "confirme_par": sanitize(str(par or ""), max_length=200),
+                  "confirme_le": now})
+    merged = {**existing, "analyse": champ,
+              # La confirmation fait de la catégorie une détermination de
+              # l'avocat : la mention « présumé » doit tomber avec elle.
+              "category_source": "juriste",
+              "updated_at": now, "etag": str(uuid.uuid4())}
+    try:
+        db.collection(COLLECTION).document(document_id).set(merged)
+    except Exception:
+        log_unexpected("document analyse confirm failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    return merged, []
+
+
+def list_analyses(document_id: str, limit: int = 20) -> list[dict]:
+    """Le journal, du plus récent au plus ancien. Échoue OUVERT — c'est un
+    affichage d'historique, jamais une garde."""
+    try:
+        snaps = (
+            db.collection(COLLECTION).document(document_id)
+            .collection(ANALYSES_SUBCOLLECTION)
+            .order_by("genere_le", direction="DESCENDING")
+            .limit(max(1, min(int(limit or 20), 100))).stream()
+        )
+        return [s.to_dict() for s in snaps]
+    except Exception:
+        log_unexpected("document analyses read failed")
+        return []
