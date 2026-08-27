@@ -270,6 +270,13 @@ def world(monkeypatch):
 
     monkeypatch.setattr(cc, "db", _FakeDB(store))
     monkeypatch.setattr(cc, "firestore", _FakeFirestore)
+    # ⚠ La charte partage le MÊME faux magasin. Sans ces deux lignes,
+    # `charter_model` tomberait sur le client patché par
+    # `mock.patch("google.cloud.firestore.Client")` : `snap.exists` y est
+    # truthy et `to_dict()` rend un MagicMock, si bien que toute la suite
+    # tournerait sur une charte fantôme — verte, et ne prouvant rien.
+    monkeypatch.setattr(turn_engine.charter_model, "db", _FakeDB(store))
+    monkeypatch.setattr(turn_engine.charter_model, "firestore", _FakeFirestore)
     monkeypatch.setattr(turn_engine, "storage", _FakeStorage(files))
     monkeypatch.setattr(turn_engine.vertex, "call_model", scripted)
     monkeypatch.setattr(
@@ -932,3 +939,157 @@ def test_charter_resolution_precedes_pending_tool_execution(world, monkeypatch):
         turn_engine.process_task(_payload(world, token), 0)
     # L'écriture approuvée n'a PAS eu lieu : la redélivrance ne la doublera pas.
     assert executes == []
+
+
+# ── La charte résolue par tour (lot 3) ─────────────────────────────────────
+
+_CORPS_CHARTE = (
+    "RÈGLES DE SORTIE\n- Tu réponds en français.\n\n"
+    "DISCIPLINE D'ÉCRITURE\n- Une règle reconnaissable : ANANAS.\n"
+) * 3
+
+
+def test_bootstrap_stamps_amorcage_and_says_nothing(world):
+    """Aucune charte enregistrée est l'état NORMAL d'un déploiement neuf.
+
+    Le tour tourne sur le texte source, l'estampille dit vrai, et rien
+    n'est journalisé : crier au loup à chaque installation neuve rendrait
+    l'alerte de repli inutilisable.
+    """
+    world.vertex.responses = [_response([{"type": "text", "text": "Voici."}])]
+    assert turn_engine.process_task(_payload(world), 0) == "final"
+    stored = _stored_turn(world)
+    assert stored["charter_version"] == 1
+    assert stored["charter_source"] == "amorcage"
+    assert not [e for e in world.events if e["event"] == "chat_charter_repli"]
+    assert world.vertex.calls[0]["system"][0]["text"] == turn_engine.charter.BASE_CHARTER
+
+
+def test_a_saved_charter_governs_and_carries_the_socle(world):
+    doc, errors = turn_engine.charter_model.revise_charter(body=_CORPS_CHARTE)
+    assert errors == [] and doc["current_version"] == 2
+    world.vertex.responses = [_response([{"type": "text", "text": "Voici."}])]
+    assert turn_engine.process_task(_payload(world), 0) == "final"
+    stored = _stored_turn(world)
+    assert stored["charter_version"] == 2
+    assert stored["charter_source"] == "firestore"
+    texte = world.vertex.calls[0]["system"][0]["text"]
+    assert "ANANAS" in texte                       # le corps enregistré
+    assert "DEVOIRS ÉPISTÉMIQUES" in texte         # le socle, prépendé
+    assert texte.startswith("Tu es l'assistant juridique")
+
+
+def test_an_unreadable_charter_falls_back_loudly(world, monkeypatch):
+    """Jamais un tour sans charte — mais jamais en silence non plus.
+
+    Le repli tourne sur un texte RELU, pas sur une absence de charte. Il
+    peut néanmoins taire une restriction fraîchement ajoutée : d'où
+    l'ERROR, l'estampille honnête, et le bandeau à l'écran.
+    """
+    monkeypatch.setattr(
+        turn_engine.charter_model, "get_head", lambda: (None, "erreur")
+    )
+    world.vertex.responses = [_response([{"type": "text", "text": "Voici."}])]
+    assert turn_engine.process_task(_payload(world), 0) == "final"
+    stored = _stored_turn(world)
+    assert stored["charter_version"] == 1
+    assert stored["charter_source"] == "repli"
+    repli = [e for e in world.events if e["event"] == "chat_charter_repli"]
+    assert len(repli) == 1 and repli[0]["outcome"] == "failure"
+    # Le texte source a bien gouverné.
+    assert world.vertex.calls[0]["system"][0]["text"] == turn_engine.charter.BASE_CHARTER
+
+
+def _outils_muets(monkeypatch):
+    """Les outils rendent un succès muet — ce lot ne teste pas
+    l'outillage. Par `monkeypatch`, jamais par affectation directe : un
+    remplacement global non restauré ferait passer les tests SUIVANTS
+    pour de mauvaises raisons."""
+    monkeypatch.setattr(
+        turn_engine.executors,
+        "execute_tool",
+        lambda name, args, **kw: SimpleNamespace(content="{}", is_error=False),
+    )
+
+def test_step_two_reads_the_pinned_version_never_the_head(world, monkeypatch):
+    """Une charte révisée pendant que l'avocat délibère ne doit pas changer
+    de constitution au milieu d'une chaîne — et le registre doit dire vrai
+    sur ce qui a gouverné."""
+    turn_engine.charter_model.revise_charter(body=_CORPS_CHARTE)
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_dossier", "input": {}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Fini."}]),
+    ]
+    _outils_muets(monkeypatch)
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    assert _stored_turn(world)["charter_version"] == 2
+
+    # L'avocat révise entre les deux pas.
+    revisee, _ = turn_engine.charter_model.revise_charter(
+        body=_CORPS_CHARTE.replace("ANANAS", "GOYAVE")
+    )
+    assert revisee["current_version"] == 3
+
+    jeton = _stored_turn(world)["step_token"]
+    assert turn_engine.process_task(_payload(world, jeton), 0) == "final"
+    # Le pas 2 a tourné sur la v2 épinglée, pas sur la v3 fraîche.
+    assert "ANANAS" in world.vertex.calls[1]["system"][0]["text"]
+    assert "GOYAVE" not in world.vertex.calls[1]["system"][0]["text"]
+    assert _stored_turn(world)["charter_version"] == 2
+
+
+
+def test_a_chain_born_in_fallback_survives_its_second_step(world, monkeypatch):
+    """Le piège le plus coûteux du lot.
+
+    Une chaîne née en repli est épinglée à la version SOURCE, qui
+    n'existera jamais dans `versions/`. Une lecture cléée y échouerait
+    POUR TOUJOURS — retryable, redélivrance, retryable — jusqu'à
+    l'épuisement des reprises, donc la mort du tour.
+    """
+    monkeypatch.setattr(
+        turn_engine.charter_model, "get_head", lambda: (None, "erreur")
+    )
+    lectures = []
+    monkeypatch.setattr(
+        turn_engine.charter_model,
+        "get_version",
+        lambda v: lectures.append(v) or None,
+    )
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_dossier", "input": {}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Fini."}]),
+    ]
+    _outils_muets(monkeypatch)
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    jeton = _stored_turn(world)["step_token"]
+    # Le pas 2 ne DOIT PAS toucher Firestore pour une version source.
+    assert turn_engine.process_task(_payload(world, jeton), 0) == "final"
+    assert lectures == []
+
+
+def test_an_unreadable_pinned_version_retries_rather_than_switching(world, monkeypatch):
+    """Aux pas ≥ 2 il n'y a pas de repli : faire rejouer la chaîne est
+    moins grave que la faire finir sous un autre texte que celui qu'elle a
+    commencé."""
+    turn_engine.charter_model.revise_charter(body=_CORPS_CHARTE)
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_dossier", "input": {}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Fini."}]),
+    ]
+    _outils_muets(monkeypatch)
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    jeton = _stored_turn(world)["step_token"]
+    monkeypatch.setattr(turn_engine.charter_model, "get_version", lambda v: None)
+    with pytest.raises(turn_engine.vertex.ChatVertexRetryable) as excinfo:
+        turn_engine.process_task(_payload(world, jeton), 0)
+    assert excinfo.value.reason == "charter_unreadable"

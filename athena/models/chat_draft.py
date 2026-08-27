@@ -66,6 +66,10 @@ _PROVENANCE_KEYS = (
     "model",
     "skill_versions",
     "charter_version",
+    # Le numéro seul ne dit pas SOUS QUOI le brouillon a été rédigé :
+    # « 1 » vaut à la fois « tour d'avant le lot », « amorçage » et
+    # « repli ». La provenance porte donc les deux.
+    "charter_source",
 )
 
 

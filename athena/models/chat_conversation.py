@@ -191,6 +191,13 @@ def prepare_turn_pair(
         "authorization": None,
         "skill_versions": [],
         "charter_version": None,
+        # « » = tour d'avant le versionnement de la charte, ou pas
+        # encore estampillé. Ensuite : firestore | amorcage | repli.
+        # Le défaut VIDE est ce qui garde l'historique muet : un
+        # bandeau branché sur « charter_version == 1 » accuserait
+        # rétroactivement chaque tour déjà au registre, puisqu'ils
+        # le portent tous.
+        "charter_source": "",
         "addendum": addendum or "",
         "vertex_calls_started": 0,
         "vertex_calls_recorded": 0,

@@ -35,6 +35,7 @@ from typing import Any, Optional
 from firebase_admin import storage
 
 from config import Config
+from models import chat_charter as charter_model
 from models import chat_conversation as conv_model
 from models import chat_skill as skill_model
 from models import document as document_model
@@ -194,6 +195,53 @@ def _resolve_skills(conv: dict) -> tuple[list[dict], list[dict]]:
         for h in heads
     ]
     return heads, versions
+
+
+def _resolve_charter(turn: dict) -> tuple[dict, int, str]:
+    """La charte de CE tour → ``(résolue, version, source)``.
+
+    **Au pas 1** on lit la tête. **Aux pas ≥ 2** — et à la reprise d'une
+    pause d'autorisation — on relit la version ÉPINGLÉE sur le tour, jamais
+    la tête : une charte révisée pendant que l'avocat délibère ne doit pas
+    changer de constitution au milieu d'une chaîne, et le registre doit
+    dire vrai sur ce qui a gouverné.
+
+    Le repli n'existe donc QU'au pas 1. Aux pas ≥ 2 une lecture en échec
+    lève un retryable : faire rejouer la chaîne est moins grave que la
+    faire finir sous un autre texte que celui qu'elle a commencé.
+
+    ⚠ Une chaîne née en repli est épinglée à la version SOURCE, qui
+    n'existera jamais dans ``versions/``. Une lecture cléée y échouerait
+    POUR TOUJOURS — retryable, redélivrance, retryable — jusqu'à
+    l'épuisement des reprises. D'où le court-circuit : la version source se
+    résout sans toucher Firestore.
+    """
+    epingle = turn.get("charter_version")
+    if epingle is not None:
+        if charter_model.is_source_version(epingle):
+            return charter.source_charter(), charter.SOURCE_CHARTER_VERSION, ""
+        doc = charter_model.get_version(int(epingle))
+        if doc is None:
+            raise vertex.ChatVertexRetryable("charter_unreadable")
+        resolue = charter.charter_from_head(
+            {**doc, "current_version": doc.get("version")}
+        )
+        return resolue, int(epingle), ""
+
+    head, statut = charter_model.get_head()
+    if statut == "ok" and head is not None:
+        return (
+            charter.charter_from_head(head),
+            int(head.get("current_version") or 0),
+            "firestore",
+        )
+    # « absent » est l'état NORMAL d'un déploiement neuf — silencieux.
+    # « erreur » veut dire qu'une charte existe et n'a pas été appliquée.
+    return (
+        charter.source_charter(),
+        charter.SOURCE_CHARTER_VERSION,
+        "amorcage" if statut == "absent" else "repli",
+    )
 
 
 def _build_tools() -> list[dict]:
@@ -521,8 +569,16 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
     # below may move above this line.
     heads, skill_pairs = _resolve_skills(conv)
     scheduled = turn.get("addendum") == "unattended"
-    charter_version = charter.SOURCE_CHARTER_VERSION
-    system = charter.system_blocks(heads, scheduled=scheduled)
+    charte, charter_version, charter_source = _resolve_charter(turn)
+    if charter_source == "repli":
+        log_chat_event(
+            "chat_charter_repli",
+            "failure",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            step=step + 1,
+        )
+    system = charter.system_blocks(heads, scheduled=scheduled, charter=charte)
     tools = _build_tools()
 
     # Pending tool work from an authorization decision (§4.6.3): the last
@@ -617,6 +673,7 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
         stamps = {
             "skill_versions": skill_pairs,
             "charter_version": charter_version,
+            "charter_source": charter_source,
         }
 
     common = dict(

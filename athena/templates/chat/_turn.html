@@ -39,6 +39,18 @@
   </div>
   {% endif %}
 
+  {# Le repli — et LUI SEUL. « amorcage » est l'état normal tant qu'aucune
+     charte n'est enregistrée, et « » celui de tout tour antérieur au
+     versionnement : les afficher accuserait rétroactivement tout le
+     registre. #}
+  {% if t.charter_source == 'repli' %}
+  <div class="mb-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+    Ce tour a tourné sur la charte de référence : la charte enregistrée
+    n'a pas pu être lue. Une règle ajoutée depuis a donc pu ne pas
+    s'appliquer — vérifiez la réponse, et relancez si besoin.
+  </div>
+  {% endif %}
+
   {% if t.state == 'failed' %}
   <div class="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
     Le tour a échoué{% if t.error and t.error.code %} ({{ t.error.code }}){% endif %}.
@@ -61,6 +73,9 @@
     {{ t.segments[0].model if t.segments else '' }}
     · {{ t.usage.input_tokens + t.usage.output_tokens }} jetons
     · ≈ {{ t.usd_display }}
+    {# La version n'était affichée nulle part tant qu'elle valait toujours
+       1. Maintenant qu'elle varie, le registre doit se lire à l'écran. #}
+    {% if t.charter_version %} · charte v{{ t.charter_version }}{% endif %}
   </p>
   {% endif %}
 </div>

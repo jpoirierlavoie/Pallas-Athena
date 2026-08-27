@@ -682,6 +682,14 @@ ChatEvent = Literal[
     "chat_draft_exported",
     "chat_skill_saved",
     "chat_task_saved",
+    # Le tour a tourné sur le TEXTE SOURCE parce que la charte enregistrée
+    # était illisible. ERROR par doctrine : la constitution en vigueur n'a
+    # pas été appliquée, et une restriction récemment ajoutée a donc pu ne
+    # pas s'appliquer — c'est le seul événement du lot qui signale une
+    # gouvernance dégradée, et il mérite une alerte log-based.
+    # L'AMORÇAGE (aucune charte enregistrée) n'émet rien : c'est l'état
+    # normal d'un déploiement neuf, pas un incident.
+    "chat_charter_repli",
 ]
 ChatOutcome = Literal["success", "failure", "refused"]
 

@@ -557,3 +557,39 @@ def test_chat_event_vocabulary_and_emissions_agree_both_ways():
     # …and every declared event has an emitter (a dead vocabulary entry is
     # documentation that lies).
     assert declared <= emitted, f"jamais émis : {sorted(declared - emitted)}"
+
+
+# ── Le repli de charte se VOIT, et lui seul ────────────────────────────────
+
+def test_only_a_fallback_turn_shows_the_charter_banner(web_rendu, monkeypatch):
+    """« amorcage » est l'état normal tant qu'aucune charte n'est
+    enregistrée, et « » celui de tout tour antérieur au versionnement.
+    Les afficher accuserait rétroactivement tout le registre."""
+    monkeypatch.setattr(rc.conv_model, "get_conversation", lambda i: _conv())
+    monkeypatch.setattr(rc.conv_model, "mark_read", lambda i: None)
+    monkeypatch.setattr(rc.skill_model, "list_skills", lambda: [])
+
+    def _rendu(source):
+        monkeypatch.setattr(
+            rc.conv_model, "list_turns",
+            lambda i, limit=500: [
+                _final_turn(charter_source=source, charter_version=2)
+            ],
+        )
+        return web_rendu.get("/chat/c1").get_data(as_text=True)
+
+    bandeau = "la charte enregistrée"
+    assert bandeau in _rendu("repli")
+    for muet in ("amorcage", "firestore", ""):
+        assert bandeau not in _rendu(muet), muet
+
+
+def test_the_charter_version_is_readable_on_the_turn(web_rendu, monkeypatch):
+    monkeypatch.setattr(rc.conv_model, "get_conversation", lambda i: _conv())
+    monkeypatch.setattr(rc.conv_model, "mark_read", lambda i: None)
+    monkeypatch.setattr(rc.skill_model, "list_skills", lambda: [])
+    monkeypatch.setattr(
+        rc.conv_model, "list_turns",
+        lambda i, limit=500: [_final_turn(charter_version=7)],
+    )
+    assert "charte v7" in web_rendu.get("/chat/c1").get_data(as_text=True)
