@@ -297,10 +297,28 @@ _SKILL_NOT_SELECTED_FR = (
 )
 
 
+_CHARTER_NOT_RESOLVED_FR = (
+    "La charte de ce tour n'a pas de fichier de référence lisible."
+)
+
+
 def _read_skill_file(skill_id: str, version: int, filename: str):
     """Lazy-import seam (the _set_draft_provenance motif): models/__init__
     builds the Firestore client at import, and test_chat_registry imports
-    this module without patching it."""
+    this module without patching it.
+
+    Two carriers share one tool: the CHARTER answers to a reserved id
+    (``charter.CHARTER_FILE_ID``), everything else is a compétence. One
+    tool rather than two, so the tools-array prefix — and its trailing
+    cache breakpoint — never grows a permanent second schema.
+    """
+    from chat import charter
+
+    if skill_id == charter.CHARTER_FILE_ID:
+        from models import chat_charter
+
+        return chat_charter.get_version_file(version, filename)
+
     from models import chat_skill
 
     return chat_skill.get_version_file(skill_id, version, filename)
@@ -331,8 +349,19 @@ def _execute_skill_file(
         None,
     )
     if version is None:
-        # Never echoes the requested id — refusals quote nothing.
-        return ToolExecution(content=_SKILL_NOT_SELECTED_FR, is_error=True)
+        # Never echoes the requested id — refusals quote nothing. And the
+        # charter is never « non sélectionnée » : it governs every turn, so
+        # the skill wording would be a plain falsehood for it.
+        from chat import charter as _charter
+
+        return ToolExecution(
+            content=(
+                _CHARTER_NOT_RESOLVED_FR
+                if skill_id == _charter.CHARTER_FILE_ID
+                else _SKILL_NOT_SELECTED_FR
+            ),
+            is_error=True,
+        )
     try:
         content, reason = _read_skill_file(
             skill_id, version, str(arguments.get("filename", ""))

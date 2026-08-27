@@ -289,12 +289,25 @@ def _run_tools(
     # the `or` habit is precisely what made the stamp guard below unable to
     # guard a conversation with no skills.
     stamped_charter = turn.get("charter_version")
+    charte_effective = (
+        stamped_charter if stamped_charter is not None else charter_version
+    )
+    # ⚠ DEUX listes, et la distinction est porteuse. La provenance
+    # enregistre les compétences PURES ; la résolution y ajoute la
+    # charte sous son identifiant réservé, pour que get_skill_file
+    # trouve sa version épinglée par le MÊME chemin. Une seule variable
+    # ferait apparaître une fausse compétence nommée « charte » dans
+    # le skill_versions de chaque brouillon.
+    resolution_pairs = list(effective_pairs)
+    if charte_effective is not None:
+        resolution_pairs.append(
+            {"skill_id": charter.CHARTER_FILE_ID, "version": int(charte_effective)}
+        )
     provenance_extra = {
         "model": conv.get("model", ""),
         "skill_versions": effective_pairs,
-        "charter_version": (
-            stamped_charter if stamped_charter is not None else charter_version
-        ),
+        "charter_version": charte_effective,
+
     }
     results: list[dict] = []
     attachments: list[dict] = []
@@ -332,7 +345,7 @@ def _run_tools(
                 idempotency_seed=seed,
                 tool_use_id=tool_use_id,
                 provenance_extra=provenance_extra,
-                skill_pairs=effective_pairs,
+                skill_pairs=resolution_pairs,
             )
         results.append(
             {

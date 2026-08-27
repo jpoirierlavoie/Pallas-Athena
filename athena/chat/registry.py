@@ -71,9 +71,10 @@ GET_SKILL_FILE_NAME = "get_skill_file"
 GET_SKILL_FILE_SPEC: dict[str, Any] = {
     "name": GET_SKILL_FILE_NAME,
     "description": (
-        "Read ONE reference file of a SELECTED compétence. The available "
-        "files are listed in the FICHIERS DE RÉFÉRENCE section of each "
-        "COMPÉTENCE block of the system prompt, with the skill_id to use. "
+        "Read ONE reference file of a SELECTED compétence, or of the "
+        "charte. The available files are listed in a FICHIERS DE RÉFÉRENCE "
+        "section of the system prompt — in the charter's own first block, "
+        "and in each COMPÉTENCE block — each giving the skill_id to use. "
         "Read a file only when the current task needs it — the listing "
         "alone is enough to know it exists. Returns the file's raw text."
     ),
@@ -83,8 +84,8 @@ GET_SKILL_FILE_SPEC: dict[str, Any] = {
             "skill_id": {
                 "type": "string",
                 "description": (
-                    "The compétence's id, exactly as given in its "
-                    "FICHIERS DE RÉFÉRENCE listing."
+                    "The carrier's id, exactly as given in its FICHIERS DE "
+                    "RÉFÉRENCE listing — a compétence's id, or « charte »."
                 ),
             },
             "filename": {

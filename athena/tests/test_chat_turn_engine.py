@@ -1093,3 +1093,77 @@ def test_an_unreadable_pinned_version_retries_rather_than_switching(world, monke
     with pytest.raises(turn_engine.vertex.ChatVertexRetryable) as excinfo:
         turn_engine.process_task(_payload(world, jeton), 0)
     assert excinfo.value.reason == "charter_unreadable"
+
+
+def test_a_charter_reference_file_reads_at_the_pinned_version(world, monkeypatch):
+    """UN outil pour deux porteurs : la charte répond à son identifiant
+    réservé, tout le reste est une compétence. Deux outils auraient fait
+    vivre un second schéma en permanence dans chaque prompt."""
+    turn_engine.charter_model.revise_charter(
+        body=_CORPS_CHARTE,
+        files=[{"name": "Grille", "description": "Aide-mémoire.",
+                "content": "Le contenu de la grille."}],
+    )
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "get_skill_file",
+              "input": {"skill_id": "charte", "filename": "Grille"}}],
+            "tool_use",
+        ),
+        _response([{"type": "text", "text": "Lu."}]),
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    resultats = _stored_turn(world)["segments"][0]["tool_results"]
+    assert resultats[0]["is_error"] is False
+    assert resultats[0]["content"][0]["text"] == "Le contenu de la grille."
+    # Le listing est bien dans le bloc 0, sous l'identifiant réservé.
+    assert "skill_id : charte" in world.vertex.calls[0]["system"][0]["text"]
+
+
+def test_the_charter_never_enters_the_stamped_skill_versions(world, monkeypatch):
+    """La provenance enregistre les compétences PURES : une fausse
+    compétence nommée « charte » y serait un mensonge sur le registre."""
+    turn_engine.charter_model.revise_charter(body=_CORPS_CHARTE)
+    vus = {}
+    monkeypatch.setattr(
+        turn_engine.executors,
+        "execute_tool",
+        lambda name, args, **kw: (
+            vus.update(
+                provenance=kw.get("provenance_extra") or {},
+                resolution=list(kw.get("skill_pairs") or []),
+            ),
+            SimpleNamespace(content="{}", is_error=False),
+        )[1],
+    )
+    world.vertex.responses = [
+        _response(
+            [{"type": "tool_use", "id": "t1", "name": "save_draft", "input": {}}],
+            "tool_use",
+        ),
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "continue"
+    # La charte est dans la RÉSOLUTION…
+    assert {"skill_id": "charte", "version": 2} in vus["resolution"]
+    # …et jamais dans la provenance, ni dans ce qui est estampillé.
+    assert vus["provenance"]["skill_versions"] == []
+    assert vus["provenance"]["charter_version"] == 2
+    assert _stored_turn(world)["skill_versions"] == []
+
+
+def test_a_charter_file_request_gets_a_charter_shaped_refusal(monkeypatch):
+    """« Compétence non sélectionnée » serait un mensonge : la charte
+    gouverne CHAQUE tour, elle n'est jamais « non sélectionnée »."""
+    from chat import executors as ex
+
+    resultat = ex._execute_skill_file(
+        {"skill_id": "charte", "filename": "Grille"}, skill_pairs=[]
+    )
+    assert resultat.is_error is True
+    assert "charte" in resultat.content.lower()
+    assert "non sélectionnée" not in resultat.content
+    autre = ex._execute_skill_file(
+        {"skill_id": "s-inconnue", "filename": "X"}, skill_pairs=[]
+    )
+    assert "non sélectionnée" in autre.content
+    assert "s-inconnue" not in autre.content      # un refus ne cite rien
