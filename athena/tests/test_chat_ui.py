@@ -544,6 +544,11 @@ def test_chat_event_vocabulary_and_emissions_agree_both_ways():
         Path(_ATHENA) / "chat" / "turn_engine.py",
         Path(_ATHENA) / "chat" / "planification.py",
         Path(_ATHENA) / "chat" / "executors.py",
+        # registry.py joined the emitters with the mailbox lot: it is where
+        # « enabled but unconfigured » is said out loud, and that sentence is
+        # the whole point of the event.
+        Path(_ATHENA) / "chat" / "registry.py",
+        Path(_ATHENA) / "chat" / "mail_executor.py",
     ]
     for path in sources:
         emitted |= set(

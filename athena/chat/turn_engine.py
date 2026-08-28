@@ -39,6 +39,7 @@ from models import chat_charter as charter_model
 from models import chat_conversation as conv_model
 from models import chat_skill as skill_model
 from models import document as document_model
+from utils import graph_messagerie
 from utils.logging_setup import log_chat_event, log_unexpected
 from utils.tracing_setup import span
 
@@ -279,8 +280,8 @@ def _resolve_charter(turn: dict) -> tuple[dict, int, str]:
     )
 
 
-def _build_tools() -> list[dict]:
-    tools = registry.anthropic_tools()
+def _build_tools(*, unattended: bool = False) -> list[dict]:
+    tools = registry.anthropic_tools(unattended=unattended)
     if tools:
         # The entry dicts are fresh per call (only input_schema is shared by
         # identity), so the trailing cache breakpoint never mutates TOOLS.
@@ -344,8 +345,40 @@ def _run_tools(
         "charter_version": charte_effective,
 
     }
+    # ONE mail budget for the whole batch, not one per call. The tool phase
+    # runs in the SAME gunicorn request as the Vertex call it follows
+    # (chat.yaml: --timeout 570) and this loop has no length check, so
+    # per-call ceilings do not compose into a per-request bound: three long
+    # filings would SIGKILL the worker mid-batch, which is the one failure an
+    # at-least-once chain cannot recover from cleanly.
+    mail_context = {
+        "owner_uid": str(conv.get("owner_uid", "")),
+        "conversation_dossier_id": str(conv.get("dossier_id", "")),
+        "unattended": unattended,
+        "idempotency_seed": seed,
+        # A LIST so the count survives execute_tool's per-call copy of this
+        # dict: {**ctx} copies references, so every call in the batch shares
+        # this one object. The batch loop below has no length check of its
+        # own, which is exactly what the cap exists for.
+        "batch_calls": [0],
+    }
+    mail_budget = graph_messagerie.start_budget()
     results: list[dict] = []
     attachments: list[dict] = []
+    try:
+        return _run_tool_batch(
+            tool_uses, conv, turn, refused_ids, resolution_pairs,
+            provenance_extra, unattended, seed, mail_context, results,
+            attachments,
+        )
+    finally:
+        graph_messagerie.reset_budget(mail_budget)
+
+
+def _run_tool_batch(
+    tool_uses, conv, turn, refused_ids, resolution_pairs, provenance_extra,
+    unattended, seed, mail_context, results, attachments,
+):
     for block in tool_uses:
         tool_use_id = str(block.get("id", ""))
         name = str(block.get("name", ""))
@@ -381,6 +414,7 @@ def _run_tools(
                 tool_use_id=tool_use_id,
                 provenance_extra=provenance_extra,
                 skill_pairs=resolution_pairs,
+                mail_context=mail_context,
             )
         results.append(
             {
@@ -406,7 +440,10 @@ def _native_pdf_fallback(
     if tool_use.get("name") != "get_document_text" or execution.is_error:
         return []
     try:
-        payload = json.loads(execution.content)
+        # raw_content, never content: the provenance envelope wraps the
+        # payload for the model, and parsing the wrapped form would fail
+        # into a silent [] — the scanned exhibit would just stop working.
+        payload = json.loads(getattr(execution, "raw_content", "") or execution.content)
     except ValueError:
         return []
     if not (
@@ -629,7 +666,7 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
     system = charter.system_blocks(
         heads, scheduled=scheduled, charter=charte, conv=conv
     )
-    tools = _build_tools()
+    tools = _build_tools(unattended=scheduled)
 
     # Pending tool work from an authorization decision (§4.6.3): the last
     # segment stopped on tool_use, no results yet, decision recorded.
@@ -694,6 +731,30 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
             (usage.get("server_tool_use") or {}).get("web_search_requests") or 0
         ),
     )
+
+    # web_search is the one channel whose payload leaves the tenant before any
+    # code here sees it: a `server_tool_use` block is already a RESULT, never
+    # routed through executors.py. Until now it had no log line at all — the
+    # queries were recorded on the turn document and nowhere anyone looks.
+    #
+    # The query TEXT is deliberately not emitted. It is model-composed and can
+    # carry a client name straight out of a privileged thread, and the
+    # redaction filter does not scrub names. Length plus a short digest give a
+    # burst an identity and let two identical searches be correlated; the text
+    # itself stays on the turn document, where a forensic read can reach it.
+    for _block in list(response.get("content") or []):
+        if _block.get("type") != "server_tool_use":
+            continue
+        _query = str((_block.get("input") or {}).get("query") or "")
+        log_chat_event(
+            "chat_web_search",
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            step=step + 1,
+            tool=str(_block.get("name") or "web_search"),
+            query_chars=len(_query),
+            query_sha8=hashlib.sha256(_query.encode("utf-8")).hexdigest()[:8],
+        )
 
     blocks = _store_blocks(list(response.get("content") or []), conv, turn)
     segment: dict[str, Any] = {

@@ -150,6 +150,19 @@ def _check_runtime_env(rpt: Report, is_prod: bool) -> None:
         if not mcp_origin and is_prod:
             rpt.emit(_WARN, "MCP_ENABLED=true but MCP_CANONICAL_ORIGIN is unset (defaults to the owner's domain in config.py)")
 
+    # Messagerie (2026-08-28). The half-configured state is the dangerous one:
+    # the tools vanish from the model's array and NOTHING says why, which is
+    # the shape of the origin-secret defect that stayed silent for months.
+    # « Not configured » is the normal, quiet condition on default/portail —
+    # only « enabled and not configured » is worth a word.
+    if os.environ.get("CHAT_MAIL_ENABLED", "false").lower() == "true":
+        if not os.environ.get("CHAT_MAIL_UPN"):
+            rpt.emit(_FAIL, "CHAT_MAIL_ENABLED=true but CHAT_MAIL_UPN is unset — the mail tools are silently absent from the assistant")
+        elif not os.environ.get("GRAPH_TENANT_ID"):
+            rpt.emit(_FAIL, "CHAT_MAIL_ENABLED=true but the GRAPH_* credentials are unset — the mail tools are silently absent")
+        else:
+            rpt.emit(_OK, "CHAT_MAIL_ENABLED=true and the mailbox is configured")
+
 
 def _check_prod_secrets(rpt: Report) -> None:
     project = os.environ.get("FIREBASE_PROJECT_ID", "")

@@ -1268,3 +1268,103 @@ def test_an_unreadable_pinned_skill_version_retries(world, monkeypatch):
     with pytest.raises(turn_engine.vertex.ChatVertexRetryable) as excinfo:
         turn_engine.process_task(_payload(world, jeton), 0)
     assert excinfo.value.reason == "skill_version_unreadable"
+
+
+# ── web_search: the one outbound channel, now with a detection surface ──────
+
+
+def test_web_search_query_is_logged_without_its_text(world):
+    """A server_tool_use block is already a RESULT — the query reached
+    Anthropic's search provider before any code here saw it, so this line is
+    the only detection surface that exists. The TEXT is deliberately absent:
+    it is model-composed and can carry a client name out of a privileged
+    thread, and the redaction filter does not scrub names."""
+    secret = "Tremblay c. Constructions Nord 500-17-123456-259"
+    world.vertex.responses = [
+        _response(
+            [
+                {
+                    "type": "server_tool_use",
+                    "id": "sw1",
+                    "name": "web_search",
+                    "input": {"query": secret},
+                },
+                {"type": "text", "text": "Voici."},
+            ]
+        )
+    ]
+    assert turn_engine.process_task(_payload(world), 0) == "final"
+    lines = [e for e in world.events if e["event"] == "chat_web_search"]
+    assert len(lines) == 1
+    assert lines[0]["query_chars"] == len(secret)
+    assert len(lines[0]["query_sha8"]) == 8
+    # Nothing in the emitted line carries the query, the client or the file.
+    blob = json.dumps(lines[0], ensure_ascii=False)
+    assert secret not in blob
+    assert "Tremblay" not in blob
+    assert "500-17" not in blob
+
+
+def test_an_unattended_turn_is_never_offered_web_search(world):
+    """Off unconditionally on a scheduled run: no human is there to notice a
+    query composed from privileged material."""
+    stored = _stored_turn(world)
+    stored["addendum"] = "unattended"
+    world.vertex.responses = [_response([{"type": "text", "text": "Rapport."}])]
+    assert turn_engine.process_task(_payload(world), 0) == "final"
+    tools = world.vertex.calls[0]["tools"]
+    assert all(t.get("name") != "web_search" for t in tools)
+    # The trailing cache breakpoint still lands on a fresh wrapper dict.
+    assert tools[-1]["name"] == "get_skill_file"
+    assert tools[-1].get("cache_control") == {"type": "ephemeral"}
+
+
+def test_the_scanned_pdf_fallback_survives_the_provenance_envelope(monkeypatch):
+    """A near-miss worth a pin. The envelope (audit H-1) wraps the payload for
+    the model, and _native_pdf_fallback parses a tool result as JSON to decide
+    whether a scanned exhibit needs the native-block fallback. Parsing the
+    WRAPPED form fails into a silent [] — the exhibit would just stop being
+    readable, with nothing anywhere reporting it. The fallback reads
+    raw_content for exactly that reason."""
+    payload = {
+        "found": True, "readable": True, "pagination_unit": "page",
+        "page_count": 2, "file_type": "application/pdf",
+        "pages": [{"page": 1, "has_text": False, "text": ""},
+                  {"page": 2, "has_text": False, "text": ""}],
+    }
+    raw = json.dumps(payload)
+    execution = turn_engine.executors.ToolExecution(
+        content=turn_engine.executors.external_content_envelope(
+            raw, source="document versé au dossier"
+        ),
+        is_error=False,
+        raw_content=raw,
+    )
+    assert "DONNEES-EXTERNES" in execution.content   # the model sees the wrap
+    monkeypatch.setattr(
+        turn_engine.document_model, "get_document_bytes",
+        lambda did, max_bytes=None: (b"%PDF-1.7 scanned", None),
+    )
+    blocks = turn_engine._native_pdf_fallback(
+        {"name": "get_document_text", "input": {"document_id": "d1"}},
+        execution, {"id": "c1"}, {"id": "t1"},
+    )
+    assert any(b.get("type") == "document" for b in blocks)
+
+
+def test_the_fallback_still_declines_a_document_with_text(monkeypatch):
+    """The negative half: the pin above would pass against a fallback that
+    fired on everything."""
+    raw = json.dumps({
+        "found": True, "readable": True, "pagination_unit": "page",
+        "page_count": 1,
+        "pages": [{"page": 1, "has_text": True, "text": "du texte"}],
+    })
+    execution = turn_engine.executors.ToolExecution(
+        content=turn_engine.executors.external_content_envelope(raw, source="x"),
+        is_error=False, raw_content=raw,
+    )
+    assert turn_engine._native_pdf_fallback(
+        {"name": "get_document_text", "input": {"document_id": "d1"}},
+        execution, {"id": "c1"}, {"id": "t1"},
+    ) == []

@@ -675,6 +675,8 @@ ChatEvent = Literal[
     # calling Vertex — queue-health signal; no other line would fire.
     "chat_duplicate_delivery",
     "chat_block_offloaded",
+    "chat_web_search",
+    "chat_mail_unavailable",
     "chat_turn_finalized",
     "chat_turn_failed",
     "chat_authorization",

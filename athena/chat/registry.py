@@ -55,8 +55,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from config import Config
+from utils.logging_setup import log_chat_event
 from mcp import tools as mcp_tools
 
+from chat import mail_tools
 from chat.worker_tools import WORKER_NAME_PREFIXES, WORKER_TOOLS
 
 # Executor identifiers (also the `executor` field of chat_tool_call events).
@@ -64,6 +66,11 @@ IN_PROCESS = "in_process"
 HTTP_WORKER = "http_worker"
 SKILL_FILE = "skill_file"
 ANTHROPIC_NATIVE = "anthropic_native"
+MAIL = "mail"
+
+# Every mail name, read and write, for execution-time routing. Derived from
+# the specs so a new tool cannot be routable-but-unlisted or the reverse.
+_MAIL_ALL_NAMES: frozenset[str] = frozenset(mail_tools.all_tool_names())
 
 # The one Anthropic-native tool. Basic web search only on Vertex (verified
 # 2026-08-26); its per-search cost lands in usage.server_tool_use.
@@ -158,13 +165,88 @@ CHAT_EXCLUDED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# §4.6.3 — requires_authorization. EMPTY in v1 (FLAG 3), pinned by test;
-# widening it is config-by-code, one name per line, with a reason.
-GATED_TOOLS: frozenset[str] = frozenset()
+# §4.6.3 — requires_authorization. POPULATED 2026-08-28, as the prerequisite
+# of the mailbox lot, on the recommendation the 2026-08-26 audit already made
+# (« Populate GATED_TOOLS before the first turn that can reach untrusted
+# content »). It shipped empty in v1 because the only adversary-authored text
+# reaching the loop was a document the lawyer had chosen to upload; a mailbox
+# accepts prose from anyone who knows the address, which is a different thing.
+#
+# DERIVED, not a literal, for the CHAT_WRITE_TOOLS reason: the policy is « a
+# tool that REPLACES a stored value, plus the one that is irreversible », and
+# a derived set cannot drift from that sentence. EDIT_TOOLS is exactly the
+# replacers; import_invoice replaces nothing but flips N sources to
+# « facturée », after which both models refuse every modification — the one
+# connector gesture no other connector tool can undo.
+#
+# Note what this does NOT cover, deliberately: the additive creators
+# (create_note, create_task…) stay ungated. Gating a creation would put a
+# click in front of the assistant's ordinary work for an act the lawyer can
+# delete in one gesture.
+#
+# The audit's second remedy — forcing `dry_run: true` on unattended writes —
+# is NOT available: dry_run left the protocol on 2026-08-27, one day after the
+# audit was written. This set is therefore the whole of the compensating
+# control, which is why it is derived rather than hand-listed.
+GATED_TOOLS: frozenset[str] = frozenset(mcp_tools.EDIT_TOOLS) | {"import_invoice"}
 
 
 def is_gated(name: str) -> bool:
     return name in GATED_TOOLS
+
+
+# ── La messagerie (lot 2026-08-28) ──────────────────────────────────────────
+#
+# CHAT-LOCAL: these names never enter mcp.tools.TOOLS, so they are
+# structurally unreachable from claude.ai — the Workers' mechanism.
+#
+# CHAT_LOCAL_WRITE_TOOLS is the sibling CHAT_WRITE_TOOLS cannot be. That one
+# is frozenset(mcp_tools.WRITE_TOOLS) and is pinned BY EQUALITY, so no
+# chat-local name can ever join it; without this set the kill switch would
+# report writes disabled while a mail write kept running.
+CHAT_LOCAL_WRITE_TOOLS: frozenset[str] = frozenset(mail_tools.write_tool_names())
+
+_mail_warned = False
+
+
+def mail_available() -> bool:
+    """Whether the mail family is offered at all.
+
+    Says something out loud in exactly ONE case: enabled but unconfigured.
+    « Not configured » is the normal, silent state on default and portail;
+    « enabled and unconfigured » means the tools vanish from the model's
+    array for a reason nobody can see, which is the shape of the
+    origin-secret defect this codebase already paid for once.
+    """
+    global _mail_warned
+    if not Config.CHAT_MAIL_ENABLED:
+        return False
+    if Config.chat_mail_configured():
+        return True
+    if not _mail_warned:
+        _mail_warned = True
+        log_chat_event(
+            "chat_mail_unavailable",
+            "refused",
+            reason="mail_enabled_but_unconfigured",
+        )
+    return False
+
+
+def mail_writes_enabled() -> bool:
+    """Drafting and filing, separably from reading: an incident can withdraw
+    the ability to write into Outlook and the dossier while the assistant
+    keeps reading."""
+    return bool(Config.CHAT_MAIL_DRAFTS_ENABLED) and writes_enabled()
+
+
+def mail_specs(*, include_writes: Optional[bool] = None) -> tuple[dict, ...]:
+    if not mail_available():
+        return ()
+    writes = mail_writes_enabled() if include_writes is None else (
+        include_writes and bool(Config.CHAT_MAIL_DRAFTS_ENABLED)
+    )
+    return mail_tools.READ_TOOLS + (mail_tools.WRITE_TOOLS if writes else ())
 
 
 def writes_enabled() -> bool:
@@ -200,6 +282,13 @@ def executor_for(name: str) -> Optional[str]:
         return IN_PROCESS
     if name == GET_SKILL_FILE_NAME:
         return SKILL_FILE
+    # Execution-time routing, NOT array membership. Absence from the array is
+    # never a control: the conversation history replays prior tool_use blocks
+    # verbatim, so the model re-names a withheld tool and it would still run
+    # (verified on live code — update_dossier is excluded from the array and
+    # executor_for still returns in_process for it).
+    if name.startswith(mail_tools.MAIL_NAME_PREFIX) and name in _MAIL_ALL_NAMES:
+        return MAIL if mail_available() else None
     if name.startswith(WORKER_NAME_PREFIXES) and find_worker_spec(name):
         return HTTP_WORKER
     return None
@@ -220,7 +309,21 @@ def chat_tool_names(*, include_writes: Optional[bool] = None) -> list[str]:
     return names
 
 
-def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, Any]]:
+def web_search_enabled(*, unattended: bool = False) -> bool:
+    """Whether the native web_search block is declared for this turn.
+
+    OFF unconditionally on an unattended turn: a scheduled run has no human
+    who could notice a query composed from privileged material, and the
+    queries leave the tenant before any code in this repo sees them.
+    """
+    if unattended:
+        return False
+    return bool(Config.CHAT_WEB_SEARCH_ENABLED)
+
+
+def anthropic_tools(
+    *, include_writes: Optional[bool] = None, unattended: bool = False
+) -> list[dict[str, Any]]:
     """The Messages API ``tools`` array for a turn.
 
     Internal entries reuse ``TOOLS[name]["input_schema"]`` BY IDENTITY
@@ -231,6 +334,11 @@ def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, 
     order, then get_skill_file, then web_search — the trailing
     cache_control breakpoint (chat/vertex.py) covers the whole array only
     because this order never shifts between calls.
+
+    web_search is CONDITIONAL since 2026-08-28 (kill switch, and never on an
+    unattended turn). The prefix therefore differs between an interactive and
+    a scheduled turn — which costs nothing, because the two never share a
+    chain, and within a chain `unattended` is fixed for the turn's life.
 
     Nothing model-facing contains a secret: the array is built from schemas
     and descriptions only (pinned by test).
@@ -253,6 +361,14 @@ def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, 
                 "input_schema": worker_spec["input_schema"],
             }
         )
+    for spec in mail_specs(include_writes=include_writes):
+        tools.append(
+            {
+                "name": spec["name"],
+                "description": spec["description"],
+                "input_schema": spec["input_schema"],
+            }
+        )
     # get_skill_file sits between the workers and web_search — a FRESH
     # wrapper dict (the schema shared by identity, like the internal
     # entries) so the trailing cache_control stamp never mutates the spec.
@@ -263,11 +379,12 @@ def anthropic_tools(*, include_writes: Optional[bool] = None) -> list[dict[str, 
             "input_schema": GET_SKILL_FILE_SPEC["input_schema"],
         }
     )
-    tools.append(
-        {
-            "type": WEB_SEARCH_TYPE,
-            "name": WEB_SEARCH_NAME,
-            "max_uses": Config.CHAT_WEB_SEARCH_MAX_USES,
-        }
-    )
+    if web_search_enabled(unattended=unattended):
+        tools.append(
+            {
+                "type": WEB_SEARCH_TYPE,
+                "name": WEB_SEARCH_NAME,
+                "max_uses": Config.CHAT_WEB_SEARCH_MAX_USES,
+            }
+        )
     return tools

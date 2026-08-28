@@ -191,6 +191,20 @@ class Config:
         """True when Bookings sync can run (Graph creds + a mailbox to poll)."""
         return bool(cls.graph_configured() and cls.BOOKINGS_JURISTE_UPN)
 
+    @classmethod
+    def chat_mail_configured(cls) -> bool:
+        """True when the assistant can reach the mailbox (creds + a UPN).
+
+        Mirrors bookings_configured: CREDENTIALS ONLY. CHAT_MAIL_ENABLED is
+        deliberately NOT part of it, so the registry can tell the two states
+        apart — "not configured here" is the normal, silent condition on the
+        default and portail services, while "enabled but unconfigured" is a
+        real misconfiguration that must be said out loud. Folding the flag in
+        would collapse both into one silent False, which is the shape of the
+        origin-secret defect this codebase already paid for once.
+        """
+        return bool(cls.graph_configured() and cls.CHAT_MAIL_UPN)
+
     # Miroir Outlook (2026-07-29). Pushes confirmed Athéna hearings into the
     # juriste's DEFAULT Outlook calendar every 10 min (they then count toward
     # Exchange free/busy, so « Bookings with me » stops offering slots over a
@@ -381,6 +395,81 @@ class Config:
     CHAT_WEB_SEARCH_MAX_USES: int = int(
         os.environ.get("CHAT_WEB_SEARCH_MAX_USES", "5")
     )
+    # web_search is the ONE outbound channel in the chat that leaves the
+    # Vertex boundary the whole design was built around: the query reaches
+    # Anthropic's search provider before any code here sees it (a
+    # server_tool_use block never passes through executors.py). The 2026-08-26
+    # audit recorded it as a decision taken "before untrusted document content
+    # was in the loop"; reading a mailbox puts third-party prose in that loop,
+    # so the decision gets a switch. MAX_USES caps how often it fires and has
+    # never been able to suppress the declaration — this does.
+    CHAT_WEB_SEARCH_ENABLED: bool = (
+        os.environ.get("CHAT_WEB_SEARCH_ENABLED", "true").lower() == "true"
+    )
+
+    # ── Boîte de courriels du juriste (lot messagerie, 2026-08-28) ─────────
+    #
+    # CHAT_MAIL_UPN is the mailbox the assistant READS. It is deliberately a
+    # separate name from GRAPH_SENDER_UPN (which is the address the portal
+    # SENDS from) and from BOOKINGS_JURISTE_UPN (the calendar it polls), even
+    # though all three resolve to one mailbox today: disabling Bookings must
+    # not disable mail, and reading is not sending.
+    #
+    # It lives in chat.yaml ONLY — never app.yaml. The chat-only rule is then
+    # enforced by configuration as well as by tool placement: even an
+    # accidental future surface on the default service would read "" here and
+    # be inert.
+    CHAT_MAIL_UPN: str = os.environ.get("CHAT_MAIL_UPN", "")
+    # Default FALSE, unlike its BOOKINGS_SYNC_ACTIVE / MIROIR_OUTLOOK_ACTIF
+    # siblings. Those govern a subsystem that was already provisioned; this
+    # one reaches a mailbox that is not scoped until an Exchange RBAC role
+    # assignment exists. Fail closed, and let arming be an explicit act.
+    CHAT_MAIL_ENABLED: bool = (
+        os.environ.get("CHAT_MAIL_ENABLED", "false").lower() == "true"
+    )
+    # The draft half, separable from reading: an incident can withdraw the
+    # ability to stage drafts while leaving the assistant able to read.
+    CHAT_MAIL_DRAFTS_ENABLED: bool = (
+        os.environ.get("CHAT_MAIL_DRAFTS_ENABLED", "true").lower() == "true"
+    )
+
+    # Paging. $top ranges 1..1000, but a large page risks a gateway timeout
+    # (HTTP 504) because every row carries a body; 25 x 4 = 100 rows a call.
+    CHAT_MAIL_LIST_PAGE_SIZE: int = 25
+    CHAT_MAIL_MAX_PAGES: int = 4
+    # Per-call character ceiling, matching mcp.tools.DOCUMENT_TEXT_MAX_CHARS.
+    # Sized so a full result stays UNDER CHAT_BLOCK_OFFLOAD_BYTES (100 000):
+    # the model pages instead of the turn paying a Storage round trip.
+    CHAT_MAIL_BODY_CHAR_CAP: int = 40_000
+    # Bytes. pypdf peaks at 2-3x file size and the instance is an F2 (~512 MB),
+    # so 25 MiB is the working ceiling for an attachment we parse; the .eml
+    # gets more room because it carries its attachments base64'd (+33 %).
+    CHAT_MAIL_ATTACHMENT_MAX_BYTES: int = 25 * 1024 * 1024
+    CHAT_MAIL_EML_MAX_BYTES: int = 35 * 1024 * 1024
+    # A KQL clause count. REFUSED past it, never truncated — a dropped
+    # participant is a dropped party, and the caller cannot see the loss.
+    CHAT_MAIL_MAX_ADDRESSES: int = 12
+    CHAT_MAIL_MAX_ATTACHMENTS_PER_CALL: int = 10
+    # ONE budget for the whole family, per turn, threaded the way skill_pairs
+    # is. The tool phase runs in the SAME gunicorn request as the Vertex call
+    # it follows (chat.yaml: --timeout 570), and _run_tools iterates its batch
+    # with no length check — three long filings would SIGKILL the worker
+    # mid-batch, which is the one failure an at-least-once chain cannot
+    # recover from cleanly.
+    CHAT_MAIL_TURN_BUDGET_S: int = 240
+    CHAT_MAIL_MAX_CALLS_PER_BATCH: int = 3
+    CHAT_MAIL_HTTP_TIMEOUT_S: int = 60
+    # Bounded, method-aware retry. A GET retries 429/503/504; a POST or PATCH
+    # retries 429 ONLY — a 5xx on a write is ambiguous, and retrying it is
+    # exactly the duplicate-draft hazard the no-gating decision creates.
+    CHAT_MAIL_RETRY_MAX_ATTEMPTS: int = 3
+    CHAT_MAIL_RETRY_MAX_SLEEP_S: float = 8.0
+    # Folder-path resolution: lazy, per message, small LRU, short TTL. Not an
+    # index build — the mailbox spans every folder without our knowing any
+    # folder's name, so the path is a LABEL, and only the Deleted Items id is
+    # ever load-bearing.
+    CHAT_MAIL_FOLDER_CACHE_TTL_S: int = 900
+    CHAT_MAIL_FOLDER_MAX_DEPTH: int = 8
 
     # Pricing snapshot (SPEC §7) — CONFIG, never code. USD per million tokens
     # at Vertex list prices. multiregion_multiplier is 1.0: the GLOBAL

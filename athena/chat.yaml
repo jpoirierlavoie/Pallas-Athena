@@ -49,6 +49,26 @@ env_variables:
   GRAPH_CLIENT_ID: "988bf117-3aef-463b-8062-7dac226e50d9"
   GRAPH_SENDER_UPN: "reception@poirierlavoie.ca"
   GRAPH_SENDER_NAME: "Réception — Poirier Lavoie, avocat"
+  # ── Messagerie (lot 2026-08-28) ────────────────────────────────────────
+  # La boîte que l'assistant LIT. Nom distinct de GRAPH_SENDER_UPN (d'où le
+  # portail ENVOIE) et de BOOKINGS_JURISTE_UPN (le calendrier qu'il sonde),
+  # même si les trois désignent aujourd'hui une seule boîte : couper
+  # Bookings ne doit pas couper la messagerie, et lire n'est pas envoyer.
+  #
+  # ⚠ Cette variable ne figure QUE dans chat.yaml, jamais dans app.yaml : la
+  # règle « le courriel ne sort pas du locataire » est ainsi tenue par la
+  # configuration autant que par le placement des outils. Le service default
+  # y lit "" et toute la famille y est inerte.
+  #
+  # ⚠ reception@ est un ALIAS de cette même boîte, et utils/courriel.py
+  # envoie chaque invitation du portail avec saveToSentItems: true — les
+  # Éléments envoyés contiennent donc des liens de connexion Firebase à
+  # usage unique, VIVANTS. La lecture les écarte par défaut (voir
+  # graph_messagerie) ; ne pas désarmer cette exclusion.
+  CHAT_MAIL_UPN: "jason@poirierlavoie.ca"
+  # Défaut du code : false. Armé ici, et seulement ici, une fois la portée
+  # Exchange (RBAC for Applications) posée sur la boîte.
+  CHAT_MAIL_ENABLED: "true"
   # Vertex endpoint — GLOBAL, verified live 2026-08-26 (user decision): the
   # spec's multi-region « us » answers 501 UNIMPLEMENTED for these models
   # and us-east5 404s them — global is the ONLY location that serves
