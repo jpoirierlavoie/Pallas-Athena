@@ -160,7 +160,17 @@ CHAT_EXCLUDED_TOOLS: frozenset[str] = frozenset(
         "set_time_entry_phase_bulk",
         "set_expense_phase_bulk",
         # Audit et vérification — des rapports qu'on lit à froid.
-        "get_coverage_report",
+        #
+        # get_coverage_report EST REVENU le 2026-08-28. Il avait été coupé
+        # avec ce lot au motif du budget de prompt, mais il ne coûte que
+        # ~577 jetons — 3 % du tableau — là où les outils de reprise
+        # ci-dessus en valent ~1 800 chacun. Et il porte la seule chose que
+        # le breffage quotidien ne peut pas dériver autrement : la
+        # distinction manquement / signalement, dont deux membres
+        # (vérification des conflits, vérification d'identité) sont des
+        # obligations déontologiques et non des préférences de saisie.
+        # Le retirer revenait à publier chaque matin un parc « propre »
+        # sans avoir regardé.
         "list_deletions",
     }
 )

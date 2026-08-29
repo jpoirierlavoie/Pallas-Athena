@@ -176,7 +176,7 @@ def test_a_dossier_search_is_a_union_not_a_filter(armed, monkeypatch):
     )
     issued = []
 
-    def _search(*, kql, received_from, top, page_url=""):
+    def _search(*, kql, received_from, top, page_url="", received_to=""):
         issued.append(kql)
         if "participants:" in kql:
             return [_msg("m-known")], ""
@@ -1125,3 +1125,53 @@ def test_a_thread_message_is_clipped_like_a_single_message(armed, monkeypatch):
     row = out["messages"][0]
     assert len(row["text"]) <= int(Config.CHAT_MAIL_BODY_CHAR_CAP)
     assert row["message_truncated"] is True
+
+
+def test_a_date_only_sweep_takes_the_exact_filter_path(armed, monkeypatch):
+    """The sweep this feature is actually used for. The lawyer files every
+    message into a subfolder named for its file number, so Inbox and Sent are
+    empty and a folder-scoped scan finds nothing; the instrument is a date
+    range over the WHOLE mailbox.
+
+    build_kql would send that down $search as « received:...» — day-granular,
+    capped at 1000, and unreliable on his own sent mail.
+    """
+    captured = {}
+    monkeypatch.setattr(
+        gm, "search_messages",
+        lambda **kw: (captured.update(kw), ([], ""))[1],
+    )
+    monkeypatch.setattr(gm, "deleted_items_id", lambda: ("trash", True))
+    mail_executor._search({"received_from": "2026-08-21", "received_to": "2026-08-28"})
+    assert captured["kql"] == ""                      # the filter branch
+    assert captured["received_from"] == "2026-08-21"
+    assert captured["received_to"] == "2026-08-28"
+
+
+def test_a_date_plus_query_still_uses_search(armed, monkeypatch):
+    """The negative half: the routing must not swallow a real query."""
+    captured = {}
+    monkeypatch.setattr(
+        gm, "search_messages",
+        lambda **kw: (captured.update(kw), ([], ""))[1],
+    )
+    monkeypatch.setattr(gm, "deleted_items_id", lambda: ("trash", True))
+    mail_executor._search({"received_from": "2026-08-21", "query": "Tremblay"})
+    assert "Tremblay" in captured["kql"]
+    assert captured["received_to"] == ""   # the KQL carries its own range
+
+
+def test_the_filter_path_bounds_the_window_at_both_ends(armed, monkeypatch):
+    """One property in the filter and the same one leading the orderby, so
+    the InefficientFilter rule is satisfied by construction."""
+    with mock.patch.object(
+        gm.graph, "graph_get_page", return_value={"value": []}
+    ) as g:
+        gm.search_messages(received_from="2026-08-21", received_to="2026-08-28")
+    params = g.call_args.args[1]
+    assert params["$orderby"] == "receivedDateTime desc"
+    assert params["$filter"] == (
+        "receivedDateTime ge 2026-08-21T00:00:00Z and "
+        "receivedDateTime le 2026-08-28T23:59:59Z"
+    )
+    assert "$search" not in params

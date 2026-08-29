@@ -390,6 +390,7 @@ def search_messages(
     *,
     kql: str = "",
     received_from: str = "",
+    received_to: str = "",
     top: Optional[int] = None,
     page_url: str = "",
 ) -> tuple[list[dict], str]:
@@ -416,8 +417,15 @@ def search_messages(
             # No search terms: the legal pairing is a filter whose property
             # also leads the orderby (else Graph answers InefficientFilter).
             params["$orderby"] = "receivedDateTime desc"
+            clauses = []
             if received_from:
-                params["$filter"] = f"receivedDateTime ge {received_from}T00:00:00Z"
+                clauses.append(f"receivedDateTime ge {received_from}T00:00:00Z")
+            if received_to:
+                clauses.append(f"receivedDateTime le {received_to}T23:59:59Z")
+            if clauses:
+                # One property, so the InefficientFilter rule is satisfied by
+                # construction: everything in the orderby also leads the filter.
+                params["$filter"] = " and ".join(clauses)
         data = _call(
             lambda: graph.graph_get_page(
                 f"{_mailbox()}/messages",

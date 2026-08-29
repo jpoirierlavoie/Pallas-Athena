@@ -465,6 +465,18 @@ def _analyse_form_context() -> dict:
         "analyse_niveaux": [
             (n, tax.NIVEAU_LABELS.get(n, str(n))) for n in (0, 1, 2, 3)
         ],
+        # Annexe C : deux vocabulaires FERMÉS que le formulaire offrait en
+        # texte libre — donc invérifiables, et de toute façon vides parce
+        # que l'outil ne pouvait pas les fournir.
+        "analyse_moyens_preuve": [
+            (code, libelle, ancrage)
+            for code, (libelle, ancrage) in tax.MOYENS_PREUVE.items()
+        ],
+        "analyse_qualifications": [
+            (code, libelle, ancrage)
+            for code, (libelle, ancrage) in tax.QUALIFICATIONS_ECRIT.items()
+        ],
+        "analyse_qualites": list(tax.QUALITES_RECONNAISSANCE),
     }
 
 

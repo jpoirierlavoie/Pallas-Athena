@@ -112,11 +112,7 @@
         ('auteur', 'Auteur'),
         ('date_document_str', 'Date du document (texte lu)'),
         ('date_signature_str', 'Date de signature (texte lu)'),
-        ('langue_detectee', 'Langue détectée'),
-        ('moyen_preuve', 'Moyen de preuve'),
-        ('qualification_ecrit', "Qualification de l'écrit"),
-        ('qualite_reconnaissance', 'Qualité de la reconnaissance'),
-        ('confiance', 'Confiance') ] %}
+        ('langue_detectee', 'Langue détectée') ] %}
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1.5">{{ libelle }}</label>
       <input type="text" name="analyse_{{ cle }}" value="{{ a[cle] or '' }}"
@@ -128,6 +124,67 @@
       <label class="block text-sm font-medium text-gray-700 mb-1.5">Dispositif</label>
       <textarea name="analyse_dispositif" rows="3"
                 class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">{{ a.dispositif or '' }}</textarea>
+    </div>
+
+    {# ── Annexe C : les deux axes du droit de la preuve ───────────
+         Fermés par la spec, donc offerts en listes. Ils étaient en texte
+         libre — et vides sur chaque document, parce que l'outil MCP ne
+         déclarait aucune propriété pour les recevoir. #}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Moyen de preuve</label>
+      <select name="analyse_moyen_preuve"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">— non renseigné —</option>
+        {% for code, libelle, ancrage in analyse_moyens_preuve %}
+        <option value="{{ code }}" {% if a.moyen_preuve == code %}selected{% endif %}>
+          {{ libelle }}{% if ancrage %} — {{ ancrage }}{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-400 mt-1">
+        Un acte de procédure ne prouve rien par lui-même : il porte le
+        fardeau, il n'est pas une preuve.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Qualification de l'écrit</label>
+      <select name="analyse_qualification_ecrit"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">— non renseigné —</option>
+        {% for code, libelle, ancrage in analyse_qualifications %}
+        <option value="{{ code }}" {% if a.qualification_ecrit == code %}selected{% endif %}>
+          {{ libelle }}{% if ancrage %} — {{ ancrage }}{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-gray-400 mt-1">
+        Ne s'applique qu'à un moyen « Écrit ». Un acte authentique fait
+        preuve jusqu'à inscription de faux — la qualification a des
+        conséquences.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Qualité de la reconnaissance</label>
+      <select name="analyse_qualite_reconnaissance"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">— non renseigné —</option>
+        {% for q in analyse_qualites %}
+        <option value="{{ q }}" {% if a.qualite_reconnaissance == q %}selected{% endif %}>{{ q }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1.5">Confiance</label>
+      <select name="analyse_confiance"
+              class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <option value="">— non renseignée —</option>
+        {% for q in analyse_qualites %}
+        <option value="{{ q }}" {% if a.confiance == q %}selected{% endif %}>{{ q }}</option>
+        {% endfor %}
+      </select>
     </div>
 
     {# ── Les listes, en valeurs séparées par des virgules ─────────── #}

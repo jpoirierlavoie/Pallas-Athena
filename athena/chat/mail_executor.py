@@ -106,9 +106,13 @@ def _search_basis(dossier: dict) -> tuple[list[str], list[str]]:
 # ── mail_search ─────────────────────────────────────────────────────────────
 
 
-def _run_search(kql: str, received_from: str, limit: int, page_url: str = ""):
+def _run_search(
+    kql: str, received_from: str, limit: int,
+    page_url: str = "", received_to: str = "",
+):
     return gm.search_messages(
-        kql=kql, received_from=received_from, top=limit, page_url=page_url
+        kql=kql, received_from=received_from, received_to=received_to,
+        top=limit, page_url=page_url,
     )
 
 
@@ -186,6 +190,15 @@ def _search(args: dict) -> dict:
                     has_attachments=has_attachments,
                 ),
             ))
+    elif not extra and not query and has_attachments is None:
+        # DATE-ONLY: the sweep this feature is actually used for. Routed to
+        # the exact filter/orderby path rather than through build_kql, whose
+        # « received:AAAA-MM-JJ..AAAA-MM-JJ » would send it down $search
+        # instead — day-granular, capped at 1000 results, and unreliable on
+        # the lawyer's OWN sent mail, which is half of what a mailbox sweep
+        # is for. An empty kql is what makes search_messages take the other
+        # branch; the dates travel as arguments.
+        searches.append(("recents", ""))
     else:
         kql = gm.build_kql(
             participants=tuple(extra),
@@ -199,7 +212,13 @@ def _search(args: dict) -> dict:
     next_token = ""
     saw_more = False
     for basis, kql in searches:
-        found, next_link = _run_search(kql, received_from, limit, page_url=page_token)
+        found, next_link = _run_search(
+            kql, received_from, limit,
+            page_url=page_token,
+            # The upper bound only reaches the filter path; a KQL branch
+            # already carries its own received: range from build_kql.
+            received_to="" if kql else received_to,
+        )
         # A nextLink from EITHER branch means Graph held more back. In union
         # mode we cannot hand one out (two searches, one token would be
         # meaningless), but reporting truncated:false because we discarded it

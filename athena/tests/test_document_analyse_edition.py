@@ -307,3 +307,104 @@ def test_les_vocabulaires_du_formulaire_sont_derives_des_modules_purs():
         tax.VALID_SOUS_NATURES
     )
     assert {r["code"] for r in ctx["analyse_privileges"]} == set(prot.PRIVILEGES)
+
+
+# ── Annexe C : les deux axes du droit de la preuve ──────────────────────
+#
+# Le défaut vu en production le 2026-08-27 : `moyen_preuve` et
+# `qualification_ecrit` restaient vides après TOUTE analyse. Ce n'était pas
+# le modèle qui les omettait — le schéma d'entrée de l'outil ne les
+# déclarait pas, donc il ne pouvait pas les fournir, alors qu'ils étaient
+# lus s'ils arrivaient et éditables par le juriste. Quatre champs dans cet
+# état, et rien ne le disait.
+
+
+def test_le_modele_peut_fournir_tout_ce_que_le_modele_lit():
+    """L'épingle qui aurait attrapé le défaut, et par DÉRIVATION.
+
+    Tout champ que `_EXTRACTION_FIELDS` accepte doit avoir une propriété
+    d'entrée dans l'outil. Sinon il est structurellement condamné à rester
+    vide, et rien ne le signale : ni erreur, ni avertissement, seulement
+    une carte d'analyse incomplète que personne ne relie à un schéma.
+    """
+    from mcp import tools
+
+    schema = set(
+        tools.TOOLS["record_document_analysis"]["input_schema"]["properties"]
+    )
+    manquants = sorted(set(doc._EXTRACTION_FIELDS) - schema)
+    assert not manquants, (
+        f"lus par le modèle mais impossibles à fournir : {manquants}"
+    )
+
+
+def test_les_deux_axes_de_preuve_s_ecrivent(monde):
+    store, _ = monde
+    champ, erreurs = doc._analyse_derivee(
+        {
+            "sous_nature": "PREUVE_CONTRAT", "moyen_preuve": "ECRIT",
+            "qualification_ecrit": "SOUS_SEING_PRIVE",
+            "parait_original": True, "qualite_reconnaissance": "haute",
+        },
+        document={"id": "doc-1"},
+    )
+    assert not erreurs, erreurs
+    assert champ["moyen_preuve"] == "ECRIT"
+    assert champ["qualification_ecrit"] == "SOUS_SEING_PRIVE"
+    assert champ["parait_original"] is True
+    assert champ["qualite_reconnaissance"] == "haute"
+
+
+def test_une_qualification_d_ecrit_sur_un_temoignage_est_refusee():
+    # Annexe C, axe 2 : « seulement si moyen_preuve == ECRIT ». Un « acte
+    # notarié » sur un témoignage ne veut rien dire, et la qualification a
+    # des conséquences — un acte authentique fait preuve jusqu'à
+    # inscription de faux (art. 2813-2814 C.c.Q.).
+    champ, erreurs = doc._analyse_derivee(
+        {"sous_nature": "PREUVE_CONTRAT", "moyen_preuve": "TEMOIGNAGE",
+         "qualification_ecrit": "ACTE_NOTARIE"},
+        document={"id": "doc-1"},
+    )
+    assert champ == {}
+    assert any("ECRIT" in e for e in erreurs), erreurs
+
+
+def test_non_determine_reste_acceptable_partout():
+    # C'est ce qui permet de dire « je ne peux pas trancher » sans mentir.
+    champ, erreurs = doc._analyse_derivee(
+        {"sous_nature": "PREUVE_CONTRAT", "moyen_preuve": "TEMOIGNAGE",
+         "qualification_ecrit": "NON_DETERMINE"},
+        document={"id": "doc-1"},
+    )
+    assert not erreurs, erreurs
+
+
+def test_le_juriste_est_tenu_par_la_meme_regle_d_axe(monde):
+    # La validation porte sur la valeur qui sera STOCKÉE : corriger un axe
+    # seul doit rester cohérent avec l'autre tel qu'il est déjà en place.
+    store, _ = monde
+    store["doc-1"]["analyse"], _ = doc._analyse_derivee(
+        {"sous_nature": "PREUVE_CONTRAT", "moyen_preuve": "ECRIT",
+         "qualification_ecrit": "SOUS_SEING_PRIVE"},
+        document={"id": "doc-1"},
+    )
+    maj, erreurs = doc.update_analyse(
+        "doc-1", {"moyen_preuve": "TEMOIGNAGE"}, par="me@cabinet.ca"
+    )
+    assert maj is None
+    assert any("ECRIT" in e for e in erreurs), erreurs
+
+
+def test_les_deux_axes_sont_offerts_en_listes_fermees():
+    # En texte libre, ils étaient invérifiables — et la moitié de leur
+    # valeur tient à ce qu'ils soient comparables d'un document à l'autre.
+    from routes.documents import _analyse_form_context
+    from utils import analyse_taxonomies as t
+
+    ctx = _analyse_form_context()
+    assert {c for c, _, _ in ctx["analyse_moyens_preuve"]} == set(
+        t.VALID_MOYENS_PREUVE
+    )
+    assert {c for c, _, _ in ctx["analyse_qualifications"]} == set(
+        t.VALID_QUALIFICATIONS_ECRIT
+    )

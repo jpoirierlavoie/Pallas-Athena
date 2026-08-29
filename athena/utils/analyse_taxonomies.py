@@ -753,6 +753,78 @@ def matrice_champs(
     return entry.champs, entry.champs_possibles, entry.champs_ancres
 
 
+# ── Annexe C — les deux axes du droit de la preuve ──────────────────────
+#
+# Contenu juridique arrêté par la spec (Annexe C), transcrit tel quel. Ces
+# codes ne se modifient que sur un spec approuvé, comme le reste du module.
+#
+# Axe 1 : par quel MOYEN un fait se prouve (art. 2811 C.c.Q.).
+MOYENS_PREUVE: dict[str, tuple[str, str]] = {
+    "ECRIT": ("Écrit", "art. 2811, 2837 C.c.Q."),
+    "TEMOIGNAGE": ("Témoignage", "art. 2811, 2843 C.c.Q."),
+    "PRESOMPTION": ("Présomption", "art. 2811 C.c.Q."),
+    "AVEU": ("Aveu", "art. 2811 C.c.Q."),
+    "ELEMENT_MATERIEL": (
+        "Présentation d'un élément matériel", "art. 2811 C.c.Q."
+    ),
+    "NON_DETERMINE": ("Indéterminable", ""),
+}
+VALID_MOYENS_PREUVE: frozenset = frozenset(MOYENS_PREUVE)
+
+# Axe 2 : de quelle SORTE d'écrit il s'agit — et la spec est explicite,
+# cet axe n'a de sens que si le moyen est ECRIT. Un « acte notarié » sur un
+# témoignage ne veut rien dire ; `validate_preuve` refuse la paire.
+QUALIFICATIONS_ECRIT: dict[str, tuple[str, str]] = {
+    "ACTE_AUTHENTIQUE": ("Acte authentique", "art. 2813, 2814 C.c.Q."),
+    "ACTE_NOTARIE": ("Acte notarié", "art. 2814 (6°), 2819 C.c.Q."),
+    "ACTE_SEMI_AUTHENTIQUE": (
+        "Acte émanant d'un officier public étranger", "art. 2822 C.c.Q."
+    ),
+    "SOUS_SEING_PRIVE": ("Acte sous seing privé", "art. 2826, 2827 C.c.Q."),
+    "ECRIT_ENTREPRISE": (
+        "Écrit non signé utilisé dans le cours des activités d'une "
+        "entreprise", "art. 2831 C.c.Q."
+    ),
+    "PAPIER_DOMESTIQUE": ("Papier domestique", "art. 2833 C.c.Q."),
+    "AUTRE_ECRIT": ("Autre écrit rapportant un fait", "art. 2832 C.c.Q."),
+    "NON_DETERMINE": ("Indéterminable", ""),
+}
+VALID_QUALIFICATIONS_ECRIT: frozenset = frozenset(QUALIFICATIONS_ECRIT)
+
+# La qualité de la reconnaissance du texte. Elle MESURE un besoin plutôt
+# qu'elle ne qualifie un document : si les « faible » s'accumulent, une
+# escalade vers un OCR dédié se justifiera sur des données.
+QUALITES_RECONNAISSANCE: tuple[str, ...] = ("haute", "moyenne", "faible")
+
+
+def validate_preuve(moyen: str, qualification: str) -> list[str]:
+    """Les deux axes, et la règle qui les lie (Annexe C, axe 2).
+
+    Vide = non renseigné, et c'est valide : une absence est un signal, pas
+    un trou à combler. `NON_DETERMINE` reste acceptable partout — c'est ce
+    qui permet de dire « je ne peux pas trancher » sans mentir.
+    """
+    erreurs: list[str] = []
+    moyen = (moyen or "").strip()
+    qualification = (qualification or "").strip()
+    if moyen and moyen not in VALID_MOYENS_PREUVE:
+        erreurs.append(f"Moyen de preuve inconnu : {moyen}.")
+    if qualification and qualification not in VALID_QUALIFICATIONS_ECRIT:
+        erreurs.append(f"Qualification de l'écrit inconnue : {qualification}.")
+    if (
+        not erreurs
+        and qualification
+        and qualification != "NON_DETERMINE"
+        and moyen
+        and moyen != "ECRIT"
+    ):
+        erreurs.append(
+            "La qualification de l'écrit ne s'applique qu'à un moyen de "
+            "preuve « ECRIT » (Annexe C, axe 2)."
+        )
+    return erreurs
+
+
 @lru_cache(maxsize=1)
 def schema_enums() -> dict[str, list[str]]:
     """Les énumérations que le schéma de l'outil consomme.
@@ -771,4 +843,7 @@ def schema_enums() -> dict[str, list[str]]:
         "sous_nature": [s.code for s in _SOUS_NATURES],
         "privileges": [p.code for p in _PRIVILEGES],
         "famille": [JUDICIAIRE, CORRESPONDANCE, PREUVE, CABINET, INDETERMINE],
+        "moyen_preuve": list(MOYENS_PREUVE),
+        "qualification_ecrit": list(QUALIFICATIONS_ECRIT),
+        "qualite_reconnaissance": list(QUALITES_RECONNAISSANCE),
     }

@@ -1444,6 +1444,13 @@ def _analyse_derivee(
     if inconnus:
         return {}, [f"Privilège inconnu : {', '.join(sorted(inconnus))}."]
 
+    erreurs_preuve = tax.validate_preuve(
+        str(sortie.get("moyen_preuve") or ""),
+        str(sortie.get("qualification_ecrit") or ""),
+    )
+    if erreurs_preuve:
+        return {}, erreurs_preuve
+
     extrait = {k: sortie.get(k) for k in _EXTRACTION_FIELDS if k in sortie}
     contient_dispositif = extrait.get("contient_dispositif")
     absents = prot.champs_attendus_absents(
@@ -1723,6 +1730,22 @@ def update_analyse(
     for cle in _ANALYSE_TEXTES:
         if cle in propose:
             propose[cle] = sanitize(str(propose[cle] or ""), max_length=2000)
+
+    # Annexe C : les deux axes se valident ENSEMBLE, et sur la valeur qui
+    # sera STOCKÉE — un axe corrigé seul doit rester cohérent avec l'autre
+    # tel qu'il est déjà en place.
+    erreurs += tax.validate_preuve(
+        str(propose.get("moyen_preuve", champ.get("moyen_preuve") or "")),
+        str(propose.get(
+            "qualification_ecrit", champ.get("qualification_ecrit") or ""
+        )),
+    )
+    for cle, valides in (
+        ("qualite_reconnaissance", set(tax.QUALITES_RECONNAISSANCE)),
+    ):
+        v = str(propose.get(cle) or "")
+        if v and v not in valides:
+            erreurs.append(f"Valeur invalide pour {cle} : {v}.")
 
     if erreurs:
         return None, erreurs

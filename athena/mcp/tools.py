@@ -763,6 +763,12 @@ _EXPENSE_CATEGORIES = [
 # exactement ce que l'écart assumé avec la §5.3 rend supportable.
 _SOUS_NATURE_CODES = sorted(_tax.VALID_SOUS_NATURES)
 _PRIVILEGE_CODES = sorted(_tax.VALID_PRIVILEGES)
+# Annexe C — les deux axes du droit de la preuve. L'ORDRE de la table est
+# conservé (art. 2811 d'abord) : il se lit comme la disposition, et un tri
+# alphabétique mettrait « AVEU » avant « ECRIT » sans raison.
+_MOYEN_PREUVE_CODES = list(_tax.MOYENS_PREUVE)
+_QUALIFICATION_ECRIT_CODES = list(_tax.QUALIFICATIONS_ECRIT)
+_QUALITE_RECONNAISSANCE = list(_tax.QUALITES_RECONNAISSANCE)
 
 # Phase O — DERIVED, not hand-copied (the _COVERAGE_CODES precedent):
 # utils/phases.py is pure (no model import, no Firestore at load), so the
@@ -3317,6 +3323,55 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "True when you read only part of the text "
                         "(pagination not followed to the end)."
+                    ),
+                },
+                # ── Annexe C — the two axes of evidence law ──────────
+                # These four were readable and editable but had NO input
+                # property, so the model could not supply them and they
+                # stayed empty on every analysis. Spotted in production
+                # 2026-08-27 on a TAL decision.
+                "moyen_preuve": {
+                    "type": "string",
+                    "enum": _MOYEN_PREUVE_CODES,
+                    "description": (
+                        "By WHICH MEANS this document could prove a fact "
+                        "(art. 2811 C.c.Q.). A procedural act proves "
+                        "nothing by itself — it carries the burden, it is "
+                        "not evidence — so leave this out for a "
+                        "`procédure`. NON_DETERMINE when you cannot tell; "
+                        "never guess."
+                    ),
+                },
+                "qualification_ecrit": {
+                    "type": "string",
+                    "enum": _QUALIFICATION_ECRIT_CODES,
+                    "description": (
+                        "WHAT KIND of writing, and ONLY when moyen_preuve "
+                        "is ECRIT — the call is refused otherwise. This is "
+                        "a qualification with consequences (an acte "
+                        "authentique proves itself until inscription de "
+                        "faux, art. 2813-2814): say NON_DETERMINE unless "
+                        "the document itself establishes it."
+                    ),
+                },
+                "parait_original": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether the document APPEARS to be the original "
+                        "rather than a copy (art. 2860 C.c.Q.). An "
+                        "observation, never a conclusion — a wet "
+                        "signature, a seal, an original stamp. Omit when "
+                        "nothing in the document says."
+                    ),
+                },
+                "qualite_reconnaissance": {
+                    "type": "string",
+                    "enum": _QUALITE_RECONNAISSANCE,
+                    "description": (
+                        "How well the text came through, for a scan or a "
+                        "photograph. This MEASURES a need rather than "
+                        "qualifying the document: accumulated « faible » "
+                        "is what would justify a dedicated OCR pass."
                     ),
                 },
                 **_write_protocol_props(),
