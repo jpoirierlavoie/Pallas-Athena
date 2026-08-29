@@ -1156,9 +1156,18 @@ def test_a_date_plus_query_still_uses_search(armed, monkeypatch):
         lambda **kw: (captured.update(kw), ([], ""))[1],
     )
     monkeypatch.setattr(gm, "deleted_items_id", lambda: ("trash", True))
-    mail_executor._search({"received_from": "2026-08-21", "query": "Tremblay"})
+    # received_to is supplied ON PURPOSE. Without it the assertion below is
+    # vacuous — args.get("received_to") is "" either way, so the guard at
+    # mail_executor._search (`received_to="" if kql else received_to`) could
+    # be deleted and this test would stay green. Verified by mutation.
+    mail_executor._search({
+        "received_from": "2026-08-21",
+        "received_to": "2026-08-28",
+        "query": "Tremblay",
+    })
     assert "Tremblay" in captured["kql"]
-    assert captured["received_to"] == ""   # the KQL carries its own range
+    assert "2026-08-28" in captured["kql"]  # the range travels IN the KQL...
+    assert captured["received_to"] == ""    # ...and must not be sent twice
 
 
 def test_the_filter_path_bounds_the_window_at_both_ends(armed, monkeypatch):

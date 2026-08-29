@@ -535,6 +535,14 @@ def get_agenda(args: dict) -> dict:
             **_step_row(s, today),
             "protocol_id": s.get("_protocol_id", ""),
             "protocol_title": s.get("_protocol_title", ""),
+            # The id, not just the number. A caller acting on a step — the
+            # briefing minting a follow-up task — needs the dossier_id every
+            # OTHER agenda row already carries (_hearing_row, _task_row,
+            # _prescription_row); without it a file NUMBER is all it has, and
+            # create_task refuses a number where it wants a UUID. It is in
+            # hand three lines below for the label join, so emitting it costs
+            # nothing and removes a per-candidate get_dossier call.
+            "dossier_id": s.get("_dossier_id", ""),
             # The protocol doc's own snapshot is DOUBLY stale (copied from
             # the dossier at protocol creation) — prefer the live label.
             "dossier_file_number": (

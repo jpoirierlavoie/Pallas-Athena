@@ -709,6 +709,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "urgent_protocol_steps": _arr(_step_row({
             "protocol_id": _str(),
             "protocol_title": _str(),
+            "dossier_id": _str(
+                "The dossier's UUID — what a write tool wants. Always "
+                "present (\"\" only if the parent protocol carries none)."
+            ),
             "dossier_file_number": _str(),
         })),
         "prescription_alerts": _arr(_obj({

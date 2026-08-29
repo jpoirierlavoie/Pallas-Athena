@@ -44,8 +44,19 @@ from the protocol), the forced idempotency keys (executors.py), and the
 
 ``GATED_TOOLS`` (SPEC §4.6.3): a ``tool_use`` on a member pauses the turn
 into ``awaiting_authorization`` (interactive) or is auto-refused with a
-directive to describe the action in the report instead (scheduled). The set ships EMPTY in v1 — the mechanism is
-implemented, the policy is the practitioner's to widen, one name at a time.
+directive to describe the action in the report instead (scheduled). It
+shipped EMPTY and was populated on 2026-08-28 by DERIVATION
+(``EDIT_TOOLS`` + ``import_invoice``) — eleven names. Widening it further
+is the practitioner's call, one name at a time. ⚠ It is NOT the whole
+write surface: fourteen writes reach the chat, so the ten outside this set
+— ``complete_task`` (which cascades into the linked protocol step and can
+close a whole protocol, with no reopening from here), ``create_note``,
+``append_to_note``, ``create_task``, ``create_hearing``, ``create_time_entry``,
+``create_expense``, ``save_draft``, ``record_signification``,
+``record_prescription_event`` — run unattended without asking. So does
+``CHAT_LOCAL_WRITE_TOOLS`` (the mail draft and the mail filing), which is a
+SEPARATE set this one does not reference. Any prose promising otherwise is
+wrong.
 
 No capability named « delete » exists, can be registered, or is reachable.
 """
@@ -124,8 +135,10 @@ CHAT_WRITE_TOOLS: frozenset[str] = frozenset(mcp_tools.WRITE_TOOLS)
 #
 # Le motif est le budget de prompt, et il est massif : les schémas
 # d'outils font ~29 500 jetons, soit 98 % du prompt, RENVOYÉS À CHAQUE
-# APPEL DE MODÈLE (pas par tour ni par conversation). Ces quinze-là en
-# valent 11 100, et aucun n'est de nature conversationnelle.
+# APPEL DE MODÈLE (pas par tour ni par conversation). Ces quatorze-là en
+# valent ~10 500, et aucun n'est de nature conversationnelle. (Quinze au
+# départ : get_coverage_report est revenu le 2026-08-28 — voir sa note
+# plus bas.)
 #
 # Le critère est STRUCTUREL, jamais statistique : au moment de la coupe le
 # registre comptait 26 tours et 11 appels d'outil, ce qui ne prouve rien
