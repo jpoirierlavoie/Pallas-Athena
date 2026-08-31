@@ -148,7 +148,21 @@ l'appel, et votre note ne serait pas écrite.
 | Champ du formulaire | Valeur |
 |---|---|
 | Nom | `Breffage quotidien` |
-| Description | `Le breffage du matin et la passe du lundi : agenda, échéances, courriels, hygiène.` |
+| Description | le texte ci-dessous — 368 caractères, sous le plafond de 500 |
+
+```
+Le breffage du matin et la passe du lundi : agenda et échéances, prescription,
+tâches ouvertes, courriels des sept derniers jours, hygiène des dossiers,
+dossiers dormants. Portée par les deux tâches planifiées ; à cocher à la main
+seulement pour répéter une exécution avant de la programmer. ÉCRIT : dépose une
+note sous « Général » et peut créer jusqu'à trois tâches.
+```
+
+La description **ne va pas au modèle** — `system_blocks` n'assemble que le nom, le corps et
+le listing des fichiers. Elle se lit à trois endroits, tous pour le juriste : la liste des
+compétences (tronquée à une ligne, d'où l'identification en tête), la fiche de la
+compétence, et sous la case à cocher de l'écran « Nouvelle conversation ». Le formulaire
+des tâches planifiées, lui, ne l'affiche pas.
 | Corps | le contenu de `00-corps.md` |
 | Fichiers | `gabarit-note.md`, `courriels.md`, `taches-auto.md`, `dormance.md` |
 
