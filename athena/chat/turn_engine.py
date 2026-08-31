@@ -500,6 +500,26 @@ def _native_pdf_fallback(
 # ── The task driver ─────────────────────────────────────────────────────────
 
 
+def _avis_echec(conversation_id: str) -> None:
+    """Prévenir l'avocat qu'une exécution planifiée est morte.
+
+    Best-effort par contrat, comme la livraison du rapport : un problème de
+    courriel ne doit jamais faire échouer — ni rejouer — un tour déjà
+    terminalisé. Le marqueur d'au-plus-une-fois est partagé avec le
+    rapport, donc jamais les deux.
+    """
+    try:
+        from chat import planification
+
+        planification.livrer_echec(
+            conv_model.get_conversation(conversation_id)
+        )
+    except Exception:
+        log_unexpected(
+            "chat failure notice failed", conversation_id=conversation_id
+        )
+
+
 def process_task(payload: dict, retry_count: int) -> str:
     """Drive one Cloud Tasks delivery. Returns a machine-stable outcome
     (for the route's logging); raises :class:`vertex.ChatVertexRetryable`
@@ -522,6 +542,12 @@ def process_task(payload: dict, retry_count: int) -> str:
             reason="retry_exhausted",
             retry_count=retry_count,
         )
+        # L'avis d'échec emprunte le chemin du rapport : livrer_rapport ne
+        # s'atteint QUE sur la branche de succès terminal, si bien qu'une
+        # exécution planifiée morte ici ne disait rien à personne. Une
+        # absence de courriel un mardi matin se confond avec « rien à
+        # signaler ».
+        _avis_echec(conversation_id)
         return "terminalized"
 
     status, turn, repair_token = conv_model.claim_step(
@@ -595,6 +621,7 @@ def process_task(payload: dict, retry_count: int) -> str:
             turn_id=turn_id,
             reason=exc.reason,
         )
+        _avis_echec(conversation_id)
         return "failed"
     except Exception:
         # A deterministic code fault retried five times would re-pay up to
@@ -646,12 +673,34 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
     # versioned, stable order end to end (the cache prefix depends on it).
     #
     # ⚠ ORDER IS LOAD-BEARING: this sits ABOVE the pending-tool block on
-    # purpose. Resolution is the only part of _advance that may raise a
-    # RETRYABLE, and the pending block RUNS APPROVED TOOL CALLS — an
-    # interactive turn injects no idempotency_key (executors.py, gated on
-    # `unattended`), so a raise after them would have Cloud Tasks redeliver
-    # and replay every write: duplicate notes, duplicate drafts. Nothing
-    # below may move above this line.
+    # purpose. The pending block RUNS APPROVED TOOL CALLS — an interactive
+    # turn injects no idempotency_key (executors.py, gated on `unattended`)
+    # — so a raise after them has Cloud Tasks redeliver and replay every
+    # write: duplicate notes, duplicate drafts. Nothing below may move
+    # above this line.
+    #
+    # ⚠⚠ THIS ORDERING IS NOT SUFFICIENT, and the comment here claimed it
+    # was until 2026-08-31: it said resolution was « the only part of
+    # _advance that may raise a RETRYABLE ». That is false, and always
+    # was. `vertex.call_model` — below, and the whole point of the
+    # function — raises ChatVertexRetryable on 429, on 5xx, on a timeout,
+    # and since 2026-08-31 on an empty response. Reproduced on the real
+    # engine: approve a batch, have the next model call raise, and the
+    # redelivery re-executes the whole batch (claim_step returns
+    # « proceed » WITHOUT consuming the token, by design). The exposure is
+    # narrow — interactive turns only, since a scheduled run auto-refuses
+    # every gated tool — but it is real: a replayed `revise_draft` appends
+    # a second version and moves the head twice, and nothing here can
+    # delete either.
+    #
+    # The fix is to commit the pending tool_results BEFORE the model call
+    # (a `running` commit rotating the token, so a redelivery finds
+    # tool_results != None and skips the block), or to inject the
+    # deterministic idempotency key on the resume path rather than only
+    # when `unattended` — the seed is already stable. Deliberately left
+    # for its own lot: it restructures the commit sequence of the most
+    # delicate transaction in the system, and it long predates the change
+    # that documented it.
     heads, skill_pairs = _resolve_skills(conv, turn)
     scheduled = turn.get("addendum") == "unattended"
     charte, charter_version, charter_source = _resolve_charter(turn)
@@ -721,6 +770,11 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
         step=step + 1,
         duration_ms=duration_ms,
         stop_reason=stop_reason,
+        # Le motif du fournisseur, tel quel, à côté du motif traduit : deux
+        # motifs Gemini distincts se traduisent en « end_turn », et le
+        # journal ne permettait pas de les distinguer après coup.
+        raw_stop_reason=str(response.get("raw_stop_reason") or ""),
+        blocks=len(response.get("content") or []),
         input_tokens=int(usage.get("input_tokens") or 0),
         output_tokens=int(usage.get("output_tokens") or 0),
         cache_creation_input_tokens=int(
@@ -883,7 +937,12 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
         turn_id,
         step_token,
         next_state="final",
-        truncated=(stop_reason == "max_tokens"),
+        # « unknown » rejoint « max_tokens » : un motif d'arrêt que la table
+        # de traduction ne connaît pas est un arrêt ANORMAL, et le tour ne
+        # doit pas se présenter comme complet. Sans cela, une réponse
+        # partielle sous OTHER / LANGUAGE / TOO_MANY_TOOL_CALLS se livrait
+        # comme un rapport entier.
+        truncated=(stop_reason in ("max_tokens", "unknown")),
         **common,
     )
     if status == "lost_race":

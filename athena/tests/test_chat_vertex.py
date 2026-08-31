@@ -213,3 +213,48 @@ def test_pricing_math_in_usd_micros():
     assert micros == expected
     # Unknown model → 0, honestly under-reporting rather than inventing.
     assert vertex.segment_cost_usd_micros(usage, "modele-inconnu") == 0
+
+
+# ── Une réponse SANS contenu (incident du 2026-08-31) ───────────────────────
+#
+# Gemini a rendu zéro bloc, zéro jeton de sortie et « end_turn » au cinquième
+# appel d'un breffage planifié. La forme était valide — c'est pourquoi la
+# validation ci-dessus la laissait passer —, mais il n'y avait pas de réponse :
+# le moteur a pris cela pour un tour terminé, aucune note n'a été déposée, et
+# le juriste a reçu un courriel vide sans la moindre erreur nulle part.
+
+
+def test_an_empty_content_list_is_retryable(transport):
+    """Vide + motif ordinaire : transitoire, donc la file reprend l'étape.
+
+    Le jeton d'étape n'est PAS consommé sur un retryable, si bien que la
+    redélivraison refait simplement l'appel, bornée par
+    CHAT_TASK_RETRY_TERMINAL — au bout de quoi le tour meurt BRUYAMMENT.
+    """
+    transport["response"] = _Response(
+        200,
+        {"content": [], "stop_reason": "end_turn",
+         "usage": {"input_tokens": 63335, "output_tokens": 0}},
+    )
+    with pytest.raises(ChatVertexRetryable) as excinfo:
+        _call()
+    assert excinfo.value.reason == "vertex_empty_response"
+
+
+def test_an_empty_refusal_is_fatal_not_retryable(transport):
+    """Un refus est DÉTERMINISTE : le rejouer brûlerait les reprises pour
+    rien, et retarderait l'échec visible que l'on veut au plus tôt."""
+    transport["response"] = _Response(
+        200,
+        {"content": [], "stop_reason": "refusal",
+         "usage": {"input_tokens": 10, "output_tokens": 0}},
+    )
+    with pytest.raises(ChatVertexFatal) as excinfo:
+        _call()
+    assert excinfo.value.reason == "vertex_refusal"
+
+
+def test_a_response_with_content_still_passes(transport):
+    """La garde ne mord que sur le vide — le chemin nominal est intact."""
+    transport["response"] = _Response(200, _VALID)
+    assert _call()["content"] == [{"type": "text", "text": "ok"}]

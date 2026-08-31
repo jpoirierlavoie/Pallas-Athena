@@ -669,6 +669,13 @@ ChatEvent = Literal[
     # stop_reason) — the registre-completeness invariant made observable;
     # a pause_turn is a success with its stop_reason.
     "chat_model_call",
+    # Une réponse Vertex SANS aucun bloc de contenu. Une ligne à part parce
+    # qu'elle est levée dans le transport, AVANT que chat_model_call ne soit
+    # émis : sans elle, un tour vide ne laisse aucune trace nommant sa
+    # propre forme — le défaut qui a rendu l'incident du 2026-08-31
+    # indiagnosticable après coup. Porte le motif d'arrêt BRUT du
+    # fournisseur, qui est un nom d'énumération, jamais du texte privilégié.
+    "chat_model_empty",
     "chat_tool_call",
     "chat_tool_refused",
     # The claim transaction observed an advanced step and exited without

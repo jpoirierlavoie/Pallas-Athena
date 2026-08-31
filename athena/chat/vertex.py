@@ -44,6 +44,8 @@ import requests
 
 from config import Config
 
+from utils.logging_setup import log_chat_event
+
 from chat import gemini
 
 ANTHROPIC_VERSION = "vertex-2023-10-16"
@@ -255,6 +257,47 @@ def call_model(
         or not isinstance(parsed.get("usage"), dict)
     ):
         raise ChatVertexFatal("vertex_bad_response", 200)
+    # A response carrying NO content block at all is not an answer, whatever
+    # the stop reason says. Observed in production 2026-08-31: Gemini
+    # returned zero blocks with zero output tokens on the fifth call of a
+    # scheduled briefing; the engine took that for a completed turn, and the
+    # lawyer received an empty email — no note, no error, nothing anywhere
+    # saying the briefing had not been produced. The shape was valid; the
+    # answer was absent, and only this seam sees both.
+    #
+    # The split is by REMEDY, not by severity — retrying something
+    # deterministic burns the queue's attempts to reproduce itself:
+    #   refusal      → the same prompt is blocked again. Fatal.
+    #   max_tokens   → the budget is spent before a visible part is emitted
+    #                  (thinking counts against maxOutputTokens). The remedy
+    #                  is configuration, not repetition — so it FALLS THROUGH
+    #                  to the ordinary terminal path, where turn_engine
+    #                  records truncated=True. Honest, and it keeps whatever
+    #                  earlier segments of the turn did produce.
+    #   everything   → genuinely unexplained. The step token is not consumed
+    #   else           on a retryable, so Cloud Tasks simply redoes the call,
+    #                  bounded by CHAT_TASK_RETRY_TERMINAL, ending in a LOUD
+    #                  fail_turn.
+    if not parsed["content"] and parsed.get("stop_reason") != "max_tokens":
+        raw = str(parsed.get("raw_stop_reason") or "")
+        # Logged HERE because the raise never reaches the engine's
+        # chat_model_call line: without this, an empty response leaves no
+        # trace naming its own shape — the exact thing that made the
+        # 2026-08-31 incident undiagnosable after the fact. The provider's
+        # enum name is not privileged text, so it travels.
+        log_chat_event(
+            "chat_model_empty",
+            "failure",
+            model=model_key,
+            stop_reason=str(parsed.get("stop_reason") or ""),
+            raw_stop_reason=raw,
+            blocks=0,
+            input_tokens=int((parsed.get("usage") or {}).get("input_tokens") or 0),
+            output_tokens=int((parsed.get("usage") or {}).get("output_tokens") or 0),
+        )
+        if parsed.get("stop_reason") == "refusal":
+            raise ChatVertexFatal("vertex_refusal", 200, raw)
+        raise ChatVertexRetryable("vertex_empty_response", 200)
     return parsed
 
 

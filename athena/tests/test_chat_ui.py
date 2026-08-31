@@ -549,6 +549,10 @@ def test_chat_event_vocabulary_and_emissions_agree_both_ways():
         # the whole point of the event.
         Path(_ATHENA) / "chat" / "registry.py",
         Path(_ATHENA) / "chat" / "mail_executor.py",
+        # vertex.py a rejoint les émetteurs le 2026-08-31 : chat_model_empty
+        # se lève dans le TRANSPORT, avant que le moteur n'ait pu émettre sa
+        # ligne — c'est tout l'intérêt de l'événement.
+        Path(_ATHENA) / "chat" / "vertex.py",
     ]
     for path in sources:
         emitted |= set(

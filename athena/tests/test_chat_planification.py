@@ -390,6 +390,147 @@ def _finalized_scheduled_conv(world, deliver_email=True):
     return cc.get_conversation(conv["id"])
 
 
+def _finalized_scheduled_conv_empty(world):
+    """La même chose, mais dont le tour final ne porte AUCUN texte.
+
+    C'est l'état exact produit par l'incident du 2026-08-31 : quatre appels
+    d'outils réussis, puis un cinquième appel rendu sans le moindre bloc.
+    """
+    task = _seed_task(world, deliver_email=True)
+    conv, _ = cc.create_conversation(
+        {
+            "title": "Relevé vide — 2026-09-01",
+            "model": "claude-sonnet-5", "origin": "planifiee",
+            "scheduled_task_id": task["id"], "owner_uid": "u1",
+        }
+    )
+    turn, _ = cc.start_turn(conv["id"], "Rapport", by="planificateur")
+    cc.commit_step(
+        conv["id"], turn["id"], turn["step_token"],
+        next_state="final",
+        segment={
+            "step": 1, "model": "claude-sonnet-5",
+            "blocks": [],                       # <- rien
+            "stop_reason": "end_turn", "usage": {"input_tokens": 63335},
+            "pricing": {"usd_micros": 1}, "tool_results": None,
+        },
+    )
+    return cc.get_conversation(conv["id"])
+
+
+def test_an_empty_report_sends_a_failure_notice_not_the_report(world, monkeypatch):
+    """Un rapport vide ne se livre pas — mais le SILENCE non plus.
+
+    Premier réflexe : ne rien envoyer. C'était une erreur, et l'incident du
+    2026-08-31 le prouve — il n'a été DÉTECTÉ que parce qu'un courriel vide
+    est arrivé. Une absence, un mardi matin, se confond avec « rien à
+    signaler » : la tâche pourrait mourir des semaines sans que personne le
+    voie. Un courriel vide entraîne à ignorer le canal ; le silence le
+    supprime. On envoie donc un AVIS qui nomme la panne.
+    """
+    sent: list = []
+    monkeypatch.setattr(
+        planification.courriel, "envoyer",
+        lambda dest, objet, corps: sent.append((dest, objet, corps)),
+    )
+    conv = _finalized_scheduled_conv_empty(world)
+    planification.livrer_rapport(conv)
+    assert len(sent) == 1
+    _dest, objet, corps = sent[0]
+    assert "échec" in objet
+    assert "sans produire de rapport" in corps
+    # Le marqueur est posé par l'avis : au plus UN courriel par exécution,
+    # avis compris, et jamais les deux.
+    assert cc.get_conversation(conv["id"]).get("courriel_livre") is True
+    planification.livrer_rapport(cc.get_conversation(conv["id"]))
+    assert len(sent) == 1
+    assert any(
+        e["event"] == "chat_report_emailed" and e.get("reason") == "aucun_rapport"
+        for e in world.events
+    )
+
+
+def test_interstitial_narration_does_not_pass_for_a_report(world, monkeypatch):
+    """La forme que produit une troncature : les appels d'outils narrés,
+    puis plus rien.
+
+    Le corps concatène TOUS les segments, si bien qu'une seule ligne de
+    narration suffisait à rendre le rapport « non vide » et à le livrer,
+    alors que le tour n'a jamais conclu. C'est pourquoi la décision porte
+    sur le DERNIER segment, pas sur la concaténation.
+    """
+    sent: list = []
+    monkeypatch.setattr(
+        planification.courriel, "envoyer",
+        lambda dest, objet, corps: sent.append((dest, objet, corps)),
+    )
+    task = _seed_task(world, deliver_email=True)
+    conv, _ = cc.create_conversation({
+        "title": "Relevé narré — 2026-09-01", "model": "claude-sonnet-5",
+        "origin": "planifiee", "scheduled_task_id": task["id"],
+        "owner_uid": "u1",
+    })
+    turn, _ = cc.start_turn(conv["id"], "Rapport", by="planificateur")
+    token = turn["step_token"]
+    for i in (1, 2):
+        _st, token = cc.commit_step(
+            conv["id"], turn["id"], token, next_state="running",
+            segment={"step": i, "model": "claude-sonnet-5",
+                     "blocks": [{"type": "text",
+                                 "text": f"Je consulte l'outil {i}."}],
+                     "stop_reason": "tool_use", "usage": {"input_tokens": 1},
+                     "pricing": {"usd_micros": 1}, "tool_results": []},
+        )
+    cc.commit_step(
+        conv["id"], turn["id"], token, next_state="final",
+        segment={"step": 3, "model": "claude-sonnet-5", "blocks": [],
+                 "stop_reason": "end_turn", "usage": {"input_tokens": 1},
+                 "pricing": {"usd_micros": 1}, "tool_results": None},
+    )
+    planification.livrer_rapport(cc.get_conversation(conv["id"]))
+    assert len(sent) == 1
+    assert "échec" in sent[0][1]
+    assert "Je consulte" not in sent[0][2]
+
+
+def test_an_unreadable_registre_is_not_called_an_empty_report(world, monkeypatch):
+    """« Vide » est une affirmation sur des données ; une lecture ratée n'en
+    autorise aucune (la doctrine get_dossier_strict / subtree_members)."""
+    sent: list = []
+    monkeypatch.setattr(
+        planification.courriel, "envoyer",
+        lambda dest, objet, corps: sent.append((dest, objet, corps)),
+    )
+    monkeypatch.setattr(
+        planification.conv_model, "list_turns",
+        lambda cid: (_ for _ in ()).throw(RuntimeError("firestore")),
+    )
+    conv = _finalized_scheduled_conv_empty(world)
+    planification.livrer_rapport(conv)
+    assert len(sent) == 1 and "n'a pas pu être lu" in sent[0][2]
+    assert any(
+        e["event"] == "chat_report_emailed"
+        and e.get("reason") == "registre_illisible"
+        for e in world.events
+    )
+
+
+def test_livrer_echec_reaches_the_inbox_from_a_dead_turn(world, monkeypatch):
+    """livrer_rapport ne s'atteint QUE sur la branche de succès terminal :
+    sans ce second point d'entrée, un tour mort ne disait rien à personne."""
+    sent: list = []
+    monkeypatch.setattr(
+        planification.courriel, "envoyer",
+        lambda dest, objet, corps: sent.append((dest, objet, corps)),
+    )
+    conv = _finalized_scheduled_conv_empty(world)
+    planification.livrer_echec(conv)
+    assert len(sent) == 1 and "échec" in sent[0][1]
+    # Même marqueur : un rapport ne peut plus suivre l'avis.
+    planification.livrer_rapport(cc.get_conversation(conv["id"]))
+    assert len(sent) == 1
+
+
 def test_report_email_sends_exactly_once(world, monkeypatch):
     sent: list = []
     monkeypatch.setattr(

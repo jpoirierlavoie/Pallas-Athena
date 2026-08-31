@@ -60,7 +60,12 @@ _FINISH_REASONS = {
     "PROHIBITED_CONTENT": "refusal",
     "SPII": "refusal",
     "IMAGE_SAFETY": "refusal",
-    "MALFORMED_FUNCTION_CALL": "refusal",
+    # PAS un refus : Gemini rend ce motif quand il a mal formé SON PROPRE
+    # appel d'outil. C'est un raté d'échantillonnage, documenté comme
+    # transitoire, et aucun paramètre d'échantillonnage n'étant envoyé, une
+    # redélivrance ré-échantillonne vraiment. Le ranger avec SAFETY le
+    # rendait fatal sans une seule reprise.
+    "MALFORMED_FUNCTION_CALL": "malformed_tool_call",
 }
 
 _ID_SEPARATEUR = "#"
@@ -321,12 +326,43 @@ def parse_response(payload: dict) -> dict[str, Any]:
         if texte:
             blocs.append({"type": "text", "text": str(texte)})
 
-    brut = str(premier.get("finishReason") or "STOP")
-    stop = _FINISH_REASONS.get(brut, "end_turn")
+    # Un blocage au niveau de l'INVITE ne produit aucun candidat : sans
+    # cette lecture, `candidats` est vide, `finishReason` est absent, et le
+    # défaut « STOP » ci-dessous ferait passer un refus de filtre pour une
+    # réponse terminée normalement. C'est déterministe — la même invite est
+    # rebloquée —, d'où « refusal », que vertex traite en fatal plutôt qu'en
+    # reprise.
+    blocage = str(
+        (payload.get("promptFeedback") or {}).get("blockReason") or ""
+    ).strip()
+    brut = str(premier.get("finishReason") or ("STOP" if candidats else ""))
+    if blocage:
+        brut = blocage
+        stop = "refusal"
+    else:
+        # Le défaut n'est PLUS « end_turn ». L'énumération de Vertex compte
+        # des membres que cette table ignore — OTHER, LANGUAGE,
+        # UNEXPECTED_TOOL_CALL, TOO_MANY_TOOL_CALLS,
+        # FINISH_REASON_UNSPECIFIED — et les blanchir en fin normale fait
+        # passer un arrêt anormal pour un tour complet : une réponse
+        # PARTIELLE sous un de ces motifs échappe même à la garde de vide et
+        # se livre comme un rapport entier.
+        stop = _FINISH_REASONS.get(brut, "unknown")
     # Un appel d'outil prime : Gemini rend « STOP » avec un functionCall,
     # là où le moteur attend « tool_use » pour continuer la chaîne. Sans
     # cette ligne, tout tour outillé se terminerait après un seul appel.
-    if a_un_appel and stop not in ("max_tokens", "refusal"):
+    if a_un_appel and stop not in (
+        "max_tokens", "refusal", "malformed_tool_call"
+    ):
         stop = "tool_use"
 
-    return {"content": blocs, "stop_reason": stop, "usage": _usage(payload)}
+    # Le motif BRUT voyage avec la réponse. Le journal n'enregistrait que le
+    # motif traduit, si bien qu'un « end_turn » vide ne disait pas s'il
+    # venait d'un STOP, d'un motif inconnu, ou d'aucun candidat du tout —
+    # exactement la question qu'on se pose quand on enquête dessus.
+    return {
+        "content": blocs,
+        "stop_reason": stop,
+        "usage": _usage(payload),
+        "raw_stop_reason": brut,
+    }

@@ -318,25 +318,120 @@ def _render_markdown(text: str) -> str:
     )
 
 
-def _final_report_text(conversation_id: str) -> str:
-    """The last assistant turn's visible text (thinking excluded)."""
-    turns = conv_model.list_turns(conversation_id)
+def _final_report(conversation_id: str) -> tuple[str, bool, bool]:
+    """``(texte, conclu, lisible)`` du dernier tour d'assistant terminé.
+
+    Trois valeurs plutôt qu'une chaîne, parce que « chaîne vide » recouvrait
+    trois états qu'il faut distinguer avant de décider d'un envoi :
+
+    ``lisible`` — ``list_turns`` échoue OUVERT (une panne Firestore rend une
+    liste vide). Sans ce drapeau, une lecture ratée s'annonçait « rapport
+    vide », c'est-à-dire une affirmation sur des données que personne n'avait
+    lues — le motif que le dépôt interdit ailleurs (``get_dossier_strict``,
+    ``subtree_members``).
+
+    ``conclu`` — le DERNIER segment a-t-il porté du texte ? Le corps
+    concatène tous les segments, si bien qu'une narration intercalaire
+    (« Je consulte l'outil 1. ») suffisait à rendre le rapport « non vide »
+    alors que le tour n'a jamais produit de conclusion. C'est la forme que
+    produit une troncature : les appels d'outils narrés, puis plus rien.
+    """
+    try:
+        turns = conv_model.list_turns(conversation_id)
+    except Exception:
+        return "", False, False
+    if not turns:
+        return "", False, False
     for turn in reversed(turns):
         if turn.get("role") == "assistant" and turn.get("state") == "final":
             parts: list[str] = []
+            dernier: list[str] = []
             for segment in turn.get("segments") or []:
+                dernier = []
                 for block in segment.get("blocks") or []:
                     if block.get("type") == "text":
-                        parts.append(block.get("text", ""))
+                        dernier.append(block.get("text", ""))
                     elif (
                         block.get("type") == "storage_ref"
                         and block.get("original_type") == "text"
                     ):
                         # Preview only — an emailed report is a convenience
                         # copy; the app holds the complete registre.
-                        parts.append(block.get("preview", ""))
-            return "\n\n".join(p for p in parts if p)
-    return ""
+                        dernier.append(block.get("preview", ""))
+                parts.extend(dernier)
+            texte = "\n\n".join(p for p in parts if p)
+            return texte, any(p.strip() for p in dernier), True
+    return "", False, True
+
+
+_MOTIFS_AVIS = {
+    "registre_illisible": (
+        "Le registre de la conversation n'a pas pu être lu, donc le rapport "
+        "n'a pas pu être assemblé. Rien n'indique que le travail lui-même a "
+        "échoué : ouvrez la conversation dans Athéna."
+    ),
+    "aucun_rapport": (
+        "L'exécution s'est terminée sans produire de rapport. Les outils "
+        "ont pu s'exécuter — ouvrez la conversation dans Athéna pour voir "
+        "où elle s'est arrêtée."
+    ),
+    "echec": (
+        "L'exécution a échoué avant de produire un rapport. Ouvrez la "
+        "conversation dans Athéna : le dernier tour porte l'erreur."
+    ),
+}
+
+
+def _livrer_avis(conv: dict, task_id: str, motif: str) -> None:
+    """Dire à l'avocat que le rapport n'aura pas lieu — sur le canal où il
+    attend le rapport.
+
+    Ne rien envoyer était le premier réflexe, et c'était une erreur : ce
+    défaut n'a été DÉTECTÉ que parce qu'un courriel vide est arrivé. Une
+    absence, un mardi matin, n'est pas un événement — elle se confond avec
+    « rien à signaler », et la tâche peut mourir des semaines sans que
+    personne s'en aperçoive. Un courriel vide entraîne à ignorer le canal ;
+    le silence le supprime. L'avis nomme la panne et renvoie à la
+    conversation.
+
+    Il emprunte le MÊME marqueur que le rapport : au plus un courriel par
+    exécution, avis compris, et jamais les deux.
+    """
+    conversation_id = conv.get("id", "")
+    if not conv_model.poser_marqueur_courriel(conversation_id):
+        return
+    try:
+        courriel.envoyer(
+            Config.AUTHORIZED_USER_EMAIL,
+            f"Rapport planifié — échec — {conv.get('title', '')}",
+            f"<p>{_MOTIFS_AVIS.get(motif, _MOTIFS_AVIS['echec'])}</p>",
+        )
+        log_chat_event(
+            "chat_report_emailed", "failure",
+            task_id=task_id, conversation_id=conversation_id, reason=motif,
+        )
+    except Exception:
+        log_chat_event(
+            "chat_report_emailed", "failure",
+            task_id=task_id, conversation_id=conversation_id,
+            reason="avis_non_livre",
+        )
+
+
+def livrer_echec(conv: Optional[dict]) -> None:
+    """L'avis, appelé depuis les branches d'ÉCHEC du moteur.
+
+    ``livrer_rapport`` ne s'atteint que sur la branche de succès terminal :
+    un tour mort d'épuisement des reprises ou d'une erreur fatale n'y passe
+    jamais, donc il ne livrait rien du tout.
+    """
+    if not conv or conv.get("origin") != "planifiee":
+        return
+    task_id = conv.get("scheduled_task_id") or ""
+    task = task_model.get_task(task_id) if task_id else None
+    if not task or not task.get("deliver_email"):
+        return
+    _livrer_avis(conv, task_id, "echec")
 
 
 def livrer_rapport(conv: dict) -> None:
@@ -352,11 +447,21 @@ def livrer_rapport(conv: dict) -> None:
     if not task or not task.get("deliver_email"):
         return
     conversation_id = conv.get("id", "")
+    # Les deux vérifications passent AVANT le marqueur. Le poser d'abord
+    # brûlerait le jeton d'au-plus-une-fois sur un envoi qui n'a jamais eu
+    # lieu, et plus rien n'aurait pu livrer ensuite — même une fois le
+    # défaut corrigé.
+    rapport, conclu, lisible = _final_report(conversation_id)
+    if not lisible:
+        _livrer_avis(conv, task_id, "registre_illisible")
+        return
+    if not rapport.strip() or not conclu:
+        _livrer_avis(conv, task_id, "aucun_rapport")
+        return
     if not conv_model.poser_marqueur_courriel(conversation_id):
         return  # already sent (or being sent by a racing finalizer)
     try:
-        report = _final_report_text(conversation_id)
-        corps = _render_markdown(report) or "<p>(rapport vide)</p>"
+        corps = _render_markdown(rapport)
         courriel.envoyer(
             Config.AUTHORIZED_USER_EMAIL,
             f"Rapport planifié — {conv.get('title', '')}",

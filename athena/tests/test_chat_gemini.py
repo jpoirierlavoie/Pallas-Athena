@@ -221,12 +221,23 @@ def test_l_aller_retour_d_un_appel_preserve_le_nom():
 def test_les_motifs_d_arret_se_traduisent():
     assert gemini.parse_response(
         _reponse([{"text": "x"}], "MAX_TOKENS"))["stop_reason"] == "max_tokens"
-    for brut in ("SAFETY", "PROHIBITED_CONTENT", "MALFORMED_FUNCTION_CALL"):
+    for brut in ("SAFETY", "PROHIBITED_CONTENT"):
         assert gemini.parse_response(
             _reponse([{"text": "x"}], brut))["stop_reason"] == "refusal"
-    # Un motif inconnu ne fait pas exploser le tour : il se lit « fini ».
+    # MALFORMED_FUNCTION_CALL a quitté le seau des refus le 2026-08-31 :
+    # Gemini a mal formé SON PROPRE appel d'outil, ce qui est un raté
+    # d'échantillonnage transitoire, pas une décision de politique. Rangé
+    # avec SAFETY, il devenait fatal sans une seule reprise.
     assert gemini.parse_response(
-        _reponse([{"text": "x"}], "ZORGLUB"))["stop_reason"] == "end_turn"
+        _reponse([{"text": "x"}], "MALFORMED_FUNCTION_CALL"),
+    )["stop_reason"] == "malformed_tool_call"
+    # Un motif INCONNU ne se lit plus « fini ». L'énumération de Vertex a
+    # des membres que la table ignore (OTHER, LANGUAGE, TOO_MANY_TOOL_CALLS
+    # …) : les blanchir en fin normale faisait passer un arrêt anormal pour
+    # un tour complet, et une réponse PARTIELLE sous un tel motif se livrait
+    # comme un rapport entier.
+    assert gemini.parse_response(
+        _reponse([{"text": "x"}], "ZORGLUB"))["stop_reason"] == "unknown"
 
 
 def test_un_refus_prime_sur_l_appel_d_outil():
@@ -259,7 +270,10 @@ def test_une_reponse_vide_reste_une_forme_valide():
     # exception — c'est lui qui décide de la terminalisation.
     out = gemini.parse_response({})
     assert out["content"] == []
-    assert out["stop_reason"] == "end_turn"
+    # « unknown », jamais « end_turn » : sans candidat il n'y a pas de motif
+    # d'arrêt, et en inventer un de succès est ce qui a fait passer une
+    # réponse absente pour un breffage terminé.
+    assert out["stop_reason"] == "unknown"
     assert out["usage"]["input_tokens"] == 0
 
 
@@ -380,3 +394,48 @@ def test_the_legislation_specs_still_declare_what_the_worker_emits():
                    if t["name"].startswith("legislation_")]
     assert legislation, "aucune fiche legislation_*"
     assert any("$schema" in _cles(t["input_schema"]) for t in legislation)
+
+
+# ── Réponses sans candidat (incident du 2026-08-31) ─────────────────────────
+
+
+def test_un_blocage_d_invite_devient_un_refus_et_non_une_fin_normale():
+    """Un blocage au niveau de l'INVITE ne rend AUCUN candidat.
+
+    Sans la lecture de `promptFeedback`, `finishReason` est absent, le défaut
+    « STOP » s'applique, et un refus de filtre se présente comme un tour
+    terminé normalement — ce qui est exactement la façon dont un breffage
+    planifié s'est soldé par un courriel vide.
+    """
+    out = gemini.parse_response(
+        {"promptFeedback": {"blockReason": "SAFETY"},
+         "usageMetadata": {"promptTokenCount": 63335}}
+    )
+    assert out["content"] == []
+    assert out["stop_reason"] == "refusal"
+    assert out["raw_stop_reason"] == "SAFETY"
+
+
+def test_aucun_candidat_ne_se_declare_pas_STOP():
+    """Sans candidat il n'y a pas de motif d'arrêt : ne pas en inventer un.
+
+    Le contenu reste vide, et c'est `vertex` qui tranche — ici en reprise,
+    le vide sans blocage étant traité comme transitoire.
+    """
+    out = gemini.parse_response({"candidates": [],
+                                 "usageMetadata": {"promptTokenCount": 10}})
+    assert out["content"] == []
+    assert out["raw_stop_reason"] == ""
+
+
+def test_le_motif_brut_voyage_avec_la_reponse():
+    """Deux motifs Gemini distincts se traduisent en « end_turn » : le
+    journal doit pouvoir les distinguer après coup."""
+    out = gemini.parse_response(
+        {"candidates": [{"content": {"parts": [{"text": "bonjour"}]},
+                         "finishReason": "STOP"}],
+         "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 2}}
+    )
+    assert out["stop_reason"] == "end_turn"
+    assert out["raw_stop_reason"] == "STOP"
+    assert out["usage"]["output_tokens"] == 2
