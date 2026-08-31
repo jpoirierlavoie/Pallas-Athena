@@ -408,3 +408,56 @@ def test_les_deux_axes_sont_offerts_en_listes_fermees():
     assert {c for c, _, _ in ctx["analyse_qualifications"]} == set(
         t.VALID_QUALIFICATIONS_ECRIT
     )
+
+
+# ── Deux textes, pas trois (2026-08-31) ─────────────────────────────────
+
+
+def test_le_juriste_n_a_plus_qu_un_champ_de_texte_a_lui():
+    """`description` a été RETIRÉ, et il ne doit pas revenir.
+
+    C'était le troisième champ de texte d'un document, et il était
+    redondant par construction : `record_analyse` y recopiait le résumé
+    de l'analyse, donc après toute analyse les deux portaient la même
+    chaîne. Depuis qu'ils s'éditaient séparément, ils pouvaient en plus
+    diverger — pire que la redondance.
+
+    Le partage est désormais net : `notes_internes` est le texte du
+    JURISTE (rien ne le réécrit), `analyse.resume` celui du MODÈLE, et
+    `genere_depuis` la provenance d'un document produit par la machine —
+    qui n'est ni l'un ni l'autre et ne s'édite pas.
+    """
+    defaut = doc._default_doc()
+    assert "description" not in defaut
+    assert "notes_internes" in defaut
+    assert "genere_depuis" in defaut
+
+
+def test_le_formulaire_n_ecrit_jamais_une_description(monde):
+    """La liste blanche de `update_metadata` est ce qui l'empêche.
+
+    Un formulaire périmé, un appel forgé, une couture oubliée : aucun ne
+    doit pouvoir ressusciter le champ.
+    """
+    store, _ = monde
+    maj, erreurs = doc.update_metadata(
+        "doc-1", {"description": "revenue par la bande",
+                  "notes_internes": "ma note"}
+    )
+    assert not erreurs, erreurs
+    assert maj.get("description", "") == ""
+    assert maj["notes_internes"] == "ma note"
+
+
+def test_la_recherche_libre_couvre_les_deux_textes_et_la_provenance():
+    """Elle cherchait dans `description`. Sans ce remplacement, retrouver
+    « la note d'honoraires de la facture 2026-003 » par son numéro aurait
+    cessé de fonctionner — silencieusement, comme toute recherche qui
+    rétrécit."""
+    import inspect
+
+    source = inspect.getsource(doc.list_documents)
+    assert 'd.get("notes_internes"' in source
+    assert 'd.get("genere_depuis"' in source
+    assert '"resume"' in source
+    assert 'd.get("description"' not in source

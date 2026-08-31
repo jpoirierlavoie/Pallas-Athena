@@ -1247,7 +1247,26 @@ A dossier may have **multiple protocols** over its lifetime, but **at most one `
               | "procès_verbal"
               | "procès_verbal_signification" | "procès_verbal_audience"
               | "transcription" | "mandat" | "autre",
-    "description": str,
+    # Un document porte DEUX textes, plus une provenance. `description`
+    # était un TROISIÈME champ, retiré le 2026-08-31 (décision du
+    # praticien) : `record_analyse` y RECOPIAIT le résumé de l'analyse,
+    # donc après toute analyse les deux portaient la même chaîne, et
+    # depuis qu'ils s'éditaient séparément ils pouvaient en plus diverger.
+    # Migration : `scripts/migrer_description_documents.py` (10
+    # redondantes jetées, 46 provenances déplacées, 1 texte humain versé
+    # aux notes — mesuré avant d'écrire une ligne).
+    "notes_internes": str,               # LE texte du juriste. Rien ne le
+                                          # réécrit — ni une analyse, ni une
+                                          # réanalyse ; c'est ce qui rend
+                                          # l'écrasement du reste tenable.
+    "genere_depuis": str,                # Provenance MACHINE (« Générée
+                                          # depuis la facture 2026-003-03 »).
+                                          # Ni l'un ni l'autre des deux
+                                          # textes : elle ne paraît sur aucun
+                                          # formulaire et ne s'édite pas —
+                                          # le motif des champs `portail_*`,
+                                          # sortis de `description` le
+                                          # 2026-08-27 pour la même raison.
     "tags": list[str],
     "document_date": datetime | None,     # July 2026 — the DOCUMENT's own
                                           # date (a judgment's date, a

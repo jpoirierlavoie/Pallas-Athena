@@ -599,13 +599,22 @@ def test_the_block_is_mobile_first():
 
 # ── L'analyse alimente les champs natifs (2026-08-27) ──────────────────────
 
-def test_the_analysis_fills_description_and_date(monde):
-    """Ce qui la rend utile hors de sa propre carte : le résumé devient la
-    description, la date lue devient la date du document — et le formulaire
-    d'édition les montre alors, et les laisse corriger."""
+def test_the_analysis_fills_the_document_date(monde):
+    """Ce qui la rend utile hors de sa propre carte : la date LUE devient
+    la date du document, et le formulaire d'édition la montre alors, et la
+    laisse corriger.
+
+    Le résumé, lui, ne se recopie plus nulle part. Il alimentait
+    `description` jusqu'au 2026-08-31 — donc après toute analyse les deux
+    portaient la même chaîne, et depuis qu'elles s'éditaient séparément
+    elles pouvaient en plus diverger. Le champ a été retiré : un document
+    porte le texte du juriste (`notes_internes`) et celui du modèle
+    (`analyse.resume`), et rien d'autre.
+    """
     maj, err = doc.record_analyse("doc-1", _SORTIE)
     assert err == []
-    assert maj["description"] == _SORTIE["resume"]
+    assert maj["analyse"]["resume"] == _SORTIE["resume"]
+    assert "description" not in maj
     assert maj["document_date"].strftime("%Y-%m-%d") == "2026-03-14"
     # Date-seule à minuit UTC (convention document_date).
     assert (maj["document_date"].hour, maj["document_date"].minute) == (0, 0)
@@ -622,12 +631,16 @@ def test_a_reanalysis_overwrites_and_journals_what_it_replaced():
     pass  # remplacé ci-dessous par la version à harnais
 
 
-def test_a_blank_description_counts_as_empty(monde):
-    """Les 93 documents du portail repris ont une description vide — pas
-    absente. Un espace résiduel ne doit pas bloquer le remplissage."""
-    monde["store"]["doc-1"]["description"] = "   "
+def test_the_analysis_never_writes_a_third_text_field(monde):
+    """Le champ retiré ne doit pas revenir par une couture oubliée.
+
+    Une valeur héritée en base ne se recopie pas non plus : elle sera
+    migrée hors ligne, et jusque-là elle n'a aucun effet.
+    """
+    monde["store"]["doc-1"]["description"] = "héritée"
     maj, _ = doc.record_analyse("doc-1", _SORTIE)
-    assert maj["description"] == _SORTIE["resume"]
+    assert maj["analyse"]["resume"] == _SORTIE["resume"]
+    assert maj.get("description", "") == "héritée"   # intacte, jamais lue
 
 
 # ── La page de détail rend TOUT (2026-08-27) ───────────────────────────────
@@ -644,7 +657,8 @@ def _detail(**over):
         "file_type": "application/pdf", "category": "jugement",
         "category_source": "analyse", "_file_size_fmt": "1 Mo",
         "_file_icon": "pdf", "dossier_id": "dd",
-        "dossier_file_number": "2026-034", "description": "Desc.",
+        "dossier_file_number": "2026-034",
+        "notes_internes": "Ma note.", "genere_depuis": "",
         "tags": ["portail"], "portail_invitation_id": "inv",
         "created_at": datetime(2026, 8, 26, tzinfo=timezone.utc),
         "analyse": {"sous_nature": "JUG_JUGEMENT", "nature_detectee": "jugement",
@@ -675,7 +689,11 @@ def test_the_detail_page_renders_every_section():
         ("dossier", "2026-034"),
         ("bloc d'analyse", ">Analyse<"),
         ("provenance du portail", "Reçu du portail"),
-        ("description", "Desc."),
+        # Le champ « description » est retiré depuis le 2026-08-31 : un
+        # document porte le texte du JURISTE (notes internes) et celui du
+        # MODÈLE (le résumé de l'analyse), pas un troisième qui recopiait
+        # le second.
+        ("notes internes", "Ma note."),
         ("étiquettes", ">portail<"),
         ("dates", "Ajouté le"),
         ("visualiseur", "<iframe"),
@@ -707,20 +725,15 @@ def test_a_non_pdf_gets_no_pdf_link():
     assert "Ouvrir le PDF" not in html
 
 
-def test_the_analysis_owns_description_and_date(monde):
-    """Elle les ÉCRASE, et le journal garde ce qu'elle a remplacé."""
-    monde["store"]["doc-1"]["description"] = "Ancienne description."
+def test_the_analysis_owns_the_document_date(monde):
+    """Elle l'ÉCRASE, et le journal garde ce qu'elle a remplacé."""
     monde["store"]["doc-1"]["document_date"] = datetime(
         2020, 1, 1, tzinfo=timezone.utc
     )
     maj, err = doc.record_analyse("doc-1", _SORTIE)
     assert err == []
-    assert maj["description"] == _SORTIE["resume"]
     assert maj["document_date"].strftime("%Y-%m-%d") == "2026-03-14"
-
-    a = maj["analyse"]
-    assert a["description_precedente"] == "Ancienne description."
-    assert a["date_document_precedente"].year == 2020
+    assert maj["analyse"]["date_document_precedente"].year == 2020
 
 
 def test_the_analysis_never_touches_the_internal_notes(monde):
