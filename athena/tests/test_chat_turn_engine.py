@@ -1368,3 +1368,109 @@ def test_the_fallback_still_declines_a_document_with_text(monkeypatch):
         {"name": "get_document_text", "input": {"document_id": "d1"}},
         execution, {"id": "c1"}, {"id": "t1"},
     ) == []
+
+
+# ── La reprise après autorisation, et le rejeu des écritures approuvées ─────
+#
+# Les outils approuvés s'exécutent AVANT l'appel de modèle. Tant que leurs
+# résultats n'étaient pas commis, tout retryable levé par cet appel faisait
+# rejouer le lot ENTIER à la redélivrance — jusqu'à cinq fois sur une panne
+# soutenue, et le registre n'en gardait aucune trace.
+
+
+def _reprise_approuvee(world, monkeypatch, executed):
+    """Amène la conversation juste après un «  Approuver  » : un lot en
+    attente, ses résultats non commis, et le prochain appel de modèle à
+    faire."""
+    monkeypatch.setattr(
+        turn_engine.registry, "GATED_TOOLS", frozenset({"revise_draft"})
+    )
+    monkeypatch.setattr(
+        turn_engine.executors, "execute_tool",
+        lambda name, args, **kw: (
+            executed.append(name),
+            SimpleNamespace(content='{"fait": true}', is_error=False),
+        )[1],
+    )
+    calls = [
+        {"type": "tool_use", "id": "t-rev", "name": "revise_draft", "input": {}},
+        {"type": "tool_use", "id": "t-note", "name": "create_note", "input": {}},
+    ]
+    world.vertex.responses = [_response(calls, "tool_use")]
+    assert turn_engine.process_task(_payload(world), 0) == "paused"
+    assert executed == []
+    status, token = cc.decide_authorization(
+        world.conv["id"], world.turn["id"],
+        approved=["t-rev", "t-note"], refused=[],
+    )
+    assert status == "ok"
+    return token
+
+
+def test_a_retryable_after_approval_does_not_replay_the_batch(world, monkeypatch):
+    """Le défaut, et sa réparation.
+
+    Le lot approuvé tourne, l'appel de modèle échoue de façon transitoire.
+    Ses résultats sont commis AVANT que l'exception ne remonte, si bien que
+    la redélivrance tombe dans la branche de réparation déjà existante,
+    trouve `tool_results` non nul et saute le bloc en attente.
+    """
+    executed: list = []
+    token = _reprise_approuvee(world, monkeypatch, executed)
+
+    world.vertex.responses = [
+        turn_engine.vertex.ChatVertexRetryable("vertex_http_429", 429)
+    ]
+    with pytest.raises(turn_engine.vertex.ChatVertexRetryable):
+        turn_engine.process_task(_payload(world, token), 0)
+    assert executed == ["revise_draft", "create_note"]
+    stored = _stored_turn(world)
+    assert stored["segments"][0]["tool_results"] is not None, (
+        "les résultats doivent être commis AVANT que l'exception ne remonte"
+    )
+
+    # La redélivrance porte l'ANCIEN jeton : la branche de réparation la
+    # ré-enfile, et le tour repris n'exécute plus rien.
+    world.vertex.responses = [_response([{"type": "text", "text": "Suite."}])]
+    turn_engine.process_task(_payload(world, token), 0)
+    nouveau = _stored_turn(world)["step_token"]
+    world.vertex.responses = [_response([{"type": "text", "text": "Suite."}])]
+    assert turn_engine.process_task(_payload(world, nouveau), 0) == "final"
+    assert executed == ["revise_draft", "create_note"], (
+        "le lot approuvé ne doit jamais tourner deux fois"
+    )
+
+
+def test_a_fatal_after_approval_still_terminalizes(world, monkeypatch):
+    """Le test qui manquait, et qui rendait l'option écartée « sûre ».
+
+    Une erreur FATALE après une reprise doit terminaliser le tour et libérer
+    la conversation. La variante qu'on a écartée — commettre en rotant le
+    jeton AVANT l'appel — laissait le gestionnaire fatal de `process_task`
+    avec un jeton périmé : son commit perdait la course en silence, le tour
+    restait `running` pour toujours, et le journal annonçait un échec propre.
+    """
+    executed: list = []
+    token = _reprise_approuvee(world, monkeypatch, executed)
+
+    world.vertex.responses = [
+        turn_engine.vertex.ChatVertexFatal("vertex_invalid_request", 400, "détail")
+    ]
+    assert turn_engine.process_task(_payload(world, token), 0) == "failed"
+    stored = _stored_turn(world)
+    assert stored["state"] == "failed", "la conversation ne doit pas rester bloquée"
+    assert stored["error"]["code"] == "vertex_invalid_request"
+    assert cc.get_conversation(world.conv["id"])["active_turn_id"] == ""
+
+
+def test_the_happy_path_still_commits_exactly_once(world, monkeypatch):
+    """La garde de non-régression : hors panne, rien ne change. Le lot
+    approuvé produit UN segment, pas deux."""
+    executed: list = []
+    token = _reprise_approuvee(world, monkeypatch, executed)
+    world.vertex.responses = [_response([{"type": "text", "text": "Fini."}])]
+    assert turn_engine.process_task(_payload(world, token), 0) == "final"
+    stored = _stored_turn(world)
+    assert len(stored["segments"]) == 2, [s.get("stop_reason") for s in stored["segments"]]
+    assert stored["segments"][0]["tool_results"] is not None
+    assert executed == ["revise_draft", "create_note"]

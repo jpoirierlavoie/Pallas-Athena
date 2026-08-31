@@ -748,6 +748,24 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
             decision = (turn.get("authorization") or {}).get("decision") or {}
             refused = frozenset(decision.get("refused") or [])
             tool_uses = _tool_use_blocks(_rehydrate_all(last.get("blocks")))
+            # UNE ligne par exécution d'un lot approuvé, portant le pas et
+            # les identifiants d'appel. C'est le filet de détection du seul
+            # vecteur que rien ne ferme : deux redélivrances CONCURRENTES
+            # peuvent encore réclamer le même jeton et exécuter le lot
+            # toutes les deux (claim_step le reconnaît pour l'appel de
+            # modèle — « double-pay one model call » — et se tait sur le
+            # lot). Deux lignes portant le même turn_id ET le même step
+            # signifient qu'un lot approuvé a tourné deux fois : c'est la
+            # seule trace qui le dirait, l'écriture elle-même étant
+            # indiscernable d'une écriture légitime.
+            log_chat_event(
+                "chat_authorization",
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                decision="lot_execute",
+                step=step,
+                tool_use_ids=[str(b.get("id") or "") for b in tool_uses],
+            )
             pending_results = _store_blocks(
                 _run_tools(
                     tool_uses,
@@ -773,9 +791,52 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
     messages = _assemble_messages(turns, turn_id)
 
     started = time.monotonic()
-    response = vertex.call_model(
-        conv.get("model", ""), system=system, messages=messages, tools=tools
-    )
+    try:
+        response = vertex.call_model(
+            conv.get("model", ""), system=system, messages=messages, tools=tools
+        )
+    except vertex.ChatVertexRetryable:
+        # Les outils APPROUVÉS ont déjà tourné, au-dessus. Sans ce commit,
+        # la redélivrance rejoue le lot ENTIER : claim_step ne consomme pas
+        # le jeton (à dessein — un appel mort à mi-course doit pouvoir être
+        # refait), et le bloc en attente est au-dessus de l'appel. Mesuré :
+        # deux exécutions à la première reprise, DIX au bout des cinq, et le
+        # registre n'en gardait aucune trace puisque rien n'était commis.
+        #
+        # Ne commettre QUE sur le retryable, jamais avant l'appel : un
+        # commit rote le jeton, et le gestionnaire d'erreur FATALE de
+        # process_task tient encore l'ancien. Commettre en amont ferait
+        # perdre sa course à ce commit-là, en silence — le tour resterait
+        # « running » pour toujours, sans reprise, sans bouton « Relancer »
+        # (le gabarit ne l'offre qu'en « pending »), sans passe de
+        # réparation (elle ne couvre que le planifié) et sans courriel,
+        # pendant que le journal annoncerait un échec propre. C'est la
+        # variante écartée, et c'est pourquoi le coût vit ici, sur le seul
+        # chemin d'échec : le chemin nominal est inchangé, octet pour octet.
+        if pending_results is not None:
+            statut, _tok = conv_model.commit_step(
+                conversation_id,
+                turn_id,
+                step_token,
+                next_state="running",
+                segment=None,
+                last_segment_tool_results=pending_results,
+            )
+            # Un « lost_race » est SANS DANGER ici, et c'est load-bearing :
+            # il implique que le jeton a déjà tourné (ou que le document a
+            # disparu), donc la redélivrance tombera sur « skip » ou sur la
+            # branche de réparation — jamais sur une seconde exécution.
+            # Cette garantie tombe si commit_step gagne une troisième cause
+            # de lost_race.
+            if statut == "lost_race":
+                log_chat_event(
+                    "chat_turn_failed",
+                    "failure",
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    reason="pending_results_lost_race",
+                )
+        raise
     duration_ms = int((time.monotonic() - started) * 1000)
 
     usage = response.get("usage") or {}
