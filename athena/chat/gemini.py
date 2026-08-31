@@ -45,6 +45,7 @@ sur le seul nom collerait les deux résultats l'un sur l'autre.
 from __future__ import annotations
 
 import json
+import keyword
 from typing import Any, Optional
 
 # Les motifs d'arrêt de Gemini, vers le vocabulaire du moteur.
@@ -190,6 +191,75 @@ _CLES_HORS_TYPE = frozenset(
 )
 
 
+# ── Le suffixe parasite (incident du 2026-08-31) ────────────────────────────
+#
+# UNE propriete nommee « from » dans UNE declaration corrompt les arguments
+# de TOUT le tableau : le modele rend alors date_from1, received_from1 — et,
+# sur l outil fautif lui-meme, from1_. Reproduit en A/B a deux declarations
+# comme a 69, sur Pro comme sur Flash, de facon deterministe : renommer la
+# propriete nettoie tout, la remettre re-corrompt.
+#
+# Le declencheur est la QUALITE DE MOT-CLE, pas le mot « from » : une
+# declaration voisine portant « class » corrompt de la meme facon un
+# « date_class ». Les mots-cles DOUX (« type », le seul present ici) ne
+# declenchent rien — verifie.
+#
+# Aucun message d erreur ne peut reparer cela : replace devant un refus qui
+# NOMME date_from, le modele repond « je dois utiliser date_from » puis
+# re-emet date_from1. La corruption est en aval de l intention. Et seule la
+# DECLARATION compte : le meme nom dans l historique est inoffensif, ce qui
+# est ce qui rend le renommage sur ce seul bord suffisant.
+#
+# Le renommage vit donc a la frontiere Gemini, et la seulement : le
+# connecteur externe et le chemin Anthropic gardent le nom d origine, et le
+# Worker le recoit tel qu il l attend grace au chemin retour.
+_SUFFIXE_MOT_CLE = "_arg"
+
+
+def _nom_expose(nom: str) -> str:
+    """Le nom de propriete tel que Gemini doit le voir."""
+    return f"{nom}{_SUFFIXE_MOT_CLE}" if keyword.iskeyword(nom) else nom
+
+
+def _nom_origine(nom: str) -> str:
+    """L inverse, applique aux arguments qui reviennent.
+
+    Auto-inverse sans consulter les schemas : seul un nom dont la RACINE est
+    un mot-cle est ramene. Une propriete reellement nommee « from_arg »
+    serait ambigue — il n en existe aucune dans le corpus (93 proprietes
+    balayees), et le test de garde le maintient.
+    """
+    if nom.endswith(_SUFFIXE_MOT_CLE):
+        racine = nom[: -len(_SUFFIXE_MOT_CLE)]
+        if keyword.iskeyword(racine):
+            return racine
+    return nom
+
+
+def _renommer_proprietes(valeur):
+    """Applique _nom_expose aux CLES de « properties », en profondeur.
+
+    Les listes « required » suivent : un nom renomme qui resterait requis
+    sous son ancienne forme ferait refuser chaque appel.
+    """
+    if isinstance(valeur, dict):
+        sortie = {}
+        for cle, sous in valeur.items():
+            if cle == "properties" and isinstance(sous, dict):
+                sortie[cle] = {
+                    _nom_expose(k): _renommer_proprietes(v)
+                    for k, v in sous.items()
+                }
+            elif cle == "required" and isinstance(sous, list):
+                sortie[cle] = [_nom_expose(str(n)) for n in sous]
+            else:
+                sortie[cle] = _renommer_proprietes(sous)
+        return sortie
+    if isinstance(valeur, list):
+        return [_renommer_proprietes(v) for v in valeur]
+    return valeur
+
+
 def _parametres(valeur):
     """Le schéma, débarrassé des méta-clés, en profondeur.
 
@@ -228,7 +298,7 @@ def function_declarations(tools: list[dict]) -> list[dict]:
             {
                 "name": outil.get("name", ""),
                 "description": outil.get("description", ""),
-                "parameters": _parametres(schema),
+                "parameters": _renommer_proprietes(_parametres(schema)),
             }
         )
     return declarations
@@ -280,11 +350,21 @@ def _usage(payload: dict) -> dict:
     # sous-estimerait la dépense en silence, ce que la comptabilité du
     # registre ne doit jamais faire.
     sortie += int(meta.get("thoughtsTokenCount") or 0)
+    cache = int(meta.get("cachedContentTokenCount") or 0)
+    # ⚠ `promptTokenCount` est le total EFFECTIF de l invite, cache COMPRIS
+    # (doc Google : « when cachedContent is set, this is still the total
+    # effective prompt size »). Chez Anthropic `input_tokens` est au
+    # contraire la part NON mise en cache. `vertex.segment_cost_usd_micros`
+    # additionne les deux champs : laisser le total ici facturait la tranche
+    # mise en cache DEUX FOIS — une fois au plein tarif d entree, une fois
+    # au tarif de lecture de cache. On rend donc la part non cachee, ce qui
+    # est le contrat que la fonction de prix suppose deja pour les deux
+    # fournisseurs.
     return {
-        "input_tokens": entree,
+        "input_tokens": max(0, entree - cache),
         "output_tokens": sortie,
         "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": int(meta.get("cachedContentTokenCount") or 0),
+        "cache_read_input_tokens": cache,
     }
 
 
@@ -312,12 +392,16 @@ def parse_response(payload: dict) -> dict[str, Any]:
         if appel:
             nom = str(appel.get("name") or "")
             rangs[nom] = rangs.get(nom, 0) + 1
+            args = appel.get("args") or {}
             blocs.append(
                 {
                     "type": "tool_use",
                     "id": f"{nom}{_ID_SEPARATEUR}{rangs[nom]}",
                     "name": nom,
-                    "input": appel.get("args") or {},
+                    # Chemin retour du renommage : l executeur, le Worker et
+                    # le registre ne voient jamais que le nom d origine.
+                    "input": {_nom_origine(str(k)): v for k, v in args.items()}
+                    if isinstance(args, dict) else args,
                 }
             )
             a_un_appel = True

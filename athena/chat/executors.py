@@ -307,6 +307,21 @@ def _execute_in_process(
     if errors:
         # The model self-corrects on a listed refusal; validator strings are
         # schema-derived and quote no content.
+        #
+        # Logged under its OWN reason: until 2026-08-31 an argument refusal
+        # emitted nothing of its own, so it reached Cloud Logging as a plain
+        # `chat_tool_call`/failure — indistinguishable from a Firestore error
+        # or a Graph timeout. Eight consecutive refusals in one scheduled run
+        # therefore raised nothing, and the incident had to be read out of
+        # Firestore by hand. Argument NAMES are schema, never content.
+        log_chat_event(
+            "chat_tool_refused",
+            "refused",
+            tool=name,
+            step=step,
+            reason="validation_failed",
+            arguments_refused=sorted(str(k) for k in (arguments or {})),
+        )
         return ToolExecution(
             content=f"Invalid arguments for {name}: " + "; ".join(errors),
             is_error=True,
@@ -373,6 +388,37 @@ def _execute_worker(name: str, arguments: dict) -> ToolExecution:
     the model has to read WHY in order to correct itself.
     """
     spec = registry.find_worker_spec(name)
+    # Le chemin Worker ne validait RIEN : les trois autres exécuteurs
+    # passent par validate_args, celui-ci allait droit au réseau. Et les
+    # fiches legislation_* n'ont pas `additionalProperties: false` (les
+    # jurisprudence_* si), si bien qu'un argument au nom inconnu — le
+    # « from1_ » qu'a produit l'incident du 2026-08-31 sur l'outil même qui
+    # le causait — traversait sans un mot et arrivait au Worker comme une
+    # borne de plage tout simplement ABSENTE. L'appel réussissait, et les
+    # articles rendus se présentaient comme la plage demandée.
+    schema = (spec or {}).get("input_schema") or {}
+    if schema:
+        errors = mcp_tools.validate_args(schema, arguments)
+        # `additionalProperties` est imposé ici plutôt que dans la fiche :
+        # elle est ENGENDRÉE depuis le tools/list du Worker, donc une clé
+        # nouvelle chez lui repasserait par ce point sans que personne ne
+        # l'ait relue.
+        connues = set((schema.get("properties") or {}).keys())
+        if connues:
+            errors = list(errors) + [
+                f"`{k}` is not a supported argument"
+                for k in (arguments or {}) if k not in connues
+            ]
+        if errors:
+            log_chat_event(
+                "chat_tool_refused", "refused", tool=name,
+                reason="validation_failed",
+                arguments_refused=sorted(str(k) for k in (arguments or {})),
+            )
+            return ToolExecution(
+                content=f"Invalid arguments for {name}: " + "; ".join(errors),
+                is_error=True,
+            )
     result = call_worker(spec or {}, arguments)
     if not result.get("ok"):
         return ToolExecution(

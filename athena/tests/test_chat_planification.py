@@ -611,3 +611,58 @@ def test_cron_route_guard(monkeypatch):
         "/taches/chat/planification", headers={"X-Appengine-Cron": "true"}
     )
     assert response.status_code == 200
+
+
+def test_the_failure_notice_survives_an_unreadable_conversation(world, monkeypatch):
+    """Le piège que la première version portait : `_avis_echec` relisait
+    TOUJOURS la conversation par un getter qui échoue OUVERT.
+
+    Or la branche d'épuisement des reprises est atteinte précisément quand
+    Firestore ne répond pas — une lecture impossible EST le retryable qui
+    épuise les tentatives. La sixième lecture échouait comme les cinq
+    précédentes, `livrer_echec` sortait sur `if not conv`, et l'avis
+    n'était jamais envoyé : l'avertissement était désarmé par la panne même
+    qui devait le déclencher.
+    """
+    from chat import turn_engine
+    sent: list = []
+    monkeypatch.setattr(
+        planification.courriel, "envoyer",
+        lambda dest, objet, corps: sent.append((dest, objet, corps)),
+    )
+    conv = _finalized_scheduled_conv_empty(world)
+    monkeypatch.setattr(
+        turn_engine.conv_model, "get_conversation", lambda cid: None,
+    )
+    # L'appelant DÉTIENT la conversation : on la passe, et l'avis part.
+    turn_engine._avis_echec(conv["id"], conv)
+    assert len(sent) == 1 and "échec" in sent[0][1]
+
+
+def test_an_unreadable_conversation_is_said_out_loud(world, monkeypatch):
+    """Et quand l'appelant ne l'a pas, le silence se nomme : « rien n'était
+    dû » et « on n'a pas pu savoir » ne doivent pas se ressembler."""
+    from chat import turn_engine
+    sent: list = []
+    monkeypatch.setattr(
+        planification.courriel, "envoyer",
+        lambda dest, objet, corps: sent.append((dest, objet, corps)),
+    )
+    monkeypatch.setattr(
+        turn_engine.conv_model, "get_conversation", lambda cid: None,
+    )
+    # Le fixture `world` n'intercepte que planification.log_chat_event ;
+    # celle-ci part de turn_engine, donc on l'y capte aussi.
+    monkeypatch.setattr(
+        turn_engine, "log_chat_event",
+        lambda event, outcome="success", **kw: world.events.append(
+            {"event": event, "outcome": outcome, **kw}
+        ),
+    )
+    turn_engine._avis_echec("inconnue")
+    assert sent == []
+    assert any(
+        e["event"] == "chat_report_emailed"
+        and e.get("reason") == "conversation_illisible"
+        for e in world.events
+    )

@@ -157,6 +157,44 @@ def _type_ok(expected: Any, value: Any) -> bool:
     return True
 
 
+def _nearest_argument(key: str, properties: dict) -> str:
+    """The supported name a bad one was probably meant to be, or "".
+
+    Deliberately narrow — a prefix relation either way, case-folded. That
+    covers the shapes actually observed (a spurious suffix, a truncation,
+    a case slip) without the false confidence of an edit-distance guess:
+    naming the WRONG neighbour would send the caller off to fix a field it
+    never meant.
+    """
+    plie = key.casefold()
+    candidats = [
+        nom for nom in properties
+        if plie.startswith(nom.casefold()) or nom.casefold().startswith(plie)
+    ]
+    if not candidats:
+        return ""
+    # Ne suggérer QUE si les candidats forment une chaîne — le plus long
+    # étend tous les autres. Sinon ils divergent, et le plus long n'est
+    # qu'un frère parmi d'autres : « dossier » propose alors
+    # `dossier_status` là où l'appelant voulait `dossier_id`, et suivre la
+    # suggestion pose un filtre qui RÉTRÉCIT la portée en silence. Sur les
+    # 2 755 cas de suffixe parasite du corpus cette règle ne perd rien, et
+    # elle éteint les 24 cas divergents.
+    long = max(candidats, key=len)
+    plie_long = long.casefold()
+    if not all(plie_long.startswith(c.casefold()) for c in candidats):
+        return ""
+    # Et, quand c'est la CLÉ qui est plus courte, n'accepter que si le
+    # candidat la prolonge à une frontière de mot. Sans cela `id` propose
+    # `idempotency_key` — un nom sans rapport dont `id` n'est le préfixe que
+    # par accident de lettres, et que la garde de sécurité épinglée refuse
+    # précisément (un `id` fourni sur un outil d'écriture est une tentative
+    # d'écraser un document, pas une faute de frappe).
+    if len(plie) < len(plie_long) and plie_long[len(plie)] != "_":
+        return ""
+    return long
+
+
 def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
     errors: list[str] = []
 
@@ -244,7 +282,34 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
         if schema.get("additionalProperties") is False:
             for key in value:
                 if key not in properties:
-                    errors.append(f"`{key}` is not a supported argument")
+                    # NAME the supported arguments, and the near-miss when
+                    # one is unambiguous. A refusal that says only what is
+                    # wrong leaves the caller guessing; read_from_manifest
+                    # already answered « Fichier inconnu. Fichiers
+                    # disponibles : … » and the convention had simply never
+                    # reached here.
+                    #
+                    # ⚠ This does NOT explain the 2026-08-31 `date_from1`
+                    # incident, and an earlier draft of this comment claimed
+                    # it did. Replayed against the live model, a refusal
+                    # NAMING `date_from` gets « je dois utiliser date_from »
+                    # in reply — and `date_from1` emitted again. That
+                    # corruption is downstream of the model's intent and no
+                    # wording can reach it; its cause was a keyword property
+                    # name in the tool array (chat/gemini.py). This is a
+                    # plain improvement for ordinary wrong argument names,
+                    # nothing more.
+                    proche = _nearest_argument(key, properties)
+                    detail = f"`{key}` is not a supported argument"
+                    if proche:
+                        detail += f" — did you mean `{proche}`?"
+                    if properties:
+                        detail += (
+                            " (supported: "
+                            + ", ".join(f"`{k}`" for k in sorted(properties))
+                            + ")"
+                        )
+                    errors.append(detail)
         for key in schema.get("required", []):
             if key not in value:
                 errors.append(f"`{key}` is required")

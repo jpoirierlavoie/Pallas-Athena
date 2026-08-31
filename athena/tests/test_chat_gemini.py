@@ -255,6 +255,13 @@ def test_les_jetons_de_reflexion_comptent_en_sortie():
     }))
     assert out["usage"]["output_tokens"] == 520
     assert out["usage"]["cache_read_input_tokens"] == 7
+    # `promptTokenCount` est le total EFFECTIF, cache COMPRIS — là où
+    # `input_tokens` chez Anthropic est la part NON cachée. Le prix
+    # additionne les deux champs : rendre le total ici facturait la tranche
+    # cachée deux fois. L'invariant qui l'interdit :
+    assert out["usage"]["input_tokens"] == 100 - 7
+    assert (out["usage"]["input_tokens"]
+            + out["usage"]["cache_read_input_tokens"]) == 100
 
 
 def test_les_pensees_ne_reviennent_jamais_dans_le_contenu():
@@ -439,3 +446,59 @@ def test_le_motif_brut_voyage_avec_la_reponse():
     assert out["stop_reason"] == "end_turn"
     assert out["raw_stop_reason"] == "STOP"
     assert out["usage"]["output_tokens"] == 2
+
+
+# ── Le suffixe parasite (incident du 2026-08-31) ────────────────────────────
+
+
+def test_aucune_propriete_declaree_n_est_un_mot_cle():
+    """La garde du défaut : UNE propriété nommée « from » dans UNE
+    déclaration corrompt les arguments de TOUT le tableau — le modèle rend
+    `date_from1`, `received_from1`, et `from1_` sur l'outil fautif. Le
+    déclencheur est la qualité de mot-clé, pas le mot : un voisin portant
+    « class » corrompt de même un `date_class`.
+
+    Les mots-clés DOUX ne déclenchent rien (`type` reste `type`, vérifié en
+    direct), et `to` n'est pas un mot-clé — d'où `keyword.iskeyword` et non
+    une liste tenue à la main.
+    """
+    import keyword
+
+    spec = {
+        "name": "outil", "description": "d",
+        "input_schema": {"type": "object", "properties": {
+            "law": {"type": "string"},
+            "from": {"type": "string"},
+            "to": {"type": "string"},
+            "type": {"type": "string"},
+        }, "required": ["law", "from"]},
+    }
+    decl = gemini.function_declarations([spec])[0]
+    noms = list(decl["parameters"]["properties"].keys())
+    assert not [n for n in noms if keyword.iskeyword(n)], noms
+    assert "from_arg" in noms and "to" in noms and "type" in noms
+    # `required` suit le renommage, sinon chaque appel serait refusé.
+    assert decl["parameters"]["required"] == ["law", "from_arg"]
+
+
+def test_le_nom_dorigine_revient_avant_l_execution():
+    """Le Worker attend « from » : le renommage ne vaut que pour la
+    déclaration, et le chemin retour est ce qui le rend invisible au
+    reste du système."""
+    out = gemini.parse_response({"candidates": [{"content": {"parts": [
+        {"functionCall": {"name": "legislation_qclaw_get_articles",
+                          "args": {"law": "ccq", "from_arg": "1457",
+                                   "to": "1460"}}}]},
+        "finishReason": "STOP"}], "usageMetadata": {}})
+    assert out["content"][0]["input"] == {
+        "law": "ccq", "from": "1457", "to": "1460"}
+
+
+def test_seule_une_racine_mot_cle_est_ramenee():
+    """Le chemin retour ne consulte aucun schéma : il ne doit donc ramener
+    QUE ce que l'aller a pu produire. Un « limit_arg » resterait tel quel."""
+    out = gemini.parse_response({"candidates": [{"content": {"parts": [
+        {"functionCall": {"name": "x", "args": {"limit_arg": 1,
+                                                "class_arg": 2}}}]},
+        "finishReason": "STOP"}], "usageMetadata": {}})
+    assert out["content"][0]["input"] == {"limit_arg": 1, "class": 2}

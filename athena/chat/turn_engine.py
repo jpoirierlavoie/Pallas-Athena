@@ -500,20 +500,38 @@ def _native_pdf_fallback(
 # ── The task driver ─────────────────────────────────────────────────────────
 
 
-def _avis_echec(conversation_id: str) -> None:
-    """Prévenir l'avocat qu'une exécution planifiée est morte.
+def _avis_echec(conversation_id: str, conv: Optional[dict] = None) -> None:
+    """Prevenir l avocat qu une execution planifiee est morte.
 
-    Best-effort par contrat, comme la livraison du rapport : un problème de
-    courriel ne doit jamais faire échouer — ni rejouer — un tour déjà
-    terminalisé. Le marqueur d'au-plus-une-fois est partagé avec le
+    Best-effort par contrat, comme la livraison du rapport : un probleme de
+    courriel ne doit jamais faire echouer — ni rejouer — un tour deja
+    terminalise. Le marqueur d au-plus-une-fois est partage avec le
     rapport, donc jamais les deux.
+
+    ⚠ ``conv`` se passe quand l appelant l a deja. La premiere version
+    relisait TOUJOURS par ``get_conversation``, qui echoue OUVERT : la
+    branche d epuisement des reprises est atteinte precisement quand
+    Firestore ne repond pas (une lecture impossible EST le retryable qui
+    epuise les tentatives), si bien que la sixieme lecture echouait comme
+    les cinq precedentes, ``livrer_echec`` sortait sur ``if not conv`` et
+    l avis n etait jamais envoye. L avertissement etait desarme par la
+    panne meme qui devait le declencher.
     """
     try:
         from chat import planification
 
-        planification.livrer_echec(
-            conv_model.get_conversation(conversation_id)
-        )
+        if conv is None:
+            conv = conv_model.get_conversation(conversation_id)
+        if conv is None:
+            # Distinguer « rien n etait du » de « on n a pas pu savoir ».
+            log_chat_event(
+                "chat_report_emailed",
+                "failure",
+                conversation_id=conversation_id,
+                reason="conversation_illisible",
+            )
+            return
+        planification.livrer_echec(conv)
     except Exception:
         log_unexpected(
             "chat failure notice failed", conversation_id=conversation_id
@@ -621,7 +639,7 @@ def process_task(payload: dict, retry_count: int) -> str:
             turn_id=turn_id,
             reason=exc.reason,
         )
-        _avis_echec(conversation_id)
+        _avis_echec(conversation_id, conv)
         return "failed"
     except Exception:
         # A deterministic code fault retried five times would re-pay up to
@@ -921,6 +939,11 @@ def _advance(conv: dict, turn: dict, step_token: str) -> str:
                 reason="chain_ceiling",
                 model_calls=step + 1,
             )
+            # Le plafond est une mort terminale comme les autres : sans cet
+            # avis, une execution planifiee qui boucle sur un outil consomme
+            # ses 24 appels et ne dit rien a personne — la forme exacte du
+            # 2026-08-31, ou huit appels sur dix sont partis en refus.
+            _avis_echec(conversation_id, conv)
             return "failed"
         return _commit_and_continue(conversation_id, turn_id, step_token, common)
 
