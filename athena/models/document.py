@@ -239,11 +239,19 @@ def _default_doc() -> dict:
         "file_size": 0,
         "storage_path": "",
         "category": "autre",
-        "description": "",
-        # Le champ du JURISTE. `description` appartient à l'analyse, qui
-        # la réécrit à chaque exécution : sans un second champ, écrire une
-        # note et relancer une analyse s'excluaient.
+        # LE champ du juriste — le seul texte libre qu'il saisit.
+        # `description` a été retiré le 2026-08-31 : il était une TROISIÈME
+        # zone de texte, et `record_analyse` y recopiait le résumé de
+        # l'analyse, donc après toute analyse les deux disaient la même
+        # chose. Un document porte désormais le texte du juriste (ici) et
+        # celui du modèle (`analyse.resume`). Rien d'autre.
         "notes_internes": "",
+        # La PROVENANCE d'un document produit par la machine — « Générée
+        # depuis la facture 2026-003-03 ». Ni l'un ni l'autre des deux
+        # textes ci-dessus : elle ne paraît sur aucun formulaire et ne
+        # s'édite pas, exactement comme les champs `portail_*` qui ont
+        # quitté `description` pour la même raison le 2026-08-27.
+        "genere_depuis": "",
         "tags": [],
         # The DOCUMENT'S OWN date (a procès-verbal's service date, a
         # judgment's date…) — MANUAL, date-only at midnight UTC, never
@@ -740,7 +748,12 @@ def list_documents(
                 searchable = " ".join([
                     d.get("display_name", ""),
                     d.get("filename", ""),
-                    d.get("description", ""),
+                    # Les DEUX textes du document, plus la provenance —
+                    # « la note d'honoraires de la facture 2026-003 » se
+                    # retrouve encore par son numéro.
+                    (d.get("analyse") or {}).get("resume", ""),
+                    d.get("notes_internes", ""),
+                    d.get("genere_depuis", ""),
                     " ".join(d.get("tags", [])),
                 ]).lower()
                 if term in searchable:
@@ -777,7 +790,9 @@ def update_metadata(
 
     # Only allow updating specific metadata fields
     allowed_fields = {
-        "display_name", "category", "description", "tags", "document_date",
+        # `description` a quitté cette liste le 2026-08-31 : le juriste
+        # écrit dans `notes_internes`, le modèle dans `analyse.resume`.
+        "display_name", "category", "tags", "document_date",
         "notes_internes",
     }
     sanitized = _sanitize_data({k: v for k, v in data.items() if k in allowed_fields})
@@ -1571,7 +1586,6 @@ def record_analyse(
         # Ce que l'écrasement remplace. Sans cela la divergence de classement
         # — « l'un des deux signalements qui valent le plus » — deviendrait
         # inobservable, puisqu'il n'y a plus deux valeurs à comparer.
-        "description_precedente": existing.get("description") or "",
         "date_document_precedente": existing.get("document_date"),
         "categorie_precedente": ancienne,
         "categorie_precedente_source": ancienne_source,
@@ -1583,20 +1597,12 @@ def record_analyse(
         ),
     })
 
-    # L'analyse ALIMENTE les champs natifs du document — c'est ce qui la
-    # rend utile hors de sa propre carte : le résumé devient la
-    # description, la date lue devient la date du document, et le
-    # formulaire d'édition les montre et les laisse corriger.
-    #
-    # ⚠ Elle les ÉCRASE (décision du praticien, 2026-08-27, renversant le
-    # remplir-si-vide de la veille). C'est tenable parce que `description`
-    # cesse d'être partagée : le juriste écrit dans `notes_internes`, que
-    # rien ne réécrit jamais. Sans ce second champ, écrire une note et
-    # relancer une analyse s'excluaient. La valeur remplacée part au
-    # journal, comme celle de la catégorie — rien ne disparaît sans trace.
+    # L'analyse alimente encore UN champ natif : la date lue devient la
+    # date du document. Elle l'ÉCRASE (décision du praticien,
+    # 2026-08-27), et l'ancienne valeur part au journal — rien ne
+    # disparaît sans trace. Le résumé, lui, ne se recopie plus nulle
+    # part : il EST le texte du modèle, et il vit dans `analyse.resume`.
     natifs: dict = {}
-    if champ.get("resume"):
-        natifs["description"] = champ["resume"]
     if champ.get("date_document_str"):
         lue = _coerce_document_date(champ["date_document_str"])
         if lue is not None:

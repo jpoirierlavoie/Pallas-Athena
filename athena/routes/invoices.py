@@ -519,7 +519,7 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
         "category": "correspondance",
         "folder_id": folder["id"] if folder else None,
         "display_name": display,
-        "description": f"Générée depuis la facture {invoice_number}".strip(),
+        "genere_depuis": f"Générée depuis la facture {invoice_number}".strip(),
         "tags": ["note_honoraires"],
     }
     doc, errors = upload_document(

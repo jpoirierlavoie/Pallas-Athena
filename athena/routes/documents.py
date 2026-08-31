@@ -402,7 +402,6 @@ def api_finaliser():
     tags_raw = str(donnees.get("tags") or "")
     metadata = {
         "category": str(donnees.get("category") or "autre").strip(),
-        "description": str(donnees.get("description") or "").strip(),
         "tags": [t.strip() for t in tags_raw.split(",") if t.strip()],
         "display_name": str(donnees.get("display_name") or "").strip(),
         "folder_id": str(donnees.get("folder_id") or "").strip() or None,
@@ -534,7 +533,6 @@ def document_update(document_id: str) -> str:
     data = {
         "display_name": f.get("display_name", "").strip(),
         "category": f.get("category", "autre").strip(),
-        "description": f.get("description", "").strip(),
         "tags": [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else [],
         # Le champ du juriste. Toujours porté, comme la date : un champ vidé
         # l'efface, sans quoi une note ne pourrait jamais être retirée.

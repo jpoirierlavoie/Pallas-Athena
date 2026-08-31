@@ -1390,7 +1390,15 @@ def list_documents(args: dict) -> dict:
                 # root (folder_id null) or a dangling folder reference.
                 "folder_path": paths.get(doc.get("folder_id") or "", ""),
                 "document_date": date_str(_as_utc(doc.get("document_date"))),
-                "description": doc.get("description", ""),
+                # Les DEUX textes du document. `description` était un
+                # troisième champ qui recopiait le résumé; il a été retiré
+                # le 2026-08-31. `notes_internes` est le texte du juriste —
+                # il paraît ici parce que c'est SON système, et qu'une note
+                # « pièce D-4, à coter » est précisément ce qu'un appelant
+                # doit voir avant de proposer un classement.
+                "resume": str((doc.get("analyse") or {}).get("resume") or ""),
+                "notes_internes": doc.get("notes_internes", ""),
+                "genere_depuis": doc.get("genere_depuis", ""),
                 "tags": doc.get("tags", []),
                 # L'état de l'analyse — sans quoi un appelant ne peut pas
                 # savoir ce qui a DÉJÀ été qualifié, et refait le travail à

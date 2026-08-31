@@ -138,9 +138,13 @@
   {% endif %}
 
   {# Description & tags #}
-    {% if document.description %}
-    <div class="mt-4 pt-4 border-t border-gray-100">
-      <p class="text-sm text-gray-700">{{ document.description }}</p>
+    {% if document.genere_depuis %}
+    {# Provenance MACHINE — ni le texte du juriste, ni celui du modèle.
+       Elle squattait `description` jusqu'au 2026-08-31, où ce champ a été
+       retiré : un document porte deux textes, pas trois. #}
+    <div class="mb-4">
+      <p class="text-xs text-gray-400 mb-1">Provenance</p>
+      <p class="text-sm text-gray-700">{{ document.genere_depuis }}</p>
     </div>
     {% endif %}
 

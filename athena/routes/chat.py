@@ -1141,7 +1141,7 @@ def draft_verser_word(draft_id: str) -> Response:
                 "category": "autre",
                 "folder_id": (folder or {}).get("id"),
                 "display_name": display_name,
-                "description": (
+                "genere_depuis": (
                     f"Versé depuis le brouillon "
                     f"v{draft.get('current_version', '')}"
                 ),

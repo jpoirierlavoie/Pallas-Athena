@@ -1015,7 +1015,15 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "YYYY-MM-DD — the document's OWN date (PV, jugement…), "
                 "manually entered; null on documents not yet dated. "
                 "created_at is only the upload instant."),
-            "description": _str(),
+            "resume": _str(
+            "Le résumé de l'analyse; '' si non analysé. C'est le texte du "
+            "MODÈLE."),
+        "notes_internes": _str(
+            "Le texte du JURISTE. Rien ne le réécrit — ni une analyse, ni "
+            "une réanalyse."),
+        "genere_depuis": _str(
+            "Provenance d'un document produit par la machine (« Générée "
+            "depuis la facture 2026-003-03 »); '' sinon."),
             "tags": _arr(_str()),
         # ── L'état de l'analyse documentaire ─────────────────────────
         # Aucun outil de lecture ne le disait, si bien qu'un appelant ne

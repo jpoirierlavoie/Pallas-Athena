@@ -73,28 +73,28 @@ au premier balayage à partir de 06 h 00, donc en pratique entre 06 h 00 et 06 h
 ### La consigne
 
 ```
-Produis le breffage quotidien selon la compétence « Breffage quotidien ».
+Produisez le breffage quotidien selon la compétence « Breffage quotidien ».
 
-Commence par get_agenda avec days_ahead 14. Sa réponse porte window.from, qui EST la
-date du jour à Montréal — tu n'as aucune autre source pour la date, et rien ne s'écrit
-avant cet appel.
+Commencez par get_agenda avec days_ahead 14. Sa réponse porte window.from, qui EST la
+date du jour à Montréal : vous n'avez aucune autre source pour la date, et rien ne
+s'écrit avant cet appel.
 
-Exécute les volets 1 à 7 : agenda et échéances, hygiène des dossiers, tes tâches, le
-parc des dossiers actifs, le volet financier (les trois totaux seulement), les
-courriels sur sept jours, puis les tâches à créer.
+Exécutez les volets 1 à 7 : agenda et échéances, hygiène des dossiers, les tâches
+ouvertes du juriste, le parc des dossiers actifs, le volet financier (les trois totaux
+seulement), les courriels sur sept jours, puis les tâches à créer.
 
-N'exécute pas les volets 8 à 10 — dossiers en attente, dossiers dormants, courriels
-anciens. Ils appartiennent à la passe hebdomadaire ; note leur absence dans la rubrique
-« Ce qui n'a pas été vérifié ».
+N'exécutez pas les volets 8 à 10 — dossiers en attente, dossiers dormants, courriels
+anciens. Ils appartiennent à la passe hebdomadaire du lundi ; notez leur absence dans la
+rubrique « Ce qui n'a pas été vérifié ».
 
 Le courrier nouveau est celui reçu depuis le breffage ouvrable précédent : la veille du
 mardi au vendredi, et le vendredi matin lorsque nous sommes lundi.
 
-Crée au plus trois tâches selon taches-auto.md, chacune précédée de sa vérification par
-dossier. Si le budget d'appels se resserre, abandonne les créations et décris les
+Créez au plus trois tâches selon taches-auto.md, chacune précédée de sa vérification par
+dossier. Si le budget d'appels se resserre, abandonnez les créations et décrivez les
 candidats dans la note : la note passe avant toute écriture.
 
-Dépose la note sous « Général », titrée « Breffage du [date en clair] », avec la clé
+Déposez la note sous « Général », titrée « Breffage du [date en clair] », avec la clé
 d'idempotence breffage-AAAA-MM-JJ.
 ```
 
@@ -119,24 +119,24 @@ Saisie séparément, dans sa propre définition.
 ### La consigne
 
 ```
-Produis la passe hebdomadaire selon la compétence « Breffage quotidien ».
+Produisez la passe hebdomadaire selon la compétence « Breffage quotidien ».
 
-Commence par get_agenda avec days_ahead 1. Cet appel ne sert qu'à obtenir window.from,
-la date du jour à Montréal : ne rapporte rien de son contenu.
+Commencez par get_agenda avec days_ahead 1. Cet appel ne sert qu'à obtenir window.from,
+la date du jour à Montréal : ne rapportez rien de son contenu.
 
-Exécute ensuite les volets 8 à 10 : l'hygiène des dossiers au statut « en attente », les
+Exécutez ensuite les volets 8 à 10 : l'hygiène des dossiers au statut « en attente », les
 dossiers dormants selon dormance.md, et une passe de courriels sur la tranche ANCIENNE
 — received_from il y a trente jours, received_to il y a huit jours — pour la traîne des
 fils sans réponse que la fenêtre quotidienne ne voit pas.
 
-N'exécute pas les volets 1 à 7 : ils appartiennent au breffage quotidien.
+N'exécutez pas les volets 1 à 7 : ils appartiennent au breffage quotidien.
 
-Ne crée AUCUNE tâche : cette passe observe, elle ne mint rien.
+Ne créez AUCUNE tâche : cette passe observe, elle n'écrit que sa note.
 
-Dépose ta propre note sous « Général », titrée « Passe hebdomadaire du [date en clair] »,
-avec la clé d'idempotence hebdo-AAAA-MM-JJ. Cette clé doit différer de celle du breffage
-quotidien : une clé déjà servie avec des arguments différents fait REFUSER l'appel, et
-ta note ne serait pas écrite.
+Déposez votre propre note sous « Général », titrée « Passe hebdomadaire du [date en
+clair] », avec la clé d'idempotence hebdo-AAAA-MM-JJ. Cette clé doit différer de celle du
+breffage quotidien : une clé déjà servie avec des arguments différents fait REFUSER
+l'appel, et votre note ne serait pas écrite.
 ```
 
 ---

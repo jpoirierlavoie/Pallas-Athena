@@ -670,7 +670,7 @@ def generate() -> Response | str:
             "category": template.get("category", "autre"),
             "folder_id": folder["id"] if folder else None,
             "display_name": display,
-            "description": (
+            "genere_depuis": (
                 f"Généré depuis le gabarit «{template.get('name', '')}» "
                 f"v{template.get('version', 1)}"
             ),
