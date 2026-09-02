@@ -98,8 +98,7 @@ def create_app() -> Flask:
     # The whole pipeline lives in utils/markdown_docx.py — the SAME
     # extensions/allowlist (incl. use_align_attribute=True, which restores
     # table alignment on screen) drive the .docx conversion of a note's
-    # body and the chat email report, so screen, paper and mail can never
-    # drift.
+    # body, so screen and paper can never drift.
     from utils.markdown_docx import markdown_to_safe_html
 
     app.jinja_env.filters["markdown"] = markdown_to_safe_html
@@ -127,7 +126,6 @@ def create_app() -> Flask:
     from routes.trust import trust_bp
     from routes.budgets import budgets_bp
     from routes.admin_ledger import admin_bp
-    from routes.chat import chat_bp
     from routes.comptabilite import comptabilite_bp
 
     app.register_blueprint(auth_bp)
@@ -145,7 +143,6 @@ def create_app() -> Flask:
     app.register_blueprint(trust_bp)
     app.register_blueprint(budgets_bp)
     app.register_blueprint(admin_bp)
-    app.register_blueprint(chat_bp)
     app.register_blueprint(comptabilite_bp)
 
     # ── DAV blueprints (CardDAV, CalDAV, RFC-5545, per-dossier) ─────────
@@ -198,14 +195,6 @@ def create_app() -> Flask:
     from routes.taches_outlook import taches_outlook_bp
     app.register_blueprint(taches_outlook_bp)
     csrf.exempt(taches_outlook_bp)
-
-    # ── Chat (Phase N) : cron dispatcher of the scheduled runs. The WORKER
-    # blueprint (taches_chat_bp) is deliberately NOT here — it exists only
-    # in the chat service's process (chat/app.py); the queue routes to it
-    # by service, and a stray POST to this process 404s.
-    from routes.taches_chat_cron import taches_chat_cron_bp
-    app.register_blueprint(taches_chat_cron_bp)
-    csrf.exempt(taches_chat_cron_bp)
 
     # ── MCP connector (Phase I): /mcp endpoint + embedded OAuth 2.1 AS ──
     from mcp import mcp_bp, register_mcp

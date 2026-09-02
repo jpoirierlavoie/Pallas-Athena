@@ -463,8 +463,8 @@ def test_the_live_write_path_runs_end_to_end(monde, monkeypatch):
 def test_a_broken_log_line_never_fails_a_committed_write(monde, monkeypatch):
     """Rien de ce qui SUIT un commit ne peut faire échouer l'écriture.
 
-    `endpoint._tools_call` et `chat/executors` ont chacun un
-    `except Exception` de dernier recours : une levée après le commit
+    `endpoint._tools_call` a un `except Exception` de dernier recours :
+    une levée après le commit
     rapporte comme échouée une écriture commise, après quoi le modèle
     réessaie et ajoute une SECONDE entrée au journal. C'est le piège que le
     dépôt documente pour le bump de CTag — il vaut pour toute ligne posée

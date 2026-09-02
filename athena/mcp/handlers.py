@@ -5914,10 +5914,9 @@ def get_document_text(args: dict) -> dict:
 # ── Analyse documentaire (SPEC Phase K §8-9) ─────────────────────────────
 #
 # ⚠ ÉCART ASSUMÉ avec la §9.2 : elle décrivait `analyser_document`, qui
-# ENFILE une tâche et rend « en_attente ». Le clavardage (Phase N) n'existait
-# pas quand la spec a été écrite; il fait l'analyse lui-même. L'outil
-# ENREGISTRE donc, synchrone. Le champ garde son `statut` pour qu'un pipeline
-# asynchrone futur s'y branche sans migration.
+# ENFILE une tâche et rend « en_attente ». Rien n'enfile ici : le modèle
+# analyse, puis ENREGISTRE, synchrone. Le champ garde son `statut` pour
+# qu'un pipeline asynchrone futur s'y branche sans migration.
 
 _ANALYSE_ECHO = (
     "nature_detectee", "sous_nature", "famille", "privileges",
@@ -5998,9 +5997,9 @@ def _record_document_analysis_impl(args: dict) -> dict:
 
     stocke = updated.get("analyse") or {}
     # ⚠ La ligne de journal est posée APRÈS un commit, donc elle ne doit
-    # JAMAIS pouvoir lever : `endpoint._tools_call` et `chat/executors`
-    # ont tous deux un `except Exception` de dernier recours, qui
-    # rapporterait comme ÉCHOUÉE une écriture déjà commise — après quoi
+    # JAMAIS pouvoir lever : `endpoint._tools_call` a un `except
+    # Exception` de dernier recours, qui rapporterait comme ÉCHOUÉE
+    # une écriture déjà commise — après quoi
     # le modèle réessaie et ajoute une SECONDE entrée au journal. C'est
     # le piège que le dépôt documente pour le bump de CTag ; il vaut
     # pour tout ce qui suit un commit. (Vécu le 2026-08-27 : un appel

@@ -463,7 +463,6 @@ _PALLAS_ADMIN_LEDGER = logging.getLogger("pallas.admin_ledger")
 _PALLAS_PORTAIL = logging.getLogger("pallas.portail")
 _PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
 _PALLAS_HEARING = logging.getLogger("pallas.hearing")
-_PALLAS_CHAT = logging.getLogger("pallas.chat")
 
 
 AuthEvent = Literal[
@@ -651,66 +650,6 @@ BookingsEvent = Literal[
     "miroir_outlook_erreur_graph",
 ]
 BookingsOutcome = Literal["success", "failure", "refused"]
-# Chat IA (Phase N) — the Claude-on-Vertex chat client. Events emit from BOTH
-# services (default: UI routes + the scheduled-task dispatcher; chat: the turn
-# worker) — Cloud Logging separates them by resource.labels.module_id. The
-# PII discipline is ABSOLUTE here: never a message, a prompt, a thinking text,
-# a skill body, a draft title or body, tool arguments or results, or a Worker
-# response — privileged legal work product the RedactionFilter does NOT
-# auto-scrub. Token counts, durations, model ids, tool names, IDs, USD micros
-# and machine-stable ``reason`` strings are the entire allowed vocabulary.
-ChatEvent = Literal[
-    "chat_conversation_created",
-    "chat_turn_started",
-    # The turn doc exists but the first task never enqueued — lost work is
-    # possible until a POST retry or the dispatcher repair pass re-enqueues.
-    "chat_enqueue_failed",
-    # ONE line per Vertex call (duration, the five token counters,
-    # stop_reason) — the registre-completeness invariant made observable;
-    # a pause_turn is a success with its stop_reason.
-    "chat_model_call",
-    # Une réponse Vertex SANS aucun bloc de contenu. Une ligne à part parce
-    # qu'elle est levée dans le transport, AVANT que chat_model_call ne soit
-    # émis : sans elle, un tour vide ne laisse aucune trace nommant sa
-    # propre forme — le défaut qui a rendu l'incident du 2026-08-31
-    # indiagnosticable après coup. Porte le motif d'arrêt BRUT du
-    # fournisseur, qui est un nom d'énumération, jamais du texte privilégié.
-    "chat_model_empty",
-    "chat_tool_call",
-    "chat_tool_refused",
-    # The claim transaction observed an advanced step and exited without
-    # calling Vertex — queue-health signal; no other line would fire.
-    "chat_duplicate_delivery",
-    "chat_block_offloaded",
-    "chat_web_search",
-    "chat_mail_unavailable",
-    "chat_turn_finalized",
-    "chat_turn_failed",
-    "chat_authorization",
-    "chat_scheduler_execute",
-    "chat_scheduled_dispatch",
-    # An occurrence was marked but its chain never started; the dispatcher
-    # re-enqueued it. ERROR by doctrine — every repair must be SEEN.
-    "chat_scheduled_repair",
-    "chat_report_emailed",
-    "chat_draft_written",
-    "chat_draft_exported",
-    "chat_skill_saved",
-    "chat_task_saved",
-    # Le tour a tourné sur le TEXTE SOURCE parce que la charte enregistrée
-    # était illisible. ERROR par doctrine : la constitution en vigueur n'a
-    # pas été appliquée, et une restriction récemment ajoutée a donc pu ne
-    # pas s'appliquer — c'est le seul événement du lot qui signale une
-    # gouvernance dégradée, et il mérite une alerte log-based.
-    # L'AMORÇAGE (aucune charte enregistrée) n'émet rien : c'est l'état
-    # normal d'un déploiement neuf, pas un incident.
-    "chat_charter_repli",
-    # Une version de charte a été enregistrée. Les compteurs
-    # seulement — JAMAIS le texte : il gouverne le cabinet, il
-    # n'a rien à faire dans les journaux.
-    "chat_charter_saved",
-]
-ChatOutcome = Literal["success", "failure", "refused"]
 
 
 def _emit(
@@ -1027,52 +966,6 @@ def log_bookings_event(
     _emit(_PALLAS_BOOKINGS, level, event, fields)
 
 
-def log_chat_event(
-    event: ChatEvent,
-    outcome: ChatOutcome = "success",
-    *,
-    conversation_id: Optional[str] = None,
-    turn_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    tool: Optional[str] = None,
-    model: Optional[str] = None,
-    reason: Optional[str] = None,
-    **extra: Any,
-) -> None:
-    """Emit a chat-client event (Phase N) — logger ``pallas.chat``.
-
-    ``success`` emits at INFO, ``refused`` at WARNING, ``failure`` at ERROR
-    (a failed turn or a lost enqueue means work the lawyer expects is not
-    happening — it must reach error dashboards). ``reason`` is a short
-    machine-stable string ("chain_ceiling", "retry_exhausted",
-    "vertex_invalid_request", "gated_unattended") — **never** an excerpt of
-    a message, a thinking text, a tool argument, or a document; the
-    RedactionFilter does not auto-scrub free text. Counters (token counts,
-    ``duration_ms``, ``usd_micros``, ``step``) travel in **extra. Only
-    non-``None`` optional fields are included so log-based metrics filtering
-    on, e.g., ``tool`` don't pick up structurally-empty records.
-    """
-    fields: dict[str, Any] = {"event": event, "outcome": outcome, **extra}
-    if conversation_id is not None:
-        fields["conversation_id"] = conversation_id
-    if turn_id is not None:
-        fields["turn_id"] = turn_id
-    if task_id is not None:
-        fields["task_id"] = task_id
-    if tool is not None:
-        fields["tool"] = tool
-    if model is not None:
-        fields["model"] = model
-    if reason is not None:
-        fields["reason"] = reason
-    level = {
-        "success": logging.INFO,
-        "refused": logging.WARNING,
-        "failure": logging.ERROR,
-    }[outcome]
-    _emit(_PALLAS_CHAT, level, event, fields)
-
-
 def log_unexpected(
     message: str,
     *,
@@ -1109,7 +1002,6 @@ __all__: Iterable[str] = (
     "init_app",
     "log_auth_event",
     "log_bookings_event",
-    "log_chat_event",
     "log_dav_operation",
     "log_dossier_event",
     "log_mcp_event",

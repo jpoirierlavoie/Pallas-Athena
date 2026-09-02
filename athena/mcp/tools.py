@@ -296,7 +296,7 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
                     # in reply — and `date_from1` emitted again. That
                     # corruption is downstream of the model's intent and no
                     # wording can reach it; its cause was a keyword property
-                    # name in the tool array (chat/gemini.py). This is a
+                    # name in a tool declaration. This is a
                     # plain improvement for ordinary wrong argument names,
                     # nothing more.
                     proche = _nearest_argument(key, properties)
@@ -376,9 +376,8 @@ def _write_protocol_props() -> dict:
 
     Removal is fail-CLOSED, which is what makes it safe: every write input
     schema carries ``additionalProperties: False``, so a caller still
-    sending `dry_run` is REFUSED by :func:`validate_args` on both paths
-    (the MCP endpoint and ``chat/executors``) rather than silently written
-    for — which would be the dangerous outcome.
+    sending `dry_run` is REFUSED by :func:`validate_args` rather than
+    silently written for — which would be the dangerous outcome.
     """
     return {
         "idempotency_key": {

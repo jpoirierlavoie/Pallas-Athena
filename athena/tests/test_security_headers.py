@@ -415,11 +415,10 @@ def _yaml_handlers(text: str) -> list[dict]:
 
 
 def _assert_parse_is_sane(handlers: list[dict], name: str) -> None:
-    # The floor detects a silently-broken parser, not a policy: chat.yaml
-    # (Phase N) legitimately carries ONE handler — the worker service serves
-    # no statics at all, only the catch-all.
-    minimum = 1 if name == "chat.yaml" else 3
-    assert len(handlers) >= minimum, f"{name}: parser found {len(handlers)} handlers"
+    # The floor detects a silently-broken parser, not a policy. It was a
+    # per-file number while a third yaml (chat.yaml, worker-only) carried a
+    # single catch-all handler; both remaining services serve statics.
+    assert len(handlers) >= 3, f"{name}: parser found {len(handlers)} handlers"
     assert handlers[-1]["url"] == "/.*", f"{name}: last handler is not the catch-all"
     assert handlers[-1].get("script") == "auto", f"{name}: catch-all is not script:auto"
 
@@ -446,10 +445,7 @@ def test_hsts_is_the_same_string_in_all_ten_places():
     assert found, "client/security.py: no HSTS literal found"
     copies += [("client/security.py", v) for v in found]
 
-    # chat.yaml (Phase N) has NO static handlers by design (worker-only,
-    # catch-all script: auto) — included so a future static handler there
-    # cannot ship outside this inventory.
-    for yaml_name in ("app.yaml", "portail.yaml", "chat.yaml"):
+    for yaml_name in ("app.yaml", "portail.yaml"):
         handlers = _yaml_handlers(_read(yaml_name))
         _assert_parse_is_sane(handlers, yaml_name)
         for h in _static_handlers(handlers):
@@ -485,7 +481,7 @@ def test_every_static_handler_carries_the_full_baseline():
     are excluded on a principled basis, not an arbitrary one: those responses
     go through Flask, where _add_security_headers sets the same headers.
     """
-    for yaml_name in ("app.yaml", "portail.yaml", "chat.yaml"):
+    for yaml_name in ("app.yaml", "portail.yaml"):
         handlers = _yaml_handlers(_read(yaml_name))
         _assert_parse_is_sane(handlers, yaml_name)
         for h in _static_handlers(handlers):

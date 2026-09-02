@@ -61,7 +61,7 @@ def markdown_to_safe_html(text: str) -> str:
 
     The constants above were already shared, but the two-call composition
     itself had been copied verbatim three times (the screen's Jinja filter
-    in main.py, this module's .docx conversion, and the chat email report)
+    in main.py and this module's .docx conversion)
     — audit 2026-08-26. Screen, paper and mail render through this exact
     function so they can never drift.
     """

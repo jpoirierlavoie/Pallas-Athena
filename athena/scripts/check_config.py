@@ -51,7 +51,6 @@ OWNER_LITERALS: dict[str, str] = {
 # tests are excluded on purpose — they reference the owner's ids as examples.
 _SCAN_FILES = [
     os.path.join(_ATHENA_DIR, "app.yaml"),
-    os.path.join(_ATHENA_DIR, "chat.yaml"),
     os.path.join(_ATHENA_DIR, "config.py"),
     os.path.join(_ATHENA_DIR, "main.py"),
 ]
@@ -150,19 +149,6 @@ def _check_runtime_env(rpt: Report, is_prod: bool) -> None:
         if not mcp_origin and is_prod:
             rpt.emit(_WARN, "MCP_ENABLED=true but MCP_CANONICAL_ORIGIN is unset (defaults to the owner's domain in config.py)")
 
-    # Messagerie (2026-08-28). The half-configured state is the dangerous one:
-    # the tools vanish from the model's array and NOTHING says why, which is
-    # the shape of the origin-secret defect that stayed silent for months.
-    # « Not configured » is the normal, quiet condition on default/portail —
-    # only « enabled and not configured » is worth a word.
-    if os.environ.get("CHAT_MAIL_ENABLED", "false").lower() == "true":
-        if not os.environ.get("CHAT_MAIL_UPN"):
-            rpt.emit(_FAIL, "CHAT_MAIL_ENABLED=true but CHAT_MAIL_UPN is unset — the mail tools are silently absent from the assistant")
-        elif not os.environ.get("GRAPH_TENANT_ID"):
-            rpt.emit(_FAIL, "CHAT_MAIL_ENABLED=true but the GRAPH_* credentials are unset — the mail tools are silently absent")
-        else:
-            rpt.emit(_OK, "CHAT_MAIL_ENABLED=true and the mailbox is configured")
-
 
 def _check_prod_secrets(rpt: Report) -> None:
     project = os.environ.get("FIREBASE_PROJECT_ID", "")
@@ -182,11 +168,6 @@ def _check_prod_secrets(rpt: Report) -> None:
         ("firebase-api-key", False, "the login page cannot init Firebase"),
         ("dav-password-hash", False, "DAV Basic Auth cannot succeed — DavX5 sync is unavailable"),
         ("cf-origin-secret", False, "the Cloudflare origin-secret check is disabled (direct-to-App-Engine access not blocked)"),
-        # Phase N (chat) — a bearer token with surrounding whitespace never
-        # matches what the Worker compares, so the whitespace check below is
-        # load-bearing for these two, not just cosmetic.
-        ("legislation-worker-token", False, "the chat's legislation_* tools are disabled"),
-        ("jurisprudence-worker-token", False, "the chat's jurisprudence_* tools are disabled (citations degrade to « non vérifiée »)"),
     ):
         name = f"projects/{project}/secrets/{secret_id}/versions/latest"
         try:

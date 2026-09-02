@@ -64,6 +64,16 @@ woff2 pointé par le `@font-face` de la réponse ; 3) sha256 → **NOUVEAU nom**
 (gabarits ×3, Early Hints ×2, PRECACHE + bump `STATIC_CACHE`, test des
 en-têtes) ; 5) mettre à jour ce tableau ; 6) `pytest`.
 
+**Procédure « retirer une icône »** : retirer le nom de
+`MATERIAL_ICONS` et s'arrêter là. Le woff2 devient un SURENSEMBLE —
+un glyphe que rien n'appelle ne s'affiche pas, aucun test ne lit la
+table de glyphes, et le fan-out complet coûterait six fichiers plus
+un littéral épinglé pour quelques centaines d'octets. Le retrait
+réel se fait à la prochaine régénération, celle-ci reconstruisant
+l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par construction.
+Surensemble courant depuis le 2026-09-02 : `forum` (parti avec le
+clavardage).
+
 Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v368-Apache-2.0.txt`.
 
 ## License (Noto)

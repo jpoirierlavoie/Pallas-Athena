@@ -299,7 +299,7 @@ def test_screen_pipeline_uses_shared_constants():
 
     Strengthened 2026-08-26: the constants were already shared, but the
     two-call markdown()+bleach.clean() composition had been copied three
-    times (screen filter, this module, the chat email report). The Jinja
+    times (screen filter, this module). The Jinja
     filter is now markdown_to_safe_html itself, so screen and paper cannot
     drift even in the composition."""
     main_src = open(

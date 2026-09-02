@@ -137,7 +137,7 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
     The preview property is gone from every input schema, and those schemas
     carry ``additionalProperties: False``, so a caller that still sends
     ``dry_run`` is REFUSED by ``validate_args`` on both paths (the MCP
-    endpoint and ``chat/executors``) rather than silently written for —
+    endpoint) rather than silently written for —
     which would be the dangerous outcome.
     """
     key = str(args.get("idempotency_key") or "").strip()

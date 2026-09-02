@@ -3,9 +3,10 @@
 # ⚠️ PIÈGE : `gcloud app deploy cron.yaml` REMPLACE L'ENSEMBLE des tâches
 # cron de l'application. Toute entrée future FUSIONNE dans CE fichier et
 # redéploie le fichier COMPLET — le remplacer par une entrée unique
-# arrêterait silencieusement les autres tâches. La table compte QUATRE
-# entrées : réconciliation portail, synchro Bookings, miroir Outlook,
-# répartiteur des tâches planifiées du clavardage.
+# arrêterait silencieusement les autres tâches. La table compte TROIS
+# entrées : réconciliation portail, synchro Bookings, miroir Outlook.
+# (Une quatrième, le répartiteur des tâches planifiées du clavardage,
+# est partie avec le clavardage le 2026-09-02.)
 #
 # Le gestionnaire vérifie X-Appengine-Cron: true (retiré de tout trafic
 # externe par App Engine) ; le pare-feu doit autoriser 0.1.0.2/32.
@@ -21,8 +22,4 @@ cron:
 - description: outlook — miroir des audiences vers le calendrier du juriste
   url: /taches/outlook/sync
   schedule: every 10 minutes
-  target: default
-- description: clavardage — répartiteur des tâches planifiées (spec N §12.2)
-  url: /taches/chat/planification
-  schedule: every 15 minutes
   target: default

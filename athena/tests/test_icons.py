@@ -1,10 +1,15 @@
 """Tests for utils/icons.py — Material Symbols governance (anti-drift).
 
-The vendored woff2 subset contains EXACTLY the ligature names in
-MATERIAL_ICONS. These tests keep templates and the subset in agreement in
-BOTH directions: a name used but not vendored would render as raw text on
-screen; a name vendored but never used is dead weight that a future subset
-regeneration should drop.
+These tests keep templates and MATERIAL_ICONS in agreement in BOTH
+directions: a name used but not vendored would render as raw text on
+screen; a name vendored but never used is dead weight.
+
+The woff2 is a SUPERSET since 2026-09-02: dropping the chat took `forum`
+out of the vocabulary, and the glyph stays in the file until the next
+regeneration — ~600 bytes of 24 Ko, against a full asset fan-out (six
+files plus a pinned Early-Hints literal) for no functional gain. Nothing
+here reads the font's glyph table, so the agreement these tests enforce
+is between templates and the Python set.
 """
 
 import os

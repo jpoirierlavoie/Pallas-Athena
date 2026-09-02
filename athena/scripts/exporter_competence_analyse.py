@@ -15,8 +15,8 @@ maison « dérive, ne recopie pas », appliquée à de la prose.
 
 Ce script est PUR et LOCAL : il lit un module Firestore-free, écrit des
 fichiers texte, et ne touche ni au réseau ni à la base. Les fichiers
-produits se téléversent ensuite dans l'écran « Compétences » du
-clavardage (bouton « Importer un fichier texte » de chaque ligne).
+produits se collent ensuite dans un Skill claude.ai — le corps dans
+les instructions, les trois annexes en fichiers de référence.
 
 Rerun-le après toute modification des tables : la compétence se révise
 alors en une nouvelle version, et l'historique garde la précédente.
@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import analyse_taxonomies as tax  # noqa: E402
 
-# Les plafonds du modèle (models/chat_skill.py). Vérifiés à la génération
+# Les plafonds des fichiers de référence d'un Skill. Vérifiés à la génération
 # plutôt qu'au téléversement : un fichier trop long se découvre ici, pas
 # devant un formulaire qui refuse.
 BODY_MAX = 30_000

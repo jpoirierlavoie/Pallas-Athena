@@ -23,14 +23,6 @@ steps:
     args: ['app', 'deploy', 'portail.yaml', '--quiet', '--version=$SHORT_SHA']
     dir: 'athena'
 
-  # Step 2b': Deploy the « chat » service (Phase N) — the Vertex turn worker.
-  # Same source dir, own yaml, DEFAULT service account (deliberate — see
-  # chat.yaml). Reached only by Cloud Tasks (queue « chat-turns »); no
-  # dispatch rule needed (service-level routing, no hostname).
-  - name: 'gcr.io/cloud-builders/gcloud'
-    args: ['app', 'deploy', 'chat.yaml', '--quiet', '--version=$SHORT_SHA']
-    dir: 'athena'
-
   # Step 2c: Dispatch rules — AFTER the portail service exists (a rule naming
   # an undeployed service is refused). ⚠ deploy REPLACES the whole table;
   # dispatch.yaml at the repo root is the single source of truth.
@@ -47,12 +39,17 @@ steps:
   # --service: a bare `gcloud app versions delete <id>` targets the id in
   # EVERY service — it would delete a still-serving portail version (build
   # failure) or silently prune the wrong service.
+  #
+  # A third service, « chat », was in this list until 2026-09-02. There is
+  # no `set -e` here, so a name that no longer resolves would only print an
+  # error and skip — but a list of services is an inventory, and an
+  # inventory that names something absent is a lie the next reader trusts.
   - name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        for SERVICE in default portail chat; do
+        for SERVICE in default portail; do
           OLD_VERSIONS=$$(gcloud app versions list \
             --service="$$SERVICE" \
             --filter="traffic_split=0" \

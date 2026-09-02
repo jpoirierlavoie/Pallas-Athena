@@ -11,7 +11,7 @@ never kills the call.
 
 Honesty contract: a scanned page has no text layer, and this module never
 pretends otherwise — it reports ``has_text: False`` and lists the page in
-``pages_without_text`` so the caller (the chat's native document-block
+``pages_without_text`` so the caller (the MCP get_document_text tool
 fallback, or the connector's model) can decide what to do. There is no OCR
 here and none is implied. Binary content is never returned.
 

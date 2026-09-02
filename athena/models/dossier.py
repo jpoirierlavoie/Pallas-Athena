@@ -1078,28 +1078,6 @@ def get_dossier(dossier_id: str) -> Optional[dict]:
     return None
 
 
-def get_dossier_strict(dossier_id: str) -> Optional[dict]:
-    """The dossier with *dossier_id*, or None when none exists — RAISING.
-
-    The fail-CLOSED twin of :func:`get_dossier`, in the shape
-    ``count_dossiers_for_partie_strict`` already established. Same read, same
-    migrations, same returned shape; the only difference is that a Firestore
-    failure PROPAGATES instead of collapsing into ``None``.
-
-    It exists because ``None`` means two different things to a caller who
-    must then report to the lawyer. « This dossier does not exist » and « the
-    read failed » are the same value out of ``get_dossier``, so the mailbox
-    search would tell him his live case file is not in Athéna during a
-    transient hiccup, and run no search at all. A display caller should keep
-    using ``get_dossier``; a caller whose next sentence is an assertion about
-    the practice's records must use this one.
-    """
-    doc = db.collection(COLLECTION).document(dossier_id).get()
-    if not doc.exists:
-        return None
-    return _strip_removed_fields(_migrate_parties(doc.to_dict()))
-
-
 def get_dossier_by_file_number(file_number: str) -> Optional[dict]:
     """The dossier bearing *file_number*, or None when none does.
 
@@ -1365,12 +1343,6 @@ _CHILD_COLLECTIONS = (
     # trust_transactions rows are never hard-deleted, the same count>0 refusal
     # enforces "ever existed" (spec §6.3). Archive the dossier instead.
     ("trust_transactions", "opération fiduciaire", "opérations fiduciaires"),
-    # Chat (Phase N): conversations are the append-only registre and drafts
-    # are versioned work product — neither has ANY delete path in the app,
-    # so, as with trust, count>0 means "ever existed" and the dossier can
-    # only be archived. Fail-closed like every other entry.
-    ("chat_conversations", "conversation d'assistant", "conversations d'assistant"),
-    ("chat_drafts", "brouillon", "brouillons"),
 )
 
 

@@ -1554,7 +1554,7 @@ def record_analyse(
     document_id: str,
     sortie: dict,
     *,
-    declenche_par: str = "chat",
+    declenche_par: str = "mcp",
     modele: str = "",
     dossier: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:

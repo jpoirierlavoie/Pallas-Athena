@@ -280,15 +280,14 @@ def test_the_accounting_module_is_the_only_writer_of_a_payment():
             list((racine / "models").glob("*.py")) + \
             list((racine / "mcp").glob("*.py")) + \
             list((racine / "services").glob("*.py")) + \
-            list((racine / "chat").glob("*.py")) + \
             list((racine / "scripts").glob("*.py")):
         texte = chemin.read_text(encoding="utf-8")
         if "record_payment(" in texte and chemin.name != "invoice.py":
             appelants.add(chemin.name)
     # Depuis l'audit 2026-08-26 l'orchestration Lot P vit dans
     # services/encaissements.py (routes/admin_ledger et routes/trust
-    # l'appellent) — le balayage couvre désormais services/ et chat/ aussi,
-    # pour que la portée du pin ne rétrécisse jamais en silence.
+    # l'appellent) — le balayage couvre donc services/ aussi, pour que la
+    # portée du pin ne rétrécisse jamais en silence.
     assert appelants == {
         "encaissements.py",
         "purge_encaissements_factures.py",
