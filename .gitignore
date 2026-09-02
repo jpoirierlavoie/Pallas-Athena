@@ -68,4 +68,10 @@ venv/
 # référence de la compétence « Analyse documentaire », RÉGÉNÉRABLES depuis
 # utils/analyse_taxonomies.py. Les committer figerait une copie qui
 # dériverait de sa source : c'est précisément ce que la génération évite.
-/competence_analyse/
+#
+# ⚠ NON ANCRÉ, à dessein. La forme `/competence_analyse/` n'a jamais
+# porté : la barre initiale l'attache à la RACINE du dépôt, alors que le
+# script se lance depuis `athena/` (`python -m scripts.exporter_...`) et
+# écrit donc dans `athena/competence_analyse/`. Quatre fichiers se sont
+# fait committer sous cette règle qui disait le contraire.
+competence_analyse/
