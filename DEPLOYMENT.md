@@ -501,87 +501,27 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 
 ---
 
-## 11b. Optional — Assistant IA (chat Claude sur Vertex, Phase N)
+## 11b. Retiré — Assistant IA interne (Vertex, 2026-08-26 → 2026-09-02)
 
-The in-app chat client (« Assistant » in the nav) runs Claude on **Vertex AI**
-under YOUR project — the point is that privileged material never transits a
-consumer AI product. The turn worker is the third App Engine service
-(`athena/chat.yaml`, deployed by the CI). Ordered prerequisites — the ORDER of
-step 6 is load-bearing:
+Cette section décrivait la mise en service d'un client de conversation
+Claude/Gemini sur **Vertex AI** sous le projet du cabinet, sur un TROISIÈME
+service App Engine, avec sa file Cloud Tasks `chat-turns`, son entrée cron,
+ses deux secrets de Workers juridiques et son `roles/aiplatform.user`.
 
-1. **Firestore Data Access audit logging** (the registre's compensating
-   control — SPEC N §6.2; append-only is a code convention, not a storage
-   control): IAM & Admin → Audit Logs → *Cloud Firestore/Datastore API* →
-   enable **Data Read** + **Data Write**. Verify with
-   `gcloud projects get-iam-policy $PROJECT --format=json` → `auditConfigs`.
-   Mind the log-volume cost; enable BEFORE first real use.
-2. **Model Garden**: enable `claude-sonnet-5` and `claude-opus-5` (accept the
-   terms). **Opus 5's retention class: VERIFIED 2026-08-26 (Jason)** — NOT a
-   Covered Model, zero retention; it stays in the allowlist and the
-   `claude-opus-4-8` fallback was never needed. The check remains mandatory
-   for any FUTURE model addition — a Covered Model (mandatory 30-day
-   retention) is disqualifying for privileged material (swap the
-   `CHAT_MODELS` entry in `config.py`, never widen the allowlist). Check the
-   per-model quotas.
-3. **IAM**: `gcloud projects add-iam-policy-binding $PROJECT
-   --member=serviceAccount:$PROJECT@appspot.gserviceaccount.com
-   --role=roles/aiplatform.user` (the chat service runs under the DEFAULT SA —
-   deliberate; see chat.yaml).
-4. **Endpoint: GLOBAL** (verified live 2026-08-26 on the original
-   deployment): the multi-region `us` answers **501 UNIMPLEMENTED** for
-   these models and `us-east5` 404s them — `locations/global` is the only
-   serving location, bills at the BASE rate (`multiregion_multiplier` 1.0),
-   and accepts the bare model aliases. Re-verify on YOUR project with a
-   `max_tokens=1` curl against
-   `https://aiplatform.googleapis.com/v1/projects/$PROJECT/locations/global/publishers/anthropic/models/claude-sonnet-5:rawPredict`
-   (a **429 quota** answer means the endpoint works and step 4b applies; a
-   403/404 means Model Garden is not done).
-   ⚠ **The probe body must be the CURRENT request surface**, or a 400 will be
-   misread as an endpoint problem: `{"anthropic_version":"vertex-2023-10-16",
-   "max_tokens":1,"thinking":{"type":"adaptive"},"messages":[{"role":"user",
-   "content":"ping"}]}`. On this model generation
-   `thinking.budget_tokens` and every sampling parameter (`temperature`,
-   `top_p`, `top_k`) are **removed and return a 400** — the shape the app
-   shipped with until 2026-08-26, which nothing could catch while the quota
-   was zero. A **400 on this probe means the request shape is wrong**, not
-   the endpoint.
-   **4b. Quota:** the default per-base-model quota can be ZERO even after
-   enablement (`global_online_prediction_requests_per_base_model`, base
-   models `anthropic-claude-sonnet` / `anthropic-claude-opus`). Submit the
-   increase in IAM & Admin → Quotas (modest values — 15-30 req/min — for a
-   single-user practice) and wait for the grant before first use.
-5. **Queue**: `gcloud tasks queues create chat-turns --location=<region>` then
-   `gcloud tasks queues update chat-turns --location=<region> --max-attempts=8
-   --min-backoff=10s --max-backoff=300s --max-concurrent-dispatches=2
-   --max-dispatches-per-second=1` (concurrency 2 bounds worst-case parallel
-   Vertex spend AND the duplicate-call race window). Verify the App Engine
-   firewall still allows `0.1.0.2/32` (cron + tasks).
-6. **The connector re-consent train** — Phase N widened the external MCP
-   connector too (52 tools, incl. `get_document_text`, which reads FULL
-   document content). `get_document_text` is a READ tool: **no kill switch can
-   hide it from an already-issued token** (`MCP_WRITE_ENABLED` covers writes
-   only), so the order is: **revoke every token FIRST**
-   (`python -m scripts.revoke_mcp_tokens`), then deploy, then re-add the
-   connector under the NEW consent screen (which names document-content
-   reading) and tick « Autoriser les écritures ». Fail-closed if the deploy
-   goes wrong: the connector is merely revoked, never over-granted.
-7. **Workers juridiques** (optional): create the two secrets with `printf`
-   (never `echo` — the trailing-newline trap): `legislation-worker-token`,
-   `jurisprudence-worker-token`; grant the default SA `secretAccessor`; set
-   `LEGISLATION_WORKER_URL`/`JURISPRUDENCE_WORKER_URL` in `app.yaml` and
-   `chat.yaml`. Unset = those chat tools are simply absent (citations then
-   read « non vérifiée » per the charter).
-8. **Cron**: the CI deploys the complete 4-entry `cron.yaml` (the dispatcher
-   of scheduled runs is the 4th). Never deploy a partial cron table.
-9. **First-use verification**: `python -m scripts.check_config`; open `/chat`
-   (nav entry in both renders); a dry conversation (the poller stops on
-   HTTP 286, the cost indicator moves, `chat_model_call`/`chat_turn_finalized`
-   in Cloud Logging); a tool conversation (`get_dossier` chip); a forced
-   failure (`gcloud tasks queues pause chat-turns` mid-turn → the turn shows
-   `failed` loudly after the retry ceiling; `resume` after); a scheduled run
-   end-to-end (create it in the UI — decision D7, no seeds in code); the two
-   skills pasted into « Compétences » via the UI; one « Verser en Word »
-   opened in Word without repair.
+**Il a été retiré le 2026-09-02** : le cabinet est passé à un compte **Claude
+for Work couvert par une entente de traitement des données**, ce qui retire à
+ce clavardage sa seule raison d'être (que le matériel privilégié ne transite
+pas par un produit grand public). Le service, la file, l'entrée cron et les
+données ont été supprimés ; il n'y a plus rien à provisionner ici.
+
+**Ce qui SURVIT de cette section, et qu'il faut garder :** le **Firestore
+Data Access audit logging** activé à son étape 1. Il était le contrôle
+compensatoire du registre ; il est désormais la trace de son effacement, et
+il ne coûte rien. Ne pas le désactiver.
+
+L'analyse documentaire, elle, ne dépend plus de rien ici : la compétence se
+colle dans un Skill claude.ai, et les outils MCP `get_document_text` +
+`record_document_analysis` (§11) suffisent à la boucle complète.
 
 ---
 
@@ -665,26 +605,18 @@ Notes:
   `static/src/app.input.css` → `static/vendor/app.<hash>.css` and fan the new
   hash out to `base.html`, `auth/login.html`, `sw.js` PRECACHE, and the Early
   Hints lists in `security.py` (full recipe in [CLAUDE.md](CLAUDE.md) → Tech Stack).
-- **Effacement Loi 25 d'une conversation d'assistant (runbook, hors
-  application — BY DESIGN no in-app path exists):** the chat registre
-  (`chat_conversations` + its `turns` subcollection) is append-only by code
-  convention precisely so erasure stays TECHNICALLY possible when the law
-  requires it. Manual procedure, performed by the lawyer, logged by the
-  platform (the Data Access audit logs enabled in §11b step 1 are the record
-  of the act): 1) note the conversation id; 2) delete the turn documents then
-  the conversation document (console, or a `gcloud firestore` /
-  Admin-SDK one-off — the `turns` subcollection does not cascade); 3) delete
-  the offloaded blocks under `users/{uid}/chat/{conversation_id}/` in Firebase
-  Storage; 4) if the conversation was dossier-bound, remember
-  `chat_usage_dossier/{dossier_id}` keeps its aggregate counters (tokens/US$ —
-  no content); leave them: they are accounting, not personal information.
-  Drafts (`chat_drafts` + `versions`) follow the same shape when erasure is
-  legally required. Never script this into the app.
-- **`chat_charter` is NOT in scope for erasure.** The charter (head +
-  `versions` + `fichiers`) holds the firm's own governing text — no personal
-  information, no client content. It is append-only like the rest and stays
-  that way: a prior version is the proof of what governed a given turn, which
-  is precisely what the registre exists to show.
+- **Effacement Loi 25 — le clavardage interne est parti (2026-09-02).** Ce
+  runbook visait le registre des conversations d'assistant, append-only par
+  convention précisément pour que l'effacement reste TECHNIQUEMENT possible
+  quand la loi l'exige. La fonctionnalité a été retirée, et ses données
+  effacées puis vérifiées à zéro (15 conversations, 173 enfants de
+  sous-collection, 11 objets Storage) par `scripts/effacer_clavardage.py`,
+  l'acte étant consigné par les journaux d'audit Data Access activés à la
+  §11b. Le principe reste bon pour toute collection append-only future :
+  **une sous-collection ne cascade pas** (les enfants avant la tête), les
+  compteurs agrégés sont de la comptabilité et non des renseignements
+  personnels (on les laisse), et on ne script JAMAIS un effacement dans
+  l'application.
 
 ---
 
@@ -699,9 +631,6 @@ Notes:
 | Login rejected after password entry | `REQUIRE_MFA=true` but no second factor enrolled. |
 | Warning about App Check in prod logs | `RECAPTCHA_ENTERPRISE_SITE_KEY` unset — App Check is fail-open. |
 | DavX5 silently won't sync | A DAV Basic-Auth mismatch, or the account was not re-added after a DAV collection layout change. Test the endpoint with `curl` first — an anonymous `PROPFIND /dav/` must answer `401 WWW-Authenticate: Basic`. |
-| EVERY chat turn fails `vertex_invalid_request`, right after a charter save | A blank or whitespace-only charter body builds an EMPTY first system block, which Vertex rejects with a 400 — for all conversations at once. The write path refuses it and `get_head` treats it as unreadable, so this means an out-of-app write: re-save a real body from `/chat/charte/modifier`. |
-| A turn shows the amber « charte de référence » banner | `chat_charter_repli` in the **chat** service's logs: the saved charter could not be read, so the turn ran on the source text. A rule added since may not have applied. Not the same as the bootstrap state (`charter_source: "amorcage"`), which is silent and normal until the first save. |
-| A blank 404 page with status 413 when saving a charter or a compétence | The POST exceeded the 1 MB `_enforce_request_size` ceiling. Both forms post multipart precisely to avoid it; if one reverted to urlencoded, an accented run costs six bytes per character and blows the cap (see the CLAUDE.md caps gotcha — and redo the arithmetic before raising any cap). |
 | Word shows a "repair" prompt on a generated doc | A template-engine change introduced a `docxtpl`/`python-docx` round-trip — forbidden (see CLAUDE.md). |
 
 ---

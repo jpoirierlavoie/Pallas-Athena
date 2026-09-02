@@ -248,38 +248,16 @@ Recurring calendar series (« séries »). One click here creates or destroys up
 | `series_deleted` | A chain was deleted from an occurrence onward; `serie_id`, `occurrences` (how many were ACTUALLY destroyed, never how many were asked for), `dossier_id`, `ctag_bumped`. The deletion journal takes ONE `audit_events` row per chain — see the entry in CLAUDE.md for why N rows would evict the practice's whole deletion history |
 | `series_unlinked` | One occurrence was detached and became standalone; `serie_id` (the chain it LEFT), `hearing_id`, `dossier_id`, `ctag_bumped` |
 
-### `log_chat_event(event, outcome='success', *, conversation_id=None, turn_id=None, task_id=None, tool=None, model=None, reason=None, **extra)` — logger `pallas.chat`
+### `log_chat_event` — RETIRÉ le 2026-09-02
 
-Chat IA (Phase N) — the Claude-on-Vertex chat client. Events emit from **both services**: `default` (UI routes, the scheduled-task dispatcher) and `chat` (the turn worker) — separate them with `resource.labels.module_id`, the `pallas.portail` convention. `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR**.
-
-**The PII discipline is absolute here — never a message, a prompt, a thinking text, a skill body, a draft title or body, tool arguments or results, or a Worker response.** All of it is privileged legal work product, and the `RedactionFilter` auto-scrubs none of it (emails/phones/postal only). The entire allowed vocabulary: token counts, durations, model ids, tool names, IDs, USD micros, and machine-stable `reason` strings.
-
-| `event` | Typical outcome | Notes |
-|---|---|---|
-| `chat_conversation_created` | success | `conversation_id`, `dossier_id?`, `model`, `skill_count`, `source` ∈ `ui`\|`planifiee` |
-| `chat_turn_started` | success | User POST accepted (or occurrence dispatched); the first task enqueued; `scheduled: bool` |
-| `chat_enqueue_failed` | **failure** | The turn doc exists but the chain never started — lost work is possible until a retry or the dispatcher repair pass re-enqueues |
-| `chat_model_empty` | **failure** | A Vertex response carrying NO content block. Emitted from the TRANSPORT (`chat/vertex.py`), before `chat_model_call` exists — which is why the 2026-08-31 incident left no line naming its own shape. `stop_reason`, `raw_stop_reason`, `blocks` (always 0), `input_tokens`, `output_tokens` |
-| `chat_model_call` | success / failure | **One line per Vertex call** — the registre-completeness invariant made observable. `step`, `duration_ms`, `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `web_search_requests`, `stop_reason`, `raw_stop_reason` (the PROVIDER's untranslated reason — two distinct Gemini reasons both translate to `end_turn`, and the log could not tell them apart after the fact; empty on the Anthropic path), `blocks` (content-block count) (a `pause_turn` is a success with its stop_reason) |
-| `chat_tool_call` | success / failure | `tool`, `executor` ∈ `in_process`\|`http_worker`\|`skill_file`, `duration_ms`, `step` — NEVER arguments or results |
-| `chat_tool_refused` | refused | Refusal before execution; `reason` ∈ `validation_failed`\|`gated_unattended`\|`unknown_tool`\|`write_disabled`. `validation_failed` was documented here but emitted NOWHERE until 2026-08-31: an argument refusal reached Cloud Logging as a plain `chat_tool_call`/failure, indistinguishable from a Firestore or Graph error, which is why eight consecutive refusals in one scheduled run raised nothing. It carries `arguments_refused` — the argument NAMES, which are schema, never content |
-| `chat_duplicate_delivery` | success | The claim transaction observed an advanced step and exited **without calling Vertex** — queue-health signal; no other line fires for a suppressed duplicate |
-| `chat_block_offloaded` | success | A content block exceeded the offload threshold and went to Storage verbatim; `size_bytes`, `original_type` — never the content |
-| `chat_web_search` | success | **One line per issued web search.** `step`, `tool`, `query_chars`, `query_sha8` — and deliberately NOT the query itself: it is model-composed and can carry a client name straight out of a privileged thread, which the redaction filter does not scrub. The text stays on the turn document for a forensic read. This is the only detection surface that exists for the channel: a `server_tool_use` block is already a RESULT, so the query left the tenant before any code in this repo saw it |
-| `chat_mail_unavailable` | refused | Emitted ONCE per process when `CHAT_MAIL_ENABLED` is true but the mailbox is not configured. « Not configured » is the normal, silent state on the default and portail services; « enabled and unconfigured » means the mail tools vanished from the model's array for a reason nobody can see — the shape of the origin-secret defect that stayed silent for months. Carries `reason` only |
-| `chat_turn_finalized` | success | Terminal success; `model_calls`, `tool_calls`, token totals, `usd_micros`, `duration_ms` — the counters transaction committed |
-| `chat_turn_failed` | **failure** | Loud terminal failure, visible in the transcript; `reason` ∈ `chain_ceiling`\|`retry_exhausted`\|`vertex_invalid_request`\|`vertex_permission`\|`vertex_endpoint_absent`\|`storage_ref_corrupt`\|… , `model_calls` |
-| `chat_authorization` | success / refused | The §4.6.3 seam; `tool`, `decision` ∈ `approuve`\|`refuse` — the refusal tool_result is the FIXED French string, never quoted content. Depuis le 2026-08-31, `decision="lot_execute"` marque CHAQUE exécution d'un lot approuvé (`step`, `tool_use_ids`) : deux lignes de même `turn_id` ET même `step` veulent dire qu'un lot a tourné DEUX FOIS — le filet de détection du seul vecteur que le correctif ne ferme pas (deux redélivrances concurrentes réclamant le même jeton). L'écriture elle-même est indiscernable d'une écriture légitime |
-| `chat_scheduler_execute` | success | Cron sweep summary; counters `dues`, `dispatched`, `skipped` (the `bookings_sync_execute` sibling) |
-| `chat_scheduled_dispatch` | success / refused / **failure** | Per occurrence; `task_id`, `occurrence` (local Montréal date string), `conversation_id?`; `refused` + `reason="already_dispatched"` is the idempotency CAS observed — never an error |
-| `chat_scheduled_repair` | **failure** | An occurrence was marked but its chain never started; the dispatcher re-enqueued it. ERROR by doctrine — every repair must be SEEN (the `reconciliation_reparation` convention) |
-| `chat_report_emailed` | success / refused / **failure** | `deliver_email` path; `refused` + `reason="graph_not_configured"`, `failure` + `reason="graph_error"` (the in-app copy remains — the accusé posture). Since 2026-08-31 the FAILURE NOTICE shares this event and the same at-most-once marker: `failure` + `reason` ∈ `aucun_rapport`\|`registre_illisible`\|`echec`\|`avis_non_livre` — a scheduled run that produced nothing says so in the inbox rather than going silent |
-| `chat_draft_written` | success | `save_draft`/`revise_draft` through the CHAT (the connector path also emits `mcp_write`); `draft_id`, `version`, `dossier_id?`, `content_chars` |
-| `chat_draft_exported` | success / failure | « Verser en Word » ; `draft_id`, `version`, `document_id?`, `dossier_id?` |
-| `chat_charter_repli` | **failure** | Le tour a tourné sur le TEXTE SOURCE : la charte enregistrée était illisible. ERROR par doctrine — la constitution en vigueur n'a pas été appliquée, donc une restriction récemment ajoutée a pu ne pas s'appliquer. **Mérite une alerte log-based** : c'est le seul événement de la famille qui signale une gouvernance dégradée. `conversation_id`, `turn_id`, `step`. L'AMORÇAGE — aucune charte enregistrée — n'émet RIEN : c'est l'état normal d'un déploiement neuf, et crier au loup à chaque installation neuve rendrait l'alerte inutilisable |
-| `chat_charter_saved` | success | Une version de charte a été enregistrée ; `version`, `files_count`, `body_chars`. **Jamais le texte** : il gouverne le cabinet, il n'a rien à faire dans les journaux |
-| `chat_skill_saved` | success | Create / edit-as-new-version / toggle; `skill_id`, `version`, `active: bool`, `files_count` (reference files on the saved version) |
-| `chat_task_saved` | success | Scheduled-task create / edit / toggle; `task_id`, `active: bool`, `recurrence` |
+Le logger `pallas.chat` et ses 24 événements ont été retirés avec le client
+de clavardage interne (Phase N, 2026-08-26 → 2026-09-02) : le cabinet est
+passé à un compte Claude for Work couvert par une entente de traitement des
+données, ce qui retire au clavardage sa seule raison d'être. Les journaux
+déjà émis restent dans Cloud Logging sous `logName=pallas-athena` et
+`resource.labels.module_id="chat"` jusqu'à l'expiration de leur rétention ;
+une alerte log-based posée sur `chat_charter_repli` ne se déclenchera plus et
+peut être retirée.
 
 ### `log_unexpected(message, *, exc_info=True, **extra)` — logger `pallas.unexpected`
 
@@ -349,9 +327,6 @@ These layers are a safety net, not an invitation: as with logs, never attach raw
 | `trust.reconcile` | Reconciliation completion (Phase K) | `trust.reconcile` with `account_id`, `cleared_count` |
 | `admin.transaction` | One administration write — create / reversal / card payment (August 2026) | `admin.transaction` with `direction`, `kind` — **never amounts, never supplier names** |
 | `admin.reconcile` | Administration reconciliation completion | `admin.reconcile` with `account_id`, `cleared_count` |
-| `chat.turn` | One chat-worker task delivery (Phase N) | `chat.turn` with `conversation_id`, `turn_id`, `step`, `model`, `scheduled` — IDs and counts only |
-| `chat.model_call` | One Vertex Messages API call inside a turn | `chat.model_call` with `model`, the five token counters, `stop_reason`, `duration_ms` — **never prompt or response text**. ⚠ Never call `record_exception` on a Vertex/tool error here: the `_SanitizingSpanExporter` scrubs span *attributes*, NOT exception events, so a quoted error body would export privileged content to Cloud Trace. Catch, set a machine-stable status description, and let `log_unexpected`'s `RedactionFilter`-scrubbed traceback be the record |
-| `chat.tool` | One tool execution inside a turn | `chat.tool.get_dossier` with `tool`, `executor`, `dossier_id?` — never arguments or results |
 | `pallas.<module>.<qualname>` | Default name produced by the `@traced()` decorator | `models.dossier.create_dossier` |
 
 ### Standard attributes
