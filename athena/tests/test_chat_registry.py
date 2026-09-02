@@ -54,16 +54,16 @@ def test_the_chat_withholds_exactly_the_named_tools():
 
     # Et ce qui fait le travail de conversation reste offert.
     for indispensable in ("create_note", "append_to_note", "create_task",
-                          "complete_task", "create_hearing", "save_draft",
-                          "revise_draft", "get_document_text", "get_dossier"):
+                          "complete_task", "create_hearing",
+                          "get_document_text", "get_dossier"):
         assert indispensable in exposes, indispensable
 
 
 def test_the_exclusion_never_touches_the_connector():
-    """Le connecteur externe garde ses 52 outils : c'est là que la reprise
-    de données se fait, et elle en a besoin."""
+    """Le connecteur externe garde tous ses outils : c'est là que la
+    reprise de données se fait, et elle en a besoin."""
     assert registry.CHAT_EXCLUDED_TOOLS <= set(mcp_tools.TOOLS)
-    assert len(mcp_tools.TOOLS) == 53
+    assert len(mcp_tools.TOOLS) == 49
 
 
 def test_gated_set_is_derived_not_listed():
@@ -80,7 +80,7 @@ def test_gated_set_is_derived_not_listed():
     }
     # The additive creators stay OUT: gating a creation would put a click in
     # front of ordinary work for an act the lawyer can delete in one gesture.
-    for additif in ("create_note", "create_task", "save_draft"):
+    for additif in ("create_note", "create_task", "create_hearing"):
         assert additif not in registry.GATED_TOOLS
     # And every gated name is a real tool, so a rename cannot leave a ghost.
     assert registry.GATED_TOOLS <= set(mcp_tools.TOOLS)

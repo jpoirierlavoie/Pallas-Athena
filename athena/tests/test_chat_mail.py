@@ -68,7 +68,7 @@ def test_no_mail_tool_ever_reaches_the_connector():
     called — the Workers' mechanism, and the whole of D1."""
     for name in mail_tools.read_tool_names():
         assert name not in mcp_tools.TOOLS
-    assert len(mcp_tools.TOOLS) == 53
+    assert len(mcp_tools.TOOLS) == 49
 
 
 def test_the_family_is_absent_until_configured_and_enabled():

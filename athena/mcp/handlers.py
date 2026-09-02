@@ -1,11 +1,9 @@
-"""The 52 MCP tool handlers — 29 read-only, plus 23 writes.
+"""The 49 MCP tool handlers — 27 read-only, plus 22 writes.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
-Handlers call EXISTING model/util functions only. Since Phase N the same
-handlers also serve the internal chat client IN-PROCESS
-(``chat/executors.py`` — which reproduces the endpoint-side validation
-itself), so nothing here may assume a Flask request context.
+Handlers call EXISTING model/util functions only. Nothing here may assume a
+Flask request context.
 
 **Read handlers must never write to Firestore.** Only the handlers named in
 :data:`mcp.tools.WRITE_TOOLS` mutate anything. They fall in five families —
@@ -13,13 +11,20 @@ CREATE (note, task, hearing, time entry, expense, partie, dossier, an
 appended register entry, a fill-only-if-empty dossier field), CORRECT
 (``update_partie``, ``update_dossier``, ``update_time_entry``,
 ``update_expense``, and ``complete_task``'s status change), RECLASSIFY
-(the four ``set_*_phase`` tools), IMPORT (``import_invoice``), and since
-Phase N DRAFTS (``save_draft`` creates a versioned draft, ``revise_draft``
-appends version n+1 and moves the head — every prior version stays stored)
-— and the writable collections are ``notes``, ``tasks``, ``hearings``,
-``timeentries``, ``expenses``, ``parties``, ``invoices`` (with its
-``lineitems`` subcollection), ``dossiers`` and ``chat_drafts`` (with its
-``versions`` subcollection).
+(the four ``set_*_phase`` tools), IMPORT (``import_invoice``) and ANALYSE
+(``record_document_analysis``, which replaces a document's stored category
+with one DERIVED from the closed sub-nature table) — and the writable
+collections are ``notes``, ``tasks``, ``hearings``, ``timeentries``,
+``expenses``, ``parties``, ``invoices`` (with its ``lineitems``
+subcollection), ``documents`` (with its append-only ``analyses`` journal)
+and ``dossiers``.
+
+The versioned-drafts family (``save_draft``/``revise_draft``/``get_draft``/
+``list_drafts``) LEFT this connector on 2026-09-02 with the internal chat
+client it was built for: the practice moved to a Claude for Work account
+under a data-processing agreement, so the reason the chat existed — keeping
+privileged material out of a consumer product — no longer holds. Nothing
+was ever stored in ``chat_drafts``; the feature never saw use.
 **NOTHING is ever deleted**, no invoice status is ever set and no payment is
 ever recorded. That is why, for example, ``list_protocol_steps`` derives
 overdue status by date comparison instead of calling
@@ -70,7 +75,6 @@ from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
-from models import chat_draft as chat_draft_model
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -4633,18 +4637,6 @@ def _import_invoice_entity(invoice: dict, dossier_id: str) -> dict:
     return row
 
 
-def _source_problem(
-    row: Optional[dict], dossier_id: str, *, invoiced_label: str
-) -> str:
-    if not row:
-        return "introuvable ou illisible"
-    if row.get("invoiced"):
-        return invoiced_label
-    if row.get("dossier_id") != dossier_id:
-        return "rattaché(e) à un autre dossier"
-    return ""
-
-
 # ── 39. create_dossier (WRITE) ──────────────────────────────────────────
 
 
@@ -5692,7 +5684,7 @@ def _complete_task_payload(
 
 
 # ════════════════════════════════════════════════════════════════════════
-# Phase N — document content + versioned drafts (2026-08)
+# Lecture du CONTENU d'un document (2026-08)
 # ════════════════════════════════════════════════════════════════════════
 
 # ── 48. get_document_text (read) ────────────────────────────────────────
@@ -5917,176 +5909,6 @@ def get_document_text(args: dict) -> dict:
         "next_page": next_page,
         "warnings": warnings,
     }
-
-
-# ── 49-50. get_draft / list_drafts (read) ───────────────────────────────
-
-
-def _draft_row(head: dict) -> dict:
-    return {
-        "id": head.get("id", ""),
-        "dossier_id": head.get("dossier_id", ""),
-        "dossier_file_number": head.get("dossier_file_number", ""),
-        "dossier_title": head.get("dossier_title", ""),
-        "title": head.get("title", ""),
-        "current_version": int(head.get("current_version") or 0),
-        "content_length": int(head.get("content_length") or 0),
-        "created_at": iso_mtl(_as_utc(head.get("created_at"))),
-        "updated_at": iso_mtl(_as_utc(head.get("updated_at"))),
-    }
-
-
-def get_draft(args: dict) -> dict:
-    draft_id = (args.get("draft_id") or "").strip()
-    head = chat_draft_model.get_draft(draft_id)
-    if head is None:
-        return {"found": False, "draft_id": draft_id}
-    current = int(head.get("current_version") or 0)
-    version = args.get("version")
-    if version is None or int(version) == current:
-        shown, content = current, head.get("content", "") or ""
-    else:
-        requested = int(version)
-        if requested < 1 or requested > current:
-            raise ToolArgumentError(
-                f"Version inconnue : {requested}. Ce brouillon compte "
-                f"{current} version(s) (1 à {current})."
-            )
-        version_doc = chat_draft_model.get_version(draft_id, requested)
-        if version_doc is None:
-            raise ToolArgumentError(
-                f"La version {requested} n'a pas pu être lue. Réessayez, ou "
-                "consultez l'historique du brouillon dans l'application."
-            )
-        shown, content = requested, version_doc.get("content", "") or ""
-    return {
-        "found": True,
-        "draft": _draft_row(head),
-        "version_shown": shown,
-        "content": content,
-    }
-
-
-def list_drafts(args: dict) -> dict:
-    dossier_id = (args.get("dossier_id") or "").strip()
-    floating = bool(args.get("floating"))
-    if dossier_id and floating:
-        raise ToolArgumentError(
-            "dossier_id et floating sont mutuellement exclusifs : un "
-            "brouillon flottant n'a pas de dossier."
-        )
-    limit = _limit_arg(args, 20)
-    if dossier_id:
-        scope: Optional[str] = dossier_id
-    elif floating:
-        scope = ""
-    else:
-        scope = None
-    rows = chat_draft_model.list_drafts(dossier_id=scope)
-    items = [_draft_row(r) for r in rows[:limit]]
-    return _list_payload(items, truncated=len(rows) > limit)
-
-
-# ── 51-52. save_draft / revise_draft (WRITE) ────────────────────────────
-
-
-def _clean_draft_text(raw: str, field: str, limit: int) -> str:
-    """The note-tools chevron discipline, at the draft caps."""
-    cleaned = _normalize_markdown(raw)
-    if not _survives_storage(cleaned, limit):
-        raise ToolArgumentError(
-            f"« {field} » contient du texte entre chevrons qui serait "
-            f"supprimé à l'enregistrement. {_CHEVRON_ADVICE}"
-        )
-    return cleaned
-
-
-def _draft_result(head: dict, verb: str) -> dict:
-    payload: dict[str, Any] = {
-        verb: True,
-        "draft": _draft_row(head),
-        "warnings": [],
-    }
-    return payload
-
-
-def save_draft(args: dict) -> dict:
-    return run_write("save_draft", args, lambda: _save_draft_impl(args))
-
-
-def _save_draft_impl(args: dict) -> dict:
-    dossier_id = (args.get("dossier_id") or "").strip()
-    if dossier_id:
-        dossier = dossier_model.get_dossier(dossier_id)
-        if dossier is None:
-            raise ToolArgumentError(
-                f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers "
-                "pour obtenir un dossier_id valide. N'omettez pas dossier_id "
-                "pour contourner cette erreur : un brouillon sans dossier "
-                "est flottant, et le rattachement est PERMANENT."
-            )
-    else:
-        dossier = None
-
-    title = _clean_draft_text(
-        (args.get("title") or "").strip(),
-        "title",
-        chat_draft_model.TITLE_MAX_LENGTH,
-    )
-    content = _clean_draft_text(
-        (args.get("content") or "").strip(),
-        "content",
-        chat_draft_model.CONTENT_MAX_LENGTH,
-    )
-
-    # EXPLICIT whitelist — never **args (the create_note doctrine: the model
-    # honours a caller-supplied id and set()s the full document).
-    data = {
-        "dossier_id": dossier_id,
-        "dossier_file_number": (dossier or {}).get("file_number", ""),
-        "dossier_title": (dossier or {}).get("title", ""),
-        "title": title,
-        "content": content,
-    }
-    head, errors = chat_draft_model.create_draft(data)
-    if errors:
-        raise ToolArgumentError("; ".join(errors))
-    return _draft_result(head, "created")
-
-
-def revise_draft(args: dict) -> dict:
-    return run_write(
-        "revise_draft", args, lambda: _revise_draft_impl(args)
-    )
-
-
-def _revise_draft_impl(args: dict) -> dict:
-    draft_id = (args.get("draft_id") or "").strip()
-    existing = chat_draft_model.get_draft(draft_id)
-    if existing is None:
-        raise ToolArgumentError(
-            f"Brouillon introuvable : {draft_id}. L'identifiant provient de "
-            "list_drafts ou d'un save_draft antérieur — une révision ne crée "
-            "jamais un brouillon."
-        )
-
-    content = _clean_draft_text(
-        (args.get("content") or "").strip(),
-        "content",
-        chat_draft_model.CONTENT_MAX_LENGTH,
-    )
-    title = args.get("title")
-    if title is not None:
-        title = _clean_draft_text(
-            title.strip(), "title", chat_draft_model.TITLE_MAX_LENGTH
-        )
-
-    head, errors = chat_draft_model.revise_draft(
-        draft_id, content=content, title=title
-    )
-    if errors:
-        raise ToolArgumentError("; ".join(errors))
-    return _draft_result(head, "revised")
 
 
 # ── Analyse documentaire (SPEC Phase K §8-9) ─────────────────────────────

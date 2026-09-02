@@ -155,7 +155,7 @@ def _found_or_not(found_schema: dict, notfound_props: dict[str, Any]) -> dict:
     The root carries ``type: "object"`` BESIDE the anyOf: the MCP wire
     schema for ``Tool.outputSchema`` requires a top-level ``type`` with
     const ``object`` (the official SDK zod-parses the whole ListToolsResult,
-    so ONE bare-anyOf descriptor would fail all 19 tools at once). Draft
+    so ONE bare-anyOf descriptor would fail EVERY tool at once). Draft
     2020-12 applies type and anyOf conjunctively and every branch is itself
     an object, so payload acceptance is unchanged.
     """
@@ -500,41 +500,6 @@ def _written_note() -> dict:
                                "against what was sent to detect any loss."),
         "created_at": _nstr(),
         "updated_at": _nstr(),
-    })
-
-
-def _draft_summary(id_note: str = "") -> dict:
-    """The draft snapshot both write tools and get_draft emit (Phase N).
-
-    NO ctag/dav keys anywhere in the draft family: chat_drafts is not a DAV
-    collection, and this module's rule is never to declare a sync key a
-    write cannot honour.
-    """
-    return _obj({
-        "id": _str(id_note or "Draft UUIDv4."),
-        "dossier_id": _str("Empty string for a floating draft. PERMANENT — "
-                           "a draft never moves between dossiers."),
-        "dossier_file_number": _str(),
-        "dossier_title": _str(),
-        "title": _str(),
-        "current_version": _int("Versions are 1..current_version, all "
-                                "stored, none deletable."),
-        "content_length": _int("Stored length AFTER sanitization — compare "
-                               "against what was sent to detect any loss."),
-        "created_at": _nstr(),
-        "updated_at": _nstr(),
-    })
-
-
-def _draft_write_result(verb: str) -> dict:
-    """save_draft / revise_draft success payload (Phase N)."""
-    return _obj({
-        verb: {"type": "boolean", "enum": [True]},
-        "draft": _draft_summary(
-            "Empty when nothing was written."
-        ),
-        "warnings": _arr(_str(), "French, human-readable; empty when clean."),
-        **_write_protocol_keys(),
     })
 
 
@@ -1861,7 +1826,7 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
 
     "record_prescription_event": _record_prescription_event_result(),
 
-    # ── Phase N — document content + versioned drafts ───────────────────
+    # ── Lecture du contenu d'un document + analyse documentaire ─────────
 
     "get_document_text": {
         # Root type BESIDE the anyOf — the wire-mandated shape (see
@@ -1933,19 +1898,6 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         ],
     },
 
-    "get_draft": _found_or_not(
-        _obj({
-            "found": _found(True),
-            "draft": _draft_summary(),
-            "version_shown": _int(
-                "Which version `content` carries — current_version unless "
-                "a specific one was requested."),
-            "content": _str("The FULL Markdown text of that version."),
-        }),
-        {"draft_id": _str()},
-    ),
-
-    "list_drafts": _list_envelope(_draft_summary()),
 
     "record_document_analysis": {
         "type": "object",
@@ -1961,12 +1913,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "items": {"type": "string"},
             },
         },
-        # `category` et `category_source` manquent en branche SÈCHE —
-        # rien n'est écrit, donc rien n'est stocké à rapporter. `required`
-        # ne porte donc que ce qui est TOUJOURS présent.
+        # `required` ne porte que ce qui est TOUJOURS présent : un refus
+        # n'a ni catégorie ni provenance à rapporter, rien n'étant stocké.
         "required": ["recorded", "document_id", "analyse", "warnings"],
     },
-    "save_draft": _draft_write_result("created"),
 
-    "revise_draft": _draft_write_result("revised"),
 }

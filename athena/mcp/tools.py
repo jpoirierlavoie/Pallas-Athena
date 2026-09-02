@@ -485,11 +485,6 @@ WRITE_TOOLS: frozenset[str] = frozenset({
     # sérialiseur DAV. Les update_* ci-dessus gardent leur refus intact.
     "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
-    # Phase N — les brouillons de rédaction versionnés (le livrable du
-    # clavardage, exposé aux DEUX surfaces par décision D3/D8). Créer est
-    # additif ; réviser appose la version n+1 ET déplace la tête (voir
-    # EDIT_TOOLS). Toujours aucune suppression, nulle part.
-    "save_draft", "revise_draft",
 })
 
 # Writes that REPLACE a stored value rather than adding one. Lot Q ended the
@@ -518,12 +513,6 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # l'erreur.
     "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
-    # Une révision REMPLACE le texte courant du brouillon : chaque version
-    # antérieure reste lisible dans l'application, mais ce que l'avocat voit
-    # comme « le brouillon » est déplacé — la tête est une valeur stockée et
-    # elle est remplacée. La même phrase que le reclassement, transposée.
-    # (save_draft reste hors de cet ensemble : créateur purement additif.)
-    "revise_draft",
 })
 
 # Per-call content ceiling, deliberately far below models.note's
@@ -538,13 +527,6 @@ NOTE_TITLE_MAX_CHARS = 200
 # through a long document (page_range + next_page) instead of receiving
 # megabytes; 40 000 chars ≈ 15-20 dense pages per call.
 DOCUMENT_TEXT_MAX_CHARS = 40_000
-# Draft bounds. The schema ceiling (100k) sits deliberately UNDER the model
-# cap (models/chat_draft.CONTENT_MAX_LENGTH = 120k = MAX_MARKDOWN_CHARS), so
-# an over-long draft is refused LOUDLY at -32602 and security.sanitize can
-# never length-truncate one silently — the note-tools doctrine.
-DRAFT_TITLE_MAX_CHARS = 200
-DRAFT_CONTENT_MAX_CHARS = 100_000
-
 # Copied exactly from models.note.VALID_CATEGORIES (they are French).
 # tests/test_mcp_tools.py pins the two lists against each other. Kept as a
 # literal (not derived) because importing models.* runs firestore.Client()
@@ -3149,10 +3131,9 @@ TOOLS: dict[str, dict] = {
         "scope": SCOPE_WRITE,
     },
     # ════════════════════════════════════════════════════════════════════
-    # Phase N (2026-08) — document content + versioned drafts. Exposed on
-    # BOTH surfaces (the chat AND this connector) by user decision D3/D8,
-    # get_document_text explicitly confirmed: the consent screen names the
-    # fact that full pièce content transits claude.ai.
+    # Lecture du CONTENU d'un document (2026-08). L'écran de consentement
+    # nomme le fait que le contenu intégral d'une pièce transite par
+    # claude.ai — c'est la divulgation qui rend cet outil acceptable.
     # ════════════════════════════════════════════════════════════════════
     "get_document_text": {
         "title": "Texte d'un document",
@@ -3192,68 +3173,6 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "get_document_text",
-    },
-    "get_draft": {
-        "title": "Lire un brouillon",
-        "description": (
-            "Read a draft's CURRENT text (or one specific prior version) — "
-            "the read-back half of save_draft/revise_draft. Use list_drafts "
-            "to find the id. The head is what the lawyer sees as « the "
-            "draft »; current_version counts the versions (1..n, all "
-            "readable, none deletable). Always read the current text with "
-            "this tool before calling revise_draft — revising from memory "
-            "of an older state silently discards someone else's revision."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "draft_id": _id(
-                    "The draft to read (UUIDv4), from list_drafts or a "
-                    "prior save_draft result."
-                ),
-                "version": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": (
-                        "Read this specific version instead of the head "
-                        "(1 = the original). Omit for the current text."
-                    ),
-                },
-            },
-            "required": ["draft_id"],
-            "additionalProperties": False,
-        },
-        "handler": "get_draft",
-    },
-    "list_drafts": {
-        "title": "Lister les brouillons",
-        "description": (
-            "List drafts — titles, versions and lengths, never the content "
-            "(read one with get_draft). With dossier_id: that dossier's "
-            "drafts. With floating=true: only the drafts attached to no "
-            "dossier. With neither: everything, newest-updated first. A "
-            "draft's dossier attachment is fixed at creation."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "dossier_id": _id(
-                    "Only this dossier's drafts (UUIDv4). Mutually "
-                    "exclusive with floating."
-                ),
-                "floating": {
-                    "type": "boolean",
-                    "description": (
-                        "true = only drafts attached to NO dossier. "
-                        "Mutually exclusive with dossier_id."
-                    ),
-                },
-                "limit": _limit(20),
-            },
-            "required": [],
-            "additionalProperties": False,
-        },
-        "handler": "list_drafts",
     },
     "record_document_analysis": {
         "title": "Enregistrer l'analyse d'un document",
@@ -3462,98 +3381,6 @@ TOOLS: dict[str, dict] = {
         },
         "scope": SCOPE_WRITE,
         "handler": "record_document_analysis",
-    },
-    "save_draft": {
-        "title": "Créer un brouillon de rédaction",
-        "description": (
-            "WRITE. Create a VERSIONED draft — the intended home for any "
-            "substantial rédaction (projet de procédure, de lettre, "
-            "d'analyse). Content is Markdown in French. With dossier_id it "
-            "is attached to that dossier (an id that does not resolve is "
-            "refused, never downgraded — and the attachment is permanent); "
-            "omit it only for work belonging to no file. The draft is "
-            "permanent: no tool and no screen can delete it or any of its "
-            "versions. It does NOT sync to the phone (drafts are not a DAV "
-            "collection). To change it later, use revise_draft with the id "
-            "returned here. A retry without idempotency_key creates a "
-            "SECOND draft — use one on every unattended write. Raw HTML "
-            "is rejected; write plain Markdown."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "dossier_id": _id(
-                    "The dossier to attach the draft to (UUIDv4) — "
-                    "PERMANENT, a draft never moves. Omit for a floating "
-                    "draft. An unresolvable id is refused."
-                ),
-                "title": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": DRAFT_TITLE_MAX_CHARS,
-                    "description": "Draft title, in French.",
-                },
-                "content": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": DRAFT_CONTENT_MAX_CHARS,
-                    "description": (
-                        f"Markdown body, in French (max "
-                        f"{DRAFT_CONTENT_MAX_CHARS} characters)."
-                    ),
-                },
-                **_write_protocol_props(),
-            },
-            "required": ["title", "content"],
-            "additionalProperties": False,
-        },
-        "handler": "save_draft",
-        "scope": SCOPE_WRITE,
-    },
-    "revise_draft": {
-        "title": "Réviser un brouillon (nouvelle version)",
-        "description": (
-            "WRITE — REPLACES the draft's current text by appending version "
-            "n+1 and moving the head. Every prior version stays stored and "
-            "readable in the application for ever, but what the lawyer sees "
-            "as « the draft » becomes YOUR text — send the COMPLETE revised "
-            "document, never a fragment or a diff. Read the current text "
-            "with get_draft FIRST; revising from memory discards revisions "
-            "you have not seen. The title is kept unless you send a new "
-            "one. A retry without idempotency_key appends ANOTHER version "
-            "(recoverable — nothing is ever lost — but noisy); use one on "
-            "every unattended write. An unknown draft_id is refused, never "
-            "treated as a create."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "draft_id": _id(
-                    "The draft to revise (UUIDv4), from list_drafts or "
-                    "save_draft."
-                ),
-                "content": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": DRAFT_CONTENT_MAX_CHARS,
-                    "description": (
-                        "The COMPLETE new text of the draft (Markdown, "
-                        "French) — it replaces the current version wholesale."
-                    ),
-                },
-                "title": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": DRAFT_TITLE_MAX_CHARS,
-                    "description": "New title; omit to keep the current one.",
-                },
-                **_write_protocol_props(),
-            },
-            "required": ["draft_id", "content"],
-            "additionalProperties": False,
-        },
-        "handler": "revise_draft",
-        "scope": SCOPE_WRITE,
     },
 }
 

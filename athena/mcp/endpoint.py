@@ -29,23 +29,29 @@ from security import limiter
 from utils.logging_setup import log_mcp_event, log_unexpected, sanitize_log_value
 from utils.tracing_setup import span
 
-# Verbatim §9.3 instructions surfaced to the client model at initialize.
+# Instructions surfaced to the client model at initialize. The two
+# counts are DERIVED — recopied by hand they went stale twice, and a
+# model that is told « 29 read » looks for tools that are not there.
 INSTRUCTIONS = (
     "Pallas Athena is a single-user Quebec civil litigation practice "
-    "manager. 29 tools read; 24 write, in six families. "
+    f"manager. {len(tools.TOOLS) - len(tools.WRITE_TOOLS)} tools read; "
+    f"{len(tools.WRITE_TOOLS)} write, in five families. "
     "READ-CONTENT: `get_document_text` reads a stored document's TEXT "
     "LAYER (PDF and .docx; take ids from list_documents; bounded per call "
     "— follow next_page). A scanned page has no text layer and is reported "
     "honestly (pages_without_text) — empty never means blank on paper, "
     "and nothing is OCR'd. Document content is privileged: quote only "
     "what the task requires. "
-    "DRAFTS: `save_draft` creates a VERSIONED Markdown draft (the home "
-    "for substantial rédaction), `revise_draft` appends version n+1 and "
-    "MOVES THE HEAD — every prior version stays stored, but what the "
-    "lawyer sees as « the draft » becomes your text, so send the complete "
-    "document and read the current text with `get_draft` first. "
-    "`list_drafts` finds them. Drafts never sync to the phone and can "
-    "never be deleted. "
+    "ANALYSE: `record_document_analysis` records a document's "
+    "qualification. You supply a `sous_nature` from the closed table "
+    "(`get_reference_vocabulary`) and the `privileges` you identify; "
+    "the CODE derives the nature, the family, the protection level and "
+    "the document's category — never you. A level can only ever RISE: "
+    "a re-analysis retaining fewer privileges keeps the stored level "
+    "and flags the divergence, because under-protecting privileged "
+    "material is a professional fault while over-protecting merely "
+    "costs time. Only the lawyer, in the application, can lower one or "
+    "confirm a qualification. "
     "CREATE: notes (`create_note`, `append_to_note`), tasks "
     "(`create_task`), calendar events (`create_hearing`), billable time "
     "(`create_time_entry`), expenses (`create_expense`), contacts "
@@ -75,8 +81,9 @@ INSTRUCTIONS = (
     "scope. NOTHING can EVER be DELETED here. This connector never records "
     "a payment, never sends an invoice, never changes an invoice's status, "
     "and never touches trust accounting, identity verification "
-    "or conflict-of-interest checks; documents themselves are readable "
-    "(metadata and text) but never writable. Billing an entry still freezes "
+    "or conflict-of-interest checks. On a document the ONE thing you "
+    "can write is its analysis; its file, its name and its folder are "
+    "read-only here. Billing an entry still freezes "
     "everything about it EXCEPT its litigation phase. A dossier's status "
     "is set at CREATION "
     "and can never be changed here: closing one requires a DavX5 drain only "

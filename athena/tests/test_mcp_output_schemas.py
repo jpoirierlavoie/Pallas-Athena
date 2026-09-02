@@ -1292,7 +1292,7 @@ def test_complete_task_already_closed_neither_bumps_nor_claims_a_sync(
     assert payload["dav_synced"] is False
 
 
-# ── Phase N — document content + versioned drafts ───────────────────────
+# ── Lecture du contenu d'un document ────────────────────────────────────
 
 
 def _pdf_bytes(pages):
@@ -1425,69 +1425,3 @@ def test_get_document_text_not_found_conforms(monkeypatch):
     payload = handlers.get_document_text({"document_id": "absent"})
     _conforms("get_document_text", payload)
     assert payload["found"] is False
-
-
-_DRAFT_HEAD = {
-    "id": "b1", "dossier_id": "d1", "dossier_file_number": "2026-001",
-    "dossier_title": "Tremblay", "title": "Projet de lettre",
-    "content": "# Version courante", "content_length": 18,
-    "current_version": 3, "created_at": DT, "updated_at": DT,
-}
-
-
-def test_get_draft_conforms_head_version_and_absent(monkeypatch):
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "get_draft",
-        lambda i: dict(_DRAFT_HEAD))
-    payload = handlers.get_draft({"draft_id": "b1"})
-    _conforms("get_draft", payload)
-    assert payload["version_shown"] == 3
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "get_version",
-        lambda i, v: {"version": 1, "content": "# Première version"})
-    payload = handlers.get_draft({"draft_id": "b1", "version": 1})
-    _conforms("get_draft", payload)
-    assert payload["content"] == "# Première version"
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "get_draft", lambda i: None)
-    payload = handlers.get_draft({"draft_id": "absent"})
-    _conforms("get_draft", payload)
-    assert payload["found"] is False
-
-
-def test_list_drafts_conforms(monkeypatch):
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "list_drafts",
-        lambda dossier_id=None: [dict(_DRAFT_HEAD)])
-    payload = handlers.list_drafts({})
-    _conforms("list_drafts", payload)
-    assert payload["count"] == 1
-
-
-def test_save_draft_conforms(write_world, monkeypatch):
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "create_draft",
-        lambda data: ({**data, "id": "b-new", "content_length":
-                       len(data["content"]), "current_version": 1,
-                       "created_at": DT, "updated_at": DT}, []))
-    args = {"dossier_id": "d1", "title": "Projet", "content": "# Corps"}
-    payload = handlers.save_draft(dict(args))
-    _conforms("save_draft", payload)
-    assert payload["created"] is True
-    # The stored id is the caller's only handle on the new draft.
-    assert payload["draft"]["id"] == "b-new"
-
-
-def test_revise_draft_conforms(monkeypatch):
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "get_draft",
-        lambda i: dict(_DRAFT_HEAD))
-    monkeypatch.setattr(
-        handlers.chat_draft_model, "revise_draft",
-        lambda i, **kw: ({**_DRAFT_HEAD, "content": kw["content"],
-                          "current_version": 4, "updated_at": DT}, []))
-    args = {"draft_id": "b1", "content": "# Version révisée"}
-    payload = handlers.revise_draft(dict(args))
-    _conforms("revise_draft", payload)
-    assert payload["revised"] is True
-    assert payload["draft"]["current_version"] == 4
