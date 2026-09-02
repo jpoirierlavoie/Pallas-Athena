@@ -461,3 +461,38 @@ def test_la_recherche_libre_couvre_les_deux_textes_et_la_provenance():
     assert 'd.get("genere_depuis"' in source
     assert '"resume"' in source
     assert 'd.get("description"' not in source
+
+
+def test_le_gestionnaire_ne_jette_aucun_champ_que_le_schema_annonce():
+    """L'épingle qui manquait, et le défaut qu'elle attrape.
+
+    Trois listes doivent s'accorder pour qu'un champ d'analyse traverse :
+    le SCHÉMA de l'outil (ce que le modèle peut envoyer),
+    `_ANALYSE_INPUTS` (ce que le gestionnaire retient) et
+    `_EXTRACTION_FIELDS` (ce que la dérivation lit). Le 2026-08-27, la
+    première a gagné quatre champs (les deux axes de l'Annexe C,
+    `parait_original`, `qualite_reconnaissance`) et la deuxième non : le
+    gestionnaire les jetait en silence, donc aucune surface ne pouvait
+    les écrire alors que la description de l'outil les annonçait.
+
+    L'épingle voisine (`test_le_modele_peut_fournir_tout_ce_que_le_modele_lit`)
+    ne l'a pas vu : elle vérifie `_EXTRACTION_FIELDS ⊆ schéma`, jamais le
+    maillon du MILIEU. Et la vérification manuelle de l'époque portait sur
+    `_analyse_derivee` en direct — à côté de la frontière où le défaut
+    vivait, la faute déjà consignée pour l'identifiant de courriel.
+    """
+    from mcp import handlers, tools
+
+    schema = set(
+        tools.TOOLS["record_document_analysis"]["input_schema"]["properties"]
+    )
+    lus = set(doc._EXTRACTION_FIELDS)
+    retenus = set(handlers._ANALYSE_INPUTS)
+
+    jetes = sorted((schema & lus) - retenus)
+    assert not jetes, f"annoncés au schéma mais jetés par le gestionnaire : {jetes}"
+
+    # Et l'inverse : rien de retenu qui ne soit ni déclaré ni lu, sinon la
+    # liste porterait un nom mort que personne ne remarquerait.
+    orphelins = sorted(retenus - schema - lus)
+    assert not orphelins, f"retenus sans schéma ni lecture : {orphelins}"

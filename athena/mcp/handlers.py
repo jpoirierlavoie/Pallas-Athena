@@ -6023,6 +6023,16 @@ _ANALYSE_INPUTS = (
     "date_document_str", "date_signature_str", "contient_dispositif",
     "dispositif", "indices_protection", "langue_detectee", "confiance",
     "extraction_tronquee",
+    # Annexe C — les deux axes du droit de la preuve, plus l'apparence
+    # d'original et la qualité de reconnaissance. Ajoutés au SCHÉMA le
+    # 2026-08-27 et oubliés ICI : la compréhension de liste plus bas les
+    # jetait donc en silence, si bien qu'un champ annoncé au modèle
+    # n'atteignait jamais Firestore. Aucune erreur, aucun avertissement —
+    # seulement une carte d'analyse incomplète que rien ne reliait à un
+    # schéma. La vérification de l'époque portait sur `_analyse_derivee`
+    # en direct, c'est-à-dire à côté de la frontière où le défaut vivait.
+    "moyen_preuve", "qualification_ecrit", "parait_original",
+    "qualite_reconnaissance",
 )
 
 
