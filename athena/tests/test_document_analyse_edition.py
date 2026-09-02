@@ -496,3 +496,86 @@ def test_le_gestionnaire_ne_jette_aucun_champ_que_le_schema_annonce():
     # liste porterait un nom mort que personne ne remarquerait.
     orphelins = sorted(retenus - schema - lus)
     assert not orphelins, f"retenus sans schéma ni lecture : {orphelins}"
+
+
+# ── Les vocabulaires de l'analyse, au connecteur ────────────────────────
+#
+# Le clavardage interne portait la compétence et ses annexes ; avec son
+# retrait, la seule voie est un Skill claude.ai — du texte STATIQUE que
+# rien ne relie au code et dont aucun test ne détecte la dérive. Ces
+# quatre vocabulaires sont l'assurance : la table elle-même, atteignable
+# au moment où le modèle en a besoin.
+
+
+def _vocab(kind):
+    from mcp import handlers
+
+    return handlers.get_reference_vocabulary({"kind": kind})
+
+
+def test_les_quatre_vocabulaires_d_analyse_sont_servis():
+    # Dérivé des tables, jamais recopié : une entrée ajoutée à la table
+    # paraît au connecteur sans qu'on y touche.
+    assert {r["code"] for r in _vocab("sous_natures")["items"]} == set(
+        tax.VALID_SOUS_NATURES
+    )
+    assert {r["code"] for r in _vocab("privileges")["items"]} == set(
+        prot.PRIVILEGES
+    )
+    assert {r["code"] for r in _vocab("moyens_preuve")["items"]} == set(
+        tax.VALID_MOYENS_PREUVE
+    )
+    assert {r["code"] for r in _vocab("qualifications_ecrit")["items"]} == set(
+        tax.VALID_QUALIFICATIONS_ECRIT
+    )
+
+
+def test_le_kind_declare_et_le_kind_servi_ne_peuvent_pas_deriver():
+    # Un `kind` déclaré sans constructeur est refusé à l'exécution ; un
+    # constructeur sans `kind` déclaré est inatteignable. Les deux échouent
+    # en silence du point de vue de l'appelant.
+    from mcp import handlers, tools
+
+    declares = set(
+        tools.TOOLS["get_reference_vocabulary"]["input_schema"]
+        ["properties"]["kind"]["enum"]
+    )
+    # `actions` est le seul traité hors de la table (il prend un filtre).
+    servis = set(handlers._VOCABULARIES) | {"actions"}
+    assert declares == servis
+
+
+def test_chaque_privilege_porte_son_niveau_et_sa_reserve():
+    """Le vocabulaire le plus conséquent, et pourquoi la réserve compte.
+
+    La règle asymétrique du domaine veut que sous-estimer une protection
+    soit plus grave que la surestimer (art. 60.4 du Code des professions).
+    Une réserve dit ce qu'un code ne garantit PAS — que `SECRET_COMMERCIAL`
+    n'est pas un privilège de non-divulgation, que l'étiquette `PUBLIC`
+    n'est jamais exhaustive. La taire serait pire que l'omettre.
+    """
+    lignes = {r["code"]: r["note"] for r in _vocab("privileges")["items"]}
+    for code, p in prot.PRIVILEGES.items():
+        assert f"niveau {p.niveau}" in lignes[code], code
+        if p.reserve:
+            assert p.reserve in lignes[code], code
+        if p.implique:
+            for cible in p.implique:
+                assert cible in lignes[code], (code, cible)
+
+
+def test_la_regle_d_axe_voyage_avec_chaque_qualification():
+    # Annexe C : la qualification de l'écrit n'a de sens que sur un moyen
+    # ECRIT, et le modèle doit l'apprendre AVANT le refus, pas par lui.
+    for r in _vocab("qualifications_ecrit")["items"]:
+        if r["code"] != "NON_DETERMINE":
+            assert "ECRIT" in r["note"], r["code"]
+
+
+def test_aucun_vocabulaire_d_analyse_n_est_tronque():
+    # Le plafond est à 200 et la plus grande table en compte 42 : une
+    # troncature silencieuse enseignerait un vocabulaire incomplet comme
+    # s'il était complet.
+    for kind in ("sous_natures", "privileges", "moyens_preuve",
+                 "qualifications_ecrit"):
+        assert _vocab(kind)["truncated"] is False, kind

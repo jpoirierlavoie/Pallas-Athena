@@ -1637,8 +1637,24 @@ TOOLS: dict[str, dict] = {
                     "enum": [
                         "domaines", "actions", "prescription_types",
                         "forums", "districts", "phases",
+                        # Les vocabulaires de l'ANALYSE documentaire. Sans
+                        # eux, les codes de `record_document_analysis` sont
+                        # des énums nues : pas de libellé, pas d'ancrage
+                        # légal, pas de niveau, pas de réserve.
+                        "sous_natures", "privileges",
+                        "moyens_preuve", "qualifications_ecrit",
                     ],
-                    "description": "Which vocabulary to enumerate.",
+                    "description": (
+                        "Which vocabulary to enumerate. The four analysis "
+                        "ones feed `record_document_analysis`: "
+                        "`sous_natures` (the 42 codes — the category is "
+                        "DERIVED from the one you pick, never chosen), "
+                        "`privileges` (7 codes, CUMULATIVE, each with its "
+                        "protection LEVEL, its legal basis and its "
+                        "reserve — what the code does NOT guarantee), and "
+                        "the two Annexe C axes `moyens_preuve` / "
+                        "`qualifications_ecrit`."
+                    ),
                 },
                 "domaine": {
                     "type": "string",

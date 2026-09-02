@@ -3182,12 +3182,103 @@ def _vocab_phases() -> list[dict]:
     return rows
 
 
+# ── Les vocabulaires de l'ANALYSE documentaire ──────────────────────────
+#
+# Ils manquaient. Les 42 sous-natures, les 7 privilèges et les 14 codes de
+# preuve n'existaient pour un appelant que comme énums NUES du schéma de
+# `record_document_analysis` : sans libellé, sans ancrage légal, sans
+# niveau, et sans la `reserve` que `analyse_taxonomies` désigne pourtant
+# comme « le texte que l'INTERFACE doit rendre à côté du code ».
+#
+# La compétence collée les porte, et c'est la voie normale — mais elle est
+# du texte STATIQUE dans un Skill, que rien ne relie au code et dont aucun
+# test ne détecte la dérive. Ces quatre `kind` sont l'assurance : la table
+# elle-même, atteignable au moment où le modèle en a besoin.
+#
+# Tout tient dans le contrat existant `{code, label, note}` — l'information
+# se replie dans `note` plutôt que d'élargir un schéma de sortie que 53
+# outils partagent. Dérivé, jamais recopié.
+
+
+def _vocab_sous_natures() -> list[dict]:
+    from utils import analyse_taxonomies as tax
+
+    return [
+        {
+            "code": code,
+            "label": e.libelle,
+            "note": " · ".join(
+                p for p in (e.nature, e.famille.lower(), e.ancrage) if p
+            ),
+        }
+        for code, e in tax.SOUS_NATURES.items()
+    ]
+
+
+def _vocab_privileges() -> list[dict]:
+    """Le vocabulaire le plus conséquent : il porte le NIVEAU.
+
+    La règle asymétrique du domaine vit ici — sous-estimer une protection
+    est un manquement (art. 60.4 du Code des professions), la surestimer
+    fait perdre du temps. La `reserve` entre donc dans la note : elle dit
+    ce qu'un code ne garantit PAS, et la taire serait pire que l'omettre.
+    """
+    from utils import analyse_taxonomies as tax
+
+    lignes = []
+    for code, p in tax.PRIVILEGES.items():
+        bouts = [f"niveau {p.niveau}"]
+        if p.fondement:
+            bouts.append(p.fondement)
+        if p.implique:
+            bouts.append("entraîne " + ", ".join(p.implique))
+        if p.reserve:
+            bouts.append("RÉSERVE : " + p.reserve)
+        lignes.append({
+            "code": code,
+            "label": p.portee or code,
+            "note": " · ".join(bouts),
+        })
+    return lignes
+
+
+def _vocab_moyens_preuve() -> list[dict]:
+    from utils import analyse_taxonomies as tax
+
+    return [
+        {"code": code, "label": libelle, "note": ancrage}
+        for code, (libelle, ancrage) in tax.MOYENS_PREUVE.items()
+    ]
+
+
+def _vocab_qualifications_ecrit() -> list[dict]:
+    from utils import analyse_taxonomies as tax
+
+    return [
+        {
+            "code": code,
+            "label": libelle,
+            # La règle d'axe de l'Annexe C, portée par chaque ligne : sans
+            # elle, un appelant apprend le refus par l'échec.
+            "note": " · ".join(
+                p for p in (ancrage, "exige moyen_preuve = ECRIT"
+                            if code != "NON_DETERMINE" else "") if p
+            ),
+        }
+        for code, (libelle, ancrage) in tax.QUALIFICATIONS_ECRIT.items()
+    ]
+
+
 _VOCABULARIES = {
     "domaines": _vocab_domaines,
     "prescription_types": _vocab_prescription_types,
     "forums": _vocab_forums,
     "districts": _vocab_districts,
     "phases": _vocab_phases,
+    "sous_natures": _vocab_sous_natures,
+    "privileges": _vocab_privileges,
+    "moyens_preuve": _vocab_moyens_preuve,
+    "qualifications_ecrit": _vocab_qualifications_ecrit,
 }
 
 

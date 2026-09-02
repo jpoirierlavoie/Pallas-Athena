@@ -534,21 +534,26 @@ def main() -> int:
         )
 
     print(
-        "\nÀ faire dans l'application :\n"
-        "  1. /chat/competences → « Nouvelle compétence »\n"
-        "  2. Nom : « Analyse documentaire » — Description : « Trier et "
-        "qualifier un document : nature, mentions attendues, régime de "
-        "protection. »\n"
-        "  3. Contenu : coller corps.md\n"
-        "  4. « Ajouter un fichier » ×3, et pour chacun « Importer un "
-        "fichier texte » :\n"
+        "\nÀ faire dans claude.ai (Skills du projet) :\n"
+        "  1. Nouvelle compétence, nom « Analyse documentaire »\n"
+        "  2. Description : « Trier et qualifier un document : nature, "
+        "mentions attendues, régime de protection. »\n"
+        "  3. Instructions : coller corps.md\n"
+        "  4. Joindre les trois annexes comme fichiers de référence :\n"
     )
     for titre, nom, _ in _FICHIERS:
-        print(f"       • nom « {titre} » → {nom}")
+        print(f"       • {titre} → {nom}")
     print(
-        "\n  Les descriptions de fichier sont facultatives mais utiles : "
-        "elles guident\n  la lecture à la demande (le modèle ne voit que les "
-        "noms et descriptions\n  tant qu'il n'ouvre pas un fichier).\n"
+        "\n  L'annexe D est celle qui rend le niveau de protection\n"
+        "  ÉTABLISSABLE : elle porte les sept codes, leurs niveaux, leur\n"
+        "  portée, leur fondement légal, leurs réserves et l'implication\n"
+        "  ENQUETE_INTERNE → LITIGE. Sans elle, le modèle ne voit que des\n"
+        "  codes nus dans les énums du schéma de l'outil.\n"
+        "\n  ⚠ Ces fichiers sont RÉGÉNÉRÉS depuis utils/analyse_taxonomies,\n"
+        "  qui fait foi. Un texte collé est STATIQUE : rien ne le relie au\n"
+        "  code, et aucun test ne détecte sa dérive. Recolle-les après tout\n"
+        "  lot qui touche aux tables ou au schéma de l'outil — une annexe\n"
+        "  périmée enseignerait un code que le schéma REFUSE.\n"
     )
     return 0 if ok else 1
 
