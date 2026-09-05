@@ -59,14 +59,16 @@ from models.document import (
 from models.folder import get_or_create_folder
 from models.dossier import get_dossier
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
-from models.partie import display_name, get_partie, list_parties
+from models.partie import display_name, get_partie, get_parties_bulk, list_parties
 from tz import MTL
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import (
-    MANUAL_FIELDS,
     classify_placeholders,
     fallback_value,
+    manual_options,
+    manual_spec,
+    manual_value,
     resolve_values,
 )
 from utils.tracing_setup import add_attributes, span
@@ -75,7 +77,19 @@ from routes._helpers import dossier_search_fragment, is_htmx
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
 
+class _ManualOptionError(ValueError):
+    """A manual field was submitted a value outside its option list."""
+
+    def __init__(self, field_name: str) -> None:
+        super().__init__(field_name)
+        self.field_name = field_name
+
+
 _SCALAR_MAX_CHARS = 2000
+# A multi-paragraph value (a party block) is a different animal from the
+# letter metadata _SCALAR_MAX_CHARS was drawn for: five parties with their
+# addresses already exceed it.
+_MULTILINE_MAX_CHARS = 20000
 _FIELD_PREFIX = "champ__"
 
 
@@ -426,6 +440,25 @@ def _first_id(entries: Optional[list]) -> str:
     return ""
 
 
+def _dossier_parties(dossier: Optional[dict]) -> dict:
+    """Every party of *dossier*, loaded in ONE round-trip: {id: partie doc}.
+
+    The dossier's clients[]/opposing_parties[] entries are name snapshots with
+    no address, so the role-scoped blocks need the documents themselves.
+    ``get_parties_bulk`` is a keyed ``db.get_all`` (no index) and fails OPEN to
+    ``{}`` — which degrades a block to names alone, never to an error: this is
+    a document-rendering aid, not a register.
+    """
+    if not dossier:
+        return {}
+    ids = [
+        e.get("id")
+        for e in (dossier.get("clients") or []) + (dossier.get("opposing_parties") or [])
+        if e.get("id")
+    ]
+    return get_parties_bulk(ids) if ids else {}
+
+
 def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
     """Build the field-form context: slots, resolved values, defaults."""
     dossier_id = _arg("dossier_id")
@@ -469,6 +502,7 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         destinataire=destinataire,
         firm=_firm_dict(),
         today=today,
+        parties=_dossier_parties(dossier),
     )
 
     # Re-classify on every render so the field set is always correct — even
@@ -490,11 +524,19 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         value = resolved.get(name, "")
         options = None
         if kind == "manual":
-            spec = MANUAL_FIELDS[name]
-            options = spec["options"]
+            options = manual_options(name)
             if not value:
-                value = spec["default"] or ""
-        fields.append({"name": name, "kind": kind, "value": value, "options": options})
+                value = (manual_spec(name) or {}).get("default", "") or ""
+        # A value carrying a blank line is a BLOCK: docx_fill clones the host
+        # paragraph once per chunk. It must round-trip through a <textarea> —
+        # an <input type=text> strips newlines by the HTML value-sanitization
+        # algorithm, which would flatten the party block into one line and the
+        # expansion would silently never fire.
+        multiline = "\n\n" in value.replace("\r\n", "\n")
+        fields.append({
+            "name": name, "kind": kind, "value": value,
+            "options": options, "multiline": multiline,
+        })
 
     return {
         "template": template,
@@ -585,10 +627,26 @@ def _collect_values(template: dict) -> tuple[dict[str, str], int]:
         else:
             continue  # passthrough — leave {{name}} in the output for Word
         raw = request.form.get(f"{_FIELD_PREFIX}{name}", "")
-        value = raw[:_SCALAR_MAX_CHARS].strip()
-        if not value:
-            value = fallback_value(name, is_auto=is_auto)
-            missing += 1
+        cap = _MULTILINE_MAX_CHARS if "\n" in raw else _SCALAR_MAX_CHARS
+        raw = raw[:cap]
+        if is_auto:
+            value = raw.strip()
+            if not value:
+                value = fallback_value(name, is_auto=True)
+                missing += 1
+        else:
+            options = manual_options(name)
+            if options and raw.strip() and raw.strip() not in {v for _, v in options}:
+                # The <select> is the only constraint on the browser side; a
+                # crafted or stale POST must not write an arbitrary mention
+                # into a letter. Refuse by name rather than coerce.
+                raise _ManualOptionError(name)
+            value = manual_value(name, raw)
+            # Compare against the marker itself rather than sniffing its
+            # prefix: a legitimate value could one day begin the same way, and
+            # the two would then be indistinguishable.
+            if value == fallback_value(name, is_auto=False):
+                missing += 1
         values[name] = value
     return values, missing
 
@@ -623,7 +681,24 @@ def generate() -> Response | str:
             )
         return redirect(url_for("doc_templates.template_detail", template_id=template_id))
 
-    values, missing = _collect_values(template)
+    try:
+        values, missing = _collect_values(template)
+    except _ManualOptionError as exc:
+        # htmx 2.0.4 only swaps 2xx, so _champs_error answers 200 — a 4xx
+        # fragment would never render and the button would look dead.
+        log_template_event(
+            "generation_failed", template_id=template_id,
+            reason="manual_option_invalid",
+        )
+        message = (
+            f"La valeur du champ « {exc.field_name} » ne figure pas dans "
+            "la liste proposée. Rouvrez la fenêtre et choisissez une option."
+        )
+        if _is_htmx():
+            return _champs_error(message)
+        return redirect(
+            url_for("doc_templates.template_detail", template_id=template_id)
+        )
     add_attributes(template_id=template_id, field_count=len(values))
 
     docx_bytes = get_template_bytes(template_id)

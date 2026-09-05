@@ -29,16 +29,24 @@ and the syntax rules that govern them.
 - **Name charset:** letters (including accents `À–ÿ`), digits `0–9`, underscore
   `_`, and dot `.` — **no spaces inside the name, no hyphens**. Whitespace
   *around* the name is allowed: `{{ name }}` matches `{{name}}`.
-- **Matching is case-insensitive.** `{{tribunal}}`, `{{Tribunal}}`, `{{TRIBUNAL}}`
-  all resolve to the same field.
-- **ALL-CAPS uppercases the value.** A placeholder written in all capitals gets
-  its resolved value upper-cased: `{{TRIBUNAL}}` → `COUR SUPÉRIEURE`.
+- **Matching is case-insensitive** — for auto fields *and*, since September
+  2026, for the manual fields of §4: `{{tribunal}}`, `{{Tribunal}}`,
+  `{{TRIBUNAL}}` and likewise `{{privilège}}` / `{{PRIVILÈGE}}` all resolve to
+  the same field. **Case only, never accents**: `{{privilege}}` unaccented is an
+  unknown name and stays passthrough.
+- **ALL-CAPS uppercases the value**, auto and manual alike: `{{TRIBUNAL}}` →
+  `COUR SUPÉRIEURE`, `{{TRANSMISSION_LETTRE}}` → `COURRIEL` while
+  `{{transmission_lettre}}` → `courriel`. One option list therefore serves a
+  capitalised letterhead heading and an inline sentence.
 - **Unknown names are left verbatim.** Any placeholder that isn't a known field
   survives as literal `{{name}}` in the output for you to complete in Word —
   generation never fails on it (see [§5 Passthrough](#5-passthrough--left-verbatim)).
 - **Multi-paragraph values auto-expand.** A value containing a blank line is
   split into multiple paragraphs, cloning the host paragraph (list numbering
-  continues).
+  continues). The generation popup shows such a field as a **text area** — a
+  single-line input would strip the newlines and the expansion would silently
+  never fire. (This is what `{{dossier.sommaire}}` and the `_avec_adresse`
+  party blocks rely on.)
 - **Missing value → visible marker.** An auto field left blank renders as
   `[CHAMP MANQUANT : name]`; a prompted (manual) field left blank renders as
   `[À COMPLÉTER : name]`. Passthrough names get neither — the raw `{{name}}`
@@ -71,8 +79,8 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.role}}` | Client's litigation role, raw (e.g. `demandeur`) |
 | `{{dossier.role_feminin}}` | Feminine role (demanderesse, défenderesse, …; `autre` → unresolved) |
 | `{{dossier.role_label}}` | Capitalized role label (Demandeur, Défendeur, …) |
-| `{{dossier.demandeur}}` | Demandeur name(s), **bare** (no honorific), swapped by role |
-| `{{dossier.defendeur}}` | Défendeur name(s), **bare**, swapped by role |
+| `{{dossier.demandeur}}` | Demandeur name(s), **bare** (no honorific) — alias of `{{dossier.demandeurs}}` below |
+| `{{dossier.defendeur}}` | Défendeur name(s), **bare** — alias of `{{dossier.defendeurs}}` below |
 | `{{dossier.demandeur_avec_civilite}}` | Demandeur name(s) **with** Me/M./Mme |
 | `{{dossier.defendeur_avec_civilite}}` | Défendeur name(s) **with** honorific |
 | `{{dossier.adresse_demandeur}}` | One-line address of the demandeur side |
@@ -107,6 +115,59 @@ Filled automatically from the dossier and the selected parties.
 
 Accented spellings `{{dossier.demandeur_avec_civilité}}` /
 `{{dossier.defendeur_avec_civilité}}` also resolve (auto-registered).
+
+#### Several parties — the role-scoped families (September 2026)
+
+A dossier holds **any number** of parties per side, each with its own `roles`.
+A « mis en cause » is not a defendant, so these read **each party's own role**
+rather than the side it sits on — which also makes them resolve on a dossier
+whose overall role is blank, « intervenant » or « autre » (the
+demandeur/défendeur *positions* above cannot).
+
+Two forms per role. The **inline** form enumerates in French — `A, B et C`. The
+**`_avec_adresse`** form emits *one paragraph per party*, `Nom, adresse`, and
+because the chunks are blank-line separated the fill engine clones the host
+paragraph once each, **numbering, indent and style included**. Put it alone in
+one paragraph of your intitulé; there is no marker syntax to learn.
+
+| Role | Inline | One paragraph per party (name + address) |
+|---|---|---|
+| demandeur | `{{dossier.demandeurs}}` | `{{dossier.demandeurs_avec_adresse}}` |
+| défendeur | `{{dossier.defendeurs}}` | `{{dossier.defendeurs_avec_adresse}}` |
+| demandeur reconventionnel | `{{dossier.demandeurs_reconventionnels}}` | `{{dossier.demandeurs_reconventionnels_avec_adresse}}` |
+| défendeur reconventionnel | `{{dossier.defendeurs_reconventionnels}}` | `{{dossier.defendeurs_reconventionnels_avec_adresse}}` |
+| mis en cause | `{{dossier.mis_en_cause}}` | `{{dossier.mis_en_cause_avec_adresse}}` |
+| intervenant | `{{dossier.intervenants}}` | `{{dossier.intervenants_avec_adresse}}` |
+| appelant | `{{dossier.appelants}}` | `{{dossier.appelants_avec_adresse}}` |
+| intimé | `{{dossier.intimes}}` | `{{dossier.intimes_avec_adresse}}` |
+| requérant | `{{dossier.requerants}}` | `{{dossier.requerants_avec_adresse}}` |
+
+Rules that bite here:
+
+- **Nothing is invented.** If no party carries the role, the placeholder is
+  unresolved and prints `[CHAMP MANQUANT : …]`. A bankruptcy whose adverse
+  parties are `intimé` / `mis en cause` / `requérant` has **no** défendeur, and
+  saying otherwise in an intitulé would be wrong — use the matching role.
+- **Legacy dossiers keep their meaning.** Party roles were added in July 2026
+  and never back-filled. When *no* party on a side carries any role,
+  `{{dossier.demandeur}}` / `{{dossier.defendeur}}` fall back to naming that
+  whole side, exactly as before. A side where *some* party is tagged is taken at
+  its word — an untagged co-client there is a confrère, not a second defendant.
+- **The address comes from the contact record**, through the same
+  personal-vs-professional arbitration as `{{<slot>.adresse_complete}}`. A party
+  with no usable address contributes its name alone — degraded, never wrong.
+- **It works inside a table cell**, which is how most intitulés are laid out:
+  put `{{dossier.defendeurs_avec_adresse}}` alone in the left cell's paragraph
+  and « Défendeurs » in the right one. The *paragraph* is cloned, not the row,
+  so the quality label opposite stays put. (This is why the party block does not
+  use the `{{#region}}` row repeat: that clones the whole row and flattens
+  newlines, so an address could never take its own line.)
+- **A party holding two roles appears under each**, by design: a défenderesse
+  who is also demanderesse reconventionnelle answers both questions. Put only
+  the placeholders your intitulé should name.
+- `{{dossier.adresse_demandeur}}` / `{{dossier.adresse_defendeur}}` are
+  unchanged: they still give **one** address, that of the party picked in the
+  popup. For every party's address, use the `_avec_adresse` form.
 
 ### `client.*`, `adverse.*`, `destinataire.*` (partie slots)
 
@@ -219,8 +280,16 @@ Short letter-metadata inputs offered in the generation popup. Left blank →
 | `{{objet_lettre}}` | free text (empty) |
 | `{{référence_externe}}` | free text (empty) |
 | `{{pièces_jointes}}` | defaults to **`Aucune`** |
-| `{{privilège}}` | select: `SOUS TOUTES RÉSERVES` · `PERSONNEL ET CONFIDENTIEL` · `—` |
+| `{{privilège}}` | select: `SOUS TOUTES RÉSERVES` · `SOUS TOUTES RÉSERVES ET SANS PRÉJUDICE` · `SANS PRÉJUDICE` · `PERSONNEL ET CONFIDENTIEL` · `CONFIDENTIEL` · `PRIVILÉGIÉ ET CONFIDENTIEL` · `—` · **`(aucune mention)`** |
 | `{{transmission_lettre}}` | select: `courriel` · `huissier` · `poste recommandée` · `télécopieur` |
+
+**Two ways of saying nothing, and they differ.** Choosing **« (aucune mention) »**
+prints *nothing at all*; leaving the select untouched prints the loud
+`[À COMPLÉTER : privilège]`. The `—` option prints a literal em dash, for a
+letterhead that reserves a visible line for the mention.
+
+A submitted value outside a field's option list is now **refused** with a French
+message naming the field — the `<select>` used to be the only constraint.
 
 ---
 

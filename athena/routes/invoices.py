@@ -57,7 +57,7 @@ from tz import MTL
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.invoice_docx import build_invoice_context
 from utils.logging_setup import log_template_event, log_unexpected
-from utils.template_fields import MANUAL_FIELDS, classify_placeholders, fallback_value
+from utils.template_fields import classify_placeholders, fallback_value, manual_value
 from utils.tracing_setup import add_attributes, span
 from routes._helpers import is_htmx, parse_date_input
 
@@ -435,8 +435,11 @@ def _assemble_note_values(template: dict, ctx) -> dict[str, str]:
         elif name in classification.auto:
             values[name] = fallback_value(name, is_auto=True)
         elif name in classification.manual:
-            spec = MANUAL_FIELDS[name]
-            values[name] = spec["default"] or fallback_value(name, is_auto=False)
+            # manual_value(), never MANUAL_FIELDS[name]: manual names match
+            # case-insensitively since Sept. 2026, so a {{PRIVILÈGE}} in a note
+            # template would KeyError on the bare index — on a path that never
+            # prompts, so nothing would hint at the cause.
+            values[name] = manual_value(name)
         # else: passthrough / row-scoped → omit
     return values
 

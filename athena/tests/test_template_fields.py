@@ -8,12 +8,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.template_fields import (
     CATALOG,
+    EMPTY_OPTION_VALUE,
     FLAT_ALIASES,
     MANUAL_FIELDS,
+    _enumerate_fr,
     classify_placeholders,
     fallback_value,
     french_long_date,
     is_uppercase_name,
+    manual_options,
+    manual_spec,
+    manual_value,
     resolve_values,
 )
 
@@ -269,8 +274,11 @@ def test_side_names_strip_per_name_and_leave_org_untouched():
                  {"id": "2", "name": "9123-4567 Québec inc."}],
         opposing_parties=[{"id": "3", "name": "Marc Lavoie"}],
     )
+    # French enumeration: the last name takes « et ». A bare comma join is
+    # not how a procedure names several parties. The _avec_civilite twin below
+    # keeps its side-based reading, hence its comma.
     assert _resolve(["demandeur"], dossier=d)["demandeur"] == (
-        "Marie Roy, 9123-4567 Québec inc."
+        "Marie Roy et 9123-4567 Québec inc."
     )
     assert _resolve(["dossier.demandeur_avec_civilite"], dossier=d)[
         "dossier.demandeur_avec_civilite"
@@ -765,3 +773,269 @@ def test_mandat_fields_unresolved_when_data_absent():
     assert "dossier.retention" not in r
     assert "dossier.forfait" not in r
     assert r["dossier.honoraires"] == "Horaire — 250,00 $/h"
+
+
+# ── Manual fields: case-insensitive, like their auto siblings ───────────
+#
+# Both correspondence gabarits in production write {{PRIVILÈGE}} in capitals —
+# which is how the mention is printed on a letter. Until Sept. 2026 the manual
+# branch of classify_placeholders matched by exact equality while the auto
+# branch lower-cased, so PRIVILÈGE fell through to passthrough and never got
+# its select, while {{transmission_lettre}} beside it did.
+
+def test_manual_fields_match_whatever_the_case():
+    for spelling in ("privilège", "PRIVILÈGE", "Privilège", "PRIVILÈGE"):
+        c = classify_placeholders([spelling])
+        assert c.manual == [spelling], spelling
+        assert c.passthrough == [], spelling
+        assert manual_spec(spelling) is MANUAL_FIELDS["privilège"], spelling
+
+
+def test_manual_matching_folds_CASE_but_not_ACCENTS():
+    # Deliberate parity with the auto branch, which is `.lower()` and nothing
+    # more: {{TRIBUNAL}} resolves, an unaccented {{procedure}} does not. Case
+    # folding is not accent folding, and widening one side alone would make
+    # the two families behave differently in the same document.
+    assert classify_placeholders(["privilege"]).passthrough == ["privilege"]
+    assert manual_spec("privilege") is None
+
+
+def test_manual_spec_and_value_never_raise_on_a_capitalised_name():
+    # The three readers (routes/doc_templates, routes/invoices,
+    # utils/note_docx) used to index MANUAL_FIELDS[name] directly, which
+    # KeyErrors the moment the classifier accepts a capitalised spelling —
+    # and two of those paths never prompt, so nothing would hint at the cause.
+    for name in ("PRIVILÈGE", "PIÈCES_JOINTES", "Objet_Lettre"):
+        assert manual_spec(name) is not None
+        assert manual_value(name)
+    assert manual_spec("PAS_UN_CHAMP") is None
+    assert manual_options("PAS_UN_CHAMP") is None
+
+
+def test_all_caps_manual_placeholder_upper_cases_its_value():
+    # The other half of the auto rule, now shared: one option list serves a
+    # capitalised letterhead heading and an inline sentence alike.
+    assert manual_value("TRANSMISSION_LETTRE", "courriel") == "COURRIEL"
+    assert manual_value("transmission_lettre", "courriel") == "courriel"
+    assert manual_value("PRIVILÈGE", "SOUS TOUTES RÉSERVES") == "SOUS TOUTES RÉSERVES"
+
+
+def test_manual_defaults_and_the_two_ways_of_saying_nothing():
+    assert MANUAL_FIELDS["pièces_jointes"]["default"] == "Aucune"
+    assert manual_value("pièces_jointes", "") == "Aucune"
+    # Untouched → the loud marker; « (aucune mention) » → nothing at all.
+    assert manual_value("privilège", "") == fallback_value("privilège", is_auto=False)
+    assert manual_value("privilège", EMPTY_OPTION_VALUE) == ""
+    assert manual_value("PRIVILÈGE", EMPTY_OPTION_VALUE) == ""
+
+
+def test_privilege_options_are_label_value_couples():
+    options = manual_options("privilège")
+    labels = [label for label, _ in options]
+    values = [value for _, value in options]
+    for expected in (
+        "SOUS TOUTES RÉSERVES",
+        "SOUS TOUTES RÉSERVES ET SANS PRÉJUDICE",
+        "SANS PRÉJUDICE",
+        "PERSONNEL ET CONFIDENTIEL",
+        "CONFIDENTIEL",
+        "PRIVILÉGIÉ ET CONFIDENTIEL",
+        "(aucune mention)",
+    ):
+        assert expected in labels, expected
+    # Its VALUE is a sentinel, never "" — an untouched select submits "" too.
+    assert EMPTY_OPTION_VALUE in values
+    assert "" not in values
+    # A plain string option keeps label == value.
+    assert ("courriel", "courriel") in manual_options("transmission_lettre")
+    assert manual_options("objet_lettre") is None
+
+
+# ── Several parties: French enumeration and role scoping ────────────────
+
+def test_enumerate_fr():
+    assert _enumerate_fr([]) is None
+    assert _enumerate_fr(["  ", ""]) is None
+    assert _enumerate_fr(["A"]) == "A"
+    assert _enumerate_fr(["A", "B"]) == "A et B"
+    assert _enumerate_fr(["A", "B", "C"]) == "A, B et C"
+
+
+def _party(pid, name, *roles):
+    return {"id": pid, "name": name, "roles": list(roles)}
+
+
+def test_mixed_roles_are_not_all_defendants():
+    # Production dossier 2026-018: four adverse parties, two « défendeur » and
+    # two « mis en cause ». Naming all four as defendants misdescribes them.
+    d = _dossier(
+        role="demandeur",
+        clients=[_party("c1", "M. Cedric Bernier", "demandeur")],
+        opposing_parties=[
+            _party("a1", "Kentucky Fried Chicken Canada Company", "défendeur"),
+            _party("a2", "Franchise Management Inc.", "défendeur"),
+            _party("a3", "152928 Canada Inc.", "mis en cause"),
+            _party("a4", "BCF LLP", "mis en cause"),
+        ],
+    )
+    r = _resolve(["dossier.defendeur", "dossier.mis_en_cause"], dossier=d)
+    assert r["dossier.defendeur"] == (
+        "Kentucky Fried Chicken Canada Company et Franchise Management Inc."
+    )
+    assert r["dossier.mis_en_cause"] == "152928 Canada Inc. et BCF LLP"
+
+
+def test_a_side_carrying_no_role_at_all_keeps_its_legacy_reading():
+    # 42 of the 130 production party entries predate per-party roles and were
+    # never back-filled (dossier 2026-016 is one). Filtering them out would
+    # silently empty an intitulé that works today.
+    d = _dossier(
+        role="demandeur",
+        clients=[{"id": "c", "name": "Mme Jing Luo"}],
+        opposing_parties=[
+            {"id": "x", "name": "M. Quianli Zhang"},
+            {"id": "y", "name": "À CHACUN SON HISTOIRE GROUPE INC."},
+            {"id": "z", "name": "9483-6681 QUÉBEC INC."},
+        ],
+    )
+    assert _resolve(["dossier.defendeur"], dossier=d)["dossier.defendeur"] == (
+        "Quianli Zhang, À CHACUN SON HISTOIRE GROUPE INC. et 9483-6681 QUÉBEC INC."
+    )
+
+
+def test_a_side_where_some_entry_is_tagged_is_taken_at_its_word():
+    # Dossier 2026-015: a co-client with no role is the confrère, not a
+    # second defendant. One tagged entry means the side is curated.
+    d = _dossier(
+        role="défendeur",
+        clients=[_party("c1", "Mme Dolorès Pépin", "défendeur"),
+                 {"id": "c2", "name": "Me Louis Peter Morena"}],
+        opposing_parties=[{"id": "a1", "name": "9313-5630 QUÉBEC INC."}],
+    )
+    r = _resolve(["dossier.defendeur"], dossier=d)
+    assert r["dossier.defendeur"] == "Dolorès Pépin"
+
+
+def test_role_scoping_resolves_when_the_dossier_level_role_does_not_map():
+    # 11 production dossiers carry a dossier-level role that _sides cannot map
+    # (empty, « autre », « intervenant »), so BOTH positions were unresolved.
+    # Reading each party's own roles repairs them — dossier 2025-056.
+    d = _dossier(
+        role="",
+        clients=[{"id": "c", "name": "Mme Sophie Lemieux", "roles": []}],
+        opposing_parties=[_party("o", "Fable Tech Labs Inc.", "défendeur")],
+    )
+    assert _resolve(["dossier.defendeur"], dossier=d)["dossier.defendeur"] == (
+        "Fable Tech Labs Inc."
+    )
+
+
+def test_no_party_holds_the_role_leaves_it_unresolved_loudly():
+    # Dossier 2026-011, a bankruptcy: intimé + mis en cause + requérant, and
+    # genuinely NO defendant. [CHAMP MANQUANT : …] is the honest answer;
+    # naming an intimé as a defendant is not.
+    d = _dossier(
+        role="demandeur",
+        clients=[_party("c", "Mme Julia Sutera Sardo", "demandeur")],
+        opposing_parties=[
+            _party("1", "Upperity Canada Inc.", "intimé"),
+            _party("2", "André Gabbay & Associés, syndic", "mis en cause"),
+            _party("3", "Mme Marie-Josée Legault", "requérant"),
+        ],
+    )
+    r = _resolve(
+        ["dossier.defendeur", "dossier.intimes", "dossier.requerants"], dossier=d
+    )
+    assert "dossier.defendeur" not in r
+    assert r["dossier.intimes"] == "Upperity Canada Inc."
+    assert r["dossier.requerants"] == "Marie-Josée Legault"
+
+
+# ── The party block: one paragraph each, name + address ─────────────────
+
+def _org(name, street, city, postal):
+    return {
+        "type": "organization", "organization_name": name,
+        "contact_role": "partie_adverse",
+        "address_street": street, "address_unit": "", "address_city": city,
+        "address_province": "Québec", "address_postal_code": postal,
+        "address_country": "Canada",
+    }
+
+
+def _multi_defendant_dossier():
+    return _dossier(
+        role="demandeur",
+        clients=[_party("c1", "M. Cedric Bernier", "demandeur")],
+        opposing_parties=[
+            _party("a1", "Kentucky Fried Chicken Canada Company", "défendeur"),
+            _party("a2", "Franchise Management Inc.", "défendeur"),
+            _party("a3", "152928 Canada Inc.", "mis en cause"),
+        ],
+    )
+
+
+BLANK_LINE = "\n\n"
+
+
+def test_party_block_is_one_chunk_per_party_with_its_own_address():
+    parties = {
+        "a1": _org("KFC", "1 rue A", "Montréal", "H1A 1A1"),
+        "a2": _org("FMI", "2 rue B", "Laval", "H7N 1A2"),
+    }
+    value = _resolve(
+        ["dossier.defendeurs_avec_adresse"],
+        dossier=_multi_defendant_dossier(), parties=parties,
+    )["dossier.defendeurs_avec_adresse"]
+    chunks = value.split(BLANK_LINE)
+    assert len(chunks) == 2
+    assert chunks[0] == (
+        "Kentucky Fried Chicken Canada Company, 1 rue A, Montréal (Québec) H1A 1A1"
+    )
+    assert chunks[1] == "Franchise Management Inc., 2 rue B, Laval (Québec) H7N 1A2"
+    # A BLANK line is what makes docx_fill clone the host paragraph; a single
+    # newline would collapse to a space and run the parties together.
+    assert BLANK_LINE in value
+
+
+def test_party_block_degrades_to_names_when_the_documents_are_unreadable():
+    # get_parties_bulk fails OPEN to {} — a rendering aid, not a register. The
+    # block must lose the addresses, never raise and never lose the parties.
+    value = _resolve(
+        ["dossier.defendeurs_avec_adresse"],
+        dossier=_multi_defendant_dossier(), parties={},
+    )["dossier.defendeurs_avec_adresse"]
+    assert value.split(BLANK_LINE) == [
+        "Kentucky Fried Chicken Canada Company", "Franchise Management Inc."
+    ]
+
+
+def test_party_block_omitted_when_no_party_holds_the_role():
+    r = _resolve(
+        ["dossier.appelants_avec_adresse"], dossier=_multi_defendant_dossier()
+    )
+    assert "dossier.appelants_avec_adresse" not in r
+
+
+def test_every_party_role_has_an_inline_and_a_block_placeholder():
+    # Derived, not a hand-kept list: a role added to _ROLE_STEMS without its
+    # pair would otherwise go unnoticed.
+    from utils.template_fields import _ROLE_STEMS
+    for _role, stem in _ROLE_STEMS:
+        assert f"dossier.{stem}" in CATALOG, stem
+        assert f"dossier.{stem}_avec_adresse" in CATALOG, stem
+    assert len(_ROLE_STEMS) == 9  # « autre » designates nothing in an intitulé
+
+
+def test_a_party_listed_on_both_sides_is_named_once():
+    # The model validates roles, not membership; reading both sides is what
+    # makes the role families work, so the dedup belongs here.
+    shared = _party("x", "Groupe Ambivalent inc.", "défendeur")
+    d = _dossier(
+        role="demandeur",
+        clients=[_party("c", "M. Client", "demandeur"), shared],
+        opposing_parties=[shared],
+    )
+    assert _resolve(["dossier.defendeur"], dossier=d)["dossier.defendeur"] == (
+        "Groupe Ambivalent inc."
+    )

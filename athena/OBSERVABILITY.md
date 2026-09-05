@@ -147,7 +147,7 @@ INFO, except `generation_failed` (WARNING). **Never pass field values** (client 
 | `template_updated` | Metadata edit or file replacement; `file_replaced: bool`, `version` |
 | `template_deleted` | Gabarit + Storage object removed |
 | `document_generated` | `template_id`, `dossier_id` (when saved), `saved_document_id` (when saved), `field_count`, `missing_count` (blanks replaced by the visible French fallback). **Note d'honoraires (Phase H.2):** adds `invoice_id`, `source="facture"`, and the three row counts `rows_honoraire` / `rows_debours_tx` / `rows_debours_ntx` (instead of `field_count`/`missing_count`). **Impression de note (Phase H.3):** adds `note_id`, `source="note"`, `field_count` — never the note's title or content |
-| `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`; Phase H.2 adds `no_note_template`, `invoice_voided`, `unbalanced_condition`; Phase H.3 adds `no_note_print_template`) — never a filename or field value |
+| `generation_failed` | WARNING; `reason` machine-stable (`template_not_found`, `template_file_unavailable`, `template_invalid`, `fill_error`, `save_failed`; Phase H.2 adds `no_note_template`, `invoice_voided`, `unbalanced_condition`; Phase H.3 adds `no_note_print_template`; Sept. 2026 adds `manual_option_invalid` — carries the FIELD NAME only, never the submitted value) — never a filename or field value |
 
 ### `log_trust_event(event, outcome='success', *, transaction_id=None, dossier_id=None, account_id=None, reconciliation_id=None, reason=None, **extra)` — logger `pallas.trust`
 

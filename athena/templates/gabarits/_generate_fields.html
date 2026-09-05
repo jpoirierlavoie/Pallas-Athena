@@ -137,13 +137,21 @@
           {% endif %}
         </label>
         {% if f.options %}
+        {# (label, value) couples: « (aucune mention) » prints nothing, which
+           the blank first option — meaning « not chosen » — must not be
+           confused with. It yields [À COMPLÉTER : nom] instead. #}
         <select name="champ__{{ f.name }}"
                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
           <option value=""></option>
-          {% for opt in f.options %}
-          <option value="{{ opt }}" {{ 'selected' if opt == f.value }}>{{ opt }}</option>
+          {% for label, val in f.options %}
+          <option value="{{ val }}" {{ 'selected' if val == f.value }}>{{ label }}</option>
           {% endfor %}
         </select>
+        {% elif f.multiline %}
+        {# A block value (one paragraph per party): an <input type=text> would
+           strip its newlines and the paragraph expansion would never fire. #}
+        <textarea name="champ__{{ f.name }}" rows="5" maxlength="20000"
+                  class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none">{{ f.value }}</textarea>
         {% else %}
         <input type="text" name="champ__{{ f.name }}" maxlength="2000"
                value="{{ f.value }}"

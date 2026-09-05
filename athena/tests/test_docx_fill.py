@@ -1163,3 +1163,111 @@ def test_rich_seed_pattern_linearity_invariant():
     for pat in (_PPR_SEED_RE, _PGSZ_W_RE, _PGMAR_LEFT_RE, _PGMAR_RIGHT_RE):
         assert "." not in pat.pattern.replace("\\.", ""), pat.pattern
         assert not pat.flags & _re.DOTALL, pat.pattern
+
+
+# ── The party block reaches Word as real paragraphs (Sept. 2026) ────────
+#
+# The multi-party intitulé rides the block-expansion path rather than a new
+# marker syntax: template_fields emits the parties separated by a blank line,
+# and the host <w:p> is cloned verbatim once each. This pins the seam between
+# the two modules end to end — the resolver's real output, not a hand-written
+# string.
+
+def test_party_block_from_template_fields_becomes_one_paragraph_per_party():
+    from defusedxml import ElementTree as DET
+    from utils.template_fields import resolve_values
+
+    def _org(name, street, city, postal):
+        return {
+            "type": "organization", "organization_name": name,
+            "contact_role": "partie_adverse",
+            "address_street": street, "address_unit": "", "address_city": city,
+            "address_province": "Québec", "address_postal_code": postal,
+            "address_country": "Canada",
+        }
+
+    dossier = {
+        "role": "demandeur",
+        "clients": [{"id": "c", "name": "M. Cedric Bernier", "roles": ["demandeur"]}],
+        "opposing_parties": [
+            {"id": "a1", "name": "Alpha inc.", "roles": ["défendeur"]},
+            {"id": "a2", "name": "Mme Béatrice Roy", "roles": ["défendeur"]},
+            {"id": "a3", "name": "Gamma ltée", "roles": ["défendeur"]},
+        ],
+    }
+    parties = {
+        "a1": _org("Alpha inc.", "1 rue A", "Montréal", "H1A 1A1"),
+        "a2": {"type": "individual", "first_name": "Béatrice", "last_name": "Roy",
+               "contact_role": "partie_adverse", "address_street": "2 rue B",
+               "address_unit": "", "address_city": "Laval", "address_province": "Québec",
+               "address_postal_code": "H7N 1A2", "address_country": "Canada"},
+        "a3": _org("Gamma ltée", "3 rue C", "Québec", "G1A 1A1"),
+    }
+    values = resolve_values(
+        ["dossier.defendeurs_avec_adresse"], dossier=dossier, client=None,
+        adverse=None, destinataire=None, firm={}, today=None, parties=parties,
+    )
+
+    # The host paragraph carries numbering + an indent: both must survive on
+    # every clone, which is the whole reason this rides block expansion.
+    ppr = _NUM_PPR + '<w:ind w:left="720"/>'
+    docx = _make_docx(_doc(_para("{{dossier.defendeurs_avec_adresse}}", ppr=ppr)))
+    out = _document_xml(fill_docx(docx, values))
+
+    DET.fromstring(out)  # well-formed, and defusedxml (Bandit B314)
+    assert out.count("<w:p>") == 3
+    assert out.count('<w:numId w:val="7"/>') == 3
+    assert out.count('<w:ind w:left="720"/>') == 3
+    assert "{{dossier.defendeurs_avec_adresse}}" not in out
+    assert out.index("Alpha inc.") < out.index("Béatrice Roy") < out.index("Gamma ltée")
+    assert "1 rue A, Montréal (Québec) H1A 1A1" in out
+    assert "3 rue C, Québec (Québec) G1A 1A1" in out
+
+
+def test_single_party_block_stays_one_paragraph():
+    # One defendant yields no blank line, so it takes the scalar path — the
+    # host paragraph must not be cloned, and must not be dropped either.
+    from utils.template_fields import resolve_values
+    dossier = {
+        "role": "demandeur",
+        "clients": [{"id": "c", "name": "M. Cedric Bernier", "roles": ["demandeur"]}],
+        "opposing_parties": [{"id": "a1", "name": "Alpha inc.", "roles": ["défendeur"]}],
+    }
+    values = resolve_values(
+        ["dossier.defendeurs_avec_adresse"], dossier=dossier, client=None,
+        adverse=None, destinataire=None, firm={}, today=None, parties={},
+    )
+    docx = _make_docx(_doc(_para("{{dossier.defendeurs_avec_adresse}}", ppr=_NUM_PPR)))
+    out = _document_xml(fill_docx(docx, values))
+    assert out.count("<w:p>") == 1
+    assert "Alpha inc." in out
+
+
+def test_party_block_expands_inside_a_table_cell_without_cloning_the_row():
+    # The classic Québec intitulé is a two-column table: parties on the left,
+    # their quality on the right. _PARAGRAPH_RE matches the INNERMOST <w:p>,
+    # so the cell's paragraph is what gets cloned — the <w:tr> is untouched and
+    # the « Défendeurs » label opposite stays put. Worth pinning: the row-repeat
+    # region ({{#region}}) would have cloned the whole row instead, and flattens
+    # newlines, so an address could never take its own line.
+    from defusedxml import ElementTree as DET
+    cell = (
+        '<w:tc><w:tcPr><w:tcBorders/></w:tcPr>'
+        '<w:p><w:pPr><w:ind w:left="360"/></w:pPr>'
+        '<w:r><w:t>{{dossier.defendeurs_avec_adresse}}</w:t></w:r></w:p></w:tc>'
+    )
+    right = '<w:tc><w:p><w:r><w:t>Défendeurs</w:t></w:r></w:p></w:tc>'
+    docx = _make_docx(
+        f'<?xml version="1.0"?><w:document {_W_NS}><w:body>'
+        f'<w:tbl><w:tr>{cell}{right}</w:tr></w:tbl>'
+        '</w:body></w:document>'
+    )
+    value = "\n\n".join(["Alpha inc., 1 rue A", "Béatrice Roy, 2 rue B", "Gamma ltée, 3 rue C"])
+    out = _document_xml(fill_docx(docx, {"dossier.defendeurs_avec_adresse": value}))
+
+    DET.fromstring(out)
+    assert out.count("<w:tr>") == 1          # the ROW is not cloned
+    assert out.count("<w:tc>") == 2          # nor the cells
+    assert out.count("<w:p>") == 4           # 3 in the left cell + the label
+    assert out.count('<w:ind w:left="360"/>') == 3
+    assert out.count("Défendeurs") == 1      # the quality label stays put

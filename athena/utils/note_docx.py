@@ -22,9 +22,9 @@ from utils.format_fr import format_date_fr
 from utils.template_fields import (
     CATALOG,
     FLAT_ALIASES,
-    MANUAL_FIELDS,
     classify_placeholders,
     fallback_value,
+    manual_value,
     resolve_values,
 )
 
@@ -136,7 +136,8 @@ def assemble_note_print_values(template: dict, ctx: NoteContext) -> dict[str, st
         elif name in classification.auto:
             values[name] = fallback_value(name, is_auto=True)
         elif name in classification.manual:
-            spec = MANUAL_FIELDS[name]
-            values[name] = spec["default"] or fallback_value(name, is_auto=False)
+            # See routes/invoices.py — bare indexing KeyErrors on a
+            # case-insensitive manual name, here too.
+            values[name] = manual_value(name)
         # else: passthrough → omit
     return values

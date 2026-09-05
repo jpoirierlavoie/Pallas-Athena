@@ -103,14 +103,36 @@ _FRENCH_MONTHS = (
     "août", "septembre", "octobre", "novembre", "décembre",
 )
 
+# Sentinel value of the « print nothing » choice. It cannot be the empty
+# string: an untouched select also submits "", and the two must stay
+# distinguishable — choosing « (aucune mention) » prints nothing, while
+# leaving the field alone prints the loud « [À COMPLÉTER : …] » marker.
+EMPTY_OPTION_VALUE = "__aucune__"
+
 # Deliberately manual fields (§6.6) — no data source; the popup renders a
 # scalar input (or select) with the suggested default.
+#
+# An ``options`` entry is either a bare string (label == the text written into
+# the document) or a ``(label, value)`` couple when the two must differ — the
+# only current case being « (aucune mention) », which reads as a deliberate
+# choice in the popup and prints NOTHING. That is distinct from leaving the
+# select untouched, which prints the loud ``[À COMPLÉTER : …]`` marker.
+# Read them through :func:`manual_options`, never by indexing.
 MANUAL_FIELDS: dict[str, dict] = {
     "procédure": {"default": "", "options": None},
     "disposition": {"default": "", "options": None},
     "privilège": {
         "default": "",
-        "options": ["SOUS TOUTES RÉSERVES", "PERSONNEL ET CONFIDENTIEL", "—"],
+        "options": [
+            "SOUS TOUTES RÉSERVES",
+            "SOUS TOUTES RÉSERVES ET SANS PRÉJUDICE",
+            "SANS PRÉJUDICE",
+            "PERSONNEL ET CONFIDENTIEL",
+            "CONFIDENTIEL",
+            "PRIVILÉGIÉ ET CONFIDENTIEL",
+            "—",
+            ("(aucune mention)", EMPTY_OPTION_VALUE),
+        ],
     },
     "transmission_lettre": {
         "default": "",
@@ -121,10 +143,62 @@ MANUAL_FIELDS: dict[str, dict] = {
     "référence_externe": {"default": "", "options": None},
 }
 
-# NOTE — ``salutations`` and every civilité field are deliberately NOT
-# resolved or prompted: they are passthrough (left as ``{{name}}`` in the
-# output). The closing formula and the recipient's title must appear in
-# letters but never in court procedures, so the user writes them in Word.
+# Case-insensitive index over MANUAL_FIELDS, mirroring _CATALOG_CI/_ALIAS_CI
+# below. Before it existed, `classify_placeholders` matched manual fields by
+# exact equality while auto fields matched case-insensitively — so a gabarit
+# writing {{PRIVILÈGE}} (which is how the mention is actually printed on a
+# letter) fell through to passthrough and never got its select, while
+# {{transmission_lettre}} beside it did. Both correspondence gabarits in
+# production hit exactly that.
+_MANUAL_CI: dict[str, str] = {name.lower(): name for name in MANUAL_FIELDS}
+
+
+def manual_spec(name: str) -> Optional[dict]:
+    """The :data:`MANUAL_FIELDS` spec for *name*, matched case-insensitively.
+
+    ``None`` when *name* is not a manual field. Every reader goes through
+    this — a bare ``MANUAL_FIELDS[name]`` raises ``KeyError`` on the very
+    spellings the case-insensitive classifier now accepts.
+    """
+    canonical = _MANUAL_CI.get(name.lower())
+    return MANUAL_FIELDS[canonical] if canonical else None
+
+
+def manual_options(name: str) -> Optional[list[tuple[str, str]]]:
+    """The ``(label, value)`` choices for *name*, or ``None`` when free text.
+
+    Normalizes the two accepted shapes so callers never branch on them.
+    """
+    spec = manual_spec(name)
+    if spec is None or not spec["options"]:
+        return None
+    return [
+        (opt, opt) if isinstance(opt, str) else (opt[0], opt[1])
+        for opt in spec["options"]
+    ]
+
+
+def manual_value(name: str, raw: str = "") -> str:
+    """The value a manual placeholder should print: *raw*, else its default,
+    else the visible ``[À COMPLÉTER : …]`` marker.
+
+    Applies the ALL-CAPS rule that :func:`resolve_values` applies to auto
+    fields, so ``{{TRANSMISSION_LETTRE}}`` prints ``COURRIEL`` and
+    ``{{transmission_lettre}}`` prints ``courriel`` — one option list serving
+    a capitalised letterhead heading and an inline sentence alike.
+
+    :data:`EMPTY_OPTION_VALUE` prints nothing, which is why it is a sentinel
+    rather than ``""``: an untouched field submits ``""`` too, and that means
+    « not filled in », not « no mention applies ».
+    """
+    value = (raw or "").strip()
+    if value == EMPTY_OPTION_VALUE:
+        return ""
+    if not value:
+        value = (manual_spec(name) or {}).get("default", "") or ""
+    if not value:
+        return fallback_value(name, is_auto=False)
+    return value.upper() if is_uppercase_name(name) else value
 
 
 def is_uppercase_name(name: str) -> bool:
@@ -327,6 +401,12 @@ class _Context:
     destinataire: Optional[dict]
     firm: dict
     today: date
+    # id -> full partie doc, for the role-scoped party families. The dossier's
+    # clients[]/opposing_parties[] entries are NAME SNAPSHOTS and carry no
+    # address, so the caller loads the documents (models.partie.get_parties_bulk)
+    # and injects them — this module must not import models.*. Absent or empty
+    # simply degrades a party block to names alone; it never raises.
+    parties: dict = field(default_factory=dict)
 
 
 def _dossier_field(key: str) -> Callable[[_Context], Optional[str]]:
@@ -573,6 +653,149 @@ def _side_address(index: int) -> Callable[[_Context], Optional[str]]:
     return resolver
 
 
+# ── Role-scoped party families (§6.2, extended) ──────────────────────────
+#
+# A procedure's intitulé must name each party under its OWN quality: a « mis
+# en cause » is not a defendant, and joining every opposing party under
+# {{dossier.defendeur}} misdescribes them. These resolvers therefore read each
+# entry's own ``roles`` across BOTH sides — which also repairs the dossiers
+# whose dossier-level ``role`` maps to nothing (a « défendeur » may be our
+# client or the opposing party; the entry itself says which).
+
+# Placeholder stems, per role. ASCII and space-free: the placeholder charset
+# admits accents but never a space (docx_fill.PLACEHOLDER_RE). Plural because
+# they enumerate — a single party simply yields one entry. « autre » is
+# deliberately absent: it designates nothing in an intitulé.
+_ROLE_STEMS: tuple[tuple[str, str], ...] = (
+    ("demandeur", "demandeurs"),
+    ("défendeur", "defendeurs"),
+    ("demandeur reconventionnel", "demandeurs_reconventionnels"),
+    ("défendeur reconventionnel", "defendeurs_reconventionnels"),
+    ("mis en cause", "mis_en_cause"),
+    ("intervenant", "intervenants"),
+    ("appelant", "appelants"),
+    ("intimé", "intimes"),
+    ("requérant", "requerants"),
+)
+
+# The two roles that also carry a POSITIONAL meaning, and so keep the legacy
+# side-based reading as a fallback (see _role_entries).
+_POSITIONAL_ROLES = {"demandeur": 0, "défendeur": 1}
+
+
+# A BLANK line between chunks — that is precisely what docx_fill's block
+# expansion looks for (_BLANK_LINE_RE). A single newline would collapse to a
+# space and the parties would land in one paragraph-long run-on.
+_BLOCK_SEPARATOR = chr(10) * 2
+
+
+def _enumerate_fr(names: list[str]) -> Optional[str]:
+    """``["A", "B", "C"]`` → ``"A, B et C"`` — the French enumeration.
+
+    A bare ``", ".join`` is not how a procedure names several parties; the
+    last one takes « et ». One name yields itself, none yields ``None``.
+    """
+    names = [n.strip() for n in names if n and n.strip()]
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} et {names[-1]}"
+
+
+def _dedupe_entries(entries) -> list[dict]:
+    """First occurrence of each party id, order preserved.
+
+    Nothing stops a dossier from listing the same party on both sides (the
+    model validates roles, not membership), and reading both sides is what
+    makes the role families work. No production dossier does it today; naming
+    a party twice in an intitulé is not the way to find out that one does.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    for entry in entries:
+        key = entry.get("id") or ""
+        if key and key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
+
+def _role_entries(ctx: _Context, role: str) -> list[dict]:
+    """The dossier's party entries holding *role*, across both sides.
+
+    FALLBACK, for the two positional roles only: when the side that role
+    occupies carries no role on ANY of its entries, the whole side is
+    returned. Roles are additive (they were introduced July 2026 and never
+    back-filled), so without this a legacy dossier would silently lose every
+    party from its intitulé. A side where SOME entry is tagged is taken at
+    its word — the untagged ones there are co-clients and confrères, not
+    unlabelled defendants.
+    """
+    if not ctx.dossier:
+        return []
+    clients = ctx.dossier.get("clients") or []
+    opposing = ctx.dossier.get("opposing_parties") or []
+    matched = _dedupe_entries(
+        e for e in clients + opposing if role in (e.get("roles") or [])
+    )
+    if matched:
+        return matched
+    index = _POSITIONAL_ROLES.get(role)
+    if index is None:
+        return []
+    side = _sides(ctx)[index]
+    if side and not any(e.get("roles") for e in side):
+        return list(side)
+    return []
+
+
+def _party_line(entry: dict, ctx: _Context) -> str:
+    """``"NOM, adresse sur une ligne"`` for one party entry.
+
+    The name comes from the dossier's snapshot (honorific stripped, the
+    intitulé convention); the address from the loaded partie document when the
+    caller injected one. No document, or no usable address → the name alone,
+    which is degraded but never wrong.
+    """
+    name = _strip_civility_prefix(entry.get("name", "")).strip()
+    partie = (ctx.parties or {}).get(entry.get("id") or "")
+    if not partie:
+        return name
+    address = _one_line_address(_selected_address(partie)[0])
+    return f"{name}, {address}" if address else name
+
+
+def _role_names(role: str) -> Callable[[_Context], Optional[str]]:
+    """Inline enumeration of the parties holding *role*."""
+
+    def resolver(ctx: _Context) -> Optional[str]:
+        entries = _role_entries(ctx, role)
+        return _enumerate_fr(
+            [_strip_civility_prefix(e.get("name", "")) for e in entries]
+        )
+
+    return resolver
+
+
+def _role_block(role: str) -> Callable[[_Context], Optional[str]]:
+    """One paragraph per party holding *role*: name + address.
+
+    The chunks are separated by a BLANK LINE, which is what makes
+    ``docx_fill`` clone the host ``<w:p>`` verbatim once per party — numbering,
+    indentation and style included. No new engine syntax, no marker to type in
+    Word: the value's own shape drives the expansion.
+    """
+
+    def resolver(ctx: _Context) -> Optional[str]:
+        entries = _role_entries(ctx, role)
+        lines = [line for line in (_party_line(e, ctx) for e in entries) if line]
+        return _BLOCK_SEPARATOR.join(lines) if lines else None
+
+    return resolver
+
+
 def _partie(slot: str, fn: Callable[[dict], Optional[str]]) -> Callable[[_Context], Optional[str]]:
     def resolver(ctx: _Context) -> Optional[str]:
         partie = getattr(ctx, slot)
@@ -677,8 +900,11 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.role_feminin": ("dossier", _role_feminin),
     "dossier.role_label": ("dossier", _role_label),
     # Derived party positions (§6.2) — bare by default, "_avec_civilite" twin
-    "dossier.demandeur": ("dossier", _side_names(0)),
-    "dossier.defendeur": ("dossier", _side_names(1)),
+    # Role-aware since Sept. 2026 (they used to comma-join every party on the
+    # side, which named a « mis en cause » as a defendant). The _avec_civilite
+    # twins and the adresse_* pair below keep their original side/slot reading.
+    "dossier.demandeur": ("dossier", _role_names("demandeur")),
+    "dossier.defendeur": ("dossier", _role_names("défendeur")),
     "dossier.demandeur_avec_civilite": ("dossier", _side_names(0, with_civility=True)),
     "dossier.defendeur_avec_civilite": ("dossier", _side_names(1, with_civility=True)),
     "dossier.adresse_demandeur": ("dossier", _side_address(0)),
@@ -737,6 +963,22 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     **_partie_fields("adverse"),
     **_partie_fields("destinataire"),
 }
+
+
+def _register_role_families() -> None:
+    """Register ``dossier.<role>s`` and ``dossier.<role>s_avec_adresse``.
+
+    Generated from :data:`_ROLE_STEMS` for the same reason
+    :func:`_partie_fields` generates its three slots: a hand-written table of
+    eighteen near-identical rows drifts, and the drift is invisible — the
+    document still generates, just without the field.
+    """
+    for role, stem in _ROLE_STEMS:
+        CATALOG.setdefault(f"dossier.{stem}", ("dossier", _role_names(role)))
+        CATALOG[f"dossier.{stem}_avec_adresse"] = ("dossier", _role_block(role))
+
+
+_register_role_families()
 
 
 def _register_civility_variants() -> None:
@@ -871,7 +1113,7 @@ def classify_placeholders(names: list[str]) -> Classification:
             slot = CATALOG[canonical][0]
             if slot:
                 result.slots_required.add(slot)
-        elif name in MANUAL_FIELDS:
+        elif name.lower() in _MANUAL_CI:
             result.manual.append(name)
         else:
             result.passthrough.append(name)
@@ -887,6 +1129,7 @@ def resolve_values(
     destinataire: Optional[dict],
     firm: dict,
     today: date,
+    parties: Optional[dict] = None,
 ) -> dict[str, str]:
     """Resolve every auto-resolvable name that has non-empty source data.
 
@@ -904,6 +1147,7 @@ def resolve_values(
         destinataire=destinataire,
         firm=firm or {},
         today=today,
+        parties=parties or {},
     )
     resolved: dict[str, str] = {}
     for name in names:
