@@ -101,7 +101,7 @@ Filled automatically from the dossier and the selected parties.
 | `{{dossier.droit_action}}` | Droit d'action — start of prescription (French long date) |
 | `{{dossier.date_pour_agir}}` | Date pour agir — computed limitation deadline (French long date) |
 | `{{dossier.prise_action}}` | Prise d'action — date the recourse was filed / the limitation period interrupted (art. 2892 C.c.Q.). Manual, never computed; when set it silences the prescription alert |
-| `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire », « Transactionnel », « Consultatif », « Autre ») |
+| `{{dossier.type_mandat}}` | Type de mandat label (« Judiciaire (ad litem) », « Service-conseils », « Général », « Spécial »). **Reworked July 2026** — the old « Transactionnel » / « Consultatif » / « Autre » labels are gone; a dossier saved before the rework shows « — » until re-edited |
 | `{{dossier.type_dossier}}` | **Renamed « Domaine » (July 2026)** — kept as an alias of `{{dossier.domaine}}` |
 | `{{dossier.type_honoraires}}` | Fee-type label (« Horaire », « Forfaitaire », « Mixte », « Contingence », « Pro bono », « Aide juridique ») |
 | `{{dossier.honoraires}}` | Fee type + rate jointly (« Horaire — 250,00 $/h », « Contingence — 25 % », « Mixte — 250,00 $/h + 5 000,00 $ + 25 % ») |
@@ -302,9 +302,13 @@ Deliberately **not resolved and not prompted** — these survive as literal
   court procedures — hence yours to place.)
 - `{{salutations}}` — closing salutation formula.
 - **Any ALL-CAPS block** — e.g. `{{FAITS}}`, `{{CONCLUSIONS}}`, `{{MOYENS}}` —
-  free-form legal content.
-- **Any unknown name** — anything not matching the catalog (case-insensitively,
-  incl. via a flat alias) and not a manual field.
+  free-form legal content. ⚠ **Capitals alone no longer make a name
+  passthrough** (September 2026): matching folds case on *both* families, so the
+  seven §4 names are prompted whatever their case — `{{PRIVILÈGE}}` gets its
+  select, and `{{DISPOSITION}}` / `{{PROCÉDURE}}` are prompted as manual fields
+  rather than left for Word. Pick a block name that is not one of those seven.
+- **Any unknown name** — anything not matching the catalog *or the manual
+  fields* (both case-insensitively, the catalog also via a flat alias).
 
 ---
 
