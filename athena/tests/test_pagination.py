@@ -3,13 +3,17 @@
 from datetime import datetime, timezone
 
 from pagination import (
+    MAX_PAGE,
     MAX_TRAIL,
+    PAGE_SIZE,
     cursor_pagination,
     decode_cursor,
     encode_cursor,
     keyset_page,
     paginate,
     parse_trail,
+    resolve_page,
+    total_pages_of,
 )
 
 
@@ -252,3 +256,147 @@ def test_cursor_round_trips_through_the_opaque_token():
     page2, _, _ = keyset_page(rows, key, decode_cursor(token), 1)
     assert page[0]["id"] == "id3"
     assert page2[0]["id"] == "id2"
+
+
+# ── Le total, les sauts, la position explicite (lot « navigation ») ────────
+
+
+def test_total_pages_of_distinguishes_unknown_from_empty():
+    """La garde de l'item 3 de la doctrine.
+
+    Un compte qui a ÉCHOUÉ ne doit jamais se lire comme zéro : « Page 7 / 0 »
+    est un mensonge assuré, et l'incident de juin 2026 est exactement une
+    agrégation en échec dégradée en 0 plausible. Un ensemble vide — un vrai
+    zéro, connu — vaut une page.
+    """
+    assert total_pages_of(None) is None
+    assert total_pages_of(0) == 1
+    assert total_pages_of(1) == 1
+    assert total_pages_of(PAGE_SIZE) == 1
+    assert total_pages_of(PAGE_SIZE + 1) == 2
+
+
+def test_cursor_pagination_honours_an_explicit_page_past_max_trail():
+    """La régression nommée : le libellé gelait à MAX_TRAIL + 2.
+
+    Une fois la traîne saturée, len(trail) cessait de croître, donc les pages
+    23, 24, 40 se lisaient toutes « Page 22 ».
+    """
+    trail = [f"c{i}" for i in range(MAX_TRAIL)]
+    ctx = cursor_pagination(cursor="cX", trail=trail, next_cursor="cY",
+                            url="/x", target="#r", page=25)
+    assert ctx["page"] == 25
+    assert ctx["page_exact"] is True
+    # Sans `page` (URL en vol, forgée avant ce lot), l'ancien calcul survit —
+    # et s'annonce comme approximatif au lieu d'affirmer un numéro.
+    vieux = cursor_pagination(cursor="cX", trail=trail, next_cursor="cY",
+                              url="/x", target="#r")
+    assert vieux["page"] == MAX_TRAIL + 2
+    assert vieux["page_exact"] is False
+
+
+def test_cursor_pagination_never_clamps_the_label_to_a_stale_total():
+    """À NE JAMAIS « corriger ».
+
+    Sur le chemin curseur ce sont les lignes qui commandent, pas le total. Un
+    compte périmé (trop bas) ne doit ni figer le libellé ni épingler Suivant,
+    sinon il échoue le lecteur au milieu de la liste.
+    """
+    ctx = cursor_pagination(cursor="c1", trail=["c0"], next_cursor="c2",
+                            url="/x", target="#r", page=7, total=45)
+    assert ctx["page"] == 7            # 45 lignes = 3 pages, et pourtant 7
+    assert ctx["next_page"] == 8
+    assert ctx["has_next"] is True     # tiré du fetch limit+1, jamais du total
+
+
+def test_cursor_pagination_has_prev_after_a_jump_emptied_the_trail():
+    """Un saut n'a pas de chemin de retour dans la traîne — mais « Précédent »
+    doit rester offert : il relit la page N-1 par déplacement absolu."""
+    ctx = cursor_pagination(cursor=None, trail=[], next_cursor="c9",
+                            url="/x", target="#r", page=40, total=900)
+    assert ctx["has_prev"] is True
+    assert ctx["prev_page"] == 39
+    assert ctx["prev_cursor"] == ""
+
+
+def test_a_missing_total_hides_every_jump_control():
+    """L'épingle du repli ouvert : compte illisible → aucun saut proposé,
+    donc aucun déplacement absolu non borné ne peut être demandé."""
+    ctx = cursor_pagination(cursor="c1", trail=["c0"], next_cursor="c2",
+                            url="/x", target="#r", page=7, total=None)
+    assert ctx["has_total"] is False
+    assert ctx["total_pages"] is None
+    assert ctx["show_end"] is False
+    assert ctx["show_jump"] is False
+    assert ctx["jump_next_page"] is None
+    # ⚠ Et le saut ARRIÈRE aussi : à la page 7 il vaut None de toute façon
+    # (7 − 10 < 1), ce qui masquait le défaut. Une page PROFONDE le révèle —
+    # un « −10 » offert sans total serait un déplacement absolu que
+    # resolve_page refuse, donc un contrôle qui atterrit page 1 en mentant.
+    profond = cursor_pagination(cursor="c1", trail=["c0"], next_cursor="c2",
+                                url="/x", target="#r", page=15, total=None)
+    assert profond["jump_prev_page"] is None
+    assert profond["show_jump"] is False
+    # « Début » ne demande AUCUN total (la page 1 est l'offset 0).
+    assert profond["show_first"] is True
+    # Un vrai zéro reste distinguable d'un compte absent.
+    vide = cursor_pagination(cursor=None, trail=[], next_cursor=None,
+                             url="/x", target="#r", page=1, total=0)
+    assert vide["has_total"] is True and vide["total_pages"] == 1
+
+
+def test_resolve_page_refuses_an_offset_read_without_a_total():
+    """Le garde de coût. ?page=100000 sans total émettrait offset(1_499_985),
+    soit ~1,5 M de lectures facturées et un SIGKILL de gunicorn à 60 s."""
+    assert resolve_page(40, None, has_cursor=False) == (1, 0)
+    assert resolve_page(None, None, has_cursor=False) == (1, 0)
+
+
+def test_resolve_page_clamps_and_never_offsets_a_cursor_read():
+    assert resolve_page(999, 5, has_cursor=False) == (5, 4 * PAGE_SIZE)
+    assert resolve_page(3, 78, has_cursor=False) == (3, 2 * PAGE_SIZE)
+    # Le curseur commande les lignes : le numéro est un libellé, sans offset,
+    # et il n'est PAS ramené au total.
+    assert resolve_page(7, 3, has_cursor=True) == (7, 0)
+    # Plafond dur, indépendamment du total.
+    assert resolve_page(999999, 100000, has_cursor=False)[0] == MAX_PAGE
+    # Une entrée absurde retombe sur la page 1 plutôt que de lever.
+    assert resolve_page(-3, 9, has_cursor=False) == (1, 0)
+    assert resolve_page(None, 9, has_cursor=False) == (1, 0)
+
+
+def test_jump_and_end_never_duplicate_their_neighbours():
+    """Un ±10 écrêté serait un doublon sans étiquette de son voisin."""
+    def nav(page, total_pages):
+        return cursor_pagination(cursor="c", trail=[], next_cursor="c2",
+                                 url="/x", target="#r", page=page,
+                                 total=total_pages * PAGE_SIZE)
+    # Page 5 sur 12 : reculer de 10 tomberait sur 1, ce que « Début » fait déjà.
+    assert nav(5, 12)["jump_prev_page"] is None
+    # …et avancer de 10 tomberait sur 15 → écrêté à 12, ce que « Fin » fait déjà.
+    assert nav(5, 12)["jump_next_page"] is None
+    # Assez loin des deux bords, les deux sauts se justifient.
+    milieu = nav(15, 40)
+    assert (milieu["jump_prev_page"], milieu["jump_next_page"]) == (5, 25)
+    # « Début » duplique « Précédent » à la page 2 ; « Fin » duplique
+    # « Suivant » à l'avant-dernière.
+    assert nav(2, 40)["show_first"] is False and nav(3, 40)["show_first"] is True
+    assert nav(39, 40)["show_end"] is False and nav(38, 40)["show_end"] is True
+
+
+def test_paginate_clamps_a_page_beyond_the_total():
+    """?page=999 sur une liste de 3 pages échouait le lecteur sur un tableau
+    vide sous « Page 999 » — le seul paramètre de pagination qu'une main peut
+    modifier dans la barre d'adresse."""
+    items, ctx = paginate(list(range(40)), page=99, page_size=15)
+    assert ctx["page"] == 3
+    assert items == list(range(30, 40))
+    assert ctx["has_next"] is False
+
+
+def test_paginate_now_surfaces_the_total_it_always_had():
+    _, ctx = paginate(list(range(40)), page=1, page_size=15)
+    assert ctx["total"] == 40
+    assert ctx["total_pages"] == 3
+    assert ctx["has_total"] is True
+    assert ctx["page_exact"] is True

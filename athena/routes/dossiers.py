@@ -24,7 +24,14 @@ from dav.sync import (
     record_tombstones_bulk,
     remove_tombstone,
 )
-from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
+from pagination import (
+    PAGE_SIZE,
+    cursor_pagination,
+    paginate,
+    parse_trail,
+    resolve_page,
+    total_pages_of,
+)
 from tz import to_mtl
 from models.time_entry import (
     get_time_summary,
@@ -73,10 +80,11 @@ from models.dossier import (
     PARTY_ROLES,
     PARTY_ROLE_LABELS,
     PREJUDICIAIRE_FILE_NUMBER,
-    ROLE_LABELS,
-    STATUS_LABELS,
     PRESCRIPTION_EVENT_LABELS,
+    ROLE_LABELS,
     SIGNIFICATION_MODE_LABELS,
+    STATUS_LABELS,
+    count_dossiers_page,
     create_dossier,
     delete_dossier,
     derive_prescription,
@@ -383,10 +391,24 @@ def dossier_list() -> str:
         # Cursor pagination (default browse path): ~PAGE_SIZE reads per page.
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
+        page_arg = request.args.get("page", type=int)
+        # The count is issued on the CURSOR branch only. It rides the same
+        # query builder as the page read, so the same index serves both,
+        # and it fails to None (never 0) — which HIDES the leap controls
+        # rather than asserting a total the code does not have.
+        total = count_dossiers_page(status_filter=effective_filter)
+        page_no, page_offset = resolve_page(
+            page_arg, total_pages_of(total), has_cursor=bool(cursor)
+        )
+        if page_offset:
+            # A leap has no path back through the trail; the page number
+            # carries the position from here on.
+            cursor, trail = None, []
         dossiers, next_cursor = list_dossiers_page(
             status_filter=effective_filter,
             limit=PAGE_SIZE,
             cursor=cursor,
+            offset=page_offset,
         )
         pagination = cursor_pagination(
             cursor=cursor,
@@ -394,6 +416,8 @@ def dossier_list() -> str:
             next_cursor=next_cursor,
             url=url_for("dossiers.dossier_list"),
             target="#dossier-rows",
+            page=page_no,
+            total=total,
         )
 
     # Compute prescription warnings

@@ -9,7 +9,7 @@ import vobject
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -544,10 +544,50 @@ def list_parties(
         return []
 
 
+def _page_query(role_filter: Optional[str] = None) -> "firestore.Query":
+    """The filtered, (updated_at DESC, id ASC)-ordered parties query.
+
+    ONE builder shared by :func:`list_parties_page` and
+    :func:`count_parties_page` — see the note in :func:`count_parties_page`.
+    """
+    query = db.collection(COLLECTION)
+    if role_filter and role_filter in VALID_CONTACT_ROLES:
+        query = query.where(filter=FieldFilter("contact_role", "==", role_filter))
+    return query.order_by(
+        "updated_at", direction=firestore.Query.DESCENDING
+    ).order_by("id")
+
+
+def count_parties_page(role_filter: Optional[str] = None) -> Optional[int]:
+    """Rows in the filtered set, or None when the count could not be read.
+
+    Runs on the SAME query object as the page read — order_by INCLUDED — so
+    the SAME composite index serves both. An aggregation forwards its nested
+    query verbatim, and a COUNT adds no aggregated field to trail the index.
+    Dropping the order_by makes the backend apply its own implicit ordering,
+    a THIRD ordering that FAILS (measured 2026-09-07 against production).
+
+    That shared ordering also keeps the count HONEST: an order_by excludes
+    documents missing the key, from the count and the page read alike, so
+    the two can never disagree (cross-checked against a bare collection
+    COUNT: gap of 0).
+
+    Returns None, NEVER 0, on failure — « Page 7 / 0 » is a confident lie.
+    """
+    try:
+        values = aggregation_values(_page_query(role_filter).count(alias="n").get())
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_parties_page: aggregation failed: %s", exc)
+        return None
+
+
 def list_parties_page(
     role_filter: Optional[str] = None,
     limit: int = PAGE_SIZE,
     cursor: Optional[str] = None,
+    offset: int = 0,
 ) -> tuple[list[dict], Optional[str]]:
     """Return one page of parties plus an opaque cursor for the next page.
 
@@ -562,17 +602,19 @@ def list_parties_page(
     ``(updated_at DESC, id ASC)`` and
     ``(contact_role ASC, updated_at DESC, id ASC)``.
     """
+    # Before the try: a caller naming a position TWICE is a programming error,
+    # and swallowing it into ([], None) would render an empty list with no
+    # explanation anywhere.
+    if offset and cursor:
+        raise ValueError("cursor et offset s'excluent — chacun nomme une position")
     try:
-        query = db.collection(COLLECTION)
-
-        if role_filter and role_filter in VALID_CONTACT_ROLES:
-            query = query.where(
-                filter=FieldFilter("contact_role", "==", role_filter)
-            )
-
-        query = query.order_by(
-            "updated_at", direction=firestore.Query.DESCENDING
-        ).order_by("id")
+        query = _page_query(role_filter)
+        if offset:
+            # An ABSOLUTE page read, for a « Fin » / « ±N » leap. Same
+            # ordering, so the same index — Firestore emits ONE query
+            # (order_by -> offset -> limit). It bills the skipped documents,
+            # which is why `page` is clamped before it ever reaches here.
+            query = query.offset(offset)
 
         # decode_cursor yields values in encode order: [updated_at, id].
         # Anything malformed (None or wrong arity) degrades to page 1.

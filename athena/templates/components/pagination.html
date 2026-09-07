@@ -2,46 +2,121 @@
    - "cursor" (preferred): expects next_cursor/next_trail/prev_cursor/prev_trail
      built by pagination.cursor_pagination(); hx-vals carries the opaque tokens.
    - "page" (legacy): expects page/has_prev/has_next; hx-vals carries the number.
-   Both expect: url, target. Optional: extra_vals dict for extra hx-vals params. #}
+   Both expect: url, target. Optional: extra_vals dict for extra hx-vals params.
+
+   Both modes also carry pagination._nav()'s identical key set (has_total,
+   last_page, prev/next/jump targets, show_* flags), which is what lets ONE
+   block of markup serve both with no arithmetic in the template.
+
+   EVERY control emits "page". Carrying it only on the leap cluster would let
+   the label collapse to 3/4/5 while the data read 13/14/15, and would leave
+   the freeze-at-22 bug in place.
+
+   The leap controls (Début / ±N / Fin) are mode-agnostic: they emit an EMPTY
+   cursor and trail, which is precisely what routes the request to the route's
+   absolute-page branch. Clearing them is safe because cursors are not form
+   fields, so hx-include cannot reintroduce one.
+
+   When the total is unknown (a count that failed), show_end/show_jump are
+   false and row 2 is not rendered at all — the bar is then visually identical
+   to what shipped before this component grew. #}
 {% if pagination and (pagination.has_prev or pagination.has_next) %}
 {% set extra %}{% if pagination.extra_vals %}{% for k, v in pagination.extra_vals.items() %}, "{{ k }}": "{{ v }}"{% endfor %}{% endif %}{% endset %}
-<div class="flex items-center justify-between pt-4">
-  {% if pagination.has_prev %}
-  <a hx-get="{{ pagination.url }}"
-     hx-target="{{ pagination.target }}"
-     hx-include="#filters input, #filters select"
-     {% if pagination.mode == 'cursor' %}
-     hx-vals='{"cursor": "{{ pagination.prev_cursor }}", "trail": "{{ pagination.prev_trail }}"{{ extra }}}'
-     {% else %}
-     hx-vals='{"page": "{{ pagination.page - 1 }}"{{ extra }}}'
-     {% endif %}
-     hx-push-url="true"
-     class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
-    {{ ms('chevron_left', 16) }}
-    Précédent
-  </a>
-  {% else %}
-  <span></span>
-  {% endif %}
+{% set p = pagination %}
+{% set walk = "inline-flex items-center gap-1 px-3 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
+{% set leap = "inline-flex items-center justify-center gap-1 px-3 py-3 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
+<nav class="flex flex-col gap-2 pt-4" aria-label="Pagination">
 
-  <span class="text-sm text-gray-500">Page {{ pagination.page }}</span>
+  {# ── Row 1: the walk ─────────────────────────────────────────────── #}
+  <div class="flex items-center justify-between">
+    {% if p.has_prev %}
+    <button type="button"
+       hx-get="{{ p.url }}"
+       hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       {% if p.mode == 'cursor' %}
+       hx-vals='{"cursor": "{{ p.prev_cursor }}", "trail": "{{ p.prev_trail }}", "page": "{{ p.prev_page }}"{{ extra }}}'
+       {% else %}
+       hx-vals='{"page": "{{ p.prev_page }}"{{ extra }}}'
+       {% endif %}
+       hx-push-url="true"
+       aria-label="Page précédente"
+       class="{{ walk }}">
+      {{ ms('chevron_left', 16) }}
+      Précédent
+    </button>
+    {% else %}
+    <span></span>
+    {% endif %}
 
-  {% if pagination.has_next %}
-  <a hx-get="{{ pagination.url }}"
-     hx-target="{{ pagination.target }}"
-     hx-include="#filters input, #filters select"
-     {% if pagination.mode == 'cursor' %}
-     hx-vals='{"cursor": "{{ pagination.next_cursor }}", "trail": "{{ pagination.next_trail }}"{{ extra }}}'
-     {% else %}
-     hx-vals='{"page": "{{ pagination.page + 1 }}"{{ extra }}}'
-     {% endif %}
-     hx-push-url="true"
-     class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
-    Suivant
-    {{ ms('chevron_right', 16) }}
-  </a>
-  {% else %}
-  <span></span>
+    <span class="text-sm text-gray-500" role="status"{% if not p.page_exact %} title="Position approximative — la numérotation se corrige au prochain déplacement"{% endif %}>
+      Page {{ p.page }}{% if p.has_total %} / {{ p.total_pages }}{% endif %}
+    </span>
+
+    {% if p.has_next %}
+    <button type="button"
+       hx-get="{{ p.url }}"
+       hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       {% if p.mode == 'cursor' %}
+       hx-vals='{"cursor": "{{ p.next_cursor }}", "trail": "{{ p.next_trail }}", "page": "{{ p.next_page }}"{{ extra }}}'
+       {% else %}
+       hx-vals='{"page": "{{ p.next_page }}"{{ extra }}}'
+       {% endif %}
+       hx-push-url="true"
+       aria-label="Page suivante"
+       class="{{ walk }}">
+      Suivant
+      {{ ms('chevron_right', 16) }}
+    </button>
+    {% else %}
+    <span></span>
+    {% endif %}
+  </div>
+
+  {# ── Row 2: the leap. Rendered only when a leap control exists. ───── #}
+  {% if p.show_first or p.jump_prev_page or p.jump_next_page or p.show_end %}
+  <div class="flex items-center justify-center gap-2">
+    {% if p.show_first %}
+    <button type="button"
+       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       hx-vals='{"cursor": "", "trail": "", "page": "1"{{ extra }}}'
+       hx-push-url="true"
+       aria-label="Première page"
+       class="{{ leap }}">Début</button>
+    {% endif %}
+
+    {% if p.jump_prev_page %}
+    <button type="button"
+       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       hx-vals='{"cursor": "", "trail": "", "page": "{{ p.jump_prev_page }}"{{ extra }}}'
+       hx-push-url="true"
+       aria-label="Reculer de {{ p.jump_size }} pages"
+       class="{{ leap }}">−{{ p.jump_size }}</button>
+    {% endif %}
+
+    {% if p.jump_next_page %}
+    <button type="button"
+       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       hx-vals='{"cursor": "", "trail": "", "page": "{{ p.jump_next_page }}"{{ extra }}}'
+       hx-push-url="true"
+       aria-label="Avancer de {{ p.jump_size }} pages"
+       class="{{ leap }}">+{{ p.jump_size }}</button>
+    {% endif %}
+
+    {% if p.show_end %}
+    <button type="button"
+       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       hx-vals='{"cursor": "", "trail": "", "page": "{{ p.last_page }}"{{ extra }}}'
+       hx-push-url="true"
+       aria-label="Dernière page ({{ p.last_page }})"
+       class="{{ leap }}">Fin ({{ p.last_page }})</button>
+    {% endif %}
+  </div>
   {% endif %}
-</div>
+</nav>
 {% endif %}

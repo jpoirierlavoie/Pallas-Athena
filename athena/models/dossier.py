@@ -1181,10 +1181,52 @@ def list_dossiers(
         return []
 
 
+def _page_query(status_filter: Optional[str] = None) -> "firestore.Query":
+    """The filtered, (opened_date DESC, id DESC)-ordered dossier query.
+
+    ONE builder shared by :func:`list_dossiers_page` and
+    :func:`count_dossiers_page`, so the page read and its total can never
+    ride different indexes — the property that makes « zero new indexes »
+    a fact about the code rather than a comment.
+    """
+    query = db.collection(COLLECTION)
+    if status_filter and status_filter in VALID_STATUSES:
+        query = query.where(filter=FieldFilter("status", "==", status_filter))
+    return query.order_by(
+        "opened_date", direction=firestore.Query.DESCENDING
+    ).order_by("id", direction=firestore.Query.DESCENDING)
+
+
+def count_dossiers_page(status_filter: Optional[str] = None) -> Optional[int]:
+    """Rows in the filtered set, or None when the count could not be read.
+
+    Runs on the SAME query object as the page read — order_by INCLUDED — so
+    the SAME composite index serves both. An aggregation forwards its nested
+    query verbatim, and a COUNT adds no aggregated field to trail the index.
+    Dropping the order_by makes the backend apply its own implicit ordering,
+    a THIRD ordering that FAILS (measured 2026-09-07 against production).
+
+    That shared ordering also keeps the count HONEST: an order_by excludes
+    documents missing the key, from the count and the page read alike, so
+    the two can never disagree (cross-checked against a bare collection
+    COUNT: gap of 0).
+
+    Returns None, NEVER 0, on failure — « Page 7 / 0 » is a confident lie.
+    """
+    try:
+        values = _aggregation_values(_page_query(status_filter).count(alias="n").get())
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_dossiers_page: aggregation failed: %s", exc)
+        return None
+
+
 def list_dossiers_page(
     status_filter: Optional[str] = None,
     limit: int = PAGE_SIZE,
     cursor: Optional[str] = None,
+    offset: int = 0,
 ) -> tuple[list[dict], Optional[str]]:
     """Return one page of dossiers via Firestore-native cursor pagination.
 
@@ -1202,13 +1244,19 @@ def list_dossiers_page(
     for the next page, or None on the last page. A malformed cursor degrades
     to the first page. Returns ``([], None)`` on query failure.
     """
+    # Before the try: a caller naming a position TWICE is a programming error,
+    # and swallowing it into ([], None) would render an empty list with no
+    # explanation anywhere.
+    if offset and cursor:
+        raise ValueError("cursor et offset s'excluent — chacun nomme une position")
     try:
-        query = db.collection(COLLECTION)
-        if status_filter and status_filter in VALID_STATUSES:
-            query = query.where(filter=FieldFilter("status", "==", status_filter))
-        query = query.order_by(
-            "opened_date", direction=firestore.Query.DESCENDING
-        ).order_by("id", direction=firestore.Query.DESCENDING)
+        query = _page_query(status_filter)
+        if offset:
+            # An ABSOLUTE page read, for a « Fin » / « ±N » leap. Same
+            # ordering, so the same index — Firestore emits ONE query
+            # (order_by -> offset -> limit). It bills the skipped documents,
+            # which is why `page` is clamped before it ever reaches here.
+            query = query.offset(offset)
 
         # decode_cursor yields the values in encode order: [opened_date, id].
         # start_after takes a {field_path: value} dict matched to the

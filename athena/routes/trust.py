@@ -37,7 +37,13 @@ from models.trust import (
     VALID_PURPOSES,
     VALID_TX_STATUSES,
 )
-from pagination import PAGE_SIZE, cursor_pagination, parse_trail
+from pagination import (
+    PAGE_SIZE,
+    cursor_pagination,
+    parse_trail,
+    resolve_page,
+    total_pages_of,
+)
 from security import safe_internal_redirect
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
@@ -209,13 +215,26 @@ def journal():
     else:
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
+        # Fails OPEN (None) beside a page read that fails CLOSED — see
+        # trust.count_journal_page. A missing total costs the leap controls,
+        # never a figure on the register.
+        total = trust.count_journal_page(account_id)
+        page_no, page_offset = resolve_page(
+            request.args.get("page", type=int),
+            total_pages_of(total),
+            has_cursor=bool(cursor),
+        )
+        if page_offset:
+            cursor, trail = None, []
         rows, next_cursor = trust.list_transactions_page(
-            account_id, cursor=cursor, limit=PAGE_SIZE
+            account_id, cursor=cursor, limit=PAGE_SIZE, offset=page_offset
         )
         pagination = cursor_pagination(
             cursor=cursor, trail=trail, next_cursor=next_cursor,
             url=url_for("trust.journal"), target="#trust-rows",
             extra_vals={"account_id": account_id},
+            page=page_no,
+            total=total,
         )
 
     ctx = dict(

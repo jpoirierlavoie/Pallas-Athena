@@ -19,9 +19,17 @@ from flask import (
 from auth import login_required
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
-from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
+from pagination import (
+    PAGE_SIZE,
+    cursor_pagination,
+    paginate,
+    parse_trail,
+    resolve_page,
+    total_pages_of,
+)
 from models.time_entry import (
     QUICK_DESCRIPTIONS,
+    count_time_entries_page,
     create_time_entry,
     delete_time_entry,
     get_filtered_time_totals,
@@ -34,6 +42,7 @@ from models.time_entry import (
 from models.expense import (
     CATEGORY_LABELS,
     VALID_CATEGORIES,
+    count_expenses_page,
     create_expense,
     delete_expense,
     get_expense,
@@ -220,8 +229,14 @@ def time_list() -> str:
             entries, pagination = paginate(entries, page)
             pagination.update(url=list_url, target=rows_target)
         else:
+            total = count_expenses_page(**filters)
+            page_no, page_offset = resolve_page(
+                page, total_pages_of(total), has_cursor=bool(cursor)
+            )
+            if page_offset:
+                cursor, trail = None, []
             entries, next_cursor = list_expenses_page(
-                **filters, limit=PAGE_SIZE, cursor=cursor
+                **filters, limit=PAGE_SIZE, cursor=cursor, offset=page_offset
             )
             ctx["total_amount"] = get_filtered_expense_totals(**filters)["amount"]
             pagination = cursor_pagination(
@@ -231,6 +246,8 @@ def time_list() -> str:
                 url=list_url,
                 target=rows_target,
                 extra_vals={"tab": "depenses"},
+                page=page_no,
+                total=total,
             )
         ctx["expenses"] = entries
         ctx["pagination"] = pagination
@@ -245,8 +262,14 @@ def time_list() -> str:
             entries, pagination = paginate(entries, page)
             pagination.update(url=list_url, target=rows_target)
         else:
+            total = count_time_entries_page(**filters)
+            page_no, page_offset = resolve_page(
+                page, total_pages_of(total), has_cursor=bool(cursor)
+            )
+            if page_offset:
+                cursor, trail = None, []
             entries, next_cursor = list_time_entries_page(
-                **filters, limit=PAGE_SIZE, cursor=cursor
+                **filters, limit=PAGE_SIZE, cursor=cursor, offset=page_offset
             )
             totals = get_filtered_time_totals(**filters)
             ctx["total_hours"] = totals["hours"]
@@ -258,6 +281,8 @@ def time_list() -> str:
                 url=list_url,
                 target=rows_target,
                 extra_vals={"tab": "heures"},
+                page=page_no,
+                total=total,
             )
         ctx["time_entries"] = entries
         ctx["pagination"] = pagination

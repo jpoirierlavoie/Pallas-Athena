@@ -275,6 +275,7 @@ def list_time_entries_page(
     date_to: Optional[datetime] = None,
     limit: int = PAGE_SIZE,
     cursor: Optional[str] = None,
+    offset: int = 0,
 ) -> tuple[list[dict], Optional[str]]:
     """Return one page of time entries plus an opaque next-page cursor.
 
@@ -285,10 +286,21 @@ def list_time_entries_page(
     ``list_time_entries`` remains the full-scan path for exports, summaries
     and the dossier_id + billable_filter combination.
     """
+    # Before the try: a caller naming a position TWICE is a programming
+    # error, and swallowing it into ([], None) would render an empty billing
+    # list with no explanation anywhere.
+    if offset and cursor:
+        raise ValueError("cursor et offset s'excluent — chacun nomme une position")
     try:
         query = _filtered_query(dossier_id, billable_filter, date_from, date_to)
         values = decode_cursor(cursor)
-        if values and len(values) == 2:
+        if offset:
+            # An ABSOLUTE page read, for a « Fin » / « ±N » leap. Same
+            # ordering, so the same index — and Firestore emits ONE query
+            # (order_by -> offset -> limit). It bills the skipped documents,
+            # which is why `page` is clamped before it ever gets here.
+            query = query.offset(offset)
+        elif values and len(values) == 2:
             # decode_cursor preserves encode order: [date, id]
             query = query.start_after({"date": values[0], "id": values[1]})
         docs = [d.to_dict() for d in query.limit(limit + 1).stream()]
@@ -302,6 +314,43 @@ def list_time_entries_page(
         # PII-free: log the exception only, never filter values or doc content.
         logger.warning("list_time_entries_page: paginated query failed: %s", exc)
         return [], None
+
+
+def count_time_entries_page(
+    dossier_id: Optional[str] = None,
+    billable_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+) -> Optional[int]:
+    """Rows in the filtered set, or None when the count could not be read.
+
+    Runs on the SAME query object as the page read — order_by INCLUDED — so
+    the SAME index serves both. An aggregation forwards its nested query
+    verbatim, and a COUNT adds no aggregated field to trail the index
+    (contrast the SUM tails). Dropping the order_by makes the backend apply
+    its own implicit ordering, which is a THIRD ordering that FAILS —
+    measured 2026-09-07: `dossier_id ==` plus a `date` range without the
+    order_by answers « the query requires an index ».
+
+    That shared ordering is also what keeps the count HONEST: an order_by
+    excludes documents missing the key, from the count and the page read
+    alike, so the two can never disagree (cross-checked against a bare
+    collection COUNT: gap of 0 on all five collections).
+
+    Returns None, NEVER 0, on failure — « Page 7 / 0 » is a confident lie,
+    and a plausible zero is the shape of the June-2026 incident.
+    """
+    try:
+        values = _aggregation_values(
+            _filtered_query(dossier_id, billable_filter, date_from, date_to)
+            .count(alias="n")
+            .get()
+        )
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_time_entries_page: aggregation failed: %s", exc)
+        return None
 
 
 def get_filtered_time_totals(

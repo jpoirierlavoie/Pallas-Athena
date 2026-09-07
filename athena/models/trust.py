@@ -33,7 +33,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import db
+from models import aggregation_values, db
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
@@ -1895,19 +1895,66 @@ def list_register(
     return rows, False
 
 
-def list_transactions_page(
-    account_id: str, cursor: Optional[str] = None, limit: int = PAGE_SIZE
-) -> tuple[list[dict], Optional[str]]:
-    """Journal cursor pagination for one account, newest sequence first
-    (index #1). ``sequence`` is a total order, so it is the only cursor key —
-    no ``id`` tiebreaker (spec §11). Fails CLOSED: propagates on error."""
-    query = (
+def _journal_query(account_id: str) -> "firestore.Query":
+    """The account-scoped, sequence-DESC journal query (index #1).
+
+    ONE builder shared by :func:`list_transactions_page` and
+    :func:`count_journal_page`, so the page read and its total can never
+    ride different indexes.
+    """
+    return (
         db.collection(TRANSACTIONS_COLLECTION)
         .where(filter=FieldFilter("account_id", "==", account_id))
         .order_by("sequence", direction=firestore.Query.DESCENDING)
     )
+
+
+def count_journal_page(account_id: str) -> Optional[int]:
+    """Entries in this account's journal, or None if the count failed.
+
+    Runs on the SAME query object as the page read — order_by INCLUDED — so
+    the SAME index (#1) serves both. A COUNT adds no aggregated field to
+    trail the index; dropping the order_by would be a THIRD ordering that
+    fails (measured 2026-09-07 against production).
+
+    DELIBERATELY fails OPEN, beside a :func:`list_transactions_page` that
+    fails CLOSED — and the asymmetry is the point, not an oversight. An
+    unreadable REGISTER must never render as « aucune écriture » on a book
+    of account, so the page read propagates. A page INDICATOR gates no write
+    and decides nothing: losing it costs the « Fin » control, never a
+    figure. Returning None rather than 0 is what HIDES that control instead
+    of asserting a total the code does not have.
+    """
+    try:
+        values = aggregation_values(
+            _journal_query(account_id).count(alias="n").get()
+        )
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_journal_page: aggregation failed: %s", exc)
+        return None
+
+
+def list_transactions_page(
+    account_id: str,
+    cursor: Optional[str] = None,
+    limit: int = PAGE_SIZE,
+    offset: int = 0,
+) -> tuple[list[dict], Optional[str]]:
+    """Journal cursor pagination for one account, newest sequence first
+    (index #1). ``sequence`` is a total order, so it is the only cursor key —
+    no ``id`` tiebreaker (spec §11). Fails CLOSED: propagates on error."""
+    if offset and cursor:
+        raise ValueError(
+            "cursor et offset s'excluent \u2014 chacun nomme une position"
+        )
+    query = _journal_query(account_id)
     values = decode_cursor(cursor)
-    if values and len(values) == 1:
+    if offset:
+        # Absolute page read for a leap: same ordering, same index.
+        query = query.offset(offset)
+    elif values and len(values) == 1:
         query = query.start_after({"sequence": values[0]})
     docs = [d.to_dict() for d in query.limit(limit + 1).stream()]
     next_cursor = None
@@ -2036,6 +2083,10 @@ def _reconciliation_overdue(
 def get_firm_trust_snapshot() -> dict:
     """Firm-wide trust picture for the dashboard + MCP. Totals are summed in
     Python over bounded lists — no SUM aggregation (spec §6.2).
+    (:func:`count_journal_page` is a COUNT, not a SUM: it aggregates no
+    FIELD, so it needs no aggregation-index tail and sidesteps the
+    June-2026 trap that rule exists for. It also fails OPEN, because a
+    page indicator decides nothing.)
 
     Reconciliation state is PER ACCOUNT (each account row gains
     last_reconciliation_date / never_reconciled / reconciliation_overdue) and

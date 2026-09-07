@@ -144,7 +144,10 @@ def _journal_lectures(monkeypatch):
     monkeypatch.setattr(rt.trust, "list_in_transit", lambda aid, as_of=None: [])
     monkeypatch.setattr(rt.trust, "list_reconciliations", lambda aid=None: [])
     monkeypatch.setattr(rt.trust, "list_transactions_page",
-                        lambda aid, cursor=None, limit=15: ([], None))
+                        lambda aid, cursor=None, limit=15, offset=0: ([], None))
+    # Le compteur du journal : None = illisible, ce qui RETIRE les
+    # contrôles de saut sans jamais afficher un total inventé.
+    monkeypatch.setattr(rt.trust, "count_journal_page", lambda aid: None)
 
 
 def test_rendu_pleine_page_un_seul_header(web_rendu, monkeypatch):

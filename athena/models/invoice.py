@@ -981,12 +981,68 @@ def list_invoices(
         return []
 
 
+def _page_query(
+    status_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+) -> "firestore.Query":
+    """The filtered, (date DESC, id ASC)-ordered invoice query.
+
+    ONE builder shared by :func:`list_invoices_page` and
+    :func:`count_invoices_page`, so the page read and its total can never
+    ride different indexes. The date range targets the PRIMARY sort field,
+    so it consumes no extra index dimension.
+    """
+    query = db.collection(COLLECTION)
+    if status_filter and status_filter in VALID_STATUSES:
+        query = query.where(filter=FieldFilter("status", "==", status_filter))
+    if date_from:
+        query = query.where(filter=FieldFilter("date", ">=", date_from))
+    if date_to:
+        query = query.where(filter=FieldFilter("date", "<=", date_to))
+    return query.order_by(
+        "date", direction=firestore.Query.DESCENDING
+    ).order_by("id")
+
+
+def count_invoices_page(
+    status_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+) -> Optional[int]:
+    """Rows in the filtered set, or None when the count could not be read.
+
+    Runs on the SAME query object as the page read - order_by INCLUDED - so
+    the SAME composite index serves both. An aggregation forwards its nested
+    query verbatim, and a COUNT adds no aggregated field to trail the index.
+    Dropping the order_by makes the backend apply its own implicit ordering,
+    a THIRD ordering that FAILS (measured 2026-09-07 against production).
+
+    That shared ordering also keeps the count HONEST: an order_by excludes
+    documents missing the key, from the count and the page read alike, so
+    the two can never disagree (cross-checked against a bare collection
+    COUNT: gap of 0).
+
+    Returns None, NEVER 0, on failure - a rendered "/ 0" is a confident lie.
+    """
+    try:
+        values = _aggregation_values(
+            _page_query(status_filter, date_from, date_to).count(alias="n").get()
+        )
+        n = values.get("n")
+        return int(n) if n is not None else None
+    except Exception as exc:
+        logger.warning("count_invoices_page: aggregation failed: %s", exc)
+        return None
+
+
 def list_invoices_page(
     status_filter: Optional[str] = None,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
     limit: int = PAGE_SIZE,
     cursor: Optional[str] = None,
+    offset: int = 0,
 ) -> tuple[list[dict], Optional[str]]:
     """Return one page of invoices plus an opaque cursor for the next page.
 
@@ -1005,21 +1061,18 @@ def list_invoices_page(
     document ID and is always set — a stable tiebreaker when several
     invoices share the same date.
     """
+    if offset and cursor:
+        raise ValueError(
+            "cursor et offset s'excluent \u2014 chacun nomme une position"
+        )
     try:
-        query = db.collection(COLLECTION)
-
-        if status_filter and status_filter in VALID_STATUSES:
-            query = query.where(filter=FieldFilter("status", "==", status_filter))
-
-        # Range filters on the primary order field need no extra index.
-        if date_from:
-            query = query.where(filter=FieldFilter("date", ">=", date_from))
-        if date_to:
-            query = query.where(filter=FieldFilter("date", "<=", date_to))
-
-        query = query.order_by(
-            "date", direction=firestore.Query.DESCENDING
-        ).order_by("id")
+        query = _page_query(status_filter, date_from, date_to)
+        if offset:
+            # An ABSOLUTE page read, for a leap control. Same ordering, so
+            # the same index - Firestore emits ONE query
+            # (order_by -> offset -> limit). It bills the skipped documents,
+            # which is why `page` is clamped before it ever reaches here.
+            query = query.offset(offset)
 
         # decode_cursor yields values in encode order: [date, id].
         # Anything malformed (None or wrong arity) degrades to page 1.
