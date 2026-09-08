@@ -12,12 +12,12 @@ MAIN SERVICE ONLY — a call from the portal process raises GraphNotConfigured.
 
 import logging
 import re
-import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from config import Config
+from utils.integrations_defaults import plier
 from utils import graph
 
 logger = logging.getLogger(__name__)
@@ -87,21 +87,28 @@ def _parse_graph_dt(obj: Optional[dict]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
-def _plier(texte: str) -> str:
-    """Casse et diacritiques neutralisées, pour comparer des sujets français.
-
-    Même patron que ``utils/rapprochement._plier`` : décomposition NFD puis
-    rejet des marques combinantes. Il est ici LOAD-BEARING, pas cosmétique —
-    « é » précomposé (NFC, U+00E9) et « é » décomposé (NFD, e + U+0301) sont
-    des chaînes différentes pour Python, et rien ne garantit la forme que
-    Bookings a stockée. Sans ce pliage, un mot-clé accentué peut ne jamais
-    mordre, sans le moindre message. « Consultation » n'avait pas d'accent —
-    le risque naît avec « Réunion ».
-    """
-    decompose = unicodedata.normalize("NFD", texte or "")
-    return "".join(
-        c for c in decompose if unicodedata.category(c) != "Mn"
-    ).casefold()
+# HISSÉ vers ``utils/integrations_defaults`` (module PUR, stdlib seule) le
+# 2026-09-08, et RÉ-EXPORTÉ sous son ancien nom : ``routes/taches_bookings``
+# l'atteint par ``graph_calendrier._plier``, et le garder évite de renommer un
+# appelant pour un déplacement.
+#
+# Pourquoi le déplacement : la carte « mot-clé → type » devient modifiable en
+# « Paramètres → Intégrations », et le modèle doit plier ses CLÉS avec la même
+# fonction que ce prédicat plie le sujet. Une seconde implémentation
+# reproduirait exactement le piège ci-dessous, mais sur la page bâtie pour le
+# corriger : une clé pliée d'une façon et consultée d'une autre ne mord
+# jamais, en silence.
+#
+# Il est LOAD-BEARING, pas cosmétique — « é » précomposé (NFC, U+00E9) et
+# « é » décomposé (NFD, e + U+0301) sont des chaînes différentes pour Python,
+# et rien ne garantit la forme que Bookings a stockée. Sans ce pliage, un
+# mot-clé accentué peut ne jamais mordre, sans le moindre message.
+# « Consultation » n'avait pas d'accent — le risque naît avec « Réunion ».
+#
+# ⚠ CE N'EST PAS le pliage de ``utils/rapprochement._plier``, qui réduit en
+# outre la ponctuation à des espaces : celui-là tokenise des NOMS pour l'aide
+# au contrôle des conflits. Ne pas les fusionner.
+_plier = plier
 
 
 def porte_marqueur_miroir(ev: dict) -> bool:
