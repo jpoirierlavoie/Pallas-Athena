@@ -1922,16 +1922,49 @@ Every model exports the standard CRUD set. Module-specific additions:
 ### Pagination (two modes — `pagination.py`)
 
 - **Cursor mode (preferred for list views):** model functions named `list_X_page(...,
-  limit=PAGE_SIZE, cursor=None) -> (rows, next_cursor)` push `order_by(primary,
+  limit=PAGE_SIZE, cursor=None, offset=0) -> (rows, next_cursor)` push `order_by(primary,
   "id").limit(limit+1).start_after(...)` into Firestore (~15 reads/page regardless of
   collection size). Routes thread the opaque `cursor` + a bounded `trail` of prior
-  cursors (for « Précédent ») through hx-vals; `components/pagination.html` renders both
-  modes. Every filter+order combo needs a composite index in `firestore.indexes.json`
-  (the `id` field is the tiebreaker — its direction must match the index).
-  Implemented for: timeentries, expenses, parties, dossiers, invoices.
+  cursors (for « Précédent ») **+ an explicit `page`** through hx-vals;
+  `components/pagination.html` renders both modes. Every filter+order combo needs a
+  composite index in `firestore.indexes.json` (the `id` field is the tiebreaker — its
+  direction must match the index). Implemented for: timeentries, expenses, parties,
+  dossiers, invoices **and the trust journal's unfiltered branch** (`sequence DESC`, a
+  single-key cursor — CLAUDE.md listed only five until 2026-09-07).
+- **Absolute-page mode — the leap controls (September 2026):** « Début », « ±10 »
+  and « Fin (N) » resolve a page NUMBER to `query.offset((p-1)*PAGE_SIZE)` on the
+  **same ordering**, so they ride the **same index** and need **zero new ones**.
+  `pagination.resolve_page(page_arg, total_pages, *, has_cursor)` is the one authority:
+  a cursor present → the cursor drives the rows and `page` is a **label** that is
+  deliberately NOT clamped to the total (a stale-low count must not freeze a label whose
+  rows are advancing); no total → the offset read is **REFUSED** (`page` reaches a query
+  that BILLS every skipped document, so `?page=100000` would be ~1.5 M reads and a
+  gunicorn SIGKILL); otherwise clamped to `[1, min(total_pages, MAX_PAGE=2000)]`.
+  *Suivant* is driven by the `limit+1` fetch, **never** derived from the total. A leap
+  emits an EMPTY cursor/trail, which is what routes it to the offset branch; the trail is
+  then reset and *Précédent* becomes an offset read of `page-1`. `offset` and `cursor`
+  together **raise before the `try`** (each names a position; swallowed, it would render
+  an empty billing list with no explanation). Proven on production 2026-09-07: a keyset
+  walk and an offset read land on byte-identical pages 1–6 of `timeentries`.
+- **The total — `count_X_page(...) -> Optional[int]`** (one per cursor collection;
+  `count_journal_page` for trust). Built on the **SAME query builder as the page read,
+  `order_by` INCLUDED** — a COUNT adds no aggregated field to trail the index (contrast
+  the SUM tails), so the ordering index already serves it. `tests/test_pagination_queries.py`
+  pins that sharing, which is what makes « zero new indexes » a property of the code.
+  It **must fail to `None`, never `0`** (« Page 7 / 0 » is a confident lie — the
+  June-2026 shape), and it is a **separate query, never bolted onto the existing SUM
+  totals**: a merged aggregation that failed to match an index would take the lawyer's
+  hours/amount figures down with it. Trust's count fails **OPEN** beside a page read that
+  fails **CLOSED** — a register must never read « aucune écriture », but a page indicator
+  decides nothing.
 - **Legacy page mode:** `paginate(items, page)` slices a fully materialized list. Kept
   for search paths (Python full-text filter), rare filter combos that would each need
   their own composite index, and dossier-scoped deep links (already server-narrowed).
+  It now also returns `total`/`total_pages` — every caller already held `len(items)` and
+  the helper simply discarded it — so all six legacy paths (**the documents browser is
+  page mode on EVERY path**) get an exact « Page 3 / 7 » and a true last page for no
+  query cost. It also **clamps UP**: `?page=999` on a 3-page list used to strand the
+  reader on an empty table under « Page 999 ».
 - **Bounded-group mode (no pagination UI):** views whose UX is not paginated cap reads
   server-side instead — tasks (per-status groups, 100 each; since 2026-07-23 the default
   list view fetches only the active groups — terminée/annulée are fetched and shown,
@@ -2580,6 +2613,11 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 
 - **A protocol step's stored `status` is a FOSSIL; the connector derives instead.** `check_overdue_steps` is the only writer of `en_retard`, it has **no branch that ever clears one**, and it runs only when the lawyer opens the protocol page in a browser — so a step stamped by the pre-2026-07-30 wall-clock rule carries `en_retard` for ever, and a read handler is forbidden from repairing it. `mcp/handlers.derive_step_status` therefore recomputes: `complété` is authoritative and never re-derived, everything else follows the deadline against `today_mtl()`. `_step_row` emits the derived value as `status` (what the 07:00 briefing already reads), the raw word as `status_stored`, and `status_differs` to make the fossil visible; **`is_overdue` is `status == "en_retard"` BY CONSTRUCTION**, so the contradictory pair the audit found can no longer be emitted. (`protocols/detail.html` reads `_days_remaining < 0` alone — never the stored word.) The web-keeps-its-own-rule split (mandate decision D3) was **reversed on 2026-08-02**: `get_task_summary`/`get_protocol_summary` still take an injectable `today`, but its DEFAULT is now `today_mtl()` — the historical wall-clock/UTC defaults are dead, and all three surfaces read the same prorogued predicate.
 
+- **The cursor-mode page counter FROZE at 22, and a deep walk back served the WRONG ROWS.** `cursor_pagination` derived the number as `len(trail) + 2` while `next_trail` was capped at `MAX_TRAIL = 20`, so once the trail saturated the label read « Page 22 » for ever — and worse, walking BACK drained the trail until `prev_cursor` became `""`, which re-served **page 1's rows under a page-1 label**. The number was not merely stale; the data was wrong. Fixed 2026-09-07 by carrying an explicit `page` on **every** control. Two corollaries: a control that omits `page` re-breaks it (pinned by `test_every_control_emits_the_page_param` — carrying it only on the leap cluster would let the label collapse to 3/4/5 while the data read 13/14/15), and an in-flight URL minted before the change still works, reporting `page_exact: False` so the component labels the position approximate rather than asserting a derived number.
+- **A COUNT aggregation needs the page read's `order_by`, and dropping it FAILS.** Measured against production 2026-09-07: `dossier_id ==` plus a `date` range **without** the `order_by` answers « the query requires an index », while the same filters carrying the full `order_by(date DESC, id DESC)` return a number on all six collections. The backend applies its own implicit ordering to a bare filtered aggregation, which is a THIRD ordering nothing indexes. So a count is built from the SHARED query builder, verbatim — `_page_query` / `_filtered_query` / `_journal_query`. ⚠ That shared `order_by` is also an **existence filter**: documents missing the key are excluded from the count AND from the page read, so the two can never disagree (cross-checked against a bare collection COUNT — gap of 0 on all five collections; re-run that cross-check if a nullable field ever becomes a sort key).
+- **The flipped-sort « last page » is NOT free — complete inversion was REFUTED here.** The obvious way to reach the end is to flip every `order_by` direction and take `limit(PAGE_SIZE)`. Firestore is documented to scan a composite index backwards, so this *should* be served by the existing index. It is not: a live probe on 2026-09-07 returned `FAILED_PRECONDITION` for both `timeentries order_by(date ASC, id ASC)` and `invoices order_by(date ASC, id DESC)`. Costed out, that mechanism needs **~11 new composite indexes** (3 for the *unfiltered* default views, a SUM twin `(date ASC, id ASC, amount ASC, hours ASC)` or `/temps` totals read 0,00 $, and 8 filtered variants) — and `list_time_entries_page` / `list_invoices_page` swallow `FAILED_PRECONDITION` into `([], None)`, so a missing one renders an **empty billing list with 0,00 $ totals**. The absolute-offset mechanism replaces it entirely and also gives an *exactly aligned* last page, which a flipped `limit(15)` cannot (it yields « the final 15 records », straddling two pages).
+- **The pagination bar renders INSIDE each partial's `{% if rows %}`, so an overshooting jump would be a dead end.** All 7 include sites sit inside a rows-truthy guard, which is what makes an authoritative total over a failed read structurally impossible — but it also means a page that renders empty shows **no controls at all**. Hence `resolve_page` clamps to the known total, and where the total is unknown the leap controls are **not rendered**, so no unclamped jump can be issued from the UI at all. Never loosen the outer guard to « show the bar anyway »: that resurrects an empty bar on every short legacy list.
+- **`.offset()` must never be pushed into `mcp/handlers.py`, and no paged query may go through `.pipeline(`.** The handlers filter a bounded materialized fetch in Python, so an offset there would count SERVER documents, not displayed rows — wrong page, no error. And Firestore Pipelines apply `limit` **before** `offset`, so a paged query routed through them returns zero rows silently. Both pinned by source sweeps in `tests/test_pagination_queries.py`.
 - **`pagination.keyset_page` pages a Python-materialized list by ORDER KEY — and its key must be IMMUTABLE and TOTAL.** These lists are re-derived on every call (Firestore cannot order them), so an offset walk silently skips or repeats when a row is inserted between pages; a keyset resumes from a position in the ordering instead. Two rules are load-bearing: the key must end with the document **id** (unique, never rewritten) so ties break deterministically, and the next cursor is minted **from the last returned row** — not from the model's window cursor, which in a Python-filtered branch points past rows the handler dropped. **It cannot serve every ordering:** `list_invoices` deliberately does NOT use it, because the model orders `date DESC, id ASC` — MIXED directions — while `keyset_page` has a single `descending` flag; using it would skip or repeat rows inside a same-date group, the normal case at month end. **Status note (audit 2026-08-26): `keyset_page` has NO production caller** — the Lot-2 MCP handlers each inline the same keyset discipline over `decode_cursor`/`encode_cursor` rather than calling it. It is kept as the reference implementation of the rules above (with `tests/test_pagination.py` pinning them); a new paged tool may call it or inline the same discipline, but the rules are what is binding.
 
 - **A tool that emits `next_cursor` must accept a `cursor`, and the test that checks it is DERIVED, not a list.** `test_every_paged_tool_declares_a_cursor_input` sweeps `OUTPUT_SCHEMAS` for `next_cursor` and demands the matching input property. It was first written with a hand-kept tuple and immediately stopped proving anything about the next tool added — `list_invoices` slipped past it, then `list_notes`. Any pinned inventory of tools has the same decay: derive it.
