@@ -36,7 +36,6 @@ from werkzeug.utils import secure_filename
 
 from auth import login_required
 from models.audit_event import record_deletion
-from config import Config
 from models.doc_template import (
     CATEGORY_LABELS,
     DOCX_MIME,
@@ -61,6 +60,7 @@ from models.dossier import get_dossier
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
 from models.partie import display_name, get_partie, get_parties_bulk, list_parties
 from tz import MTL
+from utils.cabinet import cabinet_dict
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import (
@@ -72,7 +72,6 @@ from utils.template_fields import (
     resolve_values,
 )
 from utils.tracing_setup import add_attributes, span
-from utils.validators import format_phone_display
 from routes._helpers import dossier_search_fragment, is_htmx
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
@@ -128,27 +127,6 @@ def _kind_from_form(form) -> str:
     if kind in VALID_KINDS:
         return kind
     return "note_honoraires" if form.get("is_note_honoraires") else "gabarit"
-
-
-def _firm_dict() -> dict:
-    street = Config.FIRM_STREET
-    if Config.FIRM_UNIT:
-        street = f"{street}, {Config.FIRM_UNIT}" if street else Config.FIRM_UNIT
-    telephone = ""
-    if Config.FIRM_PHONE:
-        try:
-            telephone = format_phone_display(Config.FIRM_PHONE)
-        except Exception:
-            telephone = Config.FIRM_PHONE
-    return {
-        "nom": Config.FIRM_NAME,
-        "adresse_civique": street,
-        "ville": Config.FIRM_CITY,
-        "province": Config.FIRM_PROVINCE,
-        "code_postal": Config.FIRM_POSTAL_CODE,
-        "telephone": telephone,
-        "courriel": Config.FIRM_EMAIL,
-    }
 
 
 # ── Lifecycle ───────────────────────────────────────────────────────────
@@ -500,7 +478,7 @@ def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
         client=client,
         adverse=adverse,
         destinataire=destinataire,
-        firm=_firm_dict(),
+        firm=cabinet_dict(),
         today=today,
         parties=_dossier_parties(dossier),
     )

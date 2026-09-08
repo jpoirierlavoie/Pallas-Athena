@@ -98,17 +98,23 @@ def _composer_cabinet() -> dict:
         return dict(_CABINET_REPLI)
     return {
         "nom": cab["nom"],
-        "organisation": _CABINET_REPLI["organisation"],
+        "organisation": cab.get("organisation") or _CABINET_REPLI["organisation"],
         "adresse_lignes": [
             cab["adresse_civique"],
             f"{cab['ville']} ({cab['province']}) {cab['code_postal']}",
         ],
-        "telephone": cab["telephone"].removeprefix("+1 "),
-        "telecopieur": cab["telecopieur"].removeprefix("+1 "),
+        "telephone": cab["telephone"],
+        "telecopieur": cab["telecopieur"],
     }
 
 
-_CABINET = _composer_cabinet()
+# DELIBERATELY NOT a module-level constant. This module is imported
+# unconditionally by main.py's create_app(), so evaluating the composition
+# here would (a) put a Firestore read on every cold start, inside app
+# construction, and (b) FREEZE the firm profile for the whole life of the
+# gunicorn worker — editing the address would never reach the accusé email
+# until a redeploy. tests/test_settings_cabinet.py pins the absence of a
+# `_CABINET` attribute so this cannot be reintroduced by a later hand.
 
 
 def _taille_lisible(octets: int) -> str:
@@ -221,7 +227,7 @@ def _corps_accuse(invitation: dict, fichiers: list[dict], quand_utc: datetime,
         "reception/_accuse_bordereau.html",
         quand=quand,
         client=_client_expediteur(invitation, partie),
-        cabinet=_CABINET,
+        cabinet=_composer_cabinet(),
         file_number=file_number,
         dossier=dossier_ctx,
         fichiers=liste,
@@ -455,7 +461,7 @@ def _corps_confirmation_intake(quand_utc: datetime) -> tuple[str, str]:
     objet = "Confirmation de réception — formulaire d'ouverture"
     corps = render_template(
         "reception/_confirmation_intake.html",
-        quand=quand, cabinet=_CABINET,
+        quand=quand, cabinet=_composer_cabinet(),
     )
     return objet, corps
 

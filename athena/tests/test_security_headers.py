@@ -182,7 +182,7 @@ def test_link_header_on_full_page_html():
     app = _make_app()
     resp = app.test_client().get("/")
     link = resp.headers.get("Link", "")
-    assert "</static/vendor/app.21501045.css>; rel=preload; as=style" in link
+    assert "</static/vendor/app.5ace6581.css>; rel=preload; as=style" in link
     # The font preload MUST keep `crossorigin` + its type — losing either
     # makes the browser fetch the woff2 twice (fonts are CORS-mode fetches).
     assert (
@@ -190,7 +190,7 @@ def test_link_header_on_full_page_html():
         ' type="font/woff2"; crossorigin' in link
     )
     assert (
-        'material-symbols-outlined-v368-390acc0f.woff2>; rel=preload; as=font;'
+        'material-symbols-outlined-v369-7ebffb11.woff2>; rel=preload; as=font;'
         ' type="font/woff2"; crossorigin' in link
     )
     assert "htmx-2.0.4.min.js>; rel=preload; as=script" in link
@@ -224,7 +224,7 @@ def test_login_page_gets_its_own_hint_set():
         ' type="font/woff2"; crossorigin' in link
     )
     assert (
-        'material-symbols-outlined-v368-390acc0f.woff2>; rel=preload; as=font;'
+        'material-symbols-outlined-v369-7ebffb11.woff2>; rel=preload; as=font;'
         ' type="font/woff2"; crossorigin' in link
     )
     assert "<https://www.gstatic.com>; rel=preconnect" in link
@@ -496,3 +496,182 @@ def test_every_static_handler_carries_the_full_baseline():
         assert handlers[-1].get("secure") == "always", (
             f"{yaml_name}: the catch-all must still force HTTPS"
         )
+
+
+# ── The two fail-open controls now SAY they are off ─────────────────────
+# Until 2026-09-07 `_enforce_origin_secret` logged nothing at all — no log, no
+# metric, not even DEBUG — which is how `cf-origin-secret` came to not exist
+# in Secret Manager for months with nothing signalling it. App Check did warn,
+# but through a bare `logger.warning` carrying no `jsonPayload.event`, so no
+# log-based metric could see it, AND the test sat below the `HX-Request` gate,
+# so a fresh instance nobody had clicked around never emitted it.
+
+
+def _guard_app(**config):
+    import security as _security
+
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["ENV"] = "production"
+    app.config.setdefault("CF_ORIGIN_SECRET", "")
+    app.config.setdefault("RECAPTCHA_ENTERPRISE_SITE_KEY", "")
+    app.config.update(config)
+    # Warn-once is module state; reset it so each test starts clean.
+    _security._ORIGIN_SECRET_MISSING_WARNED = False
+    _security._APPCHECK_MISSING_WARNED = False
+    return app, _security
+
+
+def _events(records):
+    return [
+        getattr(r, "json_fields", {}).get("event")
+        for r in records
+        if r.name == "pallas.security"
+    ]
+
+
+def test_the_origin_secret_guard_says_when_it_is_disabled(caplog):
+    import logging
+
+    app, sec = _guard_app()
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context("/dossiers"):
+            assert sec._enforce_origin_secret() is None      # still fail-OPEN
+    assert "origin_secret_disabled" in _events(caplog.records)
+
+
+def test_the_appcheck_guard_fires_on_a_NON_htmx_request(caplog):
+    """The whole point of hoisting the config test above the HX-Request gate:
+    a freshly deployed instance nobody has exercised must still say the
+    control is off."""
+    import logging
+
+    app, sec = _guard_app()
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context("/dossiers"):          # no HX-Request
+            assert sec._verify_app_check() is None           # still fail-OPEN
+    assert "appcheck_disabled" in _events(caplog.records)
+
+
+def test_the_appcheck_guard_fires_even_on_an_exempt_path(caplog):
+    """Correct, and worth pinning: this is a fact about the DEPLOYMENT, not
+    about the request."""
+    import logging
+
+    app, sec = _guard_app()
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context("/auth/login"):
+            assert sec._verify_app_check() is None
+    assert "appcheck_disabled" in _events(caplog.records)
+
+
+def test_both_guards_warn_only_once_per_process(caplog):
+    """They describe a deployment, so a hot path must not flood the log."""
+    import logging
+
+    app, sec = _guard_app()
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context("/dossiers"):
+            for _ in range(5):
+                sec._enforce_origin_secret()
+                sec._verify_app_check()
+    emitted = _events(caplog.records)
+    assert emitted.count("origin_secret_disabled") == 1
+    assert emitted.count("appcheck_disabled") == 1
+
+
+def test_neither_guard_speaks_when_the_control_is_configured(caplog):
+    import logging
+
+    app, sec = _guard_app(
+        CF_ORIGIN_SECRET="s" * 43, RECAPTCHA_ENTERPRISE_SITE_KEY="k" * 40
+    )
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context("/dossiers"):
+            sec._verify_app_check()
+    assert _events(caplog.records) == []
+
+
+def test_neither_guard_speaks_outside_production(caplog):
+    """Unset is the normal local-dev state; warning there would be noise that
+    trains the reader to ignore the one that matters."""
+    import logging
+
+    app, sec = _guard_app()
+    app.config["ENV"] = "development"
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context("/dossiers"):
+            sec._enforce_origin_secret()
+            sec._verify_app_check()
+    assert _events(caplog.records) == []
+
+
+def test_the_origin_secret_guard_still_refuses_a_bad_header():
+    """The behaviour the logging must not have disturbed."""
+    from werkzeug.exceptions import Forbidden
+
+    app, sec = _guard_app(CF_ORIGIN_SECRET="s" * 43)
+    with app.test_request_context("/dossiers", headers={"X-Origin-Auth": "wrong"}):
+        try:
+            sec._enforce_origin_secret()
+        except Forbidden:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("a mismatched origin header must abort(403)")
+    with app.test_request_context("/dossiers", headers={"X-Origin-Auth": "s" * 43}):
+        assert sec._enforce_origin_secret() is None
+
+
+def _fields(records, event):
+    """Le `json_fields` de l'UNIQUE enregistrement portant cet événement."""
+    trouves = [
+        getattr(r, "json_fields", {})
+        for r in records
+        if r.name == "pallas.security"
+        and getattr(r, "json_fields", {}).get("event") == event
+    ]
+    assert len(trouves) == 1, f"{event}: {len(trouves)} enregistrements"
+    return trouves[0]
+
+
+def test_both_guards_carry_EXACTLY_event_and_reason(caplog):
+    """Le jeu de champs est un CONTRAT, à deux titres.
+
+    D'abord la métrique : ces deux événements existent pour qu'une alerte
+    `count > 0` puisse se déclencher sans que personne ne regarde une page.
+    Un champ ajouté qui varie par requête (un chemin, une adresse, un
+    en-tête) ferait exploser la cardinalité des étiquettes.
+
+    Ensuite la vie privée : `RedactionFilter` ne nettoie par nom qu'une
+    appartenance EXACTE à `SENSITIVE_KEYS` (`logging_setup.py:283`), donc un
+    champ nouveau portant une valeur contrôlée par le client ne serait PAS
+    retiré au seul titre de son nom. Ces deux lignes décrivent le
+    DÉPLOIEMENT, jamais la requête : elles n'ont aucune raison de porter
+    autre chose que leur motif.
+    """
+    import logging
+
+    app, sec = _guard_app()
+    with caplog.at_level(logging.WARNING, logger="pallas.security"):
+        with app.test_request_context(
+            "/dossiers?client=Tremblay",
+            headers={"X-Forwarded-For": "203.0.113.9"},
+        ):
+            sec._enforce_origin_secret()
+            sec._verify_app_check()
+
+    origine = _fields(caplog.records, "origin_secret_disabled")
+    appcheck = _fields(caplog.records, "appcheck_disabled")
+
+    assert set(origine) == {"event", "reason"}, origine
+    assert set(appcheck) == {"event", "reason"}, appcheck
+
+    # Vocabulaire FERMÉ, jamais un texte bâti depuis une entrée.
+    assert origine["reason"] == "cf_origin_secret_unset"
+    assert appcheck["reason"] == "recaptcha_site_key_unset"
+
+    # Et rien de la requête n'a fui dans le message rendu.
+    for enregistrement in caplog.records:
+        rendu = enregistrement.getMessage()
+        assert "Tremblay" not in rendu
+        assert "203.0.113.9" not in rendu

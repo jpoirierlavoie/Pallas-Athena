@@ -1,0 +1,959 @@
+{% extends "base.html" %}
+{% block title %}Sécurité — Pallas Athena{% endblock %}
+
+{% block content %}
+{# L'INVARIANT de cette page : aucun contrôle ne réduit les façons de se
+   connecter sans que le juriste ait DÉMONTRÉ, dans la même visite, contre
+   Google, par un vrai SMS, qu'une autre façon fonctionne encore. Le
+   déverrouillage n'est donc pas une formalité : c'est la preuve de
+   récupérabilité. Et la page ne peut que REFUSER de créer un verrouillage,
+   jamais en réparer un — à zéro facteur, `@login_required` ne laisse plus
+   personne revenir ici. #}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <h1 class="text-lg font-semibold text-gray-900 mb-6">Paramètres</h1>
+
+  {% include "settings/_onglets.html" %}
+
+  <div data-uid="{{ user_uid }}"
+       x-data="securite()" x-init="demarrer()">
+
+    {# ── Panneaux d'état (résolus dans onAuthStateChanged) ────────── #}
+
+    <div x-show="vue === 'chargement'" class="bg-white rounded-xl border border-gray-200 p-5">
+      <p class="text-sm text-gray-500">Lecture de l'état de sécurité…</p>
+    </div>
+
+    <div x-show="vue === 'panne_demarrage'" x-cloak
+         class="bg-red-50 border border-red-200 rounded-xl p-5 mb-4">
+      <h2 class="text-sm font-semibold text-red-800 mb-1">Module de sécurité indisponible</h2>
+      <p class="text-sm text-red-700">
+        Le module de sécurité n'a pas pu démarrer. Rechargez la page. Les
+        marches à suivre en bas de page restent valables.
+      </p>
+      <button type="button" data-reload
+              class="mt-3 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+        Recharger
+      </button>
+    </div>
+
+    {# JAMAIS « aucun facteur » : l'état Firebase de ce navigateur vit dans
+       son propre IndexedDB, indépendamment du témoin Flask. Confondre les
+       deux invite à « activer » une vérification déjà en place, et rend
+       l'état d'alarme indiscernable du cas bénin. #}
+    <div x-show="vue === 'sans_etat_firebase'" x-cloak
+         class="bg-amber-50 border border-amber-200 rounded-xl p-5 mb-4">
+      <h2 class="text-sm font-semibold text-amber-900 mb-1">Reconnexion nécessaire</h2>
+      <p class="text-sm text-amber-800">
+        Votre session Athéna est valide, mais ce navigateur n'a plus l'état
+        Firebase nécessaire pour lire ou modifier vos réglages de sécurité.
+        Cela n'indique <strong>pas</strong> que la vérification en deux étapes
+        est désactivée.
+      </p>
+      {# Un lien vers /auth/login rebondirait au tableau de bord (la route
+         redirige quand la session est valide) et le bouton paraîtrait cassé :
+         la seule façon d'atteindre la page de connexion est de vider la
+         session d'abord. #}
+      <form method="post" action="/auth/logout" class="mt-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Se déconnecter et se reconnecter
+        </button>
+      </form>
+    </div>
+
+    <div x-show="vue === 'identite_divergente'" x-cloak
+         class="bg-red-50 border border-red-200 rounded-xl p-5 mb-4">
+      <h2 class="text-sm font-semibold text-red-800 mb-1">Identité différente</h2>
+      <p class="text-sm text-red-700">
+        L'identité Firebase de ce navigateur ne correspond pas à votre compte
+        Athéna. Aucune modification n'est possible dans cet état.
+      </p>
+      <form method="post" action="/auth/logout" class="mt-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit"
+                class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Se déconnecter et se reconnecter
+        </button>
+      </form>
+    </div>
+
+    {# ── L'écran normal ──────────────────────────────────────────── #}
+    <div x-show="vue === 'pret'" x-cloak>
+
+      {% if require_mfa %}
+      <div x-show="facteurs.length === 0" x-cloak
+           class="bg-red-50 border border-red-200 rounded-xl p-5 mb-4">
+        <h2 class="text-sm font-semibold text-red-800 mb-1">Aucun second facteur enregistré</h2>
+        <p class="text-sm text-red-700">
+          Votre <strong>prochaine</strong> connexion sera refusée. Enregistrez
+          un numéro maintenant — la session en cours reste valide jusqu'à son
+          expiration, c'est la fenêtre pour le faire.
+        </p>
+      </div>
+      {% endif %}
+
+      {# ── Compte ───────────────────────────────────────────────── #}
+      <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+        <h2 class="text-sm font-semibold text-gray-900 mb-3">Compte</h2>
+        <p class="text-sm text-gray-700">{{ compte_courriel }}</p>
+      </div>
+
+      {# ── Facteurs enregistrés ─────────────────────────────────── #}
+      <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+        <h2 class="text-sm font-semibold text-gray-900 mb-3">Vérification en deux étapes</h2>
+
+        <p x-show="facteurs.length === 0" x-cloak class="text-sm text-gray-500 mb-3">
+          Aucun numéro enregistré.
+        </p>
+
+        {# Le numéro est montré EN ENTIER. Masquer sur la seule page dont le
+           travail est de répondre « est-ce l'ancien ou le nouveau ? » nuit
+           activement, et le choix de celui à retirer deviendrait une
+           devinette. La page est derrière la session ET une connexion MFA
+           complète. #}
+        <template x-for="(f, i) in facteurs" :key="f.uid || i">
+          <div class="flex items-center justify-between py-2 border-b border-gray-100">
+            <div>
+              <p class="text-sm text-gray-900" x-text="f.phoneNumber || f.displayName || 'Facteur'"></p>
+              <p class="text-xs text-gray-500">
+                <span x-text="f.displayName || ''"></span>
+                <span x-show="f.inscritLe" x-cloak>
+                  · inscrit le <span x-text="f.inscritLe"></span>
+                </span>
+              </p>
+            </div>
+            <div>
+              {# La garde vit DANS la fonction, pas seulement dans
+                 `:disabled` — les outils de développement réactivent
+                 n'importe quel bouton. Le libellé dit la raison : une
+                 absence ressemble à un bogue et envoie chercher dans la
+                 console Google. #}
+              <button type="button" @click="confirmerRetrait(i)"
+                      :disabled="!peutRetirer"
+                      :title="peutRetirer ? '' : 'Le dernier facteur ne peut pas être retiré : votre prochaine connexion serait refusée. Ajoutez d\'abord un autre numéro.'"
+                      class="text-sm text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed">
+                Retirer
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <p x-show="!peutRetirer && facteurs.length === 1" x-cloak
+           class="text-xs text-gray-500 mt-3">
+          Un seul numéro est enregistré : il ne peut pas être retiré, sans quoi
+          votre prochaine connexion serait refusée. Ajoutez-en un second
+          d'abord — deux numéros valides est un état préférable.
+        </p>
+
+        <div class="mt-4">
+          <button type="button" @click="ouvrir('ajout')" :disabled="!deverrouille"
+                  class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-60">
+            Ajouter un numéro
+          </button>
+          <p x-show="!deverrouille" x-cloak class="text-xs text-gray-500 mt-2">
+            Déverrouillez la section ci-dessous pour modifier vos réglages.
+          </p>
+        </div>
+      </div>
+
+      {# ── Déverrouillage (partagé mot de passe / facteurs) ─────── #}
+      <div x-show="!deverrouille" x-cloak
+           class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+        <h2 class="text-sm font-semibold text-gray-900 mb-1">Déverrouiller</h2>
+        <p class="text-sm text-gray-500 mb-4">
+          Toute modification exige de confirmer votre mot de passe puis un code
+          SMS envoyé au numéro déjà enregistré. C'est ce qui garantit qu'un
+          moyen de connexion fonctionne encore avant d'en changer un.
+        </p>
+
+        <div x-show="etape === 'mot_de_passe'">
+          {# method="post" sans action : si Alpine ne charge pas,
+             `@submit.prevent` ne se lie jamais et l'envoi par défaut part —
+             en GET, le mot de passe atterrirait dans la barre d'adresse,
+             l'historique et chaque journal d'accès. #}
+          <form method="post" @submit.prevent="deverrouiller()">
+            <input type="text" name="username" autocomplete="username"
+                   value="{{ compte_courriel }}" readonly
+                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-500 mb-3">
+            <label class="block text-sm text-gray-700 mb-1">Mot de passe actuel</label>
+            <input :type="montrer ? 'text' : 'password'" x-model="motDePasse"
+                   autocomplete="current-password"
+                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <button type="button" @click="montrer = !montrer"
+                    class="text-xs text-indigo-600 hover:text-indigo-800 mt-1"
+                    x-text="montrer ? 'Masquer' : 'Afficher'"></button>
+            <p x-show="erreur" x-text="erreur" x-cloak class="text-sm text-red-600 mt-3"></p>
+            <button type="submit" :disabled="occupe || !motDePasse"
+                    class="mt-3 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-60">
+              <svg x-show="occupe" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+              </svg>
+              <span x-text="occupe ? 'Vérification…' : 'Continuer'"></span>
+            </button>
+          </form>
+        </div>
+
+        <div x-show="etape === 'code_deverrouillage'" x-cloak>
+          <p class="text-sm text-gray-700 mb-3" x-text="messageSms"></p>
+          <div class="flex justify-center gap-2 mb-4">
+            <template x-for="(_, i) in 6" :key="i">
+              <input type="text" inputmode="numeric" maxlength="1"
+                     :id="'deverr-digit-' + i"
+                     x-on:input="chiffreSaisi($event, i, 'deverr'); majCode('deverr')"
+                     x-on:keydown.backspace="chiffreRetour($event, i, 'deverr')"
+                     x-on:keydown.enter="confirmerDeverrouillage()"
+                     x-on:paste.prevent="collerCode($event, 'deverr'); majCode('deverr')"
+                     class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
+                            focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+            </template>
+          </div>
+          <p x-show="erreur" x-text="erreur" x-cloak class="text-sm text-red-600 mb-3 text-center"></p>
+          <button @click="confirmerDeverrouillage()" :disabled="occupe || code.length < 6"
+                  class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60 mb-3">
+            <svg x-show="occupe" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+            </svg>
+            <span x-text="occupe ? 'Vérification…' : 'Déverrouiller'"></span>
+          </button>
+          <div class="flex items-center justify-between text-sm">
+            <button @click="renvoyerCode()" :disabled="attente > 0 || occupe"
+                    class="text-indigo-600 hover:text-indigo-800 disabled:text-gray-400 disabled:cursor-not-allowed">
+              <span x-text="attente > 0 ? 'Renvoyer dans ' + attente + 's' : 'Renvoyer le code'"></span>
+            </button>
+            <button @click="annuler()" class="text-gray-500 hover:text-gray-700">Annuler</button>
+          </div>
+        </div>
+      </div>
+
+      {# ── Section déverrouillée ────────────────────────────────── #}
+      <div x-show="deverrouille" x-cloak>
+
+        <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-4">
+          <p class="text-sm text-green-700">
+            Section déverrouillée. Le déverrouillage expire après quelques
+            minutes.
+          </p>
+        </div>
+
+        {# ── Mot de passe ──────────────────────────────────────── #}
+        <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 class="text-sm font-semibold text-gray-900 mb-3">Mot de passe</h2>
+          <form method="post" @submit.prevent="changerMotDePasse()">
+            <input type="text" name="username" autocomplete="username"
+                   value="{{ compte_courriel }}" readonly
+                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-500 mb-3">
+            <label class="block text-sm text-gray-700 mb-1">Nouveau mot de passe</label>
+            <input :type="montrer ? 'text' : 'password'" x-model="nouveau"
+                   autocomplete="new-password"
+                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-3">
+            <label class="block text-sm text-gray-700 mb-1">Confirmation</label>
+            <input :type="montrer ? 'text' : 'password'" x-model="confirmation"
+                   autocomplete="new-password"
+                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <button type="button" @click="montrer = !montrer"
+                    class="text-xs text-indigo-600 hover:text-indigo-800 mt-1"
+                    x-text="montrer ? 'Masquer' : 'Afficher'"></button>
+            <p class="text-xs text-gray-500 mt-2">Au moins 12 caractères.</p>
+            <p x-show="erreurMdp" x-text="erreurMdp" x-cloak class="text-sm text-red-600 mt-3"></p>
+            <p x-show="succesMdp" x-text="succesMdp" x-cloak class="text-sm text-green-700 mt-3"></p>
+            <button type="submit" :disabled="occupe || !nouveau"
+                    class="mt-3 flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-60">
+              <svg x-show="occupe" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+              </svg>
+              <span x-text="occupe ? 'Enregistrement…' : 'Changer le mot de passe'"></span>
+            </button>
+          </form>
+        </div>
+
+        {# ── Ajout d'un numéro ─────────────────────────────────── #}
+        <div x-show="panneau === 'ajout'" x-cloak
+             class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h2 class="text-sm font-semibold text-gray-900 mb-3">Ajouter un numéro</h2>
+
+          <div x-show="etapeAjout === 'numero'">
+            <label class="block text-sm text-gray-700 mb-1">Nouveau numéro (10 chiffres)</label>
+            <input type="text" inputmode="numeric" x-model="nouveauNumero"
+                   placeholder="514 555 0100"
+                   class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p x-show="erreurAjout" x-text="erreurAjout" x-cloak class="text-sm text-red-600 mt-3"></p>
+            <button type="button" @click="confirmerNumero()"
+                    class="mt-3 px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+              Continuer
+            </button>
+          </div>
+
+          {# L'écho du numéro AVANT d'envoyer : `mfa_setup.html` préfixait
+             « +1 » à ce qui était tapé, donc 9 ou 11 chiffres produisaient
+             en silence un numéro faux ou invalide. #}
+          <div x-show="etapeAjout === 'echo'" x-cloak>
+            <p class="text-sm text-gray-700 mb-3">
+              Un code sera envoyé au <strong x-text="numeroFormate"></strong>.
+              Est-ce bien ce numéro ?
+            </p>
+            <p x-show="erreurAjout" x-text="erreurAjout" x-cloak class="text-sm text-red-600 mb-3"></p>
+            <div class="flex gap-2">
+              <button type="button" @click="envoyerCodeAjout()" :disabled="occupe"
+                      class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-60">
+                Envoyer le code
+              </button>
+              <button type="button" @click="etapeAjout = 'numero'"
+                      class="px-4 py-2.5 text-sm text-gray-500 hover:text-gray-700">
+                Corriger
+              </button>
+            </div>
+          </div>
+
+          <div x-show="etapeAjout === 'code'" x-cloak>
+            <p class="text-sm text-gray-700 mb-3">
+              Entrez le code reçu au <strong x-text="numeroFormate"></strong>.
+            </p>
+            <div class="flex justify-center gap-2 mb-4">
+              <template x-for="(_, i) in 6" :key="i">
+                <input type="text" inputmode="numeric" maxlength="1"
+                       :id="'ajout-digit-' + i"
+                       x-on:input="chiffreSaisi($event, i, 'ajout'); majCode('ajout')"
+                       x-on:keydown.backspace="chiffreRetour($event, i, 'ajout')"
+                       x-on:keydown.enter="inscrireNumero()"
+                       x-on:paste.prevent="collerCode($event, 'ajout'); majCode('ajout')"
+                       class="w-10 h-12 text-center text-lg font-semibold border border-gray-300 rounded-lg
+                              focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-transparent">
+              </template>
+            </div>
+            <p x-show="erreurAjout" x-text="erreurAjout" x-cloak class="text-sm text-red-600 mb-3 text-center"></p>
+            <button @click="inscrireNumero()" :disabled="occupe || codeAjout.length < 6"
+                    class="w-full flex items-center justify-center gap-2 rounded-lg bg-gray-900 text-white text-sm font-medium py-2.5 hover:bg-gray-800 disabled:opacity-60">
+              <svg x-show="occupe" x-cloak class="spinner w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke-dasharray="60" stroke-dashoffset="15" />
+              </svg>
+              <span x-text="occupe ? 'Inscription…' : 'Inscrire ce numéro'"></span>
+            </button>
+          </div>
+
+          <div x-show="etapeAjout === 'fait'" x-cloak>
+            <p class="text-sm text-green-700 mb-3">
+              <strong>Deux numéros sont enregistrés.</strong> Vous pouvez vous
+              connecter avec l'un ou l'autre. Votre compte est maintenant plus
+              récupérable qu'avant cette modification.
+            </p>
+            <p class="text-sm text-gray-700 mb-3">
+              Vérifiez maintenant : déconnectez-vous et reconnectez-vous avec le
+              nouveau numéro. Ne retirez l'ancien qu'ensuite.
+            </p>
+            <form method="post" action="/auth/logout">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit"
+                      class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+                Se déconnecter et vérifier
+              </button>
+            </form>
+          </div>
+        </div>
+
+        {# ── Confirmation de retrait ───────────────────────────── #}
+        <div x-show="panneau === 'retrait'" x-cloak
+             class="bg-white rounded-xl border border-red-200 p-5 mb-4">
+          <h2 class="text-sm font-semibold text-gray-900 mb-3">Retirer un numéro</h2>
+          <p class="text-sm text-gray-700 mb-3">
+            Retirer <strong x-text="numeroARetirer"></strong>.
+            <span x-text="'Il restera ' + (facteurs.length - 1) + ' facteur(s).'"></span>
+          </p>
+          <p x-show="erreurRetrait" x-text="erreurRetrait" x-cloak class="text-sm text-red-600 mb-3"></p>
+          <div class="flex gap-2">
+            <button type="button" @click="retirer()" :disabled="occupe"
+                    class="px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-60">
+              Retirer
+            </button>
+            <button type="button" @click="panneau = ''"
+                    class="px-4 py-2.5 text-sm text-gray-500 hover:text-gray-700">
+              Annuler
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Marche à suivre en cas de verrouillage ───────────────────────
+       STATIQUE et SANS directive Alpine, à dessein : elle doit se lire même
+       quand le SDK n'a pas démarré et que tous les panneaux ci-dessus sont
+       bloqués. C'est sans doute l'élément le plus utile de la page. #}
+  <div class="bg-gray-50 border border-gray-200 rounded-xl p-5 mt-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Si vous n'arrivez plus à vous connecter</h2>
+    <ol class="text-sm text-gray-700 space-y-2 list-decimal list-inside">
+      <li>
+        Poser <code>REQUIRE_MFA: "false"</code> dans <code>app.yaml</code> puis
+        redéployer. La connexion se fait alors par mot de passe seul : revenir
+        ici, enregistrer un numéro, puis remettre <code>"true"</code> et
+        redéployer. C'est la voie la plus rapide, et la seule qui ne dépende
+        que de l'accès au déploiement — le compte reste protégé par le mot de
+        passe seul pendant cette fenêtre.
+      </li>
+      <li>
+        Console Firebase → Authentication → Users → le compte → gérer les
+        seconds facteurs.
+      </li>
+      <li>
+        <strong>Les deux voies passent par le compte Google</strong>, dont la
+        vérification en deux étapes et les codes de récupération sont le vrai
+        point unique de défaillance. Imprimez ces codes et conservez-les
+        ailleurs qu'sur cette machine.
+      </li>
+    </ol>
+  </div>
+
+  {# UN SEUL conteneur reCAPTCHA, au niveau supérieur et HORS de tout
+     `x-show` : un reCAPTCHA invisible dans un sous-arbre `display:none` ne
+     peut pas afficher de défi quand Google décide d'en escalader un, et
+     `verifyPhoneNumber` reste alors bloqué sans erreur ni rejet. #}
+  <div id="parametres-recaptcha"></div>
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+{# SDK d'auth SEULEMENT. Ne JAMAIS charger firebase-app-compat ici : une
+   seconde évaluation créerait une instance de module indépendante, dont
+   `firebase.apps` est vide, et l'instance App Check activée par
+   appcheck-boot deviendrait orpheline — les requêtes htmx perdraient
+   silencieusement leur en-tête X-Firebase-AppCheck. #}
+<script src="{{ url_for('static', filename='vendor/firebase-auth-compat-10.12.2.js') }}"></script>
+
+<script nonce="{{ csp_nonce }}">
+  'use strict';
+
+  // `var` et un nom préfixé, jamais `const auth` : deux `const auth` au
+  // niveau supérieur d'un même document est une SyntaxError qui tue les
+  // DEUX blocs — la collision qu'aurait produite une fusion des anciens
+  // gabarits MFA plutôt que leur suppression.
+  var athenaAuth = null;
+  var athenaBootErreur = '';
+  var athenaUid = {{ user_uid|tojson }};
+  var athenaCourriel = {{ compte_courriel|tojson }};
+  var athenaRequireMfa = {{ require_mfa|tojson }};
+
+  try {
+    // Garde sur `firebase.apps.length`, PAS sur la condition Jinja de
+    // base.html : recopier cette condition ici la dédoublerait, et le jour
+    // où elle bouge la page initialiserait une seconde application.
+    if (!firebase.apps.length) {
+      firebase.initializeApp({
+        apiKey: {{ firebase_api_key|tojson }},
+        authDomain: "{{ firebase_project_id }}.firebaseapp.com",
+        projectId: {{ firebase_project_id|tojson }},
+        appId: {{ firebase_app_id|tojson }}
+      });
+    }
+    athenaAuth = firebase.auth();
+  } catch (e) {
+    // Une panne de démarrage ne doit PAS tuer la page : la fabrique doit
+    // rester DÉFINIE pour qu'Alpine évalue `x-data` et rende le panneau.
+    athenaBootErreur = 'demarrage';
+  }
+
+  function securite() {
+    return {
+      vue: 'chargement',
+      etape: 'mot_de_passe',
+      etapeAjout: 'numero',
+      panneau: '',
+      facteurs: [],
+      deverrouille: false,
+      deverrouilleA: 0,
+      occupe: false,
+      montrer: false,
+      erreur: '',
+      erreurMdp: '',
+      succesMdp: '',
+      erreurAjout: '',
+      erreurRetrait: '',
+      messageSms: '',
+      motDePasse: '',
+      nouveau: '',
+      confirmation: '',
+      code: '',
+      codeAjout: '',
+      nouveauNumero: '',
+      numeroFormate: '',
+      numeroARetirer: '',
+      indexARetirer: -1,
+      attente: 0,
+      minuterie: null,
+      verifier: null,
+      resolveur: null,
+      idVerification: '',
+      idVerificationAjout: '',
+
+      get peutRetirer() {
+        // La garde d'arithmétique, et non un avertissement : retirer le
+        // dernier facteur sous REQUIRE_MFA rend la PROCHAINE connexion
+        // impossible, la session en cours continuant des heures — le pire
+        // profil de panne possible.
+        if (!this.deverrouille) return false;
+        if (!athenaRequireMfa) return true;
+        return this.facteurs.length > 1;
+      },
+
+      demarrer() {
+        if (athenaBootErreur) { this.vue = 'panne_demarrage'; return; }
+        if (!athenaAuth) { this.vue = 'panne_demarrage'; return; }
+        // L'état ne se lit QUE dans onAuthStateChanged : Firebase restaure
+        // son état depuis IndexedDB de façon asynchrone, donc une lecture
+        // synchrone de currentUser voit `null` par intermittence (le défaut
+        // de mfa_setup.html).
+        athenaAuth.onAuthStateChanged((u) => {
+          if (!u) { this.vue = 'sans_etat_firebase'; return; }
+          if (athenaUid && u.uid !== athenaUid) {
+            this.vue = 'identite_divergente';
+            return;
+          }
+          this.relireFacteurs(u);
+          this.vue = 'pret';
+        });
+        setTimeout(() => {
+          if (this.vue === 'chargement') this.vue = 'sans_etat_firebase';
+        }, 10000);
+      },
+
+      relireFacteurs(u) {
+        var brut = (u.multiFactor && u.multiFactor.enrolledFactors) || [];
+        this.facteurs = brut.map((f) => ({
+          uid: f.uid,
+          phoneNumber: f.phoneNumber || '',
+          // Un facteur TOTP ajouté depuis la console rend une ligne au lieu
+          // de lever — ce qui garde l'ajout de TOTP purement additif.
+          displayName: f.factorId === 'phone'
+            ? (f.displayName || 'Téléphone')
+            : (f.displayName || f.factorId || 'Facteur'),
+          inscritLe: f.enrollmentTime
+            ? new Date(f.enrollmentTime).toLocaleDateString('fr-CA')
+            : ''
+        }));
+      },
+
+      // ── Saisie du code à 6 chiffres (repris de login.html) ──────
+      chiffreSaisi(ev, i, prefixe) {
+        var v = ev.target.value.replace(/\D/g, '');
+        ev.target.value = v.slice(0, 1);
+        if (v && i < 5) {
+          var suivant = document.getElementById(prefixe + '-digit-' + (i + 1));
+          if (suivant) suivant.focus();
+        }
+      },
+      chiffreRetour(ev, i, prefixe) {
+        if (!ev.target.value && i > 0) {
+          var prec = document.getElementById(prefixe + '-digit-' + (i - 1));
+          if (prec) prec.focus();
+        }
+      },
+      collerCode(ev, prefixe) {
+        var t = (ev.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+        for (var i = 0; i < 6 && i < t.length; i++) {
+          var el = document.getElementById(prefixe + '-digit-' + i);
+          if (el) el.value = t[i];
+        }
+        var cible = document.getElementById(prefixe + '-digit-' + Math.min(t.length, 5));
+        if (cible) cible.focus();
+      },
+      majCode(prefixe) {
+        var c = '';
+        for (var i = 0; i < 6; i++) {
+          var el = document.getElementById(prefixe + '-digit-' + i);
+          if (el) c += el.value;
+        }
+        if (prefixe === 'ajout') this.codeAjout = c; else this.code = c;
+      },
+      viderCode(prefixe) {
+        for (var i = 0; i < 6; i++) {
+          var el = document.getElementById(prefixe + '-digit-' + i);
+          if (el) el.value = '';
+        }
+        if (prefixe === 'ajout') this.codeAjout = ''; else this.code = '';
+      },
+
+      // ── reCAPTCHA : jeton à USAGE UNIQUE ────────────────────────
+      // La discipline de login.html (vider dans un try / annuler la
+      // référence / reconstruire), et non celle de mfa_setup.html qui ne
+      // reconstruit JAMAIS — un vérificateur consommé fait échouer l'envoi
+      // du SMS en silence.
+      reinitRecaptcha() {
+        if (this.verifier) {
+          try { this.verifier.clear(); } catch (e) { /* déjà démonté */ }
+          this.verifier = null;
+        }
+        this.verifier = new firebase.auth.RecaptchaVerifier(
+          'parametres-recaptcha', { size: 'invisible' }
+        );
+      },
+
+      lancerAttente() {
+        this.attente = 30;
+        if (this.minuterie) clearInterval(this.minuterie);
+        this.minuterie = setInterval(() => {
+          this.attente--;
+          if (this.attente <= 0) clearInterval(this.minuterie);
+        }, 1000);
+      },
+      attenteFinie() {
+        if (this.minuterie) clearInterval(this.minuterie);
+        this.attente = 0;
+      },
+
+      messageErreur(code, defaut) {
+        var t = {
+          'auth/invalid-credential': 'Mot de passe actuel incorrect.',
+          'auth/wrong-password': 'Mot de passe actuel incorrect.',
+          'auth/too-many-requests': 'Trop de tentatives. Patientez quelques minutes avant de réessayer.',
+          'auth/quota-exceeded': 'Trop de demandes de code. Patientez quelques minutes.',
+          'auth/network-request-failed': 'Connexion à Firebase impossible. Vérifiez votre réseau.',
+          'auth/user-mismatch': 'L’identité de ce navigateur ne correspond pas à votre compte.',
+          'auth/invalid-phone-number': 'Numéro invalide. Format attendu : 10 chiffres, indicatif régional inclus.',
+          'auth/invalid-verification-code': 'Code invalide. Le SMS reste valide — vérifiez les chiffres et réessayez.',
+          'auth/code-expired': 'Code expiré. Demandez un nouveau code.',
+          'auth/session-expired': 'Code expiré. Demandez un nouveau code.',
+          'auth/captcha-check-failed': 'Vérification anti-robot échouée. Réessayez.',
+          'auth/missing-app-credential': 'Vérification anti-robot échouée. Réessayez.',
+          'auth/invalid-app-credential': 'Vérification anti-robot échouée. Réessayez.',
+          'auth/requires-recent-login': 'Le déverrouillage a expiré. Recommencez la vérification.',
+          'auth/second-factor-already-in-use': 'Ce numéro est déjà enregistré comme second facteur.',
+          'auth/maximum-second-factor-count-exceeded': 'Le nombre maximal de seconds facteurs est atteint. Retirez-en un depuis la console Firebase.',
+          'auth/unverified-email': 'Votre adresse courriel doit être vérifiée avant d’enregistrer un second facteur.',
+          'auth/weak-password': 'Mot de passe trop court (visez au moins 12 caractères).',
+          'auth/password-does-not-meet-requirements': 'Le nouveau mot de passe ne respecte pas la politique du projet Firebase.'
+        };
+        return t[code] || defaut;
+      },
+
+      journal(evenement) {
+        // Sans attendre et sans conséquence : le serveur n'apprendrait
+        // sinon RIEN de ces changements (firebase-admin n'a aucune surface
+        // MFA), et une écriture de journal ne doit jamais bloquer ni
+        // annuler un changement de sécurité déjà commis.
+        try {
+          var meta = document.querySelector('meta[name="csrf-token"]');
+          fetch('/parametres/securite/journal', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRFToken': meta ? meta.content : ''
+            },
+            body: new URLSearchParams({
+              event: evenement,
+              factor_count: String(this.facteurs.length)
+            })
+          }).catch(() => {});
+        } catch (e) { /* jamais bloquant */ }
+      },
+
+      // ── Déverrouillage : la preuve de récupérabilité ────────────
+      async deverrouiller() {
+        if (this.occupe) return;
+        this.erreur = '';
+        this.occupe = true;
+        try {
+          var u = athenaAuth.currentUser;
+          var cred = firebase.auth.EmailAuthProvider.credential(
+            u.email || athenaCourriel, this.motDePasse
+          );
+          await u.reauthenticateWithCredential(cred);
+          // Résolu SANS défi = aucun second facteur enregistré. C'est
+          // l'état d'alarme, pas un succès.
+          this.deverrouille = true;
+          this.deverrouilleA = Date.now();
+          this.motDePasse = '';
+        } catch (err) {
+          if (err.code === 'auth/multi-factor-auth-required') {
+            this.resolveur = err.resolver;
+            var hint = this.resolveur.hints[0];
+            var fin = hint && hint.phoneNumber ? hint.phoneNumber.slice(-2) : '??';
+            this.messageSms = 'Un code a été envoyé au numéro se terminant par ••••' + fin + '.';
+            try {
+              this.reinitRecaptcha();
+              var p = new firebase.auth.PhoneAuthProvider();
+              this.idVerification = await p.verifyPhoneNumber(
+                { multiFactorHint: hint, session: this.resolveur.session },
+                this.verifier
+              );
+              this.etape = 'code_deverrouillage';
+              this.lancerAttente();
+              this.$nextTick(() => {
+                var el = document.getElementById('deverr-digit-0');
+                if (el) el.focus();
+              });
+            } catch (smsErr) {
+              this.erreur = this.messageErreur(
+                smsErr.code, 'Impossible d’envoyer le code SMS. Réessayez.'
+              );
+              if (smsErr.code === 'auth/too-many-requests' ||
+                  smsErr.code === 'auth/quota-exceeded') {
+                this.lancerAttente();
+              }
+            }
+          } else {
+            this.erreur = this.messageErreur(err.code, 'Erreur de vérification. Réessayez.');
+            this.journal('reauth_failed');
+          }
+        } finally {
+          this.occupe = false;
+        }
+      },
+
+      async confirmerDeverrouillage() {
+        if (this.occupe || this.code.length < 6) return;
+        this.erreur = '';
+        this.occupe = true;
+        try {
+          var cred = firebase.auth.PhoneAuthProvider.credential(this.idVerification, this.code);
+          var assertion = firebase.auth.PhoneMultiFactorGenerator.assertion(cred);
+          var uc = await this.resolveur.resolveSignIn(assertion);
+          var u = (uc && uc.user) || athenaAuth.currentUser;
+          this.relireFacteurs(u);
+          this.deverrouille = true;
+          this.deverrouilleA = Date.now();
+          this.motDePasse = '';
+          this.viderCode('deverr');
+        } catch (err) {
+          this.erreur = this.messageErreur(err.code, 'Erreur de vérification. Réessayez.');
+          if (err.code === 'auth/code-expired' || err.code === 'auth/session-expired') {
+            this.attenteFinie();
+          }
+          this.viderCode('deverr');
+        } finally {
+          this.occupe = false;
+        }
+      },
+
+      async renvoyerCode() {
+        if (this.occupe || this.attente > 0 || !this.resolveur) return;
+        this.erreur = '';
+        this.occupe = true;
+        try {
+          this.reinitRecaptcha();
+          var hint = this.resolveur.hints[0];
+          var p = new firebase.auth.PhoneAuthProvider();
+          this.idVerification = await p.verifyPhoneNumber(
+            { multiFactorHint: hint, session: this.resolveur.session }, this.verifier
+          );
+          this.lancerAttente();
+          this.viderCode('deverr');
+        } catch (err) {
+          this.erreur = this.messageErreur(err.code, 'Impossible de renvoyer le code.');
+          this.lancerAttente();
+        } finally {
+          this.occupe = false;
+        }
+      },
+
+      annuler() {
+        this.etape = 'mot_de_passe';
+        this.erreur = '';
+        this.resolveur = null;
+        this.idVerification = '';
+        this.viderCode('deverr');
+        this.attenteFinie();
+        if (this.verifier) {
+          try { this.verifier.clear(); } catch (e) { /* déjà démonté */ }
+          this.verifier = null;
+        }
+      },
+
+      verrouExpire() {
+        // Prudent si la vraie fenêtre est plus longue, auto-correcteur si
+        // elle est plus courte : `auth/requires-recent-login` est de toute
+        // façon traité comme un état récupérable partout.
+        if (this.deverrouille && Date.now() - this.deverrouilleA > 5 * 60 * 1000) {
+          this.deverrouille = false;
+          this.etape = 'mot_de_passe';
+          this.panneau = '';
+          this.erreur = 'Le déverrouillage a expiré. Recommencez la vérification.';
+          return true;
+        }
+        return false;
+      },
+
+      ouvrir(panneau) {
+        if (this.verrouExpire()) return;
+        this.panneau = panneau;
+        this.etapeAjout = 'numero';
+        this.erreurAjout = '';
+      },
+
+      // ── Mot de passe ────────────────────────────────────────────
+      async changerMotDePasse() {
+        if (this.occupe) return;
+        this.erreurMdp = '';
+        this.succesMdp = '';
+        if (this.verrouExpire()) return;
+        if (this.nouveau.length < 12) {
+          this.erreurMdp = 'Le mot de passe doit compter au moins 12 caractères.';
+          return;
+        }
+        if (this.nouveau !== this.confirmation) {
+          this.erreurMdp = 'Les deux mots de passe ne correspondent pas.';
+          return;
+        }
+        this.occupe = true;
+        try {
+          var u = athenaAuth.currentUser;
+          await u.updatePassword(this.nouveau);
+          this.nouveau = '';
+          this.confirmation = '';
+          this.journal('password_changed');
+          // getIdToken() SANS forçage : un changement de mot de passe
+          // relève `validSince` et révoque les jetons de rafraîchissement,
+          // donc getIdToken(true) peut courser la révocation, échouer en
+          // `auth/user-token-expired` et faire déconnecter le SDK une
+          // seconde après un succès.
+          try {
+            var jeton = await athenaAuth.currentUser.getIdToken();
+            var meta = document.querySelector('meta[name="csrf-token"]');
+            await fetch('/auth/verify-token', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRFToken': meta ? meta.content : ''
+              },
+              body: new URLSearchParams({ id_token: jeton })
+            });
+          } catch (e) {
+            // Un 429 partage le seau « 5 par minute » de la connexion, et
+            // la session EXISTANTE reste valide : ce n'est pas un échec.
+          }
+          this.succesMdp = 'Mot de passe modifié. Déconnectez-vous et '
+            + 'reconnectez-vous avec le nouveau mot de passe pour le confirmer.';
+        } catch (err) {
+          if (err.code === 'auth/user-token-expired') {
+            // Le résultat IDÉAL : Firebase a fermé la session locale, ce
+            // qui force la vérification en moins d'une minute.
+            this.succesMdp = 'Mot de passe modifié. Firebase a fermé la session '
+              + 'locale de ce navigateur — c’est normal. Reconnectez-vous pour confirmer.';
+          } else {
+            this.erreurMdp = this.messageErreur(
+              err.code, 'Erreur lors du changement de mot de passe.'
+            );
+          }
+        } finally {
+          this.occupe = false;
+        }
+      },
+
+      // ── Ajout d'un numéro : ADDITIF, jamais soustractif d'abord ──
+      confirmerNumero() {
+        this.erreurAjout = '';
+        var chiffres = (this.nouveauNumero || '').replace(/\D/g, '');
+        if (chiffres.length !== 10) {
+          this.erreurAjout = 'Numéro invalide. Entrez exactement 10 chiffres, indicatif régional inclus.';
+          return;
+        }
+        var e164 = '+1' + chiffres;
+        if (this.facteurs.some((f) => f.phoneNumber === e164)) {
+          this.erreurAjout = 'Ce numéro est déjà enregistré comme second facteur.';
+          return;
+        }
+        this.numeroFormate = '+1 (' + chiffres.slice(0, 3) + ') '
+          + chiffres.slice(3, 6) + '-' + chiffres.slice(6);
+        this.etapeAjout = 'echo';
+      },
+
+      async envoyerCodeAjout() {
+        if (this.occupe) return;
+        this.erreurAjout = '';
+        if (this.verrouExpire()) return;
+        this.occupe = true;
+        try {
+          var u = athenaAuth.currentUser;
+          this.reinitRecaptcha();
+          var session = await u.multiFactor.getSession();
+          var p = new firebase.auth.PhoneAuthProvider();
+          this.idVerificationAjout = await p.verifyPhoneNumber(
+            { phoneNumber: '+1' + this.nouveauNumero.replace(/\D/g, ''), session: session },
+            this.verifier
+          );
+          this.etapeAjout = 'code';
+          this.$nextTick(() => {
+            var el = document.getElementById('ajout-digit-0');
+            if (el) el.focus();
+          });
+        } catch (err) {
+          this.erreurAjout = this.messageErreur(
+            err.code, 'Impossible d’envoyer le code. Réessayez.'
+          );
+        } finally {
+          this.occupe = false;
+        }
+      },
+
+      async inscrireNumero() {
+        if (this.occupe || this.codeAjout.length < 6) return;
+        this.erreurAjout = '';
+        this.occupe = true;
+        try {
+          var u = athenaAuth.currentUser;
+          var cred = firebase.auth.PhoneAuthProvider.credential(
+            this.idVerificationAjout, this.codeAjout
+          );
+          var assertion = firebase.auth.PhoneMultiFactorGenerator.assertion(cred);
+          var quatre = this.nouveauNumero.replace(/\D/g, '').slice(-4);
+          await u.multiFactor.enroll(assertion, 'Téléphone …' + quatre);
+          await u.reload();
+          this.relireFacteurs(athenaAuth.currentUser);
+          this.viderCode('ajout');
+          this.etapeAjout = 'fait';
+          this.journal('mfa_enrolled');
+        } catch (err) {
+          this.erreurAjout = this.messageErreur(
+            err.code, 'Erreur lors de l’inscription. Réessayez.'
+          );
+          this.viderCode('ajout');
+        } finally {
+          this.occupe = false;
+        }
+      },
+
+      // ── Retrait, séparé et explicite ────────────────────────────
+      confirmerRetrait(i) {
+        // La garde est RÉÉVALUÉE ici, pas seulement portée par `:disabled`.
+        if (!this.peutRetirer) {
+          this.journal('mfa_unenroll_failed_zero_factors');
+          return;
+        }
+        this.indexARetirer = i;
+        this.numeroARetirer = this.facteurs[i].phoneNumber || 'ce facteur';
+        this.erreurRetrait = '';
+        this.panneau = 'retrait';
+      },
+
+      async retirer() {
+        if (this.occupe) return;
+        if (!this.peutRetirer) { this.panneau = ''; return; }
+        this.erreurRetrait = '';
+        if (this.verrouExpire()) return;
+        this.occupe = true;
+        try {
+          var u = athenaAuth.currentUser;
+          var brut = (u.multiFactor && u.multiFactor.enrolledFactors) || [];
+          var cible = brut[this.indexARetirer];
+          if (!cible) { this.erreurRetrait = 'Facteur introuvable.'; return; }
+          await u.multiFactor.unenroll(cible);
+          await u.reload();
+          this.relireFacteurs(athenaAuth.currentUser);
+          this.panneau = '';
+          this.journal('mfa_unenrolled');
+        } catch (err) {
+          if (err.code === 'auth/user-token-expired') {
+            this.panneau = '';
+            this.journal('mfa_unenrolled');
+          } else {
+            this.erreurRetrait = this.messageErreur(
+              err.code, 'Erreur lors du retrait. Les deux facteurs restent en place.'
+            );
+          }
+        } finally {
+          this.occupe = false;
+        }
+      }
+    };
+  }
+</script>
+{% endblock %}

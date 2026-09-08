@@ -83,15 +83,15 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 ## Architecture Rules
 
 1. **SINGLE USER.** Exactly one authorized email (`AUTHORIZED_USER_EMAIL` env var). No multi-tenancy, no registration, no roles. Every endpoint that mutates state verifies the session via `@login_required` (Firebase Auth + server-side session). DAV endpoints use a separate HTTP Basic auth.
-2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, `ref_palais`, the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`, the Phase-K trust collections `trust_accounts`, `trust_transactions`, `trust_reconciliations`, plus the July 2026 additions `audit_events` (append-only deletion journal) and `mcp_idempotency` (MCP write-replay cache), and `budgets` (August 2026 — per-dossier phase budgets, append-only versioned) — plus, from 2026-08-26 to 2026-09-02, six `chat_*` collections of the internal chat, emptied and removed with it). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
+2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, `ref_palais`, the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`, the Phase-K trust collections `trust_accounts`, `trust_transactions`, `trust_reconciliations`, plus the July 2026 additions `audit_events` (append-only deletion journal) and `mcp_idempotency` (MCP write-replay cache), and `budgets` (August 2026 — per-dossier phase budgets, append-only versioned), and `settings` (September 2026 — ONE document, `settings/cabinet`: the live firm profile, editable in « Paramètres ») — plus, from 2026-08-26 to 2026-09-02, six `chat_*` collections of the internal chat, emptied and removed with it). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim).
 3. **Bilingual code/UI split.** All user-facing text (labels, buttons, placeholders, errors, toasts, empty states) is in **French**. All code (variable names, function names, comments, docstrings) is in **English**.
 4. **Currency in integer cents.** `15000` means $150.00. Never use floats for money. Use `Decimal` only for tax computation intermediates, convert to int cents (with `ROUND_HALF_UP`) before storage.
 5. **Timestamps UTC.** Stored as UTC `datetime` with timezone info. Displayed in `America/Montreal` via the `to_mtl` Jinja filter (registered from `tz.py`).
-6. **UUIDv4 document IDs.** Generated server-side. Never reuse IDs. **Documented exceptions:** the OAuth collections use the lookup key as the doc ID — `oauth_clients/{client_id}`, `oauth_codes/{sha256(code)}`, `oauth_tokens/{sha256(token)}` — so raw credentials are never stored and validation is one keyed `get()`; `mcp_idempotency/{sha256(tool:key)}` follows the same keyed-`get()` pattern (the raw idempotency key is never stored). (A third exception, `chat_charter/charte`, left with the internal chat on 2026-09-02: a singleton whose lookup key WAS its id, which is what let assembly be a keyed `get()` that exists or does not, and creation be implicit inside the revision transaction — the pattern is worth remembering for the next singleton.)
+6. **UUIDv4 document IDs.** Generated server-side. Never reuse IDs. **Documented exceptions:** the OAuth collections use the lookup key as the doc ID — `oauth_clients/{client_id}`, `oauth_codes/{sha256(code)}`, `oauth_tokens/{sha256(token)}` — so raw credentials are never stored and validation is one keyed `get()`; `mcp_idempotency/{sha256(tool:key)}` follows the same keyed-`get()` pattern (the raw idempotency key is never stored); **`settings/cabinet`** is the singleton whose lookup key IS its id — which is what lets assembly be one keyed `get()` that exists or does not, and creation be IMPLICIT inside `update_cabinet` (there is no `create_cabinet`), the pattern the retired `chat_charter/charte` left on record. (The pattern came from `chat_charter/charte`, which left with the internal chat on 2026-09-02 under a note to remember it for the next singleton; `settings/cabinet` is that singleton.)
 7. **Every Firestore doc has `created_at`, `updated_at`, `etag`** (etag = UUIDv4 regenerated on every write, used for DAV `If-Match` conditional requests). Folders, the three OAuth collections, `audit_events` and `mcp_idempotency` are exceptions: no `etag` (and the last two are write-once — never updated after creation).
 8. **HTMX first.** Dynamic interactions use HTMX. Flask endpoints check `request.headers.get("HX-Request")`/`HX-Target` and return HTML fragments for HTMX requests, full pages otherwise.
 9. **Mobile-first.** Design for 375px viewport first. Breakpoints at 768px (tablet) and 1024px+ (desktop). Touch targets minimum 44px.
-10. **Minimalist visual language.** Near-white `#FAFAFA` backgrounds, near-black `gray-900` text, `indigo-600` accent. Generous white-space. **Typography (August 2026, revised 2026-08-07): Noto Sans for the ENTIRE UI; Noto Serif ONLY for document-reading surfaces** — the rendered note content (`.note-content` — note detail + the Analyse tab) and the reportlab PDF exports. The boundary is pure CSS in `static/src/app.input.css`: `body { font-family: var(--font-sans) }` + a single `.note-content { font-family: var(--font-serif) }` rule — no per-template font classes (an earlier serif-body design needed ~70 `font-sans` chrome edits; all removed when the boundary inverted). `font-sans`/`font-serif` via the `@theme` block remain the per-element escape hatch (first use needs a recompile). The fonts are vendored (SIL OFL — no CDN): variable woff2 ×4 in `static/vendor/` (Noto Sans v42 + Noto Serif v33, roman + italic, latin subset) for the web, static Noto Serif TTF ×2 in `utils/fonts/` for reportlab (provenance + sha256 in `utils/fonts/README.md`). The `.woff2` MIME type needs the dedicated `static_files` handler ABOVE `/static/vendor` in BOTH yaml files (nosniff would reject the default octet-stream). Early Hints/portal preload the SANS roman only (serif loads on demand on note pages). Emails keep their client-safe stacks (webfonts don't load in mail clients); generated `.docx` take their fonts from the user's own gabarit templates (the fill engine never writes `rFonts`). **Icons (August 2026): Material Symbols Outlined as a vendored subsetted variable icon font** (ligatures — `material-symbols-outlined-v364-*.woff2`, ~24 KB, 40 glyphs, Apache-2.0 licence file beside it) rendered ONLY through the `ms()` Jinja global (`utils/icons.py` — validates each name against the canonical `MATERIAL_ICONS` set, emits `aria-hidden`/`translate="no"`, sizes via the hand-written `.ms-N` classes in `app.input.css`); `tests/test_icons.py` pins template usage == the vendored subset both ways and forbids stray inline SVG (only the 8 SVG/CSS spinners remain — animated arcs, kept on purpose). Adding an icon = add the name to `MATERIAL_ICONS`, regenerate the subset (css2 `icon_names=` URL in `utils/fonts/README.md`), NEW hashed filename + full asset fan-out. Never use icon-font ligatures in emails.
+10. **Minimalist visual language.** Near-white `#FAFAFA` backgrounds, near-black `gray-900` text, `indigo-600` accent. Generous white-space. **Typography (August 2026, revised 2026-08-07): Noto Sans for the ENTIRE UI; Noto Serif ONLY for document-reading surfaces** — the rendered note content (`.note-content` — note detail + the Analyse tab) and the reportlab PDF exports. The boundary is pure CSS in `static/src/app.input.css`: `body { font-family: var(--font-sans) }` + a single `.note-content { font-family: var(--font-serif) }` rule — no per-template font classes (an earlier serif-body design needed ~70 `font-sans` chrome edits; all removed when the boundary inverted). `font-sans`/`font-serif` via the `@theme` block remain the per-element escape hatch (first use needs a recompile). The fonts are vendored (SIL OFL — no CDN): variable woff2 ×4 in `static/vendor/` (Noto Sans v42 + Noto Serif v33, roman + italic, latin subset) for the web, static Noto Serif TTF ×2 in `utils/fonts/` for reportlab (provenance + sha256 in `utils/fonts/README.md`). The `.woff2` MIME type needs the dedicated `static_files` handler ABOVE `/static/vendor` in BOTH yaml files (nosniff would reject the default octet-stream). Early Hints/portal preload the SANS roman only (serif loads on demand on note pages). Emails keep their client-safe stacks (webfonts don't load in mail clients); generated `.docx` take their fonts from the user's own gabarit templates (the fill engine never writes `rFonts`). **Icons (August 2026): Material Symbols Outlined as a vendored subsetted variable icon font** (ligatures — `material-symbols-outlined-v369-*.woff2`, ~25 KB, 41 glyphs, Apache-2.0 licence file beside it) rendered ONLY through the `ms()` Jinja global (`utils/icons.py` — validates each name against the canonical `MATERIAL_ICONS` set, emits `aria-hidden`/`translate="no"`, sizes via the hand-written `.ms-N` classes in `app.input.css`); `tests/test_icons.py` pins template usage == the vendored subset both ways and forbids stray inline SVG (only the SVG/CSS spinners remain — animated arcs, kept on purpose). ⚠ **Those tests compare templates against the PYTHON SET and never read the font's glyph table** (their own docstring says so, and the woff2 is deliberately a superset). So adding a name to `MATERIAL_ICONS` and using it while SKIPPING the regeneration leaves the whole suite green and renders the literal word (`settings`) in the sidebar — hidden 3 s by `font-display: block`, then permanent. The regeneration must be verified **in a browser**; `DEPLOYMENT.md` §6.5.2 M19 is that step. Adding an icon = add the name to `MATERIAL_ICONS`, regenerate the subset (css2 `icon_names=` URL in `utils/fonts/README.md`), NEW hashed filename + full asset fan-out. Never use icon-font ligatures in emails.
 11. **DAV-ready schemas.** Parties, hearings, tasks, notes carry stable DAV UIDs (`vcard_uid`, `vevent_uid`, `vtodo_uid`, `vjournal_uid`) set at creation and never changed.
 
 ---
@@ -228,6 +228,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # carte de crédit — dates libres, MODIFIABLE jusqu'au verrou de
 │   │   │                           # conciliation, soldes calculés À LA LECTURE (aucun solde gelé),
 │   │   │                           # ventilation TPS/TVQ, paiement de carte 2 jambes, reçus
+│   │   ├── settings.py             # Profil du cabinet (sept. 2026) : le SINGLETON
+│   │   │                           # `settings/cabinet` — nom du juriste ET du cabinet,
+│   │   │                           # adresse, téléphone/télécopieur, courriel, numéros
+│   │   │                           # de taxe. Les `Config.FIRM_*` deviennent SEMENCE et
+│   │   │                           # REPLI (corps de classe = non écrivable au runtime).
+│   │   │                           # Lu par utils/cabinet.cabinet_dict(), l'UNE dérivation
 │   │   └── trust.py                # Fidéicommis (Phase K): accounts + append-only register + reconciliation
 │   │
 │   ├── routes/                     # Flask blueprints (web UI)
@@ -252,6 +258,11 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # factures → record_payment — UNIQUE écrivain d'un
 │   │   │                           # paiement depuis le 2026-08-17 —, reçus direct-à-GCS,
 │   │   │                           # conciliations banque ET carte, exports CSV + PDF légal)
+│   │   ├── settings.py             # /parametres/*  (sept. 2026: profil du cabinet +
+│   │   │                           # sécurité du compte. Formulaire POST+redirection,
+│   │   │                           # jamais htmx ; la sécurité a son PROPRE URL pour
+│   │   │                           # qu'un « Enregistrer » ne détruise pas un envoi
+│   │   │                           # de code SMS en cours)
 │   │   ├── comptabilite.py         # /comptabilite/  (août 2026: le hub « Comptabilité » —
 │   │   │                           # composeur LECTURE SEULE des deux listes de comptes,
 │   │   │                           # fail-closed par section ; l'entrée de nav comptable)
@@ -556,7 +567,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │       │                           # appcheck-boot.<hash>.js (App Check bootstrap, was inline),
 │       │                           # noto-sans-v42-latin-wght[-italic].woff2 (UI font) +
 │       │                           # noto-serif-v33-latin-wght[-italic].woff2 (note content) +
-│       │                           # material-symbols-outlined-v364-<sha8>.woff2 (icon ligature
+│       │                           # material-symbols-outlined-v369-<sha8>.woff2 (icon ligature
 │       │                           # subset + its *-Apache-2.0.txt licence — the subset MUTATES
 │       │                           # when icons are added: new hashed name each time) +
 │       │                           # the two *-OFL.txt licenses (August 2026 — .woff2 has its own
@@ -1359,6 +1370,65 @@ Three top-level collections (standard `id`/`created_at`/`updated_at`/`etag`; not
 - **`admin_reconciliations/{reconciliationId}`** — the trust shape (≤1 brouillon/account, period_end after the last complétée and never future, variance must be 0, abandon-a-draft). A card's `statement_balance` is entered AS THE STATEMENT STATES IT (positive solde dû); `statement_to_ledger` converts once at variance time. **Completion LOCKS the period** and re-verifies each ticked entry's status AND etag in-transaction (entries are editable here until this very lock).
 - **`counters/admin-{account_id}`** — `{seq}`, the trust counter convention.
 
+### `settings/cabinet` — Firm profile (September 2026)
+
+ONE document, id `cabinet` (Rule-6 documented exception: the lookup key IS the id, so
+assembly is a keyed `get()` that exists or does not, and creation is IMPLICIT inside
+`update_cabinet` — there is no `create_cabinet`). Rule 7 fields are present though nothing
+reads the etag: not DAV-exposed, so no CTag to bump and no `If-Match` to serve. No composite
+index; `firestore.rules` deny-all already covers it.
+
+**Why it exists.** `Config.FIRM_*` are class-body `os.environ.get()` calls, evaluated once
+per gunicorn worker at import, so **nothing at runtime can write them** — an editable firm
+profile therefore had to live here. The env vars are KEPT, demoted to a **seed** (fresh
+deploy on an empty database) and a **fallback** (`get_cabinet` fails open when Firestore is
+unreadable, because every caller renders this into a document, an email or a PDF).
+
+```python
+{
+    "nom": str,            # THE LAWYER — « Me Jason Poirier Lavoie ». Signs a
+                           # procedure, a letter, an identity verification.
+    "organisation": str,   # THE FIRM — « Poirier Lavoie, avocat ». Had no setting
+                           # behind it before: a literal in routes/taches_portail.py
+                           # and again in app.yaml's GRAPH_SENDER_NAME. Blank falls
+                           # back to `nom`; NEVER the reverse.
+    "address_street": str, "address_unit": str, "address_city": str,
+    "address_province": str, "address_postal_code": str, "address_country": str,
+                           # The six suffixes `apply_address_defaults(prefix="address")`
+                           # expects — the helper is reused, not reimplemented.
+    "telephone": str,      # E.164. cabinet_dict() renders the LOCAL form.
+    "telecopieur": str,    # E.164.
+    "courriel": str,
+    "gst_number": str, "qst_number": str,
+                           # Read at invoice creation and SNAPSHOTTED per invoice;
+                           # there is no `update_invoice`, so editing them here is
+                           # for FUTURE invoices only.
+    # created_at/updated_at/etag present (Rule 7) though the etag is never read.
+}
+```
+
+**Two rules carry this collection, and they are one trap seen from both sides** — on a
+full-document-`set()` model a present key decides and an absent key survives:
+
+1. **Once the document exists it is the WHOLE truth.** `get_cabinet` bases its projection on
+   `_BLANK`, never on the env seed. A `{**seed, **stored}` merge would resurrect an env value
+   for a field the lawyer deliberately CLEARED (the fax he no longer has) — the deletion trap
+   in mirror image: injecting a seed is an un-deletion.
+2. **`_normalize` gates every branch on presence** — the defect `models/partie._normalize`
+   shipped for `mandataires`.
+
+**Deliberately UNCACHED.** `cabinet_dict()` has eight low-frequency, user-initiated call
+sites and — since the compliance signer moved into `routes/parties.py` — no per-page reader,
+which is the case a cache would serve. THE TRIGGER TO REVISIT: the moment a context processor
+or any per-page reader appears, the 60 s fail-open TTL of `main.py`'s reception badge becomes
+the right answer. Not before.
+
+**`_read_raw` refuses a non-dict snapshot, and that guard is load-bearing.**
+`tests/test_taches_portail.py` patches `firestore.Client` with a `MagicMock`, whose snapshot
+has a TRUTHY `.exists` and returns a `MagicMock` from `.to_dict()`. Without it,
+`<MagicMock …>` would be interpolated into a client email template and most assertions would
+still pass — a fake store that accepts what the real one refuses proves nothing.
+
 ### `audit_events/{eventId}` — Append-only deletion journal (July 2026)
 
 Answers « qu'est-ce qui a disparu ? » for a sync-aware client (the MCP `list_deletions` tool + `updated_since` filters): DAV tombstones are pruned at 30 days, scoped per collection, and were verified misleading as a deletion feed — this journal is the durable, cross-entity record. **Rule-7 exception:** `created_at` only, no `etag`, never updated after creation. UUIDv4 doc IDs (Rule 6 holds). Written by `models/audit_event.record_deletion(...)` — called from every web delete route and DAV DELETE branch, **best-effort AFTER the committed delete** (its own `try/except` + `log_unexpected`; a journal failure must never fail or roll back the delete). Read by `list_recent(limit≤200)` — `at` DESC single-field index, Python filters, fails open to `[]`.
@@ -1848,6 +1918,34 @@ ONE route, `GET /comptabilite/` (`@login_required`) — the unified account list
 |---|---|---|
 | `/comptabilite/` | GET | The hub: both account lists with per-row typed badges (type, Fermé, Conciliation en retard / Jamais concilié), per-row labelled balance, actions into each module's existing screens |
 
+### `settings.py` — `/parametres/*` (September 2026 — « Paramètres »)
+
+All `@login_required`, French UI, standard CSRF, **its own blueprint and NEVER exempted**
+(browser POSTs). `/parametres` falls under no exempt prefix — unlike `/auth/`, which is why
+the security page carries **no `hx-*` attribute at all** (App Check enforces only on
+`HX-Request`, and a test pins the absence). The profile form is a **plain POST + redirect**,
+which designs the 4xx-fragment-never-renders trap out of existence rather than working
+around it: a refusal re-renders at **200** with the submitted values echoed, a success
+redirects with `?ok=1`.
+
+**One nav entry, two documents.** The cog replaced « Sécurité 2FA » at `base.html:144`
+(sidebar) and `:218` (mobile « Plus »), and a test pins `href="/parametres"` at exactly 2.
+But the area is two URLs joined by a plain `<a href>`, for two failure modes: the security
+page instantiates a live reCAPTCHA and 139 KB of auth SDK that a page opened to fix a fax
+number must not carry; and on one document, « Enregistrer » mid-flow would destroy a pending
+`verificationId`, burning a paid SMS and consuming the reCAPTCHA token.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/parametres/` | GET | « Profil du cabinet » — the form, prefilled from `settings/cabinet` (phones shown in the LOCAL display form) |
+| `/parametres/cabinet` | POST | Save. Validation reuses `utils/validators` wholesale; `nom` is REQUIRED (it is the compliance signer, the letterhead, and the sentinel `taches_portail._composer_cabinet` falls back on). **No GST/QST format validation** — they print on issued invoices, where a false refusal is worse than a typo |
+| `/parametres/securite` | GET | Password + second factor. Server-rendered CADRE only: `firebase-admin` 7.4.0 has **no MFA surface at all** (no enrol, no unenrol, not even a count), so the server cannot know the factor state |
+| `/parametres/securite/journal` | POST | The security journal — 204, fire-and-forget, its OWN `30 per hour` bucket (never `RATE_LIMIT_LOGIN`, whose 5/min already constrains the post-password session refresh). Closed event allowlist; an unknown event is 400 **and logs nothing**; `factor_count` clamped 0–10 and emitted as `factor_count_client` so the provenance stays honest. A 4xx is correct here — the caller is a machine `fetch`, no htmx is in play |
+
+`/auth/mfa-setup` and `/auth/mfa-manage` keep their routes and endpoint names (so every
+`url_for` and bookmark survives) and **302** — never 301, which a browser caches
+indefinitely — to `settings.securite`. Their templates are deleted.
+
 ### `reception.py` — `/reception/*` (portail client L1)
 
 All `@login_required`, French. POST+redirect with `?message=`/`?erreur=` (no flash). Fail-open display: a missing « portail » database or bucket renders empty states + a warning, never a 500.
@@ -2112,6 +2210,50 @@ Folder functions:
 - `get_signed_url(template_id, expires_in_minutes=15)` — IAM signBlob signing, attachment disposition
 - `VALID_CATEGORIES = ("procédure", "correspondance", "autre")`, `MAX_TEMPLATE_SIZE`, `DOCX_MIME`
 - Split-run suspects become French `validation_warnings` strings; the upload proceeds (the field simply won't fill until retyped in Word and re-uploaded)
+
+### `models/settings.py` (September 2026 — profil du cabinet)
+
+The `settings/cabinet` singleton. No `create_*` (creation is implicit in the write) and no
+`delete_*` (the firm's own identity is not a deletable object).
+
+- `get_cabinet() -> dict` — always a COMPLETE record, **fails open** to `_seed_from_env()`
+  through three guards in order: the read raised, the document does not exist, or the payload
+  is **not a dict** (the `MagicMock` trap — see the collection's entry above). Deliberately
+  uncached; the trigger to revisit is written into its docstring.
+- `update_cabinet(data) -> (doc, errors)` — merges `{**_BLANK, **existing, **normalized}`
+  then one keyed `set()`. `created_at` survives, `etag` is regenerated (Rule 7), and the
+  merge base is the STORED record when one exists and the env seed otherwise — so a first
+  save from a partial form keeps the deploy-time values it did not carry.
+- `_seed_from_env()` — a pure read-time projection of the eleven `Config.FIRM_*`/tax values
+  into the stored shape. **NEVER writes.** Seeds through `apply_address_defaults`, which is
+  what migrates the unset `FIRM_PROVINCE` default `"QC"` to `"Québec"`, the convention every
+  contact address in the app already follows (`utils/budget_pdf` was expanding it by hand at
+  one consumer out of three).
+- `_normalize(data)` — every branch **gated on key presence**; `_validate(data)` returns
+  French errors, with `nom` REQUIRED and **no format validation on the tax numbers**.
+- `changed_field_names(before, after) -> list[str]` — sorted field NAMES for the
+  observability event. The values are never logged: the redaction filter scrubs emails and
+  phone numbers but NOT names of people, and `nom` is one.
+
+### `utils/cabinet.py` — the ONE derivation (`cabinet.*`)
+
+`cabinet_dict()` is unchanged in contract (always a complete dict, never raises) and is now
+the single Firestore reader, via a **lazy** import of `models.settings` inside the function —
+`models/__init__.py` builds the client at import, so a module-level import would make this
+un-importable by a pure test. Live callers: `routes/invoices.py` (note d'honoraires),
+`routes/notes.py` (note print), `routes/budgets.py` (PDF footer), `routes/doc_templates.py`
+(gabarit fill — it used to carry a DUPLICATE `_firm_dict`, debt B7, now deleted),
+`routes/taches_portail.py` (the accusé + intake emails), `services/portail_emission.py` (the
+invitation email), and `routes/parties.py` (the compliance signer).
+
+**`display_phone()` decides the phone format, once, here.** Values are stored E.164 so they
+can be validated, but four surfaces print the result and **two of them strip nothing** —
+`budget_pdf.py:370` and every gabarit's `{{cabinet.telephone}}`, both client-facing. Emitting
+the local form (`(514) 737-2525`) in the one authority is what keeps every generated document
+byte-identical to when these were pre-formatted strings in `app.yaml`. The two
+`.removeprefix("+1 ")` calls `taches_portail` carried for a case that could never fire are
+gone with it. `CABINET_KEYS` is exported so tests pin the shape by DERIVATION rather than a
+hand-written list.
 
 ### `models/reference.py` (read-only)
 
@@ -2542,7 +2684,10 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **`markdown` filter applied twice** renders nothing — only apply it on the full detail view, never on preview snippets.
 - **QST is NOT compounded on GST** (since 2013). Apply both to taxable subtotal independently.
 - **Decimal for money math, int cents for storage** — never mix Decimal and float in tax calculations.
-- **App Check + Phone MFA** can lock out the user if the phone is lost. Keep Firebase console access as a fallback.
+- **A zero-factor account is an unrecoverable lockout, and the application can only ever REFUSE to create one — never repair one.** With `REQUIRE_MFA=true` (production), `auth.py:100-106` refuses any ID token lacking `sign_in_second_factor`: sign-in succeeds at Firebase and `/auth/verify-token` then refuses the session, while the CLICKING session keeps working for up to 12 h — so the consequence lands hours later with no visible cause. And `/parametres/securite` sits behind `@login_required`, so the app cannot fix its own lockout; recovery is always out of band (`DEPLOYMENT.md` §6.5.1 — `REQUIRE_MFA: "false"` + deploy, or the Firebase console, and **both run through the Google account**, whose own 2FA and recovery codes are the real single point of failure). This was LIVE until 2026-09-07: `templates/auth/mfa_manage.html:174` performed a bare `unenroll(enrolledFactors[0])` on the only factor and reported « Vérification en deux étapes désactivée » — a success message for the act of locking yourself out. Its sibling « Changer le numéro » lied too: it linked to `/auth/mfa-setup`, which calls `enroll()` — it ADDS a factor and never replaces one, and since `login.html:274` resolves only `hints[0]`, a user who "changed their number" kept being SMS'd the OLD one. Both templates are deleted. The replacement rule: **removing the last factor is refused (in the JS FUNCTION, not merely by `:disabled` — DevTools re-enables any button), and changing a number is ADDITIVE** — enrol the new one, confirm two factors, verify by logging in, only then remove the old. Two enrolled factors is a legitimate and preferable end state for a solo practice. Never implement `unenroll(old)` then `enroll(new)`: `PhoneAuthProvider.credential()` does no network call, so the only way to learn the new code is wrong is to have already unenrolled.
+- **A Flask session valid with NO Firebase `currentUser` is the ordinary case, not an error — and must never be presented as « not enrolled ».** Firebase's persistence is its own IndexedDB, entirely independent of the session cookie, so a valid 12 h session routinely coexists with absent or DIFFERENT Firebase state. `mfa_manage.html:136-139` mapped `!user` to `not_enrolled`, which is a lie with lockout consequences: it invited "activating" a protection already in place and made the genuine alarm state indistinguishable from the benign one. `settings/securite.html` resolves FOUR states, only inside `onAuthStateChanged` (never a synchronous `currentUser` read — `mfa_setup.html:182` had that race): boot failure, no-Firebase-state, identity mismatch (`u.uid` vs the rendered session uid), and the red alarm of zero factors. The « reconnect » control must be **`POST /auth/logout`**, never a link to `/auth/login` — `routes/auth_routes.py:36-37` bounces a valid session straight to the dashboard, so the button would look broken.
+- **`firebase-auth-compat` dereferences `globalThis.firebase.INTERNAL` AT PARSE TIME.** `base.html` gated `firebase-app-compat` behind `{% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}`, so with that key unset (local dev) any page pulling the auth SDK in `page_scripts` died on its own `<script src>` line — a live breakage on both MFA pages. The App SDK is now UNCONDITIONAL (31 KB, immutable-cached, already in `sw.js` PRECACHE; production always set the key, so nothing changed there). A page loading the auth SDK must guard `initializeApp` on **`firebase.apps.length`**, never on the Jinja condition — mirroring `base.html`'s condition in a second file double-inits the day it moves, orphaning `appcheck-boot`'s App Check instance so htmx requests silently lose `X-Firebase-AppCheck`. And declare **`var athenaAuth`, never `const auth`**: two top-level `const auth` in one document is a `SyntaxError` that kills BOTH blocks.
+- **Do not build « Se déconnecter partout ».** Sessions are Flask's **default signed cookie with no server-side store** (`main.py:30-46`), and `login_required` reads only `user_id`/`expires_at` — so another browser keeps working up to 12 h regardless, and `revoke_refresh_tokens` cannot do what the label promises. Firebase already bumps `validSince` on a password change, and `auth.py:92-98`'s 10-minute `auth_time` guard already makes a stolen refresh token useless. Manufacturing a false belief at the moment the user is worried about compromise is worse than shipping nothing; the honest implementation is a server-side session epoch, in its own lot. Related: after `updatePassword`, use **`getIdToken()` and NOT `getIdToken(true)`** — the forced refresh can race the revocation, fail `auth/user-token-expired` and sign the local user out one second after a success; treat that sign-out as SUCCESS, since it forces verification within a minute.
 - **CSP is ENFORCED with a per-request nonce** (since 2026-07-11; flipped after a 90-day report-only `/csp-report` window where only `script-src` reported, then hardened the same day). `script-src` is `'self' 'nonce-<per-request>' 'unsafe-eval'` + the Google reCAPTCHA origins — **no `'unsafe-inline'`, no `ajax.cloudflare.com`** (see `build_csp` in `security.py`); the app's inline `<script>`s carry `nonce="{{ csp_nonce }}"` and an un-nonced/injected inline script is **blocked**, while inline `on*` handlers were moved to `data-` attributes + `addEventListener`. `'unsafe-eval'` (Alpine `new Function()`) and `style-src 'unsafe-inline'` (reCAPTCHA) remain as documented necessities. `report-uri` stays active, so violations are still collected under enforcement. Rocket Loader is disabled at the edge.
 - **Documents blueprint isn't nested under dossiers.** Routes live at `/documents/...` and the dossier scope is passed as `?dossier_id=…` (GET) or as a form field (POST). When linking from a dossier tab, always include `dossier_id` in the URL.
 - **Hearings prefix is `/audiences`**, not `/agenda`. Internal `url_for()` calls must use the `hearings.*` blueprint.
@@ -3104,6 +3249,64 @@ Un client de conversation Claude/Gemini **sur Vertex AI** (« Assistant » dans 
 **Ce qui en RESTE dans le dépôt, et pourquoi :** `utils/pdf_text.py` et `pypdf` (l'outil MCP `get_document_text` les appelle), `utils/markdown_docx.py` (le filtre Jinja des notes, plus le « Imprimer (Word) » de H.3), et l'**audit logging Firestore Data Access** — il était le contrôle compensatoire du registre, il est désormais la trace de son effacement, et il ne coûte rien. La compétence « Analyse documentaire » était portée par le clavardage ; elle se colle maintenant dans un Skill claude.ai, et les outils MCP `get_document_text` + `record_document_analysis` suffisent à la boucle complète. Elle n'est **pas stockée** : `python -m scripts.exporter_competence_analyse` l'ENGENDRE depuis `utils/analyse_taxonomies.py` (par défaut dans `competence_analyse/`, hors du dépôt). Une copie commitée dériverait de la table qu'elle cite, ce qui est exactement le défaut que l'exportateur existe pour supprimer — d'où l'absence délibérée de `docs/competences/`.
 
 **Ce que le cabinet a perdu, nommément :** la lecture de la boîte Outlook depuis l'application (aucune autre voie n'a jamais existé), le breffage quotidien automatique (Claude for Work ne peut pas déclencher un connecteur seul, donc la capacité disparaît vraiment), le « Verser en Word » d'un brouillon, et six balayages statiques qui tenaient la doctrine « aucune suppression ».
+
+### « Paramètres » — profil du cabinet éditable + sécurité du compte (2026-09-07, ✅ code complete)
+
+**Le manque.** L'application n'avait aucune surface de réglages. L'identité du cabinet vivait
+dans onze `Config.FIRM_*` lus dans le CORPS DE CLASSE, une fois par worker à l'import — donc
+rien au runtime ne pouvait les écrire : changer l'adresse exigeait un `app.yaml` et un
+redéploiement. `FIRM_PROVINCE` n'avait jamais été défini (production lisait le défaut `"QC"`
+pendant que toute adresse de contact de l'application dit `"Québec"`), et
+`GST_NUMBER`/`QST_NUMBER` n'avaient jamais été définis du tout — alors que **50+ factures ont
+été émises en portant TPS 5 % et TVQ 9,975 % avec un numéro d'inscription vide**. Côté
+sécurité, les deux seuls contrôles existants étaient faux : une désinscription NUE du seul
+facteur (verrouillage total, réparable hors application seulement) annoncée comme un succès,
+et un « Changer le numéro » qui AJOUTAIT un facteur sans jamais en remplacer un, si bien que
+le code SMS continuait de partir vers l'ANCIEN numéro.
+
+**Décisions du praticien :** une seule entrée de nav (le rouage remplace « Sécurité 2FA », qui
+devient une section) ; changement de mot de passe DANS l'application, défi SMS compris ; nom
+du juriste et nom du cabinet comme deux champs distincts ; numéros de taxe éditables ;
+télécopieur éditable **et rendu imprimable** ; vrai glyphe de rouage (régénération de la
+police) ; les numéros de taxe valent pour l'avenir — les 50+ factures déjà émises restent
+intactes, la décision étant consignée en suites.
+
+**Livré en quatre lots.** *(A)* le singleton `settings/cabinet` + la migration des **huit**
+sites lecteurs (le relevé initial en nommait six) — dont l'évaluation à l'IMPORT de
+`routes/taches_portail._CABINET`, qui aurait mis une lecture Firestore dans `create_app()` et
+gelé le profil pour la vie du worker, et le signataire de conformité hissé du gabarit vers
+`routes/parties.py` (dérivé À LA LECTURE sans instantané, donc pointer `FIRM_NAME` sur le
+cabinet aurait réattribué toute attestation d'identité passée à une personne morale) ; *(B)*
+les défauts documentés **L4 et B7**, inséparables — avec L4 seul, `{{cabinet.telecopieur}}` se
+serait rempli sur la voie note-d'honoraires et aurait rendu `[CHAMP MANQUANT]` sur la voie
+gabarit, même sigil, deux réponses, aucune erreur ; *(C)* le glyphe `settings` (police
+régénérée v368 → **v369**, 41 glyphes) + le re-hachage CSS et son fan-out de sept fichiers ;
+*(D)* la page de sécurité — quatre états résolus dans `onAuthStateChanged`, déverrouillage par
+ré-authentification + SMS comme **preuve de récupérabilité**, changement de mot de passe,
+changement de numéro **additif**, retrait gardé par arithmétique, et une boîte de dépannage
+STATIQUE (sans directive Alpine, pour se lire quand le SDK n'a pas démarré).
+
+**Zéro dépendance nouvelle, zéro index, aucun contrat MCP touché** (`gst_number`/`qst_number`
+ne figurent dans aucun `outputSchema` ; seule leur SOURCE bouge), **aucune ré-autorisation du
+connecteur**. Réparé au passage : `base.html` chargeait le SDK App de Firebase sous condition,
+ce qui tuait toute page tirant le SDK d'auth en développement local. **2961 tests**, dont 51 nouveaux dans `tests/test_settings_cabinet.py` et `tests/test_settings_routes.py`. Ces derniers épinglent le CADRE — routage, CSRF, discipline de nonce, plomberie de configuration, contrat du journal — et **pas une ligne** de la danse de ré-authentification ni des gardes : il n'y a dans ce dépôt ni jest, ni jsdom, ni Playwright, donc pytest ne peut pas exécuter le JavaScript où vit toute la logique de sécurité. C'est à quoi sert la liste M0-M19.
+
+**Limite assumée, écrite sur la page elle-même :** le service `portail` lit
+`FIRM_NAME`/`FIRM_PHONE` dans `os.environ` et ne peut PAS atteindre le singleton (il n'importe
+jamais `models`, et son compte de service ne lit que la base nommée « portail »). Son pied de
+page — et la clause de CONSENTEMENT de `ouverture.html`, qui nomme l'entité qui recueille les
+renseignements personnels — suivent `portail.yaml` et changent au déploiement. Épingler le
+libellé de consentement à un artefact versionné est sans doute la bonne réponse pour un
+registre légal plutôt qu'une limitation.
+
+**Ops :** rien à provisionner (`firestore.rules` en deny-all couvre déjà la collection, un
+`get()` par identifiant n'a besoin d'aucun index). Au premier déploiement, le profil se
+présente prérempli depuis `app.yaml` ; l'enregistrer une fois matérialise le document. Puis
+**saisir les numéros de TPS/TVQ**, et exécuter la liste **M0-M19** de `DEPLOYMENT.md` §6.5.2 —
+en particulier **M0** (Firebase autorise-t-il un SECOND facteur à côté du premier ? sinon le
+changement de numéro dans l'application ne doit pas servir) et **M19** (regarder la barre
+latérale dans un navigateur : un rouage, pas le mot « settings » — aucun test ne peut
+l'attraper).
 
 ### Analyse documentaire persistée (2026-08-27, ✅ code complete)
 

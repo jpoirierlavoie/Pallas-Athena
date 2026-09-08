@@ -949,11 +949,20 @@ CATALOG: dict[str, tuple[Optional[str], Callable[[_Context], Optional[str]]]] = 
     "dossier.retention": ("dossier", _dossier_retention),
     # cabinet.* (§6.5)
     "cabinet.nom": (None, _firm_field("nom")),
+    # Le nom du CABINET, distinct de celui du juriste (`cabinet.nom`). Il
+    # n'avait jusqu'ici aucun réglage : il vivait en littéral dans
+    # routes/taches_portail.py et dans GRAPH_SENDER_NAME.
+    "cabinet.organisation": (None, _firm_field("organisation")),
     "cabinet.adresse_civique": (None, _firm_field("adresse_civique")),
     "cabinet.ville": (None, _firm_field("ville")),
     "cabinet.province": (None, _firm_field("province")),
     "cabinet.code_postal": (None, _firm_field("code_postal")),
     "cabinet.telephone": (None, _firm_field("telephone")),
+    # Défaut L4 clos : `Config.FIRM_FAX` existait, `cabinet_dict()` exposait
+    # `telecopieur`, mais le CATALOG n'avait pas l'entrée — le sigil
+    # `{{cabinet.telecopieur}}` survivait donc TEL QUEL dans le .docx
+    # généré (passthrough), ce qui est pire qu'un blanc.
+    "cabinet.telecopieur": (None, _firm_field("telecopieur")),
     "cabinet.courriel": (None, _firm_field("courriel")),
     # date.* (§6.5)
     "date.aujourdhui": (None, lambda ctx: french_long_date(ctx.today)),

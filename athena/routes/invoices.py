@@ -16,9 +16,16 @@ from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from auth import login_required
-from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
+from pagination import (
+    PAGE_SIZE,
+    cursor_pagination,
+    paginate,
+    parse_trail,
+    resolve_page,
+    total_pages_of,
+)
 from security import safe_internal_redirect
-from config import Config
+from utils.cabinet import cabinet_dict
 from utils.format_fr import format_rate_fr, parse_cents_or_none
 from models.invoice import (
     STATUS_LABELS,
@@ -26,6 +33,7 @@ from models.invoice import (
     available_transitions,
     balance_of,
     billing_address_from,
+    count_invoices_page,
     create_invoice,
     delete_invoice,
     expense_split,
@@ -137,12 +145,29 @@ def invoice_list() -> str:
         # pushed server-side by list_invoices_page.
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
+        # The count is issued on the CURSOR branch only. It rides the same
+        # query builder as the page read, so the same index serves both,
+        # and it fails to None (never 0) — which HIDES the leap controls
+        # rather than asserting a total the code does not have.
+        total = count_invoices_page(
+            status_filter=status_filter or None,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        page_no, page_offset = resolve_page(
+            request.args.get("page", type=int),
+            total_pages_of(total),
+            has_cursor=bool(cursor),
+        )
+        if page_offset:
+            cursor, trail = None, []
         invoices, next_cursor = list_invoices_page(
             status_filter=status_filter or None,
             date_from=date_from,
             date_to=date_to,
             limit=PAGE_SIZE,
             cursor=cursor,
+            offset=page_offset,
         )
         # No extra_vals needed: pagination links hx-include
         # "#filters input, #filters select", which carries the active
@@ -153,6 +178,8 @@ def invoice_list() -> str:
             next_cursor=next_cursor,
             url=url_for("invoices.invoice_list"),
             target="#invoice-rows",
+            page=page_no,
+            total=total,
         )
 
     # Le solde VIVANT, annoté côté route — jamais calculé dans le gabarit :
@@ -298,6 +325,12 @@ def invoice_create() -> str:
         if client_partie:
             billing_address = billing_address_from(client_partie)
 
+    # The tax numbers are SNAPSHOTTED onto the invoice at creation and never
+    # rewritten (there is no update_invoice) — an invoice reads back under
+    # the numbers it was issued with. Only their source changed: the
+    # settings/cabinet singleton instead of Config.FIRM_*.
+    _cab = cabinet_dict()
+
     data = {
         "dossier_id": dossier_id,
         "dossier_file_number": dossier.get("file_number", ""),
@@ -310,8 +343,8 @@ def invoice_create() -> str:
         "notes": f.get("notes", "").strip(),
         "payment_terms": f.get("payment_terms", "").strip(),
         "retainer_applied": _parse_cents(f.get("retainer_applied", "")),
-        "gst_number": Config.GST_NUMBER,
-        "qst_number": Config.QST_NUMBER,
+        "gst_number": _cab.get("gst_number", ""),
+        "qst_number": _cab.get("qst_number", ""),
     }
 
     invoice, errors = create_invoice(
@@ -405,14 +438,6 @@ def invoice_detail(invoice_id: str) -> str:
 # ── Note d'honoraires (Word) — Phase H.2 ────────────────────────────────
 
 
-def _cabinet_dict() -> dict:
-    """Firm info in the Phase H catalog shape — hoisted to utils/cabinet.py
-    (one authority; doc_templates and the note-print route share it)."""
-    from utils.cabinet import cabinet_dict
-
-    return cabinet_dict()
-
-
 def _note_error(message: str) -> str:
     """HTMX error fragment (status 200 so htmx 2.0.4 swaps it, like Phase H)."""
     return (
@@ -475,7 +500,7 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
 
     ctx = build_invoice_context(
         invoice, items,
-        firm=_cabinet_dict(), destinataire=client, dossier=dossier, today=today,
+        firm=cabinet_dict(), destinataire=client, dossier=dossier, today=today,
     )
     values = _assemble_note_values(template, ctx)
     counts = {

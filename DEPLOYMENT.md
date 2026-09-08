@@ -119,12 +119,12 @@ development. **Never** put secrets in `app.yaml`.
 | `RECAPTCHA_ENTERPRISE_SITE_KEY` | ○ (recommended) | `""` | App Check; **fail-open + loud warning** if unset in prod |
 | `APPCHECK_DEBUG_TOKEN` | ○ | `""` | Local dev only |
 | `CF_ORIGIN_SECRET` → secret `cf-origin-secret` | ○ | `""` | Edge origin check; **fail-open** if unset |
-| `REQUIRE_MFA` | ○ | `true` | Enforce Phone MFA |
+| `REQUIRE_MFA` | ○ | `true` | Enforce Phone MFA. Read by « Paramètres → Sécurité » to decide whether the last enrolled factor may be removed |
 | `SESSION_LIFETIME_HOURS` | ○ | `12` | Server-side session lifetime |
 | `RATE_LIMIT_LOGIN` | ○ | `5 per minute` | Login rate limit |
 | `MCP_ENABLED` | ○ | `true` | `false` → all `/mcp` + `/oauth/*` routes 404 |
 | `MCP_CANONICAL_ORIGIN` | ○ | owner domain in [config.py](athena/config.py) | OAuth issuer — **must be your domain** |
-| `FIRM_NAME` … `FIRM_EMAIL`, `GST_NUMBER`, `QST_NUMBER` | ○ | mostly `""` | Invoice header + tax numbers |
+| `FIRM_NAME` … `FIRM_EMAIL`, `FIRM_FAX`, `GST_NUMBER`, `QST_NUMBER` | ○ | mostly `""` | **Seed and fallback only.** The live firm profile is edited in « Paramètres » and stored at `settings/cabinet`; these bootstrap a fresh deploy and are what the app falls back to if Firestore is unreadable. The `portail` service is the exception — it reads `FIRM_NAME`/`FIRM_PHONE` from `portail.yaml` and cannot reach the singleton |
 | `TRACE_SAMPLE_RATIO` | ○ | `0.1` | Cloud Trace sampling (read by `tracing_setup.py`) |
 | `PIP_REQUIRE_HASHES`, `PIP_NO_DEPS` | ✔ (prod) | `1`, `1` | Supply-chain: reject unhashed/out-of-band installs |
 
@@ -328,6 +328,67 @@ In the Firebase console (there is no clean gcloud path for these):
 
 > **Lockout warning:** losing the enrolled phone locks you out. Keep Firebase
 > console access as your recovery path.
+
+#### 6.5.1 Recovering from a lockout
+
+With `REQUIRE_MFA=true`, `auth.py` refuses any ID token lacking
+`sign_in_second_factor`. So with zero enrolled factors, sign-in succeeds at
+Firebase and then `/auth/verify-token` refuses the session — and because
+`/parametres/securite` is behind `@login_required`, **the application cannot
+repair its own lockout.** Recovery is always out of band, in this order:
+
+1. **Fastest, and the only path that needs nothing but deploy access.** Set
+   `REQUIRE_MFA: "false"` in `app.yaml`, deploy, log in with the password
+   alone, open **Paramètres → Sécurité**, enrol a number, then set it back to
+   `"true"` and deploy again. The account is password-only for the duration
+   of that window.
+2. **Firebase console** → Authentication → Users → the account → manage
+   second factors.
+3. **Both paths run through the Google account**, whose own 2FA and recovery
+   codes are the real single point of failure. Print those codes and store
+   them off this machine. Athena's lockout risk is downstream of that, not
+   independent of it.
+
+The application is built so it can only ever *refuse* to create this state:
+the last enrolled factor cannot be removed while `REQUIRE_MFA` is on, and
+changing a number is additive (enrol the new one, verify by logging in, only
+then remove the old).
+
+#### 6.5.2 Manual verification of « Paramètres → Sécurité »
+
+Nearly all of this page is client-side JavaScript, which the pytest suite
+**cannot execute** (there is no jest/jsdom/Playwright in this repo). The
+automated tests cover routing, CSRF, nonce discipline, config plumbing and
+the journal contract — **not one line** of the re-auth dance, the enrolment
+ordering, or the guards. This list is what covers the rest.
+
+Run it on a quiet day, with the Firebase console open in another tab and
+§6.5.1 printed on paper. **Never exercise the destructive paths against the
+real `AUTHORIZED_USER_EMAIL`** — mint a throwaway Firebase user and point
+`AUTHORIZED_USER_EMAIL` at it on a `gcloud app deploy --no-promote` version.
+
+| # | Check |
+|---|---|
+| **M0** | **GATE — run before the removal branch is trusted.** Enrol a **second** phone factor while the first is enrolled. Record `enrolledFactors.length` and whether the next login offers a choice of hints. If enrolling a second factor fails on this project, the in-app number change must not be used at all — correct from the console instead. |
+| M1 | Measure the recent-login window: unlock, wait 6 min, attempt an enrol. The page re-locks after 5 min by design; confirm the message is legible rather than a raw error. |
+| M2 | Local dev with `RECAPTCHA_ENTERPRISE_SITE_KEY` **unset**: the page loads, the console shows no `firebase is not defined`, and one of the four state panels renders. |
+| M3 | Key **set**: the page loads **and** App Check still works elsewhere — load `/dossiers` and confirm an htmx request still carries `X-Firebase-AppCheck`. Proves the guarded `initializeApp` did not create a second app and orphan `appcheck-boot`'s App Check instance. |
+| M4 | Delete IndexedDB `firebaseLocalStorageDb` in DevTools **without** touching cookies, reload → must show « Reconnexion nécessaire », never « aucun facteur ». |
+| M5 | Tamper with the rendered `athenaUid` → « Identité différente », every mutation refused. |
+| M6 | Password change happy path, then **log out and log back in with the new password** — the only real proof. |
+| M7 | Wrong current password → « Mot de passe actuel incorrect. » and **no SMS is sent** (a wasted SMS costs money and is an abuse vector). |
+| M8 | Three wrong SMS codes then the right one → succeeds, **without** needing a resend. |
+| M9 | Let a code expire → resend becomes immediately available → the resent code works. Confirm in the Network tab that a **new** reCAPTCHA token was minted. |
+| **M10** | **Full number change:** unlock → add new → confirm the echo → code → **two factors visible** → log out → log in with the **NEW** number → return → remove the old → log out → log in again. Two complete login cycles. |
+| M11 | Typo'd new number (a valid number you also control): the code never arrives, abandon → **the old factor is still enrolled and login still works.** |
+| M12 | With one factor and `REQUIRE_MFA=true`: the Retirer control is disabled with a visible reason — then **re-enable it in DevTools and click it**; the JS function itself must refuse. |
+| M13 | Six SMS in a few minutes → « Trop de demandes de code » and the cooldown **re-arms**. |
+| M14 | Cloud Logging: one `pallas.auth` entry per event; no phone number, email or token in `jsonPayload`. |
+| M15 | Zero CSP violations in the console; nothing arrives at `/csp-report`. |
+| M16 | 375 px: the six code inputs fit and every touch target clears 44 px. |
+| M17 | Profile: change the fax, then generate a budget PDF **and** a gabarit containing `{{cabinet.telecopieur}}` — both must show it. Confirm the accusé bordereau reads « Montréal (Québec) » and the phone still reads `(514) 737-2525` with no `+1 `. |
+| M18 | `python -m scripts.check_config` still passes. |
+| **M19** | **Look at the sidebar in a browser and confirm a cog, not the literal word « settings ».** No test can catch this: `tests/test_icons.py` compares templates against the Python set and never reads the font's glyph table. |
 
 Get `FIREBASE_APP_ID` and the browser API key from **Project settings → Your
 apps → Web app** (register one if none exists). Put the app id in `app.yaml`

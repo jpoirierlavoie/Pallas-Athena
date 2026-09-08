@@ -736,7 +736,18 @@ rien ici. Ce qu'elle inaugure vraiment : la **première écriture MCP qui touche
 Firebase Storage** (tout le reste est Firestore). C'est ce qui fait de B1 un
 blocage.
 
-### B7 — Dérive `_firm_dict` : hygiène, pas correctif
+### B7 — Dérive `_firm_dict` : hygiène, pas correctif — **CLOS 2026-09-07**
+
+> **Clos avec le lot « Paramètres ».** `_firm_dict()` est supprimé et
+> `routes/doc_templates` appelle `utils.cabinet.cabinet_dict()`. Le
+> raisonnement « sans effet observable » ci-dessous était exact et a cessé
+> de l'être le jour où L4 a été clos dans le MÊME lot : avec l'entrée au
+> catalogue mais la duplication en place, `{{cabinet.telecopieur}}` se
+> serait rempli sur la voie note-d'honoraires (alimentée par
+> `cabinet_dict`) et aurait rendu `[CHAMP MANQUANT : …]` sur la voie
+> gabarit (alimentée par `_firm_dict`, qui n'avait pas la clé) — même
+> sigil, deux réponses, aucune erreur nulle part. C'est ce qui rendait
+> les deux défauts inséparables.
 
 `routes/doc_templates._firm_dict()` duplique `utils/cabinet.cabinet_dict()` et lui
 manque `telecopieur`. La duplication est réelle et vaut d'être supprimée. Mais
@@ -887,11 +898,18 @@ de `handlers.py` annoncent 52 / 29 / 23 ; le code porte 53 / 29 / 24 depuis
 `record_document_analysis`. La docstring de `handlers.py` omet aussi `documents`
 de sa liste de collections mutables (B6).
 
-**L4 — `cabinet.telecopieur` inatteignable.** `Config.FIRM_FAX` existe,
-`cabinet_dict()` expose `telecopieur`, mais le `CATALOG` n'a pas l'entrée : un
-gabarit ne peut pas imprimer le numéro de télécopieur du cabinet. Une ligne à
-ajouter au catalogue si le besoin existe — sinon, retirer `telecopieur` de
-`cabinet_dict()` pour que la clé morte cesse de suggérer le contraire.
+**L4 — `cabinet.telecopieur` inatteignable. — CLOS 2026-09-07.**
+`Config.FIRM_FAX` existait, `cabinet_dict()` exposait `telecopieur`, mais le
+`CATALOG` n'avait pas l'entrée : un gabarit ne pouvait pas imprimer le
+numéro de télécopieur du cabinet, et le sigil `{{cabinet.telecopieur}}`
+survivait TEL QUEL dans le .docx (passthrough) — pire qu'un blanc, puisqu'il
+part chez le client. Les deux branches de l'alternative proposée ici ont
+été tranchées par la première : le lot « Paramètres » rend le
+télécopieur éditable, donc l'entrée a été ajoutée (avec
+`cabinet.organisation`, le nom du cabinet, qui n'avait lui non plus aucun
+réglage). `tests/test_template_fields.py` épingle désormais le catalogue
+`cabinet.*` par DÉRIVATION contre `utils.cabinet.CABINET_KEYS` — c'est
+l'écart entre les deux inventaires qui ÉTAIT le défaut.
 
 ---
 

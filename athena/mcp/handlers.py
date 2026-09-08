@@ -70,7 +70,6 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
-from config import Config
 from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
@@ -91,6 +90,7 @@ from models import trust as trust_model
 from security import sanitize
 from tz import MTL
 from utils import deadlines, pdf_text, phases, taxonomie
+from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
@@ -4517,6 +4517,10 @@ def _import_invoice_impl(args: dict) -> dict:
             )
         billing_address = invoice_model.billing_address_from(client_partie)
 
+    # Snapshotted at creation, exactly as the web path does; only the
+    # source moved to the settings/cabinet singleton.
+    _cab = cabinet_dict()
+
     data: dict[str, Any] = {
         "dossier_id": dossier_id,
         "dossier_file_number": dossier.get("file_number", ""),
@@ -4524,8 +4528,8 @@ def _import_invoice_impl(args: dict) -> dict:
         "client_id": client_id,
         "client_name": client_name,
         "date": when,
-        "gst_number": Config.GST_NUMBER,
-        "qst_number": Config.QST_NUMBER,
+        "gst_number": _cab.get("gst_number", ""),
+        "qst_number": _cab.get("qst_number", ""),
         "created_via": "mcp",
     }
     if billing_address is not None:

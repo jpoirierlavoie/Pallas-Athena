@@ -1,0 +1,20 @@
+{# Barre d'onglets des Paramètres.
+
+   Des `<a href>` ORDINAIRES, jamais un échange htmx : les deux moitiés sont
+   deux documents distincts, précisément pour que la page de sécurité soit
+   seule à porter le SDK d'auth et le widget reCAPTCHA, et pour que quitter
+   un envoi de code en cours soit une navigation explicite. #}
+<div class="flex gap-1 border-b border-gray-200 mb-6">
+  <a href="{{ url_for('settings.settings_index') }}"
+     class="px-3 py-2 text-sm {% if onglet == 'profil' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+    Profil du cabinet
+  </a>
+  <a href="{{ url_for('settings.securite') }}"
+     class="px-3 py-2 text-sm {% if onglet == 'securite' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+    Sécurité
+  </a>
+  <a href="{{ url_for('settings.configuration') }}"
+     class="px-3 py-2 text-sm {% if onglet == 'configuration' %}text-indigo-600 border-b-2 border-indigo-600 font-medium{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+    Configuration
+  </a>
+</div>

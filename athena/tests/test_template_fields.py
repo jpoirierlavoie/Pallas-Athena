@@ -32,6 +32,11 @@ FIRM = {
     "code_postal": "H3B 1A1",
     "telephone": "+1 (514) 555-0000",
     "courriel": "jason@poirierlavoie.ca",
+    # Ajoutés avec le lot « Paramètres » : le nom du CABINET, distinct de
+    # celui du juriste, et le télécopieur — dont le sigil survivait tel
+    # quel dans le .docx faute d'entrée au catalogue (défaut L4).
+    "organisation": "Poirier Lavoie, avocat",
+    "telecopieur": "+1 (514) 555-0001",
 }
 
 
@@ -607,6 +612,38 @@ def test_classification_buckets_and_slots():
 def test_cabinet_and_date_require_no_slot():
     c = classify_placeholders(["cabinet.nom", "date.aujourdhui", "pièces_jointes"])
     assert c.slots_required == set()
+
+
+def test_cabinet_organisation_and_telecopieur_resolve():
+    """Défaut L4 clos. Sans l'entrée au catalogue ces deux noms tombaient
+    en `passthrough`, donc le sigil `{{cabinet.telecopieur}}` survivait TEL
+    QUEL dans le document généré — pire qu'un blanc, parce qu'il part chez
+    le client."""
+    names = ["cabinet.organisation", "cabinet.telecopieur"]
+    c = classify_placeholders(names)
+    assert c.passthrough == []
+    assert c.slots_required == set()
+    resolved = _resolve(names)
+    assert resolved["cabinet.organisation"] == "Poirier Lavoie, avocat"
+    assert resolved["cabinet.telecopieur"] == "+1 (514) 555-0001"
+
+
+def test_the_cabinet_catalog_covers_every_key_cabinet_dict_emits():
+    """Épinglé par DÉRIVATION contre `utils.cabinet.CABINET_KEYS` : c'est
+    l'écart entre les deux inventaires qui ÉTAIT le défaut L4 (8 clés au
+    dict, 7 entrées au catalogue).
+
+    Les numéros de taxe sont exclus à dessein : une facture les porte
+    FIGÉS à l'émission (`{{facture.tps_numero}}`), et un gabarit qui lirait
+    la valeur courante réécrirait le passé.
+    """
+    from utils.cabinet import CABINET_KEYS
+
+    catalogued = {
+        name.split(".", 1)[1] for name in CATALOG if name.startswith("cabinet.")
+    }
+    expected = set(CABINET_KEYS) - {"gst_number", "qst_number"}
+    assert catalogued == expected
 
 
 def test_is_uppercase_name():

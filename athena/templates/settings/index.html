@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Paramètres — Pallas Athena{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <h1 class="text-lg font-semibold text-gray-900 mb-6">Paramètres</h1>
+
+  {% include "settings/_onglets.html" %}
+
+  {% if enregistre %}
+  <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-green-700">Profil du cabinet enregistré.</p>
+  </div>
+  {% endif %}
+
+  {% if errors %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('settings.cabinet_update') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+
+      {# ── Identité ────────────────────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Identité</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="sm:col-span-2">
+          <label class="block text-sm text-gray-700 mb-1">Nom du juriste</label>
+          <input type="text" name="nom" value="{{ form.nom }}" required
+                 placeholder="Ex. : Me Jason Poirier Lavoie"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="text-xs text-gray-500 mt-1">
+            Signe les procédures, les lettres et les vérifications d'identité.
+            C'est le <code>{{ '{{cabinet.nom}}' }}</code> des gabarits.
+          </p>
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-sm text-gray-700 mb-1">Nom du cabinet</label>
+          <input type="text" name="organisation" value="{{ form.organisation }}"
+                 placeholder="Ex. : Poirier Lavoie, avocat"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="text-xs text-gray-500 mt-1">
+            La raison sociale, pour un en-tête de lettre
+            (<code>{{ '{{cabinet.organisation}}' }}</code>). Laissé vide, le nom
+            du juriste est employé à sa place.
+          </p>
+        </div>
+      </div>
+
+      {# ── Adresse ─────────────────────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 mt-5">Adresse</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="sm:col-span-2">
+          <label class="block text-sm text-gray-700 mb-1">Rue</label>
+          <input type="text" name="address_street" value="{{ form.address_street }}"
+                 placeholder="Ex. : 4970, chemin de la Côte-des-Neiges"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Bureau</label>
+          <input type="text" name="address_unit" value="{{ form.address_unit }}"
+                 placeholder="suite 9"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Ville</label>
+          <input type="text" name="address_city" value="{{ form.address_city }}"
+                 placeholder="Montréal"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Province</label>
+          <input type="text" name="address_province" value="{{ form.address_province }}"
+                 placeholder="Québec"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Code postal</label>
+          <input type="text" name="address_postal_code" value="{{ form.address_postal_code }}"
+                 placeholder="H3V 1A4"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Pays</label>
+          <input type="text" name="address_country" value="{{ form.address_country }}"
+                 placeholder="Canada"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      {# ── Coordonnées ─────────────────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 mt-5">Coordonnées</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Téléphone</label>
+          <input type="text" name="telephone" value="{{ form.telephone }}"
+                 placeholder="(514) 737-2525"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Télécopieur</label>
+          <input type="text" name="telecopieur" value="{{ form.telecopieur }}"
+                 placeholder="(514) 737-6565"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-sm text-gray-700 mb-1">Courriel</label>
+          <input type="text" name="courriel" value="{{ form.courriel }}"
+                 placeholder="reception@poirierlavoie.ca"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      {# ── Taxes ───────────────────────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 mt-5">Numéros de taxe</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Numéro de TPS</label>
+          <input type="text" name="gst_number" value="{{ form.gst_number }}"
+                 placeholder="123456789 RT0001"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Numéro de TVQ</label>
+          <input type="text" name="qst_number" value="{{ form.qst_number }}"
+                 placeholder="1234567890 TQ0001"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+      <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-3">
+        <p class="text-xs text-amber-800">
+          Ces numéros sont <strong>figés sur chaque facture au moment de son
+          émission</strong> : les modifier ici vaut pour les factures à venir et
+          ne change aucune facture déjà émise.
+        </p>
+      </div>
+
+      {# ── La limite honnête ───────────────────────────────────────── #}
+      <div class="mt-5 pt-4 border-t border-gray-100">
+        <p class="text-xs text-gray-500">
+          Le nom et le numéro affichés dans le <strong>portail client</strong>
+          proviennent de la configuration de déploiement
+          (<code>portail.yaml</code>) et ne changent pas ici : ce service ne
+          peut pas lire ces réglages. La clause de consentement du formulaire
+          d'ouverture en fait partie.
+        </p>
+      </div>
+
+      <div class="flex justify-end mt-5">
+        <button type="submit"
+                class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Enregistrer
+        </button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endblock %}

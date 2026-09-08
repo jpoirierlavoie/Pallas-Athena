@@ -175,14 +175,14 @@ def _add_security_headers(response: Response) -> Response:
 # base.html / auth/login.html and the PRECACHE list in static/sw.js — the
 # CSS regeneration recipe in CLAUDE.md lists every touch point.
 _EARLY_HINTS_BASE = (
-    "</static/vendor/app.21501045.css>; rel=preload; as=style",
+    "</static/vendor/app.5ace6581.css>; rel=preload; as=style",
     # Font preloads MUST carry `crossorigin` (fonts are always fetched in CORS
     # mode) — without it the browser fetches the file TWICE. Sans roman only
     # for the text faces (serif loads on demand on note pages, italics too
     # rare); the Material Symbols subset is render-critical on EVERY page
     # (navigation icons) and font-display: block hides them until it loads.
     '</static/vendor/noto-sans-v42-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
-    '</static/vendor/material-symbols-outlined-v368-390acc0f.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
+    '</static/vendor/material-symbols-outlined-v369-7ebffb11.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/htmx-2.0.4.min.js>; rel=preload; as=script",
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
 )
@@ -197,9 +197,9 @@ _EARLY_HINTS_APPCHECK = (
 # the auth SDK — the heaviest script on the cold-start path this feature
 # exists for) and uses reCAPTCHA for phone MFA regardless of App Check.
 _EARLY_HINTS_LOGIN = (
-    "</static/vendor/app.21501045.css>; rel=preload; as=style",
+    "</static/vendor/app.5ace6581.css>; rel=preload; as=style",
     '</static/vendor/noto-sans-v42-latin-wght.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
-    '</static/vendor/material-symbols-outlined-v368-390acc0f.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
+    '</static/vendor/material-symbols-outlined-v369-7ebffb11.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
     "</static/vendor/alpinejs-3.15.12.min.js>; rel=preload; as=script",
     "</static/vendor/firebase-app-compat-10.12.2.js>; rel=preload; as=script",
     "</static/vendor/firebase-auth-compat-10.12.2.js>; rel=preload; as=script",
@@ -311,10 +311,33 @@ def is_appengine_internal_request() -> bool:
     )
 
 
+_ORIGIN_SECRET_MISSING_WARNED = False
+
+
 def _enforce_origin_secret() -> Optional[Response]:
     """Reject requests missing the Cloudflare-injected origin header."""
     secret = current_app.config.get("CF_ORIGIN_SECRET", "")
     if not secret:
+        # Fail-open, and until 2026-09-07 SILENTLY so: no log, no metric, not
+        # even a DEBUG line. The August 2026 audit found `cf-origin-secret`
+        # had never existed in Secret Manager — the whole edge-defence layer
+        # was off, `CF-Connecting-IP` was forgeable, and all three
+        # brute-force brakes were bypassable — and nothing had ever signalled
+        # it. Say it once per process, structured, so a log-based metric can
+        # catch the next one.
+        global _ORIGIN_SECRET_MISSING_WARNED
+        if (
+            current_app.config.get("ENV") == "production"
+            and not _ORIGIN_SECRET_MISSING_WARNED
+        ):
+            _ORIGIN_SECRET_MISSING_WARNED = True
+            from utils.logging_setup import log_security_event
+
+            log_security_event(
+                "origin_secret_disabled",
+                "warning",
+                reason="cf_origin_secret_unset",
+            )
         return None
     # App Engine internal requests (warmup, cron) never transit Cloudflare.
     if request.path.startswith("/_ah/"):
@@ -416,6 +439,31 @@ def _verify_app_check() -> Optional[Response]:
     Full page loads (non-HTMX) are protected by session + CSRF.
     HTMX partial requests must include a valid App Check token.
     """
+    # Skip if App Check not configured — fail-open by design, but loudly in
+    # production so a config regression cannot silently disable the control.
+    #
+    # THIS TEST IS FIRST, deliberately (moved above the HX-Request gate on
+    # 2026-09-07). Below that gate, the warning could only fire once someone
+    # had clicked around an htmx surface — so a freshly deployed instance
+    # nobody had exercised never emitted it at all, which is exactly the case
+    # that matters. Enforcement is unchanged: both branches still return None.
+    # An exempt path now also emits it, and that is correct — this is a fact
+    # about the deployment, not about the request.
+    if not current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):
+        global _APPCHECK_MISSING_WARNED
+        if current_app.config.get("ENV") == "production" and not _APPCHECK_MISSING_WARNED:
+            _APPCHECK_MISSING_WARNED = True
+            # Was a bare `current_app.logger.warning`, which carries no
+            # `jsonPayload.event` and so could not drive a log-based metric.
+            from utils.logging_setup import log_security_event
+
+            log_security_event(
+                "appcheck_disabled",
+                "warning",
+                reason="recaptcha_site_key_unset",
+            )
+        return None
+
     # Only enforce on HTMX requests (initiated by JS, token available)
     if not request.headers.get("HX-Request"):
         return None
@@ -424,18 +472,6 @@ def _verify_app_check() -> Optional[Response]:
     for prefix in _APPCHECK_EXEMPT_PREFIXES:
         if request.path.startswith(prefix):
             return None
-
-    # Skip if App Check not configured — fail-open by design, but loudly in
-    # production so a config regression cannot silently disable the control.
-    if not current_app.config.get("RECAPTCHA_ENTERPRISE_SITE_KEY"):
-        global _APPCHECK_MISSING_WARNED
-        if current_app.config.get("ENV") == "production" and not _APPCHECK_MISSING_WARNED:
-            _APPCHECK_MISSING_WARNED = True
-            current_app.logger.warning(
-                "App Check site key not configured in production — "
-                "App Check verification is disabled"
-            )
-        return None
 
     token = request.headers.get("X-Firebase-AppCheck")
     if not token:

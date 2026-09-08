@@ -218,7 +218,21 @@ class Config:
         os.environ.get("FEATURE_INTAKE", "false").lower() == "true"
     )
 
-    # Firm info (displayed on invoices)
+    # Firm info — SEED AND FALLBACK ONLY, never the live value.
+    #
+    # The live firm profile lives in Firestore at `settings/cabinet`
+    # (models/settings.py) and is read through utils.cabinet.cabinet_dict().
+    # These class-body reads happen ONCE per gunicorn worker at import, so
+    # nothing at runtime can write them — which is exactly why the editable
+    # copy had to move. They still matter twice: they bootstrap a fresh
+    # deploy on an empty database, and they are what get_cabinet() falls
+    # back to when Firestore is unreadable. main.py's
+    # `app.config.from_object(Config)` also still publishes them, though no
+    # template reads them any more.
+    #
+    # The « portail » service reads FIRM_NAME/FIRM_PHONE from os.environ
+    # directly (client/app.py) and CANNOT reach the singleton — see the note
+    # there. Its values come from portail.yaml and change on a deploy.
     FIRM_NAME: str = os.environ.get("FIRM_NAME", "")
     FIRM_STREET: str = os.environ.get("FIRM_STREET", "")
     FIRM_UNIT: str = os.environ.get("FIRM_UNIT", "")

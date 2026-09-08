@@ -29,7 +29,7 @@
      CSS is PRECOMPILED (static/src/app.input.css → vendor/app.<hash>.css);
      regenerate + re-hash when class names change — see CLAUDE.md. #}
   <!-- Application stylesheet (precompiled Tailwind + hand-written rules) -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.21501045.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/app.5ace6581.css') }}">
 
   {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
   {# App Check loads reCAPTCHA Enterprise from these origins at runtime —
@@ -141,9 +141,9 @@
 
       {# Settings + Logout at bottom #}
       <div class="mt-auto pt-6 flex flex-col gap-1">
-        <a href="/auth/mfa-manage" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
-          {{ ms('lock', 20) }}
-          Sécurité 2FA
+        <a href="/parametres" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm hover:bg-gray-100 text-gray-500">
+          {{ ms('settings', 20) }}
+          Paramètres
         </a>
         <form method="post" action="/auth/logout">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -215,7 +215,7 @@
       <a href="/notes" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('edit', 20, 'text-gray-400') }}Notes</a>
       <a href="/comptabilite" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('payments', 20, 'text-gray-400') }}Comptabilité</a>
       <hr class="my-1 border-gray-200">
-      <a href="/auth/mfa-manage" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('lock', 20, 'text-gray-400') }}Sécurité 2FA</a>
+      <a href="/parametres" class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{{ ms('settings', 20, 'text-gray-400') }}Paramètres</a>
       <hr class="my-1 border-gray-200">
       <form method="post" action="/auth/logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -234,8 +234,18 @@
   {# ── Firebase App Check (all pages) ────────────────────────────── #}
   {# Logic lives in the vendored, hash-named appcheck-boot script (CSP- and
      Rocket-Loader-friendly); this JSON block is data only, never executed. #}
-  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
+
+  {# The App SDK is UNCONDITIONAL (2026-09-07). firebase-auth-compat opens by
+     dereferencing `globalThis.firebase.INTERNAL` AT PARSE TIME, so any page
+     pulling the auth SDK in `page_scripts` died on its own <script src> line
+     whenever RECAPTCHA_ENTERPRISE_SITE_KEY was unset — i.e. every local dev
+     run of /parametres/securite (and of the MFA pages before it). 31 KB,
+     immutable for a year, already in sw.js PRECACHE, and in production the
+     key IS set, so this changes nothing there. appcheck-boot keeps its own
+     `typeof firebase === 'undefined'` and `!cfg.recaptchaSiteKey` guards, so
+     no vendored file changes and no Early-Hints list moves. #}
   <script src="{{ url_for('static', filename='vendor/firebase-app-compat-10.12.2.js') }}"></script>
+  {% if config.RECAPTCHA_ENTERPRISE_SITE_KEY %}
   <script src="{{ url_for('static', filename='vendor/firebase-app-check-compat-10.12.2.js') }}"></script>
   <script type="application/json" id="athena-appcheck-config">
     {

@@ -106,6 +106,17 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 | `appcheck_failure` | warning | Same surface as `log_auth_event("appcheck_failure", ...)` — emit one or the other, not both |
 | `session_lookup_failure` | warning | `_derive_auth_context` raised while reading `session["user_id"]` (corrupted cookie payload, `SECRET_KEY` rotation mid-flight, etc.). Request is downgraded to `auth_context="anonymous"` for logging only — authorization is still enforced by `@login_required`. Fields: `reason` (exception class name), `path` (request path). |
 | `redirect_rejected` | warning | `safe_internal_redirect` rejected a `return_to` value (open-redirect guard). Fields: `reason` (`"not_internal_path"`, `"backslash_in_path"`, `"scheme_or_netloc_present"`). The rejected URL itself is **not** logged — it could be attacker-controlled. |
+| `appcheck_disabled` | warning | **A CONFIGURATION event, not a request event** — `RECAPTCHA_ENTERPRISE_SITE_KEY` is unset in production, so App Check verification is fail-open. Fields: `reason="recaptcha_site_key_unset"`. Warns **once per process**: it describes a deployment. Note the ordering it depends on — the test sits ABOVE the `HX-Request` gate in `_verify_app_check` on purpose, because below it a freshly deployed instance nobody had clicked around never emitted it at all. It therefore also fires on App-Check-exempt paths, which is correct. Was a bare `current_app.logger.warning` until 2026-09-07, carrying no `jsonPayload.event` and so invisible to a log-based metric. |
+| `origin_secret_disabled` | warning | Same class: `CF_ORIGIN_SECRET` is unset in production, so `_enforce_origin_secret` waves every request through and the App Engine firewall is the only remaining edge layer. Fields: `reason="cf_origin_secret_unset"`. Warns once per process. **Until 2026-09-07 this guard logged NOTHING** — `if not secret: return None`, no log, no metric, not even DEBUG. The August 2026 audit found the secret had never existed in Secret Manager, meaning the whole origin check had never run and `CF-Connecting-IP` was forgeable, and nothing had ever signalled it. This row exists so that cannot recur silently. |
+
+> **These two are worth a log-based metric.** They are the only events in this registry that
+> report a security control having *switched itself off*, and both are silent-by-default
+> failure modes with a documented history. Filter on
+> `logName="projects/<project>/logs/pallas-athena"` plus
+> `jsonPayload.event=("appcheck_disabled" OR "origin_secret_disabled")` and alert on
+> **count > 0** — there is no acceptable rate. Because both warn once per process and
+> `min_instances: 0` recycles instances, expect at most a handful per day while a control is
+> genuinely off, and exactly zero once it is configured.
 
 ### `log_mcp_event(event, outcome, *, client_id=None, tool=None, reason=None, **extra)` — logger `pallas.mcp`
 
@@ -136,6 +147,15 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 
 > `mcp_consent` and `mcp_token_issued` also carry the granted `scope` string (and `write_granted` on consent). A scope is not a credential — it is the only way to answer « pourquoi le connecteur ne peut-il pas écrire ? » after the fact.
 > `mcp_auth_failure` gained one `reason`: `write_revalidation_failed` — a write tool re-read its token (bypassing the bearer success cache) and found it revoked, expired, or no longer write-scoped.
+
+### `log_settings_event(event, *, fields_changed=None, **extra)` — logger `pallas.settings`
+
+INFO, except `cabinet_refused` (WARNING). The firm profile (`settings/cabinet`) is edited from « Paramètres ». **Pass field NAMES only, never their values** — the `RedactionFilter` scrubs emails and phone numbers but NOT names of people, and `nom` is one. Compose the list with `models.settings.changed_field_names`.
+
+| `event` | Notes |
+|---|---|
+| `cabinet_updated` | `fields_changed` (sorted field NAMES) + `fields_changed_count`. A save silently changes the letterhead of every generated document, the tax numbers snapshotted onto every FUTURE invoice, and the fax on every procedure — `updated_at` says when, never what |
+| `cabinet_refused` | WARNING; `error_count`. Validation refused the save (missing `nom`, invalid phone/courriel/postal code) — never the submitted value |
 
 ### `log_template_event(event, *, template_id=None, dossier_id=None, **extra)` — logger `pallas.templates`
 

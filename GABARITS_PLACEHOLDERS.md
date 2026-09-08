@@ -204,9 +204,19 @@ Each of the three slots exposes the **same 14 fields**. Replace `<slot>` with
 
 ### `cabinet.*` (your firm)
 
-`{{cabinet.nom}}` · `{{cabinet.adresse_civique}}` · `{{cabinet.ville}}` ·
-`{{cabinet.province}}` · `{{cabinet.code_postal}}` · `{{cabinet.telephone}}` ·
-`{{cabinet.courriel}}`
+`{{cabinet.nom}}` · `{{cabinet.organisation}}` · `{{cabinet.adresse_civique}}` ·
+`{{cabinet.ville}}` · `{{cabinet.province}}` · `{{cabinet.code_postal}}` ·
+`{{cabinet.telephone}}` · `{{cabinet.telecopieur}}` · `{{cabinet.courriel}}`
+
+> **`nom` is YOU, `organisation` is the firm.** `{{cabinet.nom}}` is the
+> lawyer (« Me Jason Poirier Lavoie ») and is what signs — a procedure, a
+> letter, an identity verification. `{{cabinet.organisation}}` is the firm's
+> trade name (« Poirier Lavoie, avocat »), for a letterhead or a firm
+> designation. A blank `organisation` falls back to `nom`; never the reverse.
+>
+> All of these are edited in **Paramètres → Profil du cabinet**. Note that
+> the name shown in the *client portal* comes from the deployment
+> configuration (`portail.yaml`) and does not change there.
 
 ### `date.*`
 

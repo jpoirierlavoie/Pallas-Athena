@@ -120,6 +120,25 @@ def create_portail_app() -> Flask:
 
     @app.context_processor
     def _inject_firm() -> dict:
+        # DELIBERATELY os.environ, and NOT the settings/cabinet singleton
+        # that the main service now edits (models/settings.py).
+        #
+        # This process may not import `models` (models/__init__.py builds a
+        # Firestore client for the DEFAULT database at import) and its
+        # service account holds `datastore.viewer` scoped to the « portail »
+        # named database only — so the singleton is structurally
+        # unreachable from here. Granting the default database to a PUBLIC,
+        # partly-unauthenticated service for a footer name would invert the
+        # least-privilege design the whole L1 spec rests on.
+        #
+        # CONSEQUENCE, stated on the settings page itself: editing the firm
+        # profile updates the application, the letterhead, the gabarits and
+        # both invitation emails (sent by the MAIN service) — but not the
+        # portal footer, nor the consent clause in ouverture.html that names
+        # the entity collecting the client's personal information. Those
+        # follow portail.yaml and change on a deploy. Pinning the consent
+        # wording to a version-controlled artifact is arguably the correct
+        # answer for a legal record rather than a limitation.
         return {
             "firm_name": os.environ.get("FIRM_NAME", ""),
             "firm_phone": os.environ.get("FIRM_PHONE", ""),

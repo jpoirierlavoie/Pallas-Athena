@@ -53,8 +53,10 @@ def test_no_stray_inline_heroicon_svg():
     # Seuls les spinners restent en SVG (décision : arcs animés ≠ glyphes,
     # et le spinner de login doit exister AVANT que la police charge).
     allowed = {
-        "auth/login.html", "auth/mfa_manage.html",
-        "auth/mfa_setup.html", "documents/upload.html",
+        # Les deux gabarits auth/mfa_*.html ont été absorbés par
+        # settings/securite.html (2026-09-07), qui reprend le MÊME spinner.
+        "auth/login.html", "settings/securite.html",
+        "documents/upload.html",
     }
     for f in TEMPLATES.rglob("*.html"):
         rel = f.relative_to(TEMPLATES).as_posix()

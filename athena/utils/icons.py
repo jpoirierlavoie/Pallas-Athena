@@ -25,7 +25,8 @@ MATERIAL_ICONS: frozenset = frozenset({
     "info",
     "inventory_2", "list", "lock", "logout", "mail", "more_horiz",
     "more_vert", "payments", "person", "picture_as_pdf", "print",
-    "push_pin", "schedule", "smartphone", "undo", "upload", "warning",
+    "push_pin", "schedule", "settings", "smartphone", "undo", "upload",
+    "warning",
 })
 
 # Every size must have a hand-written .ms-N rule in app.input.css.

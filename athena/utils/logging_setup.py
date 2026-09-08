@@ -463,6 +463,7 @@ _PALLAS_ADMIN_LEDGER = logging.getLogger("pallas.admin_ledger")
 _PALLAS_PORTAIL = logging.getLogger("pallas.portail")
 _PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
 _PALLAS_HEARING = logging.getLogger("pallas.hearing")
+_PALLAS_SETTINGS = logging.getLogger("pallas.settings")
 
 
 AuthEvent = Literal[
@@ -473,6 +474,18 @@ AuthEvent = Literal[
     "auth_failure",
     "appcheck_failure",
     "rate_limit_hit",
+    # « Paramètres → Sécurité » (2026-09-07). Tout s'y joue dans le
+    # navigateur, contre Google : `firebase-admin` 7.4.0 n'a AUCUNE surface
+    # MFA, donc sans ces lignes le serveur n'apprendrait RIEN d'un
+    # changement de mot de passe ou de second facteur — et pour un logiciel
+    # qui tient des dossiers privilégiés, « quand le facteur a-t-il changé,
+    # depuis quelle adresse » est exactement ce qu'on veut après coup.
+    # Vocabulaire FERMÉ : la route refuse tout ce qui n'est pas ici.
+    "password_changed",
+    "mfa_enrolled",
+    "mfa_unenrolled",
+    "mfa_unenroll_failed_zero_factors",
+    "reauth_failed",
 ]
 DossierEvent = Literal[
     "created",
@@ -516,6 +529,19 @@ SecurityEvent = Literal[
     "appcheck_failure",
     "session_lookup_failure",
     "redirect_rejected",
+    # The two fail-open controls, saying so (2026-09-07). Until now this
+    # vocabulary had no CONFIGURATION event at all: `appcheck_failure` is the
+    # opposite of these — it fires when a token FAILS verification, i.e. when
+    # the control is working. A control that has silently disabled itself
+    # emitted nothing queryable, and `scripts/check_config.py` was the only
+    # thing that would report it. Nothing ran that, which is how
+    # `cf-origin-secret` came to not exist for months with nothing signalling
+    # it. These land in `jsonPayload.event`, so a log-based metric can alert
+    # with nobody looking at a screen.
+    #
+    # Both warn ONCE per process: they describe a deployment, not a request.
+    "appcheck_disabled",
+    "origin_secret_disabled",
 ]
 SecuritySeverity = Literal["warning", "error", "critical"]
 McpEvent = Literal[
@@ -552,6 +578,16 @@ McpEvent = Literal[
     "mcp_phase_bulk",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
+SettingsEvent = Literal[
+    # Le profil du cabinet (settings/cabinet). Un enregistrement change en
+    # silence l'en-tête de chaque document généré, les numéros de taxe de
+    # toute facture future et le télécopieur de chaque procédure : `updated_at`
+    # dit QUAND, jamais QUOI. D'où la liste de NOMS de champs — jamais de
+    # valeurs : le filtre de rédaction masque courriels et téléphones, mais
+    # PAS les noms de personnes, et `nom` en est un.
+    "cabinet_updated",
+    "cabinet_refused",
+]
 TemplateEvent = Literal[
     "template_uploaded",
     "template_updated",
@@ -822,6 +858,26 @@ def log_template_event(
     _emit(_PALLAS_TEMPLATES, level, event, fields)
 
 
+def log_settings_event(
+    event: SettingsEvent,
+    *,
+    fields_changed: Optional[list] = None,
+    **extra: Any,
+) -> None:
+    """Emit a firm-profile event.
+
+    ``cabinet_refused`` emits at WARNING, everything else at INFO. Pass
+    ``fields_changed`` as a list of field NAMES
+    (``models.settings.changed_field_names``) — never their values.
+    """
+    fields: dict[str, Any] = {"event": event, **extra}
+    if fields_changed is not None:
+        fields["fields_changed"] = list(fields_changed)
+        fields["fields_changed_count"] = len(fields_changed)
+    level = logging.WARNING if event == "cabinet_refused" else logging.INFO
+    _emit(_PALLAS_SETTINGS, level, event, fields)
+
+
 def log_trust_event(
     event: TrustEvent,
     outcome: TrustOutcome = "success",
@@ -1007,6 +1063,7 @@ __all__: Iterable[str] = (
     "log_mcp_event",
     "log_portail_event",
     "log_security_event",
+    "log_settings_event",
     "log_template_event",
     "log_trust_event",
     "log_unexpected",

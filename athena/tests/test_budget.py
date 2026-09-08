@@ -221,9 +221,14 @@ def test_view_without_budget():
 
 
 def test_cabinet_dict_carries_telecopieur():
-    from utils.cabinet import cabinet_dict
+    """Le pied du PDF de budget est le SEUL consommateur vivant de
+    `telecopieur` côté PDF ; le catalogue de gabarits l'a rejoint en
+    2026-09-07 (défaut L4). Épinglé par dérivation, pas par un inventaire
+    écrit à la main : c'est un tel inventaire qui se périme."""
+    from utils.cabinet import CABINET_KEYS, cabinet_dict
 
     assert "telecopieur" in cabinet_dict()
+    assert set(cabinet_dict()) == set(CABINET_KEYS)
 
 
 # ── Budget PDF (utils/budget_pdf.py — the two client-facing variants) ──────

@@ -15,15 +15,24 @@ from flask import (
 from markupsafe import escape
 
 from auth import login_required
+from utils.cabinet import cabinet_dict
 from dav.sync import bump_ctag, record_tombstone
 from models.audit_event import record_deletion
 from utils.template_fields import selected_address, selected_email
-from pagination import PAGE_SIZE, cursor_pagination, paginate, parse_trail
+from pagination import (
+    PAGE_SIZE,
+    cursor_pagination,
+    paginate,
+    parse_trail,
+    resolve_page,
+    total_pages_of,
+)
 from security import sanitize
 from models.partie import (
     MANDATAIRE_KIND_LABELS,
     ROLE_LABELS,
     VALID_CONTACT_ROLES,
+    count_parties_page,
     create_partie,
     delete_partie,
     display_name,
@@ -177,10 +186,24 @@ def partie_list() -> str:
     else:
         cursor = request.args.get("cursor", "") or None
         trail = parse_trail(request.args.get("trail", ""))
+        effective_role = role_filter if role_filter != "tous" else None
+        # The count is issued on the CURSOR branch only. It rides the same
+        # query builder as the page read, so the same index serves both,
+        # and it fails to None (never 0) — which HIDES the leap controls
+        # rather than asserting a total the code does not have.
+        total = count_parties_page(role_filter=effective_role)
+        page_no, page_offset = resolve_page(
+            request.args.get("page", type=int),
+            total_pages_of(total),
+            has_cursor=bool(cursor),
+        )
+        if page_offset:
+            cursor, trail = None, []
         parties, next_cursor = list_parties_page(
-            role_filter=role_filter if role_filter != "tous" else None,
+            role_filter=effective_role,
             limit=PAGE_SIZE,
             cursor=cursor,
+            offset=page_offset,
         )
         # No extra_vals needed: the pagination links hx-include
         # "#filters input, #filters select", which carries the active
@@ -191,6 +214,8 @@ def partie_list() -> str:
             next_cursor=next_cursor,
             url=url_for("parties.partie_list"),
             target="#partie-rows",
+            page=page_no,
+            total=total,
         )
 
     # Attach display names (page rows only)
@@ -281,6 +306,14 @@ def mandataire_search() -> str:
 # ── Detail ────────────────────────────────────────────────────────────────
 
 
+def _compliance_signer() -> str:
+    """« Me X » — le nom du juriste, sans dupliquer une civilité présente."""
+    nom = (cabinet_dict().get("nom") or "").strip()
+    if not nom or nom.lower().startswith("me "):
+        return nom
+    return f"Me {nom}"
+
+
 @parties_bp.route("/<partie_id>")
 @login_required
 def partie_detail(partie_id: str) -> str:
@@ -303,6 +336,17 @@ def partie_detail(partie_id: str) -> str:
     return render_template(
         "parties/detail.html",
         partie=partie,
+        # Signataire des vérifications de conformité. Le gabarit lisait
+        # `config.FIRM_NAME` directement ; la valeur vit maintenant dans
+        # settings/cabinet, et le libellé se compose ici (« le gabarit ne
+        # possède que le libellé, jamais une transformation »).
+        #
+        # Il lit le nom du JURISTE, jamais celui du cabinet : une attestation
+        # d'identité est signée par une personne. La mention est DÉRIVÉE À LA
+        # LECTURE, sans instantané au dossier — renommer le champ
+        # réattribuerait donc toutes les attestations passées, ce qui est
+        # précisément pourquoi il ne doit jamais pointer sur `organisation`.
+        compliance_signer=_compliance_signer(),
         # Bandeau d'arrivée : Réception redirige ICI après avoir créé ou mis à
         # jour une fiche depuis une ouverture du portail, et doit pouvoir dire
         # ce qui vient de se passer (« vérifiez et complétez », combien de

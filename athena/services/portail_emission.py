@@ -21,6 +21,7 @@ from config import Config
 from models import portail_invitation as inv_model
 from tz import to_mtl
 from utils import courriel
+from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_portail_event
@@ -90,6 +91,7 @@ def _corps_invitation(invitation: dict, lien: str) -> tuple[str, str]:
     label_phrase = display_label
     if label_phrase.lower().startswith("dossier "):
         label_phrase = label_phrase[len("dossier "):].strip() or display_label
+    _cab = cabinet_dict()
     corps = render_template(
         gabarit,
         display_label=display_label,
@@ -102,9 +104,14 @@ def _corps_invitation(invitation: dict, lien: str) -> tuple[str, str]:
         # prendre à /api/renvoi la branche par identifiant exact plutôt que le
         # balayage par courriel.
         url_secours=f"https://{PORTAIL_HOST}/entree?i={invitation['id']}",
-        firm_name=Config.FIRM_NAME,
-        firm_phone=Config.FIRM_PHONE,
-        firm_email=Config.FIRM_EMAIL,
+        # app.yaml documents FIRM_PHONE here as the anti-enumeration escape
+        # hatch: a client who exhausts the resend cap gets no distinct
+        # message, so a reachable number is the fallback that matters. It
+        # must never render empty — cabinet_dict fails open to the
+        # deploy-time values for exactly that reason.
+        firm_name=_cab.get("nom", ""),
+        firm_phone=_cab.get("telephone", ""),
+        firm_email=_cab.get("courriel", ""),
     )
     return f"{prefixe} — {display_label}", corps
 

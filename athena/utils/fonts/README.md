@@ -42,12 +42,12 @@ for both families).
 Sous-ensemble variable (axes `opsz 20..48`, `wght 100..700`, `FILL 0..1` —
 GRAD exclu, app exclusivement claire) contenant EXACTEMENT les glyphes de
 `utils/icons.MATERIAL_ICONS`, épinglé par `tests/test_icons.py`. Téléchargé
-2026-08-10 via l'API css2 (User-Agent navigateur obligatoire), version
-gstatic **v364** :
+2026-09-07 via l'API css2 (User-Agent navigateur obligatoire), version
+gstatic **v369** :
 
 | Fichier | SHA-256 |
 |---|---|
-| `material-symbols-outlined-v368-390acc0f.woff2` | `390acc0f2b3dde6e99813e50f60e067013412caddac7e37304da7766db5a05b2` |
+| `material-symbols-outlined-v369-7ebffb11.woff2` | `7ebffb11ac1390581d96f6dafc1a55ae794973c33aaf9c6d4dba371174526244` |
 
 URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
 
@@ -71,10 +71,12 @@ table de glyphes, et le fan-out complet coûterait six fichiers plus
 un littéral épinglé pour quelques centaines d'octets. Le retrait
 réel se fait à la prochaine régénération, celle-ci reconstruisant
 l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par construction.
-Surensemble courant depuis le 2026-09-02 : `forum` (parti avec le
-clavardage).
+Surensemble courant : AUCUN — la régénération du 2026-09-07 (ajout de
+`settings` pour « Paramètres ») a reconstruit l'URL depuis
+`sorted(MATERIAL_ICONS)`, ce qui a du même coup retiré `forum`, resté
+dans le fichier depuis le retrait du clavardage.
 
-Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v368-Apache-2.0.txt`.
+Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v369-Apache-2.0.txt`.
 
 ## License (Noto)
 

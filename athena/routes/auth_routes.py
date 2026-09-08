@@ -58,18 +58,32 @@ def verify_token() -> tuple[Response, int]:
     return jsonify({"ok": False, "error": error_msg or "Accès non autorisé."}), 403
 
 
+# Les deux pages MFA sont absorbées par « Paramètres → Sécurité »
+# (2026-09-07). Les ROUTES et les NOMS d'endpoint survivent pour que tout
+# `url_for` et tout signet tiennent — `/auth/mfa-manage` était dans la barre
+# de navigation depuis des mois. **302, jamais 301** : un 301 est mis en
+# cache indéfiniment par le navigateur et rendrait pénible toute future
+# re-séparation.
+#
+# Ce qui disparaît avec `auth/mfa_manage.html` est un bouton de
+# désinscription NU du seul facteur enregistré : sous `REQUIRE_MFA`, il
+# annonçait « Vérification en deux étapes désactivée » pour l'acte de se
+# verrouiller dehors, la session en cours continuant jusqu'à 12 h de sorte
+# que la conséquence arrivait sans lien de cause visible.
+
+
 @auth_bp.route("/mfa-setup")
 @login_required
-def mfa_setup() -> str:
-    """Render the MFA enrollment page."""
-    return render_template("auth/mfa_setup.html")
+def mfa_setup() -> Response:
+    """Redirige vers « Paramètres → Sécurité »."""
+    return redirect(url_for("settings.securite"))
 
 
 @auth_bp.route("/mfa-manage")
 @login_required
-def mfa_manage() -> str:
-    """Render the MFA management page."""
-    return render_template("auth/mfa_manage.html")
+def mfa_manage() -> Response:
+    """Redirige vers « Paramètres → Sécurité »."""
+    return redirect(url_for("settings.securite"))
 
 
 @auth_bp.route("/logout", methods=["POST"])

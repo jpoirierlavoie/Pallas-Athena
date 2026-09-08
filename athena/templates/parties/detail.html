@@ -304,10 +304,8 @@
   {% if partie.contact_role == 'client' %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-4">Conformité</h2>
-    {# Signataire des vérifications : on garantit le « Me » sans le dupliquer
-       si FIRM_NAME le contient déjà. #}
-    {% set _firm = config.FIRM_NAME %}
-    {% set compliance_signer = _firm if (not _firm or _firm.lower().startswith('me ')) else 'Me ' ~ _firm %}
+    {# `compliance_signer` est composé par la route (routes/parties.py) :
+       la valeur vient de settings/cabinet et le « Me » y est garanti. #}
     {# Mois en français : strftime('%B') dépend de la locale du serveur (anglaise
        sur App Engine), donc on mappe explicitement. Jour sans zéro initial. #}
     {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}

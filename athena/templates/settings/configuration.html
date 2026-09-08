@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Configuration — Pallas Athena{% endblock %}
+
+{% block content %}
+{# LECTURE SEULE. Aucun script, aucun attribut hx-*, aucune valeur de secret :
+   les lignes ne portent qu'une longueur, une version et un verdict. #}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <h1 class="text-lg font-semibold text-gray-900 mb-6">Paramètres</h1>
+
+  {% include "settings/_onglets.html" %}
+
+  {# ── L'en-tête, qui IGNORE l'hygiène de fork ──────────────────────── #}
+  {% if badge == 'OK' %}
+  <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-green-700">
+      Configuration opérationnelle saine — aucun contrôle désactivé, aucun
+      secret mal formé.
+    </p>
+  </div>
+  {% elif badge == 'WARN' %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-amber-800">
+      Des avertissements demandent votre lecture. Certains sont normaux hors
+      production ; un contrôle fail-open désactivé n'en est pas un.
+    </p>
+  </div>
+  {% else %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-red-700">
+      Au moins un point bloquant. Une valeur requise manque, ou un secret a
+      une forme qui ne peut pas fonctionner.
+    </p>
+  </div>
+  {% endif %}
+
+  {% if not production %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+    <p class="text-sm text-gray-500">
+      Mode <strong>développement</strong> : les secrets viennent de
+      <code>.env</code> et non de Secret Manager, donc la section « Secret
+      Manager » ne paraît pas. Beaucoup d'avertissements sont attendus ici.
+    </p>
+  </div>
+  {% endif %}
+
+  {# ── Les sections ─────────────────────────────────────────────────── #}
+  {% for section in sections %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="text-sm font-semibold text-gray-900">{{ section.titre }}</h2>
+      <span class="text-xs text-gray-500">
+        {{ section.compte.OK }} ok
+        {%- if section.compte.WARN %} · {{ section.compte.WARN }} avert.{% endif %}
+        {%- if section.compte.FAIL %} · {{ section.compte.FAIL }} bloquant{% endif %}
+      </span>
+    </div>
+    <p class="text-xs text-gray-500 mb-4">{{ section.explication }}</p>
+
+    {% if section.fork %}
+    {# Replié : sur le déploiement d'origine tout y est attendu, et 25 lignes
+       ambre en permanence apprendraient à ignorer la page entière. #}
+    <details>
+      <summary class="text-sm text-indigo-600 hover:text-indigo-800 mb-3">
+        Afficher les {{ section.lignes|length }} valeurs du propriétaire
+      </summary>
+    {% endif %}
+
+    <div class="space-y-2">
+      {% for ligne in section.lignes %}
+      <div class="flex items-start gap-2">
+        {% if ligne.level == 'OK' %}
+        <span class="text-xs font-medium text-green-700 mt-0.5">ok</span>
+        {% elif ligne.level == 'WARN' %}
+        <span class="text-xs font-medium text-amber-700 mt-0.5">!</span>
+        {% else %}
+        <span class="text-xs font-medium text-red-700 mt-0.5">✕</span>
+        {% endif %}
+        <div class="flex-1">
+          <p class="text-sm {% if ligne.level == 'OK' %}text-gray-700{% elif ligne.level == 'WARN' %}text-amber-800{% else %}text-red-700{% endif %}">
+            {{ ligne.message }}
+          </p>
+          {% if ligne.detail.detail_fr %}
+          <p class="text-xs text-gray-500 mt-1">{{ ligne.detail.detail_fr }}</p>
+          {% endif %}
+          {% if ligne.detail.version %}
+          <p class="text-xs text-gray-400 mt-1">version {{ ligne.detail.version }}</p>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if section.fork %}
+    </details>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  {# ── Ce que cette page ne peut pas voir ───────────────────────────── #}
+  <div class="bg-gray-50 border border-gray-200 rounded-xl p-5 mt-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Ce que cette page ne peut pas voir</h2>
+    <ul class="text-sm text-gray-700 space-y-2">
+      <li>
+        <strong>La règle de transformation Cloudflare.</strong> La seconde
+        moitié du contrôle d'origine ne vit pas dans Google Cloud. Cette page
+        peut dire que le secret existe et qu'il est bien formé — jamais qu'il
+        correspond à ce que l'arête injecte.
+      </li>
+      <li>
+        <strong>Le pare-feu App Engine et les règles de l'arête.</strong>
+        Plages Cloudflare, <code>0.1.0.2/32</code>, Early Hints, Rocket
+        Loader : à vérifier dans les consoles.
+      </li>
+      <li>
+        <strong>L'état réel des intégrations.</strong>
+        <code>graph_configured()</code> ne vérifie que la présence des
+        champs : un secret Graph <em>erroné</em> passe ce contrôle et échoue
+        silencieusement à l'envoi.
+      </li>
+      <li>
+        <strong>Une page ne se consulte que lorsqu'on l'ouvre.</strong> C'est
+        le même angle mort qu'un script que personne n'exécute — d'où les
+        événements <code>origin_secret_disabled</code> et
+        <code>appcheck_disabled</code>, qui permettent une alerte sans que
+        personne regarde.
+      </li>
+    </ul>
+    <p class="text-xs text-gray-500 mt-3">
+      Le même rapport en ligne de commande :
+      <code>python -m scripts.check_config --prod</code>
+      (ou <code>--json</code>).
+    </p>
+  </div>
+</div>
+{% endblock %}
