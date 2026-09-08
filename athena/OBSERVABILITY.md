@@ -27,7 +27,7 @@ Outside a request (cron jobs, scripts, M365 webhook handlers), call `bind_contex
 
 Enforced by `RedactionFilter` (CLAUDE.md, Security Rules — "Do not log PII"):
 
-- Keys in `SENSITIVE_KEYS` (case-insensitive) are replaced with `"<redacted>"`. Includes `authorization`, `cookie`, `session`, `password`, `password_hash`, `secret`, `api_key`, `token`, `id_token`, `access_token`, `refresh_token`, `private_key`, `dav_password_hash`, `csrf_token`, `firebase_token`.
+- Keys in `SENSITIVE_KEYS` are replaced with `"<redacted>"`. Matching is **exact whole-key membership** after `.lower()`, never a substring test — so `secret` is dropped while `client_secret` would not be. The full set (17): `authorization`, `cookie`, `set-cookie`, `session`, `password`, `password_hash`, `secret`, `secret_value`, `api_key`, `token`, `id_token`, `access_token`, `refresh_token`, `private_key`, `dav_password_hash`, `csrf_token`, `firebase_token`. When adding a field that could carry a credential, add its EXACT key here — a resemblance buys nothing.
 - Free-text matches are scrubbed: emails → `<email>`, phone numbers → `<phone>`, Canadian postal codes → `<postal>`. The scrub covers:
   - every string inside `record.json_fields` (recursively) and dict messages;
   - the **formatted message** — records carrying `%`-style `args` are pre-interpolated inside the filter (`record.getMessage()`), scrubbed, and their `args` cleared, so `logger.warning("... %s", value)` call sites cannot leak the arg values; plain string messages without args are scrubbed too;
@@ -249,7 +249,7 @@ Bookings sync (spec L2) — the « Bookings with me » → rendez-vous à confir
 | `event` | Typical outcome | Notes |
 |---|---|---|
 | `bookings_sync_execute` | success | Cron sweep done; counters `vus`, `detectes`, `crees`, `modifies`, `annules`, `divergences` |
-| `bookings_sync_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (Graph creds / mailbox absent — fail-open, no-op); `failure` + `reason="graph_error"` (a Graph outage — the cycle was missed, the next 10-min run retries) |
+| `bookings_sync_erreur_graph` | refused ou **failure** | `refused` + `reason="not_configured"` (Graph creds / mailbox absent — fail-open, no-op); `failure` + `reason="graph_error"` (a Graph outage — the cycle was missed, the next 10-min run retries); `failure` + `reason="aucun_mot_cle"` (`BOOKINGS_SUBJECT_KEYWORDS` empty — the predicate can never match, so the sync imports NOTHING and the absence loop would flag every already-imported reservation `annulée_client`. The route refuses to run and answers **200** — deliberately, so a cron retry storm cannot follow. ⚠ This guard sits BEFORE `bookings_configured()`, so on a doubly-unconfigured deployment the reason you see is this one, not `not_configured`. The event NAME says « erreur Graph » but this condition never touches Graph) |
 | `reception_rdv_confirme` | success | A rendez-vous was confirmed in Réception; `hearing_id`, `partie_liee: bool` — the event now enters DAV/Calendar (CTag bumped) |
 | `reception_rdv_refuse` | success ou refused | A rendez-vous was refused; `hearing_id`, `graph_annule: bool`. `refused` + `reason="graph_error"` when the Outlook cancellation failed (the Athéna refusal still stands — the juriste is told to cancel manually) |
 | `reception_rdv_divergence_traitee` | success | A `bookings_divergence` alert was applied/ignored/cancelled; `hearing_id`, `action` |

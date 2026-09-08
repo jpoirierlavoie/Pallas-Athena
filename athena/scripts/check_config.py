@@ -2,7 +2,13 @@
 
 Written for adopters standing up their OWN instance: it verifies that the
 runtime environment and the committed config are internally consistent and no
-longer point at the original deployment. Four passes:
+longer point at the original deployment.
+
+Four sections exist, but a LOCAL run prints three: pass 2 is nested inside
+pass 1 behind ``if is_prod`` (``config_checks.check_runtime_env``), because off
+production the secrets come from ``.env`` and reporting a Secret-Manager-backed
+value as « unset » from ``os.environ`` would be a false negative by
+construction. ``run_all`` therefore invokes three checks, not four:
 
   1. Runtime env       — required env vars resolve; fail-open security controls
                          are set (or explicitly acknowledged); SECRET_KEY

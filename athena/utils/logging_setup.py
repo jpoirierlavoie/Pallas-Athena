@@ -26,11 +26,12 @@ This module is the single entry point for everything observability-related:
 * ``sanitize_log_value`` is the call-site companion: wrap user-controlled
   values (URL path segments, request fields) interpolated into log
   messages.
-* Typed helpers (``log_auth_event``, ``log_dossier_event``,
-  ``log_dav_operation``, ``log_security_event``, ``log_unexpected``)
-  emit through dedicated logger names (``pallas.auth``, ``pallas.dossier``,
-  ``pallas.dav``, ``pallas.security``, ``pallas.unexpected``) so that
-  log-based metrics filter cleanly by ``logName``.
+* Typed helpers emit through dedicated logger names (``pallas.auth``,
+  ``pallas.dossier``, ``pallas.dav``, ``pallas.security``,
+  ``pallas.unexpected``, ``pallas.settings``, ``pallas.trust``, …) so that
+  log-based metrics filter cleanly by ``logName``.  **``__all__`` below is
+  the inventory** — there are thirteen, and this paragraph used to name five,
+  which made it useless as a registration checklist.
 
 To add a new event type: extend the relevant ``Literal`` (or add a new
 helper for a new domain), then document it in ``OBSERVABILITY.md``.
@@ -68,6 +69,11 @@ SENSITIVE_KEYS: set[str] = {
     "dav_password_hash",
     "csrf_token",
     "firebase_token",
+    # Nothing emits this key today. It is a BACKSTOP: matching below is
+    # exact whole-key membership, so `secret` is dropped while `secret_value`
+    # would not be — and a secret-writing surface is exactly where a future
+    # hand would reach for that name.
+    "secret_value",
 }
 
 
@@ -168,8 +174,12 @@ class RedactionFilter(logging.Filter):
     """Strip PII and secrets from log records before they are emitted.
 
     Runs after :class:`ContextFilter`.  Drops keys in :data:`SENSITIVE_KEYS`
-    (case-insensitive) replacing values with ``"<redacted>"`` so the field
-    shape is preserved for log-based metrics.  Walks string values and
+    replacing values with ``"<redacted>"`` so the field shape is preserved for
+    log-based metrics.  Matching is **exact whole-key membership** after
+    ``.lower()`` (see :meth:`_redact_field`) — NOT a substring test.  So a
+    field named ``secret`` is dropped while ``client_secret`` would not be:
+    add the exact key to :data:`SENSITIVE_KEYS` rather than relying on a
+    resemblance, and never widen this to a substring scan.  Walks string values and
     redacts emails, E.164 / North American phone numbers, and Canadian
     postal codes.  Truncates strings longer than :data:`MAX_LEN`.
 
@@ -1056,10 +1066,12 @@ __all__: Iterable[str] = (
     "bind_context",
     "clear_context",
     "init_app",
+    "log_admin_ledger_event",
     "log_auth_event",
     "log_bookings_event",
     "log_dav_operation",
     "log_dossier_event",
+    "log_hearing_series_event",
     "log_mcp_event",
     "log_portail_event",
     "log_security_event",

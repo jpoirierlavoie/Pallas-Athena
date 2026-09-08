@@ -312,6 +312,53 @@ def test_sensitive_keys_set_extendable():
     assert all(k == k.lower() for k in SENSITIVE_KEYS)
 
 
+def test_key_matching_is_exact_membership_never_substring():
+    """The rule is `key.lower() in SENSITIVE_KEYS` — EXACT whole-key
+    membership. Nothing pinned it until now, and « helpfully » widening it to
+    `any(k in key.lower() for k in SENSITIVE_KEYS)` would look strictly safer
+    while breaking two things silently.
+
+    The concrete casualty is `secret_id`. It CONTAINS « secret », so under a
+    substring rule it would be redacted — and a secret id is a PUBLIC
+    identifier (it appears in `config.py`, `deployment_inventory.py`,
+    CLAUDE.md and DEPLOYMENT.md) which the « Paramètres → Déploiement » write
+    path logs as its primary field. The observability of a credential write
+    would quietly become `<redacted>`, i.e. useless, with every test green.
+
+    Second casualty: field SHAPE. Redaction preserves the key so a log-based
+    metric keeps working; widening the match drops fields a metric counts on.
+    """
+    record = _make_record(
+        msg="m",
+        json_fields={
+            # exact members -> redacted
+            "secret": "s3cr3t",
+            "token": "tok",
+            # merely CONTAIN a member -> must survive verbatim
+            "secret_id": "cf-origin-secret",
+            "client_secret_present": "true",
+            "tokens_seen": 4,
+        },
+    )
+    RedactionFilter().filter(record)
+    f = record.json_fields
+    assert f["secret"] == "<redacted>"
+    assert f["token"] == "<redacted>"
+    assert f["secret_id"] == "cf-origin-secret", "a secret ID is public — never redact it"
+    assert f["client_secret_present"] == "true"
+    assert f["tokens_seen"] == 4
+
+
+def test_secret_value_is_a_member_so_it_can_never_be_logged():
+    """`secret_value` is a BACKSTOP, added with the secret write path. Nothing
+    emits it today; the point is that the next hand cannot introduce it as a
+    leak, since exact matching means a near-miss name buys nothing."""
+    assert "secret_value" in SENSITIVE_KEYS
+    record = _make_record(msg="m", json_fields={"secret_value": "AKIA-not-really"})
+    RedactionFilter().filter(record)
+    assert record.json_fields["secret_value"] == "<redacted>"
+
+
 def test_redaction_scrubs_percent_args_message():
     # Regression (LOG-ARGS): %s args are interpolated at emit time, after
     # filters — the filter must pre-format the message and scrub it.
