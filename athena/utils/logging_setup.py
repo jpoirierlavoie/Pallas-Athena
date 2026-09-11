@@ -597,6 +597,12 @@ SettingsEvent = Literal[
     # PAS les noms de personnes, et `nom` en est un.
     "cabinet_updated",
     "cabinet_refused",
+    # Les réglages d'intégration (settings/integrations). Mêmes raisons, plus
+    # une : un mot-clé d'objet mal réglé arrête la synchro Bookings en
+    # silence, donc savoir QUAND les champs ont bougé est la première chose
+    # qu'on veut en diagnostiquant « plus rien n'entre ».
+    "integrations_updated",
+    "integrations_refused",
 ]
 TemplateEvent = Literal[
     "template_uploaded",

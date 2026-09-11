@@ -35,6 +35,13 @@ from flask import (
 )
 
 from auth import login_required
+from config import Config
+from models.integrations import (
+    changed_field_names as integrations_changed,
+    get_integrations_state,
+    unmapped_keywords,
+    update_integrations,
+)
 from models.settings import (
     changed_field_names,
     get_cabinet,
@@ -42,6 +49,16 @@ from models.settings import (
 )
 from security import limiter, sanitize
 from utils import config_checks
+from utils.integrations_defaults import (
+    DEPLOY_ONLY_FIELDS,
+    JOURS_BORNES,
+    JOURS_FIELDS,
+    KILL_SWITCHES,
+    format_keywords,
+    format_type_map,
+    parse_keywords,
+    parse_type_map,
+)
 from utils.cabinet import display_phone
 from utils.logging_setup import log_auth_event, log_settings_event
 
@@ -119,6 +136,144 @@ def cabinet_update():
         fields_changed=changed_field_names(before, doc or {}),
     )
     return redirect(url_for("settings.settings_index", ok="1"))
+
+
+# Les quatre valeurs fixées au déploiement, avec l'autre moitié de
+# l'opération NOMMÉE. Le motif est écrit dans utils/integrations_defaults ; ce
+# qui vit ici est sa formulation à l'écran, parce qu'une ligne en lecture
+# seule qui ne dit pas POURQUOI se lit comme un oubli.
+_DEPLOY_ONLY_FR: dict[str, tuple[str, str]] = {
+    "graph_tenant_id": (
+        "Identifiant de locataire Entra",
+        "Le secret qui l'accompagne (`graph-client-secret`) vit dans Secret "
+        "Manager et ne s'édite pas ici. Changer l'un sans l'autre casse "
+        "l'authentification Entra (HTTP 401) et arrête d'un coup le courriel "
+        "sortant, la synchro Bookings et le miroir Outlook.",
+    ),
+    "graph_client_id": (
+        "Identifiant d'application Entra",
+        "Même triplet que ci-dessus : les deux tiers ici, le tiers manquant "
+        "dans Secret Manager.",
+    ),
+    "graph_sender_upn": (
+        "Boîte expéditrice",
+        "Cette boîte doit d'abord être PORTÉE côté Exchange (RBAC for "
+        "Applications, PowerShell à certificat — `graph-client-secret` ne "
+        "peut pas l'administrer), et le changement met de 30 min à 2 h à "
+        "sortir du cache. La changer ici sans l'autre moitié donnerait un "
+        "HTTP 403 sur chaque envoi.",
+    ),
+    "bookings_juriste_upn": (
+        "Boîte interrogée (Bookings)",
+        "Même portée Exchange que la boîte expéditrice. Une migration de "
+        "boîte est de toute façon une opération Exchange.",
+    ),
+}
+
+
+def _integrations_form(rec: dict) -> dict:
+    """L'enregistrement préparé pour le formulaire (tuples et dict aplatis)."""
+    form = dict(rec)
+    form["bookings_subject_keywords"] = format_keywords(
+        rec.get("bookings_subject_keywords") or ()
+    )
+    form["bookings_type_par_mot_cle"] = format_type_map(
+        rec.get("bookings_type_par_mot_cle") or {}
+    )
+    return form
+
+
+def _integrations_context(rec: dict, provenance: str, **over) -> dict:
+    from models.hearing import VALID_HEARING_TYPES_EXTRAJUDICIAIRE
+    ctx = {
+        "onglet": "integrations",
+        "form": _integrations_form(rec),
+        "errors": [],
+        "enregistre": False,
+        "provenance": provenance,
+        "lisible": provenance != "unreadable",
+        "types": VALID_HEARING_TYPES_EXTRAJUDICIAIRE,
+        "jours_bornes": JOURS_BORNES,
+        "jours_fields": JOURS_FIELDS,
+        "deploy_only": [
+            (name, _DEPLOY_ONLY_FR[name][0], _DEPLOY_ONLY_FR[name][1],
+             getattr(Config, name.upper(), "") or "")
+            for name in DEPLOY_ONLY_FIELDS
+        ],
+        "kill_switches": [
+            (name, bool(getattr(Config, name.upper(), False)))
+            for name in KILL_SWITCHES
+        ],
+        "non_mappes": unmapped_keywords(rec),
+    }
+    ctx.update(over)
+    return ctx
+
+
+@settings_bp.route("/integrations")
+@login_required
+def integrations() -> str:
+    """« Paramètres → Intégrations » — les neuf réglages modifiables.
+
+    POST + redirection, jamais htmx : `/parametres` n'est sous aucun préfixe
+    exempté d'App Check, et un fragment d'erreur en 4xx ne paraîtrait jamais
+    (htmx n'échange que les 2xx). Un refus se re-rend donc à 200.
+    """
+    rec, provenance = get_integrations_state()
+    return render_template(
+        "settings/integrations.html",
+        **_integrations_context(
+            rec, provenance, enregistre=request.args.get("ok") == "1"
+        ),
+    )
+
+
+@settings_bp.route("/integrations/enregistrer", methods=["POST"])
+@login_required
+def integrations_update():
+    f = request.form
+    data: dict = {
+        "bookings_subject_keywords": parse_keywords(
+            f.get("bookings_subject_keywords", "")
+        ),
+        "bookings_type_par_mot_cle": parse_type_map(
+            f.get("bookings_type_par_mot_cle", "")
+        ),
+        "bookings_type_defaut": sanitize(
+            f.get("bookings_type_defaut", ""), max_length=120
+        ),
+        # Une case non cochée n'est PAS soumise : l'absence est un faux, pas
+        # une clé manquante. Le contrat de présence de `_normalize` rendrait
+        # sinon impossible de DÉCOCHER la case.
+        "bookings_debug_payload": f.get("bookings_debug_payload") == "on",
+        "graph_sender_name": sanitize(
+            f.get("graph_sender_name", ""), max_length=200
+        ),
+    }
+    for key in JOURS_FIELDS:
+        data[key] = f.get(key, "")
+
+    before, provenance = get_integrations_state()
+    doc, errors = update_integrations(data)
+    if errors:
+        log_settings_event("integrations_refused", error_count=len(errors))
+        # 200, et on réaffiche CE QUI A ÉTÉ SOUMIS — sinon la correction se
+        # fait à l'aveugle.
+        soumis = {**_integrations_form(before), **{
+            k: f.get(k, "") for k in (
+                "bookings_subject_keywords", "bookings_type_par_mot_cle",
+                "bookings_type_defaut", "graph_sender_name", *JOURS_FIELDS,
+            )
+        }, "bookings_debug_payload": data["bookings_debug_payload"]}
+        ctx = _integrations_context(before, provenance, errors=errors)
+        ctx["form"] = soumis
+        return render_template("settings/integrations.html", **ctx)
+
+    log_settings_event(
+        "integrations_updated",
+        fields_changed=integrations_changed(before, doc or {}),
+    )
+    return redirect(url_for("settings.integrations", ok="1"))
 
 
 @settings_bp.route("/securite")

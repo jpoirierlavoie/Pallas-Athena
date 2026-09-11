@@ -281,13 +281,39 @@ def check_integrations(rpt: Report) -> None:
     # An EMPTY keyword tuple is a total, silent outage: the predicate never
     # matches, nothing is imported, and the absence loop then flags every
     # already-imported reservation as cancelled by the client.
-    if Config.BOOKINGS_SYNC_ACTIVE and not Config.BOOKINGS_SUBJECT_KEYWORDS:
+    #
+    # READ FROM THE STORE, not from Config — the keywords became editable in
+    # « Paramètres → Intégrations ». Left on Config this row would report OK
+    # while `settings/integrations` holds an empty set: the diagnostic page
+    # lying about precisely the outage it exists to catch. The import is LAZY
+    # so this module stays importable by the credential-less CLI, and the read
+    # degrades to Config on any failure (a diagnostic must never be the thing
+    # that breaks).
+    mots_cles = Config.BOOKINGS_SUBJECT_KEYWORDS
+    source = "app.yaml"
+    try:
+        from models.integrations import get_integrations_state
+        rec, provenance = get_integrations_state()
+        mots_cles = rec.get("bookings_subject_keywords") or ()
+        source = "Firestore" if provenance == "store" else f"app.yaml ({provenance})"
+    except Exception:  # noqa: BLE001 — a diagnostic never raises
+        source = "app.yaml (magasin illisible)"
+
+    if Config.BOOKINGS_SYNC_ACTIVE and not mots_cles:
         rpt.emit(
             FAIL,
-            "BOOKINGS_SYNC_ACTIVE is true but BOOKINGS_SUBJECT_KEYWORDS is "
-            "EMPTY — the sync would import nothing and flag existing "
+            "BOOKINGS_SYNC_ACTIVE is true but the Bookings subject keywords "
+            "are EMPTY — the sync would import nothing and flag existing "
             "reservations as cancelled",
             integration="bookings",
+            detail_fr=f"Source des mots-clés : {source}",
+        )
+    elif Config.BOOKINGS_SYNC_ACTIVE:
+        rpt.emit(
+            OK,
+            f"Bookings subject keywords: {len(mots_cles)} configured",
+            integration="bookings",
+            detail_fr=f"Source : {source}",
         )
 
 

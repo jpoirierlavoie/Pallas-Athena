@@ -1,0 +1,242 @@
+{% extends "base.html" %}
+{% block title %}Intégrations — Pallas Athena{% endblock %}
+
+{% block content %}
+{# POST + redirection, jamais htmx : `/parametres` n'est sous aucun préfixe
+   exempté d'App Check, et un fragment d'erreur en 4xx ne paraîtrait jamais
+   (htmx n'échange que les 2xx). Aucun attribut hx-*, aucun script. #}
+<div class="max-w-2xl mx-auto px-4 py-6">
+
+  <h1 class="text-lg font-semibold text-gray-900 mb-6">Paramètres</h1>
+
+  {% include "settings/_onglets.html" %}
+
+  {% if enregistre %}
+  <div class="bg-green-50 border border-green-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-green-700">Réglages d'intégration enregistrés.</p>
+  </div>
+  {% endif %}
+
+  {% if errors %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    <ul class="text-sm text-red-700 space-y-1">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if not lisible %}
+  {# Le bouton est désactivé ET le POST refuse côté serveur : un bouton
+     désactivé n'est pas une garde, les outils de développement le
+     réactivent. #}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-amber-800">
+      Les valeurs affichées viennent du <strong>déploiement</strong> : le
+      magasin de réglages est illisible. L'enregistrement est désactivé pour
+      ne pas écraser vos valeurs. Réessayez dans un moment.
+    </p>
+  </div>
+  {% elif provenance == 'absent' %}
+  <div class="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+    <p class="text-sm text-gray-500">
+      Aucun réglage n'a encore été enregistré : les valeurs ci-dessous sont
+      celles du déploiement (<code>app.yaml</code>). Enregistrer une fois les
+      matérialise.
+    </p>
+  </div>
+  {% endif %}
+
+  {% if non_mappes %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+    <p class="text-sm text-amber-800">
+      Sans correspondance de type, donc importés sous le type par défaut :
+      <strong>{{ non_mappes|join(', ') }}</strong>. Ce n'est pas une erreur —
+      mais un service dont le type compte doit figurer dans la table.
+    </p>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('settings.integrations_update') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5">
+
+      {# ── Bookings : la détection ─────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Détection des rendez-vous Bookings</h3>
+      <div class="grid grid-cols-1 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Mots-clés d'objet</label>
+          <input type="text" name="bookings_subject_keywords"
+                 value="{{ form.bookings_subject_keywords }}" required
+                 placeholder="Consultation, Rencontre"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="text-xs text-gray-500 mt-1">
+            Séparés par des virgules. L'objet doit se <strong>terminer</strong>
+            par « — {{ 'mot-clé' }} » : Bookings nomme l'événement
+            « {{ 'Client' }} - {{ 'Service' }} », donc c'est le nom du service.
+            Accents et casse sont ignorés. <strong>Vide, la synchro n'importe
+            plus rien</strong> et finirait par déclarer annulées les
+            réservations déjà importées — c'est pourquoi le champ est requis.
+          </p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Type de rendez-vous par mot-clé</label>
+          <textarea name="bookings_type_par_mot_cle" rows="4"
+                    placeholder="consultation = consultation&#10;rencontre = rencontre"
+                    class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none">{{ form.bookings_type_par_mot_cle }}</textarea>
+          <p class="text-xs text-gray-500 mt-1">
+            Une correspondance par ligne, <code>mot-clé = type</code>. Un
+            mot-clé absent de la table retombe sur le type par défaut. Seuls
+            les types <em>extrajudiciaires</em> sont admis : le forum est
+            DÉRIVÉ du type, donc une valeur judiciaire ferait lire
+            « judiciaire » à une consultation client partout.
+          </p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Type par défaut</label>
+          <select name="bookings_type_defaut"
+                  class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% for t in types %}
+            <option value="{{ t }}" {% if form.bookings_type_defaut == t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      {# ── Les fenêtres ────────────────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 mt-5">Fenêtres de synchronisation</h3>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {% for key, label in [
+          ('bookings_sync_lookahead_days', 'Bookings — à venir (jours)'),
+          ('bookings_sync_lookback_days', 'Bookings — passé (jours)'),
+          ('miroir_outlook_lookahead_days', 'Miroir Outlook — à venir (jours)'),
+          ('miroir_outlook_lookback_days', 'Miroir Outlook — passé (jours)')
+        ] %}
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">{{ label }}</label>
+          <input type="number" name="{{ key }}" value="{{ form[key] }}"
+                 min="{{ jours_bornes[key][0] }}" max="{{ jours_bornes[key][1] }}"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        {% endfor %}
+      </div>
+      <p class="text-xs text-gray-500 mt-1">
+        <code>calendarView</code> de Graph plafonne une fenêtre à 1825 jours.
+        Les deux bornes du miroir sont lues ensemble, une seule fois par
+        cycle : c'est ce qui garantit qu'Athéna et Outlook sont comparés sur
+        la même fenêtre, et donc qu'un miroir n'est jamais pris pour un
+        orphelin.
+      </p>
+
+      {# ── Courriel + mise au point ────────────────────────────────── #}
+      <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3 mt-5">Courriel sortant</h3>
+      <div class="grid grid-cols-1 gap-4">
+        <div>
+          <label class="block text-sm text-gray-700 mb-1">Nom d'affichage de l'expéditeur</label>
+          <input type="text" name="graph_sender_name" value="{{ form.graph_sender_name }}"
+                 placeholder="Poirier Lavoie, avocat"
+                 class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="text-xs text-gray-500 mt-1">
+            Ce que le client voit à la place du nom d'annuaire de la boîte.
+            Laissé vide, aucun nom n'est transmis (forme historique). Exchange
+            peut réécrire ce nom vers sa valeur d'annuaire ; si le réglage ne
+            tient pas à l'essai, la solution durable est une boîte partagée.
+          </p>
+        </div>
+        <div>
+          <label class="inline-flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" name="bookings_debug_payload"
+                   {% if form.bookings_debug_payload %}checked{% endif %}>
+            Journaliser un échantillon du prédicat Bookings
+          </label>
+          <p class="text-xs text-gray-500 mt-1">
+            Pour régler les mots-clés. Ne journalise jamais l'objet de la
+            réunion (il embarque le nom du client) — seulement les booléens du
+            prédicat et les domaines. À remettre à l'arrêt une fois réglé.
+          </p>
+        </div>
+      </div>
+
+      <div class="flex justify-end mt-5">
+        <button type="submit" {% if not lisible %}disabled{% endif %}
+                class="px-4 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
+          Enregistrer
+        </button>
+      </div>
+    </div>
+  </form>
+
+  {# ── Fixés au déploiement ──────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Réglages fixés au déploiement</h2>
+    <p class="text-xs text-gray-500 mb-4">
+      Chacun est la <strong>moitié</strong> d'une opération dont l'autre
+      moitié n'est pas dans cette application. Les modifier ici sans l'autre
+      moitié ne produirait qu'une panne — c'est pourquoi ils sont montrés
+      plutôt qu'offerts.
+    </p>
+    <div class="space-y-4">
+      {% for name, label, motif, valeur in deploy_only %}
+      <div>
+        <p class="text-sm text-gray-700">
+          <strong>{{ label }}</strong>
+          — <code>{{ valeur if valeur else '(non configuré)' }}</code>
+        </p>
+        <p class="text-xs text-gray-500 mt-1">{{ motif }}</p>
+        <p class="text-xs text-gray-400 mt-1">
+          Modifier <code>{{ name|upper }}</code> dans
+          <code>athena/app.yaml</code>, puis redéployer.
+        </p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ── Les coupe-circuits ────────────────────────────────────────────── #}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mt-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Coupe-circuits</h2>
+    <p class="text-xs text-gray-500 mb-4">
+      Volontairement hors de cette page, et ce n'est pas un oubli : un
+      coupe-circuit joignable seulement par l'application est inutile au
+      moment précis où c'est l'application qu'on cherche à arrêter.
+    </p>
+    <div class="space-y-2">
+      {% for name, actif in kill_switches %}
+      <p class="text-sm text-gray-700">
+        <code>{{ name|upper }}</code> —
+        {% if actif %}actif{% else %}arrêté{% endif %}
+      </p>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# ── Ce que cette page ne peut pas faire ───────────────────────────── #}
+  <div class="bg-gray-50 border border-gray-200 rounded-xl p-5 mt-6">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Ce que ces réglages ne peuvent pas faire</h2>
+    <ul class="text-sm text-gray-700 space-y-2">
+      <li>
+        <strong>Ils ne vérifient rien auprès de Microsoft.</strong> Un
+        mot-clé qui ne correspond à aucun service publié est accepté ici et
+        n'importera simplement jamais rien. La page de
+        <a href="{{ url_for('settings.configuration') }}" class="text-indigo-600 hover:text-indigo-800">Configuration</a>
+        dit si les identifiants Graph répondent ; elle ne dit pas si vos
+        mots-clés mordent.
+      </li>
+      <li>
+        <strong>Si le magasin devient illisible</strong>, les deux synchros
+        reprennent les valeurs du déploiement — et la synchro Bookings
+        <strong>désarme</strong> alors sa boucle d'annulation, parce qu'un jeu
+        de mots-clés replié pourrait ne correspondre à rien et faire déclarer
+        « annulées » de vraies réservations. Les créations restent actives.
+      </li>
+      <li>
+        <strong>Le service « portail » ne lit pas ces réglages</strong> : il
+        n'a accès qu'à sa propre base. Son nom d'expéditeur suit
+        <code>portail.yaml</code>.
+      </li>
+    </ul>
+  </div>
+</div>
+{% endblock %}
