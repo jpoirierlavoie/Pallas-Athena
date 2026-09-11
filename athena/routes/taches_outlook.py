@@ -79,7 +79,7 @@ def _retenir(h: dict) -> bool:
     )
 
 
-def _synchroniser() -> dict | None:
+def _synchroniser(integ: dict) -> dict | None:
     """Diff Athéna ↔ Outlook sur UNE fenêtre partagée ; rend les compteurs.
 
     La fenêtre est la même des deux côtés — l'invariant anti-orphelin : un
@@ -89,8 +89,12 @@ def _synchroniser() -> dict | None:
     supprime comme orphelin puis le recrée quand la nouvelle date entre.
     """
     now = datetime.now(timezone.utc)
-    debut = now - timedelta(days=Config.MIROIR_OUTLOOK_LOOKBACK_DAYS)
-    fin = now + timedelta(days=Config.MIROIR_OUTLOOK_LOOKAHEAD_DAYS)
+    # LES DEUX bornes viennent du MÊME dict, résolu une fois par exécution :
+    # c'est ce qui garantit que le jeu désiré d'Athéna et la lecture Outlook
+    # sont calculés sur une fenêtre identique — l'invariant anti-orphelin
+    # ci-dessus. Deux lectures séparées pourraient enjamber une écriture.
+    debut = now - timedelta(days=integ["miroir_outlook_lookback_days"])
+    fin = now + timedelta(days=integ["miroir_outlook_lookahead_days"])
 
     # list_hearings_in_range_state, jamais la variante simple : ce balayage
     # SUPPRIME sur la foi d'une absence, donc il lui faut les deux signaux que
@@ -227,7 +231,9 @@ def sync():
     if not Config.MIROIR_OUTLOOK_ACTIF:
         # Kill switch : gèle les miroirs EN PLACE (aucun nettoyage) — la
         # purge manuelle est la suppression des événements catégorisés
-        # « Pallas Athéna » dans Outlook.
+        # « Pallas Athéna » dans Outlook. Il reste sur l'environnement, à
+        # dessein : un coupe-circuit joignable seulement par l'application est
+        # inutile au moment où c'est l'application qu'on cherche à arrêter.
         return jsonify({"actif": False})
     if not Config.bookings_configured():
         # Graph creds or the mailbox are absent — nothing to write. Fail-open.
@@ -236,8 +242,18 @@ def sync():
         )
         return jsonify({"actif": True, "configure": False})
 
+    # Import PARESSEUX (patron `utils.cabinet.cabinet_dict`) : `main.py`
+    # importe ce module à la création de l'application.
+    #
+    # La provenance n'est PAS consultée ici, et c'est mesuré : les deux seules
+    # valeurs que ce balayage tire des réglages sont les bornes de la fenêtre,
+    # et une fenêtre repliée ne peut pas provoquer une suppression fautive —
+    # un miroir hors de la fenêtre d'Athéna est hors de celle d'Outlook aussi,
+    # donc il est invisible au diff (il fuit, il n'est pas supprimé). La garde
+    # qui compte ici reste `fenetre_pleine`.
+    from models.integrations import get_integrations
     try:
-        counters = _synchroniser()
+        counters = _synchroniser(get_integrations())
     except (GraphError, GraphNotConfigured):
         # A Graph outage is transient — log and return 200 (the next 10-min
         # cycle retries); a 500 would only spawn a cron retry storm.

@@ -687,6 +687,11 @@ PortailOutcome = Literal["success", "failure", "refused"]
 BookingsEvent = Literal[
     "bookings_sync_execute",
     "bookings_sync_erreur_graph",
+    # Un mot-clé sans entrée dans la carte des types retombe sur le défaut.
+    # C'était un `logger.warning` NU, donc invisible au flux `pallas.bookings`
+    # qu'un tableau de bord surveille — tolérable tant que la carte vivait
+    # dans `config.py`, et PROBABLE depuis qu'elle s'édite dans l'application.
+    "bookings_mot_cle_non_mappe",
     "reception_rdv_confirme",
     "reception_rdv_refuse",
     "reception_rdv_divergence_traitee",

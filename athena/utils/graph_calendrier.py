@@ -127,8 +127,19 @@ def porte_marqueur_miroir(ev: dict) -> bool:
     return MIROIR_CATEGORIE in (ev.get("categories") or [])
 
 
-def mot_cle_correspondant(ev: dict) -> str:
+def mot_cle_correspondant(
+    ev: dict, *, mots_cles: Optional[tuple] = None
+) -> str:
     """Le mot-clé Bookings détecté dans *ev*, ou « » (spec §4.4).
+
+    *mots_cles* est le jeu de « Paramètres → Intégrations ». ``None``
+    signifie « lire ``Config`` », soit octet pour octet le comportement
+    historique — et c'est ce qui garde ce module PUR : il n'importe
+    jamais ``models``, donc ``tests/test_graph_calendrier.py`` (dont la
+    fixture autouse gèle les mots-clés, et qui ne simule PAS
+    ``firestore.Client``) reste la seule autorité pour ses propres
+    appels. Aucune valeur Firestore ne peut y arriver : rien dans ce
+    fichier ne passe l'argument.
 
     Prédicat déterministe : le juriste est l'organisateur ET le sujet SE
     TERMINE par « {séparateur} {mot-clé} ». Bookings nomme l'événement
@@ -159,7 +170,8 @@ def mot_cle_correspondant(ev: dict) -> str:
     if not upn or org != upn:
         return ""
     sujet = _plier(ev.get("subject") or "")
-    for k in Config.BOOKINGS_SUBJECT_KEYWORDS:
+    for k in (mots_cles if mots_cles is not None
+              else Config.BOOKINGS_SUBJECT_KEYWORDS):
         plie = _plier(k)
         # Un mot-clé vide serait « contenu » partout : la garde reste, comme
         # dans la version sous-chaîne.
@@ -170,12 +182,12 @@ def mot_cle_correspondant(ev: dict) -> str:
     return ""
 
 
-def est_reservation(ev: dict) -> bool:
+def est_reservation(ev: dict, *, mots_cles: Optional[tuple] = None) -> bool:
     """True when *ev* is a « Bookings with me » reservation (spec §4.4)."""
-    return bool(mot_cle_correspondant(ev))
+    return bool(mot_cle_correspondant(ev, mots_cles=mots_cles))
 
 
-def extraire(ev: dict) -> dict:
+def extraire(ev: dict, *, mots_cles: Optional[tuple] = None) -> dict:
     """Normalize a Graph event to the fields the reconciliation upserts."""
     upn = Config.BOOKINGS_JURISTE_UPN.lower()
     online = ev.get("onlineMeeting") or {}
@@ -207,7 +219,12 @@ def extraire(ev: dict) -> dict:
         # Le service Bookings détecté — l'appelant en dérive le hearing_type.
         # Recalculé plutôt que passé en argument : extraire reste appelable
         # seule, et le mot-clé ne peut pas diverger du prédicat qui l'a admis.
-        "mot_cle": mot_cle_correspondant(ev),
+        # ⚠ Cet invariant est passé d'un GLOBAL de module à une forme de code
+        # le 2026-09-11 : `mots_cles` doit être LE MÊME objet que celui remis à
+        # `est_reservation`, sans quoi un événement admis par un jeu pourrait
+        # être retypé par un autre. `_synchroniser` le résout une seule fois
+        # par exécution et un test épingle l'identité des deux arguments.
+        "mot_cle": mot_cle_correspondant(ev, mots_cles=mots_cles),
     }
 
 

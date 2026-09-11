@@ -27,6 +27,7 @@ from flask import Flask  # noqa: E402
 with mock.patch("google.cloud.firestore.Client"):
     import routes.taches_bookings as tb
     import models.hearing as h
+    from models.integrations import _seed_from_config
 
 from config import Config  # noqa: E402
 
@@ -98,13 +99,26 @@ def _stored(uid="ical-1", confirmation="à_confirmer", last_mod=OLD, days=3,
     }
 
 
+
+def _integ() -> dict:
+    """Les réglages d'intégration TELS QUE ``Config`` les porte.
+
+    `_seed_from_config` lit les attributs de CLASSE, donc les fixtures
+    `monkeypatch.setattr(Config, …)` de ce fichier restent l'unique autorité :
+    aucune valeur Firestore ne peut entrer ici. C'est la raison pour laquelle
+    le paramètre est REQUIS côté route — un point d'appel oublié lève un
+    TypeError bruyant au lieu de revenir en silence à la valeur de
+    déploiement.
+    """
+    return _seed_from_config()
+
 def _run(monkeypatch, reservations, existing):
     monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
                         lambda debut, fin: reservations)
     # The reconciliation reads its prior imports via list_bookings_all (which
     # includes refusée), NOT list_hearings.
     monkeypatch.setattr(h, "list_bookings_all", lambda: existing)
-    return tb._synchroniser()
+    return tb._synchroniser(_integ(), "store")
 
 
 # ── Create + idempotence (the duplicate trap) ─────────────────────────────
@@ -127,7 +141,10 @@ def test_second_run_is_idempotent(monkeypatch, spy):
                     [_stored("ical-1", last_mod=OLD)])
     assert not spy.creates and not spy.updates
     assert counters == {"vus": 1, "detectes": 1, "crees": 0,
-                        "modifies": 0, "annules": 0, "divergences": 0}
+                        "modifies": 0, "annules": 0, "divergences": 0,
+                        # Faux : la provenance « store » garde la boucle
+                        # d'absence ARMÉE.
+                        "annulations_desarmees": False}
 
 
 def test_sync_lookup_uses_list_bookings_all(monkeypatch, spy):
@@ -144,7 +161,7 @@ def test_sync_lookup_uses_list_bookings_all(monkeypatch, spy):
         raise AssertionError("sync must not call list_hearings for its lookup")
 
     monkeypatch.setattr(h, "list_hearings", _forbidden)
-    tb._synchroniser()
+    tb._synchroniser(_integ(), "store")
     assert called["all"] == 1
 
 
@@ -217,6 +234,92 @@ def test_absence_out_of_window_left_alone(monkeypatch, spy):
     assert not spy.updates
 
 
+def test_absence_loop_is_DISARMED_when_the_settings_are_a_fallback(
+    monkeypatch, spy, caplog
+):
+    """LE GARDE-FOU DU LOT, et il ferme un défaut RÉEL.
+
+    Cette boucle conclut une annulation d'une ABSENCE, et l'absence est
+    produite par le prédicat, lui-même piloté par les mots-clés. Si le juriste
+    a renommé un service Bookings et mis les mots-clés à jour dans
+    l'application, un repli sur le jeu du DÉPLOIEMENT ne mord sur RIEN — et la
+    boucle estampillerait « annulée_client » sur de VRAIES réservations de
+    clients. « Non vide » n'est pas la même chose que « correspondant » :
+    c'est exactement l'erreur que la conception de ce lot avait d'abord
+    commise, et que trois relectures indépendantes ont relevée.
+
+    La création reste ARMÉE — le précédent `fenetre_pleine` de
+    `taches_outlook` : une lecture dégradée désarme les suppressions et laisse
+    la création, parce qu'un jeu tronqué dit quand même la vérité sur ce qu'il
+    CONTIENT.
+    """
+    monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
+                        lambda debut, fin: [])
+    monkeypatch.setattr(
+        h, "list_bookings_all",
+        lambda: [_stored("gone", confirmation="à_confirmer", days=3)],
+    )
+    with caplog.at_level("WARNING"):
+        counters = tb._synchroniser(_integ(), "unreadable")
+
+    assert not spy.updates, "une réservation réelle a été annulée à tort"
+    assert counters["annules"] == 0
+    assert counters["annulations_desarmees"] is True
+    raisons = [
+        getattr(r, "json_fields", {}).get("reason")
+        for r in caplog.records if r.name == "pallas.bookings"
+    ]
+    assert "reglages_replies" in raisons
+
+
+def test_absence_loop_STAYS_ARMED_on_a_fresh_deploy(monkeypatch, spy):
+    """`absent` est un déploiement neuf, avant que quiconque ait ouvert la
+    page — il doit tourner NORMALEMENT, sans quoi le lot livrerait un gel
+    d'amorçage des deux synchros. C'est l'omission qu'une des conceptions
+    concurrentes portait et qu'il ne fallait pas hériter avec sa politique."""
+    monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
+                        lambda debut, fin: [])
+    monkeypatch.setattr(
+        h, "list_bookings_all",
+        lambda: [_stored("gone", confirmation="à_confirmer", days=3)],
+    )
+    counters = tb._synchroniser(_integ(), "absent")
+    assert counters["annules"] == 1
+    assert counters["annulations_desarmees"] is False
+
+
+def test_the_SAME_keyword_object_reaches_both_readers(monkeypatch):
+    """`extraire` recalcule le mot-clé pour qu'il « ne puisse pas diverger du
+    prédicat qui l'a admis ». Cet invariant tenait par un global de module ;
+    il tient désormais par UN liage dans `_synchroniser`, donc l'identité des
+    deux arguments est ce qui le remplace. Une divergence retyperait une
+    audience en silence."""
+    vus: list = []
+    monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
+                        lambda debut, fin: [_ev("ical-1")])
+    monkeypatch.setattr(h, "list_bookings_all", lambda: [])
+    vrai_est = tb.graph_calendrier.est_reservation
+    vrai_extr = tb.graph_calendrier.extraire
+
+    def _est(ev, *, mots_cles=None):
+        vus.append(("est", mots_cles))
+        return vrai_est(ev, mots_cles=mots_cles)
+
+    def _extr(ev, *, mots_cles=None):
+        vus.append(("extr", mots_cles))
+        return vrai_extr(ev, mots_cles=mots_cles)
+
+    monkeypatch.setattr(tb.graph_calendrier, "est_reservation", _est)
+    monkeypatch.setattr(tb.graph_calendrier, "extraire", _extr)
+    tb._synchroniser(_integ(), "store")
+
+    passes = [m for _n, m in vus]
+    assert len(passes) >= 2
+    premier = passes[0]
+    for autre in passes[1:]:
+        assert autre is premier, "deux jeux de mots-clés distincts sur un cycle"
+
+
 def test_already_flagged_confirmed_cancel_is_idempotent(monkeypatch, spy):
     div = {"motif": "annulé_côté_client", "detail": "x", "vu": False}
     _run(monkeypatch, [], [_stored("c", confirmation="", days=3, divergence=div)])
@@ -271,7 +374,7 @@ def test_debug_payload_never_logs_the_subject(monkeypatch, caplog):
     monkeypatch.setattr(Config, "BOOKINGS_SUBJECT_KEYWORDS", ("RDV",))
     ev = _ev("ical-1", subject="RDV — Consultation Marie Tremblay")
     with caplog.at_level(_logging.DEBUG, logger=tb.logger.name):
-        tb._debug_payload([ev])
+        tb._debug_payload([ev], Config.BOOKINGS_SUBJECT_KEYWORDS)
     text = caplog.text
     assert "Marie Tremblay" not in text and "Consultation" not in text
     assert "keyword_match" in text and "organizer_match" in text
@@ -291,7 +394,7 @@ def test_le_type_est_derive_du_mot_cle(client, monkeypatch, spy):
         lambda debut, fin: [_ev("ical-c", subject="Jean - Consultation"),
                             _ev("ical-r", subject="Jean - Rencontre")],
     )
-    tb._synchroniser()
+    tb._synchroniser(_integ(), "store")
     types = sorted(d["hearing_type"] for d in spy.creates)
     assert types == ["consultation", "rencontre"]
 
@@ -308,9 +411,22 @@ def test_un_mot_cle_non_mappe_retombe_sur_le_defaut_en_le_disant(
         lambda debut, fin: [_ev("ical-m", subject="Jean - Médiation")],
     )
     with caplog.at_level("WARNING"):
-        tb._synchroniser()
+        tb._synchroniser(_integ(), "store")
     assert spy.creates[0]["hearing_type"] == Config.BOOKINGS_TYPE_DEFAUT
-    assert any("sans type d'audience mapp" in r.message for r in caplog.records)
+    # ÉVÉNEMENT TYPÉ depuis le lot « Intégrations » : c'était un
+    # `logger.warning` nu, donc invisible au flux `pallas.bookings` qu'un
+    # tableau de bord surveille — tolérable tant que la carte vivait dans
+    # `config.py`, et probable depuis qu'elle s'édite dans l'application.
+    champs = [
+        getattr(r, "json_fields", {}) for r in caplog.records
+        if getattr(r, "json_fields", {}).get("event")
+        == "bookings_mot_cle_non_mappe"
+    ]
+    assert champs, "aucun événement typé émis"
+    assert champs[0]["mot_cle"] == "Médiation"
+    assert champs[0]["type_defaut"] == Config.BOOKINGS_TYPE_DEFAUT
+    # Le SUJET embarque le nom du client : jamais journalisé.
+    assert not any("Jean" in (r.getMessage() or "") for r in caplog.records)
 
 
 def test_les_deux_types_restent_extrajudiciaires():
@@ -329,7 +445,7 @@ def test_un_titre_interne_n_est_plus_importe(client, monkeypatch, spy):
         tb.graph_calendrier, "lister_reservations",
         lambda debut, fin: [_ev("ical-x", subject="Réunion d'équipe")],
     )
-    counters = tb._synchroniser()
+    counters = tb._synchroniser(_integ(), "store")
     assert counters["detectes"] == 0 and counters["crees"] == 0
     assert spy.creates == []
 
@@ -378,6 +494,6 @@ def test_un_refus_du_modele_est_journalise(client, monkeypatch, caplog):
     monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
                         lambda debut, fin: [_ev("ical-1")])
     with caplog.at_level("WARNING"):
-        counters = tb._synchroniser()
+        counters = tb._synchroniser(_integ(), "store")
     assert counters["detectes"] == 1 and counters["crees"] == 0
     assert any("cr\u00e9ation refus\u00e9e" in r.message for r in caplog.records)

@@ -29,6 +29,7 @@ from flask import Flask  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
     import routes.taches_outlook as to
+    from models.integrations import _seed_from_config
     import models.hearing as h
 
 from config import Config  # noqa: E402
@@ -47,6 +48,18 @@ def _configured(monkeypatch):
     monkeypatch.setattr(Config, "MIROIR_OUTLOOK_LOOKBACK_DAYS", 30)
     monkeypatch.setattr(Config, "MIROIR_OUTLOOK_LOOKAHEAD_DAYS", 365)
 
+
+def _integ() -> dict:
+    """Les réglages d'intégration TELS QUE ``Config`` les porte.
+
+    `_seed_from_config` lit les attributs de CLASSE, donc les fixtures
+    `monkeypatch.setattr(Config, …)` de ce fichier restent l'unique autorité :
+    aucune valeur Firestore ne peut entrer ici. C'est la raison pour laquelle
+    le paramètre est REQUIS côté route — un point d'appel oublié lève un
+    TypeError bruyant au lieu de revenir en silence à la valeur de
+    déploiement.
+    """
+    return _seed_from_config()
 
 def _audience(hid="h-1", etag="e-1", days=3, **over):
     start = NOW + timedelta(days=days)
@@ -145,7 +158,7 @@ def _run(monkeypatch, audiences, miroirs, echoue_sur=(), raw_count=None, ok=True
     monkeypatch.setattr(to.graph_miroir, "creer_miroir", s.creer)
     monkeypatch.setattr(to.graph_miroir, "corriger_miroir", s.corriger)
     monkeypatch.setattr(to.graph_miroir, "supprimer_miroir", s.supprimer)
-    return to._synchroniser(), s
+    return to._synchroniser(_integ()), s
 
 
 # ── Le diff ───────────────────────────────────────────────────────────────
@@ -426,5 +439,5 @@ def test_la_fenetre_est_partagee(monkeypatch):
 
     monkeypatch.setattr(h, "list_hearings_in_range_state", _athena)
     monkeypatch.setattr(to.graph_miroir, "lister_miroirs", _outlook)
-    to._synchroniser()
+    to._synchroniser(_integ())
     assert fenetres["athena"] == fenetres["outlook"]

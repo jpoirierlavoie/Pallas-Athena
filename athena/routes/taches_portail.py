@@ -25,6 +25,7 @@ from client.services import taches
 from config import Config
 from models import portail_invitation as pi
 from models.dossier import get_dossier
+from models.integrations import sender_display_name
 from models.partie import display_name, get_partie
 from services import portail_emission as emission
 from tz import to_mtl
@@ -418,7 +419,10 @@ def _traiter_soumission(inv_id: str, batch: str) -> None:
             )
             return
         try:
-            courriel.envoyer(invitation.get("email", ""), objet, corps)
+            courriel.envoyer(
+                invitation.get("email", ""), objet, corps,
+                expediteur_nom=sender_display_name(),
+            )
             log_portail_event(
                 "accuse_envoye", invitation_id=inv_id, batch=batch,
             )
@@ -518,7 +522,10 @@ def _traiter_intake(inv_id: str, batch: str, invitation: dict) -> None:
             quand = datetime.now(timezone.utc)
         objet, corps = _corps_confirmation_intake(quand)
         try:
-            courriel.envoyer(invitation.get("email", ""), objet, corps)
+            courriel.envoyer(
+                invitation.get("email", ""), objet, corps,
+                expediteur_nom=sender_display_name(),
+            )
             log_portail_event(
                 "intake_confirmation_envoyee",
                 invitation_id=inv_id, batch=batch,

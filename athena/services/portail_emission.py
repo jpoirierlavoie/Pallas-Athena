@@ -19,6 +19,7 @@ from flask import render_template
 from client.config import PORTAIL_HOST, PORTAIL_MAX_FILE_MB
 from config import Config
 from models import portail_invitation as inv_model
+from models.integrations import sender_display_name
 from tz import to_mtl
 from utils import courriel
 from utils.cabinet import cabinet_dict
@@ -120,7 +121,9 @@ def _expedier(email: str, objet: str, corps_html: str, lien: str,
               invitation_id: str) -> str:
     """Send the invitation email; return the manual link on any failure."""
     try:
-        courriel.envoyer(email, objet, corps_html)
+        courriel.envoyer(
+            email, objet, corps_html, expediteur_nom=sender_display_name()
+        )
     except GraphNotConfigured:
         log_portail_event(
             "courriel_echec", "refused",

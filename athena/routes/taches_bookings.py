@@ -42,7 +42,7 @@ def _fmt(dt) -> str:
     return f"{local.strftime('%Y-%m-%d %H:%M')}"
 
 
-def _type_audience(mot_cle: str) -> str:
+def _type_audience(mot_cle: str, integ: dict) -> str:
     """hearing_type dérivé du service Bookings détecté.
 
     Le juriste publie plusieurs types de rendez-vous (« Consultation »,
@@ -52,23 +52,32 @@ def _type_audience(mot_cle: str) -> str:
     entrée dans la table serait sinon importé sous un type faux, en silence.
     """
     plie = graph_calendrier._plier(mot_cle)
-    type_ = Config.BOOKINGS_TYPE_PAR_MOT_CLE.get(plie)
+    type_ = (integ.get("bookings_type_par_mot_cle") or {}).get(plie)
     if type_ is None:
-        logger.warning(
-            "bookings: mot-clé sans type d'audience mappé, repli sur %s",
-            Config.BOOKINGS_TYPE_DEFAUT,
+        defaut = integ.get("bookings_type_defaut") or Config.BOOKINGS_TYPE_DEFAUT
+        # Événement TYPÉ, plus un `logger.warning` nu : le repli est devenu
+        # probable depuis que la carte s'édite dans l'application, et une
+        # ligne non typée n'apparaît dans aucun tableau de bord. Le mot-clé
+        # est le nom d'un SERVICE choisi par le juriste — une valeur de
+        # configuration, jamais une donnée de client (le SUJET, lui, embarque
+        # le nom du client et n'est journalisé nulle part).
+        log_bookings_event(
+            "bookings_mot_cle_non_mappe",
+            "refused",
+            mot_cle=mot_cle,
+            type_defaut=defaut,
         )
-        return Config.BOOKINGS_TYPE_DEFAUT
+        return defaut
     return type_
 
 
-def _creer(r: dict, counters: dict) -> None:
+def _creer(r: dict, counters: dict, integ: dict) -> None:
     """Create a new hearing from a Bookings reservation (NO CTag bump —
     it stays invisible in DAV until confirmed)."""
     data = {
         "source": "bookings",
         "confirmation": "à_confirmer",
-        "hearing_type": _type_audience(r["mot_cle"]),
+        "hearing_type": _type_audience(r["mot_cle"], integ),
         # The meeting IS confirmed with the client (Bookings); « confirmation »
         # is the Athéna-side review gate, orthogonal to « status ».
         "status": "confirmée",
@@ -170,7 +179,7 @@ def _appliquer_annulation(existing: dict, counters: dict) -> None:
         counters["annules"] += 1
 
 
-def _debug_payload(bruts: list[dict]) -> None:
+def _debug_payload(bruts: list[dict], mots_cles: tuple) -> None:
     """§4.4 predicate tuning: log the first detected + first undetected event.
     PII-FREE — the meeting SUBJECT is NEVER logged (it embeds the client name);
     only the predicate booleans + domain-reduced addresses, which is what
@@ -189,9 +198,15 @@ def _debug_payload(bruts: list[dict]) -> None:
         return out
 
     upn = Config.BOOKINGS_JURISTE_UPN.lower()
-    detected = next((e for e in bruts if graph_calendrier.est_reservation(e)), None)
+    detected = next(
+        (e for e in bruts
+         if graph_calendrier.est_reservation(e, mots_cles=mots_cles)),
+        None,
+    )
     undetected = next(
-        (e for e in bruts if not graph_calendrier.est_reservation(e)), None
+        (e for e in bruts
+         if not graph_calendrier.est_reservation(e, mots_cles=mots_cles)),
+        None,
     )
     for label, ev in (("detected", detected), ("undetected", undetected)):
         if ev is None:
@@ -201,7 +216,7 @@ def _debug_payload(bruts: list[dict]) -> None:
             or ""
         ).lower()
         subj = ev.get("subject") or ""
-        mot_cle = graph_calendrier.mot_cle_correspondant(ev)
+        mot_cle = graph_calendrier.mot_cle_correspondant(ev, mots_cles=mots_cles)
         logger.info(
             "bookings predicate sample (%s): organizer_match=%s keyword_match=%s "
             "mot_cle=%r subject_len=%d organizer_domain=%r attendee_domains=%r",
@@ -215,15 +230,28 @@ def _debug_payload(bruts: list[dict]) -> None:
         )
 
 
-def _synchroniser() -> dict:
-    """Read the window, reconcile by graph_ical_uid, return the counters."""
+def _synchroniser(integ: dict, provenance: str) -> dict:
+    """Read the window, reconcile by graph_ical_uid, return the counters.
+
+    *integ* is « Paramètres → Intégrations », resolved ONCE by the view.
+    *provenance* is where it came from (``store`` | ``absent`` |
+    ``unreadable``) and it decides whether the absence loop stays armed — see
+    the loop itself for why that is not a nicety.
+    """
     now = datetime.now(timezone.utc)
-    debut = now - timedelta(days=Config.BOOKINGS_SYNC_LOOKBACK_DAYS)
-    fin = now + timedelta(days=Config.BOOKINGS_SYNC_LOOKAHEAD_DAYS)
+    debut = now - timedelta(days=integ["bookings_sync_lookback_days"])
+    fin = now + timedelta(days=integ["bookings_sync_lookahead_days"])
+
+    # UN SEUL liage par exécution. `extraire` recalcule le mot-clé pour qu'il
+    # « ne puisse pas diverger du prédicat qui l'a admis » ; cet invariant
+    # tenait par un global de module et tient désormais par cette ligne, donc
+    # le MÊME objet doit atteindre `est_reservation` et `extraire`. Un test
+    # épingle l'identité.
+    mots_cles = integ["bookings_subject_keywords"]
 
     bruts = graph_calendrier.lister_reservations(debut, fin)
-    if Config.BOOKINGS_DEBUG_PAYLOAD:
-        _debug_payload(bruts)
+    if integ["bookings_debug_payload"]:
+        _debug_payload(bruts, mots_cles)
 
     # THE TRAP: the reconciliation lookup must see EVERY prior import,
     # including refusée and annulée_client. list_hearings(include_unconfirmed=
@@ -240,13 +268,17 @@ def _synchroniser() -> dict:
     counters = {
         "vus": len(bruts), "detectes": 0, "crees": 0,
         "modifies": 0, "annules": 0, "divergences": 0,
+        # Vrai quand la boucle d'absence a été DÉSARMÉE faute de réglages
+        # fiables (voir la boucle). Dans les compteurs plutôt que dans un
+        # événement séparé : une seule ligne doit raconter le cycle entier.
+        "annulations_desarmees": False,
     }
     detected_uids: set[str] = set()
 
     for ev in bruts:
-        if not graph_calendrier.est_reservation(ev):
+        if not graph_calendrier.est_reservation(ev, mots_cles=mots_cles):
             continue
-        r = graph_calendrier.extraire(ev)
+        r = graph_calendrier.extraire(ev, mots_cles=mots_cles)
         counters["detectes"] += 1
         uid = r["graph_ical_uid"]
         if not uid:
@@ -264,19 +296,41 @@ def _synchroniser() -> dict:
                 _appliquer_annulation(existing, counters)
             continue
         if existing is None:
-            _creer(r, counters)
+            _creer(r, counters, integ)
         else:
             _rapprocher_modif(existing, r, counters)
 
     # Absence-based cancellation: a stored booking whose start is IN the window
     # but which Graph no longer returns was cancelled client-side. Never
     # conclude cancellation for an out-of-window event (§4.5).
-    for uid, existing in existants.items():
-        if uid in detected_uids:
-            continue
-        start = existing.get("start_datetime")
-        if isinstance(start, datetime) and debut <= start <= fin:
-            _appliquer_annulation(existing, counters)
+    #
+    # ⚠ DÉSARMÉE hors provenance « store », et ce n'est pas de la prudence
+    # décorative. Cette boucle conclut une annulation d'une ABSENCE, et
+    # l'absence est produite par le prédicat, qui est piloté par les mots-clés.
+    # Si le juriste a renommé un service Bookings et mis les mots-clés à jour
+    # dans l'application, un repli sur le jeu du DÉPLOIEMENT ne mord sur RIEN —
+    # et la boucle estampillerait alors « annulée_client » sur de vraies
+    # réservations de clients. Non-vide n'est PAS la même chose que
+    # correspondant : c'est l'erreur exacte que la conception de ce lot a
+    # d'abord commise.
+    #
+    # La création reste ARMÉE : c'est le précédent `fenetre_pleine` de
+    # `taches_outlook` — une lecture dégradée désarme les suppressions et
+    # laisse la création, parce qu'un jeu tronqué dit quand même la vérité sur
+    # ce qu'il CONTIENT. Un déploiement neuf (provenance « absent ») tourne
+    # normalement : sans cela le lot livrerait un gel d'amorçage.
+    if provenance == "store" or provenance == "absent":
+        for uid, existing in existants.items():
+            if uid in detected_uids:
+                continue
+            start = existing.get("start_datetime")
+            if isinstance(start, datetime) and debut <= start <= fin:
+                _appliquer_annulation(existing, counters)
+    else:
+        counters["annulations_desarmees"] = True
+        log_bookings_event(
+            "bookings_sync_erreur_graph", "failure", reason="reglages_replies"
+        )
 
     return counters
 
@@ -289,14 +343,31 @@ def sync():
         abort(403)
 
     if not Config.BOOKINGS_SYNC_ACTIVE:
+        # Le coupe-circuit reste sur l'environnement, à dessein : un
+        # coupe-circuit joignable seulement par l'application est inutile au
+        # moment où c'est l'application qu'on cherche à arrêter.
         return jsonify({"actif": False})
-    if not Config.BOOKINGS_SUBJECT_KEYWORDS:
+
+    # Import PARESSEUX (le patron `utils.cabinet.cabinet_dict`) : ce module est
+    # chargé par `main.py` à la création de l'application, donc un import de
+    # `models` au niveau module mettrait une lecture Firestore dans
+    # `create_app()`.
+    from models.integrations import get_integrations_state
+    integ, provenance = get_integrations_state()
+
+    if not integ["bookings_subject_keywords"]:
         # Un BOOKINGS_SUBJECT_KEYWORDS vide (valeur vide, virgule seule,
         # espaces) produit un tuple vide, et le prédicat ne mord alors JAMAIS :
         # la synchro tourne toutes les 10 minutes sans jamais rien importer, et
         # rien ne le dit. Pire, la boucle d'absence finirait par déclarer
         # « annulées côté client » les réservations déjà importées. Le dire
         # fort est la seule défense contre une panne totale silencieuse.
+        #
+        # ⚠ CE CONTRÔLE N'EST PAS DEVENU REDONDANT parce que
+        # `models/integrations._validate` refuse désormais un jeu vide. Il est
+        # le SEUL rempart contre une édition à la main dans la console
+        # Firestore, chemin que la validation du modèle ne voit jamais. Le
+        # retirer comme superflu restaurerait la panne totale silencieuse.
         log_bookings_event(
             "bookings_sync_erreur_graph", "failure", reason="aucun_mot_cle"
         )
@@ -309,7 +380,7 @@ def sync():
         return jsonify({"actif": True, "configure": False})
 
     try:
-        counters = _synchroniser()
+        counters = _synchroniser(integ, provenance)
     except (GraphError, GraphNotConfigured):
         # A Graph outage is transient — log and return 200 (the next 10-min
         # cycle retries); a 500 would only spawn a cron retry storm.

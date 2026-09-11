@@ -219,6 +219,21 @@ def get_integrations() -> dict:
     return get_integrations_state()[0]
 
 
+def sender_display_name() -> str:
+    """The outbound-email display name — the ONE convenience accessor.
+
+    Three callers send client email (the accusé, the intake confirmation and
+    the invitation), and a copy of the lazy read at each of them would be
+    three places to forget. They all already import ``models`` transitively,
+    so the lazy-import caveat that keeps the PURE modules parameter-fed does
+    not apply here.
+
+    Fails open like everything else on this path: a read failure yields the
+    deploy-time name, which is the name the client has always seen.
+    """
+    return get_integrations().get("graph_sender_name") or ""
+
+
 def _normalize(data: dict) -> dict:
     """Normalize IN PLACE, every branch gated on key presence (rule 2)."""
     if "bookings_subject_keywords" in data:
