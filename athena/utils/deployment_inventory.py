@@ -396,8 +396,15 @@ def secret_by_id(secret_id: str) -> Optional[Secret]:
 # chemin, donc `cmd.exe` n'entre pas dans la chaîne.
 #
 # **PowerShell ne convient pas, et c'est pire que ce que ce commentaire
-# disait.** « abc » y arrive en 8 octets : `ef bb bf 61 62 63 0d 0a`. Trois
-# mécanismes, pas un :
+# disait.** « abc » arrive en 8 octets à un exécutable NATIF :
+# `ef bb bf 61 62 63 0d 0a`. Mais sur Windows `gcloud` est lui-même un `.ps1`
+# qui RE-TUYAUTE (`gcloud.ps1:118` — `$input | & "$exe_path"`), donc la charge
+# subit DEUX passages et se fait terminer deux fois. Mesuré au bout, à travers
+# le vrai `gcloud`, dans un vrai Secret Manager, le 2026-09-11 : dix
+# caractères ASCII y sont devenus **16 octets**,
+# `efbbbf 6162636465666768696a 0d 0d 0a` — la nomenclature, la charge, puis le
+# CR resté du premier passage suivi du CRLF du second. Trois mécanismes, pas
+# un :
 #   1. un CRLF ajouté par OBJET du pipeline — inconditionnel, dans TOUTES les
 #      formes essayées, y compris natif→natif et y compris quand le programme
 #      amont n'émet rien ;
@@ -431,6 +438,34 @@ def expected_length_fr(secret: "Secret") -> str:
         return ""
     lo, hi = secret.shape.minimum, secret.shape.maximum
     return f"exactement {lo}" if lo == hi else f"entre {lo} et {hi}"
+
+
+# La sonde d'interpréteur, et pourquoi elle ESSAIE au lieu de regarder.
+# `command -v python3` ne suffit pas : sur Windows, `python3` est présent sur
+# le PATH sous forme de raccourci d'exécution du Microsoft Store, qui sort en
+# code 49 sans rien produire. Mesuré au pire endroit le 2026-09-11, lors d'un
+# essai réel contre un secret jetable — la valeur engendrée était VIDE, et
+# seule la comparaison de longueur a empêché d'écrire un `cf-origin-secret`
+# vide, c'est-à-dire de DÉSACTIVER en silence tout le contrôle d'origine
+# (`if not secret: return None`). Une sonde d'EXISTENCE aurait choisi le
+# raccourci cassé ; une sonde d'EXÉCUTION choisit ce qui marche.
+#
+# `py` ferme la liste : le lanceur Windows répond là où les deux autres noms
+# échouent. Sur cette machine, `python` tombe sur le venv du dépôt — où
+# bcrypt est déjà installé.
+_SONDE_PY = r"""PY=""; for c in python3 python py; do "$c" -c '' >/dev/null 2>&1 && { PY=$c; break; }; done
+if [ -n "$PY" ]; then
+  printf 'interpréteur : %s\n' "$PY"
+else
+  printf 'aucun interpréteur Python utilisable — REFUSER\n'
+fi"""
+
+_SONDE_FR = (
+    "Résoudre l'interpréteur en l'ESSAYANT, jamais en le cherchant. Sur "
+    "Windows, `python3` est un raccourci du Microsoft Store : il EXISTE sur "
+    "le PATH et sort en code 49 sans rien produire, si bien qu'un "
+    "`command -v` le choisirait et que la valeur engendrée serait vide."
+)
 
 
 def _controle_longueur(secret: "Secret", var: str = "N") -> str:
@@ -485,7 +520,7 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
        table sont tous d'une seule ligne par construction (un jeton, une clé
        d'API, une empreinte bcrypt, un secret Entra), donc un collage
        multiligne signifie qu'on a collé la mauvaise chose — et le collage
-       tronqué a l'air complet à l'écran. C'est l'étape 2 qui l'attrape, et
+       tronqué a l'air complet à l'écran. C'est le contrôle d'avant-vol qui l'attrape, et
        seulement parce qu'elle COMPARE au lieu de montrer.
     2. `printf '%s'` — `printf` est une PRIMITIVE du shell, donc la valeur ne
        passe jamais par `/proc/*/cmdline` ; et `'%s'` n'ajoute AUCUN saut de
@@ -518,18 +553,19 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
 
     if secret.origin == ORIGIN_PASSWORD:
         return [
+            (_SONDE_FR, _SONDE_PY),
             (
                 "En local, bcrypt est déjà dans l'environnement du dépôt "
                 "(c'est une dépendance épinglée) : sauter cette ligne. Elle "
                 "sert dans Cloud Shell, où il n'est pas préinstallé.",
-                "python3 -m pip install --quiet --user bcrypt",
+                '"$PY" -m pip install --quiet --user bcrypt',
             ),
             (
                 "Calculer l'empreinte ET l'écrire en UNE commande : le mot de "
                 "passe n'est jamais un argument, jamais une variable, jamais "
                 "dans l'historique. `sys.stdout.write` n'ajoute pas de saut "
                 "de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)",
-                "python3 -c 'import bcrypt, getpass, sys; "
+                '"$PY" -c ' "'" 'import bcrypt, getpass, sys; '
                 "sys.stdout.write(bcrypt.hashpw(getpass.getpass("
                 '"Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())'
                 "' \\\n"
@@ -550,12 +586,15 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
 
     etapes = []
     if secret.origin == ORIGIN_GENERATED:
+        etapes.append((_SONDE_FR, _SONDE_PY))
         etapes.append((
             "Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` "
             "par discipline : aucune ligne de cette recette n'émet de saut de "
-            "ligne.",
-            "VALEUR=$(python3 -c 'import secrets, sys; "
-            "sys.stdout.write(secrets.token_urlsafe(32))')",
+            "ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : "
+            "c'est le générateur cryptographique de la bibliothèque standard, "
+            "ce qui vaut de dépendre d'un interpréteur.",
+            """VALEUR=$("$PY" -c 'import secrets, sys; """
+            """sys.stdout.write(secrets.token_urlsafe(32))')""",
         ))
     else:
         etapes.append((
@@ -590,8 +629,8 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
         "unset VALEUR",
     ))
     etapes.append((
-        f"Relire ce qui est STOCKÉ : {attendu} octets, et le même compte qu'à "
-        "l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que "
+        f"Relire ce qui est STOCKÉ : {attendu} octets, et le même compte qu'au "
+        "le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort "
         "n'importe quel contrôle d'avant-vol — il interroge la valeur "
         "réellement enregistrée.",
         f"N=$(gcloud secrets versions access latest --secret={secret_id} \\\n"

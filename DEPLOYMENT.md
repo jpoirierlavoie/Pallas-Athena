@@ -320,9 +320,24 @@ than translated. A second, English copy is exactly the thing that would drift.
 > launcher, never to `gcloud.cmd`, so `cmd.exe` is not in the chain — check
 > yours with `file $(command -v gcloud)`.
 >
+> ⚠ **But `python3` is a trap on Windows, and it fails SILENTLY.** It is
+> present on PATH as a Microsoft Store App Execution Alias that exits 49 and
+> writes nothing, so `command -v python3` SUCCEEDS while the interpreter is
+> broken. Found by running this section for real against a throwaway secret on
+> 2026-09-11: the generated value came out EMPTY, and only the length
+> comparison stopped an empty `cf-origin-secret` from being written — which
+> would have silently disabled the entire origin check. Every block below
+> therefore resolves the interpreter by TRYING it, never by looking for it.
+>
 > **PowerShell does not work, and it is worse than a stray newline.** `abc`
-> arrives as **8 bytes** — `ef bb bf 61 62 63 0d 0a`. Three mechanisms, not
-> one: a CRLF appended once per pipeline OBJECT (unconditional, in every
+> arrives at a NATIVE executable as **8 bytes** — `ef bb bf 61 62 63 0d 0a`.
+> But on Windows `gcloud` is itself a `.ps1` that re-pipes (`gcloud.ps1:118`,
+> `$input | & "$exe_path"`), so the payload is terminated TWICE. Measured end
+> to end through the real `gcloud` into a real Secret Manager on 2026-09-11:
+> ten ASCII characters were stored as **16 bytes**,
+> `efbbbf 6162636465666768696a 0d 0d 0a` — the BOM, the payload, then the CR
+> left over from the first hop followed by the second hop's CRLF. Three
+> mechanisms, not one: a CRLF appended once per pipeline OBJECT (unconditional, in every
 > idiom tested, including native→native and including when the upstream
 > program emitted nothing); a 3-byte BOM prepended, which comes from
 > `[Console]::InputEncoding`; and `$OutputEncoding` re-encoding the payload —
@@ -367,10 +382,18 @@ never the `create` above.
 If this value is wrong or absent: l'application NE DÉMARRE PAS.
 
 ```bash
-# 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
-VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+# 1. Résoudre l'interpréteur en l'ESSAYANT, jamais en le cherchant. Sur Windows, `python3` est un raccourci du Microsoft Store : il EXISTE sur le PATH et sort en code 49 sans rien produire, si bien qu'un `command -v` le choisirait et que la valeur engendrée serait vide.
+PY=""; for c in python3 python py; do "$c" -c '' >/dev/null 2>&1 && { PY=$c; break; }; done
+if [ -n "$PY" ]; then
+  printf 'interpréteur : %s\n' "$PY"
+else
+  printf 'aucun interpréteur Python utilisable — REFUSER\n'
+fi
 
-# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
+# 2. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : c'est le générateur cryptographique de la bibliothèque standard, ce qui vaut de dépendre d'un interpréteur.
+VALEUR=$("$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+
+# 3. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
 printf '[%s]\n' "$VALEUR"
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
@@ -379,14 +402,14 @@ else
   printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
 fi
 
-# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+# 4. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add flask-secret-key \
   --project=$PROJECT --data-file=-
 
-# 4. Effacer la variable de la session.
+# 5. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+# 6. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
 N=$(gcloud secrets versions access latest --secret=flask-secret-key \
   --project=$PROJECT | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
@@ -401,10 +424,18 @@ fi
 If this value is wrong or absent: le service « portail » NE DÉMARRE PAS.
 
 ```bash
-# 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
-VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+# 1. Résoudre l'interpréteur en l'ESSAYANT, jamais en le cherchant. Sur Windows, `python3` est un raccourci du Microsoft Store : il EXISTE sur le PATH et sort en code 49 sans rien produire, si bien qu'un `command -v` le choisirait et que la valeur engendrée serait vide.
+PY=""; for c in python3 python py; do "$c" -c '' >/dev/null 2>&1 && { PY=$c; break; }; done
+if [ -n "$PY" ]; then
+  printf 'interpréteur : %s\n' "$PY"
+else
+  printf 'aucun interpréteur Python utilisable — REFUSER\n'
+fi
 
-# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
+# 2. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : c'est le générateur cryptographique de la bibliothèque standard, ce qui vaut de dépendre d'un interpréteur.
+VALEUR=$("$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+
+# 3. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
 printf '[%s]\n' "$VALEUR"
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
@@ -413,14 +444,14 @@ else
   printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
 fi
 
-# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+# 4. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add portail-secret-key \
   --project=$PROJECT --data-file=-
 
-# 4. Effacer la variable de la session.
+# 5. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+# 6. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
 N=$(gcloud secrets versions access latest --secret=portail-secret-key \
   --project=$PROJECT | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
@@ -454,7 +485,7 @@ printf '%s' "$VALEUR" | gcloud secrets versions add firebase-api-key \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 30 et 60 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+# 5. Relire ce qui est STOCKÉ : entre 30 et 60 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
 N=$(gcloud secrets versions access latest --secret=firebase-api-key \
   --project=$PROJECT | wc -c | tr -d ' ')
 if [ "$N" -ge 30 ] && [ "$N" -le 60 ]; then
@@ -469,15 +500,23 @@ fi
 If this value is wrong or absent: l'authentification DAV ne peut pas réussir — DavX5 cesse de synchroniser SANS message d'erreur.
 
 ```bash
-# 1. En local, bcrypt est déjà dans l'environnement du dépôt (c'est une dépendance épinglée) : sauter cette ligne. Elle sert dans Cloud Shell, où il n'est pas préinstallé.
-python3 -m pip install --quiet --user bcrypt
+# 1. Résoudre l'interpréteur en l'ESSAYANT, jamais en le cherchant. Sur Windows, `python3` est un raccourci du Microsoft Store : il EXISTE sur le PATH et sort en code 49 sans rien produire, si bien qu'un `command -v` le choisirait et que la valeur engendrée serait vide.
+PY=""; for c in python3 python py; do "$c" -c '' >/dev/null 2>&1 && { PY=$c; break; }; done
+if [ -n "$PY" ]; then
+  printf 'interpréteur : %s\n' "$PY"
+else
+  printf 'aucun interpréteur Python utilisable — REFUSER\n'
+fi
 
-# 2. Calculer l'empreinte ET l'écrire en UNE commande : le mot de passe n'est jamais un argument, jamais une variable, jamais dans l'historique. `sys.stdout.write` n'ajoute pas de saut de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)
-python3 -c 'import bcrypt, getpass, sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())' \
+# 2. En local, bcrypt est déjà dans l'environnement du dépôt (c'est une dépendance épinglée) : sauter cette ligne. Elle sert dans Cloud Shell, où il n'est pas préinstallé.
+"$PY" -m pip install --quiet --user bcrypt
+
+# 3. Calculer l'empreinte ET l'écrire en UNE commande : le mot de passe n'est jamais un argument, jamais une variable, jamais dans l'historique. `sys.stdout.write` n'ajoute pas de saut de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)
+"$PY" -c 'import bcrypt, getpass, sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())' \
   | gcloud secrets versions add dav-password-hash \
       --project=$PROJECT --data-file=-
 
-# 3. Relire ce qui est STOCKÉ — le compte doit valoir exactement 60, et c'est le SHELL qui compare. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
+# 4. Relire ce qui est STOCKÉ — le compte doit valoir exactement 60, et c'est le SHELL qui compare. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
 N=$(gcloud secrets versions access latest --secret=dav-password-hash \
   --project=$PROJECT | wc -c | tr -d ' ')
 if [ "$N" -eq 60 ]; then
@@ -492,10 +531,18 @@ fi
 If this value is wrong or absent: le contrôle d'origine est DÉSACTIVÉ en silence (l'accès direct à App Engine n'est plus bloqué).
 
 ```bash
-# 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
-VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+# 1. Résoudre l'interpréteur en l'ESSAYANT, jamais en le cherchant. Sur Windows, `python3` est un raccourci du Microsoft Store : il EXISTE sur le PATH et sort en code 49 sans rien produire, si bien qu'un `command -v` le choisirait et que la valeur engendrée serait vide.
+PY=""; for c in python3 python py; do "$c" -c '' >/dev/null 2>&1 && { PY=$c; break; }; done
+if [ -n "$PY" ]; then
+  printf 'interpréteur : %s\n' "$PY"
+else
+  printf 'aucun interpréteur Python utilisable — REFUSER\n'
+fi
 
-# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 128 octets attendus).
+# 2. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : c'est le générateur cryptographique de la bibliothèque standard, ce qui vaut de dépendre d'un interpréteur.
+VALEUR=$("$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+
+# 3. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 128 octets attendus).
 printf '[%s]\n' "$VALEUR"
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
@@ -504,14 +551,14 @@ else
   printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
 fi
 
-# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+# 4. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add cf-origin-secret \
   --project=$PROJECT --data-file=-
 
-# 4. Effacer la variable de la session.
+# 5. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 32 et 128 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+# 6. Relire ce qui est STOCKÉ : entre 32 et 128 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
 N=$(gcloud secrets versions access latest --secret=cf-origin-secret \
   --project=$PROJECT | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
@@ -545,7 +592,7 @@ printf '%s' "$VALEUR" | gcloud secrets versions add graph-client-secret \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 20 et 256 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+# 5. Relire ce qui est STOCKÉ : entre 20 et 256 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
 N=$(gcloud secrets versions access latest --secret=graph-client-secret \
   --project=$PROJECT | wc -c | tr -d ' ')
 if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then

@@ -438,6 +438,71 @@ def test_the_dav_recipe_never_puts_a_password_on_the_command_line():
     assert "hashpw(b'" not in commandes
 
 
+def test_no_recipe_invokes_an_interpreter_BY_NAME():
+    """Le défaut du 2026-09-11, trouvé par un essai RÉEL contre un jetable.
+
+    La recette disait `python3 -c …`. Sur Windows, `python3` EXISTE sur le
+    PATH — c'est un raccourci d'exécution du Microsoft Store — et sort en
+    code 49 sans rien produire. La valeur engendrée était donc VIDE, et seule
+    la comparaison de longueur ajoutée la veille a empêché d'écrire un
+    `cf-origin-secret` vide, c'est-à-dire de DÉSACTIVER en silence tout le
+    contrôle d'origine (`security.py` : `if not secret: return None`).
+
+    La leçon générale, et c'est elle qu'on épingle : une commande ÉCRITE mais
+    jamais EXÉCUTÉE sur la plateforme qu'elle vise peut être confiante et
+    fausse. Tout interpréteur passe désormais par `$PY`, résolu par une sonde.
+    """
+    for sid in SECRET_IDS:
+        for _c, commande in gcloud_recipe(sid, "p"):
+            for nom in ("python3 -c", "python -c", "py -c",
+                        "python3 -m", "python -m"):
+                assert nom not in commande, (sid, nom, commande[:80])
+
+
+def test_the_interpreter_probe_tests_EXECUTION_never_existence():
+    """`command -v python3` aurait choisi le raccourci cassé : il EXISTE.
+
+    La sonde doit donc lancer l'interpréteur (`-c ''`) et lire son code de
+    sortie. Épingler la forme, parce que « command -v » est exactement ce
+    qu'une main pressée écrirait en la simplifiant.
+    """
+    sondes = [
+        c for sid in SECRET_IDS for _cm, c in gcloud_recipe(sid, "p")
+        if "PY=" in c
+    ]
+    assert sondes, "aucune sonde d'interpréteur dans aucune recette"
+    for s in sondes:
+        assert "command -v" not in s, (
+            "la sonde teste l'EXISTENCE — c'est ce qui a choisi le raccourci "
+            "cassé du Microsoft Store"
+        )
+        assert '-c \'\'' in s or '-c ""' in s, "la sonde ne lance rien"
+        assert "REFUSER" in s, "aucune branche ne refuse quand rien ne marche"
+
+
+def test_every_recipe_that_needs_python_carries_the_probe():
+    """Une recette qui emploie `$PY` sans l'avoir résolu écrirait une valeur
+    VIDE — précisément le mode de défaillance qu'on vient de mesurer."""
+    for sid in SECRET_IDS:
+        commandes = [c for _c, c in gcloud_recipe(sid, "p")]
+        # « $PY -c » / « $PY -m », c'est-à-dire l'INVOQUER. La sonde
+        # elle-même mentionne `$PY` pour l'annoncer, donc chercher la simple
+        # mention ferait de la sonde son propre usage et l'ordre serait
+        # trivialement satisfait — un test vert qui ne teste rien.
+        invoque = [c for c in commandes if '"$PY" -' in c]
+        emploie = bool(invoque)
+        resout = any(c.startswith('PY=') for c in commandes)
+        assert emploie == resout, (
+            sid,
+            "emploie $PY sans le résoudre" if emploie else
+            "résout $PY sans l'employer",
+        )
+        if resout:
+            i_sonde = next(i for i, c in enumerate(commandes) if c.startswith("PY="))
+            i_usage = next(i for i, c in enumerate(commandes) if '"$PY" -' in c)
+            assert i_sonde < i_usage, (sid, "la sonde vient APRÈS son usage")
+
+
 def test_an_unknown_secret_id_renders_NOTHING():
     """La table est FERMÉE. La page qui rend ces lignes existe pour qu'on y
     copie du shell : une chaîne arbitraire ne doit pas pouvoir y devenir une
