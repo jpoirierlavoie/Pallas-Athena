@@ -5,134 +5,132 @@
    Both expect: url, target. Optional: extra_vals dict for extra hx-vals params.
 
    Both modes also carry pagination._nav()'s identical key set (has_total,
-   last_page, prev/next/jump targets, show_* flags), which is what lets ONE
-   block of markup serve both with no arithmetic in the template.
+   last_page, prev/next/jump targets, show_* and *_possible flags), which is
+   what lets ONE block of markup serve both with no arithmetic in the template.
 
-   EVERY control emits "page". Carrying it only on the leap cluster would let
-   the label collapse to 3/4/5 while the data read 13/14/15, and would leave
-   the freeze-at-22 bug in place.
+   EVERY live control emits "page". Carrying it only on the leap cluster would
+   let the label collapse to 3/4/5 while the data read 13/14/15, and would
+   leave the freeze-at-22 bug in place.
 
    The leap controls are mode-agnostic: they emit an EMPTY cursor and trail,
    which is precisely what routes the request to the route's absolute-page
    branch. Clearing them is safe because cursors are not form fields, so
    hx-include cannot reintroduce one.
 
-   When the total is unknown (a count that failed), show_end/show_jump are
-   false and row 2 is not rendered at all.
-
-   ── ICON-ONLY (2026-09-11) ──────────────────────────────────────────────
+   ── ONE ROW, COUNTER BELOW (2026-09-11) ─────────────────────────────────
    Six glyphs, no label text: chevron (walk one page), double chevron (leap
-   ±jump_size), bar-chevron (first / last page). Two consequences the markup
-   has to carry deliberately:
+   ±jump_size), bar-chevron (first / last page) — ordered by DESTINATION
+   (1, p−10, p−1, p+1, p+10, L), a spatial number line that also keeps the two
+   long-range controls at the outer edges, so a mis-tap on « Suivant » costs
+   10 pages instead of a jump to the end.
 
    * A glyph is the control's ONLY affordance, so every button needs BOTH
      `aria-label` (ms() renders aria-hidden, so the glyph contributes nothing
      to the accessible name) AND `title` — with no text, hover on a desktop
      and long-press on a phone are the only ways to learn what a button does.
-     The last-page title keeps its destination number, which is what the old
-     « Fin (42) » label used to say out loud.
-   * Losing the labels SHRINKS the hit area, so the padding grows to `px-4`
-     with a 20 px glyph: 54 × 46 px, clearing the documented 44 px minimum
-     that the old `px-3 py-1.5` never met. That is also why the bar stays on
-     TWO rows — six 54 px controls plus the counter measure ~409 px, and a
-     375 px viewport has ~343 px of usable width. #}
-{% if pagination and (pagination.has_prev or pagination.has_next) %}
-{% set extra %}{% if pagination.extra_vals %}{% for k, v in pagination.extra_vals.items() %}, "{{ k }}": "{{ v }}"{% endfor %}{% endif %}{% endset %}
-{% set p = pagination %}
-{% set walk = "inline-flex items-center justify-center px-4 py-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
-{% set leap = "inline-flex items-center justify-center px-4 py-3 text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
+     A DISABLED button keeps both: a screen reader still reads it in browse
+     mode, and an unnamed grey square is unidentifiable.
+   * Geometry: `.ms-20` is 21 px (app.input.css — the .ms-N names are
+     deliberately offset from their pixel size), so `px-3 py-3` + a 1 px
+     border is 47 × 47, clearing the Rule-9 minimum of 44. Six of them are
+     282 px against ~343 px of usable width at 375 px (max-w-4xl px-4). The
+     counter moved to its own line to free the ~85 px it ate inline — which
+     is what made one row impossible before, not the buttons.
+   * `justify-between` with NO gap, not `justify-center gap-2`: padding is rem
+     while the glyph is px, so at a root font-size of 18 px the gapped row
+     needs 345 px against 339 px and CLIPS the last control — « Fin », whose
+     title carries the destination number. Edge-to-edge needs only 6× the
+     button (300 px at root 18, 318 at 20) and widens the separation between
+     six adjacent targets from 8 px to 12.2 px. `flex-wrap` is the backstop
+     past that; `w-full` is load-bearing, since a content-sized row leaves
+     justify-between nothing to distribute.
+
+   ── RENDER PER LIST, DISABLE PER PAGE ───────────────────────────────────
+   A control is RENDERED when it could ever apply on this list (*_possible)
+   and ENABLED when it applies on this page (show_* / jump_*_page). So the
+   button under the finger never moves during a walk, and no control is drawn
+   that is dead on every page of the list. Slot counts, constant per list:
+   2 pages → 2 · 3-11 → 4 · ≥12 → 6 · no total → 3. « Début » survives the
+   countless case because page 1 is offset 0, and it is the only escape from
+   a deep countless walk (« Précédent » moves one page and the trail caps at
+   MAX_TRAIL). Caveat worth knowing: has_total is recomputed per request, so
+   an INTERMITTENTLY failing count still flips the bar 6 ↔ 3 mid-walk.
+
+   A disabled control carries NO hx-* attribute at all — `:disabled` is not a
+   guard (DevTools re-enables any button), and it also keeps a None jump
+   target out of the emitted JSON. Its class string OMITS hover:bg-gray-50 and
+   cursor-pointer: CSS :hover matches a disabled element and Tailwind adds no
+   :not(:disabled), so an inert button would light up. That rule lives inside
+   @media (hover:hover), which makes the defect invisible on the phone and
+   visible on a desktop. There is no disabled:bg-* in the compiled artifact,
+   so omission is the only fix that avoids the seven-file asset fan-out.
+
+   `cursor is none` means « omit cursor/trail entirely » (page mode's walk);
+   an empty string is a real value and is emitted, which is what a leap needs
+   and what the true first page of a cursor walk already carried. #}
+{% macro ctrl(p, extra, live, page_no, cursor, trail, glyph, nom) %}
+{%- set actif = "inline-flex items-center justify-center px-3 py-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
+{%- set inerte = "inline-flex items-center justify-center px-3 py-3 text-gray-700 bg-white border border-gray-300 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed" %}
+{%- if live %}
+    <button type="button"
+       hx-get="{{ p.url }}"
+       hx-target="{{ p.target }}"
+       hx-include="#filters input, #filters select"
+       {% if cursor is none -%}
+       hx-vals='{"page": "{{ page_no }}"{{ extra }}}'
+       {%- else -%}
+       hx-vals='{"cursor": "{{ cursor }}", "trail": "{{ trail }}", "page": "{{ page_no }}"{{ extra }}}'
+       {%- endif %}
+       hx-push-url="true"
+       aria-label="{{ nom }}"
+       title="{{ nom }}"
+       class="{{ actif }}">{{ glyph }}</button>
+{%- else %}
+    <button type="button" disabled
+       aria-label="{{ nom }}"
+       title="{{ nom }}"
+       class="{{ inerte }}">{{ glyph }}</button>
+{%- endif %}
+{% endmacro -%}
+{% if pagination and (pagination.has_prev or pagination.has_next) -%}
+{% set extra %}{% if pagination.extra_vals %}{% for k, v in pagination.extra_vals.items() %}, "{{ k }}": "{{ v }}"{% endfor %}{% endif %}{% endset -%}
+{% set p = pagination -%}
+{% set cur = p.mode == 'cursor' -%}
 <nav class="flex flex-col gap-2 pt-4" aria-label="Pagination">
+  <div class="flex flex-wrap items-center justify-between w-full">
+    {%- if p.first_possible %}
+    {{ ctrl(p, extra, p.show_first, 1, '', '',
+            ms('first_page', 20), 'Première page') }}
+    {%- endif %}
 
-  {# ── Row 1: the walk ─────────────────────────────────────────────── #}
-  <div class="flex items-center justify-between">
-    {% if p.has_prev %}
-    <button type="button"
-       hx-get="{{ p.url }}"
-       hx-target="{{ p.target }}"
-       hx-include="#filters input, #filters select"
-       {% if p.mode == 'cursor' %}
-       hx-vals='{"cursor": "{{ p.prev_cursor }}", "trail": "{{ p.prev_trail }}", "page": "{{ p.prev_page }}"{{ extra }}}'
-       {% else %}
-       hx-vals='{"page": "{{ p.prev_page }}"{{ extra }}}'
-       {% endif %}
-       hx-push-url="true"
-       aria-label="Page précédente"
-       title="Page précédente"
-       class="{{ walk }}">{{ ms('chevron_left', 20) }}</button>
-    {% else %}
-    <span></span>
-    {% endif %}
+    {%- if p.jump_possible %}
+    {{ ctrl(p, extra, p.jump_prev_page, p.jump_prev_page, '', '',
+            ms('keyboard_double_arrow_left', 20),
+            'Reculer de ' ~ p.jump_size ~ ' pages') }}
+    {%- endif %}
 
-    <span class="text-sm text-gray-500" role="status"{% if not p.page_exact %} title="Position approximative — la numérotation se corrige au prochain déplacement"{% endif %}>
-      Page {{ p.page }}{% if p.has_total %} / {{ p.total_pages }}{% endif %}
-    </span>
+    {{ ctrl(p, extra, p.has_prev, p.prev_page,
+            p.prev_cursor if cur else none, p.prev_trail if cur else none,
+            ms('chevron_left', 20), 'Page précédente') }}
 
-    {% if p.has_next %}
-    <button type="button"
-       hx-get="{{ p.url }}"
-       hx-target="{{ p.target }}"
-       hx-include="#filters input, #filters select"
-       {% if p.mode == 'cursor' %}
-       hx-vals='{"cursor": "{{ p.next_cursor }}", "trail": "{{ p.next_trail }}", "page": "{{ p.next_page }}"{{ extra }}}'
-       {% else %}
-       hx-vals='{"page": "{{ p.next_page }}"{{ extra }}}'
-       {% endif %}
-       hx-push-url="true"
-       aria-label="Page suivante"
-       title="Page suivante"
-       class="{{ walk }}">{{ ms('chevron_right', 20) }}</button>
-    {% else %}
-    <span></span>
-    {% endif %}
+    {{ ctrl(p, extra, p.has_next, p.next_page,
+            p.next_cursor if cur else none, p.next_trail if cur else none,
+            ms('chevron_right', 20), 'Page suivante') }}
+
+    {%- if p.jump_possible %}
+    {{ ctrl(p, extra, p.jump_next_page, p.jump_next_page, '', '',
+            ms('keyboard_double_arrow_right', 20),
+            'Avancer de ' ~ p.jump_size ~ ' pages') }}
+    {%- endif %}
+
+    {%- if p.last_possible %}
+    {{ ctrl(p, extra, p.show_end, p.last_page, '', '',
+            ms('last_page', 20), 'Dernière page (' ~ p.last_page ~ ')') }}
+    {%- endif %}
   </div>
 
-  {# ── Row 2: the leap. Rendered only when a leap control exists. ───── #}
-  {% if p.show_first or p.jump_prev_page or p.jump_next_page or p.show_end %}
-  <div class="flex items-center justify-center gap-2">
-    {% if p.show_first %}
-    <button type="button"
-       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
-       hx-include="#filters input, #filters select"
-       hx-vals='{"cursor": "", "trail": "", "page": "1"{{ extra }}}'
-       hx-push-url="true"
-       aria-label="Première page"
-       title="Première page"
-       class="{{ leap }}">{{ ms('first_page', 20) }}</button>
-    {% endif %}
-
-    {% if p.jump_prev_page %}
-    <button type="button"
-       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
-       hx-include="#filters input, #filters select"
-       hx-vals='{"cursor": "", "trail": "", "page": "{{ p.jump_prev_page }}"{{ extra }}}'
-       hx-push-url="true"
-       aria-label="Reculer de {{ p.jump_size }} pages"
-       title="Reculer de {{ p.jump_size }} pages"
-       class="{{ leap }}">{{ ms('keyboard_double_arrow_left', 20) }}</button>
-    {% endif %}
-
-    {% if p.jump_next_page %}
-    <button type="button"
-       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
-       hx-include="#filters input, #filters select"
-       hx-vals='{"cursor": "", "trail": "", "page": "{{ p.jump_next_page }}"{{ extra }}}'
-       hx-push-url="true"
-       aria-label="Avancer de {{ p.jump_size }} pages"
-       title="Avancer de {{ p.jump_size }} pages"
-       class="{{ leap }}">{{ ms('keyboard_double_arrow_right', 20) }}</button>
-    {% endif %}
-
-    {% if p.show_end %}
-    <button type="button"
-       hx-get="{{ p.url }}" hx-target="{{ p.target }}"
-       hx-include="#filters input, #filters select"
-       hx-vals='{"cursor": "", "trail": "", "page": "{{ p.last_page }}"{{ extra }}}'
-       hx-push-url="true"
-       aria-label="Dernière page ({{ p.last_page }})"
-       title="Dernière page ({{ p.last_page }})"
-       class="{{ leap }}">{{ ms('last_page', 20) }}</button>
-    {% endif %}
-  </div>
-  {% endif %}
+  <span class="text-sm text-gray-500 text-center" role="status"{% if not p.page_exact %} title="Position approximative — la numérotation se corrige au prochain déplacement"{% endif %}>
+    Page {{ p.page }}{% if p.has_total %} / {{ p.total_pages }}{% endif %}
+  </span>
 </nav>
 {% endif %}

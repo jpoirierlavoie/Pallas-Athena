@@ -123,19 +123,25 @@ def _nav(page: int, total: Optional[int], page_size: int = PAGE_SIZE) -> dict:
     # « Début » that already does. This strict rule is also what makes the
     # request's « for larger sets » condition emerge from the data instead of
     # from a guessed threshold: below ~12 pages neither target can qualify.
-    # `has_total` gates BOTH directions, not just the forward one: a
-    # backward leap is an absolute-offset read too, and resolve_page REFUSES
-    # one without a total. Ungated, a failed count at page 15 would render a
-    # « −10 » that silently landed on page 1 — a control lying about itself.
+    #
+    # `in_range` gates BOTH directions, and it carries two terms for the same
+    # fault — a control lying about itself. `has_total`: a leap is an
+    # absolute-offset read and resolve_page REFUSES one without a total, so
+    # ungated, a failed count at page 15 would render a « −10 » that silently
+    # landed on page 1. `page <= last_page`: `page` is deliberately NOT
+    # clamped to the total on the cursor path (see resolve_page), so page 40
+    # of a 3-page list is reachable — and there a « −10 » targets page 30,
+    # which resolve_page clamps to the stale total: the reader goes back 37
+    # pages, not 10, and the label resets to « Page 3 / 3 ». Redundant on
+    # the forward side (page + JUMP < L ⟹ page < L), stated on both so the
+    # implication is read off the line instead of re-derived.
     # « Début » needs no total (page 1 is offset 0), so show_first stays free.
-    jump_prev = (
-        page - JUMP_PAGES if has_total and page - JUMP_PAGES > 1 else None
-    )
+    in_range = has_total and page <= last_page
+    jump_prev = page - JUMP_PAGES if in_range and page - JUMP_PAGES > 1 else None
     jump_next = (
-        page + JUMP_PAGES
-        if has_total and page + JUMP_PAGES < last_page
-        else None
+        page + JUMP_PAGES if in_range and page + JUMP_PAGES < last_page else None
     )
+    show_first = page > 2
     return {
         "total": total,
         "total_pages": last_page,
@@ -148,12 +154,39 @@ def _nav(page: int, total: Optional[int], page_size: int = PAGE_SIZE) -> dict:
         "jump_prev_page": jump_prev,
         "jump_next_page": jump_next,
         # At page 2, « Début » duplicates « Précédent ».
-        "show_first": page > 2,
+        "show_first": show_first,
         # At the penultimate page, « Suivant » IS the end.
         "show_end": has_total and last_page > page + 1,
         # Derived, never a second threshold that could drift from the rule.
         "show_jump": jump_prev is not None or jump_next is not None,
         "jump_size": JUMP_PAGES,
+        # ── Per-LIST capability ───────────────────────────────────────────
+        # The flags above answer « does this control apply on THIS page? »;
+        # these answer « could it EVER apply on this list? ». The component
+        # RENDERS on the second and DISABLES on the first, so the row keeps a
+        # constant shape for a whole walk of one list while no permanently
+        # dead control is ever drawn. Each is the existential closure of its
+        # per-page rule over page ∈ [1..last_page]:
+        #   show_first ⟺ page > 2            → ∃ ⟺ L ≥ 3
+        #   show_end   ⟺ page ≤ L − 2        → ∃ ⟺ L ≥ 3
+        #   jump_prev  ⟺ page ≥ JUMP + 2     → ∃ ⟺ L ≥ JUMP + 2
+        #   jump_next  ⟺ page ≤ L − JUMP − 1 → ∃ ⟺ L ≥ JUMP + 2
+        # The two ends coincide at L ≥ 3 by arithmetic accident — each rule
+        # happens to cost two pages — NOT by derivation, so they stay two
+        # expressions: one shared flag would drift the day either rule moved.
+        #
+        # `enabled ⟹ rendered` must hold, or a control vanishes exactly when
+        # it would have worked. It holds by arithmetic for show_end and
+        # jump_next (each bounds L from below on its own), by `in_range` for
+        # jump_prev, and by the explicit `or show_first` here — page 1 is
+        # offset 0, so « Début » is valid under ANY total and must never be
+        # hidden while it applies. `not has_total` keeps it on a countless
+        # list too, where it is the ONLY way home: « Précédent » moves one
+        # page, the trail caps at MAX_TRAIL, and a failed count is the DEEP
+        # case by nature (a count fails on big collections, not small ones).
+        "first_possible": (not has_total) or last_page >= 3 or show_first,
+        "last_possible": has_total and last_page >= 3,
+        "jump_possible": has_total and last_page >= JUMP_PAGES + 2,
     }
 
 

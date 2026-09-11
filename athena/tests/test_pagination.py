@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 from pagination import (
+    JUMP_PAGES,
     MAX_PAGE,
     MAX_TRAIL,
     PAGE_SIZE,
@@ -339,6 +340,14 @@ def test_a_missing_total_hides_every_jump_control():
     assert profond["show_jump"] is False
     # « Début » ne demande AUCUN total (la page 1 est l'offset 0).
     assert profond["show_first"] is True
+    # …et il est RENDU, ce qui est une décision distincte : sur une liste sans
+    # compte c'est la seule sortie (« Précédent » avance d'une page et la
+    # traîne plafonne à MAX_TRAIL), et un compte qui échoue est le cas
+    # PROFOND par nature. Les deux autres bouts, eux, ne peuvent rien offrir.
+    assert profond["first_possible"] is True
+    assert profond["last_possible"] is False
+    assert profond["jump_possible"] is False
+    assert ctx["first_possible"] is True
     # Un vrai zéro reste distinguable d'un compte absent.
     vide = cursor_pagination(cursor=None, trail=[], next_cursor=None,
                              url="/x", target="#r", page=1, total=0)
@@ -378,6 +387,11 @@ def test_jump_and_end_never_duplicate_their_neighbours():
     # Assez loin des deux bords, les deux sauts se justifient.
     milieu = nav(15, 40)
     assert (milieu["jump_prev_page"], milieu["jump_next_page"]) == (5, 25)
+    # Page 5 sur 12 : les deux sauts sont inapplicables ICI, mais la liste EN
+    # A un — la page 12 peut reculer, la page 1 peut avancer. Ils sont donc
+    # rendus, grisés ; à 11 pages aucune page ne le pourrait jamais.
+    assert nav(5, 12)["jump_possible"] is True
+    assert nav(5, 11)["jump_possible"] is False
     # « Début » duplique « Précédent » à la page 2 ; « Fin » duplique
     # « Suivant » à l'avant-dernière.
     assert nav(2, 40)["show_first"] is False and nav(3, 40)["show_first"] is True
@@ -400,3 +414,71 @@ def test_paginate_now_surfaces_the_total_it_always_had():
     assert ctx["total_pages"] == 3
     assert ctx["has_total"] is True
     assert ctx["page_exact"] is True
+
+
+def test_the_per_list_capability_flags_are_tight_at_both_bounds():
+    """Chaque drapeau est la clôture existentielle de sa règle par page.
+
+    Le composant RENDRE sur ces drapeaux et GRISE sur les règles par page, si
+    bien qu'un seuil trop bas dessine un contrôle mort sur toute la liste et
+    qu'un seuil trop haut cache un contrôle qui s'applique. Les deux bornes
+    sont donc épinglées, pas seulement le cas heureux.
+
+    Les deux bouts coïncident à L ≥ 3 par ACCIDENT arithmétique — chacune des
+    deux règles coûte deux pages — et non par dérivation : c'est pourquoi ils
+    restent deux expressions, et pourquoi ce test les interroge séparément.
+    """
+    def nav(page, pages):
+        return cursor_pagination(cursor="c", trail=[], next_cursor="c2",
+                                 url="/x", target="#r", page=page,
+                                 total=pages * PAGE_SIZE)
+
+    # L = 2 : aucune des deux extrémités ne peut s'appliquer sur AUCUNE page
+    # (show_first exige page > 2, show_end exige page ≤ L − 2). C'est le seul
+    # endroit où ces deux drapeaux changent quelque chose — et `_matrice()` du
+    # test de composant ne porte aucun cas L = 2.
+    for page in (1, 2):
+        assert nav(page, 2)["first_possible"] is False, page
+        assert nav(page, 2)["last_possible"] is False, page
+    # L = 3 : « Début » s'applique à la page 3, « Fin » à la page 1.
+    assert nav(1, 3)["first_possible"] is True
+    assert nav(1, 3)["last_possible"] is True
+    assert nav(3, 3)["show_first"] is True and nav(1, 3)["show_end"] is True
+
+    # Les sauts : rien avant JUMP_PAGES + 2, où chacun s'applique sur
+    # exactement UNE page. Relever le seuil cacherait ce « −10 » réel.
+    assert nav(1, JUMP_PAGES + 1)["jump_possible"] is False
+    assert nav(1, JUMP_PAGES + 2)["jump_possible"] is True
+    assert nav(JUMP_PAGES + 2, JUMP_PAGES + 2)["jump_prev_page"] == 2
+    assert nav(1, JUMP_PAGES + 2)["jump_next_page"] == JUMP_PAGES + 1
+
+
+def test_a_page_past_a_stale_total_is_never_offered_a_backward_leap():
+    """Le défaut réparé par ce lot, épinglé au niveau de la RÈGLE.
+
+    `page` n'est délibérément pas ramené au total sur le chemin curseur (un
+    compte périmé ne doit pas figer un libellé dont les lignes avancent), donc
+    `page > last_page` est un état de production. Un « −10 » y visait la page
+    30 d'une liste de 3 pages ; le saut vide le curseur, si bien que
+    resolve_page(30, 3, has_cursor=False) répond (3, 30) — le lecteur est
+    téléporté page 3 sous une étiquette « 30 ».
+    """
+    def nav(page, pages):
+        return cursor_pagination(cursor="c", trail=["c0"], next_cursor="c2",
+                                 url="/x", target="#r", page=page,
+                                 total=pages * PAGE_SIZE)
+
+    assert nav(40, 3)["jump_prev_page"] is None
+    assert nav(12, 11)["jump_prev_page"] is None
+    # Ce que l'ancienne règle faisait vraiment : le saut vide le curseur, donc
+    # resolve_page écrête sa cible au total périmé et lit l'offset de la page
+    # 3. Un « Reculer de 10 pages » qui recule de 37, et repose le libellé à
+    # « Page 3 / 3 » — le contrôle ne fait pas ce que son titre annonce.
+    assert resolve_page(30, 3, has_cursor=False) == (3, 2 * PAGE_SIZE)
+    # Le libellé de la position COURANTE, lui, reste NON écrêté : c'est la
+    # règle qui rend cet état atteignable, et elle est délibérée.
+    assert nav(40, 3)["page"] == 40
+    # En revanche « Début » reste offert : la page 1 est l'offset 0, donc ce
+    # saut ne peut pas mentir, quel que soit le total.
+    assert nav(40, 3)["show_first"] is True
+    assert nav(40, 3)["first_possible"] is True
