@@ -38,11 +38,13 @@ from utils.deployment_inventory import (  # noqa: E402
     REQUIRED_ENV,
     SCAN_FILES,
     SECRET_BACKED_ENV,
-    SECRET_IDS,
     SECRETS,
+    SECRET_IDS,
     SHAPE_FAIL,
     SHAPE_WARN,
     WRITABLE_SECRET_IDS,
+    expected_length_fr,
+    gcloud_recipe,
     secret_by_id,
     stray_whitespace,
 )
@@ -312,6 +314,151 @@ def test_stray_whitespace_reports_both_sides():
 def test_stray_whitespace_never_echoes_the_value():
     message = stray_whitespace("SENTINELLE\n")
     assert message and "SENTINELLE" not in message
+
+
+# ── La recette `gcloud` — DÉRIVÉE, jamais littérale ─────────────────────
+#
+# Chaque balayage tourne sur les SIX secrets. Une assertion écrite contre un
+# identifiant en particulier ne dirait rien du septième, et un septième est
+# précisément ce qui est arrivé à « les quatre secrets » de §4.2.
+
+
+def _lignes_de_recette():
+    for sid in SECRET_IDS:
+        for commentaire, commande in gcloud_recipe(sid, "projet-essai"):
+            yield sid, commentaire, commande
+
+
+def _lignes_d_ecriture():
+    for sid, _c, commande in _lignes_de_recette():
+        if "secrets versions add" in commande:
+            yield sid, commande
+
+
+def test_every_secret_has_a_recipe():
+    for sid in SECRET_IDS:
+        assert gcloud_recipe(sid, "p"), sid
+
+
+def test_every_write_line_pipes_from_a_newline_free_producer():
+    """Tout le piège tient là. `printf '%s'` et `sys.stdout.write` n'émettent
+    AUCUN saut de ligne ; `echo`, `print(` et un heredoc en ajoutent un — et
+    `gcloud secrets versions add` stocke la charge VERBATIM, `config.py` ne
+    dépouillant rien. Un octet de trop sur `cf-origin-secret`, c'est 403 sur
+    tout le site ; sur `dav-password-hash`, c'est DavX5 qui cesse de
+    synchroniser sans un mot."""
+    for sid, commande in _lignes_d_ecriture():
+        assert ("printf '%s'" in commande) or ("sys.stdout.write" in commande), sid
+        assert "echo " not in commande, sid
+        assert "print(" not in commande, sid
+        assert "<<" not in commande, sid
+
+
+def test_no_command_anywhere_uses_echo_or_a_heredoc():
+    """Y compris les étapes qui n'écrivent pas : la recette ENSEIGNE une
+    forme, et une ligne d'exemple en `echo` est celle qu'on recopiera le jour
+    où l'on improvisera."""
+    for sid, _c, commande in _lignes_de_recette():
+        assert "echo " not in commande, (sid, commande)
+        assert "<<" not in commande, (sid, commande)
+
+
+def test_every_write_line_uses_data_file_and_never_data_equals():
+    """`--data=` déposerait la valeur dans `ps` et dans l'historique."""
+    for sid, commande in _lignes_d_ecriture():
+        assert "--data-file=-" in commande, sid
+        assert "--data=" not in commande, sid
+
+
+def test_every_write_line_adds_a_VERSION_never_creates_a_secret():
+    """Le défaut de §6.4 : chaque ligne y disait `secrets create` — juste au
+    tout premier déploiement, faux pour toutes les rotations depuis, et
+    l'échec ressemble alors à une panne."""
+    for sid, commande in _lignes_d_ecriture():
+        assert "secrets versions add" in commande, sid
+    for sid, _c, commande in _lignes_de_recette():
+        assert "secrets create" not in commande, sid
+
+
+def test_every_recipe_reads_the_stored_value_back():
+    """Le contrôle d'APRÈS-VOL, et c'est lui qui rend inutile un validateur
+    côté navigateur : `.strip()` de Python et `.trim()` de JavaScript ne
+    s'accordent pas sur six caractères, dont la MOM d'un collage Windows —
+    un prédicat en JS ne serait donc pas une transcription mais un AUTRE
+    prédicat, en désaccord sur l'entrée la plus probable."""
+    for sid in SECRET_IDS:
+        commandes = [c for _c, c in gcloud_recipe(sid, "p")]
+        assert any("versions access latest" in c and "wc -c" in c
+                   for c in commandes), sid
+
+
+def test_the_dav_recipe_never_puts_a_password_on_the_command_line():
+    """§6.4 faisait `hashpw(b'YOUR_DAV_PASSWORD', …)`, ce qui dépose le mot de
+    passe DAV EN CLAIR dans `~/.bash_history` — et le mot de passe DAV, lui,
+    ne tourne pas tout seul."""
+    commandes = " ".join(c for _c, c in gcloud_recipe("dav-password-hash", "p"))
+    assert "getpass" in commandes
+    assert "YOUR_DAV_PASSWORD" not in commandes
+    assert "hashpw(b'" not in commandes
+
+
+def test_an_unknown_secret_id_renders_NOTHING():
+    """La table est FERMÉE. La page qui rend ces lignes existe pour qu'on y
+    copie du shell : une chaîne arbitraire ne doit pas pouvoir y devenir une
+    commande."""
+    for inconnu in ("", "inexistant", "cf-origin-secret; rm -rf /",
+                    "--data=TOUT", "$(whoami)"):
+        assert gcloud_recipe(inconnu, "p") == [], inconnu
+
+
+def test_an_empty_project_renders_a_placeholder_not_an_empty_string():
+    """`--project=` vide vise le projet ACTIF de `gcloud`, ce qui est
+    exactement comment on écrit dans le projet de quelqu'un d'autre."""
+    commandes = " ".join(c for _c, c in gcloud_recipe("cf-origin-secret"))
+    assert "$PROJECT" in commandes
+    assert "--project= " not in commandes and not commandes.endswith("--project=")
+
+
+def test_the_expected_length_is_DERIVED_from_the_shape():
+    """Le nombre annoncé dans le commentaire doit venir du contrôle qui le
+    vérifie. Recopié à la main, il dérive — c'est l'histoire entière de ce
+    module."""
+    for secret in SECRETS:
+        if secret.shape is None:
+            continue
+        lo, hi = secret.shape.minimum, secret.shape.maximum
+        attendu = expected_length_fr(secret)
+        assert str(lo) in attendu and str(hi) in attendu, secret.secret_id
+        texte = " ".join(c for c, _cmd in gcloud_recipe(secret.secret_id, "p"))
+        assert attendu in texte, secret.secret_id
+
+
+def test_the_bcrypt_expected_length_is_exact_not_a_range():
+    assert expected_length_fr(secret_by_id("dav-password-hash")) == "exactement 60"
+
+
+def test_every_recipe_is_valid_bash():
+    """Une recette qu'on ne peut pas coller est une recette qui ment. Sauté
+    proprement là où `bash` n'existe pas plutôt que rendu vert par accident."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("bash"):
+        pytest.skip("bash absent")
+    for sid in SECRET_IDS:
+        script = "\n".join(c for _c, c in gcloud_recipe(sid, "p"))
+        r = subprocess.run(["bash", "-n"], input=script, text=True,
+                           capture_output=True)
+        assert r.returncode == 0, (sid, r.stderr)
+
+
+def test_the_recipe_names_the_windows_trap():
+    """Cette machine est sous Windows 11. `IFS= read -rs` est du bash, et un
+    tuyau PowerShell vers `gcloud --data-file=-` est un GÉNÉRATEUR de saut de
+    ligne : le piège même que la recette ferme. Il est dit dans le module ET
+    sur la page."""
+    src = _lire("utils", "deployment_inventory.py")
+    assert "PowerShell" in src and "Cloud Shell" in src
 
 
 # ── La complétude de SCAN_FILES, DÉRIVÉE ────────────────────────────────
@@ -632,3 +779,85 @@ def test_render_json_carries_the_detail_dict():
     assert charge["worst"] == OK
     ligne = charge["sections"][0]["rows"][0]
     assert ligne["detail"] == {"secret_id": "cf-origin-secret", "char_length": 43}
+
+
+# ── DEPLOYMENT.md, ÉPINGLÉ CONTRE LE CODE ───────────────────────────────
+#
+# §4.2 a dit « the four Secret Manager secrets » du jour où
+# `portail-secret-key` est arrivé en cinquième, et §6.4 portait trois défauts
+# de la famille « recopié à la main ». Le remède n'est pas de corriger le
+# texte : c'est de l'ENGENDRER et de l'épingler, faute de quoi le prochain
+# secret rouvre exactement le même trou.
+
+
+def _deployment_md() -> str:
+    return io.open(os.path.join(_ROOT, "DEPLOYMENT.md"), encoding="utf-8").read()
+
+
+def test_section_6_4_matches_gcloud_recipe_command_for_command():
+    """Le contrat qui rend la page structurellement meilleure que le document
+    plutôt qu'une seconde copie de lui. Chaque commande rendue à l'écran doit
+    figurer VERBATIM dans §6.4 — donc modifier l'une sans l'autre casse le
+    déploiement, ce qui est précisément ce qu'on veut."""
+    doc = _deployment_md()
+    manquantes = []
+    for sid in SECRET_IDS:
+        for _commentaire, commande in gcloud_recipe(sid):
+            if commande not in doc:
+                manquantes.append((sid, commande.splitlines()[0]))
+    assert not manquantes, (
+        "DEPLOYMENT.md §6.4 a dérivé de gcloud_recipe() — régénérez-la : "
+        f"{manquantes}"
+    )
+
+
+def test_the_deployment_doc_lists_every_secret_and_says_six():
+    doc = _deployment_md()
+    for sid in SECRET_IDS:
+        assert f"`{sid}`" in doc, sid
+    assert "The six Secret Manager secrets" in doc
+    assert "The four Secret Manager secrets" not in doc
+    assert "(4 secrets)" not in doc, "le schéma de §1 comptait encore quatre"
+
+
+def test_the_deployment_doc_no_longer_teaches_the_three_defects():
+    """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
+    absence : le mot de passe DAV en clair dans l'historique, `secrets create`
+    là où il faut `versions add`, et le `tr -d` qui éponge un saut de ligne
+    que rien n'émet. Le bloc de PROSE qui les explique subsiste — on
+    l'exclut avant de balayer, sinon le test mesurerait sa propre leçon."""
+    doc = _deployment_md()
+    blocs = [b for i, b in enumerate(doc.split("```")) if i % 2 == 1]
+    # Les lignes de COMMENTAIRE sont retirées : la recette PARLE du
+    # `tr -d` pour dire pourquoi il ne suit PAS, et les garder ferait
+    # matcher la leçon au lieu du code. Le balayage porte sur ce qui
+    # s'EXÉCUTE.
+    shell = "\n".join(
+        ligne for bloc in blocs for ligne in bloc.splitlines()
+        if not ligne.lstrip().startswith("#")
+    )
+    assert "YOUR_DAV_PASSWORD" not in shell
+    assert "tr -d" not in shell
+    assert "secrets create --data-file" not in shell
+    assert "gcloud secrets create $s" in shell, (
+        "la création des conteneurs vides doit rester — `versions add` sur un "
+        "secret inexistant échoue"
+    )
+
+
+def test_the_accessor_loop_covers_graph_client_secret():
+    """⚠ Il en était ABSENT. `Config.GRAPH_CLIENT_SECRET` est lu avec
+    `required=False`, ce qui avale un PERMISSION_DENIED en `""` : une liaison
+    manquante éteint le courriel sortant EN SILENCE. Vérifié en production le
+    2026-09-11 — le secret se résout bien, donc la liaison existe sur le
+    déploiement d'origine ; ce qui manquait, c'était le mode d'emploi."""
+    doc = _deployment_md()
+    i = doc.index("roles/secretmanager.secretAccessor")
+    boucle = doc[doc.rindex("for s in", 0, i):i]
+    for sid in SECRET_IDS:
+        if sid == "portail-secret-key":
+            # Il appartient à l'AUTRE compte de service : sa place n'est pas
+            # dans cette boucle, et l'y mettre affaiblirait la séparation.
+            assert sid not in boucle
+            continue
+        assert sid in boucle, sid

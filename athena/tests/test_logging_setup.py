@@ -730,3 +730,43 @@ def test_le_type_McpEvent_ne_ment_pas_sur_les_evenements_emis():
 
     emitted = {"mcp_write", "mcp_write_refused", "mcp_note_written"}
     assert emitted <= set(get_args(McpEvent))
+
+
+# ── Le registre d'observabilité, contre le CODE ─────────────────────────
+
+
+def _observability_md() -> str:
+    import io as _io
+
+    chemin = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "OBSERVABILITY.md",
+    )
+    return _io.open(chemin, encoding="utf-8").read()
+
+
+@pytest.mark.parametrize(
+    "nom_du_type",
+    ["AuthEvent", "SecurityEvent", "SettingsEvent"],
+)
+def test_every_event_name_is_documented(nom_du_type):
+    """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding
+    log events ») — et il a dérivé : les CINQ événements de « Paramètres →
+    Sécurité » livrés en b9f7f34 n'y figuraient pas, ni les deux du lot
+    Intégrations. Une liste tenue à la main dérive ; c'est la prédiction
+    écrite de ce dépôt, et elle s'est vérifiée trois fois.
+
+    Le balayage est DÉRIVÉ du `Literal` — jamais d'un inventaire recopié, qui
+    cesserait de prouver quoi que ce soit au huitième événement.
+    """
+    import typing
+
+    import utils.logging_setup as ls
+
+    membres = typing.get_args(getattr(ls, nom_du_type))
+    assert membres, nom_du_type
+    doc = _observability_md()
+    absents = [m for m in membres if f"`{m}`" not in doc]
+    assert not absents, (
+        f"{nom_du_type} : non documentés dans OBSERVABILITY.md -> {absents}"
+    )

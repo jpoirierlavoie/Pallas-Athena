@@ -55,7 +55,7 @@ Browser / DavX5 / Claude
         │
   ┌─────┴───────────────┬──────────────────┬───────────────┐
 Firestore        Firebase Storage     Firebase Auth    Secret Manager
-(native mode)    (documents/gabarits) (+ Phone MFA)    (4 secrets)
+(native mode)    (documents/gabarits) (+ Phone MFA)    (6 secrets)
 ```
 
 ---
@@ -128,10 +128,33 @@ development. **Never** put secrets in `app.yaml`.
 | `TRACE_SAMPLE_RATIO` | ○ | `0.1` | Cloud Trace sampling (read by `tracing_setup.py`) |
 | `PIP_REQUIRE_HASHES`, `PIP_NO_DEPS` | ✔ (prod) | `1`, `1` | Supply-chain: reject unhashed/out-of-band installs |
 
-### 4.2 The four Secret Manager secrets (production)
+### 4.2 The six Secret Manager secrets (production)
 
-`flask-secret-key` (required), `firebase-api-key`, `dav-password-hash`,
-`cf-origin-secret`. Created in §6.4.
+**Six, not four.** This section said "the four" from the day
+`portail-secret-key` shipped as a fifth and `graph-client-secret` as a sixth —
+which is the predicted behaviour of a hand-kept list, and the reason the table
+below is now GENERATED from
+[`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
+and pinned against it by a test.
+
+| Secret | Required for | Where the value comes from | Expected length | If absent or wrong |
+|---|---|---|---|---|
+| `flask-secret-key` | `default` | you mint it | entre 32 et 256 chars | l'application NE DÉMARRE PAS |
+| `portail-secret-key` | `portail` | you mint it | entre 32 et 256 chars | le service « portail » NE DÉMARRE PAS |
+| `firebase-api-key` | optional | a console hands it to you | entre 30 et 60 chars | la page de connexion ne peut pas initialiser Firebase |
+| `dav-password-hash` | optional | computed from a password you choose | exactement 60 chars | l'authentification DAV ne peut pas réussir — DavX5 cesse de synchroniser SANS message d'erreur |
+| `cf-origin-secret` | optional | you mint it | entre 32 et 128 chars | le contrôle d'origine est DÉSACTIVÉ en silence (l'accès direct à App Engine n'est plus bloqué) |
+| `graph-client-secret` | optional | a console hands it to you | entre 20 et 256 chars | le courriel sortant est désactivé |
+
+Created in §6.4. `portail-secret-key` is **required for the `portail` service
+to boot** — it is not optional in the way the other five non-`flask` entries
+are; the portal simply does not start without it.
+
+The live verdict on all six — does each resolve, is its length right, does it
+carry stray whitespace or a character that cannot survive an HTTP header — is
+on the **« Paramètres → Configuration »** page, and in
+`python -m scripts.check_config --prod`. Both read the same table and the same
+predicates as this section.
 
 ### 4.3 Owner-specific values to replace
 
@@ -174,7 +197,7 @@ Two steps are **irreversible or order-sensitive**:
 5. **Deploy indexes + rules — BEFORE the first code deploy** (§6.3). Until an
    index finishes building, the query it serves fails and the view silently
    shows an empty list.
-6. Create the 4 secrets + grant IAM (§6.4)
+6. Create the 6 secrets + grant IAM (§6.4)
 7. Firebase Auth: create the single user + enroll Phone MFA (§6.5)
 8. Storage bucket (§6.6)
 9. App Check + reCAPTCHA (§6.7)
@@ -251,35 +274,218 @@ firebase deploy --only firestore:indexes,firestore:rules,storage --project $PROJ
 
 ### 6.4 Secret Manager + IAM
 
-Create the secrets (only `flask-secret-key` is strictly required):
+**Everything in this section below the IAM grants is GENERATED** from
+`athena/utils/deployment_inventory.gcloud_recipe()` and pinned against it by
+`athena/tests/test_deployment_inventory.py`. It is therefore the *same*
+recipe the « Paramètres → Configuration » page renders beside each secret for
+every later rotation — the doc and the page cannot drift, which is the whole
+reason the shared table exists. Do not hand-edit the command blocks; change
+the function.
 
-> **The `| tr -d '\n'` in every line below is load-bearing — do not drop it.**
-> `print()` appends a newline, `gcloud secrets create --data-file=-` stores the
+The comments inside the blocks are in **French**. That is not an oversight:
+they are the very strings the French settings page renders, generated rather
+than translated. A second, English copy is exactly the thing that would drift.
+
+> **What the previous version of this section got wrong**, kept here because
+> each defect is instructive. It ran `hashpw(b'YOUR_DAV_PASSWORD', …)`, which
+> deposits the **plaintext DAV password** in `~/.bash_history`. Every line
+> said `gcloud secrets create --data-file=-` — correct on a first deploy, and
+> wrong for every rotation since, where the secret already exists and `create`
+> fails in a way that reads like a platform fault. And every line ended in
+> `| tr -d '\n'` to mop up a newline `sys.stdout.write` never emits, which
+> teaches a superstition instead of the rule.
+
+> **The rule itself is one sentence: nothing in the pipeline may emit a
+> trailing newline.** `gcloud secrets versions add --data-file=-` stores the
 > payload **byte for byte**, and nothing in `config.py` strips it (`_secret` →
-> `_from_secret_manager` decodes and returns as-is). A trailing `\n` therefore
-> becomes part of the secret. For `cf-origin-secret` that is site-wide
-> downtime: `security.py`'s `hmac.compare_digest` compares the stored value
-> against the header a Cloudflare Transform Rule injects, and a rule cannot
-> emit a newline — so **every request answers 403** and the only cure is a new
-> secret version plus a redeploy (the value is read once at import and
-> `lru_cache`d, so a live instance never re-reads it). `dav-password-hash` has
-> the same trap for a different reason: a 61-byte bcrypt hash never matches the
-> 60 bytes `checkpw` recomputes, and DavX5 fails silently. Verify after
-> creating: `gcloud secrets versions access latest --secret=<id> | xxd | tail -1`
-> must not end in `0a`.
+> `_from_secret_manager` decodes and returns as-is). So `printf '%s'` and
+> `sys.stdout.write` are safe; `echo`, `print()` and a heredoc are not. For
+> `cf-origin-secret` one stray byte is site-wide downtime — `security.py`'s
+> `hmac.compare_digest` compares the stored value against a header a
+> Cloudflare Transform Rule injects, and **a rule cannot emit a newline**, so
+> every request answers 403. `dav-password-hash` has the same trap for a
+> different reason: a 61-byte hash never matches the 60 bytes `checkpw`
+> recomputes, and DavX5 then fails **silently**.
+
+> ⚠ **bash only — and on Windows this matters.** In PowerShell,
+> `$OutputEncoding` re-encodes the stream and a pipeline into a native
+> executable appends a terminator, so piping into `gcloud --data-file=-` is a
+> newline *generator*: precisely the trap these commands close. Run them in
+> **Google Cloud Shell** — bash, `gcloud` already authenticated as your own
+> human identity (so the Cloud Audit Log attributes the version to a person
+> rather than to the App Engine service account), ephemeral, reachable from a
+> phone.
+
+**First, create the six empty containers.** `gcloud secrets create` without
+`--data-file` makes the container and no version; the first version is written
+by the per-secret blocks below.
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(64))" | tr -d '\n' \
-  | gcloud secrets create flask-secret-key --data-file=- --project=$PROJECT
+REGION=northamerica-northeast1   # the SAME region as §6.2
 
-# bcrypt hash for the DAV password (pick your own password):
-python -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_DAV_PASSWORD', bcrypt.gensalt()).decode())" | tr -d '\n' \
-  | gcloud secrets create dav-password-hash --data-file=- --project=$PROJECT
-
-printf '%s' 'YOUR_FIREBASE_WEB_API_KEY' | gcloud secrets create firebase-api-key --data-file=- --project=$PROJECT
-python -c "import secrets; print(secrets.token_urlsafe(32))" | tr -d '\n' \
-  | gcloud secrets create cf-origin-secret --data-file=- --project=$PROJECT   # also paste into the Cloudflare Transform Rule (§7)
+for s in flask-secret-key portail-secret-key firebase-api-key dav-password-hash cf-origin-secret graph-client-secret; do
+  gcloud secrets create $s --project=$PROJECT \
+    --replication-policy=user-managed --locations=$REGION
+done
 ```
+
+> **Replication is permanent per secret.** `user-managed` pinned to the App
+> Engine region keeps the payloads in one jurisdiction, which for a law
+> practice is a data-residency question rather than a preference.
+> `--replication-policy=automatic` is the alternative and cannot be changed
+> afterwards — you would have to create a new secret under a new name.
+
+**Then write the first version of each.** These are the same commands the
+Configuration page renders for a rotation; on a rotation you run only these,
+never the `create` above.
+
+#### `flask-secret-key` — Clé de signature des sessions Flask
+
+If this value is wrong or absent: l'application NE DÉMARRE PAS.
+
+```bash
+# 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
+VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 32 et 256).
+printf '[%s]\n' "$VALEUR"
+printf '%s' "$VALEUR" | wc -c
+
+# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+printf '%s' "$VALEUR" | gcloud secrets versions add flask-secret-key \
+  --project=$PROJECT --data-file=-
+
+# 4. Effacer la variable de la session.
+unset VALEUR
+
+# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 32 et 256 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+gcloud secrets versions access latest --secret=flask-secret-key \
+  --project=$PROJECT | wc -c
+```
+
+#### `portail-secret-key` — Clé de session du service « portail »
+
+If this value is wrong or absent: le service « portail » NE DÉMARRE PAS.
+
+```bash
+# 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
+VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 32 et 256).
+printf '[%s]\n' "$VALEUR"
+printf '%s' "$VALEUR" | wc -c
+
+# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+printf '%s' "$VALEUR" | gcloud secrets versions add portail-secret-key \
+  --project=$PROJECT --data-file=-
+
+# 4. Effacer la variable de la session.
+unset VALEUR
+
+# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 32 et 256 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+gcloud secrets versions access latest --secret=portail-secret-key \
+  --project=$PROJECT | wc -c
+```
+
+#### `firebase-api-key` — Clé d'API navigateur Firebase
+
+If this value is wrong or absent: la page de connexion ne peut pas initialiser Firebase.
+
+```bash
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR à l'étape suivante, pas les perdre en silence.
+IFS= read -rs VALEUR
+
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 30 et 60).
+printf '[%s]\n' "$VALEUR"
+printf '%s' "$VALEUR" | wc -c
+
+# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+printf '%s' "$VALEUR" | gcloud secrets versions add firebase-api-key \
+  --project=$PROJECT --data-file=-
+
+# 4. Effacer la variable de la session.
+unset VALEUR
+
+# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 30 et 60 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+gcloud secrets versions access latest --secret=firebase-api-key \
+  --project=$PROJECT | wc -c
+```
+
+#### `dav-password-hash` — Empreinte bcrypt du mot de passe DAV
+
+If this value is wrong or absent: l'authentification DAV ne peut pas réussir — DavX5 cesse de synchroniser SANS message d'erreur.
+
+```bash
+# 1. bcrypt n'est pas préinstallé dans Cloud Shell.
+python3 -m pip install --quiet --user bcrypt
+
+# 2. Calculer l'empreinte ET l'écrire en UNE commande : le mot de passe n'est jamais un argument, jamais une variable, jamais dans l'historique. `sys.stdout.write` n'ajoute pas de saut de ligne — c'est pourquoi aucun `tr -d` ne suit.
+python3 -c 'import bcrypt, getpass, sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())' \
+  | gcloud secrets versions add dav-password-hash \
+      --project=$PROJECT --data-file=-
+
+# 3. Relire ce qui est STOCKÉ : le compte doit valoir exactement 60. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
+gcloud secrets versions access latest --secret=dav-password-hash \
+  --project=$PROJECT | wc -c
+```
+
+#### `cf-origin-secret` — Secret d'origine Cloudflare
+
+If this value is wrong or absent: le contrôle d'origine est DÉSACTIVÉ en silence (l'accès direct à App Engine n'est plus bloqué).
+
+```bash
+# 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
+VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
+
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 32 et 128).
+printf '[%s]\n' "$VALEUR"
+printf '%s' "$VALEUR" | wc -c
+
+# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+printf '%s' "$VALEUR" | gcloud secrets versions add cf-origin-secret \
+  --project=$PROJECT --data-file=-
+
+# 4. Effacer la variable de la session.
+unset VALEUR
+
+# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 32 et 128 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+gcloud secrets versions access latest --secret=cf-origin-secret \
+  --project=$PROJECT | wc -c
+```
+
+#### `graph-client-secret` — Secret client Microsoft Graph
+
+If this value is wrong or absent: le courriel sortant est désactivé.
+
+```bash
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR à l'étape suivante, pas les perdre en silence.
+IFS= read -rs VALEUR
+
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 20 et 256).
+printf '[%s]\n' "$VALEUR"
+printf '%s' "$VALEUR" | wc -c
+
+# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
+printf '%s' "$VALEUR" | gcloud secrets versions add graph-client-secret \
+  --project=$PROJECT --data-file=-
+
+# 4. Effacer la variable de la session.
+unset VALEUR
+
+# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 20 et 256 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+gcloud secrets versions access latest --secret=graph-client-secret \
+  --project=$PROJECT | wc -c
+```
+
+Verify each one after writing it — the last command of every block prints a
+byte count, and that count is the post-flight check. A second opinion, on the
+values as actually stored:
+
+```bash
+gcloud secrets versions access latest --secret=<id> --project=$PROJECT | xxd | tail -1
+```
+
+must **not** end in `0a`.
 
 Grant IAM. The two service accounts are the **App Engine default SA**
 (`$PROJECT@appspot.gserviceaccount.com`) and whatever SA your **Cloud Build
@@ -291,10 +497,23 @@ AE_SA="$PROJECT@appspot.gserviceaccount.com"
 # App Engine runtime SA:
 gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$AE_SA" --role="roles/logging.logWriter"
 gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:$AE_SA" --role="roles/cloudtrace.agent"
-for s in flask-secret-key firebase-api-key dav-password-hash cf-origin-secret; do
+# `graph-client-secret` was MISSING from this loop. `Config.GRAPH_CLIENT_SECRET`
+# is read with required=False, which swallows a PERMISSION_DENIED into "" — so
+# a missing binding here turns outbound email (invitations, accusés, intake
+# confirmations) off SILENTLY. `portail-secret-key` is deliberately absent: it
+# belongs to the `portail` service account, not to this one.
+for s in flask-secret-key firebase-api-key dav-password-hash cf-origin-secret graph-client-secret; do
   gcloud secrets add-iam-policy-binding $s --member="serviceAccount:$AE_SA" \
     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
 done
+
+# `portail-secret-key` is granted to the PORTAL service account instead — it
+# belongs to the second App Engine service, whose least-privilege SA is the
+# whole point of keeping the two session keys apart:
+#   gcloud secrets add-iam-policy-binding portail-secret-key #     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" #     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
+# The portal's full infrastructure (bucket, named database, queue, nine IAM
+# grants) is not yet in this document — see CLAUDE.md « Portail client » until
+# it is.
 
 # REQUIRED for signed Storage URLs: the runtime SA must be able to sign as ITSELF
 # (iam.signBlob self-impersonation). Without this, document & gabarit uploads and

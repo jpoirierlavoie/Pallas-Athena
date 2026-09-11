@@ -53,6 +53,11 @@ Each helper emits through a dedicated logger so log-based metrics can filter by 
 | `auth_failure` | WARNING (always) | Token verification, unauthorized email, etc. |
 | `appcheck_failure` | WARNING (always) | App Check verification failed on HTMX request |
 | `rate_limit_hit` | WARNING (always) | `flask-limiter` rejected the request |
+| `password_changed` | INFO / WARNING | « Paramètres → Sécurité ». **Reported by the BROWSER**, not observed by the server: `firebase-admin` 7.4.0 has no MFA surface at all — not enrol, not unenrol, not even a count — so without this line the server would learn nothing of a password or second-factor change. Posted to `/parametres/securite/journal` (204, fire-and-forget, its own `30 per hour` bucket). The event vocabulary there is **closed**: an unknown name is a 400 and logs nothing |
+| `mfa_enrolled` | INFO / WARNING | A second factor was added. Changing a number is **additive** — enrol the new one, confirm two, then remove the old — so this fires before `mfa_unenrolled` in a number change, never instead of it |
+| `mfa_unenrolled` | INFO / WARNING | A factor was removed. Carries `factor_count_client`, clamped 0–10 and named `_client` on purpose: the provenance stays honest, because the server cannot verify it |
+| `mfa_unenroll_failed_zero_factors` | WARNING (always) | The refusal that matters. Removing the LAST factor is an unrecoverable lockout — with `REQUIRE_MFA=true` the app refuses every session while `/parametres/securite` sits behind `@login_required`, so the application cannot repair its own lock. The guard lives in the JS FUNCTION, never in a `:disabled` attribute, which DevTools re-enables |
+| `reauth_failed` | WARNING (always) | Re-authentication before a privileged change (password, factor) did not succeed. Fields: `reason` from the closed allowlist — never the submitted value |
 
 `reason` should be a short machine-stable string (`"token_invalid"`, `"mfa_missing"`, `"unauthorized_email"`, `"rate_limit_exceeded"`) — never an email or token.
 
@@ -150,12 +155,14 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 
 ### `log_settings_event(event, *, fields_changed=None, **extra)` — logger `pallas.settings`
 
-INFO, except `cabinet_refused` (WARNING). The firm profile (`settings/cabinet`) is edited from « Paramètres ». **Pass field NAMES only, never their values** — the `RedactionFilter` scrubs emails and phone numbers but NOT names of people, and `nom` is one. Compose the list with `models.settings.changed_field_names`.
+INFO, except `cabinet_refused` and `integrations_refused` (WARNING). The firm profile (`settings/cabinet`) and the integration settings (`settings/integrations`) are edited from « Paramètres ». **Pass field NAMES only, never their values** — the `RedactionFilter` scrubs emails and phone numbers but NOT names of people, and `nom` is one. Compose the list with `models.settings.changed_field_names`.
 
 | `event` | Notes |
 |---|---|
 | `cabinet_updated` | `fields_changed` (sorted field NAMES) + `fields_changed_count`. A save silently changes the letterhead of every generated document, the tax numbers snapshotted onto every FUTURE invoice, and the fax on every procedure — `updated_at` says when, never what |
 | `cabinet_refused` | WARNING; `error_count`. Validation refused the save (missing `nom`, invalid phone/courriel/postal code) — never the submitted value |
+| `integrations_updated` | `fields_changed` (sorted field NAMES) + `fields_changed_count`, over `settings/integrations`. Same rule, plus one reason of its own: a mis-set subject keyword stops the Bookings sync **silently**, and worse, an EMPTY keyword set makes the absence loop flag already-imported reservations `annulée_client`. « When did these fields last move? » is therefore the first question when diagnosing « nothing comes in any more » |
+| `integrations_refused` | WARNING; `error_count`. The store refused — an empty keyword set, a judicial `hearing_type` in the keyword→type map, a day count outside its bounds. Never the submitted value |
 
 ### `log_template_event(event, *, template_id=None, dossier_id=None, **extra)` — logger `pallas.templates`
 

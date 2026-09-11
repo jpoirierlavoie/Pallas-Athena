@@ -86,6 +86,68 @@
           {% if ligne.detail.version %}
           <p class="text-xs text-gray-400 mt-1">version {{ ligne.detail.version }}</p>
           {% endif %}
+
+          {# ── La recette, repliée ─────────────────────────────────────
+             Rendue en TEXTE INERTE : aucun `|safe`, aucun script, aucun
+             attribut hx-*. Jinja échappe les guillemets et l'esperluette,
+             et un `<textarea>` les redécode au parsage — donc ce qu'on
+             copie est exactement ce qu'on a écrit.
+
+             La liste vient de la ROUTE, par une table fermée : cette boucle
+             ne peut rendre que des commandes construites autour d'un
+             identifiant de secret connu. #}
+          {% if ligne.recette %}
+          <details class="mt-2">
+            <summary class="text-xs text-indigo-600 hover:text-indigo-800 cursor-pointer">
+              Écrire une nouvelle version de ce secret
+            </summary>
+            <div class="mt-3 space-y-3">
+
+              <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p class="text-xs text-amber-800">
+                  <strong>bash seulement.</strong> Dans PowerShell, un tuyau
+                  vers un exécutable natif réencode le flux et ajoute un
+                  terminateur : la commande deviendrait un GÉNÉRATEUR de saut
+                  de ligne, c'est-à-dire le piège même qu'elle ferme. Le bon
+                  endroit est <strong>Google Cloud Shell</strong> — bash,
+                  <code>gcloud</code> déjà authentifié sous votre identité
+                  humaine (le journal d'audit attribue alors la version à une
+                  personne, pas au compte de service), éphémère, joignable
+                  depuis un téléphone.
+                </p>
+              </div>
+
+              <p class="text-xs text-gray-500">
+                Si cette valeur est fausse : {{ ligne.secret.consequence }}.
+              </p>
+
+              {% if ligne.secret.refusal %}
+              <p class="text-xs text-amber-800">
+                Cette page n'écrira jamais ce secret, et la raison vaut aussi
+                comme avertissement avant de le faire tourner à la main :
+                {{ ligne.secret.refusal }}
+              </p>
+              {% endif %}
+
+              {% for commentaire, commande in ligne.recette %}
+              <div>
+                <p class="text-xs text-gray-500 mb-1">{{ loop.index }}. {{ commentaire }}</p>
+                <textarea readonly rows="{{ commande.splitlines()|length }}"
+                          class="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs font-mono text-gray-700">{{ commande }}</textarea>
+              </div>
+              {% endfor %}
+
+              <p class="text-xs text-gray-400">
+                Une version écrite ne prend effet qu'au <strong>prochain
+                déploiement</strong> : <code>config.py</code> lit ses secrets
+                dans le corps de classe, une seule fois par processus. Mais
+                cette page, elle, relit <code>versions/latest</code> à chaque
+                affichage — rechargez-la pour vérifier la nouvelle version
+                AVANT de redéployer.
+              </p>
+            </div>
+          </details>
+          {% endif %}
         </div>
       </div>
       {% endfor %}

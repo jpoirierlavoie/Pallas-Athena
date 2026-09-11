@@ -49,6 +49,7 @@ from models.settings import (
 )
 from security import limiter, sanitize
 from utils import config_checks
+from utils.deployment_inventory import gcloud_recipe, secret_by_id
 from utils.integrations_defaults import (
     DEPLOY_ONLY_FIELDS,
     JOURS_BORNES,
@@ -318,6 +319,35 @@ _EVENEMENTS_JOURNAL: frozenset = frozenset({
 # en-tête FRANÇAIS et ce que la section veut dire. Le module de contrôle rend
 # des identifiants de section en anglais (il est développeur-facing et ses
 # messages le sont aussi) ; la présentation vit ici.
+def _ligne_rendue(row) -> dict:
+    """Une ligne du rapport — plus, si c'est une ligne de Secret Manager,
+    la recette qui la répare.
+
+    La recherche passe par `secret_by_id`, c'est-à-dire par une TABLE FERMÉE,
+    et elle vit ICI plutôt que dans le gabarit. `detail["secret_id"]` vient
+    d'un rapport ; une ligne qui en porterait un jour une chaîne arbitraire
+    ne doit pas pouvoir devenir une ligne de shell sur une page dont le
+    métier entier est « copiez ceci et exécutez-le ». Un identifiant inconnu
+    rend une liste vide, donc aucun bloc ne paraît du tout.
+
+    Le projet est passé explicitement : une commande à `--project=` vide vise
+    le projet ACTIF de `gcloud`, ce qui est exactement comment on écrit dans
+    le projet de quelqu'un d'autre. Vide, `gcloud_recipe` rend `$PROJECT`.
+    """
+    secret = secret_by_id(str(row.detail.get("secret_id", "")))
+    return {
+        "level": row.level,
+        "message": row.message,
+        "detail": row.detail,
+        "secret": secret,
+        "recette": (
+            gcloud_recipe(secret.secret_id, Config.FIREBASE_PROJECT_ID)
+            if secret
+            else []
+        ),
+    }
+
+
 _SECTIONS_FR: tuple[tuple[str, str, str], ...] = (
     (
         config_checks.SECTION_ENV,
@@ -389,7 +419,7 @@ def configuration() -> str:
             "id": identifiant,
             "titre": titre,
             "explication": explication,
-            "lignes": lignes,
+            "lignes": [_ligne_rendue(r) for r in lignes],
             "fork": identifiant == config_checks.SECTION_FORK,
             "compte": {
                 niveau: sum(1 for r in lignes if r.level == niveau)
@@ -398,7 +428,7 @@ def configuration() -> str:
         })
 
     operationnelles = [s for s in sections if not s["fork"]]
-    niveaux = {r.level for s in operationnelles for r in s["lignes"]}
+    niveaux = {r["level"] for s in operationnelles for r in s["lignes"]}
     badge = "FAIL" if "FAIL" in niveaux else ("WARN" if "WARN" in niveaux else "OK")
 
     return render_template(

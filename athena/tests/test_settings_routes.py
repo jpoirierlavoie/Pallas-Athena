@@ -487,9 +487,137 @@ def test_the_page_states_what_it_cannot_see(web):
     assert "origin_secret_disabled" in body
 
 
-def test_all_three_settings_pages_carry_the_three_tabs(web):
-    for chemin in ("/parametres/", "/parametres/securite",
-                   "/parametres/configuration"):
-        body = web.get(chemin).data.decode("utf-8")
-        for onglet in ("Profil du cabinet", "Sécurité", "Configuration"):
-            assert onglet in body, f"{chemin} manque l'onglet {onglet}"
+# ── La recette sur la page ───────────────────────────────────────────────
+
+def _rapport_secret(secret_id="cf-origin-secret"):
+    rpt = Report()
+    rpt.section(_cc.SECTION_SECRETS)
+    rpt.emit(OK, "une ligne de secret", secret_id=secret_id, version="12")
+    return rpt
+
+
+def test_a_secret_row_carries_its_recipe(web, monkeypatch):
+    monkeypatch.setattr(rs.config_checks, "run_all",
+                        lambda *a, **k: _rapport_secret())
+    body = web.get("/parametres/configuration").data.decode("utf-8")
+    assert "une ligne de secret" in body, "la ligne fabriquée doit paraître"
+    assert "Écrire une nouvelle version de ce secret" in body
+    assert "gcloud secrets versions add cf-origin-secret" in body
+    assert "bash seulement" in body
+    assert "Cloud Shell" in body
+
+
+def test_a_row_whose_secret_id_is_UNKNOWN_renders_no_recipe(web, monkeypatch):
+    """La garde qui compte. `detail["secret_id"]` vient d'un rapport ; la
+    recherche passe par une table FERMÉE dans la ROUTE, donc une chaîne
+    arbitraire ne peut pas devenir une ligne de shell sur une page dont le
+    métier entier est « copiez ceci et exécutez-le »."""
+    monkeypatch.setattr(
+        rs.config_checks, "run_all",
+        lambda *a, **k: _rapport_secret("cf-origin-secret; rm -rf /"),
+    )
+    body = web.get("/parametres/configuration").data.decode("utf-8")
+    assert "une ligne de secret" in body
+    assert "Écrire une nouvelle version" not in body
+    assert "rm -rf" not in body
+
+
+def test_a_row_with_no_secret_id_renders_no_recipe(web, monkeypatch):
+    """Les lignes d'environnement de la même section n'en portent pas."""
+    monkeypatch.setattr(rs.config_checks, "run_all",
+                        lambda *a, **k: _rapport(op_level=OK))
+    body = web.get("/parametres/configuration").data.decode("utf-8")
+    assert "Écrire une nouvelle version" not in body
+
+
+def test_the_recipe_is_inert_text(web, monkeypatch):
+    """Aucun `|safe` dans le gabarit, et le shell vit dans un `<textarea>`
+    en lecture seule : Jinja échappe, le navigateur redécode au parsage, donc
+    ce qu'on copie est ce qui a été écrit — sans qu'aucun caractère de la
+    commande puisse fermer une balise."""
+    brut = io.open(
+        os.path.join(_ATHENA, "templates", "settings", "configuration.html"),
+        encoding="utf-8",
+    ).read()
+    # Les commentaires Jinja PARLENT de la règle (« aucun `|safe` ») : les
+    # garder ferait matcher la prose au lieu du code — la faute que ce lot a
+    # déjà commise quatre fois. Retirés sans regex, comme le test voisin.
+    source = "".join(
+        bloc.split("#}", 1)[-1] if i else bloc
+        for i, bloc in enumerate(brut.split("{#"))
+    )
+    assert "|safe" not in source and "| safe" not in source
+
+    monkeypatch.setattr(rs.config_checks, "run_all",
+                        lambda *a, **k: _rapport_secret())
+    body = web.get("/parametres/configuration").data.decode("utf-8")
+    debut = body.index("gcloud secrets versions add")
+    fragment = body[debut - 400:debut + 200]
+    assert "<textarea readonly" in fragment
+
+
+def test_the_page_says_a_new_version_needs_a_redeploy(web, monkeypatch):
+    """La moitié qu'on oublie : `config.py` lit ses secrets dans le corps de
+    classe, une fois par processus. Écrire une version ne l'applique PAS —
+    mais cette page relit `versions/latest` à chaque affichage, donc elle
+    valide la nouvelle version AVANT le redéploiement qui l'active. C'est
+    tout ce qui manquait à la boucle."""
+    monkeypatch.setattr(rs.config_checks, "run_all",
+                        lambda *a, **k: _rapport_secret())
+    body = web.get("/parametres/configuration").data.decode("utf-8")
+    assert "prochain" in body and "déploiement" in body
+
+
+def _onglets_declares() -> tuple[list, list]:
+    """Les endpoints et les libellés lus DANS le gabarit d'onglets.
+
+    Motifs délibérément linéaires (classes tempérées, aucun quantificateur
+    imbriqué) : ce dépôt a payé 43 s de ReDoS deux fois, et un test n'est pas
+    dispensé de la règle.
+    """
+    brut = io.open(
+        os.path.join(_ATHENA, "templates", "settings", "_onglets.html"),
+        encoding="utf-8",
+    ).read()
+    endpoints = re.findall(r"url_for\('settings\.([a-z_]+)'\)", brut)
+    libelles = [t.strip() for t in re.findall(r">\s*([^<>]+?)\s*</a>", brut)]
+    return endpoints, libelles
+
+
+def test_every_settings_page_carries_every_tab():
+    """DÉRIVÉ des deux côtés, et c'est tout l'objet du remplacement.
+
+    L'ancien test s'appelait `..._three_settings_pages_carry_the_three_tabs`
+    et énumérait trois chemins et trois libellés À LA MAIN : il était périmé
+    depuis l'arrivée du quatrième onglet, et n'avait rien signalé. Passer 3 à
+    5 aurait perpétué le défaut au lieu d'en fermer la classe — d'où une
+    dérivation : les pages viennent de `url_map`, les libellés du gabarit.
+    Un cinquième onglet est alors couvert le jour où il est écrit.
+    """
+    app = _app()
+    endpoints, libelles = _onglets_declares()
+    assert endpoints and libelles and len(endpoints) == len(libelles)
+
+    # Les pages : toute règle GET du blueprint « settings ».
+    pages = {
+        r.endpoint.split(".", 1)[1]: r.rule
+        for r in app.url_map.iter_rules()
+        if r.endpoint.startswith("settings.")
+        and r.methods <= {"GET", "HEAD", "OPTIONS"}
+    }
+    assert pages, "aucune page de Paramètres ?"
+
+    # Aucun onglet ne pointe une page qui n'existe pas...
+    assert set(endpoints) <= set(pages), set(endpoints) - set(pages)
+    # ...et aucune page n'est ORPHELINE de la barre d'onglets : c'est le sens
+    # que le test périmé avait perdu.
+    assert set(pages) == set(endpoints), set(pages) - set(endpoints)
+
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["user_id"] = "u1"
+        s["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
+    for endpoint, rule in sorted(pages.items()):
+        body = client.get(rule).data.decode("utf-8")
+        for libelle in libelles:
+            assert libelle in body, f"{rule} manque l'onglet « {libelle} »"
