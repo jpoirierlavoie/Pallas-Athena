@@ -382,14 +382,47 @@ def secret_by_id(secret_id: str) -> Optional[Secret]:
 # c'est ce qui rend la page structurellement meilleure que le document, et
 # non une seconde copie de lui.
 #
-# ⚠ BASH SEULEMENT, et ce n'est pas une préférence. Dans PowerShell,
-# `$OutputEncoding` réencode le flux et un pipeline vers un exécutable natif
-# ajoute un terminateur : le tuyau vers `gcloud --data-file=-` est alors un
-# GÉNÉRATEUR de saut de ligne, c'est-à-dire exactement le piège que la
-# recette existe pour fermer. La page le dit et pointe Google Cloud Shell —
-# bash, `gcloud` déjà authentifié sous l'identité HUMAINE du praticien (donc
-# le journal d'audit attribue la version à une personne, pas au compte de
-# service d'App Engine), éphémère, joignable depuis un téléphone.
+# ⚠ BASH SEULEMENT, et ce n'est pas une préférence — c'est MESURÉ
+# (2026-09-11, sur cette machine).
+#
+# **Git Bash convient.** `printf '%s' "$V" | <exe natif>` livre exactement les
+# octets de `$V` : 3 pour « abc », 43 pour un jeton de 43 caractères. Le
+# contrôle négatif fait le travail — `echo`, un heredoc et une chaîne ici
+# livrent 4 octets, le supplément étant un `\n` NU, donc le tuyau MSYS→natif
+# ne traduit pas non plus LF↔CRLF. Vérifié sur les 256 valeurs d'octet, à
+# 200 Ko, et jusque dans `files.ReadStdinBytes()` de gcloud lui-même. Le
+# relais `~/bin/gcloud` est un script bash qui `exec` le lanceur POSIX du SDK,
+# lequel `exec` un `python.exe` natif : `gcloud.cmd` n'est jamais sur ce
+# chemin, donc `cmd.exe` n'entre pas dans la chaîne.
+#
+# **PowerShell ne convient pas, et c'est pire que ce que ce commentaire
+# disait.** « abc » y arrive en 8 octets : `ef bb bf 61 62 63 0d 0a`. Trois
+# mécanismes, pas un :
+#   1. un CRLF ajouté par OBJET du pipeline — inconditionnel, dans TOUTES les
+#      formes essayées, y compris natif→natif et y compris quand le programme
+#      amont n'émet rien ;
+#   2. `$OutputEncoding` qui RÉENCODE la charge — et Windows PowerShell 5.1 le
+#      règle par défaut sur **ASCII** (page de code 20127), donc une lettre
+#      accentuée devient « ? » : une corruption SILENCIEUSE du contenu, pas
+#      seulement un octet de queue ;
+#   3. une NOMENCLATURE d'octets (BOM) de 3 octets en TÊTE, qui vient de
+#      `[Console]::InputEncoding` — et non de `$OutputEncoding`, ce que ce
+#      commentaire affirmait à tort.
+# PowerShell 7 n'est pas installé ici : ne rien affirmer à son sujet.
+#
+# Conséquence sur le CONTRÔLE, et c'est le défaut que la mesure a trouvé : une
+# nomenclature est en TÊTE, donc un `xxd | tail -1` ne peut pas la voir. Seul
+# le COMPTE D'OCTETS voit les deux bouts (3 devant, 2 derrière). C'est
+# pourquoi la recette compte plutôt que de regarder la fin.
+#
+# Google Cloud Shell reste une bonne seconde voie — bash, userland Linux
+# propre, aucune trace sur le disque local, joignable depuis un téléphone.
+# Ce qu'elle n'apporte PAS : une meilleure attribution au journal d'audit.
+# Ce commentaire l'a prétendu ; c'est faux. La version 1 de `cf-origin-secret`
+# a été écrite DEPUIS CETTE MACHINE par le gcloud local le 2026-08-11, et le
+# journal d'audit l'attribue à la personne. Sur 400 jours, 26 écritures de
+# secret sur 26 sont attribuées à l'humain et zéro au compte de service
+# d'App Engine.
 
 
 def expected_length_fr(secret: "Secret") -> str:
@@ -398,6 +431,36 @@ def expected_length_fr(secret: "Secret") -> str:
         return ""
     lo, hi = secret.shape.minimum, secret.shape.maximum
     return f"exactement {lo}" if lo == hi else f"entre {lo} et {hi}"
+
+
+def _controle_longueur(secret: "Secret", var: str = "N") -> str:
+    """Le test SHELL qui remplace un coup d'œil de l'opérateur.
+
+    La recette affichait un compte et demandait de le comparer de tête à la
+    longueur attendue. Mesuré le 2026-09-11 : c'est insuffisant, parce que le
+    mode de défaillance dominant de l'étape de collage est INVISIBLE à l'œil.
+    `IFS= read -rs` ne retient que la PREMIÈRE LIGNE d'un collage multiligne —
+    une clé PEM de 84 octets devient 27 — et l'écho entre crochets affiche
+    alors une valeur qui a l'air complète. Le shell, lui, sait comparer.
+
+    Les bornes viennent de `Shape`, donc du prédicat qui juge la valeur : le
+    contrôle d'avant-vol et le contrôle d'après-vol ne peuvent pas diverger.
+    """
+    if secret.shape is None:
+        return ""
+    lo, hi = secret.shape.minimum, secret.shape.maximum
+    test = (
+        f'[ "${var}" -eq {lo} ]'
+        if lo == hi
+        else f'[ "${var}" -ge {lo} ] && [ "${var}" -le {hi} ]'
+    )
+    return (
+        f"if {test}; then\n"
+        f"  printf 'longueur %s octets — conforme\\n' \"${var}\"\n"
+        f"else\n"
+        f"  printf 'longueur %s octets — REFUSER, ne rien écrire\\n' \"${var}\"\n"
+        f"fi"
+    )
 
 
 def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
@@ -418,6 +481,12 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
     1. `IFS= read -rs` — la valeur ne paraît pas à l'écran, n'entre pas dans
        l'historique du shell, et `IFS=` empêche que les blancs de tête et de
        queue soient mangés (ce qui masquerait le défaut qu'on cherche).
+       ⚠ `read` ne retient que la PREMIÈRE LIGNE. Les six secrets de cette
+       table sont tous d'une seule ligne par construction (un jeton, une clé
+       d'API, une empreinte bcrypt, un secret Entra), donc un collage
+       multiligne signifie qu'on a collé la mauvaise chose — et le collage
+       tronqué a l'air complet à l'écran. C'est l'étape 2 qui l'attrape, et
+       seulement parce qu'elle COMPARE au lieu de montrer.
     2. `printf '%s'` — `printf` est une PRIMITIVE du shell, donc la valeur ne
        passe jamais par `/proc/*/cmdline` ; et `'%s'` n'ajoute AUCUN saut de
        ligne, ce qui est tout le piège.
@@ -425,14 +494,16 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
        `ps`.
     4. L'écho entre crochets — une espace de tête ou de queue devient
        VISIBLE, ce qu'aucune console ne montre autrement.
-    5. `| wc -c` sur la relecture — le contrôle d'après-vol, dans le shell de
-       l'opérateur. C'est ce qui rend inutile un validateur côté navigateur :
-       `.strip()` de Python et `.trim()` de JavaScript ne s'accordent pas sur
-       six caractères, dont la MOM d'un collage Windows.
+    5. Le COMPTE D'OCTETS, comparé par le shell, aux deux bouts du vol.
+       C'est ce qui rend inutile un validateur côté navigateur : `.strip()` de
+       Python et `.trim()` de JavaScript ne s'accordent pas sur six
+       caractères, dont la MOM d'un collage Windows. Et c'est le seul contrôle
+       qui voie une nomenclature d'octets en TÊTE aussi bien qu'un
+       terminateur en queue — un `xxd | tail -1` ne regarde que la fin.
 
-    `wc -c` compte des OCTETS, pas des caractères — et cela ne ment que si la
-    valeur n'est pas ASCII. C'est précisément ce que `_shape_ascii_token`
-    refuse, donc les deux contrôles se tiennent l'un l'autre.
+    `wc -c` compte des OCTETS, jamais des caractères — `${#VALEUR}` compterait
+    des caractères et dirait 11 pour « café-secret », qui en fait 12. La
+    recette n'emploie donc nulle part `${#…}`.
     """
     secret = secret_by_id(secret_id)
     if secret is None:
@@ -448,14 +519,16 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
     if secret.origin == ORIGIN_PASSWORD:
         return [
             (
-                "bcrypt n'est pas préinstallé dans Cloud Shell.",
+                "En local, bcrypt est déjà dans l'environnement du dépôt "
+                "(c'est une dépendance épinglée) : sauter cette ligne. Elle "
+                "sert dans Cloud Shell, où il n'est pas préinstallé.",
                 "python3 -m pip install --quiet --user bcrypt",
             ),
             (
                 "Calculer l'empreinte ET l'écrire en UNE commande : le mot de "
                 "passe n'est jamais un argument, jamais une variable, jamais "
                 "dans l'historique. `sys.stdout.write` n'ajoute pas de saut "
-                "de ligne — c'est pourquoi aucun `tr -d` ne suit.",
+                "de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)",
                 "python3 -c 'import bcrypt, getpass, sys; "
                 "sys.stdout.write(bcrypt.hashpw(getpass.getpass("
                 '"Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())'
@@ -464,12 +537,14 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
                 f"      --project={projet} --data-file=-",
             ),
             (
-                f"Relire ce qui est STOCKÉ : le compte doit valoir {attendu}. "
-                "Une empreinte de 61 octets n'égalera jamais les 60 que "
-                "`bcrypt.checkpw` recalcule, et DavX5 cesse alors de "
-                "synchroniser sans un mot.",
-                f"gcloud secrets versions access latest --secret={secret_id} \\\n"
-                f"  --project={projet} | wc -c",
+                f"Relire ce qui est STOCKÉ — le compte doit valoir {attendu}, "
+                "et c'est le SHELL qui compare. Une empreinte de 61 octets "
+                "n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et "
+                "DavX5 cesse alors de synchroniser sans un mot.",
+                f"N=$(gcloud secrets versions access latest "
+                f"--secret={secret_id} \\\n"
+                f"  --project={projet} | wc -c | tr -d ' ')\n"
+                + _controle_longueur(secret),
             ),
         ]
 
@@ -492,11 +567,14 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
         ))
 
     etapes.append((
-        "Voir ce qui a réellement été saisi. Les crochets rendent visible une "
-        "espace de tête ou de queue, qu'aucune console ne montre autrement ; "
-        "le second compte est celui que la relecture devra retrouver "
-        f"({attendu}).",
-        "printf '[%s]\\n' \"$VALEUR\"\nprintf '%s' \"$VALEUR\" | wc -c",
+        "Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les "
+        "crochets rendent visible une espace de tête ou de queue, qu'aucune "
+        "console ne montre autrement ; le compte, lui, attrape ce que l'œil "
+        f"ne peut pas voir — un collage tronqué à sa première ligne ({attendu}"
+        " octets attendus).",
+        "printf '[%s]\\n' \"$VALEUR\"\n"
+        "N=$(printf '%s' \"$VALEUR\" | wc -c | tr -d ' ')\n"
+        + _controle_longueur(secret),
     ))
     etapes.append((
         "Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets "
@@ -512,12 +590,13 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
         "unset VALEUR",
     ))
     etapes.append((
-        f"Relire ce qui est STOCKÉ : le compte doit valoir {attendu} et "
-        "correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et "
-        "il est plus fort que n'importe quel contrôle d'avant-vol — il "
-        "interroge la valeur réellement enregistrée.",
-        f"gcloud secrets versions access latest --secret={secret_id} \\\n"
-        f"  --project={projet} | wc -c",
+        f"Relire ce qui est STOCKÉ : {attendu} octets, et le même compte qu'à "
+        "l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que "
+        "n'importe quel contrôle d'avant-vol — il interroge la valeur "
+        "réellement enregistrée.",
+        f"N=$(gcloud secrets versions access latest --secret={secret_id} \\\n"
+        f"  --project={projet} | wc -c | tr -d ' ')\n"
+        + _controle_longueur(secret),
     ))
     return etapes
 

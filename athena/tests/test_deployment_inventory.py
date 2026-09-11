@@ -392,6 +392,42 @@ def test_every_recipe_reads_the_stored_value_back():
                    for c in commandes), sid
 
 
+def test_every_recipe_lets_the_SHELL_compare_rather_than_the_eye():
+    """Le défaut que la mesure du 2026-09-11 a trouvé, et qu'aucun test
+    n'aurait attrapé.
+
+    `IFS= read -rs` ne retient que la PREMIÈRE LIGNE d'un collage multiligne,
+    et l'écho entre crochets affiche alors une valeur qui a l'air complète —
+    mesuré : 63 octets collés, 20 stockés, crochets impeccables. Un compte
+    AFFICHÉ à côté d'une longueur attendue écrite en prose ne ferme pas ça,
+    parce qu'il demande à l'opérateur de comparer de tête au moment précis où
+    il tient un secret. Le shell, lui, ne se lasse pas.
+    """
+    for sid in SECRET_IDS:
+        commandes = [c for _c, c in gcloud_recipe(sid, "p")]
+        controles = [c for c in commandes if "wc -c" in c]
+        assert controles, sid
+        for c in controles:
+            assert "if [" in c, (sid, "le contrôle n'est pas une comparaison")
+            assert "REFUSER" in c, (sid, "aucune branche ne dit de ne rien écrire")
+
+
+def test_the_shell_bounds_are_DERIVED_from_the_same_Shape_that_judges_the_value():
+    """L'avant-vol et l'après-vol ne peuvent pas diverger : les deux bornes du
+    test shell viennent de `Shape`, celle-là même que `check_prod_secrets`
+    applique à la valeur stockée. Écrites à la main, elles dériveraient — et
+    une recette qui accepte ce que la page refuse est pire qu'aucune."""
+    for secret in SECRETS:
+        if secret.shape is None:
+            continue
+        lo, hi = secret.shape.minimum, secret.shape.maximum
+        texte = " ".join(c for _c, c in gcloud_recipe(secret.secret_id, "p"))
+        if lo == hi:
+            assert f'-eq {lo}' in texte, secret.secret_id
+        else:
+            assert f'-ge {lo}' in texte and f'-le {hi}' in texte, secret.secret_id
+
+
 def test_the_dav_recipe_never_puts_a_password_on_the_command_line():
     """§6.4 faisait `hashpw(b'YOUR_DAV_PASSWORD', …)`, ce qui dépose le mot de
     passe DAV EN CLAIR dans `~/.bash_history` — et le mot de passe DAV, lui,
@@ -459,6 +495,16 @@ def test_the_recipe_names_the_windows_trap():
     sur la page."""
     src = _lire("utils", "deployment_inventory.py")
     assert "PowerShell" in src and "Cloud Shell" in src
+    # Depuis le 2026-09-11 la venue PREMIÈRE est Git Bash : mesuré
+    # byte-transparent sur cette machine, alors que le commentaire n'offrait
+    # que Cloud Shell. Si « Git Bash » disparaît, la recette est revenue à
+    # envoyer le praticien ailleurs sans raison mesurée.
+    assert "Git Bash" in src
+    # Et le mécanisme doit rester NOMMÉ correctement : la nomenclature vient
+    # de `[Console]::InputEncoding`, pas de `$OutputEncoding`. Nommer le
+    # mauvais mécanisme dans une consigne de sécurité enseigne une
+    # superstition — le défaut même que ce lot a retiré de §6.4.
+    assert "[Console]::InputEncoding" in src
 
 
 # ── La complétude de SCAN_FILES, DÉRIVÉE ────────────────────────────────
@@ -802,9 +848,18 @@ def test_section_6_4_matches_gcloud_recipe_command_for_command():
     doc = _deployment_md()
     manquantes = []
     for sid in SECRET_IDS:
-        for _commentaire, commande in gcloud_recipe(sid):
+        for commentaire, commande in gcloud_recipe(sid):
             if commande not in doc:
-                manquantes.append((sid, commande.splitlines()[0]))
+                manquantes.append((sid, "COMMANDE", commande.splitlines()[0]))
+            # Les COMMENTAIRES aussi. L'épingle ne couvrait que les commandes,
+            # et c'était un trou mesuré le 2026-09-11 : reformuler un
+            # commentaire de la recette laissait la §6.4 porter l'ANCIEN texte
+            # sans qu'aucun test ne bronche — exactement la dérive que
+            # « engendrée plutôt qu'écrite » existe pour rendre impossible.
+            # Le commentaire EST la leçon ; une commande sans elle n'explique
+            # rien.
+            if commentaire not in doc:
+                manquantes.append((sid, "COMMENTAIRE", commentaire[:60]))
     assert not manquantes, (
         "DEPLOYMENT.md §6.4 a dérivé de gcloud_recipe() — régénérez-la : "
         f"{manquantes}"
@@ -837,7 +892,16 @@ def test_the_deployment_doc_no_longer_teaches_the_three_defects():
         if not ligne.lstrip().startswith("#")
     )
     assert "YOUR_DAV_PASSWORD" not in shell
-    assert "tr -d" not in shell
+    # `tr -d` NU serait trop grossier, et l'a été : le défaut de §6.4
+    # était `tr -d '\n'` — éponger un saut de ligne DANS LA CHARGE, ce
+    # qui enseigne la superstition. `tr -d ' '` sur la sortie de `wc -c`
+    # nettoie un COMPTE, ne touche à aucun secret, et est la seule façon
+    # portable de comparer ce compte dans le shell. Épingler le défaut,
+    # pas les deux caractères qu'il partage avec une commande correcte.
+    assert "tr -d '\\n'" not in shell
+    assert "tr -d" in shell, (
+        "le contrôle de longueur a disparu — il emploie tr -d ' ' sur wc -c"
+    )
     assert "secrets create --data-file" not in shell
     assert "gcloud secrets create $s" in shell, (
         "la création des conteneurs vides doit rester — `versions add` sur un "

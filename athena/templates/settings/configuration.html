@@ -105,15 +105,26 @@
 
               <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
                 <p class="text-xs text-amber-800">
-                  <strong>bash seulement.</strong> Dans PowerShell, un tuyau
-                  vers un exécutable natif réencode le flux et ajoute un
-                  terminateur : la commande deviendrait un GÉNÉRATEUR de saut
-                  de ligne, c'est-à-dire le piège même qu'elle ferme. Le bon
-                  endroit est <strong>Google Cloud Shell</strong> — bash,
-                  <code>gcloud</code> déjà authentifié sous votre identité
-                  humaine (le journal d'audit attribue alors la version à une
-                  personne, pas au compte de service), éphémère, joignable
-                  depuis un téléphone.
+                  <strong>bash seulement</strong> — et sur cette machine,
+                  <strong>Git Bash fait l'affaire</strong>. Mesuré : un tuyau
+                  y livre exactement les octets écrits (43 pour un jeton de
+                  43 caractères), et <code>gcloud</code> y passe par le
+                  lanceur POSIX, jamais par <code>gcloud.cmd</code>.
+                </p>
+                <p class="text-xs text-amber-800 mt-2">
+                  <strong>Pas dans PowerShell.</strong> « abc » y arrive en
+                  <strong>8 octets</strong> : un CRLF ajouté par objet du
+                  pipeline, une nomenclature d'octets de 3 octets en tête, et
+                  un réencodage en <strong>ASCII</strong> qui change une
+                  lettre accentuée en « ? » — une corruption silencieuse du
+                  contenu, pas seulement un octet de trop.
+                </p>
+                <p class="text-xs text-amber-800 mt-2">
+                  <strong>Google Cloud Shell</strong> reste une bonne seconde
+                  voie : userland Linux propre, aucune trace sur ce disque,
+                  joignable depuis un téléphone. Elle n'améliore pas
+                  l'attribution au journal d'audit — votre
+                  <code>gcloud</code> local écrit déjà sous votre identité.
                 </p>
               </div>
 

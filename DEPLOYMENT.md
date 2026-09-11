@@ -307,14 +307,37 @@ than translated. A second, English copy is exactly the thing that would drift.
 > different reason: a 61-byte hash never matches the 60 bytes `checkpw`
 > recomputes, and DavX5 then fails **silently**.
 
-> ⚠ **bash only — and on Windows this matters.** In PowerShell,
-> `$OutputEncoding` re-encodes the stream and a pipeline into a native
-> executable appends a terminator, so piping into `gcloud --data-file=-` is a
-> newline *generator*: precisely the trap these commands close. Run them in
-> **Google Cloud Shell** — bash, `gcloud` already authenticated as your own
-> human identity (so the Cloud Audit Log attributes the version to a person
-> rather than to the App Engine service account), ephemeral, reachable from a
-> phone.
+> ⚠ **bash only — and on Windows that is a measurement, not a preference.**
+> Measured on the maintainer's Windows 11 machine, 2026-09-11.
+>
+> **Git Bash works.** `printf '%s' "$V" | <native exe>` delivers exactly the
+> bytes held in `$V` — 3 for `abc`, 43 for a 43-character token. The negative
+> control is what makes that mean something: `echo`, a heredoc and a
+> here-string each deliver one byte MORE, and the extra byte is a bare `\n`,
+> so the MSYS→native pipe performs no LF↔CRLF translation either. Verified
+> across all 256 byte values, at 200 KB, and into gcloud's own
+> `files.ReadStdinBytes()`. On that machine `gcloud` resolves to a POSIX
+> launcher, never to `gcloud.cmd`, so `cmd.exe` is not in the chain — check
+> yours with `file $(command -v gcloud)`.
+>
+> **PowerShell does not work, and it is worse than a stray newline.** `abc`
+> arrives as **8 bytes** — `ef bb bf 61 62 63 0d 0a`. Three mechanisms, not
+> one: a CRLF appended once per pipeline OBJECT (unconditional, in every
+> idiom tested, including native→native and including when the upstream
+> program emitted nothing); a 3-byte BOM prepended, which comes from
+> `[Console]::InputEncoding`; and `$OutputEncoding` re-encoding the payload —
+> Windows PowerShell 5.1 defaults it to **ASCII** (code page 20127), so an
+> accented character silently becomes `?`. That last one corrupts the
+> CONTENT, not just the tail. PowerShell 7 was not installed and therefore
+> not measured; do not assume it is safe.
+>
+> **Google Cloud Shell remains a good second venue** — a clean Linux
+> userland, no trace on your own disk, reachable from a phone. What it does
+> NOT buy is better audit attribution: a local `gcloud` authenticated as you
+> already writes as you. This document claimed otherwise until 2026-09-11.
+> The audit log settles it — `cf-origin-secret` version 1 was written from a
+> Windows laptop by the local CLI and Cloud Audit attributed it to the
+> practitioner, as it did for 26 of 26 human secret writes over 400 days.
 
 **First, create the six empty containers.** `gcloud secrets create` without
 `--data-file` makes the container and no version; the first version is written
@@ -347,9 +370,14 @@ If this value is wrong or absent: l'application NE DÉMARRE PAS.
 # 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
 VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
 
-# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 32 et 256).
+# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
 printf '[%s]\n' "$VALEUR"
-printf '%s' "$VALEUR" | wc -c
+N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
+if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 
 # 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add flask-secret-key \
@@ -358,9 +386,14 @@ printf '%s' "$VALEUR" | gcloud secrets versions add flask-secret-key \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 32 et 256 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-gcloud secrets versions access latest --secret=flask-secret-key \
-  --project=$PROJECT | wc -c
+# 5. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+N=$(gcloud secrets versions access latest --secret=flask-secret-key \
+  --project=$PROJECT | wc -c | tr -d ' ')
+if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 ```
 
 #### `portail-secret-key` — Clé de session du service « portail »
@@ -371,9 +404,14 @@ If this value is wrong or absent: le service « portail » NE DÉMARRE PAS.
 # 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
 VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
 
-# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 32 et 256).
+# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
 printf '[%s]\n' "$VALEUR"
-printf '%s' "$VALEUR" | wc -c
+N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
+if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 
 # 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add portail-secret-key \
@@ -382,9 +420,14 @@ printf '%s' "$VALEUR" | gcloud secrets versions add portail-secret-key \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 32 et 256 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-gcloud secrets versions access latest --secret=portail-secret-key \
-  --project=$PROJECT | wc -c
+# 5. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+N=$(gcloud secrets versions access latest --secret=portail-secret-key \
+  --project=$PROJECT | wc -c | tr -d ' ')
+if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 ```
 
 #### `firebase-api-key` — Clé d'API navigateur Firebase
@@ -395,9 +438,14 @@ If this value is wrong or absent: la page de connexion ne peut pas initialiser F
 # 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR à l'étape suivante, pas les perdre en silence.
 IFS= read -rs VALEUR
 
-# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 30 et 60).
+# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 30 et 60 octets attendus).
 printf '[%s]\n' "$VALEUR"
-printf '%s' "$VALEUR" | wc -c
+N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
+if [ "$N" -ge 30 ] && [ "$N" -le 60 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 
 # 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add firebase-api-key \
@@ -406,9 +454,14 @@ printf '%s' "$VALEUR" | gcloud secrets versions add firebase-api-key \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 30 et 60 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-gcloud secrets versions access latest --secret=firebase-api-key \
-  --project=$PROJECT | wc -c
+# 5. Relire ce qui est STOCKÉ : entre 30 et 60 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+N=$(gcloud secrets versions access latest --secret=firebase-api-key \
+  --project=$PROJECT | wc -c | tr -d ' ')
+if [ "$N" -ge 30 ] && [ "$N" -le 60 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 ```
 
 #### `dav-password-hash` — Empreinte bcrypt du mot de passe DAV
@@ -416,17 +469,22 @@ gcloud secrets versions access latest --secret=firebase-api-key \
 If this value is wrong or absent: l'authentification DAV ne peut pas réussir — DavX5 cesse de synchroniser SANS message d'erreur.
 
 ```bash
-# 1. bcrypt n'est pas préinstallé dans Cloud Shell.
+# 1. En local, bcrypt est déjà dans l'environnement du dépôt (c'est une dépendance épinglée) : sauter cette ligne. Elle sert dans Cloud Shell, où il n'est pas préinstallé.
 python3 -m pip install --quiet --user bcrypt
 
-# 2. Calculer l'empreinte ET l'écrire en UNE commande : le mot de passe n'est jamais un argument, jamais une variable, jamais dans l'historique. `sys.stdout.write` n'ajoute pas de saut de ligne — c'est pourquoi aucun `tr -d` ne suit.
+# 2. Calculer l'empreinte ET l'écrire en UNE commande : le mot de passe n'est jamais un argument, jamais une variable, jamais dans l'historique. `sys.stdout.write` n'ajoute pas de saut de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)
 python3 -c 'import bcrypt, getpass, sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())' \
   | gcloud secrets versions add dav-password-hash \
       --project=$PROJECT --data-file=-
 
-# 3. Relire ce qui est STOCKÉ : le compte doit valoir exactement 60. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
-gcloud secrets versions access latest --secret=dav-password-hash \
-  --project=$PROJECT | wc -c
+# 3. Relire ce qui est STOCKÉ — le compte doit valoir exactement 60, et c'est le SHELL qui compare. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
+N=$(gcloud secrets versions access latest --secret=dav-password-hash \
+  --project=$PROJECT | wc -c | tr -d ' ')
+if [ "$N" -eq 60 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 ```
 
 #### `cf-origin-secret` — Secret d'origine Cloudflare
@@ -437,9 +495,14 @@ If this value is wrong or absent: le contrôle d'origine est DÉSACTIVÉ en sile
 # 1. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne.
 VALEUR=$(python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
 
-# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 32 et 128).
+# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 128 octets attendus).
 printf '[%s]\n' "$VALEUR"
-printf '%s' "$VALEUR" | wc -c
+N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
+if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 
 # 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add cf-origin-secret \
@@ -448,9 +511,14 @@ printf '%s' "$VALEUR" | gcloud secrets versions add cf-origin-secret \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 32 et 128 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-gcloud secrets versions access latest --secret=cf-origin-secret \
-  --project=$PROJECT | wc -c
+# 5. Relire ce qui est STOCKÉ : entre 32 et 128 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+N=$(gcloud secrets versions access latest --secret=cf-origin-secret \
+  --project=$PROJECT | wc -c | tr -d ' ')
+if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 ```
 
 #### `graph-client-secret` — Secret client Microsoft Graph
@@ -461,9 +529,14 @@ If this value is wrong or absent: le courriel sortant est désactivé.
 # 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR à l'étape suivante, pas les perdre en silence.
 IFS= read -rs VALEUR
 
-# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le second compte est celui que la relecture devra retrouver (entre 20 et 256).
+# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 20 et 256 octets attendus).
 printf '[%s]\n' "$VALEUR"
-printf '%s' "$VALEUR" | wc -c
+N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
+if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 
 # 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
 printf '%s' "$VALEUR" | gcloud secrets versions add graph-client-secret \
@@ -472,20 +545,33 @@ printf '%s' "$VALEUR" | gcloud secrets versions add graph-client-secret \
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : le compte doit valoir entre 20 et 256 et correspondre à celui de l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-gcloud secrets versions access latest --secret=graph-client-secret \
-  --project=$PROJECT | wc -c
+# 5. Relire ce qui est STOCKÉ : entre 20 et 256 octets, et le même compte qu'à l'étape 2. C'est le contrôle d'après-vol, et il est plus fort que n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
+N=$(gcloud secrets versions access latest --secret=graph-client-secret \
+  --project=$PROJECT | wc -c | tr -d ' ')
+if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
+  printf 'longueur %s octets — conforme\n' "$N"
+else
+  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+fi
 ```
 
-Verify each one after writing it — the last command of every block prints a
-byte count, and that count is the post-flight check. A second opinion, on the
-values as actually stored:
+Each block's last command does the verification itself — it reads the stored
+value back and lets the SHELL compare the byte count, rather than printing a
+number for you to check by eye.
 
-```bash
-gcloud secrets versions access latest --secret=<id> --project=$PROJECT | xxd | tail -1
-```
+**The byte count is the complete check, and `xxd | tail -1` is not.** This
+document used to advise inspecting the last line of a hex dump for a trailing
+`0a`. That only looks at the END. PowerShell's worst artefact is a 3-byte BOM
+at the FRONT, which a tail inspection cannot see; a byte count sees both (3
+added in front, 2 at the back). It also never prints the secret, which a hex
+dump does.
 
-must **not** end in `0a`.
+The count is also the only thing that catches the paste failure an eye cannot:
+`IFS= read -rs` keeps only the **first line** of a multi-line paste, and the
+bracketed echo then displays a truncated value that looks perfectly complete.
+Measured: 63 bytes pasted, 20 stored, brackets clean. All six secrets here are
+single-line by construction, so a multi-line paste means the wrong thing was
+copied.
 
 Grant IAM. The two service accounts are the **App Engine default SA**
 (`$PROJECT@appspot.gserviceaccount.com`) and whatever SA your **Cloud Build
