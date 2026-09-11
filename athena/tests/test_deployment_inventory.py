@@ -40,6 +40,8 @@ from utils.deployment_inventory import (  # noqa: E402
     SECRET_BACKED_ENV,
     SECRET_IDS,
     SECRETS,
+    SHAPE_FAIL,
+    SHAPE_WARN,
     WRITABLE_SECRET_IDS,
     secret_by_id,
     stray_whitespace,
@@ -184,7 +186,106 @@ def test_a_non_bcrypt_value_is_refused(mauvais):
 def test_the_bcrypt_error_never_echoes_the_value():
     """Un message d'erreur est le dernier endroit où un secret doit paraître."""
     err = secret_by_id("dav-password-hash").shape("SENTINELLE-SECRETE")
-    assert err and "SENTINELLE-SECRETE" not in err
+    # `.message`, jamais le verdict nu : `"X" not in ShapeVerdict(...)` teste
+    # l'APPARTENANCE aux deux membres du tuple, donc la version nue passait
+    # quoi que dise le message. Un test qui passe pour la mauvaise raison est
+    # pire qu'aucun test.
+    assert err and "SENTINELLE-SECRETE" not in err.message
+
+
+def test_a_bcrypt_cost_written_in_unicode_digits_is_refused():
+    """Le second des deux défauts VIVANTS du 2026-09-11.
+
+    Le `\\d` de Python est UNICODE : « ١٢ » (chiffres arabo-indiens) sont des
+    chiffres pour `re`, si bien que cette chaîne de 60 caractères MATCHAIT
+    `_BCRYPT_RE`. Elle passait donc `_shape_bcrypt`, puis échouait
+    `bcrypt.checkpw` — que `dav/dav_auth.py` avale dans un `except` nu. C'est
+    exactement la panne DavX5 silencieuse que ce prédicat existe pour
+    supprimer, entrée par la porte du prédicat lui-même.
+    """
+    faux = "$2b$" + "\u0661\u0662" + "$" + "a" * 53
+    assert len(faux) == 60, "le cas ne vaut que s'il a la BONNE longueur"
+    verdict = secret_by_id("dav-password-hash").shape(faux)
+    assert verdict and verdict.severity == SHAPE_FAIL
+
+
+# ── Le jeu de caractères d'un jeton — l'autre défaut vivant ─────────────
+
+def _origine():
+    return secret_by_id("cf-origin-secret").shape
+
+
+def test_twenty_real_tokens_are_accepted():
+    """Le contrôle doit d'abord ne PAS mentir sur un déploiement qui marche.
+
+    Un contrôle qui fait rougir une valeur correcte cesse d'être lu, et un
+    contrôle qu'on ne lit plus est l'état dans lequel `cf-origin-secret` a
+    passé des mois. C'est la moitié du lot qu'on oublie d'écrire.
+    """
+    import secrets
+
+    shape = _origine()
+    for _ in range(20):
+        assert shape(secrets.token_urlsafe(32)) is None
+
+
+@pytest.mark.parametrize(
+    "mauvais,pourquoi",
+    [
+        ("é", "lettre accentuée"),
+        ("\u2019", "apostrophe typographique (Word)"),
+        ("\u00a0", "espace insécable"),
+        ("\u200b", "espace de largeur nulle"),
+    ],
+)
+def test_a_non_ascii_character_FAILS_because_it_is_a_500_storm(mauvais, pourquoi):
+    """`hmac.compare_digest` LÈVE `TypeError` sur une chaîne non ASCII, et
+    `_enforce_origin_secret` l'appelle sur CHAQUE requête : la conséquence
+    n'est pas le 403 documenté du saut de ligne, c'est une 500 à chaque
+    requête, avec une trace par requête. L'ancien prédicat disait « ok »."""
+    valeur = "a" * 42 + mauvais
+    verdict = _origine()(valeur)
+    assert verdict and verdict.severity == SHAPE_FAIL, pourquoi
+
+
+@pytest.mark.parametrize("mauvais", ["\x00", "\n", "\x1f", "\x7f"])
+def test_a_control_character_FAILS_because_a_header_cannot_carry_it(mauvais):
+    """Un caractère de contrôle INTÉRIEUR échappe à `stray_whitespace`, qui ne
+    regarde que les extrémités. Un en-tête HTTP ne peut pas le transporter :
+    la valeur reçue ne pourra jamais égaler celle qui est stockée."""
+    verdict = _origine()("a" * 20 + mauvais + "b" * 21)
+    assert verdict and verdict.severity == SHAPE_FAIL
+
+
+def test_an_interior_space_WARNS_rather_than_FAILS():
+    """Mesuré plutôt que supposé : `hmac.compare_digest("x", "ab c")` NE lève
+    PAS, une espace est un caractère légal dans une valeur d'en-tête HTTP, et
+    `IFS= read -rs` la conserve. Un tel déploiement FONCTIONNE — le rougir
+    serait exactement la faute que le classement en deux crans existe pour
+    éviter. Mais l'espace est invisible dans une console, donc on le dit."""
+    verdict = _origine()("a" * 21 + " " + "b" * 21)
+    assert verdict and verdict.severity == SHAPE_WARN
+    assert "espace" in verdict.message
+
+
+def test_standard_base64_WARNS_rather_than_FAILS():
+    verdict = _origine()("a" * 40 + "+/=")
+    assert verdict and verdict.severity == SHAPE_WARN
+
+
+def test_a_length_outside_the_bounds_still_FAILS():
+    assert _origine()("court").severity == SHAPE_FAIL
+    assert _origine()("a" * 129).severity == SHAPE_FAIL
+
+
+def test_no_token_verdict_ever_echoes_the_value():
+    """Un message d'erreur est le dernier endroit où un secret doit paraître :
+    il voyage dans `detail_fr`, qui est rendu à l'écran et journalisé."""
+    for valeur in ("SENTINELLE\u2019SECRETE", "SENTINELLE SECRETE" + "a" * 25,
+                   "SENTINELLE\x00SECRETE" + "a" * 22, "SENTINELLE"):
+        verdict = _origine()(valeur)
+        assert verdict, valeur
+        assert "SENTINELLE" not in verdict.message, verdict.message
 
 
 # ── Les blancs parasites ─────────────────────────────────────────────────
@@ -362,6 +463,72 @@ def test_check_config_is_a_thin_cli_over_run_all():
     for parti in ("def check_runtime_env", "def check_prod_secrets",
                   "def check_owner_literals", "for secret in SECRETS:"):
         assert parti not in src, parti
+
+
+def test_the_secret_verdicts_are_evaluated_in_the_ONE_order_that_works():
+    """L'ordre des trois verdicts est load-bearing, et il n'est pas devinable.
+
+    `stray_whitespace("")` rend `None` — c'est correct, une chaîne vide n'a
+    pas de blanc parasite —, donc si le test de vacuité ne venait pas EN
+    PREMIER, un secret vide traverserait sans un mot. Et la forme doit venir
+    après le blanc parasite : sur `"abc\\n"`, le verdict utile est « il y a un
+    saut de ligne à la fin », pas « longueur inattendue : 4 ».
+
+    Épinglé sur l'AST plutôt qu'en prose, parce qu'un ordre qui ne vit que
+    dans un commentaire est un ordre qu'une réécriture change sans le voir.
+    """
+    tree = ast.parse(_lire("utils", "config_checks.py"))
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "check_prod_secrets"
+    )
+
+    ligne_vide = ligne_blanc = ligne_forme = None
+    for node in ast.walk(fn):
+        # `if not payload:`
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.UnaryOp)
+            and isinstance(node.test.op, ast.Not)
+            and isinstance(node.test.operand, ast.Name)
+            and node.test.operand.id == "payload"
+            and ligne_vide is None
+        ):
+            ligne_vide = node.lineno
+        if isinstance(node, ast.Call):
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "stray_whitespace"
+                and ligne_blanc is None
+            ):
+                ligne_blanc = node.lineno
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "shape"
+                and ligne_forme is None
+            ):
+                ligne_forme = node.lineno
+
+    assert ligne_vide and ligne_blanc and ligne_forme, (
+        ligne_vide, ligne_blanc, ligne_forme
+    )
+    assert ligne_vide < ligne_blanc < ligne_forme, (
+        "ordre attendu : vacuité < blancs parasites < forme ; obtenu "
+        f"{ligne_vide} / {ligne_blanc} / {ligne_forme}"
+    )
+
+
+def test_an_unusual_shape_is_a_WARN_at_the_call_site_too():
+    """Le classement en deux crans ne vaut que si l'APPELANT le respecte.
+
+    `if shape_error:` traitait tout verdict en échec ; avec un verdict à deux
+    crans, ce même code ferait rougir un déploiement qui fonctionne — et un
+    contrôle qui rougit à tort cesse d'être lu. Le balayage interdit le
+    retour de la forme unique.
+    """
+    src = _lire("utils", "config_checks.py")
+    assert "verdict.severity == SHAPE_FAIL" in src
+    assert "shape_error" not in src, "l'ancienne forme à un seul cran est revenue"
 
 
 def test_no_emit_call_passes_the_payload():

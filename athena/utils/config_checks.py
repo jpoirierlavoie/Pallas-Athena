@@ -36,6 +36,7 @@ from utils.deployment_inventory import (
     SCAN_FILES,
     SECRET_BACKED_ENV,
     SECRETS,
+    SHAPE_FAIL,
     stray_whitespace,
 )
 from utils.deployment_report import FAIL, OK, WARN, Report
@@ -204,14 +205,31 @@ def check_prod_secrets(rpt: Report) -> None:
             )
             continue
 
-        shape_error = secret.shape(payload) if secret.shape else None
-        if shape_error:
+        # Two tiers, and they must NOT collapse back into one. A FAIL says
+        # the value is broken TODAY — a 500 or a 403 on every request. A WARN
+        # says it is merely unusual, which a working deployment is allowed to
+        # be; a control that reddens a working deployment stops being read,
+        # and a control nobody reads is the state `cf-origin-secret` spent
+        # months in.
+        verdict = secret.shape(payload) if secret.shape else None
+        if verdict and verdict.severity == SHAPE_FAIL:
             rpt.emit(
                 FAIL,
                 f"secret '{secret.secret_id}' has the wrong shape "
                 f"({len(payload)} chars) — {secret.consequence}",
                 secret_id=secret.secret_id, outcome="bad_shape",
-                version=version, detail_fr=shape_error,
+                version=version, detail_fr=verdict.message,
+            )
+            continue
+        if verdict:
+            rpt.emit(
+                WARN,
+                f"secret '{secret.secret_id}' resolves ({len(payload)} "
+                "chars) but carries unusual characters — verify it was not "
+                "mangled in transcription",
+                secret_id=secret.secret_id, outcome="unusual_shape",
+                version=version, detail_fr=verdict.message,
+                char_length=len(payload),
             )
             continue
 

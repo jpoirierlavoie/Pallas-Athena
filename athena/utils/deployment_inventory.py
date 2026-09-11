@@ -28,7 +28,7 @@ pure.
 
 import re
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 # ── Services ─────────────────────────────────────────────────────────────
 # Two App Engine services share this project. A value required by one is not
@@ -42,18 +42,45 @@ SERVICES: tuple[str, ...] = (SERVICE_DEFAULT, SERVICE_PORTAIL)
 
 
 # ── Shape predicates ─────────────────────────────────────────────────────
-# Each takes the DECODED value and returns a French error, or None when the
-# shape is acceptable. Pure; no I/O; never logs; never returns the value.
+# Each takes the DECODED value and returns a ShapeVerdict, or None when the
+# shape is acceptable. Pure; no I/O; never logs; never returns the value —
+# only COUNTS and categories computed from it.
+
+SHAPE_FAIL = "fail"
+SHAPE_WARN = "warn"
+
+
+class ShapeVerdict(NamedTuple):
+    """Une objection sur la forme, et SA GRAVITÉ.
+
+    Le classement en deux crans porte le lot plutôt qu'il ne le décore : un
+    contrôle qui fait rougir un déploiement qui FONCTIONNE est un contrôle
+    qu'on cesse de lire, et un contrôle qu'on ne lit plus est exactement
+    l'état dans lequel `cf-origin-secret` a passé des mois. FAIL est donc
+    réservé à ce qui est cassé AUJOURD'HUI — la requête échoue, à chaque
+    fois — et tout ce qui n'est qu'inhabituel répond WARN.
+    """
+
+    severity: str
+    message: str
+
 
 # \Z, never $ — Python's `$` ALSO matches just before a trailing newline,
 # so `^…$` would accept the 61-character value this predicate exists to
 # refuse. That is the same defect `normalize_email` was documented for, and
 # the explicit length check below is the belt to this braces.
-_BCRYPT_RE = re.compile(r"^\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}\Z")
+#
+# `[0-9][0-9]`, never `\d\d` — Python's `\d` is UNICODE-aware, so
+# `"$2b$" + "١٢" + "$" + "a"*53` is 60 characters long and MATCHED (measured
+# 2026-09-11). It then fails `bcrypt.checkpw`, which `dav/dav_auth.py`
+# swallows in a bare `except` — which is to say it walked straight through
+# the predicate and into the silent-DavX5 failure the predicate exists to
+# eliminate.
+_BCRYPT_RE = re.compile(r"^\$2[aby]\$[0-9][0-9]\$[./A-Za-z0-9]{53}\Z")
 _BCRYPT_LENGTH = 60
 
 
-def _shape_bcrypt(value: str) -> Optional[str]:
+def _shape_bcrypt(value: str) -> Optional[ShapeVerdict]:
     """A bcrypt hash, exactly 60 characters.
 
     The single highest-value validation in the inventory. ``bcrypt.checkpw``
@@ -63,20 +90,94 @@ def _shape_bcrypt(value: str) -> Optional[str]:
     application, and a shape check removes it by construction.
     """
     if len(value) != _BCRYPT_LENGTH or not _BCRYPT_RE.match(value):
-        return (
+        return ShapeVerdict(
+            SHAPE_FAIL,
             f"Ce champ attend une EMPREINTE bcrypt de {_BCRYPT_LENGTH} "
             f"caractères (« $2b$… »), jamais un mot de passe en clair "
-            f"(reçu : {len(value)} caractères)."
+            f"(reçu : {len(value)} caractères).",
         )
     return None
 
 
-def _shape_urlsafe(minimum: int, maximum: int) -> Callable[[str], Optional[str]]:
-    def check(value: str) -> Optional[str]:
+# Ce dans quoi `secrets.token_urlsafe` puise, plus les deux marques non
+# réservées restantes de la RFC 3986. Chaque secret de cette table est
+# ENGENDRÉ — un jeton, une empreinte —, donc ce jeu est ce dont une valeur
+# correcte est FAITE, et non une préférence de style.
+_TOKEN_SAFE = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789_.~-"
+)
+
+
+def _shape_ascii_token(
+    minimum: int, maximum: int
+) -> Callable[[str], Optional[ShapeVerdict]]:
+    """La longueur, ET le jeu de caractères que le nom promettait.
+
+    `_shape_urlsafe` était une borne de LONGUEUR portant un nom de jeu de
+    caractères, et l'écart n'était pas cosmétique.
+    `security._enforce_origin_secret` appelle
+    `hmac.compare_digest(supplied, secret)` sur **chaque** requête, avec deux
+    `str` — et cela LÈVE `TypeError` sur une chaîne non ASCII (mesuré). Une
+    seule lettre accentuée, une apostrophe typographique collée depuis Word
+    ou une espace insécable dans `cf-origin-secret` répond donc **500 à
+    chaque requête**, avec une trace par requête : strictement pire que le
+    403 du saut de ligne déjà documenté — et l'ancien prédicat appelait cela
+    « ok ».
+
+    Un caractère de contrôle est la même espèce, d'un cran en dessous : un
+    en-tête HTTP ne peut pas le transporter, donc la valeur reçue ne peut
+    jamais égaler la valeur stockée et chaque requête répond 403.
+
+    Tout le reste hors de `_TOKEN_SAFE` — une espace, « + », « / », « = »,
+    une ponctuation — est ASCII et transmissible : ce peut très bien être un
+    déploiement qui FONCTIONNE, dont le générateur a simplement produit du
+    base64 standard. C'est donc un avertissement, jamais un échec.
+
+    Aucun message ne rend la valeur : seulement des DÉCOMPTES et des
+    catégories calculés sur elle.
+    """
+
+    def check(value: str) -> Optional[ShapeVerdict]:
         if not (minimum <= len(value) <= maximum):
-            return (
+            return ShapeVerdict(
+                SHAPE_FAIL,
                 f"Longueur inattendue : {len(value)} caractères "
-                f"(attendu entre {minimum} et {maximum})."
+                f"(attendu entre {minimum} et {maximum}).",
+            )
+        hors_ascii = sum(1 for c in value if ord(c) > 127)
+        if hors_ascii:
+            return ShapeVerdict(
+                SHAPE_FAIL,
+                f"{hors_ascii} caractère(s) NON ASCII — lettre accentuée, "
+                "apostrophe typographique, espace insécable : la signature "
+                "d'un copier-coller. `hmac.compare_digest` LÈVE sur une "
+                "chaîne non ASCII, donc pour le secret d'origine c'est une "
+                "erreur 500 à chaque requête, et non un 403.",
+            )
+        controles = sum(1 for c in value if ord(c) < 32 or ord(c) == 127)
+        if controles:
+            return ShapeVerdict(
+                SHAPE_FAIL,
+                f"{controles} caractère(s) de contrôle. Un en-tête HTTP ne "
+                "peut pas en transporter : la valeur reçue ne pourra jamais "
+                "égaler celle qui est stockée.",
+            )
+        espaces = sum(1 for c in value if c == " ")
+        autres = sum(1 for c in value if c != " " and c not in _TOKEN_SAFE)
+        if espaces or autres:
+            parts = []
+            if espaces:
+                parts.append(f"{espaces} espace(s) à l'intérieur")
+            if autres:
+                parts.append(f"{autres} caractère(s) hors du jeu habituel")
+            return ShapeVerdict(
+                SHAPE_WARN,
+                f"Inhabituel : {' et '.join(parts)}. Ce n'est pas forcément "
+                "une panne — un générateur en base64 standard produit « + », "
+                "« / » et « = » —, mais une espace est invisible dans une "
+                "console et ne s'est probablement pas retrouvée là exprès.",
             )
         return None
 
@@ -130,7 +231,7 @@ class Secret:
     consequence: str
     writable: bool
     refusal: str = ""
-    shape: Optional[Callable[[str], Optional[str]]] = None
+    shape: Optional[Callable[[str], Optional[ShapeVerdict]]] = None
 
     @property
     def required(self) -> bool:
@@ -154,7 +255,7 @@ SECRETS: tuple[Secret, ...] = (
             "démarre pas. Et c'est le seul dont l'écriture permettrait de "
             "FORGER des sessions."
         ),
-        shape=_shape_urlsafe(32, 256),
+        shape=_shape_ascii_token(32, 256),
     ),
     Secret(
         secret_id="portail-secret-key",
@@ -171,7 +272,7 @@ SECRETS: tuple[Secret, ...] = (
             "les services : une page capable d'écrire les deux moitiés "
             "affaiblirait l'argument qui la justifie."
         ),
-        shape=_shape_urlsafe(32, 256),
+        shape=_shape_ascii_token(32, 256),
     ),
     Secret(
         secret_id="firebase-api-key",
@@ -180,7 +281,7 @@ SECRETS: tuple[Secret, ...] = (
         required_for=frozenset(),
         consequence="la page de connexion ne peut pas initialiser Firebase",
         writable=True,
-        shape=_shape_urlsafe(30, 60),
+        shape=_shape_ascii_token(30, 60),
     ),
     Secret(
         secret_id="dav-password-hash",
@@ -204,7 +305,7 @@ SECRETS: tuple[Secret, ...] = (
             "App Engine n'est plus bloqué)"
         ),
         writable=True,
-        shape=_shape_urlsafe(32, 128),
+        shape=_shape_ascii_token(32, 128),
     ),
     Secret(
         secret_id="graph-client-secret",
@@ -213,7 +314,7 @@ SECRETS: tuple[Secret, ...] = (
         required_for=frozenset(),
         consequence="le courriel sortant est désactivé",
         writable=True,
-        shape=_shape_urlsafe(20, 256),
+        shape=_shape_ascii_token(20, 256),
     ),
 )
 
@@ -323,6 +424,9 @@ SCAN_FILES: tuple[str, ...] = (
 
 __all__ = [
     "FAIL_OPEN_ENV",
+    "SHAPE_FAIL",
+    "SHAPE_WARN",
+    "ShapeVerdict",
     "OWNER_FINGERPRINT_RE",
     "OWNER_LITERALS",
     "REQUIRED_ENV",
