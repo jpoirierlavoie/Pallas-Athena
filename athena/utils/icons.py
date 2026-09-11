@@ -20,13 +20,13 @@ from markupsafe import Markup, escape
 MATERIAL_ICONS: frozenset = frozenset({
     "add", "archive", "arrow_back", "assignment", "bookmark",
     "calendar_month", "call", "check", "check_circle", "chevron_left",
-    "chevron_right", "close", "delete", "description", "download", "draft",
-    "edit", "error", "folder_open", "grid_view", "group", "image",
-    "info",
-    "inventory_2", "list", "lock", "logout", "mail", "more_horiz",
-    "more_vert", "payments", "person", "picture_as_pdf", "print",
-    "push_pin", "schedule", "settings", "smartphone", "undo", "upload",
-    "warning",
+    "chevron_right", "close", "delete", "description", "download",
+    "draft", "edit", "error", "first_page", "folder_open", "grid_view",
+    "group", "image", "info", "inventory_2", "keyboard_double_arrow_left",
+    "keyboard_double_arrow_right", "last_page", "list", "lock", "logout",
+    "mail", "more_horiz", "more_vert", "payments", "person",
+    "picture_as_pdf", "print", "push_pin", "schedule", "settings",
+    "smartphone", "undo", "upload", "warning",
 })
 
 # Every size must have a hand-written .ms-N rule in app.input.css.

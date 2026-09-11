@@ -42,12 +42,12 @@ for both families).
 Sous-ensemble variable (axes `opsz 20..48`, `wght 100..700`, `FILL 0..1` —
 GRAD exclu, app exclusivement claire) contenant EXACTEMENT les glyphes de
 `utils/icons.MATERIAL_ICONS`, épinglé par `tests/test_icons.py`. Téléchargé
-2026-09-07 via l'API css2 (User-Agent navigateur obligatoire), version
-gstatic **v369** :
+2026-09-11 via l'API css2 (User-Agent navigateur obligatoire), version
+gstatic **v371**, **45 glyphes** :
 
 | Fichier | SHA-256 |
 |---|---|
-| `material-symbols-outlined-v369-7ebffb11.woff2` | `7ebffb11ac1390581d96f6dafc1a55ae794973c33aaf9c6d4dba371174526244` |
+| `material-symbols-outlined-v371-2ac72714.woff2` | `2ac727148a23a2556a271d4bb5cdb186a8ea55ac2fe4b071a14c56ee09d69e29` |
 
 URL de régénération (liste `icon_names=` TRIÉE = `sorted(MATERIAL_ICONS)`) :
 
@@ -71,12 +71,23 @@ table de glyphes, et le fan-out complet coûterait six fichiers plus
 un littéral épinglé pour quelques centaines d'octets. Le retrait
 réel se fait à la prochaine régénération, celle-ci reconstruisant
 l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par construction.
-Surensemble courant : AUCUN — la régénération du 2026-09-07 (ajout de
-`settings` pour « Paramètres ») a reconstruit l'URL depuis
-`sorted(MATERIAL_ICONS)`, ce qui a du même coup retiré `forum`, resté
-dans le fichier depuis le retrait du clavardage.
+Surensemble courant : AUCUN — la régénération du 2026-09-11 (ajout de
+`first_page`, `last_page`, `keyboard_double_arrow_left` et
+`keyboard_double_arrow_right` pour la barre de pagination icon-only) a
+reconstruit l'URL depuis `sorted(MATERIAL_ICONS)`, donc à jour par
+construction.
 
-Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v369-Apache-2.0.txt`.
+⚠ **La TAILLE du woff2 est la vérification du nom, et elle est binaire.**
+L'API css2 n'échoue PAS sur un nom qu'elle ne reconnaît pas : elle abandonne
+le sous-ensemble et sert la police ENTIÈRE. Mesuré le 2026-09-11 — quatre
+noms valides rendent **2 548 octets**, quatre noms bidon en rendent
+**2 351 956**. Donc un `icon_names=` contenant une coquille ne produit pas un
+glyphe manquant, il produit un actif de 2,3 Mo servi `immutable` pendant un
+an, et le glyphe s'affiche quand même (la police complète les a tous) — rien
+ne le signalerait. Après tout téléchargement : vérifier que le fichier pèse
+quelques dizaines de kilo-octets, jamais des mégaoctets.
+
+Licence **Apache-2.0** (pas OFL) — `static/vendor/material-symbols-outlined-v371-Apache-2.0.txt`.
 
 ## License (Noto)
 

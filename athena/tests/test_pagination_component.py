@@ -129,15 +129,32 @@ def test_every_class_in_every_branch_exists_in_the_compiled_artifact():
     assert not manquantes, "classes absentes de l'artefact : %r" % (manquantes,)
 
 
-def test_the_bar_adds_no_icon_beyond_the_two_chevrons():
-    """`tests/test_icons.py` épingle le sous-ensemble DANS LES DEUX SENS.
+def test_the_bar_uses_exactly_the_six_navigation_glyphs():
+    """La barre est ICON-ONLY depuis le 2026-09-11 : six glyphes, zéro libellé.
 
-    Ajouter `last_page` sans régénérer la police fait tomber la porte de
-    déploiement ; les quatre contrôles de saut sont donc du TEXTE — et
-    « Fin (42) » dit en plus OÙ l'on va, ce qu'aucun double chevron ne fait.
+    `tests/test_icons.py` épingle le sous-ensemble DANS LES DEUX SENS, donc
+    ajouter un nom ici sans régénérer la police woff2 laisse la suite VERTE
+    et rend le mot littéral à l'écran (le piège M19). Ces six noms ont été
+    régénérés ensemble — v369 → v371, 41 → 45 glyphes.
     """
     src = (_RACINE / "templates" / _GABARIT).read_text(encoding="utf-8")
-    assert set(_MS_CALL_RE.findall(src)) == {"chevron_left", "chevron_right"}
+    assert set(_MS_CALL_RE.findall(src)) == {
+        "chevron_left", "chevron_right",
+        "keyboard_double_arrow_left", "keyboard_double_arrow_right",
+        "first_page", "last_page",
+    }
+
+
+def test_every_glyph_the_bar_names_is_governed_by_the_icon_set():
+    """Le nom passé à ms() doit vivre dans MATERIAL_ICONS.
+
+    ms() lève sur un nom inconnu, donc le rendu l'attraperait — mais il ne
+    l'attraperait que dans la branche qui l'emploie, et « Première page » ne
+    paraît qu'à partir de la page 3.
+    """
+    from utils.icons import MATERIAL_ICONS
+    src = (_RACINE / "templates" / _GABARIT).read_text(encoding="utf-8")
+    assert set(_MS_CALL_RE.findall(src)) <= set(MATERIAL_ICONS)
 
 
 # ── Le contrat des hx-vals ─────────────────────────────────────────────────
@@ -166,10 +183,16 @@ def test_every_control_carries_hx_include_and_extra_vals():
 
 
 def test_leap_controls_clear_the_cursor():
-    """Vider le curseur EST ce qui aiguille la requête vers la page absolue."""
+    """Vider le curseur EST ce qui aiguille la requête vers la page absolue.
+
+    Le filtre porte sur l'`aria-label`, jamais sur un libellé visible : la
+    barre est icon-only, et un contrôle sans nom accessible serait de toute
+    façon un défaut que `test_every_control_is_a_button_with_an_aria_label`
+    fait tomber.
+    """
     html = _rendu(_cursor_ctx(JUMP_PAGES + 2, _GROS_PAGES * PAGE_SIZE))
     sauts = [c for c in _BUTTON_RE.findall(html)
-             if "Fin (" in c or ("%d" % JUMP_PAGES) in c or "Début" in c]
+             if "page (" in c or "Première page" in c or "de %d pages" % JUMP_PAGES in c]
     assert len(sauts) == 4, sauts
     for ctrl in sauts:
         assert '"cursor": ""' in ctrl and '"trail": ""' in ctrl
@@ -186,9 +209,10 @@ def test_the_bar_is_hidden_for_a_single_page():
 def test_a_missing_total_hides_the_leap_row_entirely():
     """Compte illisible → la barre est visuellement celle d'avant ce lot."""
     html = _rendu(_cursor_ctx(7, None))
-    assert "Fin (" not in html
-    assert ("+%d" % JUMP_PAGES) not in html
-    assert "Précédent" in html and "Suivant" in html
+    assert "Dernière page" not in html
+    assert "de %d pages" % JUMP_PAGES not in html
+    # La marche reste offerte — elle ne dépend d'aucun total.
+    assert "Page précédente" in html and "Page suivante" in html
     indicateur = " ".join(html.split())
     assert "Page 7 <" in indicateur or "Page 7</span>" in indicateur
 

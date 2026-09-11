@@ -12,19 +12,35 @@
    the label collapse to 3/4/5 while the data read 13/14/15, and would leave
    the freeze-at-22 bug in place.
 
-   The leap controls (Début / ±N / Fin) are mode-agnostic: they emit an EMPTY
-   cursor and trail, which is precisely what routes the request to the route's
-   absolute-page branch. Clearing them is safe because cursors are not form
-   fields, so hx-include cannot reintroduce one.
+   The leap controls are mode-agnostic: they emit an EMPTY cursor and trail,
+   which is precisely what routes the request to the route's absolute-page
+   branch. Clearing them is safe because cursors are not form fields, so
+   hx-include cannot reintroduce one.
 
    When the total is unknown (a count that failed), show_end/show_jump are
-   false and row 2 is not rendered at all — the bar is then visually identical
-   to what shipped before this component grew. #}
+   false and row 2 is not rendered at all.
+
+   ── ICON-ONLY (2026-09-11) ──────────────────────────────────────────────
+   Six glyphs, no label text: chevron (walk one page), double chevron (leap
+   ±jump_size), bar-chevron (first / last page). Two consequences the markup
+   has to carry deliberately:
+
+   * A glyph is the control's ONLY affordance, so every button needs BOTH
+     `aria-label` (ms() renders aria-hidden, so the glyph contributes nothing
+     to the accessible name) AND `title` — with no text, hover on a desktop
+     and long-press on a phone are the only ways to learn what a button does.
+     The last-page title keeps its destination number, which is what the old
+     « Fin (42) » label used to say out loud.
+   * Losing the labels SHRINKS the hit area, so the padding grows to `px-4`
+     with a 20 px glyph: 54 × 46 px, clearing the documented 44 px minimum
+     that the old `px-3 py-1.5` never met. That is also why the bar stays on
+     TWO rows — six 54 px controls plus the counter measure ~409 px, and a
+     375 px viewport has ~343 px of usable width. #}
 {% if pagination and (pagination.has_prev or pagination.has_next) %}
 {% set extra %}{% if pagination.extra_vals %}{% for k, v in pagination.extra_vals.items() %}, "{{ k }}": "{{ v }}"{% endfor %}{% endif %}{% endset %}
 {% set p = pagination %}
-{% set walk = "inline-flex items-center gap-1 px-3 py-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
-{% set leap = "inline-flex items-center justify-center gap-1 px-3 py-3 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
+{% set walk = "inline-flex items-center justify-center px-4 py-3 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
+{% set leap = "inline-flex items-center justify-center px-4 py-3 text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer" %}
 <nav class="flex flex-col gap-2 pt-4" aria-label="Pagination">
 
   {# ── Row 1: the walk ─────────────────────────────────────────────── #}
@@ -41,10 +57,8 @@
        {% endif %}
        hx-push-url="true"
        aria-label="Page précédente"
-       class="{{ walk }}">
-      {{ ms('chevron_left', 16) }}
-      Précédent
-    </button>
+       title="Page précédente"
+       class="{{ walk }}">{{ ms('chevron_left', 20) }}</button>
     {% else %}
     <span></span>
     {% endif %}
@@ -65,10 +79,8 @@
        {% endif %}
        hx-push-url="true"
        aria-label="Page suivante"
-       class="{{ walk }}">
-      Suivant
-      {{ ms('chevron_right', 16) }}
-    </button>
+       title="Page suivante"
+       class="{{ walk }}">{{ ms('chevron_right', 20) }}</button>
     {% else %}
     <span></span>
     {% endif %}
@@ -84,7 +96,8 @@
        hx-vals='{"cursor": "", "trail": "", "page": "1"{{ extra }}}'
        hx-push-url="true"
        aria-label="Première page"
-       class="{{ leap }}">Début</button>
+       title="Première page"
+       class="{{ leap }}">{{ ms('first_page', 20) }}</button>
     {% endif %}
 
     {% if p.jump_prev_page %}
@@ -94,7 +107,8 @@
        hx-vals='{"cursor": "", "trail": "", "page": "{{ p.jump_prev_page }}"{{ extra }}}'
        hx-push-url="true"
        aria-label="Reculer de {{ p.jump_size }} pages"
-       class="{{ leap }}">−{{ p.jump_size }}</button>
+       title="Reculer de {{ p.jump_size }} pages"
+       class="{{ leap }}">{{ ms('keyboard_double_arrow_left', 20) }}</button>
     {% endif %}
 
     {% if p.jump_next_page %}
@@ -104,7 +118,8 @@
        hx-vals='{"cursor": "", "trail": "", "page": "{{ p.jump_next_page }}"{{ extra }}}'
        hx-push-url="true"
        aria-label="Avancer de {{ p.jump_size }} pages"
-       class="{{ leap }}">+{{ p.jump_size }}</button>
+       title="Avancer de {{ p.jump_size }} pages"
+       class="{{ leap }}">{{ ms('keyboard_double_arrow_right', 20) }}</button>
     {% endif %}
 
     {% if p.show_end %}
@@ -114,7 +129,8 @@
        hx-vals='{"cursor": "", "trail": "", "page": "{{ p.last_page }}"{{ extra }}}'
        hx-push-url="true"
        aria-label="Dernière page ({{ p.last_page }})"
-       class="{{ leap }}">Fin ({{ p.last_page }})</button>
+       title="Dernière page ({{ p.last_page }})"
+       class="{{ leap }}">{{ ms('last_page', 20) }}</button>
     {% endif %}
   </div>
   {% endif %}
