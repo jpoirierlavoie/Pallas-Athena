@@ -102,15 +102,25 @@ bill. Everything Google-side is small at single-user scale.
 
 ### 4.1 Environment variables
 
-Set these in [`athena/app.yaml`](athena/app.yaml) (non-secret identifiers) for
-production, and in a local `.env` (from [`.env.example`](.env.example)) for
-development. **Never** put secrets in `app.yaml`.
+Set these in [`athena/app.yaml`](athena/app.yaml) (main service) and
+[`athena/portail.yaml`](athena/portail.yaml) (portal service) for production,
+and in a local `.env` (from [`.env.example`](.env.example)) for development.
+**Never** put a secret in either yaml.
+
+**Complete by derivation.** A test parses `config.py`, `client/config.py` and
+`client/app.py` for every environment variable they actually read and fails if
+one is absent from the tables below. **Twenty-five were missing until
+2026-09-12** — the whole Microsoft Graph, Bookings and Outlook-mirror surface,
+the portal's own four, and `MCP_WRITE_ENABLED`. Five of those govern
+integrations an adopter cannot otherwise discover without reading `config.py`.
+
+#### Core — boot, authentication, edge
 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
-| `ENV` | ✔ | `development` | `production` switches secret resolution to Secret Manager |
+| `ENV` | ✔ | `development` | `production` switches secret resolution to Secret Manager. Read by **both** services |
 | `SECRET_KEY` → secret `flask-secret-key` | ✔ **hard** | — | Flask session signing; **app won't boot without it** |
-| `FIREBASE_PROJECT_ID` | ✔ **hard** | — | Your GCP/Firebase project id |
+| `FIREBASE_PROJECT_ID` | ✔ **hard** | — | Your GCP/Firebase project id. It also *builds the Secret Manager resource path*, so **nothing** — not one secret — resolves without it |
 | `FIREBASE_STORAGE_BUCKET` | ✔ **hard** | — | Your Storage bucket name |
 | `AUTHORIZED_USER_EMAIL` | ✔ **hard** | — | The single user; also the DAV username |
 | `FIREBASE_APP_ID` | ○ | `""` | Web-app id used by the App Check bootstrap |
@@ -118,15 +128,80 @@ development. **Never** put secrets in `app.yaml`.
 | `DAV_PASSWORD_HASH` → secret `dav-password-hash` | ○ (needed for DAV) | `""` | **bcrypt** hash of the DAV password |
 | `RECAPTCHA_ENTERPRISE_SITE_KEY` | ○ (recommended) | `""` | App Check; **fail-open + loud warning** if unset in prod |
 | `APPCHECK_DEBUG_TOKEN` | ○ | `""` | Local dev only |
-| `CF_ORIGIN_SECRET` → secret `cf-origin-secret` | ○ | `""` | Edge origin check; **fail-open** if unset |
+| `CF_ORIGIN_SECRET` → secret `cf-origin-secret` | ○ | `""` | Edge origin check; **fail-open and completely SILENT** if unset — no log, no metric. §4.4 and « Paramètres → Configuration » are the only things that will tell you |
 | `REQUIRE_MFA` | ○ | `true` | Enforce Phone MFA. Read by « Paramètres → Sécurité » to decide whether the last enrolled factor may be removed |
 | `SESSION_LIFETIME_HOURS` | ○ | `12` | Server-side session lifetime |
 | `RATE_LIMIT_LOGIN` | ○ | `5 per minute` | Login rate limit |
 | `MCP_ENABLED` | ○ | `true` | `false` → all `/mcp` + `/oauth/*` routes 404 |
+| `MCP_WRITE_ENABLED` | ○ | `true` | `false` → the 22 write tools vanish from `tools/list`, are refused at `tools/call`, and the consent checkbox disappears; reads are untouched. Its arm/disarm procedure is **deploy-ordered** — see the comment in `app.yaml` — which is why it is deliberately not editable at runtime |
 | `MCP_CANONICAL_ORIGIN` | ○ | owner domain in [config.py](athena/config.py) | OAuth issuer — **must be your domain** |
-| `FIRM_NAME` … `FIRM_EMAIL`, `FIRM_FAX`, `GST_NUMBER`, `QST_NUMBER` | ○ | mostly `""` | **Seed and fallback only.** The live firm profile is edited in « Paramètres » and stored at `settings/cabinet`; these bootstrap a fresh deploy and are what the app falls back to if Firestore is unreadable. The `portail` service is the exception — it reads `FIRM_NAME`/`FIRM_PHONE` from `portail.yaml` and cannot reach the singleton |
-| `TRACE_SAMPLE_RATIO` | ○ | `0.1` | Cloud Trace sampling (read by `tracing_setup.py`) |
+| `TRACE_SAMPLE_RATIO` | ○ | `0.1` | Trace sampling (read by `utils/tracing_setup.py`, not by `config.py`) |
+| `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` | ✔ (prod) | — | `gcp`. Read by the **OpenTelemetry SDK itself**: since SDK 1.42 the resource detectors load *only* when it is set. Needed in **both** yamls — each service runs its own `tracing_setup` in its own process |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | ○ (prod) | SDK default | OTLP export timeout **in seconds**. Both yamls set `5` |
 | `PIP_REQUIRE_HASHES`, `PIP_NO_DEPS` | ✔ (prod) | `1`, `1` | Supply-chain: reject unhashed/out-of-band installs |
+
+#### Firm profile — SEED and FALLBACK only
+
+The live firm profile is edited in « Paramètres » and stored at
+`settings/cabinet`. These eleven bootstrap a fresh deploy on an empty database
+and are what the app falls back to if Firestore is unreadable — they are **not**
+the running values once the profile has been saved once. The `portail` service
+is the exception: it reads `FIRM_NAME`/`FIRM_PHONE` straight from its own yaml
+and cannot reach the singleton.
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `FIRM_NAME` | ○ | `""` | **The lawyer**, not the firm — the compliance signer and the letterhead |
+| `FIRM_STREET`, `FIRM_UNIT`, `FIRM_CITY`, `FIRM_POSTAL_CODE` | ○ | `""` | Address, in the app's own six-suffix shape |
+| `FIRM_PROVINCE` | ○ | `QC` | ⚠ The only non-empty default here, and it disagrees with the convention every contact address in the app follows (`Québec`, spelled out). `_seed_from_env` migrates it through `apply_address_defaults`, so the stored profile is correct — but a reader of `app.yaml` sees `QC` |
+| `FIRM_PHONE`, `FIRM_FAX`, `FIRM_EMAIL` | ○ | `""` | Phones are stored **E.164**; `cabinet_dict()` renders the local form |
+| `GST_NUMBER`, `QST_NUMBER` | ○ | `""` | ⚠ Read at invoice creation and **snapshotted per invoice**. There is no `update_invoice`, so setting them here (or in « Paramètres ») affects **future invoices only** |
+
+#### Integrations — Microsoft Graph, Bookings, Outlook mirror
+
+Main service only. The `portail` service has **no** `GRAPH_*` variable by
+design (spec L1 §8.1 — it cannot call Graph at all).
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `GRAPH_TENANT_ID` | ○ | `""` | Entra tenant. Outbound email is off unless all four Graph values are set (`Config.graph_configured()`) |
+| `GRAPH_CLIENT_ID` | ○ | `""` | The app registration |
+| `GRAPH_SENDER_UPN` | ○ | `""` | The mailbox invitations and accusés are sent **from** |
+| `GRAPH_SENDER_NAME` | ○ | `""` | Display name on those messages |
+| `GRAPH_CLIENT_SECRET` → secret `graph-client-secret` | ○ | `""` | Resolved with `required=False`, which **swallows a PERMISSION_DENIED into `""`** — a missing accessor binding therefore turns outbound email off in silence. §6.4's grant loop covers it |
+| `BOOKINGS_JURISTE_UPN` | ○ | `""` | The mailbox whose calendar is polled. **Empty short-circuits the sync** |
+| `BOOKINGS_SYNC_ACTIVE` | ○ | `true` | Kill switch for the 10-minute Bookings import |
+| `BOOKINGS_SUBJECT_KEYWORDS` | ○ | `Consultation` | Comma-separated. A subject matches when it **ends** with « {separator} {keyword} », case- and accent-folded — Bookings names the event `{Customer} - {Service}`, so the service name is a suffix. ⚠ An **empty** value is a total, silent outage: nothing matches, and the absence loop then flags every already-imported reservation `annulée_client`. The sync refuses to run rather than proceed |
+| `BOOKINGS_SYNC_LOOKAHEAD_DAYS` | ○ | `90` | Forward window of the poll |
+| `BOOKINGS_SYNC_LOOKBACK_DAYS` | ○ | `1` | Backward window of the poll |
+| `BOOKINGS_DEBUG_PAYLOAD` | ○ | `false` | Predicate tuning: logs the first detected and first undetected event **at INFO** (the root logger sits at INFO in production, so DEBUG would be mute exactly where it is needed). Domains and predicate booleans only — never the subject, which embeds the client's name |
+| `MIROIR_OUTLOOK_ACTIF` | ○ | `true` | Kill switch for the Athéna → Outlook mirror. `false` freezes existing mirrors in place; it does not clean them up |
+| `MIROIR_OUTLOOK_LOOKAHEAD_DAYS` | ○ | `365` | The mirror's forward window — **shared** by the Athéna read and the Outlook read, which is what keeps a mirror from becoming an invisible orphan |
+| `MIROIR_OUTLOOK_LOOKBACK_DAYS` | ○ | `30` | Its backward window |
+| `FEATURE_INTAKE` | ○ | `false` | Offers the portal's intake (dossier-opening) form when confirming a Bookings rendez-vous whose email matches no contact |
+
+⚠ **Two Bookings settings have no environment variable at all.**
+`BOOKINGS_TYPE_PAR_MOT_CLE` (keyword → hearing type) and
+`BOOKINGS_TYPE_DEFAUT` are literals in
+[`config.py`](athena/config.py). Publishing a new Bookings service and naming
+it in `BOOKINGS_SUBJECT_KEYWORDS` **without** adding it to that map falls back
+to « consultation » — logged, but only in the logs. Editing `config.py` is the
+only way to change it today.
+
+#### The `portail` service — set in `portail.yaml`
+
+The portal runs in its own process under its own least-privilege service
+account, so it re-reads what it needs from its own yaml. `ENV`,
+`FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`, `RECAPTCHA_ENTERPRISE_SITE_KEY`,
+`APPCHECK_DEBUG_TOKEN`, `FIRM_NAME` and `FIRM_PHONE` are the same names as
+above and must be set **again** there.
+
+| Variable | Required? | Default | Purpose |
+|---|---|---|---|
+| `PORTAIL_SECRET_KEY` → secret `portail-secret-key` | ✔ **hard** (portal) | — | The portal's session key, **distinct** from the main one. The service does not boot without it |
+| `PORTAIL_HOST` | ○ | ⚠ `portail.poirierlavoie.ca` — the **original owner's** host | Used to build the fallback link in every invitation email |
+| `PORTAIL_BUCKET` | ○ | `{FIREBASE_PROJECT_ID}-portail-quarantaine` | Derived, so it follows your project id by itself |
+| `TASKS_LOCATION` | ○ | ⚠ `northamerica-northeast1` (Montréal) | **Must equal your App Engine region** (`gcloud app describe`). It is not derived: deploy elsewhere and leave it, and every `signaler()` raises `NOT_FOUND` at finalization — a failure the portal swallows **by design** (the envelope is the durable truth), so the only symptom is lots arriving in Réception ~15 minutes late via the reconciliation cron |
 
 ### 4.2 The six Secret Manager secrets (production)
 
@@ -158,20 +233,48 @@ predicates as this section.
 
 ### 4.3 Owner-specific values to replace
 
-Every value below is currently hardcoded to the original deployment. Replace
-each one, then run the checker in §4.4.
+Every value below is hardcoded to the original deployment. Replace each one,
+then run the checker in §4.4 — **which names the exact value and the exact
+file**, so this table deliberately does not repeat the owner's identifiers a
+third time.
 
-| Value | Where |
+The table is GENERATED from `OWNER_LITERALS` and `SCAN_FILES` in
+[`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
+and pinned against them by a test: the « Where » column is not a claim, it is
+the result of searching each scanned file for that value. It listed nine rows
+until 2026-09-12 and the checker already knew of fifteen.
+
+| Value | Where the checker finds it |
 |---|---|
-| GCP project id | `app.yaml`, every `gcloud`/`firebase --project` command, `.env` |
-| Firebase app id | `app.yaml` |
-| Storage bucket | `app.yaml` |
-| Authorized email | `app.yaml` |
-| `FIRM_NAME` | `app.yaml` |
-| **reCAPTCHA site key** | `app.yaml` — replace **and** rotate the old one |
-| MCP canonical origin default | [config.py](athena/config.py) |
-| Firm name / domain / contact | [static/legal/privacy.html](athena/static/legal/privacy.html), [terms.html](athena/static/legal/terms.html), [README.md](README.md), [SECURITY.md](SECURITY.md), [LICENSE](LICENSE) |
-| TWA package + SHA-256 fingerprint | [main.py](athena/main.py) `assetlinks.json` route (only if you build the Android app, §12) |
+| GCP project id | `athena/app.yaml`, `athena/portail.yaml` |
+| Storage bucket | `athena/app.yaml` |
+| Firebase app id | `athena/app.yaml`, `athena/portail.yaml` |
+| Authorized user email | `athena/app.yaml` |
+| Firm name | `athena/app.yaml`, `athena/portail.yaml` |
+| reCAPTCHA site key | `athena/app.yaml`, `athena/portail.yaml` |
+| MCP canonical origin | `athena/app.yaml`, `athena/config.py` |
+| Domain | `athena/app.yaml`, `dispatch.yaml`, `athena/config.py` |
+| TWA package | `athena/main.py` |
+| Portal host | `dispatch.yaml`, `athena/client/config.py` |
+| Portal service account | `athena/portail.yaml` |
+| Firm phone | `athena/app.yaml`, `athena/portail.yaml` |
+| Firm email | `athena/app.yaml` |
+| Graph tenant id | `athena/app.yaml` |
+| Graph client id | `athena/app.yaml` |
+| App Engine region | `athena/client/config.py` |
+
+**Also carrying the owner's identity, outside the scan.** The checker looks at
+deployment config only, so these are on you: the firm name, domain and contact
+in [`static/legal/privacy.html`](athena/static/legal/privacy.html) and
+[`terms.html`](athena/static/legal/terms.html), [README.md](README.md),
+[SECURITY.md](SECURITY.md) and [LICENSE](LICENSE); the TWA package and its
+SHA-256 signing fingerprint in [main.py](athena/main.py)'s `assetlinks.json`
+route (only if you build the Android app, §12); and the placeholder values in
+[`.env.example`](.env.example).
+
+⚠ **The reCAPTCHA site key must be replaced *and* the old one rotated** — a
+site key is public, so forking the repo hands it to everyone; and a fork that
+keeps it is sending App Check attestations against someone else's key.
 
 ### 4.4 Verify your configuration
 

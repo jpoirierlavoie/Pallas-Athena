@@ -1105,6 +1105,124 @@ def test_the_six_apis_that_were_MISSING_are_named():
         assert service in API_SERVICES, service
 
 
+# § 4.1 — l'inventaire des variables d'environnement, COMPLET PAR DÉRIVATION.
+#
+# Vingt-cinq manquaient le 2026-09-12 : toute la surface Graph / Bookings /
+# miroir Outlook, les quatre du portail, et `MCP_WRITE_ENABLED`. Les recopier
+# à la main aurait reproduit le défaut — la liste se DÉRIVE donc de ce que les
+# modules de configuration lisent réellement.
+#
+# Deux formes d'accès, et il faut les DEUX : `os.environ[...]` / `.get(...)` /
+# `os.getenv(...)` pour les valeurs ordinaires, et le SECOND argument de
+# `_secret(secret_id, env_var)` pour les six valeurs sensibles — que le
+# balayage `os.environ` ne voit pas, puisqu'en production elles ne passent
+# jamais par l'environnement. Un test qui n'en lirait qu'une forme
+# déclarerait §4.1 complète en lui manquant `SECRET_KEY`.
+
+_CONFIG_MODULES = (
+    "athena/config.py",
+    "athena/client/config.py",
+    # Le portail relit sept noms dans SON processus : il n'importe jamais
+    # `config.py` (`models/__init__` y construirait un client Firestore que
+    # son compte de service n'a pas le droit d'ouvrir).
+    "athena/client/app.py",
+)
+
+
+def _env_names_read_by(chemin: str) -> set:
+    arbre = ast.parse(io.open(chemin, encoding="utf-8").read())
+    trouves = set()
+    for n in ast.walk(arbre):
+        if isinstance(n, ast.Subscript):
+            v = n.value
+            if isinstance(v, ast.Attribute) and v.attr == "environ":
+                sl = n.slice
+                if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                    trouves.add(sl.value)
+        if isinstance(n, ast.Call) and n.args:
+            f, cible = n.func, None
+            if isinstance(f, ast.Attribute) and f.attr == "get":
+                v = f.value
+                if isinstance(v, ast.Attribute) and v.attr == "environ":
+                    cible = n.args[0]
+            elif isinstance(f, ast.Attribute) and f.attr == "getenv":
+                cible = n.args[0]
+            elif (isinstance(f, ast.Name) and f.id == "_secret"
+                    and len(n.args) > 1):
+                cible = n.args[1]
+            if isinstance(cible, ast.Constant) and isinstance(cible.value, str):
+                trouves.add(cible.value)
+    return trouves
+
+
+def test_the_env_scan_actually_finds_the_two_access_shapes():
+    """Un test dérivé ne vaut que sa dérivation : si le balayage rendait un
+    ensemble vide, l'épingle suivante passerait en ne prouvant RIEN. On exige
+    donc un témoin de CHAQUE forme — `FIREBASE_PROJECT_ID` par crochets, et
+    `SECRET_KEY`, que seul le second argument de `_secret` révèle."""
+    lus = _env_names_read_by(os.path.join(_ROOT, "athena/config.py"))
+    assert "FIREBASE_PROJECT_ID" in lus, "la forme os.environ[...] est ratée"
+    assert "SECRET_KEY" in lus, "la forme _secret(..., env_var) est ratée"
+    assert len(lus) > 30, len(lus)
+
+
+def test_section_4_1_names_EVERY_env_var_the_configuration_reads():
+    doc = _deployment_md()
+    section = doc[doc.index("### 4.1"):doc.index("### 4.2 ")]
+    lus = set()
+    for chemin in _CONFIG_MODULES:
+        lus |= _env_names_read_by(os.path.join(_ROOT, chemin))
+    absents = sorted(n for n in lus if "`" + n + "`" not in section)
+    assert not absents, (
+        "DEPLOYMENT.md §4.1 ne nomme pas ces variables, que la configuration "
+        "lit pourtant : " + repr(absents)
+    )
+
+
+def test_section_4_3_is_GENERATED_from_the_literals_and_the_scan():
+    """§4.3 listait NEUF valeurs quand le vérificateur en connaissait quinze,
+    et sa colonne « Where » était de la prose. Elle est maintenant le RÉSULTAT
+    du balayage : pour chaque littéral, les fichiers de `SCAN_FILES` qui le
+    portent réellement. Déplacer une valeur d'un yaml à l'autre fait donc
+    tomber ce test, ce qu'aucune relecture de prose n'aurait fait."""
+    doc = _deployment_md()
+    attendues = []
+    for cle, valeur in OWNER_LITERALS.items():
+        porteurs = [
+            f for f in SCAN_FILES
+            if os.path.exists(os.path.join(_ROOT, f))
+            and valeur in io.open(
+                os.path.join(_ROOT, f), encoding="utf-8").read()
+        ]
+        assert porteurs, (
+            cle + " : aucun fichier balayé ne porte ce littéral — la valeur "
+            "a bougé, ou SCAN_FILES a un trou"
+        )
+        attendues.append("| {} | {} |".format(
+            cle, ", ".join("`" + f + "`" for f in porteurs)))
+
+    manquantes = [r for r in attendues if r not in doc]
+    assert not manquantes, (
+        "DEPLOYMENT.md §4.3 a dérivé — régénérez ces rangées : "
+        + repr(manquantes)
+    )
+    positions = [doc.index(r) for r in attendues]
+    assert positions == sorted(positions), (
+        "les rangées de §4.3 ne suivent plus l'ordre d'OWNER_LITERALS"
+    )
+
+
+def test_the_app_engine_region_is_a_literal_an_adopter_must_replace():
+    """`client/config.py` code la région en dur comme défaut de
+    `TASKS_LOCATION`, et ce fichier est balayé depuis l'extraction — mais le
+    balayage ne signale que ce qu'on lui donne à chercher. Sans cette entrée,
+    un adoptant hors Montréal obtient une file Cloud Tasks que le code ne
+    trouve pas, et l'échec est AVALÉ par conception côté portail."""
+    assert OWNER_LITERALS["App Engine region"] == "northamerica-northeast1"
+    chemin = os.path.join(_ROOT, "athena/client/config.py")
+    assert "northamerica-northeast1" in io.open(chemin, encoding="utf-8").read()
+
+
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
     """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
     absence : le mot de passe DAV en clair dans l'historique, `secrets create`

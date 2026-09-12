@@ -180,8 +180,12 @@ class Config:
     # The mailbox whose calendar is queried (the juriste's Bookings mailbox).
     # Empty → the sync short-circuits (nothing to query).
     BOOKINGS_JURISTE_UPN: str = os.environ.get("BOOKINGS_JURISTE_UPN", "")
-    # §4.4 predicate tuning: log the raw JSON of the first detected + first
-    # undetected event at DEBUG (domains only — never full addresses).
+    # §4.4 predicate tuning: log the first detected + first undetected event
+    # (predicate booleans + attendee DOMAINS only — never the subject, which
+    # embeds the client's name). Emitted at INFO, not DEBUG: the root logger
+    # sits at INFO in production, so a DEBUG line produced NOTHING there —
+    # this comment said DEBUG until 2026-09-12, describing the defect rather
+    # than the code that fixed it (routes/taches_bookings._debug_payload).
     BOOKINGS_DEBUG_PAYLOAD: bool = (
         os.environ.get("BOOKINGS_DEBUG_PAYLOAD", "false").lower() == "true"
     )

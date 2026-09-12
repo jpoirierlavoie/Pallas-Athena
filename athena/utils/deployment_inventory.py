@@ -922,6 +922,15 @@ OWNER_LITERALS: dict[str, str] = {
     "Firm email": "reception@poirierlavoie.ca",
     "Graph tenant id": "4c5c39a5-2e63-4b04-8408-973c58cd88c7",
     "Graph client id": "988bf117-3aef-463b-8062-7dac226e50d9",
+    # La RÉGION App Engine. `client/config.py` la code en dur comme défaut de
+    # `TASKS_LOCATION`, et ce fichier EST balayé — mais le balayage ne peut
+    # signaler que ce qu'on lui donne à chercher. Un adoptant qui déploie
+    # ailleurs obtient donc une file Cloud Tasks que le code ne trouve pas,
+    # et `signaler()` lève `NOT_FOUND` à la finalisation — un échec que le
+    # portail avale PAR CONCEPTION (l'enveloppe est la vérité durable), donc
+    # le seul symptôme est un lot qui arrive en Réception un quart d'heure
+    # plus tard, par le cron de réconciliation.
+    "App Engine region": "northamerica-northeast1",
 }
 
 # The TWA signing fingerprint is a PATTERN, not a literal value.
