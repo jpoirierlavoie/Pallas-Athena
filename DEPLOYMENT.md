@@ -684,7 +684,9 @@ done
 # `portail-secret-key` is granted to the PORTAL service account instead — it
 # belongs to the second App Engine service, whose least-privilege SA is the
 # whole point of keeping the two session keys apart:
-#   gcloud secrets add-iam-policy-binding portail-secret-key #     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" #     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
+#   gcloud secrets add-iam-policy-binding portail-secret-key \
+#     --member="serviceAccount:portail-svc@$PROJECT.iam.gserviceaccount.com" \
+#     --role="roles/secretmanager.secretAccessor" --project=$PROJECT
 # The portal's full infrastructure (bucket, named database, queue, nine IAM
 # grants) is not yet in this document — see CLAUDE.md « Portail client » until
 # it is.

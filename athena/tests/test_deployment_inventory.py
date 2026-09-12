@@ -34,6 +34,9 @@ sys.path.insert(0, _ATHENA)
 from utils.deployment_inventory import (  # noqa: E402
     FAIL_OPEN_ENV,
     OWNER_FINGERPRINT_RE,
+    ORIGIN_EXTERNAL,
+    ORIGIN_GENERATED,
+    ORIGIN_PASSWORD,
     OWNER_LITERALS,
     REQUIRED_ENV,
     SCAN_FILES,
@@ -980,6 +983,58 @@ def test_the_deployment_doc_lists_every_secret_and_says_six():
     assert "The six Secret Manager secrets" in doc
     assert "The four Secret Manager secrets" not in doc
     assert "(4 secrets)" not in doc, "le schéma de §1 comptait encore quatre"
+
+
+# §4.2 se DÉCLARE « GENERATED … and pinned by a test », et ce n'était vrai
+# qu'à moitié : rien ne vérifiait la colonne des longueurs attendues, ni
+# d'ailleurs les trois autres colonnes dérivables. Une section qui affirme
+# être épinglée sans l'être est pire qu'une section qui ne l'affirme pas —
+# elle invite la main suivante à modifier `Shape` sans regarder le document.
+_ORIGINE_FR = {
+    ORIGIN_GENERATED: "you mint it",
+    ORIGIN_EXTERNAL: "a console hands it to you",
+    ORIGIN_PASSWORD: "computed from a password you choose",
+}
+
+
+def _ligne_4_2(secret) -> str:
+    """La rangée de §4.2, ENGENDRÉE. Quatre des cinq colonnes sortent de la
+    table ; seule la prose d'origine est traduite ici, par une table fermée
+    dont un membre nouveau lèverait un KeyError plutôt que de passer."""
+    if secret.required_for:
+        pour = " + ".join("`" + s + "`" for s in sorted(secret.required_for))
+    else:
+        pour = "optional"
+    return "| `{}` | {} | {} | {} chars | {} |".format(
+        secret.secret_id,
+        pour,
+        _ORIGINE_FR[secret.origin],
+        expected_length_fr(secret),
+        secret.consequence,
+    )
+
+
+def test_section_4_2_is_GENERATED_row_for_row_INCLUDING_the_length_column():
+    """L'épingle voisine ne vérifiait que la PRÉSENCE de chaque identifiant.
+    Celle-ci vérifie la rangée entière : le service pour lequel le secret est
+    requis, la provenance de la valeur, la longueur attendue — dérivée du
+    `Shape` qui juge réellement la valeur stockée — et la conséquence d'une
+    absence. Resserrer une borne sans régénérer §4.2 fait donc tomber ce test,
+    ce qui est exactement ce qu'on veut : le document et le prédicat ne
+    peuvent plus diverger en silence."""
+    doc = _deployment_md()
+    attendues = [_ligne_4_2(s) for s in SECRETS]
+    manquantes = [ligne for ligne in attendues if ligne not in doc]
+    assert not manquantes, (
+        "DEPLOYMENT.md §4.2 a dérivé de la table — régénérez ces rangées : "
+        + repr(manquantes)
+    )
+    # Et dans l'ORDRE de la table : une rangée juste au mauvais rang ferait
+    # lire à un adoptant la conséquence du secret d'à côté.
+    positions = [doc.index(ligne) for ligne in attendues]
+    assert positions == sorted(positions), (
+        "les rangées de §4.2 ne suivent plus l'ordre de SECRETS"
+    )
 
 
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
