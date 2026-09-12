@@ -1293,6 +1293,99 @@ def test_gunicorn_is_documented_as_POSIX_only():
         )
 
 
+# ── « les quatre secrets », la troisième fois ────────────────────────────
+#
+# §4.2 a dit « the four Secret Manager secrets » pendant des mois. Réparé le
+# 2026-09-11 — et la même phrase vivait encore dans DEUX autres fichiers que
+# rien n'épinglait : `app.yaml` nommait quatre des cinq valeurs que
+# `config.py` résout, et `CLAUDE.md` disait « the four application secrets ».
+# L'omise était `CF_ORIGIN_SECRET` dans les deux cas : précisément la valeur
+# dont l'absence désactive TOUT le contrôle d'origine en silence.
+#
+# La leçon ne porte pas sur le nombre quatre. Un commentaire qui ÉNUMÈRE est
+# un inventaire, et un inventaire tenu à la main dérive — c'est la phrase que
+# ce dépôt écrit lui-même à propos de trois autres listes. On dérive donc les
+# noms des appels `_secret(...)` du module de configuration de CHAQUE service,
+# et on exige que le yaml du service les nomme tous.
+
+
+def _secrets_resolved_by(chemin: str) -> list:
+    """(secret_id, env_var) pour chaque appel `_secret(...)` du module."""
+    arbre = ast.parse(io.open(chemin, encoding="utf-8").read())
+    out = []
+    for n in ast.walk(arbre):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "_secret" and len(n.args) > 1
+                and isinstance(n.args[0], ast.Constant)
+                and isinstance(n.args[1], ast.Constant)):
+            out.append((n.args[0].value, n.args[1].value))
+    return out
+
+
+_YAML_ET_SA_CONFIG = (
+    ("athena/app.yaml", "athena/config.py"),
+    ("athena/portail.yaml", "athena/client/config.py"),
+)
+
+
+def test_the_secret_scan_finds_something_in_each_config_module():
+    """Garde-fou du garde-fou : une dérivation qui rend une liste vide fait
+    passer l'épingle suivante en ne prouvant rien."""
+    for _yaml, module in _YAML_ET_SA_CONFIG:
+        resolus = _secrets_resolved_by(os.path.join(_ROOT, module))
+        assert resolus, module
+        for sid, _env in resolus:
+            assert sid in SECRET_IDS, (module, sid, "secret hors de la table")
+
+
+_MARQUEUR = "SECRET-MANAGER-BACKED:"
+
+
+def _inventaire_declare(nom_yaml: str) -> set:
+    """Les noms que le yaml DÉCLARE, lus du marqueur et de ses continuations.
+
+    Le marqueur existe parce que la première version de cette épingle
+    balayait le FICHIER ENTIER et que sa mutation est PASSÉE : la prose
+    d'explication voisine nommait `CF_ORIGIN_SECRET` une seconde fois, si
+    bien que le test mesurait la leçon au lieu de l'inventaire — le piège
+    `tr -d`, une troisième fois. Délimiter l'inventaire laisse la prose dire
+    ce qu'elle veut sans jamais satisfaire le test.
+    """
+    lignes = io.open(
+        os.path.join(_ROOT, nom_yaml), encoding="utf-8").read().splitlines()
+    i = next((k for k, l in enumerate(lignes) if _MARQUEUR in l), None)
+    if i is None:
+        return set()
+    brut = lignes[i].split(_MARQUEUR, 1)[1]
+    # Les continuations : lignes de commentaire suivantes plus INDENTÉES que
+    # le « # » du marqueur.
+    for suivante in lignes[i + 1:]:
+        nue = suivante.strip()
+        if not nue.startswith("#"):
+            break
+        corps = nue[1:]
+        if not corps.startswith("  "):
+            break
+        brut += " " + corps
+    return {n.strip() for n in brut.replace(",", " ").split() if n.strip()}
+
+
+def test_a_yaml_that_ENUMERATES_its_secrets_enumerates_them_ALL():
+    for nom_yaml, module in _YAML_ET_SA_CONFIG:
+        declare = _inventaire_declare(nom_yaml)
+        assert declare, (
+            nom_yaml + " ne porte plus le marqueur " + _MARQUEUR +
+            " — l'inventaire des secrets doit rester machine-lisible"
+        )
+        attendus = {env for _sid, env in _secrets_resolved_by(
+            os.path.join(_ROOT, module))}
+        assert declare == attendus, (
+            nom_yaml + " déclare " + repr(sorted(declare)) + " alors que " +
+            module + " résout " + repr(sorted(attendus)) +
+            " — c'est la forme exacte du défaut « les quatre secrets »."
+        )
+
+
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
     """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
     absence : le mot de passe DAV en clair dans l'historique, `secrets create`

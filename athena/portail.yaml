@@ -16,8 +16,16 @@ automatic_scaling:
 # Compte de service à moindre privilège (spec §3) : objectCreator sur le
 # bucket de quarantaine, datastore.viewer conditionné à la base « portail »,
 # cloudtasks.enqueuer sur la file, logWriter/cloudtrace.agent, accessor sur
-# portail-secret-key + firebase-api-key. RIEN d'autre — pas de Graph, pas
-# d'écriture Firestore, pas de lecture du bucket.
+# portail-secret-key + firebase-api-key, ET appengine.appViewer au niveau du
+# PROJET. Ce dernier manquait à cette liste jusqu'au 2026-09-12, alors que la
+# spec l'omettait aussi et que son absence a fait échouer l'enfilage en
+# silence de bout en bout au premier lancement : une tâche
+# `app_engine_http_request` exige `appengine.applications.get`, que
+# `cloudtasks.enqueuer` ne porte pas. Les quatre rôles de niveau projet ont
+# été relus sur le déploiement vivant le 2026-09-12 ; une liste close qui se
+# trompe est pire qu'une liste absente, puisque le lecteur suivant s'y fie.
+# RIEN d'autre au-delà — pas de Graph, pas d'écriture Firestore, pas de
+# lecture du bucket.
 service_account: portail-svc@athena-pallas.iam.gserviceaccount.com
 
 entrypoint: gunicorn -b :$PORT --workers 2 --threads 4 --timeout 60 --graceful-timeout 30 client.wsgi:app
@@ -42,9 +50,13 @@ env_variables:
   # raison ici, et elle pèse davantage : le portail est en F1, une seule
   # instance, et un arrêt qui traîne y est plus visible.
   OTEL_EXPORTER_OTLP_TIMEOUT: "5"
-  # PORTAIL_SECRET_KEY et FIREBASE_API_KEY viennent de Secret Manager à
-  # l'exécution (client/config.py — résolution paresseuse). AUCUNE variable
-  # GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler Graph).
+  # Les valeurs sensibles viennent de Secret Manager à l'exécution
+  # (client/config.py — résolution paresseuse). La ligne ci-dessous est
+  # l'INVENTAIRE, et elle est épinglée contre les appels `_secret(...)` de
+  # ce module, dans les deux sens.
+  # SECRET-MANAGER-BACKED: PORTAIL_SECRET_KEY, FIREBASE_API_KEY
+  # AUCUNE variable GRAPH_* ici (spec §8.1 : le portail ne peut pas appeler
+  # Graph).
 
 # Les gestionnaires statiques court-circuitent l'after_request de Flask : chacun
 # répète donc la ligne de base. La règle est TOTALE à dessein — tout

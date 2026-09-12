@@ -2950,7 +2950,7 @@ The Cloud Build service account (`firebase-adminsdk-fbsvc@athena-pallas.iam.gser
 
 The App Engine default service account (`athena-pallas@appspot.gserviceaccount.com`) needs:
 - `roles/logging.logWriter` (Cloud Logging) and `roles/cloudtrace.agent` (Cloud Trace)
-- `roles/secretmanager.secretAccessor` on the four application secrets
+- `roles/secretmanager.secretAccessor` on the **five** secrets `config.py` resolves (`flask-secret-key`, `firebase-api-key`, `dav-password-hash`, `cf-origin-secret`, `graph-client-secret`) — this line said « four » until 2026-09-12 and the omitted one was `cf-origin-secret`. `portail-secret-key` is deliberately not among them: it belongs to `portail-svc`, and keeping the two session keys on separate accounts is the point. ⚠ On the ORIGINAL deployment the role is in fact held at **project level, unconditioned** (measured 2026-09-12) — `DEPLOYMENT.md` §6.4 grants it per secret, which is what an adopter should do.
 - `roles/iam.serviceAccountTokenCreator` **on itself** (member and resource are both `athena-pallas@appspot.gserviceaccount.com`) — required for the `iam.signBlob` self-impersonation that signs Firebase Storage URLs (`models/document.py`, `models/doc_template.py`). Without it, every document/gabarit upload and download **silently fails to produce a signed URL** on App Engine (local dev using a service-account JSON key signs locally and never hits this path, so the gap only surfaces in production).
 
 ### `app.yaml` (current, abridged)

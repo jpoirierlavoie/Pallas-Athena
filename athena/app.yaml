@@ -134,9 +134,16 @@ env_variables:
   FEATURE_INTAKE: "true"
   PIP_REQUIRE_HASHES: "1"
   PIP_NO_DEPS: "1"
-  # Secrets (SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH,
-  # GRAPH_CLIENT_SECRET) are pulled from Google Cloud Secret Manager at
-  # runtime — see config.py.
+  # Secrets are pulled from Google Cloud Secret Manager at runtime — see
+  # config.py. The line below is the INVENTORY, and it is pinned: a test
+  # reads the `_secret(...)` calls in config.py and fails if this list
+  # disagrees, in either direction.
+  # SECRET-MANAGER-BACKED: SECRET_KEY, FIREBASE_API_KEY, DAV_PASSWORD_HASH,
+  #   CF_ORIGIN_SECRET, GRAPH_CLIENT_SECRET
+  # It named FOUR until 2026-09-12, and the one it left out was the edge
+  # origin check's — the value whose absence disables that whole layer in
+  # perfect silence (`security.py`: `if not secret: return None`, no log, no
+  # metric). Which is precisely the one an inventory must not forget.
 
 # Static handlers bypass Flask's after_request security headers, so each one
 # repeats the baseline. The rule is deliberately TOTAL — every handler carries
