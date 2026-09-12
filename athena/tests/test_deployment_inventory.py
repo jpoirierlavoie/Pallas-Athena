@@ -1386,6 +1386,79 @@ def test_a_yaml_that_ENUMERATES_its_secrets_enumerates_them_ALL():
         )
 
 
+# ── Le document doit décrire le déploiement QUI EXISTE ───────────────────
+#
+# §8 décrivait UN `gcloud app deploy` là où `cloudbuild.yaml` en fait quatre,
+# et le schéma de §1 montrait UN service App Engine là où il y en a deux
+# depuis juillet 2026. Un adoptant apprenait donc l'existence du service
+# `portail` au moment où sa première construction CI échouait en le
+# déployant. Les deux se DÉRIVENT de `cloudbuild.yaml`.
+
+
+def _cloudbuild() -> str:
+    return io.open(os.path.join(_ROOT, "cloudbuild.yaml"), encoding="utf-8").read()
+
+
+def _deployed_yamls() -> list:
+    """Les fichiers que le CI déploie, dans l'ordre, lus de cloudbuild.yaml."""
+    out = []
+    for ligne in _cloudbuild().splitlines():
+        nue = ligne.strip()
+        if nue.startswith("#") or "'app', 'deploy'" not in nue:
+            continue
+        # args: ['app', 'deploy', 'X.yaml', ...]
+        for morceau in nue.split("'"):
+            if morceau.endswith(".yaml"):
+                out.append(morceau)
+                break
+    return out
+
+
+def test_the_deploy_step_scan_finds_the_real_pipeline():
+    """Garde-fou : une dérivation qui rend une liste vide ferait passer
+    l'épingle suivante en ne prouvant rien."""
+    deployes = _deployed_yamls()
+    assert len(deployes) >= 4, deployes
+    assert "app.yaml" in deployes and "portail.yaml" in deployes, deployes
+
+
+def test_section_8_names_EVERY_yaml_the_pipeline_deploys():
+    doc = _deployment_md()
+    section = doc[doc.index("## 8."):doc.index("## 9.")]
+    absents = [y for y in _deployed_yamls() if "`" + y + "`" not in section]
+    assert not absents, (
+        "DEPLOYMENT.md §8 ne nomme pas " + repr(absents) + ", que "
+        "cloudbuild.yaml déploie pourtant — c'est ainsi qu'un adoptant "
+        "découvre le service `portail` au moment où sa construction échoue."
+    )
+
+
+def test_section_1_names_BOTH_app_engine_services():
+    """Le schéma d'architecture est la première chose qu'on lit. Tant qu'il
+    montrait un service, tout le reste du document se lisait comme si le
+    portail n'existait pas."""
+    doc = _deployment_md()
+    section = doc[doc.index("## 1."):doc.index("## 2.")]
+    for service in ("default", "portail"):
+        assert service in section, (
+            "§1 ne nomme pas le service « " + service + " »"
+        )
+
+
+def test_section_7_does_not_tell_you_to_lock_out_your_own_cron():
+    """§7 disait « Cloudflare ranges ONLY ». Suivi à la lettre, cela coupe
+    les trois tâches cron ET la file Cloud Tasks : App Engine les expédie
+    depuis l'adresse interne `0.1.0.2`, qui n'est pas une plage Cloudflare.
+    Relu sur le déploiement vivant le 2026-09-12 : la règle est bien là, en
+    priorité 10, au-dessus des 22 plages Cloudflare."""
+    doc = _deployment_md()
+    section = doc[doc.index("## 7."):doc.index("## 8.")]
+    assert "0.1.0.2/32" in section, (
+        "§7 ne dit pas d'autoriser 0.1.0.2/32 — le suivre couperait cron et "
+        "Cloud Tasks"
+    )
+
+
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
     """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
     absence : le mot de passe DAV en clair dans l'historique, `secrets create`

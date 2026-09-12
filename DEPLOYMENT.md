@@ -47,16 +47,34 @@ assumptions are baked deep into the code — accept them before you start:
 Architecture at a glance:
 
 ```
-Browser / DavX5 / Claude
-        │
-   Cloudflare  (TLS, WAF, Early Hints, origin secret)
-        │
-  App Engine Standard (Flask + gunicorn, Python 3.13)
-        │
-  ┌─────┴───────────────┬──────────────────┬───────────────┐
-Firestore        Firebase Storage     Firebase Auth    Secret Manager
-(native mode)    (documents/gabarits) (+ Phone MFA)    (6 secrets)
+Browser / DavX5 / Claude                     Invited client (public)
+        │                                              │
+   Cloudflare  (TLS, WAF, Early Hints, origin secret)  │
+        │                                              │
+  App Engine « default »                    App Engine « portail »
+  (Flask + gunicorn, F2)                    (F1, own least-privilege SA)
+        │                                              │
+        │                           ┌──────────────────┤
+        │                           │                  │
+        │                    Cloud Tasks queue   Quarantine bucket
+        │                     « portail »        (client uploads)
+        │                           │                  │
+        └──────────┬────────────────┴──────────────────┘
+                   │
+  ┌────────────────┼──────────────┬──────────────┬────────────────┐
+Firestore     Firestore      Firebase Storage  Firebase Auth  Secret Manager
+(default)     « portail »    (documents/       (+ Phone MFA)  (6 secrets)
+              (named DB)      gabarits)
 ```
+
+**There are TWO App Engine services, not one**, plus a `dispatch.yaml` that
+routes the portal host to the second and a `cron.yaml` carrying three jobs.
+This diagram showed one until 2026-09-12, which is how an adopter learns the
+`portail` service exists only when their first CI build fails deploying it.
+Its infrastructure — the least-privilege service account, the quarantine
+bucket, the named Firestore database, the Cloud Tasks queue and nine IAM
+grants — is **not yet written up in this document**; `CLAUDE.md` « Portail
+client » is the authority until it is.
 
 ---
 
@@ -91,7 +109,10 @@ Firestore        Firebase Storage     Firebase Auth    Secret Manager
 |---|---|
 | App Engine F2, `min_instances: 0` | a few $/mo (pay-per-request; cold starts) |
 | App Engine F2, `min_instances: 1` | ~US$40–50/mo (one always-on instance, no cold starts) |
-| Firestore (native) | cents–low $/mo at single-user volume |
+| App Engine F1 — the **`portail` service** | a few $/mo (also `min_instances: 0`; it only moves JSON, never file bytes) |
+| Firestore (native) — **two databases** | cents–low $/mo at single-user volume |
+| Cloud Tasks + Cloud Scheduler | free tier covers one queue and three cron jobs |
+| Quarantine bucket (client uploads) | pennies/mo + egress; lifecycle purges at 90 / 365 days |
 | Firebase Storage | pennies/mo + egress |
 | Secret Manager | negligible |
 | reCAPTCHA Enterprise | free tier is generous for one user |
@@ -296,8 +317,25 @@ python -m scripts.check_config --prod   # force the production ruleset
 
 ## 5. Order of operations (read this before running anything)
 
-Two steps are **irreversible or order-sensitive**:
+**Three of these are irreversible**, and no later step can undo them: the App
+Engine region (3), the default Firestore database's location (4), and — once
+the portal is provisioned — the named `portail` database's. Everything else
+can be re-run.
 
+**Four are order-sensitive**, and each fails in its own way: indexes before the
+first deploy (5), or a query silently returns an empty list while it builds;
+the firewall's `0.1.0.2/32` allow **before** the default-deny (12), or you cut
+off your own cron and queue; the Cloudflare Transform Rule **before**
+`cf-origin-secret` exists (12), or the site answers 403 everywhere with no
+deploy to explain it; and the storage bucket before its rules (8).
+
+0. **Authenticate and select the project** — `gcloud auth login`,
+   `gcloud auth application-default login`, `gcloud config set project
+   $PROJECT`, `firebase login`. This step did not exist in this document until
+   2026-09-12; §6.1 opened straight on `gcloud projects create`, and §9 later
+   referenced credentials nothing had told you to obtain. Note that
+   `.firebaserc` is gitignored and absent, so **every `firebase` command needs
+   an explicit `--project`**.
 1. Create GCP project + enable billing
 2. Enable required APIs
 3. **Create the App Engine app — the region choice is PERMANENT** (§6.2)
@@ -307,7 +345,7 @@ Two steps are **irreversible or order-sensitive**:
    shows an empty list.
 6. Create the 6 secrets + grant IAM (§6.4)
 7. Firebase Auth: create the single user + enroll Phone MFA (§6.5)
-8. Storage bucket (§6.6)
+8. Storage bucket **then its rules** (§6.6) — the bucket must exist first
 9. App Check + reCAPTCHA (§6.7)
 10. First deploy + smoke test (§8)
 11. Seed reference data (§9)
@@ -402,8 +440,10 @@ same region (next step).
 gcloud firestore databases create \
   --location=northamerica-northeast1 --type=firestore-native --project=$PROJECT
 
-# From the repo root (firebase.json points at the root rule/index files):
-firebase deploy --only firestore:indexes,firestore:rules,storage --project $PROJECT
+# From the repo root (firebase.json points at the root rule/index files).
+# NOTE: storage rules are NOT deployed here — the bucket does not exist yet.
+# They go in §6.6, right after you create it.
+firebase deploy --only firestore:indexes,firestore:rules --project $PROJECT
 ```
 
 - **Native mode**, not Datastore mode.
@@ -412,7 +452,15 @@ firebase deploy --only firestore:indexes,firestore:rules,storage --project $PROJ
   Firebase account from reading your data.
 - `firestore.indexes.json` contains the composite indexes (dashboard
   aggregations, cursor-paginated lists, the protocol-steps collection group).
-  **They must finish building before you send real traffic.**
+  **They must finish building before you send real traffic.** There is no
+  « done » signal from the CLI; watch Firebase console → Firestore → Indexes
+  until every one reads **Enabled**.
+- ⚠ **The storage rules moved to §6.6.** Until 2026-09-12 this command carried
+  `,storage`, which asks the Firebase CLI to deploy rules for a bucket §6.6 has
+  not created yet. Doing it in the documented order is strictly safer;
+  *whether* the combined form hard-errors or silently no-ops on a project with
+  no default bucket has not been tested here, and would need a fresh project to
+  settle.
 
 ### 6.4 Secret Manager + IAM
 
@@ -934,9 +982,18 @@ and the API key in the `firebase-api-key` secret.
 ### 6.6 Firebase Storage
 
 Initialize the default bucket (Firebase console → **Storage → Get started**).
-Its name must equal `FIREBASE_STORAGE_BUCKET`. The deny-all `storage.rules` you
-deployed in §6.3 already protects it; files are served only via 15-minute signed
-URLs.
+Its name must equal `FIREBASE_STORAGE_BUCKET`.
+
+**Then, and only then, deploy its rules** — the bucket has to exist first:
+
+```bash
+# From the repo root:
+firebase deploy --only storage --project $PROJECT
+```
+
+The rules are deny-all; files are served only via 15-minute signed URLs, which
+bypass rules because they are produced by the Admin SDK. Nothing in the
+application reads Storage through a client SDK.
 
 ### 6.7 App Check + reCAPTCHA Enterprise (recommended)
 
@@ -1004,8 +1061,18 @@ rejects direct access. Set up, in order:
    target (map the domain first under App Engine → Settings → Custom domains).
 2. **SSL/TLS:** set the mode to **Full (Strict)** and install an **Origin
    Certificate** on App Engine's custom domain.
-3. **App Engine firewall:** restrict ingress to **Cloudflare's published IP
-   ranges** only, so the origin can't be hit directly.
+3. **App Engine firewall:** allow **Cloudflare's published IP ranges**, and
+   **`0.1.0.2/32` at a higher priority**, then set the `default` rule to DENY —
+   in that order. ⚠ This step said « Cloudflare ranges **only** » until
+   2026-09-12, and following it literally **kills all three cron jobs and the
+   Cloud Tasks queue**: App Engine dispatches them from the internal address
+   `0.1.0.2`, which is not a Cloudflare range. The live deployment carries 24
+   rules — `0.1.0.2/32` at priority 10, 22 Cloudflare ranges at 100–360, and
+   the implicit `default` DENY (read 2026-09-12). Set the deny LAST: flipping
+   it before the allows locks you out of your own origin. Cloudflare publishes
+   new ranges over time and this repository carries no copy of the list — take
+   it from `cloudflare.com/ips` at provisioning time, and never delete a range
+   you do not recognise, since it may be your own office IP.
 4. **Origin secret (Transform Rule):** add a request Transform Rule that injects
    header `X-Origin-Auth: <cf-origin-secret value>` on every request, zone-wide.
    The app checks it (`security.py`) when `CF_ORIGIN_SECRET` is set. This is the
@@ -1022,13 +1089,30 @@ rejects direct access. Set up, in order:
 
 ## 8. First deploy + smoke test
 
-**Deploy** either by connecting a Cloud Build trigger on push to `main` (runs
-the pytest gate → `gcloud app deploy` → prunes old versions), or manually:
+**Deploy** either manually, or by connecting a Cloud Build trigger on push to
+`main`.
 
 ```bash
 cd athena
 gcloud app deploy app.yaml --project=$PROJECT
 ```
+
+⚠ **The trigger does not do one deploy, it does four**, and this section said
+one until 2026-09-12. `cloudbuild.yaml` runs the pytest gate, then deploys
+`app.yaml`, `portail.yaml`, `dispatch.yaml` and `cron.yaml` in that order, then
+prunes old versions **per service**. Three consequences for a first build:
+
+- **Step 2b fails if `portail-svc` does not exist.** The portal's service
+  account and its IAM must be provisioned before the trigger is ever fired —
+  and that checklist is in `CLAUDE.md` « Portail client », not yet here.
+- **Step 2d needs `cloudscheduler.googleapis.com`** (§6.1). Without it the
+  build fails `SERVICE_DISABLED` *after* three services are already deployed.
+- **`dispatch.yaml` and `cron.yaml` each REPLACE their whole table.** The two
+  files at the repo root are the single complete source; a partial file
+  silently removes the rules or jobs it omits.
+
+Deploying `app.yaml` by hand, as above, is the safe way to get the first
+service up before any of that exists.
 
 **Smoke test:**
 - Visit `https://yourdomain.example` — the login page loads through Cloudflare.
