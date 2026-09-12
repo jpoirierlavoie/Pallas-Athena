@@ -1223,6 +1223,76 @@ def test_the_app_engine_region_is_a_literal_an_adopter_must_replace():
     assert "northamerica-northeast1" in io.open(chemin, encoding="utf-8").read()
 
 
+# ── Les commandes que les documents font TAPER ───────────────────────────
+#
+# `flask run --debug` figurait dans DEPLOYMENT.md §14 ET dans CLAUDE.md, et
+# ne fonctionne dans NI l'un NI l'autre : il n'existe ici ni `app.py`, ni
+# `wsgi.py`, ni `FLASK_APP`, donc Flask répond « Could not locate a Flask
+# application ». C'est la toute première commande qu'un adoptant lance après
+# avoir rempli son `.env` — mesuré le 2026-09-12, les deux formes.
+#
+# On épingle la CLASSE : aucun bloc shell de l'un ou l'autre document ne doit
+# invoquer `flask run` sans dire à Flask où est l'application. Le balayage
+# retire les lignes de COMMENTAIRE avant de chercher, sinon il mesurerait la
+# prose qui explique le défaut au lieu du code qui l'a remplacé — le piège
+# exact que l'épingle `tr -d` a payé la veille.
+
+_DOCS_A_COMMANDES = ("DEPLOYMENT.md", "CLAUDE.md")
+
+
+def _lignes_shell(nom: str) -> list:
+    texte = io.open(os.path.join(_ROOT, nom), encoding="utf-8").read()
+    blocs = texte.split("```")
+    lignes = []
+    for i in range(1, len(blocs), 2):
+        tete, _, corps = blocs[i].partition(chr(10))
+        if tete.strip() not in ("bash", "sh", ""):
+            continue
+        for ligne in corps.splitlines():
+            nue = ligne.strip()
+            if nue and not nue.startswith("#"):
+                lignes.append(nue)
+    return lignes
+
+
+def test_the_shell_blocks_never_invoke_a_rootless_flask_run():
+    for nom in _DOCS_A_COMMANDES:
+        lignes = _lignes_shell(nom)
+        assert lignes, nom
+        for ligne in lignes:
+            if not ligne.startswith("flask "):
+                continue
+            assert "--app " in ligne, (
+                nom + " : « " + ligne + " » — Flask ne peut pas trouver "
+                "l'application sans --app (ni app.py, ni wsgi.py, ni FLASK_APP "
+                "dans ce dépôt)"
+            )
+
+
+def test_both_documents_teach_the_form_that_WORKS():
+    """L'absence ne suffit pas : retirer la commande passerait le test
+    précédent tout en laissant l'adoptant sans moyen de lancer le serveur."""
+    for nom in _DOCS_A_COMMANDES:
+        assert any(l.startswith("flask --app main run")
+                   for l in _lignes_shell(nom)), nom
+
+
+def test_gunicorn_is_documented_as_POSIX_only():
+    """Il importe `fcntl`. Sur Windows — la machine du praticien — la ligne
+    lève `ModuleNotFoundError`, mesuré. Les deux documents doivent le dire,
+    sans quoi la seule vérification « comme en production » ressemble à une
+    panne du dépôt."""
+    for nom in _DOCS_A_COMMANDES:
+        texte = io.open(os.path.join(_ROOT, nom), encoding="utf-8").read()
+        if "gunicorn -b :8080" not in texte:
+            continue
+        i = texte.index("gunicorn -b :8080")
+        voisinage = texte[max(0, i - 600):i + 600]
+        assert "fcntl" in voisinage, (
+            nom + " : la ligne gunicorn ne dit pas qu'elle est POSIX seulement"
+        )
+
+
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
     """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
     absence : le mot de passe DAV en clair dans l'historique, `secrets create`

@@ -3013,10 +3013,13 @@ uv pip compile requirements.in --python-version 3.13 --universal --generate-hash
 # Firestore emulator
 gcloud emulators firestore start
 
-# Run Flask
-flask run --debug
+# Run Flask (from athena/). `flask run` ALONE cannot find the app — there is
+# no app.py, no wsgi.py and no FLASK_APP, so it answers « Could not locate a
+# Flask application ». Measured 2026-09-12.
+flask --app main run --debug
 
-# Run with gunicorn (production-like)
+# Run with gunicorn (production-like) — POSIX ONLY. gunicorn imports fcntl, so
+# on Windows this is ModuleNotFoundError: No module named 'fcntl'. Measured.
 gunicorn -b :8080 main:app
 
 # Deploy manually (normally CI handles this)

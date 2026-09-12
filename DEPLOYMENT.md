@@ -76,7 +76,12 @@ Firestore        Firebase Storage     Firebase Auth    Secret Manager
 - [`firebase` CLI](https://firebase.google.com/docs/cli) (`npm i -g firebase-tools`)
 - [`uv`](https://github.com/astral-sh/uv) (only if you change dependencies)
 - Node.js + npm (only if you recompile the CSS — see §15)
-- `git`, and Python's `bcrypt` (`pip install bcrypt`) for generating the DAV hash
+- `git`. **Not** a separate `pip install bcrypt`: `bcrypt` is a pinned direct
+  dependency, so `pip install -r athena/requirements.txt` (§14) already brings
+  it — and a `.venv` created with `--without-pip` has no `pip` to run the
+  command with anyway (« No module named pip », measured on this repository's
+  own venv). §6.4's recipe therefore *checks* for bcrypt instead of installing
+  it blind.
 
 ---
 
@@ -1154,16 +1159,32 @@ pip install -r athena/requirements.txt
 pip install -r athena/requirements-dev.txt
 
 cd athena
-python -m scripts.check_config     # sanity-check your .env
-flask run --debug                  # http://127.0.0.1:5000
-# production-like: gunicorn -b :8080 main:app
+python -m scripts.check_config       # sanity-check your .env
+flask --app main run --debug         # http://127.0.0.1:5000
 python -m pytest tests/ -q
 ```
+
+⚠ **`flask run --debug` alone does not work here, and its error message is
+the giveaway.** There is no `app.py`, no `wsgi.py` and no `FLASK_APP`, so
+Flask answers *« Could not locate a Flask application »*. The app factory
+lives in `main.py`, hence `--app main`. Measured 2026-09-12, both forms.
+
+⚠ **`gunicorn` does not run on Windows** — it imports `fcntl`, which is
+POSIX-only (`ModuleNotFoundError: No module named 'fcntl'`, measured). The
+production-like check is a Linux/macOS/WSL step; on Windows the deploy
+itself is the first place the `app.yaml` entrypoint is exercised. On a POSIX
+box it is `gunicorn -b :8080 main:app`, run from `athena/`.
 
 Notes:
 - **Firestore emulator** (`gcloud emulators firestore start`) requires exporting
   `FIRESTORE_EMULATOR_HOST` before running Flask/scripts — otherwise the Admin
   SDK targets **live** Firestore via Application Default Credentials.
+  ⚠ And point it at something that is actually **listening**: `main.py`
+  registers a context processor for the Réception badge that runs a Firestore
+  aggregation on **every template render**, and its fail-open catches
+  exceptions, not an unreachable host. Aimed at a dead port, every page of the
+  application therefore **hangs** instead of erroring — measured 2026-09-12,
+  stack captured at `models/portail_invitation.compter_soumises`.
 - `scripts/seed_reference_data.py` does **not** read `.env`; it needs
   `GOOGLE_APPLICATION_CREDENTIALS` / ADC.
 - For local MCP testing, run on `:8080` (or set `MCP_CANONICAL_ORIGIN` to match
