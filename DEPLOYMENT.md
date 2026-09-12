@@ -393,29 +393,34 @@ fi
 # 2. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : c'est le générateur cryptographique de la bibliothèque standard, ce qui vaut de dépendre d'un interpréteur.
 VALEUR=$("$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
 
-# 3. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
+# 3. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
 printf '[%s]\n' "$VALEUR"
+
+# 4. Mesurer, puis écrire SEULEMENT si la longueur est entre 32 et 256 octets. La mesure est une GARDE, pas un avis : la commande d'écriture vit DANS le `if`, donc coller le bloc entier ne peut pas écrire une valeur que la mesure vient de refuser. `printf` est une primitive du shell, donc la valeur ne devient l'argument d'aucun processus ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; et `versions add`, jamais `secrets create` — le secret existe déjà.
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+  VERSION=$(printf '%s' "$VALEUR" | gcloud secrets versions add flask-secret-key \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
 fi
-
-# 4. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
-printf '%s' "$VALEUR" | gcloud secrets versions add flask-secret-key \
-  --project=$PROJECT --data-file=-
 
 # 5. Effacer la variable de la session.
 unset VALEUR
 
-# 6. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-N=$(gcloud secrets versions access latest --secret=flask-secret-key \
-  --project=$PROJECT | wc -c | tr -d ' ')
-if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+# 6. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si l'écriture avait échoué, `latest` désignerait la version précédente, qui a toutes les chances d'être de bonne longueur puisqu'elle fonctionnait : l'après-vol rassurerait alors sur une écriture qui n'a pas eu lieu.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=flask-secret-key \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
 fi
 ```
 
@@ -435,29 +440,34 @@ fi
 # 2. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : c'est le générateur cryptographique de la bibliothèque standard, ce qui vaut de dépendre d'un interpréteur.
 VALEUR=$("$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
 
-# 3. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 256 octets attendus).
+# 3. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
 printf '[%s]\n' "$VALEUR"
+
+# 4. Mesurer, puis écrire SEULEMENT si la longueur est entre 32 et 256 octets. La mesure est une GARDE, pas un avis : la commande d'écriture vit DANS le `if`, donc coller le bloc entier ne peut pas écrire une valeur que la mesure vient de refuser. `printf` est une primitive du shell, donc la valeur ne devient l'argument d'aucun processus ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; et `versions add`, jamais `secrets create` — le secret existe déjà.
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+  VERSION=$(printf '%s' "$VALEUR" | gcloud secrets versions add portail-secret-key \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
 fi
-
-# 4. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
-printf '%s' "$VALEUR" | gcloud secrets versions add portail-secret-key \
-  --project=$PROJECT --data-file=-
 
 # 5. Effacer la variable de la session.
 unset VALEUR
 
-# 6. Relire ce qui est STOCKÉ : entre 32 et 256 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-N=$(gcloud secrets versions access latest --secret=portail-secret-key \
-  --project=$PROJECT | wc -c | tr -d ' ')
-if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+# 6. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si l'écriture avait échoué, `latest` désignerait la version précédente, qui a toutes les chances d'être de bonne longueur puisqu'elle fonctionnait : l'après-vol rassurerait alors sur une écriture qui n'a pas eu lieu.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=portail-secret-key \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -ge 32 ] && [ "$N" -le 256 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
 fi
 ```
 
@@ -466,32 +476,37 @@ fi
 If this value is wrong or absent: la page de connexion ne peut pas initialiser Firebase.
 
 ```bash
-# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR à l'étape suivante, pas les perdre en silence.
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les six secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
 IFS= read -rs VALEUR
 
-# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 30 et 60 octets attendus).
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
 printf '[%s]\n' "$VALEUR"
+
+# 3. Mesurer, puis écrire SEULEMENT si la longueur est entre 30 et 60 octets. La mesure est une GARDE, pas un avis : la commande d'écriture vit DANS le `if`, donc coller le bloc entier ne peut pas écrire une valeur que la mesure vient de refuser. `printf` est une primitive du shell, donc la valeur ne devient l'argument d'aucun processus ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; et `versions add`, jamais `secrets create` — le secret existe déjà.
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 30 ] && [ "$N" -le 60 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+  VERSION=$(printf '%s' "$VALEUR" | gcloud secrets versions add firebase-api-key \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
 fi
-
-# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
-printf '%s' "$VALEUR" | gcloud secrets versions add firebase-api-key \
-  --project=$PROJECT --data-file=-
 
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 30 et 60 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-N=$(gcloud secrets versions access latest --secret=firebase-api-key \
-  --project=$PROJECT | wc -c | tr -d ' ')
-if [ "$N" -ge 30 ] && [ "$N" -le 60 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+# 5. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si l'écriture avait échoué, `latest` désignerait la version précédente, qui a toutes les chances d'être de bonne longueur puisqu'elle fonctionnait : l'après-vol rassurerait alors sur une écriture qui n'a pas eu lieu.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=firebase-api-key \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -ge 30 ] && [ "$N" -le 60 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
 fi
 ```
 
@@ -508,21 +523,37 @@ else
   printf 'aucun interpréteur Python utilisable — REFUSER\n'
 fi
 
-# 2. En local, bcrypt est déjà dans l'environnement du dépôt (c'est une dépendance épinglée) : sauter cette ligne. Elle sert dans Cloud Shell, où il n'est pas préinstallé.
-"$PY" -m pip install --quiet --user bcrypt
+# 2. Vérifier que bcrypt est présent DANS cet interpréteur — et non ailleurs. L'ancienne ligne `-m pip install` ne marche pas partout : le venv de ce dépôt n'a pas `pip` du tout (« No module named pip », mesuré), et bcrypt y est déjà puisque c'est une dépendance épinglée. On constate donc au lieu d'installer à l'aveugle.
+"$PY" -c 'import bcrypt' 2>/dev/null && printf 'bcrypt : présent\n' || printf 'bcrypt ABSENT de cet interpréteur — à installer avant de continuer\n'
 
-# 3. Calculer l'empreinte ET l'écrire en UNE commande : le mot de passe n'est jamais un argument, jamais une variable, jamais dans l'historique. `sys.stdout.write` n'ajoute pas de saut de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)
-"$PY" -c 'import bcrypt, getpass, sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())' \
-  | gcloud secrets versions add dav-password-hash \
-      --project=$PROJECT --data-file=-
+# 3. Calculer l'empreinte. Le mot de passe n'est jamais un argument ni une variable — `getpass` le lit du terminal. L'EMPREINTE, elle, peut vivre dans une variable : c'est un condensé, et c'est ce qui permet de la mesurer AVANT de l'écrire, contrôle que la forme fusionnée précédente ne pouvait pas offrir.
+EMPREINTE=$("$PY" -c 'import bcrypt, getpass, sys; sys.stdout.write(bcrypt.hashpw(getpass.getpass("Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())')
 
-# 4. Relire ce qui est STOCKÉ — le compte doit valoir exactement 60, et c'est le SHELL qui compare. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
-N=$(gcloud secrets versions access latest --secret=dav-password-hash \
-  --project=$PROJECT | wc -c | tr -d ' ')
+# 4. Mesurer, puis écrire SEULEMENT si la longueur est exactement 60. Une empreinte de 61 octets n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de synchroniser sans un mot.
+N=$(printf '%s' "$EMPREINTE" | wc -c | tr -d ' ')
 if [ "$N" -eq 60 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+  VERSION=$(printf '%s' "$EMPREINTE" | gcloud secrets versions add dav-password-hash \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
+fi
+
+# 5. Effacer l'empreinte de la session.
+unset EMPREINTE
+
+# 6. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`, qui désignerait la version précédente si l'écriture avait échoué et rassurerait donc à tort.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
+else
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=dav-password-hash \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -eq 60 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
 fi
 ```
 
@@ -542,29 +573,34 @@ fi
 # 2. Frapper une valeur neuve. `sys.stdout.write` plutôt que `print` par discipline : aucune ligne de cette recette n'émet de saut de ligne. Et `secrets` plutôt qu'un tirage depuis `/dev/urandom` : c'est le générateur cryptographique de la bibliothèque standard, ce qui vaut de dépendre d'un interpréteur.
 VALEUR=$("$PY" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32))')
 
-# 3. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 32 et 128 octets attendus).
+# 3. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
 printf '[%s]\n' "$VALEUR"
+
+# 4. Mesurer, puis écrire SEULEMENT si la longueur est entre 32 et 128 octets. La mesure est une GARDE, pas un avis : la commande d'écriture vit DANS le `if`, donc coller le bloc entier ne peut pas écrire une valeur que la mesure vient de refuser. `printf` est une primitive du shell, donc la valeur ne devient l'argument d'aucun processus ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; et `versions add`, jamais `secrets create` — le secret existe déjà.
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+  VERSION=$(printf '%s' "$VALEUR" | gcloud secrets versions add cf-origin-secret \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
 fi
-
-# 4. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
-printf '%s' "$VALEUR" | gcloud secrets versions add cf-origin-secret \
-  --project=$PROJECT --data-file=-
 
 # 5. Effacer la variable de la session.
 unset VALEUR
 
-# 6. Relire ce qui est STOCKÉ : entre 32 et 128 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-N=$(gcloud secrets versions access latest --secret=cf-origin-secret \
-  --project=$PROJECT | wc -c | tr -d ' ')
-if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+# 6. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si l'écriture avait échoué, `latest` désignerait la version précédente, qui a toutes les chances d'être de bonne longueur puisqu'elle fonctionnait : l'après-vol rassurerait alors sur une écriture qui n'a pas eu lieu.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=cf-origin-secret \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -ge 32 ] && [ "$N" -le 128 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
 fi
 ```
 
@@ -573,32 +609,37 @@ fi
 If this value is wrong or absent: le courriel sortant est désactivé.
 
 ```bash
-# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR à l'étape suivante, pas les perdre en silence.
+# 1. Coller la valeur remise par la console, puis Entrée. Rien ne s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger les blancs — s'il y en a, on veut les VOIR, pas les perdre en silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les six secrets sont d'une seule ligne par construction, donc un collage multiligne signifie qu'on a collé la mauvaise chose — et le collage tronqué a l'air complet à l'écran. C'est la mesure qui l'attrape, pas l'œil.
 IFS= read -rs VALEUR
 
-# 2. Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement ; le compte, lui, attrape ce que l'œil ne peut pas voir — un collage tronqué à sa première ligne (entre 20 et 256 octets attendus).
+# 2. Voir ce qui a réellement été saisi. Les crochets rendent visible une espace de tête ou de queue, qu'aucune console ne montre autrement.
 printf '[%s]\n' "$VALEUR"
+
+# 3. Mesurer, puis écrire SEULEMENT si la longueur est entre 20 et 256 octets. La mesure est une GARDE, pas un avis : la commande d'écriture vit DANS le `if`, donc coller le bloc entier ne peut pas écrire une valeur que la mesure vient de refuser. `printf` est une primitive du shell, donc la valeur ne devient l'argument d'aucun processus ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; et `versions add`, jamais `secrets create` — le secret existe déjà.
 N=$(printf '%s' "$VALEUR" | wc -c | tr -d ' ')
 if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+  VERSION=$(printf '%s' "$VALEUR" | gcloud secrets versions add graph-client-secret \
+    --project=$PROJECT --data-file=- --format='value(name)')
+  printf 'écrit : %s octets, version %s\n' "$N" "${VERSION##*/}"
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  VERSION=""
+  printf "longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été écrit\n" "$N"
 fi
-
-# 3. Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets create` : le secret existe déjà, et `create` échouerait en laissant croire à une panne. `printf` est une primitive du shell, donc la valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps`.
-printf '%s' "$VALEUR" | gcloud secrets versions add graph-client-secret \
-  --project=$PROJECT --data-file=-
 
 # 4. Effacer la variable de la session.
 unset VALEUR
 
-# 5. Relire ce qui est STOCKÉ : entre 20 et 256 octets, et le même compte qu'au le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort n'importe quel contrôle d'avant-vol — il interroge la valeur réellement enregistrée.
-N=$(gcloud secrets versions access latest --secret=graph-client-secret \
-  --project=$PROJECT | wc -c | tr -d ' ')
-if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
-  printf 'longueur %s octets — conforme\n' "$N"
+# 5. Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si l'écriture avait échoué, `latest` désignerait la version précédente, qui a toutes les chances d'être de bonne longueur puisqu'elle fonctionnait : l'après-vol rassurerait alors sur une écriture qui n'a pas eu lieu.
+if [ -z "$VERSION" ]; then
+  printf 'aucune version écrite — rien à relire\n'
 else
-  printf 'longueur %s octets — REFUSER, ne rien écrire\n' "$N"
+  N=$(gcloud secrets versions access "${VERSION##*/}" --secret=graph-client-secret \
+    --project=$PROJECT | wc -c | tr -d ' ')
+  if [ "$N" -ge 20 ] && [ "$N" -le 256 ]; then
+    printf 'relu : %s octets — conforme\n' "$N"
+  else
+    printf 'relu : %s octets — NE CORRESPOND PAS\n' "$N"
+  fi
 fi
 ```
 

@@ -468,33 +468,67 @@ _SONDE_FR = (
 )
 
 
-def _controle_longueur(secret: "Secret", var: str = "N") -> str:
-    """Le test SHELL qui remplace un coup d'œil de l'opérateur.
+def _bornes(secret: "Secret") -> str:
+    """Le test shell des bornes, DÉRIVÉ de `Shape`.
 
-    La recette affichait un compte et demandait de le comparer de tête à la
-    longueur attendue. Mesuré le 2026-09-11 : c'est insuffisant, parce que le
-    mode de défaillance dominant de l'étape de collage est INVISIBLE à l'œil.
-    `IFS= read -rs` ne retient que la PREMIÈRE LIGNE d'un collage multiligne —
-    une clé PEM de 84 octets devient 27 — et l'écho entre crochets affiche
-    alors une valeur qui a l'air complète. Le shell, lui, sait comparer.
-
-    Les bornes viennent de `Shape`, donc du prédicat qui juge la valeur : le
-    contrôle d'avant-vol et le contrôle d'après-vol ne peuvent pas diverger.
+    Les bornes viennent du prédicat qui juge la valeur stockée, jamais d'un
+    nombre recopié : l'avant-vol et l'après-vol ne peuvent donc pas diverger.
     """
-    if secret.shape is None:
-        return ""
     lo, hi = secret.shape.minimum, secret.shape.maximum
-    test = (
-        f'[ "${var}" -eq {lo} ]'
-        if lo == hi
-        else f'[ "${var}" -ge {lo} ] && [ "${var}" -le {hi} ]'
-    )
+    if lo == hi:
+        return f'[ "$N" -eq {lo} ]'
+    return f'[ "$N" -ge {lo} ] && [ "$N" -le {hi} ]'
+
+
+def _ecriture_gardee(secret, secret_id: str, projet: str, var: str) -> str:
+    """L'écriture SOUS la garde, et la version capturée.
+
+    Jusqu'au 2026-09-11 le contrôle affichait « REFUSER, ne rien écrire » et
+    la commande d'écriture vivait EN DEHORS du `if` : coller le bloc écrivait
+    quoi que dise le verdict. Le shell comparait ; il n'agissait pas. Une
+    consigne de sécurité qui demande à un humain d'obéir à un mot imprimé,
+    au moment précis où il tient un secret, n'est pas une garde.
+
+    La version écrite est CAPTURÉE (`--format='value(name)'`) parce que la
+    relecture doit viser celle-là et non `latest` — voir `_relecture_gardee`.
+    """
     return (
-        f"if {test}; then\n"
-        f"  printf 'longueur %s octets — conforme\\n' \"${var}\"\n"
-        f"else\n"
-        f"  printf 'longueur %s octets — REFUSER, ne rien écrire\\n' \"${var}\"\n"
-        f"fi"
+        f"N=$(printf '%s' \"${var}\" | wc -c | tr -d ' ')\n"
+        f"if {_bornes(secret)}; then\n"
+        f"  VERSION=$(printf '%s' \"${var}\" | gcloud secrets versions add "
+        f"{secret_id} \\\n"
+        f"    --project={projet} --data-file=- --format='value(name)')\n"
+        "  printf 'écrit : %s octets, version %s\\n' \"$N\" "
+        '\"${VERSION##*/}\"\n'
+        "else\n"
+        '  VERSION=""\n'
+        "  printf \"longueur %s octets — ÉCRITURE ANNULÉE, rien n'a été "
+        'écrit\\n\" \"$N\"\n'
+        "fi"
+    )
+
+
+def _relecture_gardee(secret, secret_id: str, projet: str) -> str:
+    """Relire LA VERSION QU'ON VIENT D'ÉCRIRE, jamais `latest`.
+
+    `latest` est un piège de fausse assurance : si l'écriture échoue, il
+    désigne la version PRÉCÉDENTE — qui a toutes les chances d'avoir la bonne
+    longueur, puisqu'elle fonctionnait. Le contrôle d'après-vol répondait donc
+    « conforme » sur une écriture qui n'avait pas eu lieu.
+    """
+    return (
+        'if [ -z "$VERSION" ]; then\n'
+        "  printf 'aucune version écrite — rien à relire\\n'\n"
+        "else\n"
+        '  N=$(gcloud secrets versions access \"${VERSION##*/}\" '
+        f"--secret={secret_id} \\\n"
+        f"    --project={projet} | wc -c | tr -d ' ')\n"
+        f"  if {_bornes(secret)}; then\n"
+        "    printf 'relu : %s octets — conforme\\n' \"$N\"\n"
+        "  else\n"
+        "    printf 'relu : %s octets — NE CORRESPOND PAS\\n' \"$N\"\n"
+        "  fi\n"
+        "fi"
     )
 
 
@@ -555,32 +589,42 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
         return [
             (_SONDE_FR, _SONDE_PY),
             (
-                "En local, bcrypt est déjà dans l'environnement du dépôt "
-                "(c'est une dépendance épinglée) : sauter cette ligne. Elle "
-                "sert dans Cloud Shell, où il n'est pas préinstallé.",
-                '"$PY" -m pip install --quiet --user bcrypt',
+                "Vérifier que bcrypt est présent DANS cet interpréteur — et "
+                "non ailleurs. L'ancienne ligne `-m pip install` ne marche "
+                "pas partout : le venv de ce dépôt n'a pas `pip` du tout "
+                "(« No module named pip », mesuré), et bcrypt y est déjà "
+                "puisque c'est une dépendance épinglée. On constate donc au "
+                "lieu d'installer à l'aveugle.",
+                '"$PY" -c \'import bcrypt\' 2>/dev/null'
+                " && printf 'bcrypt : présent\\n'"
+                " || printf 'bcrypt ABSENT de cet interpréteur — "
+                "à installer avant de continuer\\n'",
             ),
             (
-                "Calculer l'empreinte ET l'écrire en UNE commande : le mot de "
-                "passe n'est jamais un argument, jamais une variable, jamais "
-                "dans l'historique. `sys.stdout.write` n'ajoute pas de saut "
-                "de ligne — c'est pourquoi aucun `tr -d` n'éponge la CHARGE. (Le contrôle de l'étape suivante en emploie un, mais sur la sortie de `wc -c` : il nettoie un compte, il ne touche pas au secret.)",
-                '"$PY" -c ' "'" 'import bcrypt, getpass, sys; '
+                "Calculer l'empreinte. Le mot de passe n'est jamais un "
+                "argument ni une variable — `getpass` le lit du terminal. "
+                "L'EMPREINTE, elle, peut vivre dans une variable : c'est un "
+                "condensé, et c'est ce qui permet de la mesurer AVANT de "
+                "l'écrire, contrôle que la forme fusionnée précédente ne "
+                "pouvait pas offrir.",
+                'EMPREINTE=$("$PY" -c \'import bcrypt, getpass, sys; '
                 "sys.stdout.write(bcrypt.hashpw(getpass.getpass("
-                '"Mot de passe DAV : ").encode(), bcrypt.gensalt()).decode())'
-                "' \\\n"
-                f"  | gcloud secrets versions add {secret_id} \\\n"
-                f"      --project={projet} --data-file=-",
+                '"Mot de passe DAV : ").encode(), bcrypt.gensalt())'
+                ".decode())')",
             ),
             (
-                f"Relire ce qui est STOCKÉ — le compte doit valoir {attendu}, "
-                "et c'est le SHELL qui compare. Une empreinte de 61 octets "
-                "n'égalera jamais les 60 que `bcrypt.checkpw` recalcule, et "
-                "DavX5 cesse alors de synchroniser sans un mot.",
-                f"N=$(gcloud secrets versions access latest "
-                f"--secret={secret_id} \\\n"
-                f"  --project={projet} | wc -c | tr -d ' ')\n"
-                + _controle_longueur(secret),
+                f"Mesurer, puis écrire SEULEMENT si la longueur est "
+                f"{attendu}. Une empreinte de 61 octets n'égalera jamais les "
+                "60 que `bcrypt.checkpw` recalcule, et DavX5 cesse alors de "
+                "synchroniser sans un mot.",
+                _ecriture_gardee(secret, secret_id, projet, "EMPREINTE"),
+            ),
+            ("Effacer l'empreinte de la session.", "unset EMPREINTE"),
+            (
+                "Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`, "
+                "qui désignerait la version précédente si l'écriture avait "
+                "échoué et rassurerait donc à tort.",
+                _relecture_gardee(secret, secret_id, projet),
             ),
         ]
 
@@ -600,42 +644,41 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
         etapes.append((
             "Coller la valeur remise par la console, puis Entrée. Rien ne "
             "s'affiche : `-s` la tait, et `IFS=` empêche le shell de manger "
-            "les blancs — s'il y en a, on veut les VOIR à l'étape suivante, "
-            "pas les perdre en silence.",
+            "les blancs — s'il y en a, on veut les VOIR, pas les perdre en "
+            "silence. ⚠ `read` ne retient que la PREMIÈRE LIGNE : les six "
+            "secrets sont d'une seule ligne par construction, donc un collage "
+            "multiligne signifie qu'on a collé la mauvaise chose — et le "
+            "collage tronqué a l'air complet à l'écran. C'est la mesure qui "
+            "l'attrape, pas l'œil.",
             "IFS= read -rs VALEUR",
         ))
 
     etapes.append((
-        "Voir ce qui a réellement été saisi, puis laisser le SHELL juger. Les "
-        "crochets rendent visible une espace de tête ou de queue, qu'aucune "
-        "console ne montre autrement ; le compte, lui, attrape ce que l'œil "
-        f"ne peut pas voir — un collage tronqué à sa première ligne ({attendu}"
-        " octets attendus).",
-        "printf '[%s]\\n' \"$VALEUR\"\n"
-        "N=$(printf '%s' \"$VALEUR\" | wc -c | tr -d ' ')\n"
-        + _controle_longueur(secret),
+        "Voir ce qui a réellement été saisi. Les crochets rendent visible une "
+        "espace de tête ou de queue, qu'aucune console ne montre autrement.",
+        'printf \'[%s]\\n\' "$VALEUR"',
     ))
     etapes.append((
-        "Écrire la NOUVELLE VERSION — `versions add`, jamais `secrets "
-        "create` : le secret existe déjà, et `create` échouerait en laissant "
-        "croire à une panne. `printf` est une primitive du shell, donc la "
-        "valeur ne passe pas par `/proc/*/cmdline` ; `--data-file=-` plutôt "
-        "que `--data=`, qui la déposerait dans `ps`.",
-        f"printf '%s' \"$VALEUR\" | gcloud secrets versions add {secret_id} \\\n"
-        f"  --project={projet} --data-file=-",
+        f"Mesurer, puis écrire SEULEMENT si la longueur est {attendu} octets. "
+        "La mesure est une GARDE, pas un avis : la commande d'écriture vit "
+        "DANS le `if`, donc coller le bloc entier ne peut pas écrire une "
+        "valeur que la mesure vient de refuser. `printf` est une primitive du "
+        "shell, donc la valeur ne devient l'argument d'aucun processus ; "
+        "`--data-file=-` plutôt que `--data=`, qui la déposerait dans `ps` ; "
+        "et `versions add`, jamais `secrets create` — le secret existe déjà.",
+        _ecriture_gardee(secret, secret_id, projet, "VALEUR"),
     ))
     etapes.append((
         "Effacer la variable de la session.",
         "unset VALEUR",
     ))
     etapes.append((
-        f"Relire ce qui est STOCKÉ : {attendu} octets, et le même compte qu'au "
-        "le contrôle d'avant-vol. C'est l'après-vol, et il est plus fort "
-        "n'importe quel contrôle d'avant-vol — il interroge la valeur "
-        "réellement enregistrée.",
-        f"N=$(gcloud secrets versions access latest --secret={secret_id} \\\n"
-        f"  --project={projet} | wc -c | tr -d ' ')\n"
-        + _controle_longueur(secret),
+        "Relire LA VERSION QU'ON VIENT D'ÉCRIRE — jamais `latest`. Si "
+        "l'écriture avait échoué, `latest` désignerait la version précédente, "
+        "qui a toutes les chances d'être de bonne longueur puisqu'elle "
+        "fonctionnait : l'après-vol rassurerait alors sur une écriture qui "
+        "n'a pas eu lieu.",
+        _relecture_gardee(secret, secret_id, projet),
     ))
     return etapes
 

@@ -388,8 +388,19 @@ def test_every_recipe_reads_the_stored_value_back():
     prédicat, en désaccord sur l'entrée la plus probable."""
     for sid in SECRET_IDS:
         commandes = [c for _c, c in gcloud_recipe(sid, "p")]
-        assert any("versions access latest" in c and "wc -c" in c
-                   for c in commandes), sid
+        relectures = [c for c in commandes if "versions access" in c]
+        assert relectures, sid
+        for c in relectures:
+            assert "wc -c" in c, sid
+            # `latest` est un piège de FAUSSE ASSURANCE : si l'écriture
+            # échoue, il désigne la version PRÉCÉDENTE — qui a toutes les
+            # chances d'être de bonne longueur, puisqu'elle fonctionnait — et
+            # l'après-vol répond alors « conforme » sur une écriture qui n'a
+            # pas eu lieu. On relit la version CAPTURÉE à l'écriture.
+            assert "versions access latest" not in c, (
+                sid, "la relecture vise `latest` au lieu de la version écrite"
+            )
+            assert "$VERSION" in c, (sid, "la version écrite n'est pas relue")
 
 
 def test_every_recipe_lets_the_SHELL_compare_rather_than_the_eye():
@@ -405,11 +416,42 @@ def test_every_recipe_lets_the_SHELL_compare_rather_than_the_eye():
     """
     for sid in SECRET_IDS:
         commandes = [c for _c, c in gcloud_recipe(sid, "p")]
-        controles = [c for c in commandes if "wc -c" in c]
-        assert controles, sid
-        for c in controles:
-            assert "if [" in c, (sid, "le contrôle n'est pas une comparaison")
-            assert "REFUSER" in c, (sid, "aucune branche ne dit de ne rien écrire")
+        ecritures = [c for c in commandes if "versions add" in c]
+        assert len(ecritures) == 1, sid
+        ecriture = ecritures[0]
+
+        # COMPARER NE SUFFISAIT PAS. Jusqu'au 2026-09-11 la mesure imprimait
+        # « REFUSER, ne rien écrire » et la commande d'écriture vivait EN
+        # DEHORS du `if` : coller le bloc écrivait quoi que dise le verdict.
+        # Le shell comparait ; il n'agissait pas. Une consigne de sécurité
+        # qui demande à un humain d'obéir à un mot imprimé, au moment précis
+        # où il tient un secret, n'est pas une garde.
+        assert "wc -c" in ecriture, (sid, "l'écriture ne mesure rien")
+        assert "if [" in ecriture, (sid, "l'écriture n'est pas gardée")
+        i_if = ecriture.index("if [")
+        i_add = ecriture.index("versions add")
+        assert i_if < i_add, (sid, "l'écriture précède sa propre garde")
+        # Et la branche d'échec doit exister ET ne rien écrire.
+        i_else = ecriture.index("else")
+        assert i_add < i_else, (sid, "l'écriture est dans la branche d'échec")
+        assert "ANNULÉE" in ecriture, (sid, "l'échec ne se nomme pas")
+
+
+def test_the_written_version_is_CAPTURED_so_the_readback_can_target_it():
+    """Sans capture, la relecture n'a que `latest` — et `latest` ment quand
+    l'écriture a échoué. `--format='value(name)'` rend le nom complet de la
+    ressource ; `${VERSION##*/}` en garde le numéro."""
+    for sid in SECRET_IDS:
+        ecriture = next(
+            c for _c, c in gcloud_recipe(sid, "p") if "versions add" in c
+        )
+        assert "VERSION=$(" in ecriture, (sid, "la version n'est pas capturée")
+        assert "--format='value(name)'" in ecriture, sid
+        # La branche d'échec doit VIDER la variable, sinon une exécution
+        # précédente laisserait la relecture viser une vieille version.
+        assert 'VERSION=""' in ecriture, (
+            sid, "un échec laisse VERSION d'une exécution antérieure"
+        )
 
 
 def test_the_shell_bounds_are_DERIVED_from_the_same_Shape_that_judges_the_value():
