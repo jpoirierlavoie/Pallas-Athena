@@ -220,14 +220,48 @@ gcloud billing projects link $PROJECT --billing-account=XXXXXX-XXXXXX-XXXXXX
 firebase projects:addfirebase $PROJECT
 
 gcloud services enable \
-  appengine.googleapis.com firestore.googleapis.com firebase.googleapis.com \
-  firebaseappcheck.googleapis.com identitytoolkit.googleapis.com \
+  appengine.googleapis.com firestore.googleapis.com \
   secretmanager.googleapis.com cloudbuild.googleapis.com \
-  logging.googleapis.com cloudtrace.googleapis.com \
-  telemetry.googleapis.com \
-  recaptchaenterprise.googleapis.com iam.googleapis.com \
+  iam.googleapis.com iamcredentials.googleapis.com \
+  firebase.googleapis.com firebaseappcheck.googleapis.com \
+  firebaserules.googleapis.com firebasestorage.googleapis.com \
+  storage.googleapis.com identitytoolkit.googleapis.com \
+  recaptchaenterprise.googleapis.com logging.googleapis.com \
+  cloudtrace.googleapis.com telemetry.googleapis.com \
+  cloudtasks.googleapis.com cloudscheduler.googleapis.com \
   --project=$PROJECT
 ```
+
+**Eighteen, not twelve.** This list said twelve until 2026-09-12 and
+omitted six, of which `cloudscheduler` breaks an adopter's very first CI
+build — `cloudbuild.yaml` deploys `cron.yaml` unconditionally, as its
+**fourth** step, so the failure lands after `default`, `portail` and
+`dispatch` have already gone out. The block above and the table below are
+both GENERATED from
+[`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
+and pinned against it by a test, so an API added to the code announces
+itself here or the suite goes red.
+
+| API | Why it is required | Who calls it |
+|---|---|---|
+| `appengine.googleapis.com` | Les deux services App Engine y tournent. | app.yaml, portail.yaml |
+| `firestore.googleapis.com` | La base par défaut ET la base NOMMÉE « portail » — ce sont deux bases du même service. | models/, client/services/invitations.py |
+| `secretmanager.googleapis.com` | Les six secrets de §4.2. Sans elle, `config.py` lève à l'import et le service ne démarre pas du tout. | config.py, client/config.py |
+| `cloudbuild.googleapis.com` | Le déclencheur qui exécute la suite puis déploie. | cloudbuild.yaml |
+| `iam.googleapis.com` | Les liaisons de rôles que §6.4 pose. | les commandes de §6.4 |
+| `iamcredentials.googleapis.com` | L'API `signBlob`. Sans elle l'auto-impersonation échoue et AUCUN URL signé n'est produit — en silence, et en PRODUCTION seulement : en local une clé de compte de service signe sur place, donc ce chemin n'est jamais emprunté avant le déploiement. | models/document.sign_blob_url, models/doc_template |
+| `firebase.googleapis.com` | La gestion du projet Firebase. | la CLI firebase |
+| `firebaseappcheck.googleapis.com` | App Check, qui vérifie l'attestation des requêtes HTMX. | security.py |
+| `firebaserules.googleapis.com` | Le déploiement des règles Firestore et Storage. Sans elle `firebase deploy --only firestore:rules,storage` échoue — et ces règles SONT le refus par défaut qui couvre chaque collection. | firestore.rules, storage.rules |
+| `firebasestorage.googleapis.com` | Le seau par défaut de Firebase Storage et ses règles. | firebase-admin.storage |
+| `storage.googleapis.com` | L'API JSON de GCS elle-même : URL signés, sessions reprenables, ingestion par rewrite, composition du ZIP d'un dossier de classement. `firebasestorage` gère le seau ; c'est celle-ci qui déplace les octets. | google-cloud-storage |
+| `identitytoolkit.googleapis.com` | Firebase Auth — la session, la MFA, et le lien courriel du portail. | auth.py, client/routes.py |
+| `recaptchaenterprise.googleapis.com` | Le fournisseur d'attestation d'App Check. | security.py, base.html |
+| `logging.googleapis.com` | Le journal structuré, par `CloudLoggingHandler`. Sans elle, il ne reste aucune trace agrégée de ce que la production a fait. | utils/logging_setup.py |
+| `cloudtrace.googleapis.com` | Doit rester activée À CÔTÉ de `telemetry` : la note de migration de Google est explicite — désactiver Cloud Trace fait JETER les traces envoyées à l'API Telemetry, en silence. C'est aussi elle qui sert la LECTURE des traces. | utils/tracing_setup.py, la console |
+| `telemetry.googleapis.com` | La destination OTLP des spans depuis le 2026-07-30. | utils/tracing_setup.py |
+| `cloudtasks.googleapis.com` | La file « portail » par laquelle le service public signale. | client/services/taches.py |
+| `cloudscheduler.googleapis.com` | EXIGÉE par `gcloud app deploy cron.yaml`. Son absence fait échouer cette étape sur `SERVICE_DISABLED`, et `cloudbuild.yaml` la place en QUATRIÈME : l'échec arrive donc APRÈS que `default`, `portail` et `dispatch` sont déployés. La première construction d'un adoptant se termine rouge sur un déploiement à moitié fait. | cloudbuild.yaml, cron.yaml |
 
 **`telemetry.googleapis.com` is where spans are now sent** (OTLP, since
 2026-07-30 — see `athena/OBSERVABILITY.md`). **`cloudtrace.googleapis.com` must

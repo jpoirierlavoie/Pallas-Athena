@@ -683,6 +683,181 @@ def gcloud_recipe(secret_id: str, project_id: str = "") -> list:
     return etapes
 
 
+# ── Les API à activer ────────────────────────────────────────────────────
+#
+# §6.1 de DEPLOYMENT.md en listait DOUZE et en omettait six, dont une qui
+# casse la toute première construction CI d'un adoptant : `cloudbuild.yaml`
+# déploie `cron.yaml` sans condition, et sans `cloudscheduler` cette étape
+# échoue `SERVICE_DISABLED` — APRÈS que trois services ont déjà été
+# déployés. La liste vit donc ici, et §6.1 en est ENGENDRÉE : une API
+# ajoutée au code se réclame d'elle-même dans le document, ou le test tombe.
+#
+# `reason` dit pourquoi elle est requise, `consumer` dit QUI l'appelle —
+# parce qu'une liste d'API sans appelant ne se vérifie pas : on ne peut ni
+# la retirer en confiance, ni diagnostiquer son absence.
+
+
+@dataclass(frozen=True)
+class Api:
+    service: str
+    reason: str
+    consumer: str
+
+
+REQUIRED_APIS: tuple[Api, ...] = (
+    Api(
+        service="appengine.googleapis.com",
+        reason="Les deux services App Engine y tournent.",
+        consumer="app.yaml, portail.yaml",
+    ),
+    Api(
+        service="firestore.googleapis.com",
+        reason=(
+            "La base par défaut ET la base NOMMÉE « portail » — ce sont deux "
+            "bases du même service."
+        ),
+        consumer="models/, client/services/invitations.py",
+    ),
+    Api(
+        service="secretmanager.googleapis.com",
+        reason=(
+            "Les six secrets de §4.2. Sans elle, `config.py` lève à l'import "
+            "et le service ne démarre pas du tout."
+        ),
+        consumer="config.py, client/config.py",
+    ),
+    Api(
+        service="cloudbuild.googleapis.com",
+        reason="Le déclencheur qui exécute la suite puis déploie.",
+        consumer="cloudbuild.yaml",
+    ),
+    Api(
+        service="iam.googleapis.com",
+        reason="Les liaisons de rôles que §6.4 pose.",
+        consumer="les commandes de §6.4",
+    ),
+    Api(
+        service="iamcredentials.googleapis.com",
+        reason=(
+            "L'API `signBlob`. Sans elle l'auto-impersonation échoue et AUCUN "
+            "URL signé n'est produit — en silence, et en PRODUCTION seulement : "
+            "en local une clé de compte de service signe sur place, donc ce "
+            "chemin n'est jamais emprunté avant le déploiement."
+        ),
+        consumer="models/document.sign_blob_url, models/doc_template",
+    ),
+    Api(
+        service="firebase.googleapis.com",
+        reason="La gestion du projet Firebase.",
+        consumer="la CLI firebase",
+    ),
+    Api(
+        service="firebaseappcheck.googleapis.com",
+        reason="App Check, qui vérifie l'attestation des requêtes HTMX.",
+        consumer="security.py",
+    ),
+    Api(
+        service="firebaserules.googleapis.com",
+        reason=(
+            "Le déploiement des règles Firestore et Storage. Sans elle "
+            "`firebase deploy --only firestore:rules,storage` échoue — et ces "
+            "règles SONT le refus par défaut qui couvre chaque collection."
+        ),
+        consumer="firestore.rules, storage.rules",
+    ),
+    Api(
+        service="firebasestorage.googleapis.com",
+        reason="Le seau par défaut de Firebase Storage et ses règles.",
+        consumer="firebase-admin.storage",
+    ),
+    Api(
+        service="storage.googleapis.com",
+        reason=(
+            "L'API JSON de GCS elle-même : URL signés, sessions reprenables, "
+            "ingestion par rewrite, composition du ZIP d'un dossier de "
+            "classement. `firebasestorage` gère le seau ; c'est celle-ci qui "
+            "déplace les octets."
+        ),
+        consumer="google-cloud-storage",
+    ),
+    Api(
+        service="identitytoolkit.googleapis.com",
+        reason=(
+            "Firebase Auth — la session, la MFA, et le lien courriel du "
+            "portail."
+        ),
+        consumer="auth.py, client/routes.py",
+    ),
+    Api(
+        service="recaptchaenterprise.googleapis.com",
+        reason="Le fournisseur d'attestation d'App Check.",
+        consumer="security.py, base.html",
+    ),
+    Api(
+        service="logging.googleapis.com",
+        reason=(
+            "Le journal structuré, par `CloudLoggingHandler`. Sans elle, il ne "
+            "reste aucune trace agrégée de ce que la production a fait."
+        ),
+        consumer="utils/logging_setup.py",
+    ),
+    Api(
+        service="cloudtrace.googleapis.com",
+        reason=(
+            "Doit rester activée À CÔTÉ de `telemetry` : la note de migration "
+            "de Google est explicite — désactiver Cloud Trace fait JETER les "
+            "traces envoyées à l'API Telemetry, en silence. C'est aussi elle "
+            "qui sert la LECTURE des traces."
+        ),
+        consumer="utils/tracing_setup.py, la console",
+    ),
+    Api(
+        service="telemetry.googleapis.com",
+        reason="La destination OTLP des spans depuis le 2026-07-30.",
+        consumer="utils/tracing_setup.py",
+    ),
+    Api(
+        service="cloudtasks.googleapis.com",
+        reason="La file « portail » par laquelle le service public signale.",
+        consumer="client/services/taches.py",
+    ),
+    Api(
+        service="cloudscheduler.googleapis.com",
+        reason=(
+            "EXIGÉE par `gcloud app deploy cron.yaml`. Son absence fait "
+            "échouer cette étape sur `SERVICE_DISABLED`, et `cloudbuild.yaml` "
+            "la place en QUATRIÈME : l'échec arrive donc APRÈS que `default`, "
+            "`portail` et `dispatch` sont déployés. La première construction "
+            "d'un adoptant se termine rouge sur un déploiement à moitié fait."
+        ),
+        consumer="cloudbuild.yaml, cron.yaml",
+    ),
+)
+
+API_SERVICES: tuple[str, ...] = tuple(a.service for a in REQUIRED_APIS)
+
+# Combien d'API par ligne du bloc engendré. Deux tient sous 80 colonnes
+# même avec les deux noms les plus longs de la table côte à côte ; trois
+# débordait de dix caractères, dans un bloc qu'un adoptant copie à la main.
+_APIS_PAR_LIGNE = 2
+
+
+def services_enable_block(project_id: str = "") -> str:
+    """La commande `gcloud services enable`, ENGENDRÉE depuis la table.
+
+    Un `project_id` vide rend `$PROJECT`, la variable que §6.1 pose déjà —
+    le même choix que `gcloud_recipe`, pour la même raison : le document ne
+    doit pas porter l'identifiant de projet du propriétaire d'origine.
+    """
+    projet = project_id or "$PROJECT"
+    noms = list(API_SERVICES)
+    lignes = ["gcloud services enable " + chr(92)]
+    for i in range(0, len(noms), _APIS_PAR_LIGNE):
+        lignes.append("  " + " ".join(noms[i:i + _APIS_PAR_LIGNE]) + " " + chr(92))
+    lignes.append("  --project=" + projet)
+    return chr(10).join(lignes)
+
+
 # ── Runtime environment ──────────────────────────────────────────────────
 
 # Read with bracket ``os.environ[...]`` in the class body of ``config.py``, so
@@ -775,6 +950,8 @@ SCAN_FILES: tuple[str, ...] = (
 )
 
 __all__ = [
+    "API_SERVICES",
+    "Api",
     "FAIL_OPEN_ENV",
     "ORIGIN_EXTERNAL",
     "ORIGIN_GENERATED",
@@ -784,6 +961,7 @@ __all__ = [
     "ShapeVerdict",
     "OWNER_FINGERPRINT_RE",
     "OWNER_LITERALS",
+    "REQUIRED_APIS",
     "REQUIRED_ENV",
     "SCAN_FILES",
     "SECRETS",
@@ -796,6 +974,7 @@ __all__ = [
     "Shape",
     "WRITABLE_SECRET_IDS",
     "expected_length_fr",
+    "services_enable_block",
     "gcloud_recipe",
     "secret_by_id",
     "stray_whitespace",

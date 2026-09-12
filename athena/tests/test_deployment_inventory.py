@@ -32,12 +32,14 @@ _ROOT = os.path.dirname(_ATHENA)
 sys.path.insert(0, _ATHENA)
 
 from utils.deployment_inventory import (  # noqa: E402
+    API_SERVICES,
     FAIL_OPEN_ENV,
     OWNER_FINGERPRINT_RE,
     ORIGIN_EXTERNAL,
     ORIGIN_GENERATED,
     ORIGIN_PASSWORD,
     OWNER_LITERALS,
+    REQUIRED_APIS,
     REQUIRED_ENV,
     SCAN_FILES,
     SECRET_BACKED_ENV,
@@ -49,6 +51,7 @@ from utils.deployment_inventory import (  # noqa: E402
     expected_length_fr,
     gcloud_recipe,
     secret_by_id,
+    services_enable_block,
     stray_whitespace,
 )
 from utils.deployment_report import (  # noqa: E402
@@ -1035,6 +1038,71 @@ def test_section_4_2_is_GENERATED_row_for_row_INCLUDING_the_length_column():
     assert positions == sorted(positions), (
         "les rangées de §4.2 ne suivent plus l'ordre de SECRETS"
     )
+
+
+def test_every_required_api_carries_a_reason_AND_a_consumer():
+    """Une liste d'API sans appelant ne se vérifie pas : on ne peut ni en
+    retirer une en confiance, ni diagnostiquer son absence. §6.1 en portait
+    douze, nues, et il en manquait six."""
+    vus = set()
+    for api in REQUIRED_APIS:
+        assert api.service.endswith(".googleapis.com"), api.service
+        assert api.service not in vus, ("doublon", api.service)
+        vus.add(api.service)
+        assert api.reason.strip(), api.service
+        assert api.consumer.strip(), api.service
+        # Une raison d'un mot n'explique rien — c'est le défaut qu'on répare.
+        assert len(api.reason) > 25, (api.service, api.reason)
+
+
+def test_section_6_1_enable_block_IS_services_enable_block():
+    """Le bloc que l'adoptant colle est ENGENDRÉ. Ajouter une API à la table
+    sans régénérer §6.1 fait donc tomber ce test — ce qui est la seule façon
+    connue d'empêcher la liste de reprendre du retard."""
+    doc = _deployment_md()
+    bloc = services_enable_block()
+    assert bloc in doc, (
+        "DEPLOYMENT.md §6.1 a dérivé de services_enable_block() — "
+        "régénérez-la. Attendu :" + chr(10) + bloc
+    )
+    # Et l'ANCIENNE forme ne doit pas survivre à côté : deux blocs
+    # `services enable` dans le document, l'un complet et l'autre non, se
+    # lisent comme deux étapes à faire toutes les deux.
+    assert doc.count("gcloud services enable") == 1
+
+
+def test_section_6_1_table_is_GENERATED_row_for_row():
+    doc = _deployment_md()
+    attendues = [
+        "| `{}` | {} | {} |".format(a.service, a.reason, a.consumer)
+        for a in REQUIRED_APIS
+    ]
+    manquantes = [r for r in attendues if r not in doc]
+    assert not manquantes, (
+        "DEPLOYMENT.md §6.1 a dérivé de REQUIRED_APIS — régénérez ces "
+        "rangées : " + repr([r[:48] for r in manquantes])
+    )
+    positions = [doc.index(r) for r in attendues]
+    assert positions == sorted(positions), (
+        "les rangées de §6.1 ne suivent plus l'ordre de REQUIRED_APIS"
+    )
+
+
+def test_the_six_apis_that_were_MISSING_are_named():
+    """Épingle l'instance, pas seulement la classe. Chacune de ces six a un
+    mode de défaillance mesuré ou documenté ; les perdre à un futur
+    « nettoyage » de la table les remettrait exactement là où elles étaient
+    le 2026-09-11 — absentes du document, présentes en production, donc
+    invisibles jusqu'au jour où quelqu'un repart de zéro."""
+    for service in (
+        "cloudtasks.googleapis.com",
+        "cloudscheduler.googleapis.com",
+        "firebasestorage.googleapis.com",
+        "storage.googleapis.com",
+        "iamcredentials.googleapis.com",
+        "firebaserules.googleapis.com",
+    ):
+        assert service in API_SERVICES, service
 
 
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
