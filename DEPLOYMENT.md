@@ -329,14 +329,17 @@ off your own cron and queue; the Cloudflare Transform Rule **before**
 `cf-origin-secret` exists (12), or the site answers 403 everywhere with no
 deploy to explain it; and the storage bucket before its rules (8).
 
-0. **Authenticate and select the project** — `gcloud auth login`,
-   `gcloud auth application-default login`, `gcloud config set project
-   $PROJECT`, `firebase login`. This step did not exist in this document until
-   2026-09-12; §6.1 opened straight on `gcloud projects create`, and §9 later
+0. **Authenticate** — `gcloud auth login`, `gcloud auth
+   application-default login` (the ADC the scripts of §9 use), and
+   `firebase login`. This step did not exist in this document until
+   2026-09-12: §6.1 opened straight on `gcloud projects create`, and §9 later
    referenced credentials nothing had told you to obtain. Note that
    `.firebaserc` is gitignored and absent, so **every `firebase` command needs
    an explicit `--project`**.
-1. Create GCP project + enable billing
+1. Create GCP project + enable billing, then `gcloud config set project
+   $PROJECT` (it cannot be selected before it exists — every command below
+   also takes `--project=$PROJECT` explicitly, which is the safer habit: a
+   stale active project is how you provision into someone else's)
 2. Enable required APIs
 3. **Create the App Engine app — the region choice is PERMANENT** (§6.2)
 4. Create Firestore in native mode (same region)
