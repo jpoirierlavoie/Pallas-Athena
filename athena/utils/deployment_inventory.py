@@ -858,6 +858,340 @@ def services_enable_block(project_id: str = "") -> str:
     return chr(10).join(lignes)
 
 
+# ── Ce qu'il faut provisionner, et comment le CONSTATER ──────────────────
+#
+# Les API et les secrets ont leur table ; le reste — l'application App Engine,
+# les DEUX bases Firestore, la file, le seau de quarantaine, le pare-feu, le
+# compte de service du portail — vivait uniquement dans CLAUDE.md, en prose,
+# et pour partie dans une spec qui n'est PAS dans le dépôt. Le cycle de vie du
+# seau de quarantaine en est l'exemple net : la politique de rétention des
+# téléversements d'un client — matériel privilégié — était citée comme « §12.3
+# de la spec » et ne figurait dans aucun fichier versionné. Elle est ici,
+# relevée sur le déploiement vivant le 2026-09-13.
+#
+# `detect` est un GABARIT D'ARGUMENTS, pas une commande : ce module reste pur
+# (aucun `subprocess`, aucune E/S), et c'est cette pureté qui le rend
+# importable par une route Flask, par un script et par un test sans
+# identifiants. Chaque verbe est en LECTURE SEULE — il n'existe volontairement
+# aucun `apply()` dans ce lot : cette moitié-là ne peut pas être éprouvée sans
+# dépenser un projet jetable, et la leçon du 2026-09-11 est qu'une commande
+# écrite mais jamais exécutée est confiante et fausse.
+#
+# `symptom` est le champ qui rend la liste VÉRIFIABLE. Sans lui on ne peut ni
+# retirer une ligne en confiance, ni diagnostiquer son absence — et plusieurs
+# de ces absences échouent EN SILENCE, ce qui est précisément pourquoi elles
+# méritaient une table plutôt qu'un paragraphe.
+
+# Le suffixe du seau de quarantaine. `client/config.py` le dérive de
+# l'identifiant de projet ; un test épingle les deux ensemble, pour qu'un
+# adoptant n'ait pas à choisir un nom.
+PORTAIL_BUCKET_SUFFIX = "-portail-quarantaine"
+
+# La file Cloud Tasks et la base nommée, telles que `client/config.py` les
+# nomme. Même épingle, même raison.
+PORTAIL_QUEUE_NAME = "portail"
+PORTAIL_DB_NAME = "portail"
+
+# L'adresse interne d'où App Engine expédie cron et Cloud Tasks. Elle n'est
+# PAS une plage Cloudflare, et §7 de DEPLOYMENT.md a dit « les plages
+# Cloudflare seulement » jusqu'au 2026-09-12 — suivi à la lettre, cela coupe
+# les trois tâches cron et la file.
+APPENGINE_INTERNAL_CIDR = "0.1.0.2/32"
+
+# Le cycle de vie du seau de quarantaine, EN DONNÉES. Relevé sur le
+# déploiement vivant le 2026-09-13 ; c'est la première fois qu'il vit dans un
+# fichier versionné.
+QUARANTINE_LIFECYCLE: tuple[dict, ...] = (
+    {"prefix": "submissions/", "age_days": 90},
+    {"prefix": "archive/", "age_days": 365},
+)
+
+PHASE_SOCLE = "socle"
+PHASE_DONNEES = "données"
+PHASE_SECRETS = "secrets"
+PHASE_PORTAIL = "portail"
+PHASE_BORDURE = "bordure"
+
+# L'ordre dans lequel un adoptant doit franchir les phases. Cinq des huit
+# défaillances connues d'un clone neuf sont des défaillances d'ORDRE, pas de
+# commande : c'est la raison d'être de ce tuple.
+PHASE_ORDER: tuple[str, ...] = (
+    PHASE_SOCLE,
+    PHASE_DONNEES,
+    PHASE_SECRETS,
+    PHASE_PORTAIL,
+    PHASE_BORDURE,
+)
+
+
+@dataclass(frozen=True)
+class Resource:
+    """Une ressource à provisionner, et la commande qui la CONSTATE."""
+
+    key: str
+    label: str
+    phase: str
+    detect: tuple = ()
+    expect: str = ""
+    symptom: str = ""
+    irreversible: bool = False
+    manual: bool = False
+
+    def argv(self, project: str, region: str) -> tuple:
+        """Le gabarit, rempli. Aucun secret n'entre jamais ici — un test le
+        balaie, parce qu'un argument atterrit dans `ps` et dans l'historique."""
+        bucket = project + PORTAIL_BUCKET_SUFFIX
+        return tuple(
+            a.replace("{project}", project)
+             .replace("{region}", region)
+             .replace("{bucket}", bucket)
+            for a in self.detect
+        )
+
+
+RESOURCES: tuple[Resource, ...] = (
+    Resource(
+        key="app-engine",
+        label="Application App Engine",
+        phase=PHASE_SOCLE,
+        detect=("gcloud", "app", "describe", "--project={project}",
+                "--format=value(locationId)"),
+        expect="la région, qui doit être celle de tout le reste",
+        symptom="rien ne se déploie ; et la région choisie ici est DÉFINITIVE",
+        irreversible=True,
+    ),
+    Resource(
+        key="firestore-defaut",
+        label="Base Firestore par défaut (mode natif)",
+        phase=PHASE_DONNEES,
+        detect=("gcloud", "firestore", "databases", "describe",
+                "--database=(default)", "--project={project}",
+                "--format=value(locationId,type)"),
+        expect="FIRESTORE_NATIVE, dans la région App Engine",
+        symptom="l'application démarre puis échoue à la première lecture",
+        irreversible=True,
+    ),
+    Resource(
+        key="firestore-portail",
+        label="Base Firestore NOMMÉE « portail »",
+        phase=PHASE_DONNEES,
+        detect=("gcloud", "firestore", "databases", "describe",
+                "--database=" + PORTAIL_DB_NAME, "--project={project}",
+                "--format=value(locationId,type)"),
+        expect="FIRESTORE_NATIVE, même région",
+        symptom=(
+            "aucune invitation ne se lit ni ne s'écrit ; c'est une base "
+            "SÉPARÉE, pas une collection de la base par défaut"
+        ),
+        irreversible=True,
+    ),
+    Resource(
+        key="index-composites",
+        label="Index composites Firestore",
+        phase=PHASE_DONNEES,
+        detect=("gcloud", "firestore", "indexes", "composite", "list",
+                "--project={project}", "--format=value(state)"),
+        expect=(
+            "autant d'index READY que firestore.indexes.json en déclare — le "
+            "compte se DÉRIVE du fichier, il ne se recopie pas"
+        ),
+        symptom=(
+            "tant qu'un index construit, la requête qu'il sert échoue et la "
+            "vue se dégrade en LISTE VIDE — jamais en erreur"
+        ),
+    ),
+    Resource(
+        key="ttl-firestore",
+        label="Politiques TTL (oauth_codes, oauth_tokens, mcp_idempotency)",
+        phase=PHASE_DONNEES,
+        detect=("gcloud", "firestore", "fields", "ttls", "list",
+                "--collection-group=oauth_codes", "--project={project}",
+                "--format=value(ttlConfig.state)"),
+        expect="ACTIVE",
+        symptom=(
+            "aucune conséquence de SÉCURITÉ — l'expiration est appliquée dans "
+            "le code à chaque lecture ; le TTL n'est que du ramassage. Les "
+            "trois sont d'ailleurs déclarés en `fieldOverrides` dans "
+            "firestore.indexes.json, donc le déploiement des index les pose "
+            "déjà : les commandes `ttls update` que CLAUDE.md énumère sont "
+            "redondantes (constaté 2026-09-13)"
+        ),
+    ),
+    Resource(
+        key="sa-portail",
+        label="Compte de service portail-svc",
+        phase=PHASE_PORTAIL,
+        detect=("gcloud", "iam", "service-accounts", "describe",
+                "portail-svc@{project}.iam.gserviceaccount.com",
+                "--project={project}", "--format=value(email)"),
+        expect="il existe",
+        symptom="l'étape 2b de cloudbuild.yaml échoue et la construction s'arrête",
+    ),
+    Resource(
+        key="seau-quarantaine",
+        label="Seau de quarantaine du portail",
+        phase=PHASE_PORTAIL,
+        detect=("gcloud", "storage", "buckets", "describe", "gs://{bucket}",
+                "--project={project}",
+                "--format=value(location,uniform_bucket_level_access.enabled,"
+                "public_access_prevention)"),
+        expect=(
+            "la région App Engine, accès uniforme ACTIVÉ, accès public "
+            "« enforced »"
+        ),
+        symptom=(
+            "le client ne peut rien téléverser ; et un seau dans la mauvaise "
+            "région fait payer de l'egress inter-régional sur chaque octet"
+        ),
+    ),
+    Resource(
+        key="cycle-de-vie-quarantaine",
+        label="Cycle de vie du seau (rétention)",
+        phase=PHASE_PORTAIL,
+        detect=("gcloud", "storage", "buckets", "describe", "gs://{bucket}",
+                "--project={project}", "--format=json(lifecycle_config)"),
+        expect="submissions/ à 90 jours, archive/ à 365 (QUARANTINE_LIFECYCLE)",
+        symptom=(
+            "le matériel privilégié d'un client reste en quarantaine POUR "
+            "TOUJOURS. C'est la règle qui ne vivait dans aucun fichier "
+            "versionné jusqu'au 2026-09-13"
+        ),
+    ),
+    Resource(
+        key="file-portail",
+        label="File Cloud Tasks « portail »",
+        phase=PHASE_PORTAIL,
+        detect=("gcloud", "tasks", "queues", "describe", PORTAIL_QUEUE_NAME,
+                "--location={region}", "--project={project}",
+                "--format=value(state,rateLimits.maxConcurrentDispatches,"
+                "rateLimits.maxDispatchesPerSecond,retryConfig.maxAttempts)"),
+        expect="RUNNING, 3 dispatches simultanés, 5/s, 10 tentatives",
+        symptom=(
+            "une soumission n'est jamais traitée EN DIRECT ; le cron de "
+            "réconciliation la rattrape un quart d'heure plus tard, donc "
+            "l'absence se lit comme de la lenteur, pas comme une panne"
+        ),
+    ),
+    Resource(
+        key="pare-feu-interne",
+        label="Pare-feu : " + APPENGINE_INTERNAL_CIDR + " autorisé",
+        phase=PHASE_BORDURE,
+        detect=("gcloud", "app", "firewall-rules", "list", "--project={project}",
+                "--format=value(priority,action,sourceRange)"),
+        expect=(
+            APPENGINE_INTERNAL_CIDR + " en ALLOW, AU-DESSUS des plages "
+            "Cloudflare, et le DENY par défaut en dernier"
+        ),
+        symptom=(
+            "les trois tâches cron et toute la file Cloud Tasks sont bloquées "
+            "à la couche 1, en silence — App Engine les expédie depuis cette "
+            "adresse interne, qui n'est pas une plage Cloudflare"
+        ),
+    ),
+    # ── Ce qu'aucune commande ne peut constater ──────────────────────────
+    Resource(
+        key="firebase-auth",
+        label="Firebase Auth : fournisseur mot de passe + lien courriel",
+        phase=PHASE_SOCLE,
+        manual=True,
+        expect="activés dans la console, domaine du portail autorisé",
+        symptom="personne ne peut se connecter, ni le juriste ni un client invité",
+    ),
+    Resource(
+        key="utilisateur-unique",
+        label="L'utilisateur unique, et son second facteur",
+        phase=PHASE_SOCLE,
+        manual=True,
+        expect="un seul compte, l'adresse d'AUTHORIZED_USER_EMAIL, MFA inscrite",
+        symptom=(
+            "avec REQUIRE_MFA=true, une connexion réussit chez Firebase puis "
+            "la session est REFUSÉE — et l'application ne peut pas réparer son "
+            "propre verrouillage, la page de sécurité étant derrière la "
+            "connexion"
+        ),
+    ),
+    Resource(
+        key="seau-firebase-storage",
+        label="Seau Firebase Storage par défaut",
+        phase=PHASE_DONNEES,
+        manual=True,
+        expect="initialisé dans la console, nom == FIREBASE_STORAGE_BUCKET",
+        symptom=(
+            "aucun document ne se téléverse ; et ses règles ne se déploient "
+            "qu'APRÈS sa création"
+        ),
+    ),
+    Resource(
+        key="app-check",
+        label="App Check + clé reCAPTCHA Enterprise",
+        phase=PHASE_BORDURE,
+        manual=True,
+        expect="application web enregistrée, clé du domaine du portail incluse",
+        symptom=(
+            "App Check échoue OUVERT — l'application fonctionne, la protection "
+            "n'existe pas, et seul un avertissement en production le dit"
+        ),
+    ),
+    Resource(
+        key="cloudflare",
+        label="Cloudflare : DNS, Full (Strict), Transform Rule, Configuration Rule",
+        phase=PHASE_BORDURE,
+        manual=True,
+        expect=(
+            "la Transform Rule zone-wide PROUVÉE par le traceur de requêtes "
+            "AVANT que cf-origin-secret n'existe"
+        ),
+        symptom=(
+            "dans le mauvais ordre, le site répond 403 PARTOUT sans qu'aucun "
+            "déploiement ne l'explique — les instances se recyclent seules"
+        ),
+    ),
+    Resource(
+        key="entra",
+        label="Entra ID : inscription d'application + permissions Graph",
+        phase=PHASE_BORDURE,
+        manual=True,
+        expect="Mail.Send et Calendars.ReadWrite, consentement administrateur",
+        symptom=(
+            "le courriel sortant et la synchro Bookings sont éteints ; et un "
+            "changement de permission met 30 min à 2 h à sortir du cache "
+            "Exchange, donc « ça marche encore » ne prouve rien"
+        ),
+    ),
+    Resource(
+        key="declencheur-cloud-build",
+        label="Déclencheur Cloud Build sur push vers main",
+        phase=PHASE_BORDURE,
+        manual=True,
+        expect="connecté au dépôt, exécutant cloudbuild.yaml",
+        symptom=(
+            "rien ne se déploie tout seul ; et le brancher AVANT que "
+            "portail-svc n'existe fait échouer la première construction à "
+            "l'étape 2b"
+        ),
+    ),
+)
+
+RESOURCE_KEYS: tuple[str, ...] = tuple(r.key for r in RESOURCES)
+
+
+def resource_by_key(key: str):
+    for r in RESOURCES:
+        if r.key == key:
+            return r
+    return None
+
+
+def provisioning_plan() -> tuple:
+    """Les ressources dans l'ordre des phases, l'ordre stable à l'intérieur.
+
+    C'est l'ORDRE qui a de la valeur, pas les commandes : cinq des huit
+    défaillances connues d'un clone neuf sont des défaillances d'ordre.
+    """
+    rang = {p: i for i, p in enumerate(PHASE_ORDER)}
+    return tuple(sorted(RESOURCES, key=lambda r: rang[r.phase]))
+
+
 # ── Runtime environment ──────────────────────────────────────────────────
 
 # Read with bracket ``os.environ[...]`` in the class body of ``config.py``, so
@@ -959,8 +1293,17 @@ SCAN_FILES: tuple[str, ...] = (
 )
 
 __all__ = [
+    "APPENGINE_INTERNAL_CIDR",
     "API_SERVICES",
     "Api",
+    "PHASE_ORDER",
+    "PORTAIL_BUCKET_SUFFIX",
+    "PORTAIL_DB_NAME",
+    "PORTAIL_QUEUE_NAME",
+    "QUARANTINE_LIFECYCLE",
+    "RESOURCES",
+    "RESOURCE_KEYS",
+    "Resource",
     "FAIL_OPEN_ENV",
     "ORIGIN_EXTERNAL",
     "ORIGIN_GENERATED",
@@ -985,6 +1328,8 @@ __all__ = [
     "expected_length_fr",
     "services_enable_block",
     "gcloud_recipe",
+    "provisioning_plan",
+    "resource_by_key",
     "secret_by_id",
     "stray_whitespace",
 ]

@@ -32,6 +32,7 @@ _ROOT = os.path.dirname(_ATHENA)
 sys.path.insert(0, _ATHENA)
 
 from utils.deployment_inventory import (  # noqa: E402
+    APPENGINE_INTERNAL_CIDR,
     API_SERVICES,
     FAIL_OPEN_ENV,
     OWNER_FINGERPRINT_RE,
@@ -39,17 +40,24 @@ from utils.deployment_inventory import (  # noqa: E402
     ORIGIN_GENERATED,
     ORIGIN_PASSWORD,
     OWNER_LITERALS,
+    PHASE_ORDER,
+    PORTAIL_BUCKET_SUFFIX,
+    PORTAIL_DB_NAME,
+    PORTAIL_QUEUE_NAME,
+    QUARANTINE_LIFECYCLE,
     REQUIRED_APIS,
     REQUIRED_ENV,
     SCAN_FILES,
     SECRET_BACKED_ENV,
     SECRETS,
+    RESOURCES,
     SECRET_IDS,
     SHAPE_FAIL,
     SHAPE_WARN,
     WRITABLE_SECRET_IDS,
     expected_length_fr,
     gcloud_recipe,
+    provisioning_plan,
     secret_by_id,
     services_enable_block,
     stray_whitespace,
@@ -1457,6 +1465,141 @@ def test_section_7_does_not_tell_you_to_lock_out_your_own_cron():
         "§7 ne dit pas d'autoriser 0.1.0.2/32 — le suivre couperait cron et "
         "Cloud Tasks"
     )
+
+
+# ── La table des ressources, et la garantie qui la porte ─────────────────
+#
+# Un provisionneur se décompose en DÉTECTER et APPLIQUER. Seul le premier est
+# ici, délibérément : l'autre moitié ne peut pas être éprouvée sans dépenser
+# un projet jetable, et la leçon du 2026-09-11 est qu'une commande écrite mais
+# jamais exécutée est confiante et fausse. La garantie doit donc être
+# STRUCTURELLE, pas une promesse en commentaire — d'où le balayage des verbes
+# ci-dessous, qui est la seule épingle de ce lot qui compte vraiment.
+
+# Les verbes de LECTURE, en liste fermée. Tout le reste est refusé, y compris
+# ce qu'on n'a pas pensé à interdire — c'est l'inverse d'une liste noire, qui
+# aurait laissé passer le prochain verbe mutant de gcloud.
+_VERBES_DE_LECTURE = frozenset({"describe", "list", "get-iam-policy"})
+
+
+def test_no_detect_command_can_MUTATE_anything():
+    """La garantie « aucun apply() » vit dans la FORME, pas dans la prose.
+
+    Elle est vérifiée par liste blanche : le dernier verbe de chaque commande
+    doit appartenir aux trois verbes de lecture connus. Une liste noire
+    (« ni create, ni delete… ») laisserait passer le prochain verbe mutant
+    que gcloud ajoutera.
+    """
+    for r in RESOURCES:
+        if r.manual:
+            assert not r.detect, (r.key, "une étape manuelle n'a pas de commande")
+            continue
+        assert r.detect, r.key
+        assert r.detect[0] == "gcloud", (r.key, r.detect[0])
+        verbes = [a for a in r.detect if not a.startswith("-")
+                  and not a.startswith("gs://") and a != "gcloud"]
+        assert verbes, r.key
+        assert verbes[-1] in _VERBES_DE_LECTURE or any(
+            v in _VERBES_DE_LECTURE for v in verbes), (
+            r.key, verbes, "aucun verbe de lecture reconnu"
+        )
+        # Et positivement : aucun mot de la commande n'est un verbe mutant.
+        for mot in verbes:
+            assert mot not in (
+                "create", "delete", "update", "add-iam-policy-binding",
+                "remove-iam-policy-binding", "set-iam-policy", "set", "enable",
+                "disable", "deploy", "add", "destroy", "purge", "pause",
+                "resume", "import", "export", "rewrite", "cp", "rm",
+            ), (r.key, mot, "verbe MUTANT dans une commande de détection")
+
+
+def test_no_detect_command_can_leak_a_secret_into_ps():
+    """Un argument atterrit dans `ps` et dans l'historique du shell. Les
+    recettes de §6.4 emploient `--data-file=-` pour cette raison ; une
+    commande de détection ne doit même pas pouvoir porter de charge."""
+    # ⚠ Le prédicat est ancré sur les drapeaux EXACTS qui portent une
+    # charge. Un `startswith("--data")` naïf — la première forme écrite ici —
+    # attrape `--database=(default)`, qui n'a rien d'un secret : un faux
+    # positif rend un garde-fou inutilisable, donc désarmé à la main.
+    _PORTEURS_DE_CHARGE = ("--data=", "--data-file=", "--secret-data=")
+    for r in RESOURCES:
+        for a in r.detect:
+            for drapeau in _PORTEURS_DE_CHARGE:
+                assert not a.startswith(drapeau), (r.key, a)
+
+
+def test_every_resource_carries_a_symptom_and_a_known_phase():
+    """`symptom` est ce qui rend la liste vérifiable : sans lui on ne peut ni
+    retirer une ligne en confiance, ni diagnostiquer son absence. Et plusieurs
+    de ces absences échouent EN SILENCE, ce qui est exactement pourquoi elles
+    méritaient une table."""
+    vus = set()
+    for r in RESOURCES:
+        assert r.key not in vus, ("doublon", r.key)
+        vus.add(r.key)
+        assert r.phase in PHASE_ORDER, (r.key, r.phase)
+        assert r.expect.strip(), r.key
+        assert len(r.symptom) > 30, (r.key, r.symptom)
+
+
+def test_every_automatic_detect_is_pinned_to_the_project_it_was_given():
+    """Un projet actif périmé est la façon dont on provisionne — ou dont on
+    INSPECTE — chez quelqu'un d'autre. Chaque commande porte donc son projet
+    explicitement, jamais par héritage de `gcloud config`."""
+    for r in RESOURCES:
+        if r.manual:
+            continue
+        assert any("{project}" in a for a in r.detect), r.key
+        rempli = r.argv("mon-projet", "ma-region")
+        assert all("{" not in a for a in rempli), (r.key, rempli)
+        assert any("mon-projet" in a for a in rempli), r.key
+
+
+def test_the_portail_names_are_pinned_to_client_config():
+    """Le suffixe du seau, le nom de la file et celui de la base nommée sont
+    DÉRIVÉS de `client/config.py` plutôt que choisis ici — sans quoi un
+    adoptant se retrouverait à devoir deviner trois noms, et le code en
+    attendrait trois autres."""
+    src = io.open(os.path.join(_ROOT, "athena/client/config.py"),
+                  encoding="utf-8").read()
+    assert PORTAIL_BUCKET_SUFFIX in src, PORTAIL_BUCKET_SUFFIX
+    assert 'PORTAIL_QUEUE = "' + PORTAIL_QUEUE_NAME + '"' in src
+    assert 'PORTAIL_DB = "' + PORTAIL_DB_NAME + '"' in src
+
+
+def test_the_quarantine_lifecycle_is_DATA_not_a_pointer_to_a_missing_spec():
+    """CLAUDE.md renvoyait à « §12.3 de la spec » pour la rétention des
+    téléversements d'un client — matériel privilégié — et cette spec n'est
+    PAS dans le dépôt. La politique vit ici depuis le 2026-09-13, relevée sur
+    le déploiement vivant."""
+    assert QUARANTINE_LIFECYCLE
+    prefixes = {r["prefix"] for r in QUARANTINE_LIFECYCLE}
+    assert prefixes == {"submissions/", "archive/"}, prefixes
+    for regle in QUARANTINE_LIFECYCLE:
+        assert isinstance(regle["age_days"], int) and regle["age_days"] > 0
+    # L'archive survit à la quarantaine : l'ordre porte du sens.
+    par_prefixe = {r["prefix"]: r["age_days"] for r in QUARANTINE_LIFECYCLE}
+    assert par_prefixe["archive/"] > par_prefixe["submissions/"]
+
+
+def test_the_plan_is_ordered_by_phase_and_the_order_is_the_deliverable():
+    """Cinq des huit défaillances connues d'un clone neuf sont des
+    défaillances d'ORDRE, pas de commande."""
+    plan = provisioning_plan()
+    assert len(plan) == len(RESOURCES)
+    rang = {p: i for i, p in enumerate(PHASE_ORDER)}
+    rangs = [rang[r.phase] for r in plan]
+    assert rangs == sorted(rangs), [r.key for r in plan]
+    # Le pare-feu vient APRÈS la file : autoriser l'adresse interne avant de
+    # refuser le reste est la moitié qui compte de cet ordre.
+    cles = [r.key for r in plan]
+    assert cles.index("file-portail") < cles.index("pare-feu-interne")
+
+
+def test_the_firewall_row_names_the_internal_address():
+    r = next(x for x in RESOURCES if x.key == "pare-feu-interne")
+    assert APPENGINE_INTERNAL_CIDR in r.label + r.expect
+    assert "0.1.0.2/32" == APPENGINE_INTERNAL_CIDR
 
 
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
