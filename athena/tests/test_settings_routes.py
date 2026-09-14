@@ -324,6 +324,109 @@ def test_the_journal_ignores_unknown_fields_entirely(web, caplog):
     assert set(rec.json_fields) == {"event", "outcome"}
 
 
+# ── Le code d'erreur Firebase : borné par la FORME ───────────────────────
+#
+# Ajouté le 2026-09-13. Une inscription de second facteur a échoué sur un code
+# absent de la table de vingt de la page ; le message générique l'a jeté, la
+# route n'était appelée que sur les SUCCÈS, et la console du navigateur était
+# noyée sous le bruit d'une extension. Le diagnostic n'existait NULLE PART.
+#
+# Le remède fait entrer une chaîne venue du NAVIGATEUR dans un journal, ce que
+# ce fichier interdit partout ailleurs. Ce qui le rend acceptable est une
+# borne de FORME, et c'est elle qu'on épingle des deux côtés.
+
+
+def test_the_journal_accepts_the_enrolment_failure_event(web):
+    r = web.post(
+        "/parametres/securite/journal", data={"event": "mfa_enroll_failed"}
+    )
+    assert r.status_code == 204
+
+
+def test_a_failed_event_is_logged_as_a_FAILURE_not_a_success(web, caplog):
+    """L'issue se DÉRIVE du nom. Journaliser un échec sous « success »
+    rendrait le journal pire qu'absent : une alerte bâtie dessus ne se
+    déclencherait jamais, et la ligne dirait le contraire du fait."""
+    import logging
+    from routes.settings import _EVENEMENTS_JOURNAL
+
+    echecs = [e for e in _EVENEMENTS_JOURNAL if e.endswith("_failed")]
+    assert echecs, "le vocabulaire ne porte plus aucun échec — dérive"
+    for evenement in sorted(echecs):
+        with caplog.at_level(logging.INFO, logger="pallas.auth"):
+            caplog.clear()
+            web.post("/parametres/securite/journal", data={"event": evenement})
+        rec = [r for r in caplog.records if r.name == "pallas.auth"][-1]
+        assert rec.json_fields["outcome"] == "failure", evenement
+
+
+def test_the_journal_records_a_wellformed_firebase_error_code(web, caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="pallas.auth"):
+        web.post("/parametres/securite/journal", data={
+            "event": "mfa_enroll_failed",
+            "error_code": "auth/unsupported-first-factor",
+        })
+    rec = [r for r in caplog.records if r.name == "pallas.auth"][-1]
+    assert rec.json_fields["error_code_client"] == "auth/unsupported-first-factor"
+
+
+def test_the_journal_DROPS_a_malformed_error_code(web, caplog):
+    """La borne est une FORME, pas une liste fermée — les codes bougent avec
+    le SDK et une liste tairait le code inattendu qu'on veut justement
+    apprendre. Mais la forme doit tenir : rien d'autre n'entre."""
+    import logging
+    hostiles = [
+        "<script>alert(1)</script>",
+        "auth/" + ("a" * 200),
+        "AUTH/MAJUSCULES",
+        "auth/",
+        "texte libre sans préfixe",
+        "auth/ok" + chr(10) + "auth/injection",   # saut de ligne REEL
+        "x" * 5000,
+        "auth/ok; DROP TABLE",
+    ]
+    for mauvais in hostiles:
+        with caplog.at_level(logging.INFO, logger="pallas.auth"):
+            caplog.clear()
+            r = web.post("/parametres/securite/journal", data={
+                "event": "mfa_enroll_failed", "error_code": mauvais,
+            })
+        assert r.status_code == 204, mauvais
+        rec = [x for x in caplog.records if x.name == "pallas.auth"][-1]
+        assert "error_code_client" not in rec.json_fields, mauvais[:40]
+
+
+def test_the_error_code_pattern_stays_LINEAR(web):
+    """Doctrine CWE-1333 du dépôt : aucun `.`, aucun DOTALL, et des bornes.
+    Un motif ancré des deux côtés et plafonné à 48 ne peut pas revenir sur
+    ses pas ; la borne de longueur qui le précède est la ceinture."""
+    from routes.settings import _CODE_ERREUR_RE
+
+    assert "." not in _CODE_ERREUR_RE.pattern
+    assert not _CODE_ERREUR_RE.flags & 16  # re.DOTALL
+    assert _CODE_ERREUR_RE.pattern.startswith("^")
+    assert _CODE_ERREUR_RE.pattern.endswith("$")
+    assert "{1,48}" in _CODE_ERREUR_RE.pattern
+
+
+def test_the_security_page_NAMES_a_code_it_does_not_recognise(web):
+    """Le vrai défaut du 2026-09-13 : « Réessayez » sans le code, sur la
+    seule page dont une mauvaise manœuvre peut laisser un compte SANS second
+    facteur. Un message générique y est le pire message possible."""
+    html = web.get("/parametres/securite").get_data(as_text=True)
+    assert "return t[code] || defaut" not in html, (
+        "le repli jette le code au lieu de le nommer"
+    )
+    assert "(code : ' + code + ')" in html
+    assert "console.error" in html, (
+        "aucun console.error — l'objet d'erreur complet reste inaccessible"
+    )
+    assert "mfa_enroll_failed" in html, (
+        "l'échec d'inscription ne se journalise pas côté serveur"
+    )
+
+
 # ── La navigation ────────────────────────────────────────────────────────
 
 def test_the_nav_points_at_parametres_on_both_surfaces():

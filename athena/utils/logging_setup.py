@@ -495,6 +495,10 @@ AuthEvent = Literal[
     "mfa_enrolled",
     "mfa_unenrolled",
     "mfa_unenroll_failed_zero_factors",
+    # 2026-09-13 : un échec d'inscription ne laissait AUCUNE trace — la
+    # route n'était appelée que sur les succès. Il porte `error_code_client`,
+    # le code Firebase tel que le navigateur l'a vu.
+    "mfa_enroll_failed",
     "reauth_failed",
 ]
 DossierEvent = Literal[

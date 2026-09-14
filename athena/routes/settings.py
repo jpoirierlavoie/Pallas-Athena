@@ -22,6 +22,8 @@ exempts d'App Check) — contrairement à `/auth/`, ce qui est précisément
 pourquoi la page de sécurité ne porte aucun attribut `hx-*`.
 """
 
+import re
+
 from flask import (
     Blueprint,
     Response,
@@ -306,11 +308,16 @@ def securite() -> str:
 # Vocabulaire FERMÉ du journal de sécurité. Tout le reste est refusé et
 # RIEN n'est journalisé — une valeur libre venue du navigateur ne doit
 # jamais atteindre un journal.
+# La FORME d'un code d'erreur Firebase — bornée, jamais une liste fermée :
+# voir la note au point d'usage dans `securite_journal`.
+_CODE_ERREUR_RE = re.compile(r"^auth/[a-z0-9-]{1,48}$")
+
 _EVENEMENTS_JOURNAL: frozenset = frozenset({
     "password_changed",
     "mfa_enrolled",
     "mfa_unenrolled",
     "mfa_unenroll_failed_zero_factors",
+    "mfa_enroll_failed",
     "reauth_failed",
 })
 
@@ -475,6 +482,17 @@ def securite_journal() -> tuple[Response, int]:
         except ValueError:
             pass
 
-    # Aucun champ libre : les clés inconnues sont ignorées ENTIÈREMENT.
-    log_auth_event(evenement, "success", **fields)
+    # Le code Firebase d'un échec. Il vient du NAVIGATEUR, donc il est
+    # borné par sa FORME plutôt que par une liste : les codes évoluent avec
+    # le SDK, et une liste fermée ici ferait taire précisément le code
+    # inattendu qu'on veut apprendre. `auth/` + minuscules, tirets et
+    # chiffres, 48 caractères au plus — assez pour tout code réel, trop peu
+    # pour y glisser autre chose. La provenance est nommée dans la clé.
+    code = (request.form.get("error_code") or "").strip()
+    if code and len(code) <= 64 and _CODE_ERREUR_RE.match(code):
+        fields["error_code_client"] = code
+
+    # Aucun autre champ libre : les clés inconnues sont ignorées ENTIÈREMENT.
+    resultat = "failure" if evenement.endswith("_failed") else "success"
+    log_auth_event(evenement, resultat, **fields)
     return Response(status=204), 204

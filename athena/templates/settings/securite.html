@@ -622,26 +622,51 @@
           'auth/weak-password': 'Mot de passe trop court (visez au moins 12 caractères).',
           'auth/password-does-not-meet-requirements': 'Le nouveau mot de passe ne respecte pas la politique du projet Firebase.'
         };
-        return t[code] || defaut;
+        if (t[code]) return t[code];
+        // ⚠ UN CODE NON RÉPERTORIÉ DOIT SE LIRE À L'ÉCRAN.
+        // Le 2026-09-13 à 19 h 04, « Ajouter un numéro » a échoué sur un
+        // code absent de cette table. Le message générique l'a jeté, aucun
+        // `console.error` ne le reprenait, la route du journal n'est appelée
+        // que sur les SUCCÈS — et la console d'un navigateur réel était
+        // noyée sous le bruit d'une extension. Le diagnostic n'existait donc
+        // NULLE PART : ni à l'écran, ni dans Cloud Logging, ni dans la
+        // console. Sur la seule page dont une mauvaise manœuvre peut laisser
+        // un compte SANS second facteur, « Réessayez » tout court est le
+        // pire message possible.
+        try {
+          console.error('[Athéna · sécurité] code Firebase non répertorié :',
+                        code, '— message générique affiché');
+        } catch (e) { /* pas de console */ }
+        return defaut + (code
+          ? ' (code : ' + code + ')'
+          : ' (aucun code Firebase — l’erreur ne vient pas de l’authentification)');
       },
 
-      journal(evenement) {
+      journal(evenement, codeErreur) {
         // Sans attendre et sans conséquence : le serveur n'apprendrait
         // sinon RIEN de ces changements (firebase-admin n'a aucune surface
         // MFA), et une écriture de journal ne doit jamais bloquer ni
         // annuler un changement de sécurité déjà commis.
+        //
+        // `codeErreur` est le code Firebase d'un ÉCHEC — facultatif, et
+        // borné côté serveur par une expression qui n'accepte que la forme
+        // `auth/…`. Jusqu'au 2026-09-13 la route n'était appelée que sur des
+        // succès, si bien qu'un échec d'inscription ne laissait aucune trace
+        // nulle part.
         try {
           var meta = document.querySelector('meta[name="csrf-token"]');
+          var corps = {
+            event: evenement,
+            factor_count: String(this.facteurs.length)
+          };
+          if (codeErreur) corps.error_code = String(codeErreur);
           fetch('/parametres/securite/journal', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/x-www-form-urlencoded',
               'X-CSRFToken': meta ? meta.content : ''
             },
-            body: new URLSearchParams({
-              event: evenement,
-              factor_count: String(this.facteurs.length)
-            })
+            body: new URLSearchParams(corps)
           }).catch(() => {});
         } catch (e) { /* jamais bloquant */ }
       },
@@ -876,9 +901,11 @@
             if (el) el.focus();
           });
         } catch (err) {
+          console.error('[Athéna · sécurité] envoi du SMS d’inscription', err);
           this.erreurAjout = this.messageErreur(
             err.code, 'Impossible d’envoyer le code. Réessayez.'
           );
+          this.journal('mfa_enroll_failed', err.code);
         } finally {
           this.occupe = false;
         }
@@ -902,9 +929,11 @@
           this.etapeAjout = 'fait';
           this.journal('mfa_enrolled');
         } catch (err) {
+          console.error('[Athéna · sécurité] inscription du facteur', err);
           this.erreurAjout = this.messageErreur(
             err.code, 'Erreur lors de l’inscription. Réessayez.'
           );
+          this.journal('mfa_enroll_failed', err.code);
           this.viderCode('ajout');
         } finally {
           this.occupe = false;
