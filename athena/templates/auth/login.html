@@ -225,9 +225,46 @@
 
         initRecaptcha() {
           if (this.recaptchaVerifier) return;
-          this.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('mfa-recaptcha-container', {
-            size: 'invisible'
-          });
+
+          // ⚠ THE CONTAINER IS REPLACED, NEVER REUSED.
+          //
+          // An INVISIBLE verifier does not clean its container. Verified in
+          // the vendored SDK bytes
+          // (`static/vendor/firebase-auth-compat-10.12.2.js`) — three
+          // `isInvisible||` guards that must be read together:
+          //
+          //   clear(){…this.isInvisible||this.container.childNodes.forEach(…)}
+          //   validateStartingState(){…isInvisible||!this.container.hasChildNodes…}
+          //   makeRenderPromise: …isInvisible||(t=document.createElement("div"),…)
+          //
+          // So `clear()` removes NO node, the dirty-container assert is
+          // SKIPPED, and render() targets the container ITSELF rather than a
+          // throwaway child. A second `grecaptcha.render()` on the same
+          // element throws a BARE `Error` — no `.code` — so the
+          // `err.code` switch in both catch blocks matches nothing and falls
+          // through to its generic message, naming no cause.
+          //
+          // On THIS page the first send renders once and works, so the
+          // defect hides in « Renvoyer le code »: `resendCode` is the second
+          // render and would have thrown every time. Diagnosed 2026-09-14
+          // from the identical live failure on /parametres/securite, where
+          // the enrolment send is structurally always the second render.
+          let container = document.getElementById('mfa-recaptcha-container');
+          if (container && container.parentNode) {
+            const fresh = document.createElement('div');
+            fresh.id = 'mfa-recaptcha-container';
+            container.parentNode.replaceChild(fresh, container);
+            container = fresh;
+          }
+
+          // The ELEMENT, not its id: the SDK accepts either
+          // (`"string"==typeof t?document.getElementById(t):t`), and passing
+          // the node we just inserted removes any second lookup. The string
+          // fallback keeps the previous behaviour if the container is gone —
+          // the SDK then throws `auth/argument-error`, which CARRIES a code.
+          this.recaptchaVerifier = new firebase.auth.RecaptchaVerifier(
+            container || 'mfa-recaptcha-container', { size: 'invisible' }
+          );
         },
 
         resetRecaptcha() {

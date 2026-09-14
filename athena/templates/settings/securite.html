@@ -579,11 +579,55 @@
       // du SMS en silence.
       reinitRecaptcha() {
         if (this.verifier) {
+          // `clear()` reste nécessaire — il décrémente le compteur
+          // d'instances du chargeur et marque l'ancien vérificateur
+          // détruit, donc un rappel tardif est inerte. Il ne suffit
+          // simplement pas, voir juste en dessous.
           try { this.verifier.clear(); } catch (e) { /* déjà démonté */ }
           this.verifier = null;
         }
+
+        // ⚠ LE CONTENEUR EST REMPLACÉ, JAMAIS RÉUTILISÉ.
+        //
+        // Un vérificateur INVISIBLE ne nettoie pas son conteneur. Vérifié
+        // dans les octets du SDK vendorisé
+        // (`static/vendor/firebase-auth-compat-10.12.2.js`) — trois
+        // `isInvisible||` qui se lisent ensemble :
+        //
+        //   clear(){…this.isInvisible||this.container.childNodes.forEach(…)}
+        //   validateStartingState(){…isInvisible||!this.container.hasChildNodes…}
+        //   makeRenderPromise: …isInvisible||(t=document.createElement("div"),…)
+        //
+        // Donc : `clear()` ne retire AUCUN nœud, l'assertion « conteneur
+        // déjà sale » est SAUTÉE, et le rendu se fait SUR LE CONTENEUR
+        // LUI-MÊME au lieu d'un enfant jetable. Un second
+        // `grecaptcha.render()` sur le même élément lève une `Error` NUE —
+        // sans `.code` —, que `messageErreur` ne peut donc pas nommer.
+        //
+        // Constaté en production le 2026-09-14 : « Ajouter un numéro » →
+        // « Impossible d'envoyer le code. Réessayez. », et le journal
+        // Identity Platform ne porte AUCUN `StartMfaEnrollment` — la
+        // requête n'a jamais quitté le navigateur. C'était STRUCTUREL et
+        // non intermittent : le bouton est `:disabled="!deverrouille"`, et
+        // `deverrouille` ne se pose que par le déverrouillage, qui vient
+        // de rendre dans ce conteneur. L'inscription était donc TOUJOURS
+        // le second rendu, sans aucun chemin vers un premier.
+        var conteneur = document.getElementById('parametres-recaptcha');
+        if (conteneur && conteneur.parentNode) {
+          var neuf = document.createElement('div');
+          neuf.id = 'parametres-recaptcha';
+          conteneur.parentNode.replaceChild(neuf, conteneur);
+          conteneur = neuf;
+        }
+
+        // L'ÉLÉMENT, pas son identifiant : le SDK accepte les deux
+        // (`"string"==typeof t?document.getElementById(t):t`) et passer le
+        // nœud qu'on vient de poser retire toute seconde résolution. Le
+        // repli sur la chaîne garde le comportement d'avant si le
+        // conteneur manque — le SDK lève alors `auth/argument-error`, qui
+        // PORTE un code, donc l'écran le nomme.
         this.verifier = new firebase.auth.RecaptchaVerifier(
-          'parametres-recaptcha', { size: 'invisible' }
+          conteneur || 'parametres-recaptcha', { size: 'invisible' }
         );
       },
 
