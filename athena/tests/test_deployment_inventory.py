@@ -1602,6 +1602,42 @@ def test_the_firewall_row_names_the_internal_address():
     assert "0.1.0.2/32" == APPENGINE_INTERNAL_CIDR
 
 
+def test_section_17_is_GENERATED_from_the_manual_resources():
+    """Les étapes que rien ne peut constater sont celles qu'on oublie — c'est
+    le rôle d'une liste. Elle est ENGENDRÉE des lignes `manual` de la table,
+    et elle porte les MÊMES identifiants que le script imprime, pour qu'une
+    liste et un rapport puissent désigner la même chose."""
+    doc = _deployment_md()
+    section = doc[doc.index("## 17."):]
+    manuelles = [r for r in RESOURCES if r.manual]
+    assert manuelles, "aucune étape manuelle — la table a changé de forme"
+    attendues = [
+        "| `{}` | {} | {} |".format(r.key, r.label, r.expect)
+        for r in manuelles
+    ]
+    manquantes = [x for x in attendues if x not in section]
+    assert not manquantes, (
+        "DEPLOYMENT.md §17 a dérivé — régénérez ces rangées : "
+        + repr([x[:44] for x in manquantes])
+    )
+    # Et AUCUNE ressource constatable ne doit y figurer : une étape que le
+    # script vérifie n'a rien à faire dans une liste manuelle, sinon on la
+    # refait à la main pour rien.
+    automatiques = [r.key for r in RESOURCES if not r.manual]
+    intrus = [k for k in automatiques if "`" + k + "`" in section]
+    assert not intrus, (intrus, "ressource constatable dans la liste manuelle")
+
+
+def test_the_provisioning_script_is_DOCUMENTED_where_someone_will_find_it():
+    """Un script que personne ne connaît est un script que personne ne lance
+    — le mode de défaillance exact qui a laissé `cf-origin-secret` absent
+    pendant des mois avec `check_config` comme seul témoin."""
+    doc = _deployment_md()
+    assert "scripts.provision" in doc, "DEPLOYMENT.md ne mentionne pas le script"
+    claude = io.open(os.path.join(_ROOT, "CLAUDE.md"), encoding="utf-8").read()
+    assert "provision.py" in claude, "CLAUDE.md ne mentionne pas le script"
+
+
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
     """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
     absence : le mot de passe DAV en clair dans l'historique, `secrets create`

@@ -313,6 +313,43 @@ python -m scripts.check_config          # uses ENV from your shell/.env
 python -m scripts.check_config --prod   # force the production ruleset
 ```
 
+**And a second one checks the INFRASTRUCTURE**, which the first never
+looked at — it reads env vars, secrets and committed files, but knows nothing
+about whether the queue exists or the firewall lets your own cron through:
+
+```bash
+cd athena
+python -m scripts.provision --project $PROJECT                  # état + plan
+python -m scripts.provision --project $PROJECT --plan-seulement # le plan seul
+python -m scripts.provision --project $PROJECT --json           # pour une machine
+```
+
+It **never mutates anything**, and that is structural rather than promised:
+every command it runs comes from a table whose verbs are restricted, by
+allowlist, to `describe` / `list` / `get-iam-policy` — a test enforces it.
+There is deliberately no `--apply`.
+
+`--project` is **required and never inherited** from `gcloud config`: a stale
+active project is how you inspect — or provision — inside someone else's.
+The region is not asked for; it is read from the App Engine application,
+which is authoritative because its region is permanent.
+
+Exit codes, and the distinct `2` matters — a CI that conflates « go click in a
+console » with « something is broken » ends up ignoring both:
+
+| Code | Meaning |
+|---|---|
+| `0` | everything detectable is in place |
+| `1` | **drift** — a resource exists and contradicts what the code expects |
+| `2` | work remains: not yet provisioned, console-only, or not verifiable |
+
+⚠ **A failed probe reports `inconnu`, never « absent ».** `gcloud` missing,
+stale credentials, a disabled API — none of those say anything about the
+resource, and reporting an absence would send you to provision what is
+already there. The first real run proved the rule before it was ever tested:
+`subprocess` on Windows resolves only `.exe`, never the SDK's `gcloud.CMD`,
+so ten present resources came back « not verified » instead of « missing ».
+
 ---
 
 ## 5. Order of operations (read this before running anything)
@@ -1333,6 +1370,38 @@ Notes:
 | Warning about App Check in prod logs | `RECAPTCHA_ENTERPRISE_SITE_KEY` unset — App Check is fail-open. |
 | DavX5 silently won't sync | A DAV Basic-Auth mismatch, or the account was not re-added after a DAV collection layout change. Test the endpoint with `curl` first — an anonymous `PROPFIND /dav/` must answer `401 WWW-Authenticate: Basic`. |
 | Word shows a "repair" prompt on a generated doc | A template-engine change introduced a `docxtpl`/`python-docx` round-trip — forbidden (see CLAUDE.md). |
+
+---
+
+## 17. The steps no command can verify
+
+`python -m scripts.provision` reports everything a read-only `gcloud` call can
+establish. These are the rest — console work, edge configuration, a directory
+you do not own. They carry **stable ids**, the same ones the script prints
+under « à la main », so a checklist and a report can refer to the same thing.
+
+This table is GENERATED from the `manual` rows of
+[`athena/utils/deployment_inventory.py`](athena/utils/deployment_inventory.py)
+and pinned against them by a test.
+
+| Id | Step | What « done » looks like |
+|---|---|---|
+| `firebase-auth` | Firebase Auth : fournisseur mot de passe + lien courriel | activés dans la console, domaine du portail autorisé |
+| `utilisateur-unique` | L'utilisateur unique, et son second facteur | un seul compte, l'adresse d'AUTHORIZED_USER_EMAIL, MFA inscrite |
+| `seau-firebase-storage` | Seau Firebase Storage par défaut | initialisé dans la console, nom == FIREBASE_STORAGE_BUCKET |
+| `app-check` | App Check + clé reCAPTCHA Enterprise | application web enregistrée, clé du domaine du portail incluse |
+| `cloudflare` | Cloudflare : DNS, Full (Strict), Transform Rule, Configuration Rule | la Transform Rule zone-wide PROUVÉE par le traceur de requêtes AVANT que cf-origin-secret n'existe |
+| `entra` | Entra ID : inscription d'application + permissions Graph | Mail.Send et Calendars.ReadWrite, consentement administrateur |
+| `declencheur-cloud-build` | Déclencheur Cloud Build sur push vers main | connecté au dépôt, exécutant cloudbuild.yaml |
+
+Each one fails in its own way when skipped, and the script prints that
+consequence beside it. Three are worth repeating here because their failure is
+**silent**: App Check fails OPEN, so the application works and the protection
+simply does not exist; a Cloudflare Transform Rule created *after*
+`cf-origin-secret` makes the site answer 403 everywhere with no deploy to
+explain it; and an Entra permission change takes 30 minutes to 2 hours to
+leave the Exchange cache, so « it still works » proves nothing about a
+revocation you just made.
 
 ---
 

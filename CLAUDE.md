@@ -391,6 +391,23 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │
 │   ├── scripts/                    # One-time / manual scripts (run with python -m scripts.X)
 │   │   ├── __init__.py
+│   │   ├── provision.py           # Sept. 2026 — constate l'état de PROVISIONNEMENT
+│   │   │                           # d'un projet (App Engine, les DEUX bases,
+│   │   │                           # index, TTL, portail-svc, seau + son cycle
+│   │   │                           # de vie, file, pare-feu) et rend le plan de
+│   │   │                           # ce qui reste, par phases. LECTURE SEULE et
+│   │   │                           # structurellement : les verbes de
+│   │   │                           # `deployment_inventory.RESOURCES` sont
+│   │   │                           # restreints par liste BLANCHE à describe /
+│   │   │                           # list / get-iam-policy, et un test l'exige.
+│   │   │                           # Aucun --apply. --project OBLIGATOIRE,
+│   │   │                           # jamais hérité de `gcloud config`. Codes :
+│   │   │                           # 0 en place · 1 DÉRIVE · 2 du travail reste.
+│   │   │                           # ⚠ Un échec de sonde rend « inconnu »,
+│   │   │                           # JAMAIS « absent » — sans quoi la première
+│   │   │                           # exécution réelle (subprocess Windows ne
+│   │   │                           # résout pas gcloud.CMD) aurait ordonné de
+│   │   │                           # provisionner un projet déjà complet
 │   │   ├── seed_reference_data.py  # Populate ref_greffes + ref_juridictions (Phase G)
 │   │   ├── mint_dev_token.py       # Local-dev MCP bearer minting (refuses ENV=production)
 │   │   ├── revoke_mcp_tokens.py    # Break-glass: revoke all MCP tokens (+ optional client purge)
