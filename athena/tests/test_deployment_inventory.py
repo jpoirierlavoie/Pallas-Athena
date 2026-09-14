@@ -1638,6 +1638,152 @@ def test_the_provisioning_script_is_DOCUMENTED_where_someone_will_find_it():
     assert "provision.py" in claude, "CLAUDE.md ne mentionne pas le script"
 
 
+# ── L'ÉVENTAIL du hachage CSS, et l'ordre bordure-puis-secret ────────────
+#
+# Deux défauts que j'ai moi-même laissés dans ce document, corrigés le
+# 2026-09-13 et épinglés ici parce qu'aucun des deux ne se voit en relisant.
+
+
+def _fichier_css_hache() -> str:
+    """Le nom de l'artefact Tailwind compilé, LU du dossier vendor."""
+    vendor = os.path.join(_ROOT, "athena", "static", "vendor")
+    haches = [n for n in os.listdir(vendor)
+              if n.startswith("app.") and n.endswith(".css")]
+    assert len(haches) == 1, (
+        "il devrait y avoir EXACTEMENT un app.<hash>.css — " + repr(haches) +
+        ". Deux signifie que l'ancien n'a pas été supprimé ; zéro, que "
+        "l'artefact compilé manque."
+    )
+    return haches[0]
+
+
+def _porteurs_du_hachage(nom_css: str) -> list:
+    """Les fichiers qui NOMMENT l'artefact — hors tests, qui l'épinglent."""
+    out = []
+    for base, dossiers, fichiers in os.walk(_ROOT):
+        dossiers[:] = [d for d in dossiers if d not in (
+            ".git", "node_modules", "__pycache__", ".venv", "venv", "tests")]
+        for nom in fichiers:
+            if not nom.endswith((".html", ".js", ".py")):
+                continue
+            chemin = os.path.join(base, nom)
+            try:
+                texte = io.open(chemin, encoding="utf-8").read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if nom_css in texte:
+                out.append(os.path.relpath(chemin, _ROOT).replace(chr(92), "/"))
+    return sorted(out)
+
+
+def _bulle_frontend() -> str:
+    """La LISTE de l'éventail — et rien de la prose qui l'explique.
+
+    ⚠ Le piège `tr -d`, une QUATRIÈME fois, et attrapé une fois de plus par
+    la mutation plutôt que par la relecture. La bulle porte, après la liste,
+    un avertissement qui NOMME `client/templates/base.html` pour raconter
+    l'omission de 2026-09-13. Tant que l'épingle balayait la bulle entière,
+    retirer ce fichier de la LISTE la laissait verte : elle mesurait la leçon.
+
+    La règle générale, valable pour toute épingle de ce fichier : **une
+    épingle se borne à la chose qu'elle épingle, jamais au paragraphe qui
+    l'entoure.** La prose doit rester libre de citer ce qu'elle veut.
+    """
+    doc = _deployment_md()
+    i = doc.index("- **Frontend assets:**")
+    j = doc.index(chr(10) + "- **", i + 5)
+    bulle = doc[i:j]
+    coupe = bulle.find(chr(0x26A0))          # ⚠ — la prose commence ici
+    return bulle if coupe < 0 else bulle[:coupe]
+
+
+def _relatif_a_athena(chemin: str) -> str:
+    """Le chemin tel que le document doit le nommer : relatif à `athena/`."""
+    prefixe = "athena/"
+    return chemin[len(prefixe):] if chemin.startswith(prefixe) else chemin
+
+
+def _nomme_le_chemin(texte: str, chemin: str) -> bool:
+    """Le texte nomme-t-il CE chemin — et pas seulement un chemin qui le
+    contient ?
+
+    ⚠ La première version de cette épingle comparait des noms de fichier et
+    un « répertoire distinguant » calculé comme le parent immédiat. Pour
+    `templates/base.html` et `client/templates/base.html`, ce parent vaut
+    « templates » DANS LES DEUX CAS : l'épingle a donc passé sur la mutation
+    même qu'elle visait — retirer la base du portail de la liste — et n'a été
+    démasquée que par le test de mutation. Une épingle qui ne peut pas
+    échouer est une décoration.
+
+    La règle correcte est une FRONTIÈRE : « templates/base.html » apparaît
+    bien à l'intérieur de « client/templates/base.html », mais précédé d'une
+    barre oblique, donc cette occurrence-là ne nomme pas le fichier principal.
+    """
+    depuis = 0
+    while True:
+        i = texte.find(chemin, depuis)
+        if i < 0:
+            return False
+        avant = texte[i - 1] if i else ""
+        if avant != "/" and not (avant.isalnum() or avant == "_"):
+            return True
+        depuis = i + 1
+
+
+def test_the_css_fanout_list_names_EVERY_file_that_carries_the_hash():
+    """§15 en nommait QUATRE et il y en a cinq. L'omis était
+    `client/templates/base.html` — la base du PORTAIL.
+
+    Suivre la liste laissait donc le service PUBLIC, celui qu'un client voit,
+    pointer sur un nom de fichier supprimé, servi `Cache-Control: immutable`
+    un an durant : sans style, pour tout le monde, et sans une seule erreur
+    nulle part. Rien ne l'épinglait — seul `test_security_headers.py` portait
+    le littéral, et il vérifie les en-têtes, pas l'inventaire.
+    """
+    nom_css = _fichier_css_hache()
+    porteurs = _porteurs_du_hachage(nom_css)
+    assert len(porteurs) >= 4, porteurs
+    bulle = _bulle_frontend()
+
+    manquants = [c for c in porteurs
+                 if not _nomme_le_chemin(bulle, _relatif_a_athena(c))]
+
+    assert not manquants, (
+        "DEPLOYMENT.md §15 ne nomme pas " + repr(manquants) + " alors que ces "
+        "fichiers portent " + nom_css + " — un éventail incomplet sert un "
+        "artefact supprimé, en cache immutable, sans erreur."
+    )
+
+
+def test_section_5_arms_the_origin_secret_AFTER_the_edge_rule():
+    """L'ordre édicté par la doctrine, épinglé sur la LISTE et non la prose.
+
+    §5 avertissait dans son préambule que la Transform Rule doit précéder
+    `cf-origin-secret` — puis numérotait les secrets en 6 et Cloudflare en 12.
+    Le document se contredisait donc lui-même, et la version suivie est
+    toujours celle qui est numérotée. Créer la valeur d'abord arme
+    l'application contre un en-tête que personne n'envoie, et avec
+    `min_instances: 0` les instances se recyclent seules : le site répond 403
+    partout SANS déploiement à incriminer, page de connexion comprise.
+    """
+    doc = _deployment_md()
+    section = doc[doc.index("## 5."):doc.index("## 6.")]
+    # La LISTE seulement — le préambule nomme les deux dans l'ordre inverse
+    # pour expliquer le piège, ce qui est correct et ne doit pas être mesuré.
+    liste = section[section.index(chr(10) + "0. "):]
+
+    assert liste.count("cf-origin-secret") == 1, (
+        "la liste doit nommer `cf-origin-secret` UNE fois, à l'étape qui "
+        "l'arme — le nommer deux fois rend l'ordre illisible"
+    )
+    i_regle = liste.index("Transform Rule")
+    i_secret = liste.index("cf-origin-secret")
+    assert i_regle < i_secret, (
+        "DEPLOYMENT.md §5 arme le secret d'origine AVANT la Transform Rule — "
+        "c'est le piège que son propre préambule décrit"
+    )
+
+
 def test_the_deployment_doc_no_longer_teaches_the_three_defects():
     """Les trois défauts réels de l'ancienne §6.4, chacun épinglé par son
     absence : le mot de passe DAV en clair dans l'historique, `secrets create`

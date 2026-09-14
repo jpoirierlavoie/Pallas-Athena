@@ -362,9 +362,15 @@ can be re-run.
 **Four are order-sensitive**, and each fails in its own way: indexes before the
 first deploy (5), or a query silently returns an empty list while it builds;
 the firewall's `0.1.0.2/32` allow **before** the default-deny (12), or you cut
-off your own cron and queue; the Cloudflare Transform Rule **before**
-`cf-origin-secret` exists (12), or the site answers 403 everywhere with no
+off your own cron and queue; the Cloudflare Transform Rule (12) **before** the
+origin secret gets a VALUE (13), or the site answers 403 everywhere with no
 deploy to explain it; and the storage bucket before its rules (8).
+
+⚠ **That third one was wrong in this very list until 2026-09-13** — the
+preamble warned about the order while the numbered steps put the secrets at 6
+and Cloudflare at 12, which is the trap itself. It is split now, and the split
+is the honest shape: an empty *container* is inert, a *version* is what arms
+the check.
 
 0. **Authenticate** — `gcloud auth login`, `gcloud auth
    application-default login` (the ADC the scripts of §9 use), and
@@ -383,14 +389,27 @@ deploy to explain it; and the storage bucket before its rules (8).
 5. **Deploy indexes + rules — BEFORE the first code deploy** (§6.3). Until an
    index finishes building, the query it serves fails and the view silently
    shows an empty list.
-6. Create the 6 secrets + grant IAM (§6.4)
+6. Create the six empty secret containers + grant IAM, then write **five** of
+   the six VALUES (§6.4). The origin secret's value is deliberately NOT one of
+   them — it waits for 13. An empty container is harmless: `config._secret`
+   resolves an optional secret with no version to `""`, and
+   `_enforce_origin_secret` reads that as « disabled »
 7. Firebase Auth: create the single user + enroll Phone MFA (§6.5)
 8. Storage bucket **then its rules** (§6.6) — the bucket must exist first
 9. App Check + reCAPTCHA (§6.7)
 10. First deploy + smoke test (§8)
 11. Seed reference data (§9)
-12. Cloudflare edge (§7 — can be prepared in parallel, but DNS cutover comes here)
-13. Optional: DavX5 (§10), MCP (§11), Android TWA (§12)
+12. Cloudflare edge (§7) — DNS cutover, Full (Strict), the firewall, and the
+    zone-wide **Transform Rule** that injects `X-Origin-Auth`. Can be prepared
+    in parallel, but it lands here. **Prove the rule fires** with Cloudflare's
+    request tracer before going on; do not infer it
+13. **Arm the origin secret** — only NOW write `cf-origin-secret`'s first
+    version (§6.4). Earlier, you arm the application against a header nobody
+    sends, and with `min_instances: 0` the instances recycle by themselves —
+    so the site starts answering **403 on every path with no deploy to
+    blame**, including the login page you would use to investigate. The value
+    takes effect as instances recycle; redeploy if you want it immediate
+14. Optional: DavX5 (§10), MCP (§11), Android TWA (§12)
 
 ---
 
@@ -1117,6 +1136,10 @@ rejects direct access. Set up, in order:
    header `X-Origin-Auth: <cf-origin-secret value>` on every request, zone-wide.
    The app checks it (`security.py`) when `CF_ORIGIN_SECRET` is set. This is the
    second layer that defeats a spoofed-Host direct hit.
+   ⚠ **Do this while the secret is still an EMPTY container, and prove the rule
+   fires before giving it a value** — Cloudflare's request tracer
+   (`POST /accounts/{id}/request-tracer/trace`), never inference. The reverse
+   order 403s the entire zone with no deploy to explain it; see §5 step 13.
 5. **Rocket Loader:** leave it **off** — the original enabled it, then disabled
    it at the edge on 2026-07-11, and it is not returning. ⚠️ The end-of-`<body>`
    script order in `base.html` is still load-bearing: the App Check boot runs synchronously and htmx/Alpine
@@ -1340,9 +1363,18 @@ Notes:
   four delicate subsystems in [CLAUDE.md](CLAUDE.md) should be re-verified after
   any bump to `icalendar`/`vobject`, `google-*`, or the OpenTelemetry stack.
 - **Frontend assets:** if you change Tailwind classes, recompile
-  `static/src/app.input.css` → `static/vendor/app.<hash>.css` and fan the new
-  hash out to `base.html`, `auth/login.html`, `sw.js` PRECACHE, and the Early
-  Hints lists in `security.py` (full recipe in [CLAUDE.md](CLAUDE.md) → Tech Stack).
+  `static/src/app.input.css` → `static/vendor/app.<hash>.css`, then fan the new
+  hash out to **five** sites — `templates/base.html`,
+  `templates/auth/login.html`, **`client/templates/base.html`**,
+  `static/sw.js`'s PRECACHE (bumping `STATIC_CACHE` with it), and the Early
+  Hints lists in `security.py` — and delete the old hashed file. Full recipe in
+  [CLAUDE.md](CLAUDE.md) → Tech Stack.
+  ⚠ **This list named four until 2026-09-13, and the one it omitted was
+  `client/templates/base.html` — the PORTAL's own base.** Following it left the
+  public, client-facing service pointing at a deleted filename served
+  `Cache-Control: immutable` for a year: unstyled, for everyone, with no error
+  anywhere. A test now pins this list against the files that actually carry the
+  hash, so it cannot fall behind again.
 - **Effacement Loi 25 — le clavardage interne est parti (2026-09-02).** Ce
   runbook visait le registre des conversations d'assistant, append-only par
   convention précisément pour que l'effacement reste TECHNIQUEMENT possible
