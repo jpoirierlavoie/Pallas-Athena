@@ -1033,7 +1033,13 @@ RESOURCES: tuple[Resource, ...] = (
         phase=PHASE_PORTAIL,
         detect=("gcloud", "storage", "buckets", "describe", "gs://{bucket}",
                 "--project={project}",
-                "--format=value(location,uniform_bucket_level_access.enabled,"
+                # ⚠ `uniform_bucket_level_access` est un BOOLÉEN nu.
+                # Projeter `.enabled` — la forme qu'on écrit
+                # naturellement — rend une colonne VIDE, et un
+                # découpage naïf décale alors tout ce qui suit
+                # (mesuré le 2026-09-13 : « accès uniforme DÉSACTIVÉ »
+                # rapporté à tort sur un seau conforme).
+                "--format=value(location,uniform_bucket_level_access,"
                 "public_access_prevention)"),
         expect=(
             "la région App Engine, accès uniforme ACTIVÉ, accès public "
