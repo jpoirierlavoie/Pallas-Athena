@@ -145,9 +145,14 @@ def test_every_write_handler_funnels_through_run_write_under_its_own_name(name):
 @pytest.mark.parametrize("name", sorted(tools.WRITE_TOOLS))
 def test_every_write_handler_calls_run_write_at_runtime(name, monkeypatch):
     """The runtime half: whatever indirection the source uses, the call that
-    actually happens carries the tool's own name and the very args object —
-    and the handler leaves `execute` to run_write (a handler that ran its
-    own write before delegating would show up as `executed`)."""
+    actually happens carries the tool's own name and the very args object,
+    exactly once, with a callable `execute` left to run_write.
+
+    What this half does NOT prove is that nothing ran BEFORE the call: the
+    models behind the handlers are MagicMocks in this process, so a write
+    made ahead of run_write would succeed silently. The AST half above
+    (a single `return` statement, followed through every delegate) is what
+    closes that door."""
     seen = []
 
     def spy(tool, args, execute):
@@ -159,6 +164,95 @@ def test_every_write_handler_calls_run_write_at_runtime(name, monkeypatch):
     assert _handler(name)(args) == {"spied": True}
     assert seen == [(name, args, True)]
     assert seen[0][1] is args
+
+
+_DELEGATION_FIXTURE = '''
+def run_write(tool, args, execute):
+    return execute()
+
+
+def forwards(args):
+    return _funnel(args, "forwards")
+
+
+def forwards_by_keyword(args):
+    return _funnel(tool="forwards_by_keyword", a=args)
+
+
+def _funnel(a, tool):
+    return run_write(tool, a, lambda: None)
+
+
+def borrows_a_sibling_name(args):
+    return _sibling(args)
+
+
+def _sibling(a):
+    return run_write("someone_else", a, lambda: None)
+
+
+def drops_the_args(args):
+    return _funnel({}, "drops_the_args")
+
+
+def works_first(args):
+    args = dict(args)
+    return run_write("works_first", args, lambda: None)
+
+
+def cycles(args):
+    return _cycle_back(args)
+
+
+def _cycle_back(args):
+    return cycles(args)
+'''
+
+
+@pytest.fixture()
+def delegation_module(tmp_path, monkeypatch):
+    """A throw-away module standing in for mcp.handlers, so the delegation
+    branch of the walker — which no handler exercises today, all 22 being
+    the direct form — is proven to follow bindings rather than wave them
+    through."""
+    import importlib.util
+
+    path = tmp_path / "fake_handlers_for_guard.py"
+    path.write_text(_DELEGATION_FIXTURE, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("fake_handlers_for_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(sys.modules[__name__], "handlers", module)
+    return module
+
+
+def _walk(fn):
+    first_param = _function_def(fn).args.args[0].arg
+    return _run_write_call(fn, {first_param: ("args",)}, frozenset())
+
+
+def test_the_walker_follows_a_delegate_with_its_parameters_bound(delegation_module):
+    m = delegation_module
+    assert _walk(m.forwards) == (("const", "forwards"), ("args",))
+    assert _walk(m.forwards_by_keyword) == (("const", "forwards_by_keyword"), ("args",))
+
+
+def test_the_walker_reports_what_a_delegate_really_passes(delegation_module):
+    """A delegate keyed by another tool's name, or one that fingerprints a
+    literal instead of the handler's arguments, comes back as exactly that —
+    so the parametrized guard above refuses it instead of passing it."""
+    m = delegation_module
+    assert _walk(m.borrows_a_sibling_name) == (("const", "someone_else"), ("args",))
+    assert _walk(m.drops_the_args)[1] is None
+
+
+def test_the_walker_refuses_work_before_the_call_and_delegation_cycles(delegation_module):
+    m = delegation_module
+    with pytest.raises(AssertionError, match="single `return run_write"):
+        _walk(m.works_first)
+    with pytest.raises(AssertionError, match="cycle"):
+        _walk(m.cycles)
 
 
 def test_no_read_handler_calls_run_write():
@@ -329,9 +423,21 @@ def test_the_advertised_safety_hints_follow_the_registry():
 # persist a capability. Reads may return content (get_note, get_document_text)
 # — that is their job — but no output may ever carry a URL or a storage path.
 _NO_URL_NAMES = {"signed_url", "upload_url", "download_url", "storage_path"}
-_WRITE_FORBIDDEN_NAMES = _NO_URL_NAMES | {
-    "content", "text", "body", "contenu", "previous_value",
-}
+_CONTENT_NAMES = {"content", "text", "body", "contenu", "previous_value"}
+_WRITE_FORBIDDEN_NAMES = _NO_URL_NAMES | _CONTENT_NAMES
+
+
+def _is_capability_name(key: str) -> bool:
+    """A signed URL or a storage path, by NAME — the four the design lists,
+    plus anything URL-shaped (`url`, `*_url`): a `preview_url` or a
+    `file_url` added later is the same capability under a name nobody
+    thought to list. (`conference_uri` — a hearing's video link, which the
+    lawyer typed — is a URI, not a URL-to-our-storage, and stays legal.)"""
+    return key in _NO_URL_NAMES or key == "url" or key.endswith("_url")
+
+
+def _is_write_forbidden_name(key: str) -> bool:
+    return key in _CONTENT_NAMES or _is_capability_name(key)
 
 # {tool: {property: reason}}. Empty today. The Lot 2 upload ticket (the one
 # documented exception to « no signed URL in output ») must be added HERE, by
@@ -367,13 +473,16 @@ def _property_names(schema) -> list[tuple[str, str]]:
     return out
 
 
-def _violations(names: set, tool_filter) -> dict:
+def _violations(is_forbidden, tool_filter) -> dict:
     found = {}
     for tool in sorted(OUTPUT_SCHEMAS):
         if not tool_filter(tool):
             continue
         allowed = _OUTPUT_NAME_EXEMPTIONS.get(tool, {})
-        hits = [p for p, key in _property_names(OUTPUT_SCHEMAS[tool]) if key in names and key not in allowed]
+        hits = [
+            p for p, key in _property_names(OUTPUT_SCHEMAS[tool])
+            if is_forbidden(key) and key not in allowed
+        ]
         if hits:
             found[tool] = hits
     return found
@@ -389,12 +498,20 @@ def test_the_property_walker_sees_nested_and_branched_properties():
     assert {k for _p, k in _property_names(schema)} == {"a", "signed_url", "b", "content"}
 
 
+def test_the_forbidden_name_rules_bite():
+    for key in _WRITE_FORBIDDEN_NAMES | {"url", "preview_url", "file_url"}:
+        assert _is_write_forbidden_name(key), key
+    for key in ("conference_uri", "folder_path", "hourly_rate", "urls_count"):
+        assert not _is_capability_name(key), key
+    assert not _is_write_forbidden_name("description")
+
+
 def test_no_write_output_declares_content_or_a_capability():
-    assert _violations(_WRITE_FORBIDDEN_NAMES, lambda t: t in tools.WRITE_TOOLS) == {}
+    assert _violations(_is_write_forbidden_name, lambda t: t in tools.WRITE_TOOLS) == {}
 
 
 def test_no_output_at_all_declares_a_url_or_a_storage_path():
-    assert _violations(_NO_URL_NAMES, lambda t: True) == {}
+    assert _violations(_is_capability_name, lambda t: True) == {}
 
 
 def test_output_exemptions_are_not_stale():
