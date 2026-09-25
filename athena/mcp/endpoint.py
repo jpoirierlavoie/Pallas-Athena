@@ -6,7 +6,6 @@ server-initiated messages). Notifications are acknowledged with an empty
 202. ``GET``/``DELETE`` fall through to Flask's automatic 405.
 """
 
-import re
 import time
 from typing import Any, Optional
 
@@ -25,7 +24,7 @@ from mcp.bearer import (
     mcp_auth_required,
     revalidate_for_write,
 )
-from mcp.tools import ToolArgumentError
+from mcp.tools import CommittedWriteError, ToolArgumentError
 from security import limiter
 from utils.logging_setup import log_mcp_event, log_unexpected, sanitize_log_value
 from utils.tracing_setup import span
@@ -243,27 +242,13 @@ def _initialize(params: dict) -> dict:
     }
 
 
-# The shape of a server-minted document id (Architecture Rule 6: UUIDv4).
-# Fixed-count character classes only — linear, nothing to backtrack over.
-_ID_SHAPE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-    re.IGNORECASE,
-)
-
-
-def _loggable_id(value: Any) -> Optional[str]:
-    """*value* when it is shaped like an id, else None.
-
-    A REFUSED call's `dossier_id` is still the caller's string: the schema
-    bounds it to 64 characters and nothing more, and the commonest handler
-    refusal is precisely « dossier introuvable ». A title or a party name
-    pasted into the argument must not reach the refusal log, where the
-    RedactionFilter does not scrub names. `fullmatch`, never `match` + `$`:
-    `$` also matches before a trailing newline.
-    """
-    if isinstance(value, str) and _ID_SHAPE.fullmatch(value):
-        return value
-    return None
+# A REFUSED call's `dossier_id` is still the caller's string: the schema
+# bounds it to 64 characters and nothing more, and the commonest handler
+# refusal is precisely « dossier introuvable ». A title or a party name
+# pasted into the argument must not reach the refusal log, where the
+# RedactionFilter does not scrub names. The shape check lives in mcp.tools
+# since the write protocol needs the same one for its stored records.
+_loggable_id = tools.loggable_id
 
 
 def _log_write_refused(name: str, reason: str, **fields: Any) -> None:
@@ -337,6 +322,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
     started = time.perf_counter()
     argument_error: Optional[str] = None
     argument_reason = tools.DEFAULT_REFUSAL_REASON
+    committed_error: Optional[CommittedWriteError] = None
     try:
         with span(f"mcp.tool.{name}", **span_attrs):
             # ToolArgumentError is caught INSIDE the span. `span()` calls
@@ -352,6 +338,18 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
                 argument_error = str(exc)
                 argument_reason = exc.reason
                 payload = None
+            except CommittedWriteError as exc:
+                # A write that COMMITTED, then failed. Caught here and not
+                # by the blanket `except` below, which would answer
+                # « internal error » — a retryable failure, so the caller
+                # would retry and write twice. Inside the span for the same
+                # reason as above: its own fields are ids, but its
+                # `__cause__` is the original exception, whose text may
+                # describe content — and record_exception would export the
+                # chain. run_write has already logged the traceback
+                # (`unexpected`) and recorded the entry `partial`.
+                committed_error = exc
+                payload = None
     except Exception:
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
         log_unexpected("mcp tool execution failed", tool=name)
@@ -366,6 +364,35 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         return tools.error_result(
             "Tool execution failed due to an internal error."
         )
+
+    if committed_error is not None:
+        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        # Ids, a collection name and counts only — never content. No
+        # `mcp_write` success line: the call did not succeed, and the audit
+        # line that says « written » would mislead a reader counting writes.
+        partial_fields = {
+            "entity_id": _loggable_id(committed_error.entity_id),
+            "dossier_id": _loggable_id(committed_error.dossier_id),
+            "collection": committed_error.collection or None,
+        }
+        log_mcp_event(
+            "mcp_write_partial",
+            "failure",
+            tool=name,
+            rows=committed_error.rows,
+            idempotent_replay=committed_error.replay,
+            **{k: v for k, v in partial_fields.items() if v is not None},
+        )
+        log_mcp_event(
+            "mcp_tool_call",
+            "failure",
+            tool=name,
+            duration_ms=duration_ms,
+            **({"dossier_id": dossier_id} if span_attrs else {}),
+        )
+        # A tool RESULT with isError — not a -32602, which promises that
+        # nothing was written. The message says the opposite, loudly.
+        return tools.error_result(str(committed_error))
 
     if argument_error is not None:
         # The refusal is LOGGED by its reason code — the text below reaches
