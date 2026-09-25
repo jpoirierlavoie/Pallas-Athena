@@ -27,8 +27,10 @@ Sémantique juridique fixée par le plan :
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -45,6 +47,22 @@ UTC = timezone.utc
 
 def _d(y, m, day):
     return datetime(y, m, day, tzinfo=UTC)
+
+
+# Every derivation below judges lateness against TODAY (deadlines.is_past_due
+# reads today_mtl()), while the fixture dates are absolute. Unfrozen, the
+# file held two time-bombs: the default prescription_date (2026-09-21)
+# stopped being « future » on 2026-09-22 and broke the deploy gate, and the
+# 2026-11-23 reconnaissance case would have gone off two months later. The
+# Montréal day is frozen at the file's authoring date instead — the remedy
+# CLAUDE.md prescribes (« freeze the day, keep a fixed deadline; never widen
+# the offset »).
+_FROZEN_TODAY = date(2026, 7, 30)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_today(monkeypatch):
+    monkeypatch.setattr(dmod.deadlines, "today_mtl", lambda: _FROZEN_TODAY)
 
 
 def _doc(**over):
