@@ -590,18 +590,11 @@ McpEvent = Literal[
     # avec `entity_id: None` — honnête, un lot n'a pas d'entité unique —,
     # d'où cette ligne de COMPTES à côté. Jamais de liste d'identifiants.
     "mcp_phase_bulk",
-    # The idempotency store (mcp_idempotency) could not be read or written.
-    # Under the `optional` policy the write went ahead regardless (the store
-    # fails OPEN); under `required` the call was refused (fails CLOSED). `op`
-    # says which operation, `error_type` the exception's class — never its
-    # text, which can carry the stored result. Replaced two raw
-    # `logger.warning`.
+    # The idempotency store (mcp_idempotency) could not be read or written;
+    # the write went ahead regardless (the store fails OPEN). `op` says
+    # which operation, `error_type` the exception's class — never its text,
+    # which can carry the stored result. Replaced two raw `logger.warning`.
     "mcp_idempotency_store_failure",
-    # A write COMMITTED, then a later step of the same call failed; the
-    # client was told « ENREGISTRÉE — NE PAS RÉESSAYER ». WARNING (this
-    # helper cannot emit ERROR) — the ERROR with the traceback is the
-    # `unexpected` line run_write logs beside it. Ids and counts only.
-    "mcp_write_partial",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 SettingsEvent = Literal[
