@@ -88,7 +88,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 4. **Currency in integer cents.** `15000` means $150.00. Never use floats for money. Use `Decimal` only for tax computation intermediates, convert to int cents (with `ROUND_HALF_UP`) before storage.
 5. **Timestamps UTC.** Stored as UTC `datetime` with timezone info. Displayed in `America/Montreal` via the `to_mtl` Jinja filter (registered from `tz.py`).
 6. **UUIDv4 document IDs.** Generated server-side. Never reuse IDs. **Documented exceptions:** the OAuth collections use the lookup key as the doc ID — `oauth_clients/{client_id}`, `oauth_codes/{sha256(code)}`, `oauth_tokens/{sha256(token)}` — so raw credentials are never stored and validation is one keyed `get()`; `mcp_idempotency/{sha256(tool:key)}` follows the same keyed-`get()` pattern (the raw idempotency key is never stored); **`settings/cabinet`** is the singleton whose lookup key IS its id — which is what lets assembly be one keyed `get()` that exists or does not, and creation be IMPLICIT inside `update_cabinet` (there is no `create_cabinet`), the pattern the retired `chat_charter/charte` left on record. (The pattern came from `chat_charter/charte`, which left with the internal chat on 2026-09-02 under a note to remember it for the next singleton; `settings/cabinet` is that singleton.)
-7. **Every Firestore doc has `created_at`, `updated_at`, `etag`** (etag = UUIDv4 regenerated on every write, used for DAV `If-Match` conditional requests and — since 2026-09-25 — for optimistic concurrency: an edit given `expected_etag` commits only against that version, compared inside a Firestore transaction by `models/concurrency.py`). Folders, the three OAuth collections, `audit_events` and `mcp_idempotency` are exceptions: no `etag` (`audit_events` is write-once — never updated after creation; an `mcp_idempotency` entry is CLAIMED `pending` by a `create()`, then finalized ONCE — `committed` or `partial` — and never updated again).
+7. **Every Firestore doc has `created_at`, `updated_at`, `etag`** (etag = UUIDv4 regenerated on every write, used for DAV `If-Match` conditional requests and — since 2026-09-25 — for optimistic concurrency: an edit given `expected_etag` commits only against that version, compared inside a Firestore transaction by `models/concurrency.py`). Folders, the three OAuth collections, `audit_events`, `mcp_idempotency` and the `revisions` subcollections are exceptions: no `etag` (`audit_events` and a revision are write-once — never updated after creation; an `mcp_idempotency` entry is CLAIMED `pending` by a `create()`, then finalized ONCE — `committed` or `partial` — and never updated again).
 8. **HTMX first.** Dynamic interactions use HTMX. Flask endpoints check `request.headers.get("HX-Request")`/`HX-Target` and return HTML fragments for HTMX requests, full pages otherwise.
 9. **Mobile-first.** Design for 375px viewport first. Breakpoints at 768px (tablet) and 1024px+ (desktop). Touch targets minimum 44px.
 10. **Minimalist visual language.** Near-white `#FAFAFA` backgrounds, near-black `gray-900` text, `indigo-600` accent. Generous white-space. **Typography (August 2026, revised 2026-08-07): Noto Sans for the ENTIRE UI; Noto Serif ONLY for document-reading surfaces** — the rendered note content (`.note-content` — note detail + the Analyse tab) and the reportlab PDF exports. The boundary is pure CSS in `static/src/app.input.css`: `body { font-family: var(--font-sans) }` + a single `.note-content { font-family: var(--font-serif) }` rule — no per-template font classes (an earlier serif-body design needed ~70 `font-sans` chrome edits; all removed when the boundary inverted). `font-sans`/`font-serif` via the `@theme` block remain the per-element escape hatch (first use needs a recompile). The fonts are vendored (SIL OFL — no CDN): variable woff2 ×4 in `static/vendor/` (Noto Sans v42 + Noto Serif v33, roman + italic, latin subset) for the web, static Noto Serif TTF ×2 in `utils/fonts/` for reportlab (provenance + sha256 in `utils/fonts/README.md`). The `.woff2` MIME type needs the dedicated `static_files` handler ABOVE `/static/vendor` in BOTH yaml files (nosniff would reject the default octet-stream). Early Hints/portal preload the SANS roman only (serif loads on demand on note pages). Emails keep their client-safe stacks (webfonts don't load in mail clients); generated `.docx` take their fonts from the user's own gabarit templates (the fill engine never writes `rFonts`). **Icons (August 2026): Material Symbols Outlined as a vendored subsetted variable icon font** (ligatures — `material-symbols-outlined-v371-*.woff2`, ~26 KB, 45 glyphs, Apache-2.0 licence file beside it) rendered ONLY through the `ms()` Jinja global (`utils/icons.py` — validates each name against the canonical `MATERIAL_ICONS` set, emits `aria-hidden`/`translate="no"`, sizes via the hand-written `.ms-N` classes in `app.input.css`); `tests/test_icons.py` pins template usage == the vendored subset both ways and forbids stray inline SVG (only the SVG/CSS spinners remain — animated arcs, kept on purpose). ⚠ **Those tests compare templates against the PYTHON SET and never read the font's glyph table** (their own docstring says so, and the woff2 is deliberately a superset). So adding a name to `MATERIAL_ICONS` and using it while SKIPPING the regeneration leaves the whole suite green and renders the literal word (`settings`) in the sidebar — hidden 3 s by `font-display: block`, then permanent. The regeneration must be verified **in a browser**; `DEPLOYMENT.md` §6.5.2 M19 is that step. ⚠ **A SECOND, cheaper signal exists and it is binary: the woff2's SIZE.** The css2 API does not fail on a name it does not recognise — it abandons subsetting and serves the WHOLE font. Measured 2026-09-11: four valid names return **2 548 bytes**, four bogus ones **2 351 956**. So a typo in `icon_names=` does not yield a missing glyph, it yields a 2,3 MB asset served `immutable` for a year — and the glyph still renders (the full font has them all), so nothing would ever flag it. Conversely a subset that comes back at tens of kilobytes proves EVERY name was recognised, which is what makes the size worth checking on every regeneration. Adding an icon = add the name to `MATERIAL_ICONS`, regenerate the subset (css2 `icon_names=` URL in `utils/fonts/README.md`), NEW hashed filename + full asset fan-out. Never use icon-font ligatures in emails.
@@ -223,6 +223,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # commit_fields re-read IN a transaction and write only
 │   │   │                           # if the etag is still the expected one; None = the
 │   │   │                           # plain legacy set()/update(), byte for byte
+│   │   ├── revision.py             # Lot 0a (no caller yet — Lot 1's D8 primitive):
+│   │   │                           # write-once snapshots of REPLACED prose under
+│   │   │                           # {parent}/{id}/revisions/; build_revision RETURNS a
+│   │   │                           # pair for the caller's transaction and writes nothing
 │   │   ├── audit_event.py          # Append-only deletion journal (July 2026): record_deletion
 │   │   │                           # (best-effort, AFTER the committed delete) + list_recent
 │   │   ├── portail_invitation.py   # Invitations (NAMED database « portail », lazy client, single
@@ -512,6 +516,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_mcp_write_support.py     # run_write: idempotency replay/conflict, fail-open
 │   │   ├── test_concurrency.py           # models/concurrency on the shared fake: legacy path
 │   │   │                                 # unchanged, stale/vanished/raced writes nothing
+│   │   ├── test_revision.py              # models/revision on the shared fake: Rule-7 shape,
+│   │   │                                 # atomic with the replacement (stale → no revision),
+│   │   │                                 # no write verb, nothing else reaches the subcollection
 │   │   ├── test_concurrency_models.py    # the ten expected_etag mutators + the six MCP edit
 │   │   │                                 # tools end to end, cases DERIVED from signatures/registry
 │   │   ├── test_edit_conflict_web.py     # the 8 web edit forms over the real routes + shared
@@ -1320,6 +1327,44 @@ constater qu'un niveau de protection a baissé. Chaque entrée porte le champ
 `models/document.list_analyses` (fenêtre 20, fail-open — un affichage
 d'historique, jamais une garde). **Aucun index composite** (`set()` sur un id
 connu), **aucun bump de CTag** (`documents` n'est pas exposée en DAV).
+
+### `{parent}/{parentId}/revisions/{revisionId}` — Replaced prose (lot 0a, 2026-09-25)
+
+**Write-once** snapshots of a prose value just before a write REPLACES it
+(plan rule 4, D8). `models/revision.py` — **no caller yet**: Lot 1's note
+and théorie-de-la-cause edits are its first. The generalisation of the
+analyses journal above, with one structural difference: `build_revision`
+**writes nothing** — it returns a `(reference, data)` pair the caller stages
+in ITS transaction (`models.concurrency.commit_document(extra_sets=[…])`), so
+a revision can never record a replacement that was refused.
+
+```python
+{
+    "id": UUIDv4,                 # Rule 6 holds
+    "parent_collection": "notes", # VALID_PARENT_COLLECTIONS — closed; a lot
+                                  # adds its collection with its first caller
+    "parent_id": str,
+    "field": "content" | "content:rewrite" | "bloc:entete" | "bloc:A".."bloc:H",
+    "previous_value": str,        # ≤ MAX_SNAPSHOT_CHARS (250 000 — 1 MiB at
+                                  # 4 bytes/char), refused above, never cut
+    "previous_length": int,
+    "previous_etag": str,         # the version replaced ('' = pre-Rule-7)
+    "new_etag": str,              # the version the replacement stamps
+    "via": str, "tool": str,      # models.provenance at build time
+    "created_at": datetime,       # Rule-7 exception: NO updated_at, NO etag
+}
+```
+
+`list_revisions` (newest first, **projects `previous_value` away** unless
+asked, fail-open) orders on `created_at` alone — the subcollection's
+automatic index, **no composite index**. `get_revision` RAISES on a read
+failure: a restore works from the truth. No verb updates or deletes a
+revision, and `tests/test_revision.py` refuses any OTHER module that
+addresses the subcollection by name — ⚠ because Firestore does not cascade,
+a note deleted in the app would leave its revisions (the full privileged
+prior text) behind, and whether to purge them with the note is **Lot 1's
+decision**, to be recorded here. Deny-all `firestore.rules` already covers
+subcollections (`{document=**}`).
 
 ### `dav_sync/{collectionName}` — DAV sync state
 
