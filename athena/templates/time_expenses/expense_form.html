@@ -31,6 +31,9 @@
   </div>
   {% endif %}
 
+  {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {# ── Errors ────────────────────────────────────────────────── #}
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -47,6 +50,7 @@
         action="{{ url_for('time_expenses.expense_update', expense_id=expense.id) if expense and expense.id else url_for('time_expenses.expense_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(expense) }}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
 
     {# Dossier selector #}

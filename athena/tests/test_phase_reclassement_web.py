@@ -93,7 +93,11 @@ def _render(item: dict, kind: str, **over) -> str:
 # ── 1. Le formulaire n'écrit QUE la phase ────────────────────────────────
 
 
-_ALLOWED_NAMES = {"csrf_token", "return_to", "phase", "sous_phase"}
+# `expected_etag` joined deliberately on 2026-09-25 (web conflict checks,
+# plan rule 11): it names the VERSION the page was rendered from, and the
+# route hands it to the model as a guard — it writes no field of the row.
+_ALLOWED_NAMES = {"csrf_token", "return_to", "phase", "sous_phase",
+                  "expected_etag"}
 
 
 @pytest.mark.parametrize(

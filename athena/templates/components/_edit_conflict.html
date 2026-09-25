@@ -1,0 +1,58 @@
+{# ── Concurrence optimiste des formulaires d'édition (plan, règle 11) ──
+   Deux macros, importées DANS le bloc `content` de chaque formulaire
+   (jamais au niveau racine : un test qui ne rend que ce bloc ne verrait
+   pas un import de niveau racine) :
+
+   etag_field(record) — le champ caché `expected_etag`, porté par un
+     formulaire d'ÉDITION seulement (un enregistrement qui a un `id`). Sa
+     valeur est l'etag de la version que la page affiche ; `''` pour un
+     enregistrement hérité qui n'en a jamais eu. Une route qui re-rend un
+     formulaire soumis SANS ce champ (une page ouverte avant son arrivée)
+     pose `etag = None` : le champ n'est alors pas rendu, et la sauvegarde
+     suivante reste sans contrôle, comme avant — jamais on ne bénit une vue
+     dont on ignore la version en lui donnant l'etag actuel.
+
+   conflict_banner(conflict) — le bandeau ambre d'une sauvegarde refusée
+     parce que l'élément a changé entre-temps. Tout y est PRÉCALCULÉ par
+     `routes/edit_conflict.conflict_context` : aucun filtre, aucune date
+     traitée ici (la règle maison, et la condition pour que ce fichier se
+     compile dans l'environnement Jinja nu de certains tests). Il nomme
+     QUAND, jamais QUI : un script de maintenance régénère un etag sans
+     tamponner `updated_via`, l'auteur enregistré peut donc être le
+     précédent.
+
+   Classes : uniquement des chaînes déjà présentes dans l'artefact compilé
+   (`hover:text-amber-*` n'y est PAS) — tests/test_edit_conflict_web.py le
+   vérifie contre static/vendor/app.*.css. #}
+
+{% macro etag_field(record) -%}
+{%- if record and record.id and record.etag is not none -%}
+<input type="hidden" name="expected_etag" value="{{ record.etag or '' }}">
+{%- endif -%}
+{%- endmacro %}
+
+{% macro conflict_banner(conflict) -%}
+{%- if conflict -%}
+<div role="alert" class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+  <p class="font-semibold">Cet élément a été modifié entre-temps.</p>
+  <p class="mt-1">
+    {%- if conflict.updated_at_display %}
+    Sa dernière modification date du {{ conflict.updated_at_display }}.
+    {%- endif %}
+    {{ conflict.outcome }}
+  </p>
+  {%- if conflict.note %}
+  <p class="mt-1">{{ conflict.note }}</p>
+  {%- endif %}
+  <p class="mt-1">
+    {%- if conflict.compare_url %}
+    <a href="{{ conflict.compare_url }}" target="_blank" rel="noopener" class="font-medium underline">Voir la version actuelle</a>
+    (nouvel onglet), puis enregistrez de nouveau :
+    {%- else %}
+    Enregistrez de nouveau :
+    {%- endif %}
+    les valeurs de ce formulaire remplaceront alors celles de la version actuelle.
+  </p>
+</div>
+{%- endif -%}
+{%- endmacro %}

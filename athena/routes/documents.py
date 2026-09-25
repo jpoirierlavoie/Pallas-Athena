@@ -46,6 +46,8 @@ from models.document import (
     update_analyse,
     ANALYSE_EDITABLE,
 )
+from models import concurrency
+from routes import edit_conflict
 from routes._helpers import is_htmx
 
 logger = logging.getLogger(__name__)
@@ -522,13 +524,65 @@ def document_edit(document_id: str) -> str:
     )
 
 
+def _analyse_for_display(champs: dict) -> dict:
+    """The submitted analysis, in the SHAPE the form renders from.
+
+    ``_analyse_from_form`` hands the model what the model parses — the four
+    list fields as comma-separated strings, the level as a string. The form
+    renders from the stored shape (lists joined, the level compared with an
+    int), so a re-render fed the raw submission would print « A, ,, B » and
+    lose the selected level. A refused save must show what was typed.
+    """
+    from models.document import _ANALYSE_LISTES
+
+    shown = dict(champs)
+    for cle in _ANALYSE_LISTES:
+        brut = shown.get(cle)
+        if isinstance(brut, str):
+            shown[cle] = [x.strip() for x in brut.split(",") if x.strip()]
+    niveau = str(shown.get("niveau_protection") or "").strip()
+    shown["niveau_protection"] = int(niveau) if niveau.isdigit() else None
+    return shown
+
+
+def _metadata_for_display(data: dict) -> dict:
+    """The submitted metadata, in the shape the form renders from — the
+    date input submits a string, and the form calls ``strftime`` on it."""
+    from models.document import _coerce_document_date
+
+    return {**data,
+            "document_date": _coerce_document_date(data.get("document_date"))}
+
+
+# The banner's outcome when the metadata write committed and only the
+# analysis — the SECOND of the form's two writes — was refused.
+_ANALYSE_NOT_SAVED = (
+    "Les renseignements de base ont été enregistrés, mais pas l'analyse : "
+    "vos valeurs d'analyse sont conservées ci-dessous."
+)
+
+
 @documents_bp.route("/<document_id>/edit", methods=["POST"])
 @login_required
 def document_update(document_id: str) -> str:
-    """Handle metadata edit form submission."""
+    """Handle metadata edit form submission.
+
+    Two model writes, ONE etag. The form was rendered from one version of
+    the document and carries its etag once. ``update_metadata`` commits
+    against that etag; ``update_analyse`` then commits against the etag the
+    metadata write just produced — never against the form's, which the
+    first write has replaced (the second write would refuse every save),
+    and never against nothing (a write landing between the two — the
+    connector's ``record_document_analysis`` — would be overwritten under
+    the lawyer's name, through the one path that can LOWER a protection
+    level). A stale form is therefore refused before anything is written;
+    the rare race between the two writes is refused at the second, and the
+    banner says the first was saved.
+    """
     f = request.form
     tags_raw = f.get("tags", "").strip()
     return_to = f.get("return_to", "")
+    expected = edit_conflict.submitted_etag()
 
     data = {
         "display_name": f.get("display_name", "").strip(),
@@ -540,29 +594,66 @@ def document_update(document_id: str) -> str:
         # Always carried by this form — an emptied input clears the date.
         "document_date": f.get("document_date", "").strip(),
     }
-
-    doc, errors = update_metadata(document_id, data)
-
     # L'analyse, si le formulaire la porte. Le drapeau `analyse_presente`
     # distingue « le juriste n'a pas ouvert la section » de « il l'a vidée » :
     # sans lui, tout enregistrement des seules métadonnées de base
     # effacerait l'analyse entière, puisque le contrat de `update_analyse`
     # est qu'une clé présente et vide efface.
-    if not errors and f.get("analyse_presente") == "1":
-        champs = _analyse_from_form(f)
+    champs = (
+        _analyse_from_form(f) if f.get("analyse_presente") == "1" else None
+    )
+
+    saved, errors = update_metadata(
+        document_id, data, expected_etag=expected
+    )
+    # The etag the form stands for from here on: the one the metadata
+    # write produced, once it committed (None stays None — a page that
+    # carried no etag keeps the legacy, unchecked path on both writes).
+    form_etag = (
+        concurrency.etag_of(saved)
+        if saved is not None and expected is not None else expected
+    )
+
+    # A document never analysed, whose section came back empty, has no
+    # analysis to correct: `update_analyse` would refuse the empty
+    # sub-nature (« Sous-nature inconnue : . ») AFTER the metadata was
+    # saved, on every ordinary edit of an unanalysed document.
+    if saved is not None and champs is not None and (
+        (saved.get("analyse") or {}).get("sous_nature") or any(champs.values())
+    ):
         _, erreurs_analyse = update_analyse(
-            document_id, champs, par=session.get("user_email", "")
+            document_id, champs, par=session.get("user_email", ""),
+            expected_etag=form_etag,
         )
         errors = erreurs_analyse or []
 
     if errors:
+        errors, conflict, etag = edit_conflict.resolve_refusal(
+            errors,
+            submitted=form_etag,
+            reread=lambda: get_document(document_id),
+            compare_url=url_for(
+                "documents.document_detail", document_id=document_id
+            ),
+            outcome=(
+                _ANALYSE_NOT_SAVED if saved is not None
+                else edit_conflict.NOTHING_SAVED
+            ),
+        )
         existing = get_document(document_id) or {}
-        existing.update(data)
+        existing.update(_metadata_for_display(data))
+        if champs is not None:
+            existing["analyse"] = {
+                **(existing.get("analyse") or {}),
+                **_analyse_for_display(champs),
+            }
+        existing["etag"] = etag
         return render_template(
             "documents/edit.html",
             document=existing,
             category_labels=CATEGORY_LABELS,
             errors=errors,
+            conflict=conflict,
             return_to=return_to,
             **_analyse_form_context(),
         )

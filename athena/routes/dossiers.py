@@ -100,6 +100,7 @@ from models.reference import list_forums
 from utils import taxonomie
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.template_fields import format_honoraires_parts, retention_date
+from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input
 from utils.format_fr import parse_cents_or_none
 
@@ -871,6 +872,18 @@ def _sync_dossier_dav_visibility(
     bump_ctag(sync_name)
 
 
+# Every trust entry, clearing and reversal rewrites the dossier document
+# (its three trust balances) and so regenerates its etag: an edit tab opened
+# before a trust movement is refused although none of its fields collided.
+# The refusal is safe — nothing is written — and the banner says why, so the
+# lawyer does not hunt for a change that is not on the form (plan, Lot 0:
+# the dossier-etag decision is Lot 5's).
+_TRUST_WRITES_COUNT = (
+    "Une écriture au fidéicommis du dossier compte aussi comme une "
+    "modification, même si aucun champ de ce formulaire n'a changé."
+)
+
+
 @dossiers_bp.route("/<dossier_id>", methods=["POST"])
 @login_required
 def dossier_update(dossier_id: str) -> str:
@@ -878,15 +891,26 @@ def dossier_update(dossier_id: str) -> str:
     existing = get_dossier(dossier_id)
     old_status = existing.get("status", "") if existing else ""
 
+    expected = edit_conflict.submitted_etag()
     data = _form_data()
-    dossier, errors = update_dossier(dossier_id, data)
+    dossier, errors = update_dossier(dossier_id, data, expected_etag=expected)
 
     if errors:
+        errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_dossier(dossier_id),
+            compare_url=url_for(
+                "dossiers.dossier_detail", dossier_id=dossier_id
+            ),
+            note=_TRUST_WRITES_COUNT,
+        )
         data["id"] = dossier_id
         ctx = _template_context()
         ctx.update(
             dossier=data,
             errors=errors,
+            conflict=conflict,
             suggested_file_number=data.get("file_number", ""),
         )
         return render_template("dossiers/form.html", **ctx)

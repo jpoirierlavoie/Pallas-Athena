@@ -20,6 +20,9 @@
     {{ 'Modifier la tâche' if task and task.id else 'Nouvelle tâche' }}
   </h1>
 
+  {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {# ── Errors ────────────────────────────────────────────────── #}
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -36,6 +39,7 @@
         action="{{ url_for('tasks.task_update', task_id=task.id) if task and task.id else url_for('tasks.task_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(task) }}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
     <input type="hidden" name="related_note_id" value="{{ task.related_note_id if task and task.related_note_id else '' }}">
 

@@ -20,6 +20,9 @@
     {{ 'Modifier la note' if note and note.id else 'Nouvelle note' }}
   </h1>
 
+  {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {# ── Errors ────────────────────────────────────────────────── #}
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -36,6 +39,7 @@
         action="{{ url_for('notes.note_update', note_id=note.id) if note and note.id else url_for('notes.note_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(note) }}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
 
     {# Title #}

@@ -46,6 +46,7 @@ from models.dossier import (
     DOMAINE_LABELS as DOSSIER_DOMAINE_LABELS,
     list_dossiers_for_partie,
 )
+from routes import edit_conflict
 from routes._helpers import is_htmx
 
 parties_bp = Blueprint(
@@ -433,15 +434,23 @@ def partie_edit(partie_id: str) -> str:
 @login_required
 def partie_update(partie_id: str) -> str:
     """Handle edit form submission."""
+    expected = edit_conflict.submitted_etag()
     data = _form_data()
-    partie, errors = update_partie(partie_id, data)
+    partie, errors = update_partie(partie_id, data, expected_etag=expected)
 
     if errors:
+        errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_partie(partie_id),
+            compare_url=url_for("parties.partie_detail", partie_id=partie_id),
+        )
         data["id"] = partie_id
         return render_template(
             "parties/form.html",
             partie=data,
             errors=errors,
+            conflict=conflict,
             role_labels=ROLE_LABELS,
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,

@@ -37,6 +37,9 @@
   </div>
   {% endif %}
 
+  {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
     <ul class="text-sm text-red-700 space-y-1">
@@ -90,6 +93,7 @@
         action="{{ url_for('time_expenses.time_entry_phase_update', entry_id=item.id) if is_time else url_for('time_expenses.expense_phase_update', expense_id=item.id) }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(item) }}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
 
     {# The cascading picker, shared with every other phased form.

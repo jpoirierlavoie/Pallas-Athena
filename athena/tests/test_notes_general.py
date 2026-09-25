@@ -167,15 +167,23 @@ def test_note_move_tombstones_the_old_collection(
         notes_routes, "get_dossier",
         lambda i: {"id": i, "file_number": "2026-002", "title": "B"},
     )
+    # Widened on purpose (2026-09-25, web conflict checks): the route now
+    # hands the form's etag to the model. This POST carries no
+    # `expected_etag` field — a page rendered before it existed — so the
+    # model must receive None, its legacy, unchecked path.
+    passed = []
     monkeypatch.setattr(
         notes_routes, "update_note",
-        lambda nid, data: ({"id": nid, **data}, []),
+        lambda nid, data, *, expected_etag=None: (
+            passed.append(expected_etag) or ({"id": nid, **data}, [])
+        ),
     )
     resp = client.post("/notes/n1", data={
         "title": "T", "content": "C", "category": "recherche",
         "dossier_id": "d2",
     })
     assert resp.status_code in (302, 303)
+    assert passed == [None]
     assert tombstones["record"] == [("dossier:d1", "n1")]
     assert tombstones["remove"] == [("dossier:d2", "n1")]
     assert bumps == ["dossier:d1", "dossier:d2"]

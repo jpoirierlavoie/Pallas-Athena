@@ -58,6 +58,7 @@ from models.dossier import (
 from models.protocol import get_current_phase_for_dossier
 from utils import phases
 from utils.logging_setup import log_dossier_event
+from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input, standard_dossier_row
 
 time_expenses_bp = Blueprint(
@@ -376,6 +377,7 @@ def time_entry_edit(entry_id: str) -> str:
 def time_entry_update(entry_id: str) -> str:
     """Handle edit form submission for time entry."""
     f = request.form
+    expected = edit_conflict.submitted_etag()
     data = {
         "dossier_id": f.get("dossier_id", "").strip(),
         "date": _parse_date(f.get("date", "")),
@@ -389,14 +391,24 @@ def time_entry_update(entry_id: str) -> str:
     data = _enrich_dossier_info(data)
     return_to = f.get("return_to", "")
 
-    entry, errors = update_time_entry(entry_id, data)
+    entry, errors = update_time_entry(entry_id, data, expected_etag=expected)
 
     if errors:
+        errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_time_entry(entry_id),
+            compare_url=url_for(
+                "time_expenses.time_entry_edit", entry_id=entry_id
+            ),
+        )
         data["id"] = entry_id
         data["dossier_file_number"] = data.get("dossier_file_number", f.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(entry=data, errors=errors, return_to=return_to)
+        ctx.update(
+            entry=data, errors=errors, conflict=conflict, return_to=return_to
+        )
         return render_template("time_expenses/time_form.html", **ctx)
 
     target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
@@ -517,6 +529,7 @@ def expense_edit(expense_id: str) -> str:
 def expense_update(expense_id: str) -> str:
     """Handle edit form submission for expense."""
     f = request.form
+    expected = edit_conflict.submitted_etag()
     data = {
         "dossier_id": f.get("dossier_id", "").strip(),
         "date": _parse_date(f.get("date", "")),
@@ -530,14 +543,25 @@ def expense_update(expense_id: str) -> str:
     data = _enrich_dossier_info(data)
     return_to = f.get("return_to", "")
 
-    expense, errors = update_expense(expense_id, data)
+    expense, errors = update_expense(expense_id, data, expected_etag=expected)
 
     if errors:
+        errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_expense(expense_id),
+            compare_url=url_for(
+                "time_expenses.expense_edit", expense_id=expense_id
+            ),
+        )
         data["id"] = expense_id
         data["dossier_file_number"] = data.get("dossier_file_number", f.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(expense=data, errors=errors, return_to=return_to)
+        ctx.update(
+            expense=data, errors=errors, conflict=conflict,
+            return_to=return_to,
+        )
         return render_template("time_expenses/expense_form.html", **ctx)
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
@@ -650,19 +674,34 @@ def time_entry_phase_edit(entry_id: str) -> str:
 def time_entry_phase_update(entry_id: str) -> str:
     """Apply a phase reclassification to a time entry."""
     phase, sous_phase, return_to = _phase_form_data()
+    expected = edit_conflict.submitted_etag()
     existing = get_time_entry(entry_id)
-    entry, errors, changed = set_time_entry_phase(entry_id, phase, sous_phase)
+    entry, errors, changed = set_time_entry_phase(
+        entry_id, phase, sous_phase, expected_etag=expected
+    )
 
     if errors:
+        errors, conflict, etag = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_time_entry(entry_id),
+            compare_url=url_for(
+                "time_expenses.time_entry_phase_edit", entry_id=entry_id
+            ),
+        )
+        # On a stale refusal the read-only recap shows the CURRENT row —
+        # what the next save would reclassify. The selector keeps the
+        # submitted pair either way.
+        shown = (get_time_entry(entry_id) if conflict else None) or existing
         recent_rows, _ = list_time_entries_page(
-            dossier_id=(existing or {}).get("dossier_id", ""), limit=10
+            dossier_id=(shown or {}).get("dossier_id", ""), limit=10
         )
         ctx = _phase_form_context(
-            {**(existing or {"id": entry_id}), "phase": phase,
-             "sous_phase": sous_phase},
+            {**(shown or {"id": entry_id}), "phase": phase,
+             "sous_phase": sous_phase, "etag": etag},
             kind="time_entry", recent_rows=recent_rows,
         )
-        ctx.update(errors=errors, return_to=return_to)
+        ctx.update(errors=errors, conflict=conflict, return_to=return_to)
         return render_template("time_expenses/phase_form.html", **ctx)
 
     if changed:
@@ -697,19 +736,31 @@ def expense_phase_edit(expense_id: str) -> str:
 def expense_phase_update(expense_id: str) -> str:
     """Apply a phase reclassification to a disbursement."""
     phase, sous_phase, return_to = _phase_form_data()
+    expected = edit_conflict.submitted_etag()
     existing = get_expense(expense_id)
-    expense, errors, changed = set_expense_phase(expense_id, phase, sous_phase)
+    expense, errors, changed = set_expense_phase(
+        expense_id, phase, sous_phase, expected_etag=expected
+    )
 
     if errors:
+        errors, conflict, etag = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_expense(expense_id),
+            compare_url=url_for(
+                "time_expenses.expense_phase_edit", expense_id=expense_id
+            ),
+        )
+        shown = (get_expense(expense_id) if conflict else None) or existing
         recent_rows, _ = list_expenses_page(
-            dossier_id=(existing or {}).get("dossier_id", ""), limit=10
+            dossier_id=(shown or {}).get("dossier_id", ""), limit=10
         )
         ctx = _phase_form_context(
-            {**(existing or {"id": expense_id}), "phase": phase,
-             "sous_phase": sous_phase},
+            {**(shown or {"id": expense_id}), "phase": phase,
+             "sous_phase": sous_phase, "etag": etag},
             kind="expense", recent_rows=recent_rows,
         )
-        ctx.update(errors=errors, return_to=return_to)
+        ctx.update(errors=errors, conflict=conflict, return_to=return_to)
         return render_template("time_expenses/phase_form.html", **ctx)
 
     if changed:

@@ -35,6 +35,7 @@ from models.note import (
     update_note,
 )
 from models.dossier import get_dossier
+from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx
 
 # Reserved filter value: items belonging to no dossier. Not a dossier id
@@ -395,6 +396,7 @@ def note_update(note_id: str) -> str:
     if not existing_note:
         return redirect(url_for("notes.note_list"))
 
+    expected = edit_conflict.submitted_etag()
     data, link_errors = _enrich_dossier_info(_form_data())
     return_to = request.form.get("return_to", "")
 
@@ -413,17 +415,26 @@ def note_update(note_id: str) -> str:
         ]
 
     note, errors = (
-        (None, link_errors) if link_errors else update_note(note_id, data)
+        (None, link_errors) if link_errors
+        else update_note(note_id, data, expected_etag=expected)
     )
 
     if errors:
+        errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_note(note_id),
+            compare_url=url_for("notes.note_detail", note_id=note_id),
+        )
         data["id"] = note_id
         data["dossier_file_number"] = data.get(
             "dossier_file_number", request.form.get("dossier_display", "")
         )
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(note=data, errors=errors, return_to=return_to)
+        ctx.update(
+            note=data, errors=errors, conflict=conflict, return_to=return_to
+        )
         return render_template("notes/form.html", **ctx)
 
     old_scope = collection_for(existing_note.get("dossier_id"))
