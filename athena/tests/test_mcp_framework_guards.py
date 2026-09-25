@@ -314,6 +314,23 @@ def test_the_write_protocol_marks_writes_and_only_writes():
     assert carrying == set(tools.WRITE_TOOLS)
 
 
+def test_every_write_tool_declares_its_idempotency_policy():
+    """run_write reads the policy from the registry (`"idempotency"`), never
+    from the handler — so it must be DECLARED, explicitly, on every write:
+    an absent key would silently mean `optional`, which is exactly the
+    wrong default for the money and outbound tools that are coming. A read
+    tool declares none (it has no write to protect). A `required` tool must
+    also list `idempotency_key` in its schema's `required`: the client
+    should learn from the schema, not from a refusal, that a key is owed."""
+    for name, spec in tools.TOOLS.items():
+        if name not in tools.WRITE_TOOLS:
+            assert "idempotency" not in spec, name
+            continue
+        assert spec.get("idempotency") in tools.IDEMPOTENCY_POLICIES, name
+        if spec["idempotency"] == tools.IDEMPOTENCY_REQUIRED:
+            assert "idempotency_key" in spec["input_schema"].get("required", []), name
+
+
 def test_every_input_schema_refuses_unknown_arguments():
     """additionalProperties: False on EVERY tool, reads included. On a write
     it is what made the dry_run removal fail-closed; on a read it is what

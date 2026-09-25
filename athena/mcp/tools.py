@@ -8,6 +8,7 @@ which require the ``athena:write`` scope. Every schema sets
 """
 
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -46,6 +47,87 @@ class ToolArgumentError(Exception):
     ) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class CommittedWriteError(Exception):
+    """A write COMMITTED, then a later step of the same call failed.
+
+    Raised by :func:`mcp.write_support.run_write` when ``execute`` fails
+    AFTER a model noted a commit (``models.provenance.note_commit``) — a
+    CTag bump, the re-read of a cascaded step, the payload builder. Before
+    it existed that exception reached the endpoint's blanket ``except`` and
+    came back as a retryable « internal error », so a caller retried and the
+    write happened twice. This one says the opposite, loudly: the write is
+    there, do NOT retry, re-read it.
+
+    Deliberately NOT a :class:`ToolArgumentError`: a refusal is a -32602
+    that promises nothing was written; this is a tool RESULT (``isError``)
+    saying something WAS. Every field is an id, a collection name or a
+    count — never content — because the endpoint logs them
+    (``mcp_write_partial``) and the message reaches the client verbatim.
+    ``replay`` is true when the error is re-raised from a stored ``partial``
+    idempotency record rather than from this call's own failure.
+    """
+
+    def __init__(
+        self,
+        tool: str,
+        entity_id: Optional[str],
+        dossier_id: Optional[str],
+        *,
+        collection: str = "",
+        rows: int = 1,
+        replay: bool = False,
+    ) -> None:
+        self.tool = tool
+        self.entity_id = entity_id or None
+        self.dossier_id = dossier_id or None
+        self.collection = collection or ""
+        self.rows = int(rows or 0)
+        self.replay = bool(replay)
+        super().__init__(self._message())
+
+    def _message(self) -> str:
+        parts = []
+        if self.entity_id:
+            parts.append(
+                f"{self.collection}/{self.entity_id}" if self.collection
+                else f"id {self.entity_id}"
+            )
+        if self.dossier_id:
+            parts.append(f"dossier {self.dossier_id}")
+        if self.rows > 1:
+            parts.append(f"{self.rows} éléments écrits")
+        where = f" ({', '.join(parts)})" if parts else ""
+        return (
+            f"L'écriture est ENREGISTRÉE{where} mais une étape qui la suit a "
+            "échoué. NE PAS RÉESSAYER : relisez l'élément pour constater son "
+            "état — un nouvel appel avec une autre clé l'écrirait une seconde "
+            "fois."
+        )
+
+
+# The shape of a server-minted document id (Architecture Rule 6: UUIDv4).
+# Fixed-count character classes only — linear, nothing to backtrack over.
+_ID_SHAPE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+
+def loggable_id(value: Any) -> Optional[str]:
+    """*value* when it is shaped like an id, else None.
+
+    For any identifier that is about to reach a log line or a stored record
+    without having been proven to be one: a refused call's ``dossier_id`` is
+    still the caller's string (the schema bounds it to 64 characters and
+    nothing more), and a title or a party name pasted into it must not reach
+    a log the RedactionFilter does not scrub for names. ``fullmatch``, never
+    ``match`` + ``$``: ``$`` also matches before a trailing newline.
+    """
+    if isinstance(value, str) and _ID_SHAPE.fullmatch(value):
+        return value
+    return None
 
 
 def format_cents(cents: int) -> str:
@@ -563,6 +645,41 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
 })
+
+# The idempotency POLICY of a write tool — declared per tool as the
+# ``"idempotency"`` spec key and read by mcp.write_support.run_write, never
+# passed by the handler, so the registry and the protocol cannot disagree.
+#
+# * ``optional`` — an ``idempotency_key`` is accepted, not demanded. The
+#   store fails OPEN: a Firestore blip on the claim must not block a
+#   legitimate first write. Every existing write tool is ``optional``.
+# * ``required`` — the key is demanded (a call without one is refused), and
+#   the store fails CLOSED: an unreadable claim refuses the call rather than
+#   risk a second write, and a failure before any commit keeps the claim
+#   ``pending`` so a same-key retry is refused until the caller re-reads.
+#   Reserved for money, outbound and series tools (plan rule 7); no tool
+#   declares it yet. A tool that does must also list ``idempotency_key`` in
+#   its input schema's ``required`` (pinned by test_mcp_framework_guards).
+IDEMPOTENCY_OPTIONAL = "optional"
+IDEMPOTENCY_REQUIRED = "required"
+IDEMPOTENCY_POLICIES: tuple[str, ...] = (IDEMPOTENCY_OPTIONAL, IDEMPOTENCY_REQUIRED)
+
+
+def idempotency_policy(name: str) -> str:
+    """The declared idempotency policy of write tool *name*.
+
+    Absent → ``optional`` (the historical posture). A value outside
+    :data:`IDEMPOTENCY_POLICIES` — a typo in the registry — reads as
+    ``required``: when the declaration cannot be trusted, the protocol
+    takes the side that can never write twice. (The registry guard fails
+    the build on such a typo long before it could matter.) An unregistered
+    *name* raises ``KeyError``: run_write is keyed by the tool's own
+    registered name, and a handler that is not is a bug to surface, not a
+    default to guess.
+    """
+    value = TOOLS[name].get("idempotency", IDEMPOTENCY_OPTIONAL)
+    return value if value in IDEMPOTENCY_POLICIES else IDEMPOTENCY_REQUIRED
+
 
 # Per-call content ceiling, deliberately far below models.note's
 # CONTENT_MAX_LENGTH (100_000). Two reasons: an oversized write is refused
@@ -2079,6 +2196,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_note",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "append_to_note": {
         "title": "Ajouter du texte à une note existante",
@@ -2116,6 +2234,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "append_to_note",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "complete_task": {
         "title": "Clore une tâche",
@@ -2174,6 +2293,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
         "handler": "complete_task",
     },
     "create_task": {
@@ -2236,6 +2356,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_task",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "create_hearing": {
         "title": "Créer un événement au calendrier",
@@ -2322,6 +2443,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_hearing",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "create_time_entry": {
         "title": "Créer une entrée de temps",
@@ -2390,6 +2512,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_time_entry",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "create_expense": {
         "title": "Créer un déboursé",
@@ -2441,6 +2564,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_expense",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "complete_dossier": {
         "title": "Compléter les champs vides d'un dossier",
@@ -2543,6 +2667,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "complete_dossier",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "record_signification": {
         "title": "Consigner une signification",
@@ -2592,6 +2717,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "record_signification",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "record_prescription_event": {
         "title": "Consigner un événement de prescription",
@@ -2640,6 +2766,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "record_prescription_event",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "update_time_entry": {
         "title": "Corriger une entrée de temps",
@@ -2696,6 +2823,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "update_time_entry",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "update_expense": {
         "title": "Corriger un déboursé",
@@ -2739,6 +2867,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "update_expense",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "set_time_entry_phase": {
         "title": "Reclasser la phase d'une entrée de temps",
@@ -2772,6 +2901,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "set_time_entry_phase",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
         # A second identical call writes nothing: the model compares the
         # stored pair first. Declared per tool, like complete_task.
         "annotations": {"idempotentHint": True},
@@ -2801,6 +2931,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "set_expense_phase",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
         "annotations": {"idempotentHint": True},
     },
     "set_time_entry_phase_bulk": {
@@ -2831,6 +2962,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "set_time_entry_phase_bulk",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
         "annotations": {"idempotentHint": True},
     },
     "set_expense_phase_bulk": {
@@ -2855,6 +2987,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "set_expense_phase_bulk",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
         "annotations": {"idempotentHint": True},
     },
     "import_invoice": {
@@ -2985,6 +3118,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "import_invoice",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "create_dossier": {
         "title": "Créer un dossier",
@@ -3055,6 +3189,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_dossier",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "update_dossier": {
         "title": "Corriger un dossier",
@@ -3104,6 +3239,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "update_dossier",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "create_partie": {
         "title": "Créer un contact",
@@ -3144,6 +3280,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "create_partie",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     "update_partie": {
         "title": "Corriger un contact",
@@ -3179,6 +3316,7 @@ TOOLS: dict[str, dict] = {
         },
         "handler": "update_partie",
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
     },
     # ════════════════════════════════════════════════════════════════════
     # Lecture du CONTENU d'un document (2026-08). L'écran de consentement
@@ -3430,6 +3568,7 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
         "handler": "record_document_analysis",
     },
 }
