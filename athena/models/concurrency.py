@@ -9,7 +9,8 @@ and compares BEFORE calling the model, outside any transaction, so a write
 landing in between still wins — and the web forms and the connector
 compared nothing: every full-document ``set()`` was last-write-wins, so a
 stale browser tab, the phone and the connector silently erased each other's
-edits. (Routing that DAV check through ``expected_etag`` would make it
+edits. The web forms now carry the etag they were rendered from
+(``routes/edit_conflict.py``). (Routing that DAV check through ``expected_etag`` would make it
 atomic; it is not done here, and DAV keeps the legacy path.)
 
 The contract, for a caller that passes ``expected_etag``:
@@ -26,8 +27,8 @@ The contract, for a caller that passes ``expected_etag``:
 
 ``expected_etag=None`` is the LEGACY path, byte for byte: the same single
 ``set()`` (or ``update()``) the model performed before this module existed,
-no read, no transaction. DAV PUTs and the web forms that do not carry an
-etag yet take it, so their behaviour is unchanged.
+no read, no transaction. DAV PUTs and a web page rendered before its form
+carried an etag take it, so their behaviour is unchanged.
 
 ``''`` is a legitimate expected etag: it matches a legacy document written
 before Rule 7, whose stored etag is absent (a caller that read such a row

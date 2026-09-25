@@ -646,8 +646,8 @@ def update_partie(
     ``expected_etag`` (keyword-only): when given, the write commits only if
     the stored etag is still that one — checked in a transaction — and
     returns ``[concurrency.STALE_ETAG_ERROR]`` otherwise, having written
-    nothing. ``None`` (the CardDAV PUT, the forms that carry no etag yet)
-    is the unchanged single ``set()``.
+    nothing. ``None`` (the CardDAV PUT, a page rendered before its form
+    carried an etag) is the unchanged single ``set()``.
     """
     existing = get_partie(partie_id)
     if not existing:

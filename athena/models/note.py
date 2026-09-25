@@ -310,7 +310,7 @@ def update_note(
     the stored etag is still that one (``models.concurrency``); a stale one
     returns ``[STALE_ETAG_ERROR]`` and writes nothing — which is what keeps
     a stale edit tab from erasing a block appended since it opened. ``None``
-    (DAV PUT, the pin toggle, the forms that carry no etag yet) is the
+    (DAV PUT, a page rendered before its form carried an etag) is the
     unchanged single ``set()``.
     """
     existing = get_note(note_id)

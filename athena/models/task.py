@@ -312,7 +312,7 @@ def update_task(
     the stored etag is still that one (``models.concurrency``); a stale one
     returns ``[STALE_ETAG_ERROR]``, writes nothing, and — since nothing was
     written — fires no protocol-step sync either. ``None`` (DAV PUT, the
-    toggle, the protocol cascade, the forms that carry no etag yet) is the
+    protocol cascade, a page rendered before its form carried an etag) is the
     unchanged single ``set()``.
     """
     existing = get_task(task_id)
