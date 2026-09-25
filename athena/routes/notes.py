@@ -18,7 +18,7 @@ from dav.sync import (
     bump_ctag,
     collection_for,
     record_tombstone,
-    remove_tombstone,
+    relocate_resource,
 )
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
@@ -438,20 +438,19 @@ def note_update(note_id: str) -> str:
         )
         return render_template("notes/form.html", **ctx)
 
-    old_scope = collection_for(existing_note.get("dossier_id"))
-    new_scope = collection_for(note.get("dossier_id"))
-    if old_scope != new_scope:
-        # Note moved between collections (dossier <-> dossier, or to/from
-        # « Général »). Deletions travel ONLY via tombstones — without one
-        # the old collection's DavX5 copy survives forever (sync-collection
-        # reports live members + tombstones; an unmentioned href reads as
-        # "unchanged"). Mirrors routes/tasks.py task_update.
-        record_tombstone(old_scope, note_id)
-        bump_ctag(old_scope)
-        # The note (re)enters its new collection — drop any stale tombstone
-        # there so one sync REPORT never reports it as both live and deleted.
-        remove_tombstone(new_scope, note_id)
-    bump_ctag(new_scope)
+    # Note moved between collections (dossier <-> dossier, or to/from
+    # « Général »)? Deletions travel ONLY via tombstones — without one the
+    # old collection's DavX5 copy survives forever (sync-collection reports
+    # live members + tombstones; an unmentioned href reads as "unchanged"),
+    # and the new collection drops any stale tombstone so one REPORT never
+    # calls the note both live and deleted. The order lives in dav.sync
+    # (relocation_plan); tests/test_mcp_dav_resync.py pins that it is this
+    # route's former hand-written block, call for call.
+    relocate_resource(
+        note_id,
+        old_dossier_id=existing_note.get("dossier_id"),
+        new_dossier_id=note.get("dossier_id"),
+    )
 
     # Return to the note itself after saving; thread a validated return_to for
     # the detail view's « Retour » link (see note_create for the guard rationale).

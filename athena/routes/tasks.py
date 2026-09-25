@@ -16,7 +16,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
+from dav.sync import bump_ctag, collection_for, record_tombstone, relocate_resource
 from models.audit_event import record_deletion
 from utils import deadlines
 from security import safe_internal_redirect, sanitize
@@ -400,17 +400,16 @@ def task_update(task_id: str) -> str:
         )
         return render_template("tasks/form.html", **ctx)
 
-    old_scope = collection_for(old_dossier_id)
-    new_scope = collection_for(task.get("dossier_id"))
-    if old_scope != new_scope:
-        # Task moved between collections (dossier <-> dossier, or
-        # to/from « Général »).
-        record_tombstone(old_scope, task_id)
-        bump_ctag(old_scope)
-        # The task (re)enters its new collection — drop any stale tombstone
-        # there so one sync REPORT never reports it as both live and deleted.
-        remove_tombstone(new_scope, task_id)
-    bump_ctag(new_scope)
+    # A task moved between collections (dossier <-> dossier, or to/from
+    # « Général ») tombstones + bumps the OLD one and un-tombstones + bumps
+    # the new; otherwise one bump. The order lives in dav.sync
+    # (relocation_plan) — tests/test_mcp_dav_resync.py pins that it is this
+    # route's former hand-written block, call for call.
+    relocate_resource(
+        task_id,
+        old_dossier_id=old_dossier_id,
+        new_dossier_id=task.get("dossier_id"),
+    )
 
     fallback = url_for("tasks.task_detail", task_id=task_id)
     target = safe_internal_redirect(return_to, fallback)

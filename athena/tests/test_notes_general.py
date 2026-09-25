@@ -22,28 +22,37 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from flask import Flask
 
 with mock.patch("google.cloud.firestore.Client"):
+    import dav.sync as dav_sync
     import routes.notes as notes_routes
 
 UTC = timezone.utc
 ATHENA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# The route bumps and tombstones through its own imported names on create
+# and delete, and through dav.sync.relocate_resource on an EDIT (since
+# 2026-09-25, lot 0a — the move choreography lives in one place). Both seams
+# feed the SAME recorder, so every assertion below reads exactly as it did.
+
+
 @pytest.fixture()
 def bumps(monkeypatch):
     recorded = []
-    monkeypatch.setattr(notes_routes, "bump_ctag", lambda n: recorded.append(n))
+    for module in (notes_routes, dav_sync):
+        monkeypatch.setattr(module, "bump_ctag", lambda n: recorded.append(n))
     return recorded
 
 
 @pytest.fixture()
 def tombstones(monkeypatch):
     recorded = {"record": [], "remove": []}
+    for module in (notes_routes, dav_sync):
+        monkeypatch.setattr(
+            module, "record_tombstone",
+            lambda n, r: recorded["record"].append((n, r)),
+        )
     monkeypatch.setattr(
-        notes_routes, "record_tombstone",
-        lambda n, r: recorded["record"].append((n, r)),
-    )
-    monkeypatch.setattr(
-        notes_routes, "remove_tombstone",
+        dav_sync, "remove_tombstone",
         lambda n, r: recorded["remove"].append((n, r)),
     )
     return recorded

@@ -368,6 +368,19 @@ def test_the_note_route_moves_exactly_as_before(monkeypatch, old, new):
     assert calls == _legacy_calls(_legacy_note_route, old, new)
 
 
+def test_the_switched_routes_call_the_shared_helper():
+    """The parity above is only worth something if the routes really go
+    through relocate_resource — never back to a hand-written copy."""
+    for module, fn in ((tasks_routes, "task_update"), (notes_routes, "note_update")):
+        tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))
+        node = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == fn)
+        called = {c.func.id for c in ast.walk(node)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        assert "relocate_resource" in called, fn
+        assert not called & {"record_tombstone", "remove_tombstone", "bump_ctag"}, fn
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 4. _dav_resync — deux moitiés indépendantes, rien qui lève
 # ══════════════════════════════════════════════════════════════════════
