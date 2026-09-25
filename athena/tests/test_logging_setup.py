@@ -747,7 +747,7 @@ def _observability_md() -> str:
 
 @pytest.mark.parametrize(
     "nom_du_type",
-    ["AuthEvent", "SecurityEvent", "SettingsEvent"],
+    ["AuthEvent", "SecurityEvent", "SettingsEvent", "McpEvent"],
 )
 def test_every_event_name_is_documented(nom_du_type):
     """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding
