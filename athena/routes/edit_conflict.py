@@ -137,7 +137,7 @@ def resolve_refusal(
     return others, conflict, conflict["etag"]
 
 
-def _when(value) -> str:
+def _when(value: object) -> str:
     """« 25 septembre 2026 à 14 h 05 », Montréal time; '' when unknown."""
     if not isinstance(value, datetime):
         return ""
