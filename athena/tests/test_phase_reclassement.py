@@ -49,6 +49,8 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import expense as expense_model
     from models import time_entry as time_entry_model
 
+from tests._fake_firestore import install as install_fake  # noqa: E402
+
 UTC = timezone.utc
 DT = datetime(2026, 3, 4, tzinfo=UTC)
 SEEDED = datetime(2026, 3, 5, 12, 0, tzinfo=UTC)
@@ -560,7 +562,13 @@ def test_les_quatre_familles_de_refus_coexistent_dans_un_lot(many):
 
 
 def test_la_meme_cle_rejoue_le_rapport_sans_reecrire(many, monkeypatch):
-    monkeypatch.setattr(write_support, "db", many)
+    # Le registre d'idempotence tourne sur le faux Firestore PARTAGÉ depuis
+    # le 2026-09-25 (changement délibéré, lot 0a, étape 4) : la clé y est
+    # RÉSERVÉE par un create() et finalisée sous précondition, deux choses
+    # que ce faux écrit à la main ne modélise pas — et qu'un faux qui les
+    # accepterait sans les vérifier ne prouverait pas. Les modèles, eux,
+    # restent sur `many` : c'est lui qui compte les update().
+    install_fake(monkeypatch, write_support)
     args = {"entries": [{"time_entry_id": "e2", "sous_phase": "AUD-01"}],
             "idempotency_key": "reclassement-2025-001-01"}
 

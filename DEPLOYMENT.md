@@ -1243,6 +1243,23 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 - In claude.ai: **Settings → Connectors → Add custom connector →**
   `https://yourdomain.example/mcp`, then complete Firebase login + MFA on the
   consent screen and click **« Autoriser »**.
+- **Run no MCP write during a deploy window — and none after a rollback
+  past the idempotency claim** (plan lot 0a: `mcp/write_support.py` with its
+  `pending` status). Since that release a write CLAIMS its `idempotency_key`
+  before it executes: the `mcp_idempotency` entry is created `pending`, then
+  finalized `committed` (with the result) or `partial` (the write committed,
+  a later step failed — the caller was told « NE PAS RÉESSAYER »). Code from
+  before that release knows neither state: it reads a `pending` or `partial`
+  entry as « no stored result », executes the write again, and overwrites
+  the entry. So while two versions serve traffic side by side (a deploy in
+  progress, a traffic split) or after migrating traffic back to an older
+  version, a same-key retry that the new code would refuse or re-report can
+  be DUPLICATED by the old one. The window is short and needs a retry to
+  land on the other version, but a scheduled Claude job retries by design:
+  pause those jobs for the deploy, and after a rollback past this release let
+  the 24 h `expire_at` run out (or revoke the connector) before writing
+  again. Nothing to migrate in the other direction — the new code replays a
+  legacy entry (no `status`) unchanged.
 
 ---
 
@@ -1355,6 +1372,10 @@ Notes:
 - **Rollback:** Cloud Build keeps the 3 most-recent non-serving versions.
   `gcloud app versions list`, then migrate traffic:
   `gcloud app services set-traffic default --splits=<VERSION>=1`.
+  ⚠ Rolling back past the idempotency claim (lot 0a) hands the MCP entries to code
+  that does not know the `pending`/`partial` states and will execute a
+  same-key retry again — see the last bullet of §11 before writing through
+  the connector on the older version.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

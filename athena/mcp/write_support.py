@@ -1,51 +1,180 @@
-"""Shared write-tool protocol: idempotency (WP15, PA-C04).
+"""Shared write-tool protocol: the idempotency claim and the commit point
+(WP15, PA-C04; plan Lot 0a, rule 7).
 
-Every MCP write tool runs through :func:`run_write`, which layers one
-behaviour the audit asked for on top of the tool's own logic:
+Every MCP write tool runs through :func:`run_write`, which layers two
+behaviours on top of the tool's own logic.
 
-* **idempotency_key** — the caller-supplied retry armour. The old
-  create_note description warned « a retry duplicates » as a workaround
-  for its absence; with a key, a replay returns the STORED result of the
-  first call instead of writing twice, and a key reused with DIFFERENT
-  arguments is refused loudly (a silent mismatch would hand back a result
-  that does not match what was asked).
+1. The idempotency CLAIM
+------------------------
+``idempotency_key`` is the caller-supplied retry armour: a replay returns the
+STORED result of the first call instead of writing twice, and a key reused
+with DIFFERENT arguments is refused loudly (a silent mismatch would hand back
+a result that does not match what was asked).
 
-Storage: ``mcp_idempotency/{sha256(tool ":" key)}`` — a documented
-exception to Architecture Rule 6, exactly like the OAuth collections: the
-doc ID is the lookup key, so a replay is one keyed ``get()`` and no index
-exists. ``expire_at`` (24 h) carries a Firestore TTL fieldOverride for
-garbage collection ONLY — expiry is enforced in code on every read, per
-the OAuth precedent (TTL deletion can lag by days and is never a
-correctness control).
+Until 2026-09-25 the sequence was lookup → execute → record, three separate
+steps: two concurrent calls with the same key both found nothing, both
+wrote, and the second record overwrote the first. The key is now CLAIMED
+ATOMICALLY BEFORE anything executes — ``DocumentReference.create()``, which
+the server refuses when the document exists — as a ``pending`` entry:
 
-Failure posture: the store fails OPEN in both directions. Idempotency is
-retry ARMOUR, not an authorization gate — a Firestore blip on the lookup
-must not block a legitimate first write, and a blip on the record must
-not fail a write that already committed. The uncovered window (key sent,
-record failed, client retries) merely degrades to today's behaviour.
+    {tool, args_fingerprint, status: "pending", claim_id,
+     claimed_at, created_at, expire_at}
+
+then FINALIZED once, by a partial ``update()`` that never touches the
+fingerprint, the tool, the claim id or the expiry: ``committed`` with the
+``result``, or ``partial`` with the ids of what committed (see 2). A second
+call finds the claim and decides:
+
+* different fingerprint → refused, ``idempotency_conflict``;
+* ``committed``, or NO status at all — a legacy entry written before the
+  claim existed, which carries its ``result`` — → replay, unchanged;
+* ``partial`` → the same :class:`CommittedWriteError` as the first call;
+* ``pending`` and YOUNGER than :data:`IN_FLIGHT_WINDOW` → refused,
+  ``idempotency_in_flight``: « wait, then retry with the SAME key ». This is
+  the ordinary retry-while-the-first-call-runs case, and the one the design
+  review caught: telling the caller to re-read and pick a NEW key here would
+  reopen exactly the race the claim closes — the re-read shows nothing, the
+  new key writes, the first call then commits too;
+* ``pending`` and OLDER → refused, ``idempotency_interrupted``: the first
+  call can no longer be running, so re-reading has become reliable — « the
+  write may have happened; re-read, and use a new key only if nothing was
+  written ». A pending claim is never cleared automatically: expiring it
+  after a lease would reopen the duplicate window. It lapses with the 24 h
+  ``expire_at`` like every entry;
+* expired (past ``expire_at``) → deleted under a ``last_update_time``
+  precondition, then claimed afresh — a concurrent caller that got there
+  first makes the precondition fail, and the claim is re-read.
+
+The window. :data:`IN_FLIGHT_WINDOW` is the longest the first call can still
+be running, i.e. the platform's request deadline — the LARGER of the two
+bounds this deployment has. gunicorn's ``--timeout 60`` (``app.yaml``) is
+the worker heartbeat; with the ``gthread`` worker (``--threads 4``) the
+heartbeat runs on the worker's main loop, not in the request thread, so it
+does not by itself end a request. App Engine standard with automatic scaling
+does: its request deadline is 10 minutes. Ten minutes it is, plus a margin
+for clock skew between the instance that claimed and the one that reads
+(``claimed_at`` is each instance's own clock). The residue, stated rather
+than hidden: a thread the platform abandons but does not stop could still
+commit after the window — nothing in this process can observe that, and no
+re-read could either.
+
+2. The commit point
+-------------------
+A write can COMMIT and then fail: the CTag bump, the re-read of a cascaded
+protocol step, the payload builder. That exception used to reach the
+endpoint's blanket ``except`` and come back as a retryable « internal
+error » — with no record — so the retry wrote a second time. The commit
+point is now STRUCTURAL, not a handler convention: every model mutator the
+connector reaches calls ``models.provenance.note_commit(collection, id)``
+right after its Firestore write returns (pinned by
+``tests/test_provenance.py``), and ``execute`` runs inside
+``provenance.writing_via("mcp", tool=…)``, whose record this function reads.
+So on an exception:
+
+* a commit was noted → ``log_unexpected`` (the traceback — this is a bug to
+  go and look at), the claim is finalized ``partial`` with the ids, and
+  :class:`CommittedWriteError` is raised: « ENREGISTRÉE — NE PAS
+  RÉESSAYER ». A same-key retry re-raises it without executing. That holds
+  for a ``ToolArgumentError`` too: a refusal AFTER a commit is a handler
+  bug, and reporting it as « nothing was written » would be false;
+* nothing was committed → a ``ToolArgumentError`` (a refusal) releases the
+  claim, so a refused call still records nothing and a corrected same-key
+  retry can run. Any other exception releases it under the ``optional``
+  policy (a retry is safe) and KEEPS it ``pending`` under ``required``
+  (fail-closed: the same-key retry is refused and forces a re-read). Note
+  the one blind spot a structural record cannot see: the models turn a
+  Firestore write EXCEPTION into a French error list, which the handler
+  raises as a refusal — and an error on a write does not prove it did not
+  land (a timeout can follow a commit). The claim is released there as for
+  any refusal; the Lot 5 money models are transactional and read-verify for
+  that reason.
+
+A release is a ``delete()`` under the ``last_update_time`` the claim's own
+``create()`` returned — Firestore's delete preconditions are ``exists`` and
+``last_update_time`` only, so « delete only MY claim » is expressed that way.
+
+3. Failure posture
+------------------
+The policy is read from the registry — ``mcp.tools.idempotency_policy``,
+the tool's ``"idempotency"`` spec key — never passed by the handler.
+
+* ``optional`` (every tool today): the store fails OPEN. A Firestore blip on
+  the claim must not block a legitimate first write; the call runs
+  unclaimed, and afterwards a best-effort ``create()`` stores its result so
+  a later retry can still replay (``op="record"``). The uncovered window —
+  store down, retry — merely degrades to the pre-claim behaviour.
+* ``required``: the key is demanded (``idempotency_required``) and the store
+  fails CLOSED (``idempotency_store_unavailable``): nothing executes when
+  the claim cannot be established.
 
 Failing open is only tenable if the failure is SEEN: each one is logged as
 ``mcp_idempotency_store_failure`` (tool, op, exception class — never the
-exception's text), through the typed helper. Until 2026-09-25 they were two
-raw ``logger.warning`` lines: outside the event registry, invisible to any
-log-based metric keyed on ``event``, and naming no tool — so a ``record``
-failure, the one after which a same-key retry normally writes again, could
-not be traced back to the write it left uncovered. (« Normally »: an error
-on a write does not prove it did not land — a timeout can follow a commit —
-so the retry may also replay. The same-key ``mcp_write`` says which.)
+exception's text, which can carry what was being stored), through the typed
+helper. ``op`` ∈ ``lookup`` | ``claim`` | ``finalize`` | ``release`` |
+``record`` | ``record_partial``.
+
+Storage: ``mcp_idempotency/{sha256(tool ":" key)}`` — a documented exception
+to Architecture Rule 6, exactly like the OAuth collections: the doc ID is
+the lookup key, so a claim is one keyed ``get()``/``create()`` and no index
+exists. ``expire_at`` (24 h from the claim) carries a Firestore TTL
+fieldOverride for garbage collection ONLY — expiry is enforced in code on
+every read, per the OAuth precedent.
+
+Rollback and mixed versions: code from before the claim reads a ``pending``
+or ``partial`` entry as « no stored result » and executes — a duplicate.
+Run no MCP write during a deploy window (DEPLOYMENT.md §11).
 """
 
 import hashlib
 import json
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
+
+from google.api_core import exceptions as gexc
 
 from models import db, provenance
-from mcp.tools import ToolArgumentError
-from utils.logging_setup import log_mcp_event
+from mcp.tools import (
+    IDEMPOTENCY_REQUIRED,
+    CommittedWriteError,
+    ToolArgumentError,
+    idempotency_policy,
+    loggable_id,
+)
+from utils.logging_setup import log_mcp_event, log_unexpected
+
+__all__ = [
+    "COLLECTION",
+    "CommittedWriteError",
+    "IDEMPOTENCY_TTL",
+    "IN_FLIGHT_WINDOW",
+    "PLATFORM_REQUEST_DEADLINE",
+    "args_fingerprint",
+    "run_write",
+]
 
 COLLECTION = "mcp_idempotency"
 IDEMPOTENCY_TTL = timedelta(hours=24)
+
+# App Engine standard, automatic scaling: a request is cut at 10 minutes.
+# gunicorn's --timeout 60 is shorter but does not bound a gthread request
+# (see the module docstring), so the platform deadline is the larger bound.
+PLATFORM_REQUEST_DEADLINE = timedelta(minutes=10)
+# claimed_at is the CLAIMING instance's clock, compared against the reading
+# instance's: a margin for the skew between two instances' clocks.
+_CLOCK_SKEW_MARGIN = timedelta(seconds=30)
+IN_FLIGHT_WINDOW = PLATFORM_REQUEST_DEADLINE + _CLOCK_SKEW_MARGIN
+
+STATUS_PENDING = "pending"
+STATUS_COMMITTED = "committed"
+STATUS_PARTIAL = "partial"
+
+# A claim that loses a race is re-read and decided again; three rounds is
+# far more than a single-user connector can contend for one key.
+_CLAIM_ATTEMPTS = 3
+# The ids a partial record keeps — a bulk tool commits at most 50 rows.
+_MAX_RECORDED_COMMITS = 100
 
 # Protocol arguments stripped from the fingerprint: they parameterize the
 # PROTOCOL, not the write — retrying with the same key after a dry run must
@@ -61,6 +190,31 @@ IDEMPOTENCY_TTL = timedelta(hours=24)
 _PROTOCOL_ARGS = ("idempotency_key", "dry_run")
 
 
+class MalformedEntry(Exception):
+    """A stored entry this protocol cannot interpret (a non-dict snapshot,
+    an unknown status, a committed entry without a result). Only its class
+    name is ever logged."""
+
+
+class ClaimContention(Exception):
+    """The claim kept changing under this call for every attempt."""
+
+
+@dataclass(frozen=True)
+class _Claim:
+    """The pending entry THIS call created."""
+
+    ref: Any
+    claim_id: str
+    # The WriteResult time of the claim's own create(): the precondition
+    # that makes finalize/release touch THIS claim and nothing else.
+    update_time: Any
+
+
+class _Replay(NamedTuple):
+    result: dict
+
+
 def _doc_id(tool: str, key: str) -> str:
     return hashlib.sha256(f"{tool}:{key}".encode("utf-8")).hexdigest()
 
@@ -74,6 +228,10 @@ def args_fingerprint(args: dict) -> str:
         json.dumps(payload, ensure_ascii=False, sort_keys=True,
                    default=str).encode("utf-8")
     ).hexdigest()
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _store_failure(tool: str, op: str, exc: BaseException) -> None:
@@ -93,46 +251,318 @@ def _store_failure(tool: str, op: str, exc: BaseException) -> None:
     )
 
 
-def _lookup(tool: str, key: str, fingerprint: str) -> tuple[Optional[dict], bool]:
-    """(stored result, conflict). Fails OPEN to (None, False)."""
+def _unavailable(tool: str, op: str, exc: BaseException, policy: str) -> None:
+    """A claim that could not be established: fail open, or refuse.
+
+    Returns ``None`` (« run unclaimed ») under ``optional``; raises under
+    ``required``, where nothing may execute without a claim.
+    """
+    _store_failure(tool, op, exc)
+    if policy == IDEMPOTENCY_REQUIRED:
+        raise ToolArgumentError(
+            "Le registre d'idempotence est illisible pour le moment : rien "
+            "n'a été écrit. Réessayez dans un instant avec la MÊME "
+            "idempotency_key.",
+            reason="idempotency_store_unavailable",
+        )
+    return None
+
+
+def _snapshot_dict(snap: Any) -> Optional[dict]:
+    """The stored entry, ``None`` when absent. A snapshot that EXISTS but
+    does not hold a dict (a MagicMock's truthy ``exists`` and its MagicMock
+    ``to_dict()``, the settings._read_raw precedent) is unreadable — never a
+    silent « absent »."""
+    if not snap.exists:
+        return None
+    data = snap.to_dict()
+    if not isinstance(data, dict):
+        raise MalformedEntry()
+    return data
+
+
+def _expired(data: dict, now: datetime) -> bool:
+    """Past ``expire_at``. A missing or non-timestamp value never expires
+    here — the entry is still decided on its fingerprint and status — as
+    the pre-claim code read a missing one."""
+    expire_at = data.get("expire_at")
+    if not isinstance(expire_at, datetime):
+        return False
+    if expire_at.tzinfo is None:
+        expire_at = expire_at.replace(tzinfo=timezone.utc)
+    return expire_at < now
+
+
+def _age(data: dict, snap: Any, now: datetime) -> Optional[timedelta]:
+    """How long ago the pending claim was made, or None if unknowable."""
+    claimed_at = data.get("claimed_at") or getattr(snap, "create_time", None)
+    if not isinstance(claimed_at, datetime):
+        return None
+    if claimed_at.tzinfo is None:
+        claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+    return now - claimed_at
+
+
+def _refuse_pending(data: dict, snap: Any, now: datetime) -> None:
+    age = _age(data, snap, now)
+    # An unknowable age reads as YOUNG: « wait, same key » can at worst make
+    # the caller wait; « new key » could make it write twice.
+    if age is None or age < IN_FLIGHT_WINDOW:
+        remaining = IN_FLIGHT_WINDOW - (age or timedelta(0))
+        minutes = max(1, -(-int(remaining.total_seconds()) // 60))
+        raise ToolArgumentError(
+            "Un appel avec cette idempotency_key est encore en cours — "
+            "attendez puis réessayez avec la MÊME clé : vous obtiendrez son "
+            "résultat, sans double écriture. Ne changez pas de clé : l'appel "
+            "en cours peut encore écrire. (Au-delà d'environ "
+            f"{minutes} min, il sera tenu pour interrompu.)",
+            reason="idempotency_in_flight",
+        )
+    raise ToolArgumentError(
+        "Un appel avec cette idempotency_key a été interrompu : l'écriture a "
+        "peut-être eu lieu, relisez avant de réessayer (nouvelle clé "
+        "seulement si rien n'a été écrit).",
+        reason="idempotency_interrupted",
+    )
+
+
+def _stored_partial(tool: str, data: dict) -> CommittedWriteError:
+    return CommittedWriteError(
+        tool,
+        loggable_id(data.get("entity_id")),
+        loggable_id(data.get("dossier_id")),
+        collection=str(data.get("collection") or ""),
+        rows=int(data.get("rows") or 0),
+        replay=True,
+    )
+
+
+def _decide(tool: str, data: dict, snap: Any, fingerprint: str,
+            policy: str, now: datetime) -> Optional[_Replay]:
+    """An unexpired entry exists: replay it, or refuse the call.
+
+    Returns a :class:`_Replay`, or ``None`` when the entry is unusable and
+    the call fails open (``optional``). Never returns a claim: an existing
+    entry always belongs to another call.
+    """
+    if data.get("args_fingerprint") != fingerprint:
+        raise ToolArgumentError(
+            "Cette idempotency_key a déjà servi à un appel dont les "
+            "arguments diffèrent. Une clé identifie UNE écriture "
+            "précise — générez une clé nouvelle pour une écriture "
+            "nouvelle.",
+            reason="idempotency_conflict",
+        )
+    status = data.get("status")
+    if status is None or status == STATUS_COMMITTED:
+        result = data.get("result")
+        if isinstance(result, dict):
+            return _Replay(dict(result))
+        return _unavailable(tool, "lookup", MalformedEntry(), policy)
+    if status == STATUS_PARTIAL:
+        raise _stored_partial(tool, data)
+    if status == STATUS_PENDING:
+        _refuse_pending(data, snap, now)
+    return _unavailable(tool, "lookup", MalformedEntry(), policy)
+
+
+def _claim(tool: str, key: str, fingerprint: str,
+           policy: str) -> "Optional[_Claim | _Replay]":
+    """Claim *key* for this call, or replay/refuse on what already holds it.
+
+    Returns the :class:`_Claim` this call now owns, a :class:`_Replay`, or
+    ``None`` when the store failed and the ``optional`` policy runs the call
+    unclaimed. Raises ``ToolArgumentError`` for every refusal and
+    :class:`CommittedWriteError` for a stored partial.
+    """
     try:
-        snap = db.collection(COLLECTION).document(_doc_id(tool, key)).get()
-        if not snap.exists:
-            return None, False
-        doc = snap.to_dict() or {}
-        expire_at = doc.get("expire_at")
-        if expire_at is not None and expire_at < datetime.now(timezone.utc):
-            return None, False  # expired — TTL GC just hasn't caught up
-        if doc.get("args_fingerprint") != fingerprint:
-            return None, True
-        result = doc.get("result")
-        return (dict(result) if isinstance(result, dict) else None), False
+        ref = db.collection(COLLECTION).document(_doc_id(tool, key))
     except Exception as exc:
-        _store_failure(tool, "lookup", exc)
-        return None, False
+        return _unavailable(tool, "lookup", exc, policy)
+
+    for _attempt in range(_CLAIM_ATTEMPTS):
+        now = _now()
+        try:
+            snap = ref.get()
+            data = _snapshot_dict(snap)
+        except Exception as exc:  # MalformedEntry included
+            return _unavailable(tool, "lookup", exc, policy)
+
+        if data is not None:
+            if not _expired(data, now):
+                return _decide(tool, data, snap, fingerprint, policy, now)
+            # Expired: the TTL just hasn't collected it. Delete it ONLY as
+            # read — a caller that re-claimed it meanwhile fails this
+            # precondition, and the loop re-reads its claim instead.
+            try:
+                ref.delete(option=db.write_option(
+                    last_update_time=snap.update_time))
+            except (gexc.FailedPrecondition, gexc.NotFound):
+                continue
+            except Exception as exc:
+                return _unavailable(tool, "claim", exc, policy)
+
+        claim_id = str(uuid.uuid4())
+        try:
+            written = ref.create({
+                "tool": tool,
+                "args_fingerprint": fingerprint,
+                "status": STATUS_PENDING,
+                "claim_id": claim_id,
+                "claimed_at": now,
+                "created_at": now,
+                "expire_at": now + IDEMPOTENCY_TTL,
+            })
+        except gexc.Conflict:
+            continue  # claimed by a concurrent call in between: decide on it
+        except Exception as exc:
+            return _unavailable(tool, "claim", exc, policy)
+        return _Claim(ref=ref, claim_id=claim_id,
+                      update_time=written.update_time)
+
+    return _unavailable(tool, "claim", ClaimContention(), policy)
 
 
-def _record(tool: str, key: str, fingerprint: str, result: dict) -> None:
-    """Best-effort: a failure here must never fail the committed write."""
+def _entry_ref(tool: str, key: str) -> Any:
+    return db.collection(COLLECTION).document(_doc_id(tool, key))
+
+
+def _finalize(tool: str, key: str, fingerprint: str,
+              claim: Optional[_Claim], payload: dict) -> None:
+    """Store the committed result. Best-effort: never fails the write.
+
+    With a claim: a partial ``update()`` under the claim's precondition —
+    the fingerprint, tool, claim id and expiry survive, so the next same-key
+    call REPLAYS instead of reading as a conflict. A failure leaves the
+    claim ``pending``: a same-key retry is then refused, never duplicated.
+    Without one (the store failed open earlier): a ``create()`` of the whole
+    entry, so a later retry can still replay — never a ``set()``, which
+    would overwrite a claim some concurrent call made meanwhile.
+    """
+    now = _now()
+    if claim is not None:
+        try:
+            claim.ref.update(
+                {"status": STATUS_COMMITTED, "result": payload,
+                 "committed_at": now},
+                option=db.write_option(last_update_time=claim.update_time),
+            )
+        except Exception as exc:
+            _store_failure(tool, "finalize", exc)
+        return
     try:
-        now = datetime.now(timezone.utc)
-        db.collection(COLLECTION).document(_doc_id(tool, key)).set({
+        _entry_ref(tool, key).create({
             "tool": tool,
             "args_fingerprint": fingerprint,
-            "result": result,
+            "status": STATUS_COMMITTED,
+            "claim_id": str(uuid.uuid4()),
+            "claimed_at": now,
             "created_at": now,
+            "committed_at": now,
             "expire_at": now + IDEMPOTENCY_TTL,
+            "result": payload,
         })
     except Exception as exc:
         _store_failure(tool, "record", exc)
+
+
+def _release(tool: str, claim: Optional[_Claim]) -> None:
+    """Delete THIS call's pending claim — nothing was committed.
+
+    Under the ``last_update_time`` of the claim's own create(): the only
+    « delete only if it is still mine » Firestore can express. A failure
+    leaves the claim pending, which refuses a same-key retry for the
+    in-flight window and then reads as interrupted — the safe side.
+    """
+    if claim is None:
+        return
+    try:
+        claim.ref.delete(
+            option=db.write_option(last_update_time=claim.update_time))
+    except Exception as exc:
+        _store_failure(tool, "release", exc)
+
+
+def _distinct(commits: tuple) -> list[tuple[str, str]]:
+    seen: set = set()
+    out = []
+    for commit in commits:
+        if commit not in seen:
+            seen.add(commit)
+            out.append(commit)
+    return out
+
+
+def _committed_error(tool: str, args: dict,
+                     commits: list[tuple[str, str]]) -> CommittedWriteError:
+    """The error for a call that committed *commits*, then failed.
+
+    The entity is the FIRST commit — a model writes its primary document
+    first. The dossier is a committed ``dossiers`` document when there is
+    one (the dossier recorders), else the call's own ``dossier_id``: a
+    handler that committed has resolved it. Both only when id-shaped.
+    """
+    collection, entity_id = commits[0]
+    dossier_id = next(
+        (i for c, i in commits if c == "dossiers"), None
+    ) or args.get("dossier_id")
+    return CommittedWriteError(
+        tool,
+        loggable_id(entity_id),
+        loggable_id(dossier_id),
+        collection=collection,
+        rows=len(commits),
+    )
+
+
+def _record_partial(tool: str, key: str, fingerprint: str,
+                    claim: Optional[_Claim], error: CommittedWriteError,
+                    commits: list[tuple[str, str]]) -> None:
+    """Mark the entry ``partial`` so a same-key retry re-raises, never
+    re-executes. Best-effort, like :func:`_finalize`."""
+    if not key:
+        return
+    now = _now()
+    fields = {
+        "status": STATUS_PARTIAL,
+        "partial_at": now,
+        "entity_id": error.entity_id or "",
+        "dossier_id": error.dossier_id or "",
+        "collection": error.collection,
+        "rows": error.rows,
+        # A list of MAPS — Firestore refuses an array of arrays.
+        "commits": [
+            {"collection": c, "id": loggable_id(i) or ""}
+            for c, i in commits[:_MAX_RECORDED_COMMITS]
+        ],
+    }
+    try:
+        if claim is not None:
+            claim.ref.update(
+                fields,
+                option=db.write_option(last_update_time=claim.update_time),
+            )
+        else:
+            _entry_ref(tool, key).create({
+                "tool": tool,
+                "args_fingerprint": fingerprint,
+                "claim_id": str(uuid.uuid4()),
+                "claimed_at": now,
+                "created_at": now,
+                "expire_at": now + IDEMPOTENCY_TTL,
+                **fields,
+            })
+    except Exception as exc:
+        _store_failure(tool, "record_partial", exc)
 
 
 def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
     """Run a write tool under the shared protocol.
 
     *execute()* performs the tool's own resolution + validation and the
-    actual write. It must raise ``ToolArgumentError`` on any refusal so a
-    refused call never records an idempotency entry.
+    actual write. It must raise ``ToolArgumentError`` on any refusal, BEFORE
+    writing, so a refused call never records an idempotency entry. See the
+    module docstring for the claim, the commit point and the policies.
 
     ``dry_run`` was REMOVED on 2026-08-27 (user decision). It had never
     been a control: nothing required it, nothing checked it, and a caller
@@ -161,28 +591,55 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
     endpoint) rather than silently written for —
     which would be the dangerous outcome.
     """
+    policy = idempotency_policy(tool)
     key = str(args.get("idempotency_key") or "").strip()
+    if not key and policy == IDEMPOTENCY_REQUIRED:
+        raise ToolArgumentError(
+            "Cet outil exige une `idempotency_key` : choisissez une chaîne "
+            "stable qui identifie CETTE écriture, et réutilisez-la telle "
+            "quelle si vous devez réessayer.",
+            reason="idempotency_required",
+        )
     fingerprint = args_fingerprint(args) if key else ""
+
+    claim: Optional[_Claim] = None
     if key:
-        prior, conflict = _lookup(tool, key, fingerprint)
-        if conflict:
-            raise ToolArgumentError(
-                "Cette idempotency_key a déjà servi à un appel dont les "
-                "arguments diffèrent. Une clé identifie UNE écriture "
-                "précise — générez une clé nouvelle pour une écriture "
-                "nouvelle.",
-                reason="idempotency_conflict",
-            )
-        if prior is not None:
-            prior["idempotent_replay"] = True
-            return prior
+        outcome = _claim(tool, key, fingerprint, policy)
+        if isinstance(outcome, _Replay):
+            replayed = outcome.result
+            replayed["idempotent_replay"] = True
+            return replayed
+        claim = outcome
 
     # Every model write the tool makes is stamped « mcp » (and its tool
     # name) by the model itself — see models/provenance.py. The block also
-    # opens the commit record the models append to.
+    # opens the commit record the models append to, which is read HERE,
+    # inside the block: its reset on exit would empty it.
     with provenance.writing_via("mcp", tool=tool):
-        payload = execute()
+        try:
+            payload = execute()
+        except Exception as exc:
+            commits = _distinct(provenance.committed_writes())
+            if commits:
+                refusal = isinstance(exc, ToolArgumentError)
+                # A refusal's text describes user-supplied content, so a
+                # refusal after a commit (a handler bug) is logged by class,
+                # without its traceback; anything else keeps its traceback.
+                log_unexpected(
+                    "mcp write failed after its commit point",
+                    exc_info=not refusal,
+                    tool=tool,
+                    commits=len(commits),
+                    error_type=type(exc).__name__,
+                )
+                error = _committed_error(tool, args, commits)
+                _record_partial(tool, key, fingerprint, claim, error, commits)
+                raise error from exc
+            if isinstance(exc, ToolArgumentError) or policy != IDEMPOTENCY_REQUIRED:
+                _release(tool, claim)
+            raise
+
     payload["idempotent_replay"] = False
     if key:
-        _record(tool, key, fingerprint, payload)
+        _finalize(tool, key, fingerprint, claim, payload)
     return payload
