@@ -341,6 +341,49 @@ def test_a_claim_that_appears_between_the_read_and_the_create_wins(fake):
     assert excinfo.value.reason == "idempotency_in_flight"
 
 
+def test_a_claim_lost_on_every_attempt_is_refused_never_run_unclaimed(
+    fake, monkeypatch, caplog
+):
+    """Contention is not a store failure. Every round below is lost to a
+    REAL racer on the same key: it claims right before this call's create
+    (so the SERVER refuses ours, AlreadyExists), then releases — a refused
+    call — before this call re-reads, so the next round starts on an absent
+    entry again. Before the review, the attempts ran out and the `optional`
+    policy failed OPEN: this call executed UNCLAIMED while a same-key call
+    was demonstrably live, which is exactly the duplicate the claim exists
+    to prevent. It is now refused « same key », under the default policy."""
+    args = _args()
+    path = _path("create_note")
+    released = {"pending": False}
+
+    def racer_claims(info):
+        if ("create", path) in info.ops:
+            _pending(fake, "create_note", args, age=timedelta(seconds=1))
+            released["pending"] = True
+
+    fake.add_commit_hook(racer_claims)
+    server = fake._fake_server
+    real_read = server.batch_get_documents
+
+    def racer_releases(request, *a, **k):
+        if released["pending"]:
+            released["pending"] = False
+            fake.external_delete(path)
+        return real_read(request, *a, **k)
+
+    monkeypatch.setattr(server, "batch_get_documents", racer_releases)
+
+    with caplog.at_level(logging.WARNING, logger="pallas.mcp"):
+        with pytest.raises(ToolArgumentError) as excinfo:
+            ws.run_write("create_note", dict(args),
+                         lambda: pytest.fail("never run while contended"))
+    assert tools.idempotency_policy("create_note") == tools.IDEMPOTENCY_OPTIONAL
+    assert excinfo.value.reason == "idempotency_in_flight"
+    assert "MÊME clé" in str(excinfo.value)
+    assert [(f["op"], f["error_type"]) for f in _store_failures(caplog)] == [
+        ("claim", "ClaimContention")]
+
+
 def test_the_in_flight_window_covers_the_platform_request_deadline():
     """The window is the LARGER of the two bounds app.yaml sets: gunicorn's
     --timeout (60 s — a gthread worker's heartbeat, which does not end a
@@ -695,6 +738,11 @@ def test_a_finalize_failure_leaves_the_claim_pending_and_never_duplicates(
         ws.run_write("create_note", _args(), execute)
     assert excinfo.value.reason == "idempotency_in_flight"
     assert calls == ["écrit"]                      # never a second write
+    # The first call is OVER and its result was never stored: the refusal
+    # must not promise that waiting will yield it (review, 2026-09-25).
+    message = str(excinfo.value)
+    assert "sans que son résultat ait pu être enregistré" in message
+    assert "si son résultat a été enregistré" in message
 
 
 # ══════════════════════════════════════════════════════════════════════

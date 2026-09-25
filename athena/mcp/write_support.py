@@ -34,7 +34,13 @@ call finds the claim and decides:
   the ordinary retry-while-the-first-call-runs case, and the one the design
   review caught: telling the caller to re-read and pick a NEW key here would
   reopen exactly the race the claim closes — the re-read shows nothing, the
-  new key writes, the first call then commits too;
+  new key writes, the first call then commits too. The refusal is worded
+  for the other states a young pending claim can stand for — a call that
+  ENDED without its result being stored (a failed finalize, a ``required``
+  claim kept after a failure) — so it never promises a result
+  unconditionally. The same refusal answers a claim that kept changing for
+  every attempt (``ClaimContention``): that is live same-key concurrency,
+  and it never fails open, under either policy;
 * ``pending`` and OLDER → refused, ``idempotency_interrupted``: the first
   call can no longer be running, so re-reading has become reliable — « the
   write may have happened; re-read, and use a new key only if nothing was
@@ -197,7 +203,16 @@ class MalformedEntry(Exception):
 
 
 class ClaimContention(Exception):
-    """The claim kept changing under this call for every attempt."""
+    """The claim kept changing under this call for every attempt.
+
+    Not a store failure: a round is lost only when something else touched
+    this very key between this call's read and its write (a create refused
+    because the entry appeared, a guarded delete refused because it changed
+    or vanished). The TTL collector can account for one such round at most
+    — it deletes an expired entry once — so running out of rounds means
+    other CALLS are live on the key. Demonstrated concurrency on one key is
+    the one situation the claim exists to arbitrate, so it never fails open
+    — see :func:`_claim`."""
 
 
 @dataclass(frozen=True)
@@ -303,21 +318,35 @@ def _age(data: dict, snap: Any, now: datetime) -> Optional[timedelta]:
     return now - claimed_at
 
 
+def _in_flight_refusal(remaining: timedelta) -> ToolArgumentError:
+    """« Wait, then retry with the SAME key » — never « a new key ».
+
+    Worded for every state it can be raised in, not only the one it is
+    named after. A pending claim is also what a call leaves behind when it
+    ENDED without its result being stored: a finalize that failed on a
+    store blip (the write committed, the caller got its result), or a
+    ``required`` tool kept pending after a pre-commit failure. Promising
+    « you will get its result » unconditionally was false there — the
+    retry would wait out the window and then read « interrompu » instead.
+    """
+    minutes = max(1, -(-int(remaining.total_seconds()) // 60))
+    return ToolArgumentError(
+        "Un appel avec cette idempotency_key est encore en cours, ou vient "
+        "de se terminer sans que son résultat ait pu être enregistré — "
+        "attendez puis réessayez avec la MÊME clé : si son résultat a été "
+        "enregistré, vous l'obtiendrez, sans double écriture. Ne changez pas "
+        "de clé : un appel encore en cours peut écrire. (Au-delà d'environ "
+        f"{minutes} min, il sera tenu pour interrompu.)",
+        reason="idempotency_in_flight",
+    )
+
+
 def _refuse_pending(data: dict, snap: Any, now: datetime) -> None:
     age = _age(data, snap, now)
     # An unknowable age reads as YOUNG: « wait, same key » can at worst make
     # the caller wait; « new key » could make it write twice.
     if age is None or age < IN_FLIGHT_WINDOW:
-        remaining = IN_FLIGHT_WINDOW - (age or timedelta(0))
-        minutes = max(1, -(-int(remaining.total_seconds()) // 60))
-        raise ToolArgumentError(
-            "Un appel avec cette idempotency_key est encore en cours — "
-            "attendez puis réessayez avec la MÊME clé : vous obtiendrez son "
-            "résultat, sans double écriture. Ne changez pas de clé : l'appel "
-            "en cours peut encore écrire. (Au-delà d'environ "
-            f"{minutes} min, il sera tenu pour interrompu.)",
-            reason="idempotency_in_flight",
-        )
+        raise _in_flight_refusal(IN_FLIGHT_WINDOW - (age or timedelta(0)))
     raise ToolArgumentError(
         "Un appel avec cette idempotency_key a été interrompu : l'écriture a "
         "peut-être eu lieu, relisez avant de réessayer (nouvelle clé "
@@ -420,7 +449,13 @@ def _claim(tool: str, key: str, fingerprint: str,
         return _Claim(ref=ref, claim_id=claim_id,
                       update_time=written.update_time)
 
-    return _unavailable(tool, "claim", ClaimContention(), policy)
+    # Every round was lost to another call on THIS key. Logged like a store
+    # failure (so the op/error_type trail stays one place to look), but
+    # REFUSED under both policies: failing open here would run this call
+    # unclaimed precisely while a concurrent same-key call is live — the
+    # duplicate the claim exists to prevent.
+    _store_failure(tool, "claim", ClaimContention())
+    raise _in_flight_refusal(IN_FLIGHT_WINDOW)
 
 
 def _entry_ref(tool: str, key: str) -> Any:
