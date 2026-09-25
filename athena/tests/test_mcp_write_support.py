@@ -444,6 +444,8 @@ def test_a_failure_after_the_commit_is_reported_committed_never_retryable(
     message = str(error)
     assert "ENREGISTRÉE" in message and "NE PAS RÉESSAYER" in message
     assert "relisez l'élément" in message
+    # Only the SAME key is safe: a new key — or none at all — writes again.
+    assert "même idempotency_key" in message and "sans clé" in message
     assert TASK_ID in message
     assert isinstance(error.__cause__, RuntimeError)
     # Not a refusal: a -32602 promises nothing was written.

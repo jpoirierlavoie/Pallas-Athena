@@ -102,8 +102,9 @@ class CommittedWriteError(Exception):
         return (
             f"L'écriture est ENREGISTRÉE{where} mais une étape qui la suit a "
             "échoué. NE PAS RÉESSAYER : relisez l'élément pour constater son "
-            "état — un nouvel appel avec une autre clé l'écrirait une seconde "
-            "fois."
+            "état — tout nouvel appel qui ne reprend pas la même "
+            "idempotency_key (un appel sans clé compris) l'écrirait une "
+            "seconde fois."
         )
 
 
