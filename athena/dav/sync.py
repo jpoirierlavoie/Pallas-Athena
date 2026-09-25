@@ -227,6 +227,96 @@ def remove_tombstone(collection_name: str, resource_id: str) -> None:
         )
 
 
+# ── Relocation: a resource moving between collections ────────────────────
+#
+# A task, note or hearing whose dossier changes LEAVES one DAV collection and
+# ENTERS another. Deletions travel only by tombstone — sync-collection reports
+# the live members plus the tombstones, and an href it does not mention reads
+# to the client as « unchanged » — so the old collection needs a tombstone AND
+# a bump, or the phone keeps the old copy for ever; and the new one needs its
+# stale tombstone (if any) removed before its bump, or one REPORT would call
+# the resource both live and deleted (RFC 6578). Three routes carried that
+# choreography by hand (routes/tasks, routes/notes, routes/hearings — the
+# last one compared raw dossier ids instead of collections, so None vs ""
+# churned « Général »), and the connector's future movers need it too.
+#
+# The ORDER lives in ONE place, :func:`relocation_plan`, and two executors
+# run it: :func:`relocate_resource` (raises on the first failure — the loud
+# path a web route wants) and ``mcp.handlers._dav_resync`` (each step in its
+# own guard, because a failure there comes AFTER a committed write, and must
+# be reported rather than raised into a retryable error).
+
+RELOCATION_OPERATIONS: tuple[str, ...] = (
+    "record_tombstone", "bump_ctag", "remove_tombstone",
+)
+
+
+def relocation_plan(
+    resource_id: str,
+    *,
+    old_dossier_id: Optional[str],
+    new_dossier_id: Optional[str],
+    created: bool = False,
+) -> tuple[tuple[str, str], ...]:
+    """The ordered ``(operation, collection)`` steps of one write's resync.
+
+    Keyed on COLLECTIONS (:func:`collection_for`), never raw ids: ``None``
+    (a task without a dossier) and ``""`` (a note or hearing without one)
+    are the same « Général » collection, so moving between them is no move.
+
+    * a creation — ``remove_tombstone(new)``, ``bump_ctag(new)`` (a recycled
+      id may still carry a tombstone from a previous delete);
+    * a real move — ``record_tombstone(old)``, ``bump_ctag(old)``,
+      ``remove_tombstone(new)``, ``bump_ctag(new)``;
+    * otherwise — ``bump_ctag(new)``.
+
+    *resource_id* is not part of the plan's shape (every tombstone step
+    concerns it) but is required: a plan for no resource is a caller bug.
+    """
+    if not resource_id:
+        raise ValueError("relocation_plan needs the resource id")
+    new_scope = collection_for(new_dossier_id)
+    if created:
+        return (("remove_tombstone", new_scope), ("bump_ctag", new_scope))
+    old_scope = collection_for(old_dossier_id)
+    if old_scope != new_scope:
+        return (
+            ("record_tombstone", old_scope),
+            ("bump_ctag", old_scope),
+            ("remove_tombstone", new_scope),
+            ("bump_ctag", new_scope),
+        )
+    return (("bump_ctag", new_scope),)
+
+
+def relocate_resource(
+    resource_id: str,
+    *,
+    old_dossier_id: Optional[str],
+    new_dossier_id: Optional[str],
+    created: bool = False,
+) -> None:
+    """Run :func:`relocation_plan` — the move choreography — in order.
+
+    Raises on the first failure (``remove_tombstone`` never does: it logs
+    and swallows its own, as it always has). The primitives are looked up
+    at CALL time, so a test that patches ``dav.sync.bump_ctag`` sees every
+    step.
+    """
+    for operation, collection in relocation_plan(
+        resource_id,
+        old_dossier_id=old_dossier_id,
+        new_dossier_id=new_dossier_id,
+        created=created,
+    ):
+        if operation == "bump_ctag":
+            bump_ctag(collection)
+        elif operation == "record_tombstone":
+            record_tombstone(collection, resource_id)
+        else:
+            remove_tombstone(collection, resource_id)
+
+
 def get_tombstones(
     collection_name: str, since_token: Optional[str] = None
 ) -> list[dict]:

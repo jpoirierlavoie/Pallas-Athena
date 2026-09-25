@@ -69,7 +69,13 @@ import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Callable, Optional
 
-from dav.sync import bump_ctag, collection_for, remove_tombstone
+from dav.sync import (
+    bump_ctag,
+    collection_for,
+    record_tombstone,
+    relocation_plan,
+    remove_tombstone,
+)
 from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
@@ -2522,6 +2528,65 @@ def _clean_note_text(raw: str, field: str) -> str:
     return cleaned
 
 
+def _dav_resync(
+    entity_id: str,
+    *,
+    old_dossier_id: Optional[str],
+    new_dossier_id: Optional[str],
+    created: bool,
+) -> tuple[bool, bool]:
+    """Tell DavX5 about one committed write; return ``(new_ok, old_ok)``.
+
+    Runs ``dav.sync.relocation_plan`` — the ONE statement of the order
+    (tombstone old → bump old → un-tombstone new → bump new on a move;
+    un-tombstone + bump on a creation; a bump otherwise), shared with
+    ``dav.sync.relocate_resource`` — through THIS module's primitives, so
+    a test that patches ``handlers.bump_ctag`` sees every step.
+
+    Each step runs in its OWN guard and every step is attempted: the write
+    is ALREADY committed when this runs, so a failure must be reported,
+    never raised — an exception escaping here would reach
+    ``endpoint._tools_call`` as a retryable error and the model would
+    write twice. It also keeps the halves independent: an old collection
+    that cannot be told the resource left must not stop the new one from
+    learning it arrived. ``new_ok`` — every step on the NEW collection
+    succeeded (the caller's ``ctag_bumped``); ``old_ok`` — every step on
+    the OLD one did (``True`` when there was no move).
+    """
+    from utils.logging_setup import log_unexpected
+
+    new_scope = collection_for(new_dossier_id)
+    try:
+        plan = relocation_plan(
+            entity_id,
+            old_dossier_id=old_dossier_id,
+            new_dossier_id=new_dossier_id,
+            created=created,
+        )
+    except Exception:
+        log_unexpected("mcp write: DAV resync could not be planned")
+        return False, False
+    steps = {
+        "bump_ctag": lambda coll: bump_ctag(coll),
+        "record_tombstone": lambda coll: record_tombstone(coll, entity_id),
+        "remove_tombstone": lambda coll: remove_tombstone(coll, entity_id),
+    }
+    new_ok = old_ok = True
+    for operation, collection in plan:
+        try:
+            steps[operation](collection)
+        except Exception:
+            log_unexpected(
+                "mcp write: DAV resync step failed",
+                step=operation, collection=collection,
+            )
+            if collection == new_scope:
+                new_ok = False
+            else:
+                old_ok = False
+    return new_ok, old_ok
+
+
 def _bump_note_ctag(dossier_id: str, note_id: str, *, created: bool) -> bool:
     """Bump the dossier collection's CTag; return whether it succeeded.
 
@@ -2531,21 +2596,18 @@ def _bump_note_ctag(dossier_id: str, note_id: str, *, created: bool) -> bool:
     committed write as a failure — the model would retry and duplicate the
     note in a client's file. The caller surfaces the outcome as
     ``dav_synced`` instead.
-    """
-    scope = collection_for(dossier_id)
-    try:
-        if created:
-            # A recycled id could still carry a tombstone from a previous
-            # delete; RFC 6578 requires one response per href, and the
-            # sync-collection builder skips a tombstoned id.
-            remove_tombstone(scope, note_id)
-        bump_ctag(scope)
-        return True
-    except Exception:
-        from utils.logging_setup import log_unexpected
 
-        log_unexpected("mcp note write: ctag bump failed", dossier_id=dossier_id)
-        return False
+    A write that does not move the record: :func:`_dav_resync` with the
+    same dossier on both sides — on a creation, the stale tombstone a
+    recycled id could still carry is removed first (RFC 6578 requires one
+    response per href, and the sync-collection builder skips a tombstoned
+    id).
+    """
+    new_ok, _ = _dav_resync(
+        note_id, old_dossier_id=dossier_id, new_dossier_id=dossier_id,
+        created=created,
+    )
+    return new_ok
 
 
 def _write_result(
@@ -3054,6 +3116,12 @@ def _resolve_phase_pair(args: dict) -> tuple[str, str]:
     return phase, sous
 
 
+# « The caller did not say where the record was before this write » — the
+# default of _entity_write_result's previous_dossier_id, distinct from None
+# and "" (a record that WAS in « Général »).
+_UNCHANGED: Any = object()
+
+
 def _entity_write_result(
     entity_type: str,
     entity: dict,
@@ -3063,6 +3131,7 @@ def _entity_write_result(
     verb: str = "created",
     created: bool = True,
     wrote: bool = True,
+    previous_dossier_id: Any = _UNCHANGED,
 ) -> dict:
     """Success payload for the WP16 creators and WP17 recorders.
 
@@ -3086,6 +3155,17 @@ def _entity_write_result(
     a payload a strict client rejects with nothing said on our side —
     exactly what ``tests/test_mcp_output_schemas.py`` exists to catch, and
     what it did catch the day ``wrote`` replaced ``dry_run`` here.
+
+    *previous_dossier_id* — where the record was BEFORE this write — is for
+    a write that can MOVE a DAV-exposed record to another dossier (Lot 1's
+    movers; no tool passes it yet). Passed, the resync is the full
+    relocation (:func:`_dav_resync`) and the payload gains
+    ``previous_collection_cleared``: ``false`` only when the record moved
+    and the OLD collection could not be told it left — a stale copy may
+    then stay on the phone in the old dossier. A tool that passes it must
+    declare the key (``output_schemas._entity_write_result(…,
+    relocates=True)``); a tool that does not never emits it, and
+    ``tests/test_mcp_dav_resync.py`` derives the pairing.
     """
     payload: dict[str, Any] = {
         verb: True,
@@ -3093,20 +3173,41 @@ def _entity_write_result(
         "entity": entity,
         "warnings": [],
     }
+    relocating = previous_dossier_id is not _UNCHANGED
     if dav_exposed:
-        bumped = wrote and _bump_note_ctag(
-            entity.get("dossier_id") or "", entity.get("id", ""),
-            created=created,
-        )
+        old_cleared = True
+        if not wrote:
+            bumped = False
+        elif relocating:
+            bumped, old_cleared = _dav_resync(
+                entity.get("id", ""),
+                old_dossier_id=previous_dossier_id,
+                new_dossier_id=entity.get("dossier_id") or "",
+                created=created,
+            )
+        else:
+            bumped = _bump_note_ctag(
+                entity.get("dossier_id") or "", entity.get("id", ""),
+                created=created,
+            )
         status = dossier.get("status", "") if dossier is not None else None
         dav_visible = status is None or status in ("actif", "en_attente")
         payload["ctag_bumped"] = bumped
         payload["dav_synced"] = bumped and dav_visible
+        if relocating:
+            payload["previous_collection_cleared"] = old_cleared
         if wrote and not bumped:
             payload["warnings"].append(
                 "L'écriture est enregistrée, mais la synchronisation DavX5 "
                 "n'a pas pu être déclenchée. Elle apparaîtra sur l'appareil "
                 "au prochain changement dans ce dossier. Ne pas réessayer."
+            )
+        if wrote and not old_cleared:
+            payload["warnings"].append(
+                "L'écriture est enregistrée, mais l'ancien dossier n'a pas "
+                "pu être informé du déplacement : une copie périmée peut "
+                "rester sur le téléphone dans l'ancien dossier. Ne pas "
+                "réessayer."
             )
         if wrote and not dav_visible:
             payload["warnings"].append(

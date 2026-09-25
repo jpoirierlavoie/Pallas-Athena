@@ -519,6 +519,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_prescription_events.py   # derive_prescription: depot/reconnaissance/suspension,
 │   │   │                                 # legacy prise_action_date fold, three-surface parity
 │   │   ├── test_mcp_write_support.py     # run_write: idempotency replay/conflict, fail-open
+│   │   ├── test_mcp_dav_resync.py        # dav.sync.relocation_plan + its two executors: the
+│   │   │                                 # store after a move (shared fake), parity with the
+│   │   │                                 # route blocks, independent halves, and the DERIVED
+│   │   │                                 # tool ↔ previous_collection_cleared pairing
 │   │   ├── test_concurrency.py           # models/concurrency on the shared fake: legacy path
 │   │   │                                 # unchanged, stale/vanished/raced writes nothing
 │   │   ├── test_storage_identity.py      # owner_uid memo keyed on the email, fail-closed;
@@ -2638,7 +2642,11 @@ bump_ctag_in_batch(batch, collection_name: str) -> str                         #
 record_tombstones_in_batch(batch, collection_name, resource_ids, sync_token) -> None
 clear_tombstones(collection_name: str) -> None
 delete_sync_state(collection_name: str) -> None   # removes the dav_sync doc (run clear_tombstones first)
+relocation_plan(resource_id, *, old_dossier_id, new_dossier_id, created=False) -> tuple[(op, collection), ...]
+relocate_resource(resource_id, *, old_dossier_id, new_dossier_id, created=False) -> None  # runs the plan; raises on the 1st failure
 ```
+
+> **Relocation (lot 0a, 2026-09-25).** A resource whose dossier changes LEAVES one collection and ENTERS another; the ORDER lives in ONE place, `relocation_plan`, keyed on `collection_for` scopes and never on raw ids (`None` and `""` are both « Général »): a real move is `record_tombstone(old)` → `bump_ctag(old)` → `remove_tombstone(new)` → `bump_ctag(new)`; a creation is `remove_tombstone(new)` + `bump_ctag(new)`; anything else one `bump_ctag(new)`. Two executors run it: `relocate_resource` (loud — the first failure raises, the route's path) and `mcp.handlers._dav_resync` (every step under its own guard and every step attempted, because the write is already committed — returns `(new_ok, old_ok)`; `_bump_note_ctag` is its no-move case). A handler that MOVES a record passes `previous_dossier_id` to `handlers._entity_write_result`, which then emits `previous_collection_cleared` (`false` = the old collection could not be told, a stale copy may stay on the phone) — and must declare it with `output_schemas._entity_write_result(…, relocates=True)`: `tests/test_mcp_dav_resync.py` derives the tool ↔ key pairing from the handlers, and no tool relocates before Lot 1. The same file pins the parity with the three hand-written route blocks it generalizes, transcribed as they stood; `routes/hearings.py`'s block compares RAW ids, so it differs on exactly `(None, "")`/`("", None)` — a spurious tombstone-and-remove in « Général » plus a second bump.
 
 > **Bulk primitives (août 2026).** `record_tombstone` appelle `get_ctag` en ligne, soit **DEUX allers-retours sérialisés par ressource** : drainer un dossier chargé — ou supprimer une série — de cette façon marche droit dans le délai de 60 s de gunicorn, et un SIGKILL là est irrécupérable (les ressources ont quitté la collection, le CTag n'a jamais été bumpé, et plus rien ne dit à DavX5 d'aller voir). `record_tombstones_bulk` fait une lecture et `ceil(N/450)` commits ; il **propage** ses échecs.
 >

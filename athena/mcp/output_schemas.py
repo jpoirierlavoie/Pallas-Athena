@@ -649,14 +649,26 @@ def _written_entity(extra: dict[str, Any]) -> dict:
 
 def _entity_write_result(
     entity_extra: dict[str, Any], *, dav: bool, verb: str = "created",
-    extra: Optional[dict[str, Any]] = None,
+    extra: Optional[dict[str, Any]] = None, relocates: bool = False,
 ) -> dict:
     """Result contract of a WP16 creator / WP17 recorder.
 
     DAV-exposed entities (task, hearing) carry ctag_bumped/dav_synced;
     time entries, expenses and dossier-array additions are not DAV-exposed
     and deliberately do NOT declare those keys — faking them would claim a
-    sync that does not exist."""
+    sync that does not exist.
+
+    *relocates* — for a tool whose write can MOVE the record to another
+    dossier, and whose handler therefore passes ``previous_dossier_id`` to
+    ``handlers._entity_write_result`` (Lot 1's movers; none yet). It adds
+    ``previous_collection_cleared``, REQUIRED because such a handler emits
+    it on every call. A tool that does not relocate never declares it —
+    ``_obj`` requires every listed key, so declaring it on a tool that
+    never emits it would ship a violated contract;
+    ``tests/test_mcp_dav_resync.py`` derives the pairing from the
+    handlers."""
+    if relocates and not dav:
+        raise ValueError("only a DAV-exposed entity has a collection to leave")
     props: dict[str, Any] = {
         verb: {"type": "boolean", "enum": [True]},
         "entity_type": _str(),
@@ -672,6 +684,13 @@ def _entity_write_result(
         props["dav_synced"] = _bool(
             "ctag_bumped AND the collection is visible to DavX5 (a "
             "fermé/archivé dossier's is not).")
+    if relocates:
+        props["previous_collection_cleared"] = _bool(
+            "false = the record MOVED to another dossier and the OLD "
+            "dossier's DavX5 collection could not be told it left: a stale "
+            "copy may stay on the phone there. true otherwise, including "
+            "when it did not move. The write COMMITTED either way; do not "
+            "retry.")
     if extra:
         props.update(extra)
     return _obj(props)
