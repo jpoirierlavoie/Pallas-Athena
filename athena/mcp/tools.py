@@ -123,14 +123,19 @@ def validate_args(schema: dict, args: Any) -> list[str]:
     Supported keywords: ``type`` (object, string, integer, number, boolean,
     array, null — or a LIST of those for nullable fields), ``properties``,
     ``required``, ``enum``, ``minimum``, ``maximum``, ``maxLength``,
-    ``minLength``, ``items`` (one level), ``anyOf``,
-    ``additionalProperties: false``. Empty list = valid.
+    ``minLength``, ``minItems``, ``maxItems``, ``items`` (one level),
+    ``anyOf``, ``additionalProperties: false``. Empty list = valid.
 
     Despite the name, this validates OUTPUT payloads too: the conformance
     tests run every handler and check its real payload against the declared
     ``outputSchema`` with this same validator, so a schema the validator
     cannot express cannot be declared — the contract and its enforcement
     use one grammar.
+
+    ⚠ An UNLISTED keyword is not an error: it is silently ignored. That is
+    how ``minItems``/``maxItems`` sat declared on the bulk phase tools,
+    advertised to the client and enforced by nothing but the handler,
+    until 2026-09-25. Implement a keyword here before a schema relies on it.
     """
     return _validate_value(schema, args, "arguments")
 
@@ -270,6 +275,26 @@ def _validate_value(schema: dict, value: Any, name: str) -> list[str]:
                 f"`{name}` must be at least {schema['minLength']} "
                 "non-whitespace characters"
             )
+
+    if isinstance(value, list):
+        # Counted BEFORE the items are walked, and a count violation ends
+        # the check: an oversized array would otherwise be validated item by
+        # item and its per-item errors echoed back in one refusal — work and
+        # a response both proportional to what the caller chose to send.
+        count_errors: list[str] = []
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            count_errors.append(
+                f"`{name}` must contain at least {schema['minItems']} "
+                f"item(s) ({len(value)} given)"
+            )
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            count_errors.append(
+                f"`{name}` must contain at most {schema['maxItems']} "
+                f"items ({len(value)} given)"
+            )
+        if count_errors:
+            errors.extend(count_errors)
+            return errors
 
     if isinstance(value, list) and "items" in schema:
         for index, item in enumerate(value):
@@ -858,9 +883,10 @@ def _phase_props() -> dict:
 # — against gunicorn's 60 s SIGKILL, not against a round number: one batched
 # read plus at most 50 serialized single-key updates is a few seconds. It
 # also equals one `list_time_entries` page, so the read and write cadences
-# line up. `minItems`/`maxItems` below are declared for the CLIENT's benefit;
-# this module's subset validator does not implement them (as with
-# `multipleOf` on hours), so the real enforcement is in the handler.
+# line up. `minItems`/`maxItems` below are enforced by `validate_args` on the
+# endpoint path since 2026-09-25 (they were declared and ignored until then).
+# The handler still repeats both bounds, in French: a direct call skips the
+# schema, and the house rule is that a handler never relies on it.
 PHASE_BULK_MAX = 50
 
 

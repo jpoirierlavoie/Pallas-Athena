@@ -95,6 +95,109 @@ def test_validator_type_checks():
     assert tools.validate_args(_SCHEMA, "not-an-object")
 
 
+_BOUNDED = {
+    "type": "object",
+    "properties": {
+        "rows": {"type": "array", "minItems": 1, "maxItems": 3,
+                 "items": {"type": "string", "maxLength": 2}},
+    },
+    "additionalProperties": False,
+}
+
+
+def test_validator_enforces_min_and_max_items():
+    """Declared on the bulk phase tools and IGNORED by this validator until
+    2026-09-25: an unlisted keyword is silently skipped, so the client was
+    told « 1 to 50 » while the endpoint accepted any count."""
+    assert tools.validate_args(_BOUNDED, {"rows": ["a"]}) == []
+    assert tools.validate_args(_BOUNDED, {"rows": ["a", "b", "c"]}) == []
+    assert tools.validate_args(_BOUNDED, {"rows": []}) == [
+        "`rows` must contain at least 1 item(s) (0 given)"
+    ]
+    assert tools.validate_args(_BOUNDED, {"rows": ["a"] * 4}) == [
+        "`rows` must contain at most 3 items (4 given)"
+    ]
+    # An absent array has nothing to count; `required` is the keyword for
+    # presence, and this one does not declare it.
+    assert tools.validate_args(_BOUNDED, {}) == []
+
+
+def test_an_oversized_array_is_refused_on_its_count_not_item_by_item():
+    """A count violation ends the check: validating 500 bad items would
+    echo 500 errors back in one refusal, work and response size both
+    chosen by the caller."""
+    errors = tools.validate_args(_BOUNDED, {"rows": ["too-long"] * 500})
+    assert errors == ["`rows` must contain at most 3 items (500 given)"]
+    # Within the bound, the items are still validated one by one.
+    errors = tools.validate_args(_BOUNDED, {"rows": ["ok", "too-long"]})
+    assert errors == ["`rows[1]` must be at most 2 characters"]
+
+
+@pytest.mark.parametrize(
+    "tool, id_key",
+    [("set_time_entry_phase_bulk", "time_entry_id"),
+     ("set_expense_phase_bulk", "expense_id")],
+)
+def test_the_bulk_phase_schemas_enforce_the_bounds_they_declare(tool, id_key):
+    schema = tools.TOOLS[tool]["input_schema"]
+    item = {id_key: "e1", "phase": "PRE"}
+    assert tools.validate_args(schema, {"entries": [item]}) == []
+    assert tools.validate_args(
+        schema, {"entries": [item] * tools.PHASE_BULK_MAX}
+    ) == []
+    assert tools.validate_args(schema, {"entries": []})
+    assert tools.validate_args(
+        schema, {"entries": [item] * (tools.PHASE_BULK_MAX + 1)}
+    )
+
+
+# The keywords `_validate_value` ENFORCES. Adding one here is a promise that
+# it is implemented there — this set is the policy, the walk below is
+# derived. `description` is the one annotation-only key: it constrains
+# nothing and is not meant to.
+_ENFORCED_KEYWORDS = frozenset({
+    "type", "properties", "required", "enum", "minimum", "maximum",
+    "maxLength", "minLength", "minItems", "maxItems", "items", "anyOf",
+    "additionalProperties",
+})
+_ANNOTATION_KEYWORDS = frozenset({"description"})
+
+
+def _schema_keywords(schema: dict, where: str, found: set) -> None:
+    for key, value in schema.items():
+        found.add((key, where))
+        if key == "properties":
+            for prop_name, sub in value.items():
+                _schema_keywords(sub, f"{where}.{prop_name}", found)
+        elif key == "items" and isinstance(value, dict):
+            _schema_keywords(value, f"{where}[]", found)
+        elif key == "anyOf":
+            for index, branch in enumerate(value):
+                _schema_keywords(branch, f"{where}|{index}", found)
+        elif key == "additionalProperties" and isinstance(value, dict):
+            _schema_keywords(value, f"{where}{{*}}", found)
+
+
+def test_no_schema_declares_a_keyword_the_validator_would_ignore():
+    """Derived over EVERY declared schema, input and output. The validator
+    skips an unknown keyword without a word — which is exactly how
+    `minItems`/`maxItems` advertised a bound nothing enforced. A new
+    `multipleOf`, `pattern` or `uniqueItems` must be implemented first."""
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+
+    found: set = set()
+    for name, spec in tools.TOOLS.items():
+        _schema_keywords(spec["input_schema"], f"{name}<in>", found)
+    for name, schema in OUTPUT_SCHEMAS.items():
+        _schema_keywords(schema, f"{name}<out>", found)
+    assert {k for k, _ in found} >= {"minItems", "maxItems"}  # non-vacuous
+    unknown = sorted(
+        (where, key) for key, where in found
+        if key not in _ENFORCED_KEYWORDS | _ANNOTATION_KEYWORDS
+    )
+    assert not unknown, unknown
+
+
 # ── Money / date formatting ─────────────────────────────────────────────
 
 def test_format_cents():
