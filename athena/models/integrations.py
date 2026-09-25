@@ -55,7 +55,6 @@ the page) or the lot would ship a bootstrap freeze of both syncs.
 """
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 

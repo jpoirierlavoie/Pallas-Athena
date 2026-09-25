@@ -45,7 +45,6 @@ so the rendering belongs in the one authority rather than at each reader.
 """
 
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
