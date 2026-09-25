@@ -83,6 +83,8 @@
     <div class="mt-4 pt-4 border-t border-gray-100">
       <form method="post" action="{{ url_for('tasks.task_toggle', task_id=task.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {# The state this button was rendered to reach — never « flip ». #}
+        <input type="hidden" name="target" value="{{ 'à_faire' if task.status == 'terminée' else 'terminée' }}">
         {% if task.status == 'terminée' %}
         <button type="submit"
                 class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100">

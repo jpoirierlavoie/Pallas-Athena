@@ -38,11 +38,15 @@
        @touchmove="dx = $event.touches[0].clientX - startX"
        @touchend="if (dx > 80) { $refs.toggleBtn{{ loop.index }}.click() }; dx = 0"
        :style="dx > 0 ? 'transform: translateX(' + Math.min(dx, 100) + 'px); background: rgb(220 252 231)' : ''">
-    {# Checkbox #}
+    {# Checkbox — posts the state it was rendered to reach (never « flip »):
+       a stale list asking for what is already true writes nothing. The
+       field is `target`, not `status`: the list's status FILTER travels
+       in the same request through hx-include. #}
     <button hx-post="{{ url_for('tasks.task_toggle', task_id=task.id) }}"
             hx-target="#task-content"
             hx-swap="innerHTML"
             hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'
+            hx-vals='{"target": "terminée"}'
             hx-include="[name='status'], [name='priority'], [name='category'], [name='dossier']"
             x-ref="toggleBtn{{ loop.index }}"
             class="w-5 h-5 rounded border-2 border-gray-300 flex-shrink-0 flex items-center justify-center hover:border-indigo-500 hover:bg-indigo-50 transition-colors">
@@ -113,11 +117,12 @@
     {% for task in completed_tasks %}
     <div id="task-{{ task.id }}"
          class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 opacity-60">
-      {# Checked checkbox #}
+      {# Checked checkbox — reopens (target à_faire), never « flip ». #}
       <button hx-post="{{ url_for('tasks.task_toggle', task_id=task.id) }}"
               hx-target="#task-content"
               hx-swap="innerHTML"
               hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'
+              hx-vals='{"target": "à_faire"}'
               hx-include="[name='status'], [name='priority'], [name='category'], [name='dossier']"
               class="w-5 h-5 rounded border-2 border-green-500 bg-green-500 flex-shrink-0 flex items-center justify-center hover:bg-green-400 transition-colors">
         {{ ms('check', 12, 'text-white') }}

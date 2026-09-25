@@ -15,6 +15,9 @@
     <div class="flex items-center gap-2">
       <form method="post" action="{{ url_for('notes.note_pin', note_id=note.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {# The state this button was rendered to reach — never « flip »:
+           a stale page then asks for what is true, and nothing moves. #}
+        <input type="hidden" name="pinned" value="{{ '0' if note.pinned else '1' }}">
         <button type="submit"
                 title="{{ 'Désépingler' if note.pinned else 'Épingler' }}"
                 aria-label="{{ 'Désépingler' if note.pinned else 'Épingler' }}"

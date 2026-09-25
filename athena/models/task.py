@@ -388,6 +388,58 @@ def delete_task(task_id: str) -> tuple[bool, str]:
         return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
+# The two states the web checkbox can ask for. `en_cours` and `annulée` are
+# set on the edit form, never by a one-click control.
+COMPLETION_TARGETS: tuple[str, ...] = ("terminée", "à_faire")
+
+CANCELLED_MEANWHILE = (
+    "Cette tâche a été annulée entre-temps : rien n'a été changé. "
+    "Modifiez-la depuis sa fiche si elle doit reprendre."
+)
+
+
+def set_task_completion(
+    task_id: str, target: str
+) -> tuple[Optional[dict], list[str], bool]:
+    """Mark a task done (``terminée``) or open (``à_faire``) — never a toggle.
+
+    Returns ``(doc, errors, changed)``. The web checkbox posts the state it
+    was RENDERED to reach, so a stale list can no longer do the opposite of
+    what it shows: a box drawn unticked that is clicked after the phone
+    closed the task asks for « terminée », which is already true — nothing
+    is written (``changed`` False: no etag churn, no protocol cascade, and
+    the caller bumps no CTag). ``à_faire`` on a task already open —
+    ``en_cours`` included — is the same no-op, so an in-progress task is
+    never demoted.
+
+    A CANCELLED task is refused either way. No current control offers a
+    checkbox on one, so a request for it is a stale page, and turning the
+    lawyer's cancellation into « done » or « to do » would rewrite a
+    decision (the rule the connector's ``complete_task`` follows).
+
+    The status write compare-and-sets against the version just read: the
+    decision above was made on that version, and a write landing in between
+    must be refused, not overwritten.
+    """
+    if target not in COMPLETION_TARGETS:
+        return None, ["Statut demandé invalide."], False
+    existing = get_task(task_id)
+    if not existing:
+        return None, ["Tâche introuvable."], False
+    status = existing.get("status", "")
+    if status == "annulée":
+        return None, [CANCELLED_MEANWHILE], False
+    if target == "terminée" and status == "terminée":
+        return existing, [], False
+    if target == "à_faire" and status in ("à_faire", "en_cours"):
+        return existing, [], False
+    doc, errors = update_task(
+        task_id, {"status": target},
+        expected_etag=concurrency.etag_of(existing),
+    )
+    return doc, errors, doc is not None and not errors
+
+
 def toggle_task_complete(task_id: str) -> tuple[Optional[dict], list[str]]:
     """Toggle a task between à_faire and terminée. Returns (updated_doc, errors)."""
     existing = get_task(task_id)

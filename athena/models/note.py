@@ -19,6 +19,7 @@ from typing import Optional
 
 import icalendar
 
+from google.api_core.exceptions import NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
@@ -359,12 +360,58 @@ def delete_note(note_id: str) -> tuple[bool, str]:
         return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
-def toggle_pin(note_id: str) -> tuple[Optional[dict], list[str]]:
-    """Toggle the pinned status of a note."""
+def set_pinned(
+    note_id: str, pinned: bool
+) -> tuple[Optional[dict], list[str], bool]:
+    """Pin or unpin a note — SET to a target, never a toggle.
+
+    Returns ``(doc, errors, changed)``. A note already in the requested
+    state writes NOTHING (``changed`` False: no etag churn, and the caller
+    bumps no CTag, so a phone is not woken for an unchanged note). That is
+    what makes a stale page harmless: a button rendered « Épingler » that
+    is clicked after another tab pinned the note asks for what is already
+    true, and a toggle would have UNPINNED it.
+
+    The write is a partial ``update()`` of ``pinned`` and its stamp — never
+    the merged full-document ``set()`` of ``update_note``, which would
+    rewrite the content the page read (a block the connector appended since
+    it opened, say) along with the flag. A partial update cannot erase what
+    it does not name, so it needs no etag.
+    """
     existing = get_note(note_id)
     if not existing:
-        return None, ["Note introuvable."]
-    return update_note(note_id, {"pinned": not existing.get("pinned", False)})
+        return None, ["Note introuvable."], False
+    pinned = bool(pinned)
+    if bool(existing.get("pinned", False)) == pinned:
+        return existing, [], False
+
+    stamp = provenance.update_fields(datetime.now(timezone.utc))
+    try:
+        concurrency.commit_fields(
+            db.collection(COLLECTION).document(note_id),
+            {"pinned": pinned, **stamp},
+            expected_etag=None,
+        )
+    except NotFound:
+        return None, ["Note introuvable."], False
+    except Exception:
+        log_unexpected("note pin write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    provenance.note_commit(COLLECTION, note_id)
+    return {**existing, "pinned": pinned, **stamp}, [], True
+
+
+def toggle_pin(note_id: str) -> tuple[Optional[dict], list[str], bool]:
+    """Flip the pinned status — for a caller that did not say which way.
+
+    Only a page rendered before the pin button posted its target reaches
+    this (routes/notes.note_pin); every current caller names the state it
+    wants and goes through :func:`set_pinned`.
+    """
+    existing = get_note(note_id)
+    if not existing:
+        return None, ["Note introuvable."], False
+    return set_pinned(note_id, not existing.get("pinned", False))
 
 
 # ── Théorie de la cause (feuille « Analyse ») ────────────────────────────

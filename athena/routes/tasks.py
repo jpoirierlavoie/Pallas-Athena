@@ -33,8 +33,8 @@ from models.task import (
     get_task,
     list_tasks,
     list_tasks_by_status,
+    set_task_completion,
     sort_tasks_for_display,
-    toggle_task_complete,
     update_task,
 )
 from models.dossier import (
@@ -462,11 +462,34 @@ def task_delete(task_id: str) -> str:
 # ── Toggle complete (HTMX) ──────────────────────────────────────────────
 
 
+def _toggle_target(task_id: str) -> str:
+    """The state the checkbox was rendered to reach.
+
+    Every control posts ``target`` (``terminée`` or ``à_faire``) since
+    2026-09-25. A page rendered before that posts nothing: its intent is
+    read off the STORED status, the way the old toggle did — which is the
+    very staleness the target removes, accepted only for tabs already open
+    at deploy time (a cancelled task is still refused by the model).
+    """
+    target = request.form.get("target")
+    if target is not None:
+        return target.strip()
+    existing = get_task(task_id) or {}
+    return "à_faire" if existing.get("status") == "terminée" else "terminée"
+
+
 @tasks_bp.route("/<task_id>/toggle", methods=["POST"])
 @login_required
 def task_toggle(task_id: str) -> str:
-    """Toggle task completion status. Returns updated task list for HTMX."""
-    task, errors = toggle_task_complete(task_id)
+    """Set a task done or open, as the clicked control asked.
+
+    Never a toggle: a stale list asking for the state the task is already
+    in writes nothing and bumps no CTag (``set_task_completion``). Returns
+    the updated task list for HTMX.
+    """
+    task, errors, changed = set_task_completion(
+        task_id, _toggle_target(task_id)
+    )
 
     if errors:
         # Jamais un fragment 4xx : htmx 2.0.4 n'échange que les 2xx, donc
@@ -490,7 +513,8 @@ def task_toggle(task_id: str) -> str:
             resp.headers["HX-Redirect"] = target
         return resp
 
-    bump_ctag(collection_for(task.get("dossier_id")))
+    if changed:
+        bump_ctag(collection_for(task.get("dossier_id")))
 
     if _is_htmx():
         # Re-fetch with active filters (posted via hx-include on the toggle

@@ -778,7 +778,130 @@ def test_a_refused_document_save_with_a_date_re_renders(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 4. Le bandeau lui-même
+# 4. Les bascules deviennent des consignes
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def bumps(monkeypatch):
+    seen: list[str] = []
+    for module in (tasks_routes, notes_routes):
+        monkeypatch.setattr(module, "bump_ctag",
+                            lambda name, _s=seen: _s.append(name) or "c")
+    return seen
+
+
+def test_the_task_checkboxes_post_their_target(client, db, dossier_id):
+    task_id = _seed_task(db, dossier_id)
+    html = client.get("/taches/").get_data(as_text=True)
+    assert f'hx-post="/taches/{task_id}/toggle"' in html
+    assert """hx-vals='{"target": "terminée"}'""" in html
+    detail = client.get(f"/taches/{task_id}").get_data(as_text=True)
+    assert 'name="target" value="terminée"' in detail
+
+
+def test_a_stale_checkbox_asking_for_done_on_a_done_task_writes_nothing(
+    client, db, dossier_id, bumps
+):
+    task_id = _seed_task(db, dossier_id)
+    ok = client.post(f"/taches/{task_id}/toggle", data={"target": "terminée"})
+    assert ok.status_code == 302
+    after_first = db.peek(f"tasks/{task_id}")
+    assert after_first["status"] == "terminée"
+    assert bumps == [f"dossier:{dossier_id}"]
+
+    # The same list, still showing the box unticked, is clicked again. A
+    # toggle would have REOPENED the task.
+    again = client.post(f"/taches/{task_id}/toggle", data={"target": "terminée"})
+    assert again.status_code == 302
+    assert db.peek(f"tasks/{task_id}") == after_first
+    assert bumps == [f"dossier:{dossier_id}"]   # no second bump
+
+
+def test_reopening_an_open_task_keeps_en_cours(client, db, dossier_id, bumps):
+    task_id = _seed_task(db, dossier_id)
+    task_model.update_task(task_id, {"status": "en_cours"})
+    before = db.peek(f"tasks/{task_id}")
+    client.post(f"/taches/{task_id}/toggle", data={"target": "à_faire"})
+    assert db.peek(f"tasks/{task_id}") == before
+    assert bumps == []
+
+
+def test_a_cancelled_task_is_never_flipped_by_a_checkbox(
+    client, db, dossier_id, bumps
+):
+    task_id = _seed_task(db, dossier_id)
+    task_model.update_task(task_id, {"status": "annulée"})
+    before = db.peek(f"tasks/{task_id}")
+    for data in ({"target": "terminée"}, {"target": "à_faire"}, {}):
+        resp = client.post(f"/taches/{task_id}/toggle", data=data)
+        assert resp.status_code == 302
+        assert "annul" in resp.headers["Location"]  # the ?erreur= banner
+    assert db.peek(f"tasks/{task_id}") == before
+    assert bumps == []
+
+
+def test_a_page_without_target_keeps_the_old_toggle(
+    client, db, dossier_id, bumps
+):
+    task_id = _seed_task(db, dossier_id)
+    client.post(f"/taches/{task_id}/toggle", data={})
+    assert db.peek(f"tasks/{task_id}")["status"] == "terminée"
+    client.post(f"/taches/{task_id}/toggle", data={})
+    assert db.peek(f"tasks/{task_id}")["status"] == "à_faire"
+
+
+def test_the_pin_button_posts_its_target(client, db, dossier_id):
+    note_id = _seed_note(db, dossier_id)
+    html = client.get(f"/notes/{note_id}").get_data(as_text=True)
+    assert 'name="pinned" value="1"' in html
+
+
+def test_a_stale_pin_click_writes_nothing_and_never_unpins(
+    client, db, dossier_id, bumps
+):
+    note_id = _seed_note(db, dossier_id)
+    client.post(f"/notes/{note_id}/pin", data={"pinned": "1"})
+    pinned = db.peek(f"notes/{note_id}")
+    assert pinned["pinned"] is True and pinned["updated_via"] == "web"
+    assert bumps == [f"dossier:{dossier_id}"]
+
+    # A second page, rendered before the first click, still says « Épingler ».
+    client.post(f"/notes/{note_id}/pin", data={"pinned": "1"})
+    assert db.peek(f"notes/{note_id}") == pinned
+    assert bumps == [f"dossier:{dossier_id}"]
+
+    client.post(f"/notes/{note_id}/pin", data={"pinned": "0"})
+    assert db.peek(f"notes/{note_id}")["pinned"] is False
+    assert len(bumps) == 2
+
+
+def test_pinning_never_rewrites_the_content_the_page_read(
+    client, db, dossier_id, bumps
+):
+    """The pin is a partial update of the flag: a block appended since the
+    page opened survives it (update_note's full set() would have written
+    the content back)."""
+    note_id = _seed_note(db, dossier_id)
+    appended = db.peek(f"notes/{note_id}")
+    appended["content"] = "Premier jet.\n\nAjouté par Claude."
+    appended["etag"] = RIVAL_ETAG
+    db.external_write(f"notes/{note_id}", appended)
+    client.post(f"/notes/{note_id}/pin", data={"pinned": "1"})
+    stored = db.peek(f"notes/{note_id}")
+    assert stored["content"] == "Premier jet.\n\nAjouté par Claude."
+    assert stored["pinned"] is True and stored["etag"] != RIVAL_ETAG
+
+
+def test_a_malformed_pin_target_is_refused(client, db, dossier_id, bumps):
+    note_id = _seed_note(db, dossier_id)
+    before = db.peek(f"notes/{note_id}")
+    client.post(f"/notes/{note_id}/pin", data={"pinned": "oui"})
+    assert db.peek(f"notes/{note_id}") == before and bumps == []
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Le bandeau lui-même
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -852,7 +975,7 @@ def test_the_component_uses_no_filter_and_no_global():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 5. Le câblage, vu du source
+# 6. Le câblage, vu du source
 # ══════════════════════════════════════════════════════════════════════
 
 _ROUTE_FILES = ("parties.py", "dossiers.py", "time_expenses.py",
@@ -866,6 +989,15 @@ def test_expected_etag_never_enters_a_model_payload():
     for name in _ROUTE_FILES:
         src = (_ATHENA / "routes" / name).read_text(encoding="utf-8")
         assert '"expected_etag"' not in src and "'expected_etag'" not in src, name
+
+
+def test_no_edit_route_calls_a_toggle_helper():
+    for name in ("tasks.py", "notes.py"):
+        src = (_ATHENA / "routes" / name).read_text(encoding="utf-8")
+        assert "toggle_task_complete" not in src, name
+    notes_src = (_ATHENA / "routes" / "notes.py").read_text(encoding="utf-8")
+    # toggle_pin survives ONLY for a page that posts no target.
+    assert notes_src.count("toggle_pin(") == 1
 
 
 def test_the_model_refusal_text_is_what_split_stale_recognises():

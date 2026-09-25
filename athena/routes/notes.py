@@ -31,6 +31,7 @@ from models.note import (
     get_note,
     list_notes,
     list_notes_recent,
+    set_pinned,
     toggle_pin,
     update_note,
 )
@@ -584,15 +585,28 @@ def export_pdf_route() -> Response:
 @notes_bp.route("/<note_id>/pin", methods=["POST"])
 @login_required
 def note_pin(note_id: str) -> str:
-    """Toggle pin status of a note."""
-    note, errors = toggle_pin(note_id)
+    """Pin or unpin a note, as the clicked button asked.
+
+    The button posts ``pinned`` = ``1``/``0`` — the state it was rendered
+    to reach — so a stale page asking for what is already true writes
+    nothing and bumps no CTag. A page rendered before the field existed
+    posts nothing and gets the old flip (``toggle_pin``).
+    """
+    raw = request.form.get("pinned")
+    if raw is None:
+        note, errors, changed = toggle_pin(note_id)
+    elif raw in ("0", "1"):
+        note, errors, changed = set_pinned(note_id, raw == "1")
+    else:
+        note, errors, changed = None, ["Requête invalide."], False
 
     if errors:
         if _is_htmx():
             return f'<div class="text-red-600 text-sm">{escape(errors[0])}</div>', 422
         return redirect(url_for("notes.note_list"))
 
-    bump_ctag(collection_for(note.get("dossier_id")))
+    if changed:
+        bump_ctag(collection_for(note.get("dossier_id")))
 
     if _is_htmx():
         # Redirect back to where the user was
