@@ -29,6 +29,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
     from mcp.output_schemas import OUTPUT_SCHEMAS
+    from models import concurrency
 
 UTC = timezone.utc
 DT = datetime(2026, 7, 2, 14, 30, tzinfo=UTC)
@@ -911,16 +912,22 @@ def test_partie_writes_conform(monkeypatch):
     monkeypatch.setattr(handlers.partie_model, "get_partie",
                         lambda i: {"id": "p1", "type": "individual",
                                    "last_name": "Tremblay"})
+    # Widened (lot 0a, étape 5): the handler passes expected_etag; the stub
+    # writes a NEW etag, as the model does, so the payload's one is checked.
     monkeypatch.setattr(handlers.partie_model, "update_partie",
-                        lambda pid, data: ({"id": pid, "type": "individual",
-                                            "last_name": "Tremblay", **data}, []))
+                        lambda pid, data, *, expected_etag=None: (
+                            {"id": pid, "type": "individual",
+                             "last_name": "Tremblay", **data,
+                             "etag": "e-ecrit"}, []))
 
     args = {"type": "individual", "last_name": "Tremblay",
             "first_name": "Jean", "legacy_ref": "L-42"}
     _conforms("create_partie", handlers.create_partie(dict(args)))
 
     upd = {"partie_id": "p1", "notes": "corrigé"}
-    _conforms("update_partie", handlers.update_partie(dict(upd)))
+    updated = handlers.update_partie(dict(upd))
+    _conforms("update_partie", updated)
+    assert updated["entity"]["etag"] == "e-ecrit"
 
 
 def test_a_failed_addressbook_bump_still_conforms(monkeypatch):
@@ -990,14 +997,19 @@ def test_billing_edits_conform(monkeypatch):
             "category": "timbre_judiciaire", "date": DT}
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
                         lambda i: entry)
+    # Widened (lot 0a, étape 5): the handler passes expected_etag.
     monkeypatch.setattr(handlers.time_entry_model, "update_time_entry",
-                        lambda i, d: ({**entry, **d}, []))
+                        lambda i, d, *, expected_etag=None: (
+                            {**entry, **d, "etag": "e-ecrit"}, []))
     monkeypatch.setattr(handlers.expense_model, "get_expense", lambda i: disb)
     monkeypatch.setattr(handlers.expense_model, "update_expense",
-                        lambda i, d: ({**disb, **d}, []))
+                        lambda i, d, *, expected_etag=None: (
+                            {**disb, **d, "etag": "e-ecrit"}, []))
 
     te = {"time_entry_id": "e1", "hours": 0.25}
-    _conforms("update_time_entry", handlers.update_time_entry(dict(te)))
+    updated = handlers.update_time_entry(dict(te))
+    _conforms("update_time_entry", updated)
+    assert updated["entity"]["etag"] == "e-ecrit"
 
     ex = {"expense_id": "x1", "amount_cents": 5250}
     _conforms("update_expense", handlers.update_expense(dict(ex)))
@@ -1022,16 +1034,28 @@ def _phase_world(monkeypatch):
                "phase": "", "sous_phase": "", "date": DT},
     }
 
-    def _set_time(i, p, s):
+    # Widened (lot 0a, étape 5): the handler passes expected_etag — the
+    # etag it has just read. A row whose stored etag differs is answered the
+    # way the model does (the concurrency refusal), and a write mints a new
+    # etag, as the model's stamp does.
+    def _set_time(i, p, s, *, expected_etag=None):
         doc = entries[i]
+        if expected_etag is not None and expected_etag != doc.get("etag", ""):
+            return None, [concurrency.STALE_ETAG_ERROR], False
         changed = (doc["phase"], doc["sous_phase"]) != (p, s)
         doc.update(phase=p, sous_phase=s)
+        if changed:
+            doc["etag"] = f"{doc.get('etag', '')}+1"
         return dict(doc), [], changed
 
-    def _set_exp(i, p, s):
+    def _set_exp(i, p, s, *, expected_etag=None):
         doc = disbs[i]
+        if expected_etag is not None and expected_etag != doc.get("etag", ""):
+            return None, [concurrency.STALE_ETAG_ERROR], False
         changed = (doc["phase"], doc["sous_phase"]) != (p, s)
         doc.update(phase=p, sous_phase=s)
+        if changed:
+            doc["etag"] = f"{doc.get('etag', '')}+1"
         return dict(doc), [], changed
 
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entries_bulk",
@@ -1055,9 +1079,12 @@ def test_phase_single_conforms_applied_and_unchanged(monkeypatch):
     applied = handlers.set_time_entry_phase(dict(te))
     _conforms("set_time_entry_phase", applied)
     assert applied["outcome"] == "applied"
+    # The entity is built from the row AS WRITTEN: its etag is the new one.
+    assert applied["entity"]["etag"] == "+1"
     unchanged = handlers.set_time_entry_phase(dict(te))
     _conforms("set_time_entry_phase", unchanged)
     assert unchanged["outcome"] == "unchanged"
+    assert unchanged["entity"]["etag"] == "+1"
 
     ex = {"expense_id": "x1", "phase": "PRE"}
     _conforms("set_expense_phase", handlers.set_expense_phase(dict(ex)))
@@ -1082,6 +1109,22 @@ def test_phase_bulk_conforms_across_every_outcome(monkeypatch):
     assert live["applied"] == 1 and live["unchanged"] == 1
     assert live["refused"] == 2 and live["requested"] == 4
 
+    # A row written by someone else between the handler's read and its
+    # commit comes back REFUSED on its own row — the batch goes on.
+    real_bulk = handlers.time_entry_model.get_time_entries_bulk
+    monkeypatch.setattr(
+        handlers.time_entry_model, "get_time_entries_bulk",
+        lambda ids: {i: {**d, "etag": "lu-avant-la-course"}
+                     for i, d in real_bulk(ids).items()},
+    )
+    raced = handlers.set_time_entry_phase_bulk(
+        {"entries": [{"time_entry_id": "e1", "sous_phase": "PRE-01"}]}
+    )
+    _conforms("set_time_entry_phase_bulk", raced)
+    assert raced["refused"] == 1
+    assert raced["results"][0]["reason"].startswith(
+        "Cette entrée de temps a été modifiée")
+
     _conforms("set_expense_phase_bulk", handlers.set_expense_phase_bulk(
         {"entries": [{"expense_id": "x1", "phase": "PRE"}]}
     ))
@@ -1101,8 +1144,11 @@ def test_dossier_writes_conform(monkeypatch):
                         lambda i: existing)
     monkeypatch.setattr(handlers.dossier_model, "create_dossier",
                         lambda data: ({**data, "id": "d-new"}, []))
+    # Widened (lot 0a, étape 5): the handler passes expected_etag.
     monkeypatch.setattr(handlers.dossier_model, "update_dossier",
-                        lambda did, data: ({**existing, **data, "id": did}, []))
+                        lambda did, data, *, expected_etag=None: (
+                            {**existing, **data, "id": did,
+                             "etag": "e-ecrit"}, []))
 
     args = {"file_number": "2019-014", "title": "Tremblay c. Lavoie",
             "clients": [{"partie_id": "p1", "roles": ["demandeur"]}],
@@ -1110,7 +1156,9 @@ def test_dossier_writes_conform(monkeypatch):
     _conforms("create_dossier", handlers.create_dossier(dict(args)))
 
     upd = {"dossier_id": "d1", "sommaire": "résumé"}
-    _conforms("update_dossier", handlers.update_dossier(dict(upd)))
+    updated = handlers.update_dossier(dict(upd))
+    _conforms("update_dossier", updated)
+    assert updated["entity"]["etag"] == "e-ecrit"
 
 
 def test_get_import_audit_conforms_found_and_not_found(monkeypatch):

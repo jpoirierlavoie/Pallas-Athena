@@ -528,6 +528,64 @@ def _write_protocol_props() -> dict:
     }
 
 
+# The CONCURRENCY policy of an edit tool (plan rule 3) — declared per tool as
+# the ``"concurrency"`` spec key, beside ``"idempotency"``, and read by the
+# guards in tests/test_mcp_framework_guards.py. Every member of EDIT_TOOLS
+# declares one; a read tool declares none.
+#
+# * ``optional`` — ``expected_etag`` is accepted, not demanded. When the
+#   caller omits it, the handler still compare-and-sets against the etag it
+#   has just read, so a write landing between that read and the commit is
+#   refused rather than overwritten. The tool names, in ``"etag_readers"``,
+#   the read tools whose rows carry the etag it expects.
+# * ``required`` — ``expected_etag`` is demanded (content replacement,
+#   outbound actions — plan rule 3). No tool declares it yet; one that does
+#   lists it in its input schema's ``required``.
+# * ``exempt`` — the tool accepts no ``expected_etag``; ``"concurrency_reason"``
+#   says why, in one sentence a reviewer can check.
+CONCURRENCY_OPTIONAL = "optional"
+CONCURRENCY_REQUIRED = "required"
+CONCURRENCY_EXEMPT = "exempt"
+CONCURRENCY_POLICIES: tuple[str, ...] = (
+    CONCURRENCY_OPTIONAL, CONCURRENCY_REQUIRED, CONCURRENCY_EXEMPT,
+)
+
+
+def _expected_etag_prop(readers: tuple[str, ...]) -> dict:
+    """``expected_etag`` — the optimistic-concurrency argument of an edit.
+
+    Named ``expected_etag``, never ``etag``: a property literally called
+    ``etag`` is forbidden on every write (test_mcp_tools), since it reads as
+    « set the stored etag ». No ``minLength``: ``''`` is what the rows carry
+    for a legacy record that never had an etag, and it must be sendable
+    back. *readers* are the tools whose rows expose the etag — the same
+    tuple the spec declares as ``"etag_readers"``, so the text a model reads
+    and the contract the guards check cannot disagree.
+    """
+    return {
+        "expected_etag": {
+            "type": "string",
+            "maxLength": 64,
+            "description": (
+                "The `etag` from your latest read of this record ("
+                + " / ".join(readers)
+                + ", or the last write result). If the record changed "
+                "since — in the application, on the phone or through "
+                "another call — the write is REFUSED and nothing is "
+                "written: re-read, then retry."
+            ),
+        },
+    }
+
+
+# The read tools whose rows carry the etag an edit tool expects — declared
+# on the edit as ``"etag_readers"`` and named in its ``expected_etag`` text.
+_PARTIE_ETAG_READERS = ("get_partie", "list_parties")
+_DOSSIER_ETAG_READERS = ("get_dossier", "list_dossiers")
+_TIME_ENTRY_ETAG_READERS = ("list_time_entries",)
+_EXPENSE_ETAG_READERS = ("list_expenses",)
+
+
 def _offset() -> dict:
     """Offset paging for the fully-materialized list tools (G07)."""
     return {
@@ -2295,6 +2353,11 @@ TOOLS: dict[str, dict] = {
         },
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Moves to optional in plan lot 1, when update_task adopts the "
+            "same primitive; a same-state call already writes nothing."
+        ),
         "handler": "complete_task",
     },
     "create_task": {
@@ -2817,6 +2880,7 @@ TOOLS: dict[str, dict] = {
                 },
                 **_phase_props(),
                 **_legacy_ref_prop(),
+                **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
                 **_write_protocol_props(),
             },
             "required": ["time_entry_id"],
@@ -2825,6 +2889,8 @@ TOOLS: dict[str, dict] = {
         "handler": "update_time_entry",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _TIME_ENTRY_ETAG_READERS,
     },
     "update_expense": {
         "title": "Corriger un déboursé",
@@ -2861,6 +2927,7 @@ TOOLS: dict[str, dict] = {
                 },
                 **_phase_props(),
                 **_legacy_ref_prop(),
+                **_expected_etag_prop(_EXPENSE_ETAG_READERS),
                 **_write_protocol_props(),
             },
             "required": ["expense_id"],
@@ -2869,6 +2936,8 @@ TOOLS: dict[str, dict] = {
         "handler": "update_expense",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _EXPENSE_ETAG_READERS,
     },
     "set_time_entry_phase": {
         "title": "Reclasser la phase d'une entrée de temps",
@@ -2895,6 +2964,7 @@ TOOLS: dict[str, dict] = {
                     "The entry to reclassify (UUIDv4). Required."
                 ),
                 **_phase_props(),
+                **_expected_etag_prop(_TIME_ENTRY_ETAG_READERS),
                 **_write_protocol_props(),
             },
             "required": ["time_entry_id"],
@@ -2903,6 +2973,8 @@ TOOLS: dict[str, dict] = {
         "handler": "set_time_entry_phase",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _TIME_ENTRY_ETAG_READERS,
         # A second identical call writes nothing: the model compares the
         # stored pair first. Declared per tool, like complete_task.
         "annotations": {"idempotentHint": True},
@@ -2925,6 +2997,7 @@ TOOLS: dict[str, dict] = {
                     "The disbursement to reclassify. Required."
                 ),
                 **_phase_props(),
+                **_expected_etag_prop(_EXPENSE_ETAG_READERS),
                 **_write_protocol_props(),
             },
             "required": ["expense_id"],
@@ -2933,6 +3006,8 @@ TOOLS: dict[str, dict] = {
         "handler": "set_expense_phase",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _EXPENSE_ETAG_READERS,
         "annotations": {"idempotentHint": True},
     },
     "set_time_entry_phase_bulk": {
@@ -2964,6 +3039,12 @@ TOOLS: dict[str, dict] = {
         "handler": "set_time_entry_phase_bulk",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "A batch carries no per-row token yet (an item-level "
+            "expected_etag can come later); each row is still compared "
+            "and set against the etag the handler has just read."
+        ),
         "annotations": {"idempotentHint": True},
     },
     "set_expense_phase_bulk": {
@@ -2989,6 +3070,11 @@ TOOLS: dict[str, dict] = {
         "handler": "set_expense_phase_bulk",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Same as set_time_entry_phase_bulk: each row is compared and "
+            "set against the etag the handler has just read."
+        ),
         "annotations": {"idempotentHint": True},
     },
     "import_invoice": {
@@ -3120,6 +3206,12 @@ TOOLS: dict[str, dict] = {
         "handler": "import_invoice",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Creates an invoice and replaces no value it names; the sources "
+            "it flips are re-read and etag-compared inside the invoice's own "
+            "transaction."
+        ),
     },
     "create_dossier": {
         "title": "Créer un dossier",
@@ -3233,6 +3325,7 @@ TOOLS: dict[str, dict] = {
                 **_forum_props(),
                 **_dossier_field_props(),
                 **_legacy_ref_prop(),
+                **_expected_etag_prop(_DOSSIER_ETAG_READERS),
                 **_write_protocol_props(),
             },
             "required": ["dossier_id"],
@@ -3241,6 +3334,8 @@ TOOLS: dict[str, dict] = {
         "handler": "update_dossier",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _DOSSIER_ETAG_READERS,
     },
     "create_partie": {
         "title": "Créer un contact",
@@ -3310,6 +3405,7 @@ TOOLS: dict[str, dict] = {
                 },
                 **_partie_identity_props(),
                 **_legacy_ref_prop(),
+                **_expected_etag_prop(_PARTIE_ETAG_READERS),
                 **_write_protocol_props(),
             },
             "required": ["partie_id"],
@@ -3318,6 +3414,8 @@ TOOLS: dict[str, dict] = {
         "handler": "update_partie",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _PARTIE_ETAG_READERS,
     },
     # ════════════════════════════════════════════════════════════════════
     # Lecture du CONTENU d'un document (2026-08). L'écran de consentement
@@ -3570,6 +3668,12 @@ TOOLS: dict[str, dict] = {
         },
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_EXEMPT,
+        "concurrency_reason": (
+            "Adopts expected_etag with the document edit tools (plan lot "
+            "2); the analysis never lowers a protection level, so an "
+            "overwrite cannot under-protect."
+        ),
         "handler": "record_document_analysis",
     },
 }

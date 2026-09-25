@@ -67,13 +67,14 @@ Serialization rules (§10.1):
 
 import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from dav.sync import bump_ctag, collection_for, remove_tombstone
 from mcp import coverage, import_audit
 from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
+from models import concurrency
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -100,6 +101,7 @@ from utils.validators import format_phone_display
 from mcp.tools import (
     DOCUMENT_TEXT_MAX_CHARS,
     PHASE_BULK_MAX,
+    TOOLS,
     ToolArgumentError,
     date_str,
     format_cents,
@@ -3654,6 +3656,9 @@ def _dossier_write_result(
             "label": doc.get("title", ""),
             "status": doc.get("status", ""),
             "legacy_ref": doc.get("legacy_ref", ""),
+            # The etag the model just wrote: the next update_dossier
+            # presents it.
+            "etag": concurrency.etag_of(doc),
         },
         "prescription_date": date_str(_as_utc(doc.get("prescription_date"))),
         "prescription_status": derived["status"],
@@ -3703,6 +3708,82 @@ def _optional_phase_pair(args: dict) -> Optional[tuple[str, str]]:
     if "phase" not in args and "sous_phase" not in args:
         return None
     return _resolve_phase_pair(args)
+
+
+def _stale_message(tool: str, subject: str, current: Optional[dict]) -> str:
+    """The French refusal of an outdated edit — naming WHEN, never WHAT.
+
+    The time of the last write is named (it tells the caller its read is
+    old, and by how much); the path of that write is NOT: a maintenance
+    script regenerates an etag without stamping ``updated_via``, so naming
+    the via could name the wrong writer. Content is never quoted. The
+    readers named are the tool's own ``"etag_readers"`` declaration — the
+    same ones its ``expected_etag`` description names.
+    """
+    when = iso_mtl(_as_utc((current or {}).get("updated_at")))
+    last = f" (dernière écriture : {when})" if when else ""
+    readers = " ou ".join(TOOLS[tool].get("etag_readers") or ())
+    reread = f" ({readers})" if readers else ""
+    return (
+        f"{subject} depuis votre lecture{last}. Rien n'a été écrit. "
+        f"Relisez-le{reread} et refaites la modification avec son etag "
+        "actuel."
+    )
+
+
+def _stale_refusal(
+    tool: str, subject: str, current: Optional[dict]
+) -> ToolArgumentError:
+    # A LITERAL reason code, as every refusal's (test_mcp_jsonrpc sweeps it
+    # and requires it documented under `mcp_write_refused`).
+    return ToolArgumentError(
+        _stale_message(tool, subject, current), reason="stale_etag"
+    )
+
+
+def _expected_etag(
+    args: dict, existing: dict, *, tool: str, subject: str
+) -> str:
+    """The etag the model must commit against (plan rule 3).
+
+    * The caller named one: it must still be the stored one, or the call is
+      refused HERE — before any domain guard or payload work, because the
+      useful answer to an outdated view is « re-read », not the first field
+      error the outdated view happens to trip.
+    * The caller named none: the handler compare-and-sets against the etag
+      it has JUST read. Its guards and its payload were computed from that
+      read — the append-only party arrays, the invoiced wall, the phase
+      already carried — so a write landing between it and the commit must
+      be refused, never silently overwritten.
+
+    ``''`` is a real value: the etag of a legacy record that never had one.
+    """
+    current = concurrency.etag_of(existing)
+    if "expected_etag" in args:
+        wanted = str(args.get("expected_etag") or "")
+        if wanted != current:
+            raise _stale_refusal(tool, subject, existing)
+        return wanted
+    return current
+
+
+def _raise_if_stale(
+    errors: list[str], *, tool: str, subject: str,
+    reread: Callable[[], Optional[dict]],
+) -> None:
+    """Turn the model's concurrency refusal into the named French refusal.
+
+    The model refuses when a write landed between the handler's read and
+    the commit; *reread* fetches the record again, best-effort, only to name
+    the time of that write.
+    """
+    if not concurrency.is_stale(errors):
+        return
+    try:
+        current = reread()
+    except Exception:
+        current = None
+    raise _stale_refusal(tool, subject, current)
 
 
 def _refuse_if_invoiced(row: dict, kind: str) -> None:
@@ -3948,6 +4029,8 @@ def _partie_entity(doc: dict) -> dict:
         "type": doc.get("type", ""),
         "contact_role": doc.get("contact_role", ""),
         "legacy_ref": doc.get("legacy_ref", ""),
+        # The etag the model just WROTE: the next update_partie presents it.
+        "etag": concurrency.etag_of(doc),
     }
 
 
@@ -4036,6 +4119,10 @@ def _update_partie_impl(args: dict) -> dict:
             f"Contact introuvable : {partie_id}. Utilisez list_parties ou "
             "find_imported pour obtenir un partie_id valide."
         )
+    expected = _expected_etag(
+        args, existing, tool="update_partie",
+        subject="Ce contact a été modifié",
+    )
 
     data = _partie_payload(args)
     # `id` n'est PAS adressable au schéma, et ne doit jamais l'être : le
@@ -4051,7 +4138,13 @@ def _update_partie_impl(args: dict) -> dict:
     if "legacy_ref" in data and data["legacy_ref"] != existing.get("legacy_ref", ""):
         _refuse_legacy_ref_collision("parties", data["legacy_ref"])
 
-    partie, errors = partie_model.update_partie(partie_id, data)
+    partie, errors = partie_model.update_partie(
+        partie_id, data, expected_etag=expected
+    )
+    _raise_if_stale(
+        errors, tool="update_partie", subject="Ce contact a été modifié",
+        reread=lambda: partie_model.get_partie(partie_id),
+    )
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _partie_write_result(partie, verb="updated")
@@ -4071,6 +4164,8 @@ def _billing_edit(
     text_fields: tuple,
     legacy_collection: str,
     entity_builder,
+    tool: str,
+    stale_subject: str,
 ) -> dict:
     """Shared body of the two billing editors.
 
@@ -4086,6 +4181,7 @@ def _billing_edit(
     existing = getter(row_id)
     if existing is None:
         raise ToolArgumentError(f"{kind} introuvable : {row_id}.")
+    expected = _expected_etag(args, existing, tool=tool, subject=stale_subject)
     _refuse_if_invoiced(existing, kind)
 
     data: dict[str, Any] = {}
@@ -4129,7 +4225,11 @@ def _billing_edit(
         )
 
 
-    row, errors = updater(row_id, data)
+    row, errors = updater(row_id, data, expected_etag=expected)
+    _raise_if_stale(
+        errors, tool=tool, subject=stale_subject,
+        reread=lambda: getter(row_id),
+    )
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return {
@@ -4154,6 +4254,9 @@ def _time_entry_entity(doc: dict) -> dict:
         "billable": bool(doc.get("billable")),
         "invoiced": bool(doc.get("invoiced")),
         **_phase_pair(doc),
+        # The etag of the row AS STORED after the write — never the one the
+        # handler read before it (the next guarded edit presents this one).
+        "etag": concurrency.etag_of(doc),
     }
     _money(row, "rate", doc.get("rate", 0))
     _money(row, "amount", doc.get("amount", 0))
@@ -4170,6 +4273,7 @@ def _expense_entity(doc: dict) -> dict:
         "taxable": bool(doc.get("taxable")),
         "invoiced": bool(doc.get("invoiced")),
         **_phase_pair(doc),
+        "etag": concurrency.etag_of(doc),
     }
     _money(row, "amount", doc.get("amount", 0))
     return row
@@ -4187,6 +4291,8 @@ def update_time_entry(args: dict) -> dict:
             text_fields=_TIME_ENTRY_TEXT,
             legacy_collection="timeentries",
             entity_builder=_time_entry_entity,
+            tool="update_time_entry",
+            stale_subject="Cette entrée de temps a été modifiée",
         ),
     )
 
@@ -4203,6 +4309,8 @@ def update_expense(args: dict) -> dict:
             text_fields=_EXPENSE_TEXT,
             legacy_collection="expenses",
             entity_builder=_expense_entity,
+            tool="update_expense",
+            stale_subject="Ce déboursé a été modifié",
         ),
     )
 
@@ -4318,6 +4426,8 @@ def _set_phase_impl(
     setter,
     entity_builder,
     bulk: bool,
+    tool: str,
+    stale_subject: str,
 ) -> dict:
     """Shared body of the four reclassification tools.
 
@@ -4325,6 +4435,15 @@ def _set_phase_impl(
     the offending row rather than surfacing a bare model error. The bulk
     form reports line by line in the ORDER ASKED, which is what makes a
     reclassification pass auditable against the request that produced it.
+
+    Concurrency (plan rule 3). Every CHANGED row is compare-and-set: against
+    the caller's ``expected_etag`` on the single tool when given, otherwise
+    — and always on the bulk tools, which take no per-row token — against
+    the etag of the row this handler has just read. A row already carrying
+    the requested code is answered « unchanged » before any comparison:
+    nothing can be lost by not writing, and refusing the no-op would break
+    the replayability these tools promise. *tool* is the SINGLE tool's name
+    (its ``etag_readers`` name the re-read in a refusal), for both forms.
     """
     if bulk:
         items = args.get("entries") or []
@@ -4349,6 +4468,7 @@ def _set_phase_impl(
     fetched = bulk_getter(readable) if readable else {}
 
     results: list[dict] = []
+    written_rows: dict[str, dict] = {}
     applied = unchanged = refused = 0
     for row in rows:
         if row["reason"] is not None:
@@ -4371,9 +4491,31 @@ def _set_phase_impl(
             unchanged += 1
             results.append(_phase_result_row(row, doc, "unchanged"))
             continue
-        written, errors, changed = setter(
-            row["id"], row["phase"], row["sous_phase"]
+        # Raises the named refusal when the single tool's caller presented
+        # an etag the row no longer carries; the bulk form has none to
+        # present, so it compares against its own read.
+        expected = (
+            _expected_etag(args, doc, tool=tool, subject=stale_subject)
+            if not bulk else concurrency.etag_of(doc)
         )
+        written, errors, changed = setter(
+            row["id"], row["phase"], row["sous_phase"],
+            expected_etag=expected,
+        )
+        if concurrency.is_stale(errors):
+            # A write landed on this row between the read above and the
+            # commit. The single tool raises the named refusal; the bulk
+            # form reports it on the row and lets the others through. Only
+            # WHEN is named, never the content.
+            if not bulk:
+                _raise_if_stale(
+                    errors, tool=tool, subject=stale_subject,
+                    reread=lambda: bulk_getter([row["id"]]).get(row["id"]),
+                )
+            row["reason"] = _stale_message(tool, stale_subject, None)
+            refused += 1
+            results.append(_phase_result_row(row, doc, "refused"))
+            continue
         if errors:
             row["reason"] = "; ".join(errors)
             refused += 1
@@ -4383,6 +4525,7 @@ def _set_phase_impl(
             applied += 1
         else:
             unchanged += 1
+        written_rows[row["id"]] = written
         results.append(
             _phase_result_row(row, written, "applied" if changed else "unchanged")
         )
@@ -4400,11 +4543,13 @@ def _set_phase_impl(
         # a caller that named one row wants an error, not a report of one.
         if results[0]["outcome"] == "refused":
             raise ToolArgumentError(results[0]["reason"])
-        doc = fetched.get(rows[0]["id"]) or {}
+        # The entity is built from the row AS WRITTEN (the model hands back
+        # the stored document, new etag included), never from the pre-write
+        # read: its etag is what the next guarded edit must present, and the
+        # pre-write one would be refused as stale on the very next call.
         entity_source = (
-            {**doc, "phase": rows[0]["phase"],
-             "sous_phase": rows[0]["sous_phase"]}
-            if results[0]["outcome"] == "applied" else doc
+            written_rows.get(rows[0]["id"])
+            or fetched.get(rows[0]["id"]) or {}
         )
         return {
             "updated": True,
@@ -4440,15 +4585,21 @@ _TIME_PHASE_KW = {
     "id_key": "time_entry_id",
     "entity_type": "time_entry",
     "bulk_getter": lambda ids: time_entry_model.get_time_entries_bulk(ids),
-    "setter": lambda i, p, s: time_entry_model.set_time_entry_phase(i, p, s),
+    "setter": lambda i, p, s, **kw: time_entry_model.set_time_entry_phase(
+        i, p, s, **kw),
     "entity_builder": _time_entry_entity,
+    "tool": "set_time_entry_phase",
+    "stale_subject": "Cette entrée de temps a été modifiée",
 }
 _EXPENSE_PHASE_KW = {
     "id_key": "expense_id",
     "entity_type": "expense",
     "bulk_getter": lambda ids: expense_model.get_expenses_bulk(ids),
-    "setter": lambda i, p, s: expense_model.set_expense_phase(i, p, s),
+    "setter": lambda i, p, s, **kw: expense_model.set_expense_phase(
+        i, p, s, **kw),
     "entity_builder": _expense_entity,
+    "tool": "set_expense_phase",
+    "stale_subject": "Ce déboursé a été modifié",
 }
 
 
@@ -4794,6 +4945,14 @@ def _update_dossier_impl(args: dict) -> dict:
             f"Dossier introuvable : {dossier_id}. Utilisez list_dossiers ou "
             "get_dossier pour obtenir un dossier_id valide."
         )
+    # A trust entry regenerates the dossier's etag too, so a movement of the
+    # client's funds since the caller's read also refuses the edit: the
+    # refusal is right (the stored record changed), and re-reading is the
+    # whole remedy.
+    expected = _expected_etag(
+        args, existing, tool="update_dossier",
+        subject="Ce dossier a été modifié",
+    )
 
     data = _dossier_field_updates(args, allow_clear=True)
     for key in ("title", "sommaire", "forum_type", "forum",
@@ -4861,7 +5020,13 @@ def _update_dossier_impl(args: dict) -> dict:
         data.update(merged_forum)
 
 
-    dossier, errors = dossier_model.update_dossier(dossier_id, data)
+    dossier, errors = dossier_model.update_dossier(
+        dossier_id, data, expected_etag=expected
+    )
+    _raise_if_stale(
+        errors, tool="update_dossier", subject="Ce dossier a été modifié",
+        reread=lambda: dossier_model.get_dossier(dossier_id),
+    )
     if errors:
         raise ToolArgumentError("; ".join(errors))
     warnings.extend(_prescription_warnings(dossier, data))

@@ -202,7 +202,8 @@ def _dossier_write_result(verb: str) -> dict:
             "label": _str("The dossier title."),
             "status": _str(),
             "legacy_ref": _str("'' when not imported."),
-        }),
+            **_written_etag(),
+        }, optional=("etag",)),
         "prescription_date": _nstr(
             "The « date pour agir » AFTER the model recomputed it — it is "
             "derived from droit_action_date + the confirmed delay, never "
@@ -239,7 +240,8 @@ def _partie_write_result(verb: str) -> dict:
             "type": _str("individual | organization."),
             "contact_role": _str(),
             "legacy_ref": _str("'' when not imported."),
-        }),
+            **_written_etag(),
+        }, optional=("etag",)),
         "ctag_bumped": _bool(
             "The addressbook CTag moved, so DavX5 will re-sync. false with a "
             "warning means the write landed but the sync was not triggered — "
@@ -333,6 +335,22 @@ def _provenance() -> dict[str, Any]:
             "ISO-8601 Montréal: the last write made through this connector. "
             "Sticky — a later application or phone write never clears it. "
             "null = no connector write recorded since provenance began."),
+    }
+
+
+def _written_etag() -> dict[str, Any]:
+    """``etag`` on the entity of an EDITABLE record's write result.
+
+    Declared OPTIONAL wherever it is spread (``optional=("etag",)``): the
+    handlers always emit it since 2026-09-25, but an idempotency replay may
+    return a result stored before then (the cache lives 24 h), and a key an
+    existing contract never promised must not become one a strict client
+    rejects a response over."""
+    return {
+        "etag": _str(
+            "The record's etag AS STORED after this write — pass it as "
+            "`expected_etag` to the next edit instead of re-reading. On an "
+            "« unchanged » outcome it is the stored etag, untouched."),
     }
 
 
@@ -1377,7 +1395,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_phase_pair(),
             **_money("rate"),
             **_money("amount", "Recomputed as hours x rate; 0 when not billable."),
-        }),
+            **_written_etag(),
+        }, optional=("etag",)),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
     }),
@@ -1395,7 +1414,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "invoiced": _bool("Always false — an invoiced one is refused."),
             **_phase_pair(),
             **_money("amount", "Stored verbatim; never recomputed."),
-        }),
+            **_written_etag(),
+        }, optional=("etag",)),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
     }),
@@ -1429,7 +1449,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             **_phase_pair(),
             **_money("rate", "Echoed unchanged."),
             **_money("amount", "Echoed unchanged — no figure moves here."),
-        }),
+            **_written_etag(),
+        }, optional=("etag",)),
         "warnings": _arr(_str(), "French; empty when nothing is amiss."),
         **_write_protocol_keys(),
     }),
@@ -1455,7 +1476,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "invoiced": _bool("MAY be true."),
             **_phase_pair(),
             **_money("amount", "Echoed unchanged."),
-        }),
+            **_written_etag(),
+        }, optional=("etag",)),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
     }),

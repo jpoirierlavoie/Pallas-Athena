@@ -20,6 +20,10 @@ What each guard buys:
 (c) a name that promises an edit (`update_`, `set_`, …) carries
     `destructiveHint`, and every non-prefixed edit is declared with a reason;
 (d) no per-tool annotation override can rewrite a derived safety hint;
+(e) every edit declares its concurrency policy; an ``expected_etag`` in the
+    input schema is exactly what that policy says; and every tool that
+    accepts one names read tools whose output declares the ``etag`` it
+    expects — and hands the NEW etag back in its own result;
 (i) no write output declares a property that would persist privileged
     content or a capability URL into the `mcp_idempotency` replay cache, and
     no output at all declares a signed-URL or storage-path property;
@@ -429,6 +433,181 @@ def test_the_advertised_safety_hints_follow_the_registry():
         assert ann["readOnlyHint"] is (not is_write), d["name"]
         if is_write:
             assert ann["destructiveHint"] is (d["name"] in tools.EDIT_TOOLS), d["name"]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# (e) Concurrency: declared on every edit, and an etag the caller can get
+# ══════════════════════════════════════════════════════════════════════
+#
+# Plan rule 3. An `expected_etag` a caller cannot obtain from any read is a
+# dead argument — worse, its description (« from your latest read ») would
+# be false. And a policy that is not declared would let the next edit tool
+# ship last-write-wins without anyone deciding it should. The rules live in
+# ONE pure function over a registry, so the planted-defect test below
+# proves the mechanism and the real-registry test proves the code.
+
+_ETAGGED = (tools.CONCURRENCY_OPTIONAL, tools.CONCURRENCY_REQUIRED)
+
+
+def _declares_property(schema, name: str) -> bool:
+    return any(key == name for _p, key in _property_names(schema))
+
+
+def concurrency_violations(
+    registry: dict, output_schemas: dict, write_tools, edit_tools,
+) -> list[str]:
+    """Every breach of the concurrency contract in *registry*."""
+    out: list[str] = []
+    for name, spec in sorted(registry.items()):
+        policy = spec.get("concurrency")
+        schema = spec["input_schema"]
+        props = schema.get("properties", {})
+        if name not in write_tools:
+            if policy is not None:
+                out.append(f"{name}: a read tool declares a concurrency policy")
+            continue
+        if name in edit_tools and policy not in tools.CONCURRENCY_POLICIES:
+            out.append(
+                f"{name}: replaces a stored value but declares no "
+                "`concurrency` policy (optional | required | exempt — with a "
+                "`concurrency_reason` when exempt). Decide whether it is "
+                "last-write-wins before it ships")
+        if name not in edit_tools and policy not in (None, tools.CONCURRENCY_EXEMPT):
+            # A non-edit write may pre-declare only an exemption.
+            out.append(f"{name}: a non-edit write declares {policy!r}")
+        if policy == tools.CONCURRENCY_EXEMPT:
+            if not str(spec.get("concurrency_reason") or "").strip():
+                out.append(f"{name}: exempt without a concurrency_reason")
+        elif "concurrency_reason" in spec:
+            out.append(f"{name}: a concurrency_reason on a non-exempt tool")
+
+        # The argument is exactly what the policy says.
+        if ("expected_etag" in props) is not (policy in _ETAGGED):
+            out.append(f"{name}: expected_etag in the schema contradicts {policy!r}")
+        if "etag" in props:
+            out.append(f"{name}: a property literally named `etag`")
+        if policy == tools.CONCURRENCY_REQUIRED and "expected_etag" not in schema.get("required", []):
+            out.append(f"{name}: required policy, expected_etag not required")
+        if "expected_etag" in props:
+            prop = props["expected_etag"]
+            if prop.get("type") != "string" or not prop.get("description"):
+                out.append(f"{name}: expected_etag must be a described string")
+            if prop.get("minLength", 0):
+                out.append(f"{name}: expected_etag refuses '' (a legacy etag)")
+
+        # An etag the caller can obtain, and the new one handed back.
+        readers = tuple(spec.get("etag_readers") or ())
+        if readers and policy not in _ETAGGED:
+            out.append(f"{name}: names etag_readers but accepts no etag")
+        if policy not in _ETAGGED:
+            continue
+        if not readers:
+            out.append(f"{name}: accepts expected_etag but names no reader")
+        desc = props.get("expected_etag", {}).get("description", "")
+        for reader in readers:
+            if reader not in registry or reader in write_tools:
+                out.append(f"{name}: {reader} is not a read tool")
+                continue
+            if not _declares_property(output_schemas[reader], "etag"):
+                out.append(f"{name}: {reader}'s output never declares an etag")
+            if reader not in desc:
+                out.append(f"{name}: expected_etag's text does not name {reader}")
+        entity = output_schemas[name].get("properties", {}).get("entity", {})
+        if "etag" not in entity.get("properties", {}):
+            out.append(f"{name}: its result does not hand back the new etag")
+        elif "etag" in entity.get("required", []):
+            # A replayed result stored before 2026-09-25 lacks it.
+            out.append(f"{name}: the result etag is required, not optional")
+    return out
+
+
+def test_the_real_registry_honours_the_concurrency_contract():
+    assert concurrency_violations(
+        tools.TOOLS, OUTPUT_SCHEMAS, tools.WRITE_TOOLS, tools.EDIT_TOOLS,
+    ) == []
+
+
+def test_the_concurrency_guard_is_not_vacuous():
+    guarded = sorted(n for n, spec in tools.TOOLS.items()
+                     if spec.get("concurrency") in _ETAGGED)
+    assert {"update_partie", "update_dossier", "update_time_entry",
+            "update_expense", "set_time_entry_phase",
+            "set_expense_phase"} <= set(guarded), guarded
+    assert all(tools.TOOLS[n]["concurrency"] for n in tools.EDIT_TOOLS)
+
+
+def _planted_registry(**spec_over) -> tuple[dict, dict]:
+    """A two-tool world: one reader exposing an etag, one guarded editor."""
+    reader_out = {"type": "object", "properties": {"items": {
+        "type": "array", "items": {"type": "object", "properties": {
+            "etag": {"type": "string"}}}}}}
+    editor = {
+        "input_schema": {"type": "object", "properties": {
+            "x_id": {"type": "string", "description": "id"},
+            "expected_etag": {"type": "string", "maxLength": 64,
+                              "description": "etag from list_x"},
+        }},
+        "concurrency": tools.CONCURRENCY_OPTIONAL,
+        "etag_readers": ("list_x",),
+    }
+    editor.update(spec_over)
+    registry = {
+        "list_x": {"input_schema": {"type": "object", "properties": {}}},
+        "update_x": editor,
+    }
+    outputs = {
+        "list_x": reader_out,
+        "update_x": {"type": "object", "properties": {"entity": {
+            "type": "object", "properties": {"etag": {"type": "string"}},
+            "required": []}}},
+    }
+    return registry, outputs
+
+
+@pytest.mark.parametrize("over, fragment", [
+    ({}, None),  # the well-formed world is clean
+    ({"concurrency": None}, "declares no `concurrency` policy"),
+    ({"etag_readers": ()}, "names no reader"),
+    ({"etag_readers": ("list_y",)}, "is not a read tool"),
+    ({"concurrency": tools.CONCURRENCY_EXEMPT,
+      "concurrency_reason": "because"}, "contradicts"),
+    ({"concurrency": tools.CONCURRENCY_EXEMPT}, "without a concurrency_reason"),
+    ({"concurrency": tools.CONCURRENCY_REQUIRED}, "not required"),
+])
+def test_the_concurrency_guard_catches_what_it_claims(over, fragment):
+    registry, outputs = _planted_registry(**over)
+    found = concurrency_violations(
+        registry, outputs, frozenset({"update_x"}), frozenset({"update_x"}))
+    if fragment is None:
+        assert found == []
+    else:
+        assert any(fragment in v for v in found), found
+
+
+def test_the_concurrency_guard_catches_a_reader_without_an_etag_and_a_result_without_one():
+    registry, outputs = _planted_registry()
+    outputs["list_x"] = {"type": "object", "properties": {}}
+    found = concurrency_violations(
+        registry, outputs, frozenset({"update_x"}), frozenset({"update_x"}))
+    assert any("never declares an etag" in v for v in found), found
+
+    registry, outputs = _planted_registry()
+    outputs["update_x"]["properties"]["entity"]["properties"] = {}
+    found = concurrency_violations(
+        registry, outputs, frozenset({"update_x"}), frozenset({"update_x"}))
+    assert any("hand back the new etag" in v for v in found), found
+
+    registry, outputs = _planted_registry()
+    outputs["update_x"]["properties"]["entity"]["required"] = ["etag"]
+    found = concurrency_violations(
+        registry, outputs, frozenset({"update_x"}), frozenset({"update_x"}))
+    assert any("required, not optional" in v for v in found), found
+
+    registry, outputs = _planted_registry()
+    registry["update_x"]["input_schema"]["properties"]["etag"] = {"type": "string"}
+    found = concurrency_violations(
+        registry, outputs, frozenset({"update_x"}), frozenset({"update_x"}))
+    assert any("literally named `etag`" in v for v in found), found
 
 
 # ══════════════════════════════════════════════════════════════════════

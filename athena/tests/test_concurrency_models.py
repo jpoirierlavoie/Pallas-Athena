@@ -19,6 +19,10 @@ vrai), et l'on relit ce qui est STOCKÉ. Pour chacun :
 * un document supprimé entre-temps n'est jamais ressuscité ;
 * ``None`` → l'unique ``set()`` d'avant, hors transaction : DAV et les
   formulaires sans etag ne voient aucune différence.
+
+La section 5 fait la même preuve à travers les VRAIS gestionnaires du
+connecteur (``run_write`` compris), sur les six outils qui acceptent
+``expected_etag``.
 """
 
 import os
@@ -36,6 +40,10 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
+    import dav.sync as dav_sync
+    import mcp.handlers as handlers
+    import mcp.tools as tools
+    import mcp.write_support as write_support
     from models import concurrency
     from models import document as document_model
     from models import dossier as dossier_model
@@ -506,3 +514,164 @@ def test_a_document_save_chains_its_second_write_on_the_new_etag(db):
         row_id, {"resume": "x"}, par="juriste", expected_etag=doc["etag"])
     assert errors == []
     assert db.peek("documents/doc1")["analyse"]["resume"] == "x"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Le connecteur, bout à bout — vrais gestionnaires, vrais modèles
+# ══════════════════════════════════════════════════════════════════════
+#
+# Plan, règle 3, telle que l'appelant la vit : `expected_etag` périmé →
+# refus `stale_etag`, rien d'écrit ; à jour → écrit, sous le connecteur, et
+# le résultat rend l'etag STOCKÉ ; omis → le gestionnaire compare-et-écrit
+# contre SA propre lecture, si bien qu'une écriture glissée entre cette
+# lecture et le commit est refusée au lieu d'être écrasée. La liste des cas
+# est DÉRIVÉE des outils qui déclarent une politique de concurrence : un
+# nouvel outil qui accepte `expected_etag` échoue ici tant qu'il n'y figure
+# pas.
+
+
+def _e2e_db(monkeypatch):
+    return install(monkeypatch, *_MODULES, dav_sync, write_support)
+
+
+# tool → (collection, factory, id key, arguments, (field, stored value))
+_HANDLER_CASES = {
+    "update_partie": ("parties", _partie, "partie_id",
+                      {"notes": "corrigé"}, ("notes", "corrigé")),
+    "update_dossier": ("dossiers", _dossier, "dossier_id",
+                       {"sommaire": "Résumé."}, ("sommaire", "Résumé.")),
+    "update_time_entry": ("timeentries", _time_entry, "time_entry_id",
+                          {"description": "Révision"},
+                          ("description", "Révision")),
+    "update_expense": ("expenses", _expense, "expense_id",
+                       {"description": "Timbre (corrigé)"},
+                       ("description", "Timbre (corrigé)")),
+    "set_time_entry_phase": ("timeentries", _time_entry, "time_entry_id",
+                             {"sous_phase": "INT-01"},
+                             ("sous_phase", "INT-01")),
+    "set_expense_phase": ("expenses", _expense, "expense_id",
+                          {"sous_phase": "INT-01"}, ("sous_phase", "INT-01")),
+}
+_E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
+                               ids=sorted(_HANDLER_CASES))
+
+# The getter the HANDLER reads its record through (the bulk reader for the
+# reclassifiers) — the seam a rival write is slipped in after.
+_HANDLER_GETTERS = {
+    "update_partie": (partie_model, "get_partie"),
+    "update_dossier": (dossier_model, "get_dossier"),
+    "update_time_entry": (time_entry_model, "get_time_entry"),
+    "update_expense": (expense_model, "get_expense"),
+    "set_time_entry_phase": (time_entry_model, "get_time_entries_bulk"),
+    "set_expense_phase": (expense_model, "get_expenses_bulk"),
+}
+
+
+def _e2e_setup(db, tool):
+    coll, factory, id_key, extra, _expect = _HANDLER_CASES[tool]
+    row_id = factory(db)
+    path = f"{coll}/{row_id}"
+    db.reset_logs()
+    return path, {id_key: row_id, **extra}
+
+
+def _row_commits(db, path):
+    return [c for c in db.commits if any(p == path for _k, p in c.ops)]
+
+
+def test_the_handler_cases_are_the_tools_that_accept_an_etag():
+    accepting = {
+        n for n, spec in tools.TOOLS.items()
+        if spec.get("concurrency") in (tools.CONCURRENCY_OPTIONAL,
+                                       tools.CONCURRENCY_REQUIRED)
+    }
+    assert accepting == set(_HANDLER_CASES) == set(_HANDLER_GETTERS)
+
+
+@_E2E
+def test_a_stale_expected_etag_is_refused_and_nothing_is_written(
+    monkeypatch, tool,
+):
+    db = _e2e_db(monkeypatch)
+    path, args = _e2e_setup(db, tool)
+    before = db.peek(path)
+
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        getattr(handlers, tool)({**args, "expected_etag": "une-autre-version"})
+
+    assert excinfo.value.reason == "stale_etag"
+    message = str(excinfo.value)
+    assert "Rien n'a été écrit" in message
+    for reader in tools.TOOLS[tool]["etag_readers"]:
+        assert reader in message
+    assert before["etag"] not in message  # never an etag to retry blind with
+    assert db.peek(path) == before
+    assert _row_commits(db, path) == []
+
+
+@_E2E
+def test_the_current_etag_writes_as_the_connector_and_hands_back_the_new_one(
+    monkeypatch, tool,
+):
+    db = _e2e_db(monkeypatch)
+    path, args = _e2e_setup(db, tool)
+    etag0 = db.peek(path)["etag"]
+    field, value = _HANDLER_CASES[tool][4]
+
+    payload = getattr(handlers, tool)({**args, "expected_etag": etag0})
+
+    stored = db.peek(path)
+    assert stored[field] == value
+    assert stored["updated_via"] == "mcp"
+    assert stored["etag"] != etag0
+    assert payload["entity"]["etag"] == stored["etag"]
+    (commit,) = _row_commits(db, path)
+    assert commit.transaction is not None
+
+
+@_E2E
+def test_without_an_etag_the_handler_guards_its_own_read(monkeypatch, tool):
+    """The caller sent none; a rival writes right after the HANDLER's read.
+    The handler compared-and-set against that read, so the rival survives
+    and the call is refused — never a silent overwrite."""
+    db = _e2e_db(monkeypatch)
+    path, args = _e2e_setup(db, tool)
+    module, name = _HANDLER_GETTERS[tool]
+    real = getattr(module, name)
+    fired = []
+
+    def racing(*a, **kw):
+        result = real(*a, **kw)
+        if not fired:
+            fired.append(True)
+            db.external_write(path, {**db.peek(path), "etag": "e-rival",
+                                     "rival": True})
+        return result
+
+    monkeypatch.setattr(module, name, racing)
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        getattr(handlers, tool)(dict(args))
+
+    assert fired and excinfo.value.reason == "stale_etag"
+    stored = db.peek(path)
+    assert stored["etag"] == "e-rival" and stored["rival"] is True
+    assert _row_commits(db, path) == []
+
+
+@_E2E
+def test_a_chained_edit_presents_the_etag_the_first_one_returned(
+    monkeypatch, tool,
+):
+    db = _e2e_db(monkeypatch)
+    path, args = _e2e_setup(db, tool)
+    first = getattr(handlers, tool)(dict(args))
+    etag1 = first["entity"]["etag"]
+    assert etag1 == db.peek(path)["etag"]
+
+    if tool.startswith("set_"):
+        second_args = {**args, "sous_phase": "AUD-01"}
+    else:
+        field = _HANDLER_CASES[tool][4][0]
+        second_args = {**args, field: "Deuxième version"}
+    second = getattr(handlers, tool)({**second_args, "expected_etag": etag1})
+    assert second["entity"]["etag"] == db.peek(path)["etag"] != etag1

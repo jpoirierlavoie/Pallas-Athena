@@ -392,9 +392,38 @@ def test_le_lecteur_en_lot_rend_ce_qui_existe(db, kind):
 # ══════════════════════════════════════════════════════════════════════
 # 6. Le connecteur — outils simples
 # ══════════════════════════════════════════════════════════════════════
+#
+# Sections 6 à 9 : le VRAI client Firestore au-dessus du faux serveur
+# partagé, depuis le 2026-09-25 (changement délibéré, lot 0a, étape 5). Le
+# gestionnaire compare-et-écrit désormais TOUJOURS — contre l'etag de
+# l'appelant ou celui qu'il vient de lire —, donc le modèle écrit en
+# transaction, ce que le faux écrit à la main ci-dessus ne modélise pas.
+# Laissé sur lui, `test_le_lot_n_altere_aucun_chiffre` était devenu VIDE :
+# chaque écriture échouait dans le faux, chaque ligne était refusée, et
+# « aucun chiffre n'a bougé » tenait parce que rien n'avait bougé du tout.
+# Il affirme maintenant que le lot a été APPLIQUÉ. Les sections 1 à 5
+# gardent le faux écrit à la main : elles épinglent la forme du chemin
+# SANS etag (le seul que n'emprunte aucun appelant du connecteur), où ses
+# mouchards set()/update() restent la preuve la plus directe.
 
 
-def test_l_outil_simple_reclasse_une_entree_facturee(db):
+@pytest.fixture
+def real(monkeypatch):
+    fake = install_fake(monkeypatch, time_entry_model, expense_model)
+    fake.seed("timeentries/e1", _time_seed())
+    fake.seed("expenses/x1", _expense_seed())
+    fake.reset_logs()
+    return fake
+
+
+def _row_commits(fake, collection="timeentries"):
+    """Commits that wrote a row of *collection* (the idempotency store
+    shares the fake in section 9)."""
+    return [c for c in fake.commits
+            if any(p.startswith(f"{collection}/") for _k, p in c.ops)]
+
+
+def test_l_outil_simple_reclasse_une_entree_facturee(real):
     payload = handlers.set_time_entry_phase(
         {"time_entry_id": "e1", "sous_phase": "INT-02"}
     )
@@ -406,17 +435,27 @@ def test_l_outil_simple_reclasse_une_entree_facturee(db):
     # appelant que rien d'autre n'a bougé.
     assert payload["entity"]["amount_cents"] == 45000
     assert payload["entity"]["hours"] == 1.5
+    # Et l'etag rendu est celui ÉCRIT, jamais celui lu avant l'écriture :
+    # c'est celui que la prochaine édition gardée doit présenter.
+    stored = real.peek("timeentries/e1")
+    assert stored["sous_phase"] == "INT-02"
+    assert payload["entity"]["etag"] == stored["etag"] != "etag-0"
+    # Une écriture gardée : une transaction, la lecture comprise.
+    (commit,) = _row_commits(real)
+    assert commit.transaction is not None
+    assert commit.ops == (("update", "timeentries/e1"),)
 
 
-def test_l_outil_simple_annonce_le_non_changement(db):
+def test_l_outil_simple_annonce_le_non_changement(real):
     handlers.set_expense_phase({"expense_id": "x1", "phase": "PRE"})
-    db.store["_updates"].clear()
+    real.reset_logs()
     payload = handlers.set_expense_phase({"expense_id": "x1", "phase": "PRE"})
     assert payload["outcome"] == "unchanged"
-    assert db.store["_updates"] == []
+    assert _row_commits(real, "expenses") == []
+    assert payload["entity"]["etag"] == real.peek("expenses/x1")["etag"]
 
 
-def test_l_outil_simple_leve_sur_un_refus(db):
+def test_l_outil_simple_leve_sur_un_refus(real):
     """Un appelant qui a nommé UNE ligne veut une erreur, pas un rapport
     d'une ligne."""
     with pytest.raises(tools.ToolArgumentError, match="introuvable"):
@@ -429,7 +468,50 @@ def test_l_outil_simple_leve_sur_un_refus(db):
         )
     with pytest.raises(tools.ToolArgumentError, match="Aucun code de phase"):
         handlers.set_time_entry_phase({"time_entry_id": "e1"})
-    assert db.store["_updates"] == []
+    assert real.commits == []
+
+
+def test_l_outil_simple_refuse_un_etag_perime_et_n_ecrit_rien(real):
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.set_time_entry_phase({"time_entry_id": "e1",
+                                       "sous_phase": "INT-02",
+                                       "expected_etag": "une-autre-version"})
+    assert excinfo.value.reason == "stale_etag"
+    assert "list_time_entries" in str(excinfo.value)
+    assert real.peek("timeentries/e1")["sous_phase"] == ""
+    assert real.commits == []
+
+
+def test_l_outil_simple_accepte_l_etag_courant_puis_celui_qu_il_rend(real):
+    """Chaîner deux reclassements sans relire : le second présente l'etag
+    que le premier a RENDU. Présenter l'ancien serait refusé."""
+    first = handlers.set_time_entry_phase({
+        "time_entry_id": "e1", "sous_phase": "INT-02",
+        "expected_etag": "etag-0"})
+    assert first["outcome"] == "applied"
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.set_time_entry_phase({
+            "time_entry_id": "e1", "sous_phase": "AUD-01",
+            "expected_etag": "etag-0"})
+    assert excinfo.value.reason == "stale_etag"
+    second = handlers.set_time_entry_phase({
+        "time_entry_id": "e1", "sous_phase": "AUD-01",
+        "expected_etag": first["entity"]["etag"]})
+    assert second["outcome"] == "applied"
+    assert real.peek("timeentries/e1")["sous_phase"] == "AUD-01"
+
+
+def test_un_code_deja_porte_repond_inchange_meme_sur_un_etag_perime(real):
+    """Rien ne peut se perdre à ne pas écrire : refuser ce non-changement
+    casserait la rejouabilité que ces outils promettent."""
+    handlers.set_time_entry_phase({"time_entry_id": "e1",
+                                   "sous_phase": "INT-02"})
+    real.reset_logs()
+    payload = handlers.set_time_entry_phase({
+        "time_entry_id": "e1", "sous_phase": "INT-02",
+        "expected_etag": "etag-0"})
+    assert payload["outcome"] == "unchanged"
+    assert real.commits == []
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -438,14 +520,16 @@ def test_l_outil_simple_leve_sur_un_refus(db):
 
 
 @pytest.fixture
-def many(db):
+def many(real):
     """Cinq entrées facturées, dont une déjà classée."""
     for i in range(2, 6):
-        db.store["timeentries"][f"e{i}"] = _time_seed(
+        real.seed(f"timeentries/e{i}", _time_seed(
             id=f"e{i}", phase="CTS" if i == 5 else "",
             sous_phase="CTS-02" if i == 5 else "",
-        )
-    return db
+            etag=f"etag-{i}",
+        ))
+    real.reset_logs()
+    return real
 
 
 def test_le_lot_rend_une_ligne_par_demande_DANS_L_ORDRE(many):
@@ -482,9 +566,38 @@ def test_une_ligne_refusee_n_arrete_pas_ses_voisines(many):
     assert [r["outcome"] for r in payload["results"]] == [
         "applied", "refused", "applied"
     ]
-    assert many.store["timeentries"]["e2"]["sous_phase"] == "PRE-01"
-    assert many.store["timeentries"]["e4"]["sous_phase"] == "PRE-01"
-    assert many.store["timeentries"]["e3"]["sous_phase"] == ""
+    assert many.peek("timeentries/e2")["sous_phase"] == "PRE-01"
+    assert many.peek("timeentries/e4")["sous_phase"] == "PRE-01"
+    assert many.peek("timeentries/e3")["sous_phase"] == ""
+
+
+def test_une_ligne_ecrite_par_un_autre_pendant_le_lot_est_refusee_seule(
+    many, monkeypatch,
+):
+    """Le lot n'a pas d'etag par ligne : il compare-et-écrit contre sa
+    PROPRE lecture. Une ligne réécrite par un autre entre cette lecture et
+    son commit est refusée sur sa ligne — la voisine passe, et l'écriture
+    de l'autre survit."""
+    real_bulk = time_entry_model.get_time_entries_bulk
+
+    def racing(ids):
+        rows = real_bulk(ids)
+        many.external_write("timeentries/e3", {
+            **many.peek("timeentries/e3"), "phase": "AUD",
+            "sous_phase": "AUD-02", "etag": "etag-rival"})
+        return rows
+
+    monkeypatch.setattr(time_entry_model, "get_time_entries_bulk", racing)
+    payload = handlers.set_time_entry_phase_bulk({"entries": [
+        {"time_entry_id": "e2", "sous_phase": "PRE-01"},
+        {"time_entry_id": "e3", "sous_phase": "PRE-01"},
+    ]})
+    assert [r["outcome"] for r in payload["results"]] == ["applied", "refused"]
+    assert payload["results"][1]["reason"].startswith(
+        "Cette entrée de temps a été modifiée")
+    assert many.peek("timeentries/e2")["sous_phase"] == "PRE-01"
+    rival = many.peek("timeentries/e3")
+    assert rival["sous_phase"] == "AUD-02" and rival["etag"] == "etag-rival"
 
 
 def test_une_ligne_refusee_n_invente_aucun_fait_sur_elle(many):
@@ -505,7 +618,7 @@ def test_un_id_en_double_refuse_TOUT_le_lot(many):
             {"time_entry_id": "e3", "sous_phase": "AUD-01"},
             {"time_entry_id": "e2", "sous_phase": "INS-01"},
         ]})
-    assert many.store["_updates"] == []
+    assert many.commits == []
 
 
 def test_le_plafond_et_le_lot_vide_sont_refuses(many):
@@ -515,16 +628,20 @@ def test_le_plafond_et_le_lot_vide_sont_refuses(many):
         handlers.set_time_entry_phase_bulk({"entries": trop})
     with pytest.raises(tools.ToolArgumentError, match="au moins une ligne"):
         handlers.set_time_entry_phase_bulk({"entries": []})
-    assert many.store["_updates"] == []
+    assert many.commits == []
 
 
 def test_le_lot_n_altere_aucun_chiffre(many):
-    avant = {i: dict(d) for i, d in many.store["timeentries"].items()}
-    handlers.set_time_entry_phase_bulk({"entries": [
+    avant = many.peek_collection("timeentries")
+    payload = handlers.set_time_entry_phase_bulk({"entries": [
         {"time_entry_id": i, "sous_phase": "JUG-01"} for i in avant
     ]})
+    # Non vide : le lot a été APPLIQUÉ à chaque ligne — sans quoi « aucun
+    # chiffre n'a bougé » ne prouverait rien.
+    assert payload["applied"] == len(avant) == 5
     for i, before in avant.items():
-        after = many.store["timeentries"][i]
+        after = many.peek(f"timeentries/{i}")
+        assert after["sous_phase"] == "JUG-01"
         for key in ("hours", "rate", "amount", "description", "billable",
                     "invoiced", "invoice_id", "date", "dossier_id"):
             assert after[key] == before[key], (i, key)
@@ -552,8 +669,8 @@ def test_les_quatre_familles_de_refus_coexistent_dans_un_lot(many):
     assert payload["refused"] == 4
     assert [r["outcome"] for r in payload["results"]] == ["refused"] * 4
     assert "Sous-phase invalide" in payload["results"][3]["reason"]
-    assert many.store["timeentries"]["e4"]["sous_phase"] == ""
-    assert many.store["_updates"] == []
+    assert many.peek("timeentries/e4")["sous_phase"] == ""
+    assert many.commits == []
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -562,21 +679,19 @@ def test_les_quatre_familles_de_refus_coexistent_dans_un_lot(many):
 
 
 def test_la_meme_cle_rejoue_le_rapport_sans_reecrire(many, monkeypatch):
-    # Le registre d'idempotence tourne sur le faux Firestore PARTAGÉ depuis
-    # le 2026-09-25 (changement délibéré, lot 0a, étape 4) : la clé y est
-    # RÉSERVÉE par un create() et finalisée sous précondition, deux choses
-    # que ce faux écrit à la main ne modélise pas — et qu'un faux qui les
-    # accepterait sans les vérifier ne prouverait pas. Les modèles, eux,
-    # restent sur `many` : c'est lui qui compte les update().
-    install_fake(monkeypatch, write_support)
+    # Le registre d'idempotence et les modèles partagent le MÊME faux
+    # Firestore réaliste : la clé y est RÉSERVÉE par un create() et finalisée
+    # sous précondition, et la ligne s'écrit en transaction — trois choses
+    # qu'un faux écrit à la main ne modélise pas.
+    install_fake(monkeypatch, write_support, fake=many)
     args = {"entries": [{"time_entry_id": "e2", "sous_phase": "AUD-01"}],
             "idempotency_key": "reclassement-2025-001-01"}
 
     first = handlers.set_time_entry_phase_bulk(dict(args))
     assert first["applied"] == 1 and first["idempotent_replay"] is False
-    many.store["_updates"].clear()
+    many.reset_logs()
 
     again = handlers.set_time_entry_phase_bulk(dict(args))
     assert again["idempotent_replay"] is True
     assert again["results"] == first["results"]
-    assert many.store["_updates"] == []
+    assert _row_commits(many) == []

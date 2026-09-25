@@ -22,6 +22,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.tools as tools
+    from models import concurrency, provenance
 
 
 # ── get_reference_vocabulary ───────────────────────────────────────────────
@@ -317,9 +318,14 @@ def contacts(monkeypatch):
         world["created"] = dict(data)
         return {**data, "id": "p-new"}, []
 
-    def _update(pid, data):
+    # Widened on 2026-09-25 (lot 0a, étape 5): the handler now always passes
+    # `expected_etag` — the caller's, or the etag it has just read — and the
+    # stub records it, with the writer the model would stamp.
+    def _update(pid, data, *, expected_etag=None):
         world["updated"] = dict(data)
         world["updated_id"] = pid
+        world["expected_etag"] = expected_etag
+        world["via"] = provenance.current_via()
         return {**(world["existing"] or {}), **data, "id": pid}, []
 
     monkeypatch.setattr(handlers.partie_model, "create_partie", _create)
@@ -524,7 +530,9 @@ def test_update_partie_remonte_le_refus_du_modele_tel_quel(contacts, monkeypatch
                             "last_name": "Tremblay"}
     monkeypatch.setattr(
         handlers.partie_model, "update_partie",
-        lambda pid, data: (None, ["Cellulaire : Numéro de téléphone invalide."]))
+        # Widened (lot 0a, étape 5): the handler passes expected_etag.
+        lambda pid, data, *, expected_etag=None: (
+            None, ["Cellulaire : Numéro de téléphone invalide."]))
     with pytest.raises(tools.ToolArgumentError, match="Cellulaire"):
         handlers.update_partie({"partie_id": "p1", "notes": "x"})
 
@@ -575,8 +583,10 @@ def dossiers(monkeypatch):
         handlers.dossier_model._apply_prescription_deadline(doc)
         return doc, []
 
-    def _update(did, data):
+    def _update(did, data, *, expected_etag=None):
         world["updated"] = dict(data)
+        world["expected_etag"] = expected_etag
+        world["via"] = provenance.current_via()
         doc = {**(world["existing"] or {}), **data, "id": did}
         handlers.dossier_model._apply_prescription_deadline(doc)
         return doc, []
@@ -803,12 +813,16 @@ def test_les_notes_de_prescription_sont_enfin_atteignables(dossiers):
 def billing(monkeypatch):
     world = {"entry": None, "expense": None, "written": {}}
 
-    def _upd_entry(eid, data):
+    def _upd_entry(eid, data, *, expected_etag=None):
         world["written"] = dict(data)
+        world["expected_etag"] = expected_etag
+        world["via"] = provenance.current_via()
         return {**(world["entry"] or {}), **data, "id": eid}, []
 
-    def _upd_expense(xid, data):
+    def _upd_expense(xid, data, *, expected_etag=None):
         world["written"] = dict(data)
+        world["expected_etag"] = expected_etag
+        world["via"] = provenance.current_via()
         return {**(world["expense"] or {}), **data, "id": xid}, []
 
     monkeypatch.setattr(handlers.time_entry_model, "get_time_entry",
@@ -1329,3 +1343,99 @@ def test_les_deux_nouveaux_outils_restent_en_lecture_seule():
         assert name not in tools.WRITE_TOOLS
         assert tools.required_scope(name) == "athena:read"
         assert "scope" not in tools.TOOLS[name]
+
+
+# ── Concurrence optimiste (lot 0a, étape 5) ────────────────────────────────
+#
+# Plan, règle 3 : un outil d'édition accepte `expected_etag`, et quand
+# l'appelant n'en donne aucun, le gestionnaire compare-et-écrit contre
+# l'etag qu'il vient de LIRE — ses gardes et sa charge ont été calculées sur
+# cette lecture. Les deux moitiés sont épinglées ici, sur les quatre
+# éditeurs, avec l'auteur (`via`) que le modèle estampillerait.
+
+
+def test_update_partie_ecrit_contre_l_etag_qu_il_vient_de_lire(contacts):
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "T", "etag": "e-lu"}
+    payload = handlers.update_partie({"partie_id": "p1", "notes": "x"})
+    assert contacts["expected_etag"] == "e-lu"
+    assert contacts["via"] == "mcp"
+    assert payload["entity"]["etag"] == "e-lu"  # the stub echoes, no rewrite
+
+
+def test_update_partie_transmet_l_etag_de_l_appelant(contacts):
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "T", "etag": "e-lu"}
+    handlers.update_partie({"partie_id": "p1", "notes": "x",
+                            "expected_etag": "e-lu"})
+    assert contacts["expected_etag"] == "e-lu"
+
+
+def test_update_partie_refuse_un_etag_perime_sans_atteindre_le_modele(contacts):
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "T", "etag": "e-actuel"}
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.update_partie({"partie_id": "p1", "notes": "x",
+                                "expected_etag": "e-ancien"})
+    assert excinfo.value.reason == "stale_etag"
+    message = str(excinfo.value)
+    assert "Ce contact a été modifié" in message and "Rien n'a été écrit" in message
+    assert "get_partie" in message
+    assert contacts["updated"] == {}
+    assert "e-actuel" not in message  # never hand over the etag to retry blind
+
+
+def test_update_partie_nomme_le_refus_de_concurrence_du_modele(
+    contacts, monkeypatch,
+):
+    """The model refuses when a write landed between the handler's read and
+    its transactional commit: the handler names it, reason stale_etag."""
+    contacts["existing"] = {"id": "p1", "type": "individual",
+                            "last_name": "T", "etag": "e-lu"}
+    monkeypatch.setattr(
+        handlers.partie_model, "update_partie",
+        lambda pid, data, *, expected_etag=None: (
+            None, [concurrency.STALE_ETAG_ERROR]),
+    )
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.update_partie({"partie_id": "p1", "notes": "x"})
+    assert excinfo.value.reason == "stale_etag"
+    assert concurrency.STALE_ETAG_ERROR not in str(excinfo.value)
+
+
+def test_update_dossier_ecrit_contre_l_etag_qu_il_vient_de_lire(dossiers):
+    dossiers["existing"] = {"id": "d1", "file_number": "2019-014",
+                            "title": "T", "status": "actif",
+                            "clients": [], "etag": "e-lu"}
+    payload = handlers.update_dossier({"dossier_id": "d1",
+                                       "sommaire": "Résumé."})
+    assert dossiers["expected_etag"] == "e-lu" and dossiers["via"] == "mcp"
+    assert payload["entity"]["etag"] == "e-lu"
+
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.update_dossier({"dossier_id": "d1", "sommaire": "Autre.",
+                                 "expected_etag": "e-ancien"})
+    assert excinfo.value.reason == "stale_etag"
+    assert "Ce dossier a été modifié" in str(excinfo.value)
+
+
+def test_les_editeurs_de_facturation_ecrivent_contre_l_etag_lu(billing):
+    billing["entry"]["etag"] = "e-temps"
+    billing["expense"]["etag"] = "e-debours"
+    handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0})
+    assert billing["expected_etag"] == "e-temps" and billing["via"] == "mcp"
+    handlers.update_expense({"expense_id": "x1", "amount_cents": 6000})
+    assert billing["expected_etag"] == "e-debours" and billing["via"] == "mcp"
+
+
+def test_un_etag_perime_passe_avant_le_mur_de_facturation(billing):
+    """Order of the guards: a stale view is answered « re-read » first — a
+    row invoiced since the read is ONE way to be stale, and the re-read is
+    what then shows the caller the invoice."""
+    billing["entry"].update(etag="e-actuel", invoiced=True, invoice_id="i1")
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0,
+                                    "expected_etag": "e-ancien"})
+    assert excinfo.value.reason == "stale_etag"
+    assert "list_time_entries" in str(excinfo.value)
+    assert billing["written"] == {}
