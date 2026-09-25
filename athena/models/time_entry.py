@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db
+from models import aggregation_values, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -158,18 +158,15 @@ def create_time_entry(data: dict) -> tuple[Optional[dict], list[str]]:
     now = datetime.now(timezone.utc)
     entry_id = str(uuid.uuid4())
 
-    merged.update({
-        "id": entry_id,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
-    })
+    merged["id"] = entry_id
+    provenance.stamp_create(merged, now)
 
     try:
         db.collection(COLLECTION).document(entry_id).set(merged)
     except Exception:
         log_unexpected("time entry write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, entry_id)
 
     return merged, []
 
@@ -404,14 +401,14 @@ def update_time_entry(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(entry_id).set(merged)
     except Exception:
         log_unexpected("time entry write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, entry_id)
 
     return merged, []
 
@@ -450,10 +447,12 @@ def set_time_entry_phase(
     nothing else. ``invoiced`` is therefore never consulted here.
 
     What keeps that claim true is the WRITE SHAPE, not a promise: a partial
-    ``update()`` of exactly four keys, never the merged full-document
-    ``set()`` that :func:`update_time_entry` performs. The function is
-    structurally incapable of moving hours, rate, amount or description, and
-    a test pins the key set. Never "simplify" this into ``update_time_entry``
+    ``update()`` of the phase pair plus the write's own stamp
+    (``provenance.update_fields`` — updated_at, etag, updated_via, and
+    mcp_updated_at when the connector writes), never the merged
+    full-document ``set()`` that :func:`update_time_entry` performs. The
+    function is structurally incapable of moving hours, rate, amount or
+    description, and a test pins the key set. Never "simplify" this into ``update_time_entry``
     with a relaxed guard — that guard's refusal is what makes the connector's
     ``update_time_entry`` output schema (« invoiced: always false ») true.
 
@@ -493,19 +492,19 @@ def set_time_entry_phase(
         return existing, [], False
 
     now = datetime.now(timezone.utc)
-    etag = str(uuid.uuid4())
+    stamp = provenance.update_fields(now)
     try:
         db.collection(COLLECTION).document(entry_id).update({
             "phase": pair["phase"],
             "sous_phase": pair["sous_phase"],
-            "updated_at": now,
-            "etag": etag,
+            **stamp,
         })
     except Exception:
         log_unexpected("time entry phase write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    provenance.note_commit(COLLECTION, entry_id)
 
-    return {**existing, **pair, "updated_at": now, "etag": etag}, [], True
+    return {**existing, **pair, **stamp}, [], True
 
 
 def delete_time_entry(entry_id: str) -> tuple[bool, str]:
@@ -612,8 +611,7 @@ def mark_time_entries_invoiced(entry_ids: list[str], invoice_id: str) -> list[st
             db.collection(COLLECTION).document(eid).update({
                 "invoiced": True,
                 "invoice_id": invoice_id,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         except Exception as exc:
             logger.warning(

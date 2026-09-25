@@ -9,7 +9,7 @@ import icalendar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db, reference
+from models import aggregation_values, db, provenance, reference
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import taxonomie
@@ -873,7 +873,6 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
 
     now = datetime.now(timezone.utc)
     dossier_id = str(uuid.uuid4())
-    etag = str(uuid.uuid4())
     vjournal_uid = str(uuid.uuid4())
 
     # Derived role + flat ID mirrors, from the per-party arrays
@@ -884,13 +883,11 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
         {
             "id": dossier_id,
             "opened_date": merged.get("opened_date") or now,
-            "created_at": now,
-            "updated_at": now,
-            "etag": etag,
             "vjournal_uid": vjournal_uid,
             "dav_href": f"/dav/journals/{dossier_id}.ics",
         }
     )
+    provenance.stamp_create(merged, now)
 
     # Closure date mirrors update_dossier: auto-stamp when a dossier is created
     # already closed/archived (unless the form supplied one); empty otherwise.
@@ -907,6 +904,7 @@ def create_dossier(data: dict) -> tuple[Optional[dict], list[str]]:
     except Exception:
         log_unexpected("dossier write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, dossier_id)
 
     return merged, []
 
@@ -1318,8 +1316,7 @@ def update_dossier(
             )
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     # Sync flat ID arrays
     _derive_role(merged)
@@ -1370,6 +1367,7 @@ def update_dossier(
     except Exception:
         log_unexpected("dossier write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, dossier_id)
 
     return merged, []
 

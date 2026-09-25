@@ -9,7 +9,7 @@ import vobject
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db
+from models import aggregation_values, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -428,25 +428,23 @@ def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
 
     now = datetime.now(timezone.utc)
     partie_id = str(uuid.uuid4())
-    etag = str(uuid.uuid4())
     vcard_uid = str(uuid.uuid4())
 
     merged.update(
         {
             "id": partie_id,
-            "created_at": now,
-            "updated_at": now,
-            "etag": etag,
             "vcard_uid": vcard_uid,
             "dav_href": f"/dav/addressbook/{partie_id}.vcf",
         }
     )
+    provenance.stamp_create(merged, now)
 
     try:
         db.collection(COLLECTION).document(partie_id).set(merged)
     except Exception:
         log_unexpected("partie write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, partie_id)
 
     return merged, []
 
@@ -655,8 +653,7 @@ def update_partie(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     # KYC stamps: each *_date answers « when was this DECIDED », never
     # « when was the field last touched ». Stamp only on a transition INTO
@@ -686,6 +683,7 @@ def update_partie(
     except Exception:
         log_unexpected("partie write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, partie_id)
 
     return merged, []
 

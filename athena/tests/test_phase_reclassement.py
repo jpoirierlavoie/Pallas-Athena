@@ -8,11 +8,14 @@ compte le travail FACTURÉ. D'où ce lot.
 
 Ce que ces tests épinglent, dans l'ordre d'importance :
 
-1. La FORME de l'écriture. Le modèle fait un ``update()`` partiel de QUATRE
-   clés, jamais le ``set()`` du document fusionné qu'exécute
+1. La FORME de l'écriture. Le modèle fait un ``update()`` partiel de la
+   paire de phase et de son TAMPON (``provenance.update_fields`` :
+   updated_at, etag, updated_via — plus mcp_updated_at quand le connecteur
+   écrit), jamais le ``set()`` du document fusionné qu'exécute
    ``update_time_entry`` : c'est ce qui rend la fonction structurellement
    incapable de déplacer un montant. Une promesse se relit, une forme se
-   prouve.
+   prouve. (Quatre clés jusqu'au 2026-09-25 ; la provenance en a ajouté une,
+   deux sous le connecteur — aucune n'est un montant.)
 2. Le mur n'a pas bougé : ``update_time_entry`` refuse toujours une entrée
    facturée, ce qui est précisément ce qui rend vrai le
    « invoiced : toujours faux » de SON schéma de sortie.
@@ -175,12 +178,21 @@ _BOTH = pytest.mark.parametrize("kind", list(_KINDS), ids=list(_KINDS))
 # ══════════════════════════════════════════════════════════════════════
 
 
+# Ce que l'écriture partielle peut porter : la paire, et le tampon de
+# l'écriture elle-même. Rien d'autre — et surtout aucun champ de facturation.
+_PHASE_WRITE_KEYS = {"phase", "sous_phase", "updated_at", "etag", "updated_via"}
+_BILLING_KEYS = {"hours", "rate", "amount", "billable", "taxable", "invoiced",
+               "invoice_id", "description", "date"}
+
+
 @_BOTH
-def test_l_ecriture_ne_porte_QUE_quatre_cles(db, kind):
+def test_l_ecriture_ne_porte_que_la_paire_et_son_tampon(db, kind):
     """La garantie n'est pas une promesse, c'est la forme de l'écriture.
 
-    Un ``update()`` de quatre clés ne peut pas déplacer un montant ; un
-    ``set()`` de document fusionné le pourrait à la première régression.
+    Un ``update()`` de la paire et de son tampon ne peut pas déplacer un
+    montant ; un ``set()`` de document fusionné le pourrait à la première
+    régression. (Renommé le 2026-09-25 : « QUATRE clés » avant que la
+    provenance n'ajoute ``updated_via`` — changement délibéré, lot 0a.)
     """
     cfg = _KINDS[kind]
     doc, errors, changed = cfg["setter"]()(cfg["row_id"], "INT", "INT-01")
@@ -190,9 +202,34 @@ def test_l_ecriture_ne_porte_QUE_quatre_cles(db, kind):
     assert len(db.store["_updates"]) == 1
     _, doc_id, payload = db.store["_updates"][0]
     assert doc_id == cfg["row_id"]
-    assert set(payload) == {"phase", "sous_phase", "updated_at", "etag"}
+    assert set(payload) == _PHASE_WRITE_KEYS
+    assert not set(payload) & _BILLING_KEYS
+    # Hors connecteur, pas de requête Flask : c'est un script qui écrit.
+    assert payload["updated_via"] == "script"
+    # Le retour porte le tampon ÉCRIT, jamais un etag d'avant l'écriture.
+    assert doc["etag"] == payload["etag"]
     # Et surtout : jamais de set() sur ce chemin.
     assert db.store["_sets"] == []
+
+
+@_BOTH
+def test_sous_le_connecteur_l_ecriture_gagne_mcp_updated_at_et_rien_d_autre(
+    db, kind,
+):
+    """Sous ``writing_via("mcp")`` (ce que pose ``run_write``), une clé de
+    plus : l'instant collant de la dernière écriture de Claude."""
+    from models import provenance
+
+    cfg = _KINDS[kind]
+    with provenance.writing_via("mcp", tool="set_time_entry_phase"):
+        _, errors, changed = cfg["setter"]()(cfg["row_id"], "INT", "INT-01")
+
+    assert errors == [] and changed is True
+    _, _, payload = db.store["_updates"][0]
+    assert set(payload) == _PHASE_WRITE_KEYS | {"mcp_updated_at"}
+    assert not set(payload) & _BILLING_KEYS
+    assert payload["updated_via"] == "mcp"
+    assert payload["mcp_updated_at"] == payload["updated_at"]
 
 
 @_BOTH
@@ -208,7 +245,7 @@ def test_une_ligne_facturee_se_reclasse_sans_qu_aucun_chiffre_ne_bouge(db, kind)
     assert after["phase"] == "AUD" and after["sous_phase"] == "AUD-02"
     # Tout le reste, octet pour octet — y compris `invoiced` et `invoice_id`,
     # que ce chemin ne consulte jamais.
-    moved = {"phase", "sous_phase", "updated_at", "etag"}
+    moved = _PHASE_WRITE_KEYS
     for key, value in before.items():
         if key not in moved:
             assert after[key] == value, key

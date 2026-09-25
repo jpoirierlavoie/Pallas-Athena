@@ -55,7 +55,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import db
+from models import db, provenance
 from models.trust import reconciliation_variance  # pure, generic — import, don't copy
 from security import sanitize
 from tz import to_mtl
@@ -515,9 +515,7 @@ def create_account(data: dict) -> tuple[Optional[dict], list[str]]:
         "opened_date": _as_utc(merged.get("opened_date")) or now,
         "closed_date": None,
         "status": "actif",
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     })
     try:
         db.collection(ACCOUNTS_COLLECTION).document(account_id).set(merged)
@@ -561,8 +559,7 @@ def update_account(account_id: str, data: dict) -> tuple[Optional[dict], list[st
     if errors:
         return None, errors
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
     if merged.get("status") == "fermé":
         merged["closed_date"] = existing.get("closed_date") or now
     else:
@@ -721,9 +718,7 @@ def _build_transaction_doc(
         "reversed_by_id": reversed_by_id,
         "related_transaction_id": related_transaction_id,
         "revisions": [],
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     }
 
 
@@ -906,8 +901,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
         txn.update(account_ref, {
             "ledger_balance": int(account.get("ledger_balance", 0))
             + admin_delta(direction, amount),
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         result["entry"] = entry
 
@@ -1035,8 +1029,7 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
         revisions = list(existing.get("revisions") or [])
         revisions.append({"at": now, "changes": changes})
         merged["revisions"] = revisions[-_REVISIONS_CAP:]
-        merged["updated_at"] = now
-        merged["etag"] = str(uuid.uuid4())
+        provenance.stamp_update(merged, now)
 
         delta = admin_delta(merged["direction"], int(merged["amount"])) - admin_delta(
             existing.get("direction", ""), int(existing.get("amount", 0))
@@ -1044,8 +1037,7 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
         txn.set(tx_ref, merged)
         txn.update(account_ref, {
             "ledger_balance": int(account.get("ledger_balance", 0)) + delta,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         result["entry"] = merged
         result["fields"] = sorted(changes)
@@ -1108,8 +1100,7 @@ def delete_transaction(tx_id: str) -> tuple[Optional[dict], list[str]]:
         txn.update(account_ref, {
             "ledger_balance": int(account.get("ledger_balance", 0))
             - admin_delta(existing.get("direction", ""), int(existing.get("amount", 0))),
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         result["entry"] = existing
 
@@ -1185,8 +1176,7 @@ def delete_card_payment(tx_id: str) -> tuple[Optional[list[dict]], list[str]]:
             )
             txn.update(aref, {
                 "ledger_balance": int(acc.get("ledger_balance", 0)) + delta,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         result["legs"] = [leg_a, leg_b]
 
@@ -1282,14 +1272,13 @@ def _clear_entries(
             update = {
                 "status": "compensée",
                 "cleared_date": cd,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             }
             if reconciliation_id is not None:
                 update["reconciliation_id"] = reconciliation_id
             txn.update(ref, update)
             cleared_docs.append({**e, **update})
-        txn.update(account_ref, {"updated_at": now, "etag": str(uuid.uuid4())})
+        txn.update(account_ref, provenance.update_fields(now))
         outcome["cleared"] = cleared_docs
 
     try:
@@ -1481,15 +1470,13 @@ def reverse_transaction(
             txn.update(db.collection(TRANSACTIONS_COLLECTION).document(leg["id"]), {
                 "status": new_status,
                 "reversed_by_id": rev_id,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         for info in accounts.values():
             txn.set(info["counter_ref"], {"seq": info["seq"], "updated_at": now})
             txn.update(info["ref"], {
                 "ledger_balance": int(info["doc"].get("ledger_balance", 0)) + info["delta"],
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         result["reversals"] = reversals
         result["original"] = original
@@ -1608,8 +1595,7 @@ def create_card_payment(
             txn.update(info["ref"], {
                 "ledger_balance": int(info["doc"].get("ledger_balance", 0))
                 + admin_delta(leg["direction"], amount),
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         result["legs"] = [leg_a, leg_b]
 
@@ -1650,8 +1636,7 @@ def attach_receipt(
         "receipt_filename": sanitize(filename or "", max_length=300),
         "receipt_file_type": sanitize(content_type or "", max_length=100),
         "receipt_file_size": int(size or 0),
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.update_fields(now),
     }
     try:
         db.collection(TRANSACTIONS_COLLECTION).document(tx_id).update(updates)
@@ -2013,9 +1998,7 @@ def create_reconciliation(
         "completed_date": None,
         "cleared_transaction_ids": [],
         "notes": "",
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     }
     try:
         db.collection(RECONCILIATIONS_COLLECTION).document(rec_id).set(doc)
@@ -2174,10 +2157,9 @@ def complete_reconciliation(
                 "status": "compensée",
                 "cleared_date": cd,
                 "reconciliation_id": rec_id,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
-        txn.update(account_ref, {"updated_at": now, "etag": str(uuid.uuid4())})
+        txn.update(account_ref, provenance.update_fields(now))
         finalized = {
             **rec,
             "status": "complétée",
@@ -2187,8 +2169,7 @@ def complete_reconciliation(
             "variance": 0,
             "completed_date": now,
             "cleared_transaction_ids": [e["id"] for e in entries],
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         }
         txn.set(rec_ref, finalized)
         result["reconciliation"] = finalized

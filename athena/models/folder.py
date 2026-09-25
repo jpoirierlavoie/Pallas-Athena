@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -512,8 +512,7 @@ def delete_folder(
                     ref = db.collection("documents").document(doc["id"])
                     batch.update(ref, {
                         "folder_id": parent_id,
-                        "updated_at": now,
-                        "etag": str(uuid.uuid4()),
+                        **provenance.update_fields(now),
                     })
                 batch.commit()
             moved = len(documents)

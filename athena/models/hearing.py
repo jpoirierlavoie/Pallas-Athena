@@ -10,7 +10,7 @@ import icalendar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import db, provenance
 from security import sanitize
 from tz import MTL, mtl_to_utc, to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -403,18 +403,19 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
 
     merged.update({
         "id": hearing_id,
-        "created_at": merged.get("created_at") or now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
         "vevent_uid": vevent_uid,
         "dav_href": dav_href_for(merged.get("dossier_id", ""), hearing_id),
     })
+    provenance.stamp_create(
+        merged, now, created_at=merged.get("created_at") or now,
+    )
 
     try:
         db.collection(COLLECTION).document(hearing_id).set(merged)
     except Exception:
         log_unexpected("hearing write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, hearing_id)
 
     return merged, []
 
@@ -662,14 +663,14 @@ def update_hearing(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(hearing_id).set(merged)
     except Exception:
         log_unexpected("hearing write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, hearing_id)
 
     return merged, []
 
@@ -825,13 +826,10 @@ def create_hearing_series(
             "end_datetime": fin,
             "serie_id": serie_id,
             "serie_rule": rule,
-            "created_at": now,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
             "vevent_uid": str(uuid.uuid4()),
             "dav_href": dav_href_for(dossier_id, hearing_id),
         }
-        occurrences.append(occ)
+        occurrences.append(provenance.stamp_create(occ, now))
 
     try:
         batch = db.batch()
@@ -842,6 +840,8 @@ def create_hearing_series(
     except Exception:
         log_unexpected("hearing series write failed")
         return [], ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    for occ in occurrences:
+        provenance.note_commit(COLLECTION, occ["id"])
 
     return occurrences, []
 

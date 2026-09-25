@@ -11,7 +11,7 @@ _SYNCING: set[str] = set()
 import icalendar
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import db, provenance
 from tz import MTL
 from security import sanitize
 from utils import deadlines, phases
@@ -163,12 +163,10 @@ def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
 
     merged.update({
         "id": task_id,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
         "vtodo_uid": vtodo_uid,
         "dav_href": f"/dav/general/{task_id}.ics",
     })
+    provenance.stamp_create(merged, now)
 
     # Auto-set completed_date if status is terminée
     if merged["status"] == "terminée" and not merged.get("completed_date"):
@@ -179,6 +177,7 @@ def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
     except Exception:
         log_unexpected("task write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, task_id)
 
     return merged, []
 
@@ -331,8 +330,7 @@ def update_task(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     # Auto-set completed_date when completing
     if merged["status"] == "terminée" and not merged.get("completed_date"):
@@ -348,6 +346,7 @@ def update_task(
     except Exception:
         log_unexpected("task write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, task_id)
 
     # Sync to protocol step if status changed
     new_status = merged.get("status", "")
@@ -429,10 +428,9 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
                             "completed_date": now,
                             "updated_at": now,
                         })
-                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update({
-                            "updated_at": now,
-                            "etag": str(uuid.uuid4()),
-                        })
+                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update(
+                            provenance.update_fields(now)
+                        )
                         _check_protocol_completion(proto_doc.id)
                     elif new_task_status in ("à_faire", "en_cours") and step.get("status") == "complété":
                         step_doc.reference.update({
@@ -440,10 +438,9 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
                             "completed_date": None,
                             "updated_at": now,
                         })
-                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update({
-                            "updated_at": now,
-                            "etag": str(uuid.uuid4()),
-                        })
+                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update(
+                            provenance.update_fields(now)
+                        )
                     return  # Found and synced — done
     except Exception:
         pass  # Sync failure should not break the task update

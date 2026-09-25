@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from config import Config
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils.logging_setup import log_unexpected
 from utils.validators import (
@@ -304,8 +304,7 @@ def update_cabinet(data: dict) -> tuple[Optional[dict], list[str]]:
     now = datetime.now(timezone.utc)
     merged["id"] = DOC_ID
     merged["created_at"] = existing.get("created_at") or now
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(DOC_ID).set(merged)

@@ -33,7 +33,7 @@ from typing import Optional
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from models import aggregation_values, db
+from models import aggregation_values, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
@@ -457,9 +457,7 @@ def create_account(data: dict) -> tuple[Optional[dict], list[str]]:
         "opened_date": _as_utc(merged.get("opened_date")) or now,
         "closed_date": None,
         "status": "actif",
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     })
     try:
         db.collection(ACCOUNTS_COLLECTION).document(account_id).set(merged)
@@ -503,8 +501,7 @@ def update_account(account_id: str, data: dict) -> tuple[Optional[dict], list[st
     if errors:
         return None, errors
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
     if merged.get("status") == "fermé":
         merged["closed_date"] = existing.get("closed_date") or now
     else:
@@ -603,9 +600,7 @@ def _build_transaction_doc(
         "reverses_id": reverses_id,
         "reversed_by_id": reversed_by_id,
         "related_transaction_id": related_transaction_id,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     }
 
 
@@ -784,8 +779,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
         txn.set(counter_ref, {"seq": seq, "updated_at": now})
         txn.update(account_ref, {
             "book_balance": book_after_account,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         if dossier_ref is not None and client_id:
             book_map[client_id] = book_after_client
@@ -794,8 +788,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
                 "trust_balance_by_client": book_map,
                 "trust_cleared_by_client": cleared_map,
                 "trust_balance": sum(int(v) for v in book_map.values()),
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         result["entry"] = entry
 
@@ -912,8 +905,7 @@ def _clear_entries(
             update = {
                 "status": "compensée",
                 "cleared_date": cd,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             }
             if reconciliation_id is not None:
                 update["reconciliation_id"] = reconciliation_id
@@ -922,8 +914,7 @@ def _clear_entries(
 
         txn.update(account_ref, {
             "bank_balance": int(account.get("bank_balance", 0)) + bank_delta,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         for did, (dref, ddoc) in dossier_snaps.items():
             if ddoc is None:
@@ -933,8 +924,7 @@ def _clear_entries(
                 cmap[cid] = int(cmap.get(cid, 0)) + add
             txn.update(dref, {
                 "trust_cleared_by_client": cmap,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         outcome["cleared"] = cleared_docs
 
@@ -1074,14 +1064,12 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         txn.update(orig_ref, {
             "status": orig_new_status,
             "reversed_by_id": rev_id,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         txn.update(account_ref, {
             "book_balance": book_after_account,
             "bank_balance": int(account.get("bank_balance", 0)) + total["bank"],
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         if dossier_ref is not None and dossier is not None and client_id:
             book_map[client_id] = book_after_client
@@ -1090,8 +1078,7 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
                 "trust_balance_by_client": book_map,
                 "trust_cleared_by_client": cleared_map,
                 "trust_balance": sum(int(v) for v in book_map.values()),
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         result["reversal"] = reversal
         result["annulled"] = rev_status == "annulée"
@@ -1229,7 +1216,7 @@ def create_inter_dossier_transfer(
         txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_b_id), leg_b)
         txn.set(counter_ref, {"seq": seq_b, "updated_at": now})
         # Account book & bank net to zero, but bump the audit metadata.
-        txn.update(account_ref, {"updated_at": now, "etag": str(uuid.uuid4())})
+        txn.update(account_ref, provenance.update_fields(now))
 
         from_book[from_client_id] = from_book_after
         from_cleared[from_client_id] = from_cleared_after
@@ -1237,8 +1224,7 @@ def create_inter_dossier_transfer(
             "trust_balance_by_client": from_book,
             "trust_cleared_by_client": from_cleared,
             "trust_balance": sum(int(v) for v in from_book.values()),
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         to_book[to_client_id] = to_book_after
         to_cleared[to_client_id] = to_cleared_after
@@ -1246,8 +1232,7 @@ def create_inter_dossier_transfer(
             "trust_balance_by_client": to_book,
             "trust_cleared_by_client": to_cleared,
             "trust_balance": sum(int(v) for v in to_book.values()),
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         result["legs"] = [leg_a, leg_b]
 
@@ -1543,9 +1528,7 @@ def create_reconciliation(
         "completed_date": None,
         "cleared_transaction_ids": [],
         "notes": "",
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     }
     try:
         db.collection(RECONCILIATIONS_COLLECTION).document(rec_id).set(doc)
@@ -1746,13 +1729,11 @@ def complete_reconciliation(
                 "status": "compensée",
                 "cleared_date": cd,
                 "reconciliation_id": rec_id,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         txn.update(account_ref, {
             "bank_balance": post_clear_bank,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         for did, (dref, ddoc) in dossier_snaps.items():
             if ddoc is None:
@@ -1762,8 +1743,7 @@ def complete_reconciliation(
                 cmap[cid] = int(cmap.get(cid, 0)) + add
             txn.update(dref, {
                 "trust_cleared_by_client": cmap,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         finalized = {
             **rec,
@@ -1774,8 +1754,7 @@ def complete_reconciliation(
             "variance": 0,
             "completed_date": now,
             "cleared_transaction_ids": [e["id"] for e in entries],
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         }
         txn.set(rec_ref, finalized)
         result["reconciliation"] = finalized

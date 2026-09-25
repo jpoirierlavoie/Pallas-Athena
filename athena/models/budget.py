@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils import phases
 from utils.logging_setup import log_unexpected
@@ -336,9 +336,7 @@ def create_budget(data: dict) -> tuple[Optional[dict], list[str]]:
     budget_id = str(uuid.uuid4())
     merged.update({
         "id": budget_id,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     })
     try:
         db.collection(COLLECTION).document(budget_id).set(merged)

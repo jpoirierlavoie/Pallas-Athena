@@ -21,7 +21,7 @@ import icalendar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -167,17 +167,18 @@ def create_note(data: dict) -> tuple[Optional[dict], list[str]]:
 
     merged.update({
         "id": note_id,
-        "created_at": merged.get("created_at") or now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
         "vjournal_uid": vjournal_uid,
     })
+    provenance.stamp_create(
+        merged, now, created_at=merged.get("created_at") or now,
+    )
 
     try:
         db.collection(COLLECTION).document(note_id).set(merged)
     except Exception:
         log_unexpected("note write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, note_id)
 
     return merged, []
 
@@ -314,14 +315,14 @@ def update_note(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(note_id).set(merged)
     except Exception:
         log_unexpected("note write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, note_id)
 
     return merged, []
 

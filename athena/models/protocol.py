@@ -9,7 +9,7 @@ from utils import deadlines, phases
 from utils.deadlines import compute_deadline as _judicial_deadline
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -542,9 +542,7 @@ def create_protocol(
 
     merged.update({
         "id": protocol_id,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
+        **provenance.create_fields(now),
     })
 
     # Batch write protocol + all steps
@@ -726,8 +724,7 @@ def update_protocol(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(protocol_id).set(merged)
@@ -803,10 +800,9 @@ def add_step(
         ).document(step_id).set(merged)
 
         # Update protocol etag and updated_at
-        db.collection(COLLECTION).document(protocol_id).update({
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
-        })
+        db.collection(COLLECTION).document(protocol_id).update(
+            provenance.update_fields(now)
+        )
     except Exception:
         log_unexpected("protocol write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -855,10 +851,9 @@ def update_step(
             STEPS_SUBCOLLECTION
         ).document(step_id).set(merged)
 
-        db.collection(COLLECTION).document(protocol_id).update({
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
-        })
+        db.collection(COLLECTION).document(protocol_id).update(
+            provenance.update_fields(now)
+        )
     except Exception:
         log_unexpected("protocol write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -891,10 +886,9 @@ def delete_step(
             STEPS_SUBCOLLECTION
         ).document(step_id).delete()
 
-        db.collection(COLLECTION).document(protocol_id).update({
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
-        })
+        db.collection(COLLECTION).document(protocol_id).update(
+            provenance.update_fields(now)
+        )
         return True, ""
     except Exception:
         log_unexpected("protocol delete failed")
@@ -979,8 +973,7 @@ def recompute_deadlines(
         batch.update(proto_ref, {
             "start_date": new_start_date,
             "end_date": end_date,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
 
         batch.commit()
@@ -1297,8 +1290,7 @@ def _check_protocol_completion(protocol_id: str) -> None:
             now = datetime.now(timezone.utc)
             db.collection(COLLECTION).document(protocol_id).update({
                 "status": "complété",
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         except Exception as exc:
             logger.warning(

@@ -23,7 +23,7 @@ from firebase_admin import storage
 from google.cloud.exceptions import NotFound
 from werkzeug.utils import secure_filename
 
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils.docx_fill import validate_template
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -219,9 +219,7 @@ def create_template(
             "file_size": len(docx_bytes),
             "storage_path": storage_path,
             "version": 1,
-            "created_at": now,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.create_fields(now),
         }
     )
 
@@ -423,8 +421,7 @@ def update_template(
             }
         )
 
-    merged["updated_at"] = datetime.now(timezone.utc)
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, datetime.now(timezone.utc))
 
     try:
         db.collection(COLLECTION).document(template_id).set(merged)

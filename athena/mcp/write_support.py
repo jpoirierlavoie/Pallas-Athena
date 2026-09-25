@@ -40,7 +40,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from models import db
+from models import db, provenance
 from mcp.tools import ToolArgumentError
 from utils.logging_setup import log_mcp_event
 
@@ -177,7 +177,11 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
             prior["idempotent_replay"] = True
             return prior
 
-    payload = execute()
+    # Every model write the tool makes is stamped « mcp » (and its tool
+    # name) by the model itself — see models/provenance.py. The block also
+    # opens the commit record the models append to.
+    with provenance.writing_via("mcp", tool=tool):
+        payload = execute()
     payload["idempotent_replay"] = False
     if key:
         _record(tool, key, fingerprint, payload)

@@ -16,7 +16,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db
+from models import aggregation_values, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.deadlines import today_mtl
@@ -771,10 +771,8 @@ def create_invoice(
         "qst_rate": QST_RATE_BPS,
         "retainer_applied": retainer_applied,
         "amount_due": totals["total"] - retainer_applied,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
     })
+    provenance.stamp_create(merged, now)
 
     # Set default due date if not provided
     if not merged.get("due_date") and merged.get("date"):
@@ -830,8 +828,7 @@ def create_invoice(
             txn.update(ref, {
                 "invoiced": True,
                 "invoice_id": invoice_id,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
 
     try:
@@ -855,6 +852,7 @@ def create_invoice(
     except Exception as exc:
         logger.error("create_invoice: transaction failed for %s: %s", invoice_id, exc)
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, invoice_id)
 
     return merged, []
 
@@ -1185,8 +1183,7 @@ def record_payment(
             # A cleared payment has no date; keeping a stale one would read
             # as « paid on that day » for an invoice carrying no payment.
             "paid_date": paid_date if amount > 0 else None,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         }
 
         due = int(invoice.get("amount_due", 0))
@@ -1242,8 +1239,7 @@ def update_status(invoice_id: str, new_status: str) -> tuple[bool, str]:
     try:
         db.collection(COLLECTION).document(invoice_id).update({
             "status": new_status,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         return True, ""
     except Exception:
@@ -1297,15 +1293,13 @@ def void_invoice(invoice_id: str) -> tuple[bool, str]:
             batch.update(db.collection(col).document(source_id), {
                 "invoiced": False,
                 "invoice_id": None,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
 
         # Update invoice status in the same atomic commit
         batch.update(db.collection(COLLECTION).document(invoice_id), {
             "status": "annulée",
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
 
         batch.commit()

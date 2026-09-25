@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db
+from models import aggregation_values, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -135,18 +135,15 @@ def create_expense(data: dict) -> tuple[Optional[dict], list[str]]:
     now = datetime.now(timezone.utc)
     expense_id = str(uuid.uuid4())
 
-    merged.update({
-        "id": expense_id,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
-    })
+    merged["id"] = expense_id
+    provenance.stamp_create(merged, now)
 
     try:
         db.collection(COLLECTION).document(expense_id).set(merged)
     except Exception:
         log_unexpected("expense write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, expense_id)
 
     return merged, []
 
@@ -371,14 +368,14 @@ def update_expense(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(expense_id).set(merged)
     except Exception:
         log_unexpected("expense write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, expense_id)
 
     return merged, []
 
@@ -406,7 +403,8 @@ def set_expense_phase(
 
     Twin of ``models.time_entry.set_time_entry_phase``; read that docstring
     for why the ``invoiced`` wall does not apply to this pair and why the
-    write is a four-key partial ``update()`` rather than a merged ``set()``.
+    write is a partial ``update()`` of the pair plus its stamp rather than a
+    merged ``set()``.
     Returns ``(doc, errors, changed)``; an unchanged pair writes nothing.
     """
     existing = get_expense(expense_id)
@@ -433,19 +431,19 @@ def set_expense_phase(
         return existing, [], False
 
     now = datetime.now(timezone.utc)
-    etag = str(uuid.uuid4())
+    stamp = provenance.update_fields(now)
     try:
         db.collection(COLLECTION).document(expense_id).update({
             "phase": pair["phase"],
             "sous_phase": pair["sous_phase"],
-            "updated_at": now,
-            "etag": etag,
+            **stamp,
         })
     except Exception:
         log_unexpected("expense phase write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    provenance.note_commit(COLLECTION, expense_id)
 
-    return {**existing, **pair, "updated_at": now, "etag": etag}, [], True
+    return {**existing, **pair, **stamp}, [], True
 
 
 def delete_expense(expense_id: str) -> tuple[bool, str]:
@@ -505,8 +503,7 @@ def mark_expenses_invoiced(expense_ids: list[str], invoice_id: str) -> list[str]
             db.collection(COLLECTION).document(eid).update({
                 "invoiced": True,
                 "invoice_id": invoice_id,
-                "updated_at": now,
-                "etag": str(uuid.uuid4()),
+                **provenance.update_fields(now),
             })
         except Exception as exc:
             logger.warning(

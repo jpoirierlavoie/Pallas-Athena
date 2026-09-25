@@ -60,7 +60,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from config import Config
-from models import db
+from models import db, provenance
 from security import sanitize
 from utils.integrations_defaults import (
     DEFAULTS,
@@ -403,8 +403,7 @@ def update_integrations(data: dict) -> tuple[Optional[dict], list[str]]:
     )
     stored["id"] = DOC_ID
     stored["created_at"] = (existing or {}).get("created_at") or now
-    stored["updated_at"] = now
-    stored["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(stored, now)
 
     try:
         db.collection(COLLECTION).document(DOC_ID).set(stored)

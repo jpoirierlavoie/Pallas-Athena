@@ -15,7 +15,7 @@ from google.cloud.exceptions import NotFound
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
 from werkzeug.utils import secure_filename
-from models import db
+from models import db, provenance
 from security import sanitize
 from tz import to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -512,10 +512,8 @@ def _prepare_document_record(
         "file_type": content_type,
         "file_size": file_size,
         "storage_path": storage_path,
-        "created_at": now,
-        "updated_at": now,
-        "etag": str(uuid.uuid4()),
     })
+    provenance.stamp_create(merged, now)
     return merged, []
 
 
@@ -816,8 +814,7 @@ def update_metadata(
         return None, ["Catégorie invalide."]
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
-    merged["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(merged, now)
 
     try:
         db.collection(COLLECTION).document(document_id).set(merged)
@@ -1307,8 +1304,7 @@ def move_document(
 
     now = datetime.now(timezone.utc)
     doc["folder_id"] = target_folder_id
-    doc["updated_at"] = now
-    doc["etag"] = str(uuid.uuid4())
+    provenance.stamp_update(doc, now)
 
     try:
         db.collection(COLLECTION).document(document_id).set(doc)
@@ -1349,8 +1345,7 @@ def move_documents_bulk(
         ref = db.collection(COLLECTION).document(doc_id)
         batch.update(ref, {
             "folder_id": target_folder_id,
-            "updated_at": now,
-            "etag": str(uuid.uuid4()),
+            **provenance.update_fields(now),
         })
         moved += 1
 
@@ -1608,9 +1603,11 @@ def record_analyse(
         if lue is not None:
             natifs["document_date"] = lue
 
-    merged = {**existing, "analyse": champ, "category": nouvelle,
-              "category_source": "analyse", "updated_at": now,
-              "etag": str(uuid.uuid4()), **natifs}
+    merged = provenance.stamp_update(
+        {**existing, "analyse": champ, "category": nouvelle,
+         "category_source": "analyse", **natifs},
+        now,
+    )
     try:
         ref = db.collection(COLLECTION).document(document_id)
         # Le journal AVANT le cache : une entrée orpheline est inerte, un
@@ -1620,6 +1617,7 @@ def record_analyse(
     except Exception:
         log_unexpected("document analyse write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, document_id)
     return merged, []
 
 
@@ -1796,11 +1794,10 @@ def update_analyse(
         "confirme_le": now,
     })
 
-    merged = {
+    merged = provenance.stamp_update({
         **existing, "analyse": champ, "category": nature,
-        "category_source": "juriste", "updated_at": now,
-        "etag": str(uuid.uuid4()),
-    }
+        "category_source": "juriste",
+    }, now)
     try:
         ref = db.collection(COLLECTION).document(document_id)
         ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id).set(champ)
@@ -1825,11 +1822,13 @@ def confirmer_analyse(
     champ.update({"confirme": True,
                   "confirme_par": sanitize(str(par or ""), max_length=200),
                   "confirme_le": now})
-    merged = {**existing, "analyse": champ,
-              # La confirmation fait de la catégorie une détermination de
-              # l'avocat : la mention « présumé » doit tomber avec elle.
-              "category_source": "juriste",
-              "updated_at": now, "etag": str(uuid.uuid4())}
+    merged = provenance.stamp_update(
+        {**existing, "analyse": champ,
+         # La confirmation fait de la catégorie une détermination de
+         # l'avocat : la mention « présumé » doit tomber avec elle.
+         "category_source": "juriste"},
+        now,
+    )
     try:
         db.collection(COLLECTION).document(document_id).set(merged)
     except Exception:
