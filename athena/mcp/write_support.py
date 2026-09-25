@@ -29,8 +29,10 @@ Failing open is only tenable if the failure is SEEN: each one is logged as
 exception's text), through the typed helper. Until 2026-09-25 they were two
 raw ``logger.warning`` lines: outside the event registry, invisible to any
 log-based metric keyed on ``event``, and naming no tool — so a ``record``
-failure, the one after which a same-key retry WILL write again, could not
-be traced back to the write it left uncovered.
+failure, the one after which a same-key retry normally writes again, could
+not be traced back to the write it left uncovered. (« Normally »: an error
+on a write does not prove it did not land — a timeout can follow a commit —
+so the retry may also replay. The same-key ``mcp_write`` says which.)
 """
 
 import hashlib
