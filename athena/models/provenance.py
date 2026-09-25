@@ -42,7 +42,12 @@ reads. It is the STRUCTURAL commit point — the write protocol can tell « the
 model committed, then something after it failed » from « nothing was
 written » without trusting every handler to announce it. Outside a
 ``writing_via`` block it records nothing (a thread-local list that grew
-across requests would be a leak, not a record).
+across requests would be a leak, not a record). A NESTED block opens its own
+record and, on exit — normal or not — hands what it noted to the enclosing
+one: a commit made inside the inner block happened inside the outer one too,
+and a record that forgot it would tell the write protocol « nothing was
+written » about a write that was. Over-reporting a commit only costs a
+retry refusal; under-reporting one invites a duplicate.
 
 Pure: no Firestore, no model import. Flask is imported lazily and only to
 read the current request.
@@ -121,17 +126,24 @@ def writing_via(via: str, *, tool: str = "") -> Iterator[None]:
 
     Nested blocks override and restore. The reset runs in ``finally``, so
     an exception inside the block never leaves the override behind for the
-    next request served by the same thread.
+    next request served by the same thread. Also in ``finally``: the
+    commits a nested block noted are appended to the enclosing block's
+    record — the exception path is precisely the one where the outer reader
+    must still see them.
     """
     if via not in VALID_VIA:
         raise ValueError(f"unknown provenance via: {via!r}")
+    enclosing = _COMMITS.get()
+    inner: list[tuple[str, str]] = []
     override_token = _OVERRIDE.set((via, str(tool or "")))
-    commits_token = _COMMITS.set([])
+    commits_token = _COMMITS.set(inner)
     try:
         yield
     finally:
         _COMMITS.reset(commits_token)
         _OVERRIDE.reset(override_token)
+        if enclosing is not None:
+            enclosing.extend(inner)
 
 
 def update_fields(now: datetime) -> dict:

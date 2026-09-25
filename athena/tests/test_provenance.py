@@ -165,7 +165,22 @@ def test_note_commit_records_only_inside_a_writing_block():
         with provenance.writing_via("mcp", tool="inner"):
             assert provenance.committed_writes() == ()  # a fresh record
             provenance.note_commit("hearings", "h1")
-        assert provenance.committed_writes() == seen  # restored
+        # The inner commit happened inside the outer block too: handed up,
+        # never forgotten (a forgotten commit reads « nothing written »).
+        assert provenance.committed_writes() == seen + (("hearings", "h1"),)
+    assert provenance.committed_writes() == ()
+
+
+def test_a_nested_block_that_raises_still_hands_its_commits_up():
+    """The exception path is the one the commit record exists for: the
+    outer write protocol must still learn that the inner write committed."""
+    with provenance.writing_via("mcp", tool="outer"):
+        with pytest.raises(RuntimeError):
+            with provenance.writing_via("cron"):
+                provenance.note_commit("tasks", "t9")
+                raise RuntimeError("after the commit")
+        assert provenance.committed_writes() == (("tasks", "t9"),)
+        assert provenance.current_via() == "mcp"  # override restored
     assert provenance.committed_writes() == ()
 
 
