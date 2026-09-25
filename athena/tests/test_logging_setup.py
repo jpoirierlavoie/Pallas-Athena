@@ -732,6 +732,39 @@ def test_le_type_McpEvent_ne_ment_pas_sur_les_evenements_emis():
     assert emitted <= set(get_args(McpEvent))
 
 
+def test_every_emitted_mcp_event_is_a_member_of_the_literal():
+    """The hand-kept set above names three events and proves nothing about
+    a fourth. This sweep is DERIVED from the source: every literal event
+    name passed to `log_mcp_event` anywhere in the application must be a
+    McpEvent member — and the documentation sweep below, derived from the
+    Literal, then forces its OBSERVABILITY.md entry. Without it, an event
+    emitted but absent from the Literal escapes both checks at once (the
+    Literal has no runtime effect)."""
+    import ast
+    import pathlib
+    from typing import get_args
+
+    from utils.logging_setup import McpEvent
+
+    racine = pathlib.Path(__file__).resolve().parent.parent
+    emis: dict[str, str] = {}
+    for chemin in sorted(racine.rglob("*.py")):
+        if "tests" in chemin.relative_to(racine).parts:
+            continue
+        arbre = ast.parse(chemin.read_text(encoding="utf-8"))
+        for noeud in ast.walk(arbre):
+            if not isinstance(noeud, ast.Call) or not noeud.args:
+                continue
+            f = noeud.func
+            nom = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+            premier = noeud.args[0]
+            if nom == "log_mcp_event" and isinstance(premier, ast.Constant):
+                emis[premier.value] = f"{chemin.relative_to(racine)}:{noeud.lineno}"
+    assert "mcp_idempotency_store_failure" in emis  # non-vacuous
+    hors_type = {e: ou for e, ou in emis.items() if e not in get_args(McpEvent)}
+    assert not hors_type, hors_type
+
+
 # ── Le registre d'observabilité, contre le CODE ─────────────────────────
 
 

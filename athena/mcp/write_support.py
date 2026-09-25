@@ -23,18 +23,24 @@ retry ARMOUR, not an authorization gate — a Firestore blip on the lookup
 must not block a legitimate first write, and a blip on the record must
 not fail a write that already committed. The uncovered window (key sent,
 record failed, client retries) merely degrades to today's behaviour.
+
+Failing open is only tenable if the failure is SEEN: each one is logged as
+``mcp_idempotency_store_failure`` (tool, op, exception class — never the
+exception's text), through the typed helper. Until 2026-09-25 they were two
+raw ``logger.warning`` lines: outside the event registry, invisible to any
+log-based metric keyed on ``event``, and naming no tool — so a ``record``
+failure, the one after which a same-key retry WILL write again, could not
+be traced back to the write it left uncovered.
 """
 
 import hashlib
 import json
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from models import db
 from mcp.tools import ToolArgumentError
-
-logger = logging.getLogger(__name__)
+from utils.logging_setup import log_mcp_event
 
 COLLECTION = "mcp_idempotency"
 IDEMPOTENCY_TTL = timedelta(hours=24)
@@ -68,6 +74,23 @@ def args_fingerprint(args: dict) -> str:
     ).hexdigest()
 
 
+def _store_failure(tool: str, op: str, exc: BaseException) -> None:
+    """Log a failed store operation — the class name only, never the text.
+
+    An exception's message can carry what was being written (a stored
+    ``result`` holds titles and names), so ``str(exc)`` never reaches the
+    log; ``type(exc).__name__`` is enough to tell a timeout from a
+    permission error.
+    """
+    log_mcp_event(
+        "mcp_idempotency_store_failure",
+        "failure",
+        tool=tool,
+        op=op,
+        error_type=type(exc).__name__,
+    )
+
+
 def _lookup(tool: str, key: str, fingerprint: str) -> tuple[Optional[dict], bool]:
     """(stored result, conflict). Fails OPEN to (None, False)."""
     try:
@@ -83,9 +106,7 @@ def _lookup(tool: str, key: str, fingerprint: str) -> tuple[Optional[dict], bool
         result = doc.get("result")
         return (dict(result) if isinstance(result, dict) else None), False
     except Exception as exc:
-        logger.warning(
-            "mcp idempotency lookup failed: %s", type(exc).__name__
-        )
+        _store_failure(tool, "lookup", exc)
         return None, False
 
 
@@ -101,9 +122,7 @@ def _record(tool: str, key: str, fingerprint: str, result: dict) -> None:
             "expire_at": now + IDEMPOTENCY_TTL,
         })
     except Exception as exc:
-        logger.warning(
-            "mcp idempotency record failed: %s", type(exc).__name__
-        )
+        _store_failure(tool, "record", exc)
 
 
 def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
@@ -149,7 +168,8 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
                 "Cette idempotency_key a déjà servi à un appel dont les "
                 "arguments diffèrent. Une clé identifie UNE écriture "
                 "précise — générez une clé nouvelle pour une écriture "
-                "nouvelle."
+                "nouvelle.",
+                reason="idempotency_conflict",
             )
         if prior is not None:
             prior["idempotent_replay"] = True

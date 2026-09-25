@@ -231,12 +231,18 @@ def granted_scopes() -> frozenset[str]:
     return scopes
 
 
-def revalidate_for_write(required_scope: str) -> None:
+def revalidate_for_write(required_scope: str, tool: str = "") -> None:
     """Re-check the live token document before a mutation.
 
     The success cache is a read-path optimization; a write must not run on a
     token that was revoked minutes ago. This costs one keyed Firestore
     ``get()`` and only ever runs on a write tool call.
+
+    *tool* names the call being revalidated. It travels into both log lines
+    and into the :class:`ScopeRequired` it raises, so the endpoint's
+    ``mcp_write_refused`` names the tool too — without it, a revocation
+    that stopped an import mid-batch left a refusal that said nothing about
+    WHICH write it stopped.
 
     Raises :class:`ScopeRequired` when the token no longer carries
     *required_scope*, is revoked, expired, or has vanished.
@@ -249,9 +255,12 @@ def revalidate_for_write(required_scope: str) -> None:
     except Exception:
         from utils.logging_setup import log_unexpected
 
-        log_unexpected("mcp write revalidation lookup failed")
+        log_unexpected(
+            "mcp write revalidation lookup failed",
+            **({"tool": tool} if tool else {}),
+        )
         # Fail CLOSED: an unreachable store must not authorize a mutation.
-        raise ScopeRequired(required_scope)
+        raise ScopeRequired(required_scope, tool)
     if (
         doc is None
         or doc.get("token_type") != "access"
@@ -264,8 +273,9 @@ def revalidate_for_write(required_scope: str) -> None:
             "refused",
             reason="write_revalidation_failed",
             client_id=(doc or {}).get("client_id"),
+            tool=tool or None,
         )
-        raise ScopeRequired(required_scope)
+        raise ScopeRequired(required_scope, tool)
 
 
 # ── Decorator ───────────────────────────────────────────────────────────

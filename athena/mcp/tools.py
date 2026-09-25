@@ -25,9 +25,27 @@ from utils import phases
 _NBSP = " "
 
 
+#: The reason a refusal is logged under when its raiser names none.
+DEFAULT_REFUSAL_REASON = "argument_refused"
+
+
 class ToolArgumentError(Exception):
     """Argument-level failure a handler detects beyond the schema
-    (bad date string, mutually exclusive params). Maps to JSON-RPC -32602."""
+    (bad date string, mutually exclusive params). Maps to JSON-RPC -32602.
+
+    The MESSAGE goes to the client and nowhere else: it describes
+    user-supplied content (a note's text, a party's name), so it is kept
+    out of spans and logs. ``reason`` is what the refusal is LOGGED under
+    (``mcp_write_refused``) — a machine-stable snake_case code, never text.
+    Keyword-only, so every existing one-message raise is unchanged and
+    logs as :data:`DEFAULT_REFUSAL_REASON`.
+    """
+
+    def __init__(
+        self, message: str, *, reason: str = DEFAULT_REFUSAL_REASON
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def format_cents(cents: int) -> str:

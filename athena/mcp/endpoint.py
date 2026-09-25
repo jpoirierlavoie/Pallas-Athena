@@ -242,6 +242,21 @@ def _initialize(params: dict) -> dict:
     }
 
 
+def _log_write_refused(name: str, reason: str, **fields: Any) -> None:
+    """Log a refused WRITE call: the tool, a reason CODE, ids and counts.
+
+    Never the refusal's text — schema errors quote argument names the
+    caller chose, and handler refusals describe user-supplied content (a
+    note's text, a party's name) that the RedactionFilter does not scrub.
+    A read tool's refusal is not logged here: `mcp_write_refused` is the
+    write audit's counterpart, and a bad read argument changes nothing.
+    """
+    if name in tools.WRITE_TOOLS:
+        log_mcp_event(
+            "mcp_write_refused", "refused", tool=name, reason=reason, **fields
+        )
+
+
 def _tools_call(params: dict, protocol_version: str) -> dict:
     name = params.get("name")
     if not isinstance(name, str) or name not in tools.TOOLS:
@@ -266,12 +281,13 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
     if name in tools.WRITE_TOOLS:
         # Re-read the live token: the bearer success cache is a read-path
         # optimization and must not let a revoked token mutate the file.
-        revalidate_for_write(needed)
+        revalidate_for_write(needed, name)
 
     arguments = params.get("arguments")
     if arguments is None:
         arguments = {}
     if not isinstance(arguments, dict):
+        _log_write_refused(name, "schema_invalid", error_count=1)
         raise jsonrpc.JsonRpcError(
             jsonrpc.INVALID_PARAMS, "arguments must be an object"
         )
@@ -279,6 +295,11 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
     schema = tools.TOOLS[name]["input_schema"]
     validation_errors = tools.validate_args(schema, arguments)
     if validation_errors:
+        # The COUNT only: the messages quote argument names the caller
+        # chose, and an unvalidated `dossier_id` is not an id yet.
+        _log_write_refused(
+            name, "schema_invalid", error_count=len(validation_errors)
+        )
         raise jsonrpc.JsonRpcError(
             jsonrpc.INVALID_PARAMS, "; ".join(validation_errors)
         )
@@ -291,6 +312,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
     handler = tools.get_handler(name)
     started = time.perf_counter()
     argument_error: Optional[str] = None
+    argument_reason = tools.DEFAULT_REFUSAL_REASON
     try:
         with span(f"mcp.tool.{name}", **span_attrs):
             # ToolArgumentError is caught INSIDE the span. `span()` calls
@@ -304,6 +326,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
                 payload = handler(arguments)
             except ToolArgumentError as exc:
                 argument_error = str(exc)
+                argument_reason = exc.reason
                 payload = None
     except Exception:
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -321,6 +344,15 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         )
 
     if argument_error is not None:
+        # The refusal is LOGGED by its reason code — the text below reaches
+        # the client only. OBSERVABILITY.md promised an `mcp_write_refused`
+        # burst as the stop-the-import signal long before either of these
+        # refusal paths emitted one.
+        _log_write_refused(
+            name,
+            argument_reason,
+            **({"dossier_id": dossier_id} if span_attrs else {}),
+        )
         # Raised outside the span, so its (user-derived) text never reaches
         # the exporter. It still reaches the client, which is the point.
         raise jsonrpc.JsonRpcError(jsonrpc.INVALID_PARAMS, argument_error)
@@ -332,6 +364,7 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         # tools keep their historical `note` key and ALSO keep emitting the
         # original mcp_note_written event for log-metric continuity.
         entity = (payload or {}).get("entity") or (payload or {}).get("note") or {}
+        replay = bool((payload or {}).get("idempotent_replay"))
         common = {
             "tool": name,
             "dossier_id": entity.get("dossier_id") or None,
@@ -339,11 +372,14 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
             # A replay means « nothing new was written » — the audit line
             # must say so. (`dry_run` sat beside it until 2026-08-27, when
             # the preview left the write protocol.)
-            "idempotent_replay": bool((payload or {}).get("idempotent_replay")),
+            "idempotent_replay": replay,
             # The bump itself, NOT dav_synced — a closed dossier bumps
             # correctly but is never advertised to DavX5, and conflating the
             # two would make a healthy write look like a sync failure.
-            "ctag_bumped": bool((payload or {}).get("ctag_bumped")),
+            # A replay hands back the FIRST call's stored payload, `true`
+            # included, while bumping nothing: logged as-is, every replay
+            # claimed a CTag bump that never happened.
+            "ctag_bumped": bool((payload or {}).get("ctag_bumped")) and not replay,
             "dav_synced": bool((payload or {}).get("dav_synced")),
         }
         log_mcp_event("mcp_write", "success", **common)

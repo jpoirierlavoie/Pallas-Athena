@@ -590,6 +590,11 @@ McpEvent = Literal[
     # avec `entity_id: None` — honnête, un lot n'a pas d'entité unique —,
     # d'où cette ligne de COMPTES à côté. Jamais de liste d'identifiants.
     "mcp_phase_bulk",
+    # The idempotency store (mcp_idempotency) could not be read or written;
+    # the write went ahead regardless (the store fails OPEN). `op` says
+    # which operation, `error_type` the exception's class — never its text,
+    # which can carry the stored result. Replaced two raw `logger.warning`.
+    "mcp_idempotency_store_failure",
 ]
 McpOutcome = Literal["success", "failure", "refused"]
 SettingsEvent = Literal[
