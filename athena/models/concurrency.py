@@ -3,9 +3,14 @@
 Every editable record carries an ``etag`` (Architecture Rule 7), regenerated
 by every model write (``models.provenance.update_fields`` is the one stamp
 that writes it, and ``tests/test_provenance.py`` sweeps the models for any
-other). Until 2026-09-25 nothing compared it: every full-document ``set()``
-was last-write-wins, so a stale browser tab, the phone and the connector
-silently erased each other's edits.
+other). Until 2026-09-25 only the DAV layer compared it — its ``If-Match``
+check (``dav/carddav.py``, ``dav/dossier_collections.py``) reads the record
+and compares BEFORE calling the model, outside any transaction, so a write
+landing in between still wins — and the web forms and the connector
+compared nothing: every full-document ``set()`` was last-write-wins, so a
+stale browser tab, the phone and the connector silently erased each other's
+edits. (Routing that DAV check through ``expected_etag`` would make it
+atomic; it is not done here, and DAV keeps the legacy path.)
 
 The contract, for a caller that passes ``expected_etag``:
 
