@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db, provenance
+from models import aggregation_values, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -350,12 +350,20 @@ def get_filtered_expense_totals(
 
 
 def update_expense(
-    expense_id: str, data: dict
+    expense_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing expense. Returns (updated_doc, errors)."""
+    """Update an existing expense. Returns (updated_doc, errors).
+
+    ``expected_etag`` (keyword-only): the twin of
+    ``time_entry.update_time_entry`` — a stale one returns
+    ``[STALE_ETAG_ERROR]`` and writes nothing; ``None`` is the unchanged
+    single ``set()``.
+    """
     existing = get_expense(expense_id)
     if not existing:
         return None, ["Dépense introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     if existing.get("invoiced"):
         return None, ["Impossible de modifier une dépense déjà facturée."]
@@ -371,7 +379,15 @@ def update_expense(
     provenance.stamp_update(merged, now)
 
     try:
-        db.collection(COLLECTION).document(expense_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(expense_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Dépense introuvable."]
     except Exception:
         log_unexpected("expense write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -397,7 +413,8 @@ def get_expenses_bulk(expense_ids: list[str]) -> dict[str, dict]:
 
 
 def set_expense_phase(
-    expense_id: str, phase: str, sous_phase: str
+    expense_id: str, phase: str, sous_phase: str,
+    *, expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], bool]:
     """Reclassify a disbursement's litigation phase — INVOICED OR NOT.
 
@@ -406,6 +423,9 @@ def set_expense_phase(
     write is a partial ``update()`` of the pair plus its stamp rather than a
     merged ``set()``.
     Returns ``(doc, errors, changed)``; an unchanged pair writes nothing.
+    ``expected_etag`` follows the twin's contract exactly: a stale one
+    refuses a CHANGED pair and writes nothing, an unchanged pair is
+    answered before the comparison.
     """
     existing = get_expense(expense_id)
     if not existing:
@@ -430,14 +450,26 @@ def set_expense_phase(
     ):
         return existing, [], False
 
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR], False
+
     now = datetime.now(timezone.utc)
     stamp = provenance.update_fields(now)
     try:
-        db.collection(COLLECTION).document(expense_id).update({
-            "phase": pair["phase"],
-            "sous_phase": pair["sous_phase"],
-            **stamp,
-        })
+        concurrency.commit_fields(
+            db.collection(COLLECTION).document(expense_id),
+            {
+                "phase": pair["phase"],
+                "sous_phase": pair["sous_phase"],
+                **stamp,
+            },
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR], False
+    except concurrency.Vanished:
+        return None, ["Dépense introuvable."], False
     except Exception:
         log_unexpected("expense phase write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False

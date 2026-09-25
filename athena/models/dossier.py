@@ -9,7 +9,7 @@ import icalendar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db, provenance, reference
+from models import aggregation_values, concurrency, db, provenance, reference
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import taxonomie
@@ -1281,12 +1281,22 @@ def list_dossiers_page(
 
 
 def update_dossier(
-    dossier_id: str, data: dict
+    dossier_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing dossier. Returns (updated_doc, errors)."""
+    """Update an existing dossier. Returns (updated_doc, errors).
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one, checked in a transaction
+    (``models.concurrency``); a stale one returns ``[STALE_ETAG_ERROR]``
+    and writes nothing. ``None`` is the unchanged path — including its
+    last-moment re-read of the trust fields, which the guarded path does
+    not need (see the comment at that re-read).
+    """
     existing = get_dossier(dossier_id)
     if not existing:
         return None, ["Dossier introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     merged = {**existing, **_sanitize_data(data)}
     errors = (
@@ -1345,25 +1355,41 @@ def update_dossier(
     # values rather than block an unrelated dossier edit — the register in
     # trust_transactions is the source of truth and
     # scripts/verify_trust_integrity.py catches any residual drift.
-    try:
-        snap = db.collection(COLLECTION).document(dossier_id).get()
-        if snap.exists:
-            current = snap.to_dict() or {}
-            for _tf in (
-                "trust_balance",
-                "trust_balance_by_client",
-                "trust_cleared_by_client",
-            ):
-                if _tf in current:
-                    merged[_tf] = current[_tf]
-    except Exception as exc:
-        logger.warning(
-            "update_dossier: trust-field refresh failed for %s: %s",
-            sanitize_log_value(dossier_id), type(exc).__name__,
-        )
+    #
+    # The GUARDED path (expected_etag given) skips this re-read: it is
+    # subsumed, atomically, by the etag comparison. Every trust write to a
+    # dossier regenerates its etag (models/trust.py stamps each dossier
+    # update with provenance.update_fields), so a trust write that landed
+    # since `existing` was read makes the transaction refuse the whole save
+    # as stale — nothing is clobbered, and nothing is refreshed either.
+    if expected_etag is None:
+        try:
+            snap = db.collection(COLLECTION).document(dossier_id).get()
+            if snap.exists:
+                current = snap.to_dict() or {}
+                for _tf in (
+                    "trust_balance",
+                    "trust_balance_by_client",
+                    "trust_cleared_by_client",
+                ):
+                    if _tf in current:
+                        merged[_tf] = current[_tf]
+        except Exception as exc:
+            logger.warning(
+                "update_dossier: trust-field refresh failed for %s: %s",
+                sanitize_log_value(dossier_id), type(exc).__name__,
+            )
 
     try:
-        db.collection(COLLECTION).document(dossier_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(dossier_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Dossier introuvable."]
     except Exception:
         log_unexpected("dossier write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

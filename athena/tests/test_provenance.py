@@ -519,7 +519,11 @@ _MUTATOR_VERB = re.compile(
     r"delete|toggle|complete|attach|link)_"
 )
 _STAMP_HELPERS = {"stamp_create", "stamp_update", "update_fields", "create_fields"}
-_WRITE_ATTRS = {"set", "update", "create", "commit"}
+# ``commit_document``/``commit_fields`` since 2026-09-25 (lot 0a, étape 5):
+# the etag-guarded edits write through ``models.concurrency``, and its call
+# IS the write — the ``set()``/``update()`` it performs lives in that module.
+_WRITE_ATTRS = {"set", "update", "create", "commit",
+                "commit_document", "commit_fields"}
 
 
 def reached_mutators() -> set[tuple[str, str]]:

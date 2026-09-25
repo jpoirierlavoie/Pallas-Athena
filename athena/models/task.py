@@ -11,7 +11,7 @@ _SYNCING: set[str] = set()
 import icalendar
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db, provenance
+from models import concurrency, db, provenance
 from tz import MTL
 from security import sanitize
 from utils import deadlines, phases
@@ -304,12 +304,22 @@ def list_urgent_tasks(cutoff: datetime, limit: int = 50) -> list[dict]:
 
 
 def update_task(
-    task_id: str, data: dict
+    task_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing task. Returns (updated_doc, errors)."""
+    """Update an existing task. Returns (updated_doc, errors).
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one (``models.concurrency``); a stale one
+    returns ``[STALE_ETAG_ERROR]``, writes nothing, and — since nothing was
+    written — fires no protocol-step sync either. ``None`` (DAV PUT, the
+    toggle, the protocol cascade, the forms that carry no etag yet) is the
+    unchanged single ``set()``.
+    """
     existing = get_task(task_id)
     if not existing:
         return None, ["Tâche introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     merged = {**existing, **_sanitize_data(data)}
     phases.apply_sous_phase_default(merged)
@@ -342,7 +352,15 @@ def update_task(
     old_status = existing.get("status", "")
 
     try:
-        db.collection(COLLECTION).document(task_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(task_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Tâche introuvable."]
     except Exception:
         log_unexpected("task write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

@@ -15,7 +15,7 @@ from google.cloud.exceptions import NotFound
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
 from werkzeug.utils import secure_filename
-from models import db, provenance
+from models import concurrency, db, provenance
 from security import sanitize
 from tz import to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -779,12 +779,23 @@ def list_documents(
 
 
 def update_metadata(
-    document_id: str, data: dict
+    document_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update document metadata (display_name, category, tags, description)."""
+    """Update document metadata (display_name, category, tags, notes).
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one (``models.concurrency``); a stale one
+    returns ``[STALE_ETAG_ERROR]`` and writes nothing — the guard that keeps
+    a stale edit tab from reverting a category an analysis derived since it
+    opened. ``None`` is the unchanged single ``set()``. The returned
+    document carries the NEW etag: a caller chaining ``update_analyse`` on
+    the same save passes that one, never the etag its form was read with.
+    """
     existing = get_document(document_id)
     if not existing:
         return None, ["Document introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     # Only allow updating specific metadata fields
     allowed_fields = {
@@ -817,10 +828,19 @@ def update_metadata(
     provenance.stamp_update(merged, now)
 
     try:
-        db.collection(COLLECTION).document(document_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(document_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Document introuvable."]
     except Exception:
         log_unexpected("document write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, document_id)
 
     return merged, []
 
@@ -1647,7 +1667,8 @@ VALID_NIVEAUX = (0, 1, 2, 3)
 
 
 def update_analyse(
-    document_id: str, champs: dict, *, par: str
+    document_id: str, champs: dict, *, par: str,
+    expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Le juriste corrige l'analyse — et c'est la SEULE voie de déclassement.
 
@@ -1671,6 +1692,14 @@ def update_analyse(
     L'entrée au journal porte ``declenche_par: "juriste"``, si bien que
     l'historique distingue ce que le modèle a proposé de ce que l'avocat a
     arrêté. Rien ne s'efface, ici comme ailleurs.
+
+    ``expected_etag`` (keyword-only): when given, the journal entry AND the
+    cache commit together, and only if the stored etag is still that one
+    (``models.concurrency``); a stale one writes neither and returns
+    ``[STALE_ETAG_ERROR]``. It is the guard that keeps a stale tab from
+    rewriting, under the lawyer's name, an analysis recorded since it
+    opened — and from LOWERING a protection level through the one path
+    that can. ``None`` is the original path, journal then cache, unchanged.
     """
     from utils import analyse_protection as prot
     from utils import analyse_taxonomies as tax
@@ -1678,6 +1707,8 @@ def update_analyse(
     existing = get_document(document_id)
     if not existing:
         return None, ["Document introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
     champ = dict(existing.get("analyse") or {})
     if not champ.get("sous_nature") and "sous_nature" not in champs:
         return None, ["Aucune analyse à corriger."]
@@ -1800,11 +1831,23 @@ def update_analyse(
     }, now)
     try:
         ref = db.collection(COLLECTION).document(document_id)
-        ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id).set(champ)
-        ref.set(merged)
+        concurrency.commit_document(
+            ref, merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+            extra_sets=(
+                (ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id),
+                 champ),
+            ),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Document introuvable."]
     except Exception:
         log_unexpected("document analyse edit failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, document_id)
     return merged, []
 
 

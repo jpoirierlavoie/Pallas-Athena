@@ -21,7 +21,7 @@ import icalendar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db, provenance
+from models import concurrency, db, provenance
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -301,12 +301,22 @@ def list_notes_recent(
 
 
 def update_note(
-    note_id: str, data: dict
+    note_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing note. Returns (updated_doc, errors)."""
+    """Update an existing note. Returns (updated_doc, errors).
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one (``models.concurrency``); a stale one
+    returns ``[STALE_ETAG_ERROR]`` and writes nothing — which is what keeps
+    a stale edit tab from erasing a block appended since it opened. ``None``
+    (DAV PUT, the pin toggle, the forms that carry no etag yet) is the
+    unchanged single ``set()``.
+    """
     existing = get_note(note_id)
     if not existing:
         return None, ["Note introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     merged = {**existing, **_sanitize_data(data)}
 
@@ -318,7 +328,15 @@ def update_note(
     provenance.stamp_update(merged, now)
 
     try:
-        db.collection(COLLECTION).document(note_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(note_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Note introuvable."]
     except Exception:
         log_unexpected("note write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

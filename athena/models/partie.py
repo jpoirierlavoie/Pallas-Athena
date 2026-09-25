@@ -9,7 +9,7 @@ import vobject
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db, provenance
+from models import aggregation_values, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -639,12 +639,21 @@ def list_parties_page(
 
 
 def update_partie(
-    partie_id: str, data: dict
+    partie_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing partie. Returns (updated_doc, errors)."""
+    """Update an existing partie. Returns (updated_doc, errors).
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one — checked in a transaction — and
+    returns ``[concurrency.STALE_ETAG_ERROR]`` otherwise, having written
+    nothing. ``None`` (the CardDAV PUT, the forms that carry no etag yet)
+    is the unchanged single ``set()``.
+    """
     existing = get_partie(partie_id)
     if not existing:
         return None, ["Contact introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     data = _normalize(data)
     merged = {**existing, **_sanitize_data(data)}
@@ -679,7 +688,15 @@ def update_partie(
             merged[date_key] = None
 
     try:
-        db.collection(COLLECTION).document(partie_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(partie_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Contact introuvable."]
     except Exception:
         log_unexpected("partie write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db, provenance
+from models import aggregation_values, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -380,12 +380,20 @@ def get_filtered_time_totals(
 
 
 def update_time_entry(
-    entry_id: str, data: dict
+    entry_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing time entry. Returns (updated_doc, errors)."""
+    """Update an existing time entry. Returns (updated_doc, errors).
+
+    ``expected_etag`` (keyword-only): see ``models.concurrency`` — a stale
+    one returns ``[STALE_ETAG_ERROR]`` and writes nothing; ``None`` is the
+    unchanged single ``set()``. Being invoiced since the caller's read is
+    one way to be stale: the invoice's source flip regenerates the etag.
+    """
     existing = get_time_entry(entry_id)
     if not existing:
         return None, ["Entrée de temps introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     if existing.get("invoiced"):
         return None, ["Impossible de modifier une entrée déjà facturée."]
@@ -404,7 +412,15 @@ def update_time_entry(
     provenance.stamp_update(merged, now)
 
     try:
-        db.collection(COLLECTION).document(entry_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(entry_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Entrée de temps introuvable."]
     except Exception:
         log_unexpected("time entry write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -435,7 +451,8 @@ def get_time_entries_bulk(entry_ids: list[str]) -> dict[str, dict]:
 
 
 def set_time_entry_phase(
-    entry_id: str, phase: str, sous_phase: str
+    entry_id: str, phase: str, sous_phase: str,
+    *, expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], bool]:
     """Reclassify a time entry's litigation phase — INVOICED OR NOT.
 
@@ -467,6 +484,14 @@ def set_time_entry_phase(
     in each caller is how two callers drift. An unchanged pair writes
     NOTHING — no updated_at churn, no etag churn — which is what makes a
     reclassification pass replayable (the ``complete_task`` doctrine).
+
+    ``expected_etag`` (keyword-only): a CHANGED pair commits only if the
+    stored etag is still that one (``models.concurrency``, same partial
+    write, same key set); a stale one returns ``[STALE_ETAG_ERROR]`` and
+    writes nothing. An UNCHANGED pair is answered before the comparison,
+    whatever etag is given: there is no update to lose when the row already
+    carries the requested code, and refusing a no-op would break the
+    replayability above. ``None`` is the unchanged single ``update()``.
     """
     existing = get_time_entry(entry_id)
     if not existing:
@@ -491,14 +516,26 @@ def set_time_entry_phase(
     ):
         return existing, [], False
 
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR], False
+
     now = datetime.now(timezone.utc)
     stamp = provenance.update_fields(now)
     try:
-        db.collection(COLLECTION).document(entry_id).update({
-            "phase": pair["phase"],
-            "sous_phase": pair["sous_phase"],
-            **stamp,
-        })
+        concurrency.commit_fields(
+            db.collection(COLLECTION).document(entry_id),
+            {
+                "phase": pair["phase"],
+                "sous_phase": pair["sous_phase"],
+                **stamp,
+            },
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR], False
+    except concurrency.Vanished:
+        return None, ["Entrée de temps introuvable."], False
     except Exception:
         log_unexpected("time entry phase write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
