@@ -380,3 +380,120 @@ def test_no_other_module_reaches_the_revisions_subcollection():
 def test_the_subcollection_sweep_catches_what_it_claims(snippet, flagged):
     tree = ast.parse(snippet)
     assert any(_reaches_the_subcollection(n) for n in ast.walk(tree)) is flagged
+
+
+def _cascades_blindly(node: ast.AST) -> bool:
+    """A call that reaches EVERY subcollection of a document without naming
+    one: ``recursive_delete(ref)`` (a client/batch method) or a zero-argument
+    ``ref.collections()`` walk. Either would reach a note's revisions — the
+    by-name sweep above cannot see it."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    if node.func.attr == "recursive_delete":
+        return True
+    return node.func.attr == "collections" and not node.args and not node.keywords
+
+
+def test_no_module_cascades_into_subcollections_blindly():
+    """Firestore does not cascade a document delete — but
+    ``recursive_delete`` does, and a ``collections()`` walk enumerates every
+    subcollection. Either, pointed at a note, would take Lot 1's decision
+    (purge the revisions with the note, or keep them) by accident. None
+    exists today; the first one must come with that decision."""
+    offenders, scanned = [], 0
+    for path in ATHENA.rglob("*.py"):
+        rel = path.relative_to(ATHENA).as_posix()
+        if rel.startswith(("tests/", "venv/", ".venv/")) or "/site-packages/" in rel:
+            continue
+        scanned += 1
+        for node in ast.walk(_module_tree(path)):
+            if _cascades_blindly(node):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert scanned > 50, "the sweep did not walk the source tree"
+    assert offenders == []
+
+
+@pytest.mark.parametrize("snippet, flagged", [
+    ("db.recursive_delete(note_ref)", True),
+    ("for sub in note_ref.collections():\n    pass", True),
+    ('ref.collection("revisions")', False),     # the by-name sweep's job
+    ("db.collections", False),                  # not a call
+    ('client.collections("x")', False),         # not the zero-arg walk
+])
+def test_the_blind_cascade_sweep_catches_what_it_claims(snippet, flagged):
+    tree = ast.parse(snippet)
+    assert any(_cascades_blindly(n) for n in ast.walk(tree)) is flagged
+
+
+# ── 6. Un appelant ne prend jamais le chemin hérité ───────────────────────
+#
+# commit_document is atomic ONLY on its guarded path: with
+# ``expected_etag=None`` it keeps the legacy order and writes its extra_sets
+# FIRST, one by one, then the document — so a replacement that fails there
+# would leave its revision behind, a history entry for a change that never
+# happened. The plan makes the etag REQUIRED for every content replacement;
+# this sweep makes that mechanical for the callers Lot 1 will add (none
+# exists yet — the test is armed, not vacuous: its snippets prove it).
+
+
+def revision_caller_violations(source: str, label: str) -> list[str]:
+    """Functions that call ``build_revision`` and either never reach
+    ``commit_document`` or reach it without a non-None ``expected_etag``."""
+    violations = []
+    for fn in ast.walk(ast.parse(source)):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+
+        def _named(call, name):
+            f = call.func
+            return (isinstance(f, ast.Name) and f.id == name) or (
+                isinstance(f, ast.Attribute) and f.attr == name)
+
+        if not any(_named(c, "build_revision") for c in calls):
+            continue
+        commits = [c for c in calls if _named(c, "commit_document")]
+        if not commits:
+            violations.append(f"{label}:{fn.name} builds a revision it never commits "
+                              "through commit_document")
+        for c in commits:
+            etag = next((k.value for k in c.keywords if k.arg == "expected_etag"), None)
+            if etag is None or (isinstance(etag, ast.Constant) and etag.value is None):
+                violations.append(f"{label}:{fn.name}:{c.lineno} commit_document "
+                                  "without an expected_etag (legacy, non-atomic)")
+    return violations
+
+
+def test_every_revision_is_committed_on_the_guarded_path():
+    offenders = []
+    for path in ATHENA.rglob("*.py"):
+        rel = path.relative_to(ATHENA).as_posix()
+        if rel.startswith(("tests/", "venv/", ".venv/")) or "/site-packages/" in rel:
+            continue
+        if rel == "models/revision.py":
+            continue
+        offenders += revision_caller_violations(path.read_text(encoding="utf-8"), rel)
+    assert offenders == []
+
+
+@pytest.mark.parametrize("snippet, flagged", [
+    ("def f(ref, d, e):\n"
+     "    r = revision.build_revision(**kw)\n"
+     "    concurrency.commit_document(ref, d, expected_etag=e, extra_sets=[r])\n",
+     False),
+    ("def f(ref, d):\n"
+     "    r = build_revision(**kw)\n"
+     "    commit_document(ref, d, expected_etag=None, extra_sets=[r])\n",
+     True),                                   # the legacy, non-atomic path
+    ("def f(ref, d):\n"
+     "    r = build_revision(**kw)\n"
+     "    commit_document(ref, d, extra_sets=[r])\n",
+     True),                                   # expected_etag omitted
+    ("def f(ref):\n"
+     "    r, data = build_revision(**kw)\n"
+     "    r.set(data)\n",
+     True),                                   # written on its own
+    ("def f(ref, d):\n    commit_document(ref, d, expected_etag=None)\n", False),
+])
+def test_the_guarded_path_sweep_catches_what_it_claims(snippet, flagged):
+    assert bool(revision_caller_violations(snippet, "snippet")) is flagged

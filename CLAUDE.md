@@ -532,6 +532,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_revision.py              # models/revision on the shared fake: Rule-7 shape,
 │   │   │                                 # atomic with the replacement (stale → no revision),
 │   │   │                                 # no write verb, nothing else reaches the subcollection
+│   │   │                                 # (by name, nor blindly: no recursive_delete/collections())
+│   │   │                                 # and every caller commits on the GUARDED path
 │   │   ├── test_concurrency_models.py    # the ten expected_etag mutators + the six MCP edit
 │   │   │                                 # tools end to end, cases DERIVED from signatures/registry
 │   │   ├── test_edit_conflict_web.py     # the 8 web edit forms over the real routes + shared
@@ -1349,7 +1351,15 @@ and théorie-de-la-cause edits are its first. The generalisation of the
 analyses journal above, with one structural difference: `build_revision`
 **writes nothing** — it returns a `(reference, data)` pair the caller stages
 in ITS transaction (`models.concurrency.commit_document(extra_sets=[…])`), so
-a revision can never record a replacement that was refused.
+a revision can never record a replacement that was refused. ⚠ That holds on
+the GUARDED path only (an `expected_etag` given — which the plan makes
+REQUIRED for every content replacement): with `expected_etag=None`,
+`commit_document` keeps the legacy order and writes its `extra_sets` FIRST,
+one by one, then the document — a replacement that then fails would leave
+its revision behind. A caller of `build_revision` must never take the
+legacy path — `tests/test_revision.py` refuses any function that builds a
+revision without committing it through `commit_document` with a non-None
+`expected_etag` (armed for Lot 1's first caller).
 
 ```python
 {

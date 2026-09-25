@@ -23,6 +23,14 @@ would then record a change that never happened. Staying out of the write
 path is what makes that impossible here, and ``tests/test_revision.py``
 pins it by sweeping this module for any write call.
 
+Only the GUARDED branch is atomic: with ``expected_etag=None``,
+``commit_document`` keeps the legacy order and writes its ``extra_sets``
+first, one by one, then the document — a replacement failing there would
+leave its revision behind. The plan makes the etag REQUIRED for every
+content replacement, and ``tests/test_revision.py`` refuses any caller that
+builds a revision without committing it through ``commit_document`` with a
+non-None ``expected_etag``.
+
 The shape — a documented exception to Architecture Rule 7
 ---------------------------------------------------------
 ``created_at`` only: no ``updated_at``, no ``etag``. A revision is
