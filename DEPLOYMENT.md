@@ -1386,8 +1386,12 @@ Notes:
   deletes; « One or more URLs matched no objects » is the GOOD answer):
 
   ```bash
-  gcloud storage ls --recursive "gs://$FIREBASE_STORAGE_BUCKET/users/unknown/" --project=$PROJECT
-  gcloud storage ls --recursive "gs://$FIREBASE_STORAGE_BUCKET/staging/unknown/" --project=$PROJECT
+  # The value of FIREBASE_STORAGE_BUCKET in athena/app.yaml — this shell does
+  # not read app.yaml. Left unset, the ":?" stops the command instead of
+  # listing "gs:///users/unknown/", whose error is NOT the good answer.
+  FIREBASE_STORAGE_BUCKET=your-bucket-name
+  gcloud storage ls --recursive "gs://${FIREBASE_STORAGE_BUCKET:?}/users/unknown/" --project=$PROJECT
+  gcloud storage ls --recursive "gs://${FIREBASE_STORAGE_BUCKET:?}/staging/unknown/" --project=$PROJECT
   ```
 
   If either lists objects, **stop and inventory them before deploying**: their

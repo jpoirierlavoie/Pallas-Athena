@@ -24,7 +24,6 @@ from flask import (
     redirect,
     render_template,
     request,
-    session,
     url_for,
 )
 
@@ -66,7 +65,7 @@ from models.partie import (
 )
 from security import sanitize
 from services import portail_emission as emission
-from utils import graph_calendrier, rapprochement
+from utils import graph_calendrier, rapprochement, storage_identity
 from utils.graph import GraphError, GraphNotConfigured
 from utils.logging_setup import log_bookings_event, log_portail_event
 
@@ -797,6 +796,15 @@ def verser(inv_id: str, batch: str, seq: int):
     if dossier is None:
         return _rediriger(erreur="Choisissez le dossier de destination.")
 
+    # The uid the document is filed under (users/{uid}/dossiers/…), resolved
+    # BEFORE any I/O — in particular before get_or_create_folder below, which
+    # WRITES. Plan rule 8: through utils.storage_identity, never a raw session
+    # read (the model re-checks the uid, but only once the folder exists).
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return _rediriger(erreur=str(exc))
+
     # Fraîcheur (revue 2026-08-11) : _versable a jugé la taille du
     # MANIFESTE, figée au traitement du lot — le blob VIVANT peut différer.
     # Relire ses métadonnées AVANT toute lecture.
@@ -868,7 +876,7 @@ def verser(inv_id: str, batch: str, seq: int):
         dossier.get("file_number", ""),
         entree.get("name") or "document",
         metadata,
-        session["user_id"],
+        user_id,
     )
     if errors or document is None:
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")

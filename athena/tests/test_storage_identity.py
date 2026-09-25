@@ -583,3 +583,126 @@ def test_the_sweep_finds_the_builders_it_exists_for():
 def test_the_sweep_catches_what_it_claims(snippet, flagged):
     violations, _ = storage_uid_violations(snippet, "snippet")
     assert bool(violations) is flagged
+
+
+# ── 7. Les APPELANTS des écrivains qui prennent un uid ────────────────────
+#
+# The builder sweep above sees the f-string, so it cannot see a route that
+# hands a raw session uid to a MODEL builder (routes/reception.verser did,
+# with ``session["user_id"]``, until the step-7 review). The model re-checks
+# the uid — but only when it runs, which in « Verser » came AFTER
+# get_or_create_folder had already written the « Reçus du portail » folder.
+# So: every function of routes/, services/ or mcp/ that calls a model writer
+# taking a ``user_id`` must itself obtain it from a guard. Both inventories
+# are DERIVED — the writers from models/, the callers from the call sites.
+
+_CALLER_PACKAGES = ("routes", "services", "mcp")
+
+
+def _module_guards(tree: ast.Module) -> set[str]:
+    return _GUARDS | {f.name for f in _functions(tree)
+                      if _called_names(f) & _GUARDS}
+
+
+def _uid_taking_writers() -> dict[str, str]:
+    """{function name: label} — the models/ functions that take a
+    ``user_id`` parameter and guard it (directly or through a module-local
+    guard such as ``document._storage_uid``)."""
+    writers = {}
+    for path in sorted((ATHENA / "models").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        guards = _module_guards(tree)
+        for fn in _functions(tree):
+            params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+            if "user_id" in params and _called_names(fn) & guards:
+                writers[fn.name] = f"{path.relative_to(ATHENA).as_posix()}:{fn.name}"
+    return writers
+
+
+def uid_caller_violations(source: str, label: str, writers) -> tuple[list[str], list[str]]:
+    """(violations, callers) of one module: a caller of a uid-taking writer
+    that does not call a storage-identity guard itself."""
+    tree = ast.parse(source)
+    guards = _module_guards(tree)
+    violations, callers = [], []
+    for fn in _functions(tree):
+        called = _called_names(fn)
+        if not called & set(writers):
+            continue
+        callers.append(f"{label}:{fn.name}")
+        if not called & guards:
+            violations.append(
+                f"{label}:{fn.name} hands a uid to "
+                f"{sorted(called & set(writers))} without a storage guard"
+            )
+    return violations, callers
+
+
+def _caller_scan():
+    writers = _uid_taking_writers()
+    violations, callers = [], []
+    for package in _CALLER_PACKAGES:
+        for path in sorted((ATHENA / package).rglob("*.py")):
+            label = path.relative_to(ATHENA).as_posix()
+            v, c = uid_caller_violations(
+                path.read_text(encoding="utf-8"), label, writers,
+            )
+            violations += v
+            callers += c
+    return writers, violations, callers
+
+
+def test_every_caller_of_a_uid_taking_writer_obtains_the_uid_from_a_guard():
+    _, violations, _ = _caller_scan()
+    assert violations == []
+
+
+def test_the_caller_sweep_finds_what_it_exists_for():
+    writers, _, callers = _caller_scan()
+    for expected in ("upload_document", "ingest_blob_as_document",
+                     "build_folder_zip_url", "create_template"):
+        assert expected in writers, expected
+    # update_template takes no uid (it reuses the STORED one): not a writer.
+    assert "update_template" not in writers
+    for expected in (
+        "routes/documents.py:folder_zip",
+        "routes/documents.py:api_finaliser",
+        "routes/doc_templates.py:template_create",
+        "routes/doc_templates.py:generate",
+        "routes/invoices.py:invoice_note_docx",
+        "routes/reception.py:verser",
+    ):
+        assert expected in callers, expected
+
+
+@pytest.mark.parametrize("snippet, flagged", [
+    ('def v():\n    ingest_blob_as_document(b, "d", "n", "f", {}, session["user_id"])\n',
+     True),                                                  # the reception shape
+    ('def v():\n    uid = storage_identity.request_uid()\n'
+     '    doc.upload_document("d", "n", s, "f", 1, {}, uid)\n', False),
+    ('def v():\n    upload_document("d", "n", s, "f", 1, {}, owner_uid())\n', False),
+    ('def v():\n    list_documents("d")\n', False),         # not a uid writer
+])
+def test_the_caller_sweep_catches_what_it_claims(snippet, flagged):
+    writers = {"ingest_blob_as_document": "m", "upload_document": "m"}
+    violations, _ = uid_caller_violations(snippet, "snippet", writers)
+    assert bool(violations) is flagged
+
+
+def test_the_idiom_is_absent_from_the_whole_source_tree():
+    """The builder sweep scans four packages; the idiom itself is refused in
+    EVERY non-test module (scripts/, utils/, dav/, client/ included), so a
+    future helper cannot reintroduce it one directory over."""
+    offenders, scanned = [], 0
+    for path in sorted(ATHENA.rglob("*.py")):
+        rel = path.relative_to(ATHENA).as_posix()
+        if rel.startswith(("tests/", "venv/", ".venv/")) or "/site-packages/" in rel:
+            continue
+        scanned += 1
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            default = _session_uid_default(node)
+            if (isinstance(default, ast.Constant) and isinstance(default.value, str)
+                    and default.value.strip().lower() == "unknown"):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert scanned > 50, "the sweep did not walk the source tree"
+    assert offenders == []

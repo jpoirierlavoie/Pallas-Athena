@@ -174,6 +174,40 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     assert ecrits
 
 
+def test_verser_refuse_un_uid_de_session_inutilisable_avant_toute_ecriture(
+    web, monkeypatch
+):
+    """Règle 8 du plan : l'uid du chemin Storage passe par
+    utils.storage_identity. « unknown » franchit @login_required (il est
+    vrai) ; le versement doit le refuser AVANT d'ouvrir le blob et AVANT
+    get_or_create_folder, qui ÉCRIT — le garde du modèle ne jouerait qu'une
+    fois le dossier « Reçus du portail » créé."""
+    from utils import storage_identity as si
+
+    with web.session_transaction() as s:
+        s["user_id"] = "unknown"
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "get_dossier",
+                        lambda d: _dossier() if d == "d1" else None)
+    monkeypatch.setattr(rc, "_bucket",
+                        lambda: pytest.fail("ouvert la quarantaine"))
+    monkeypatch.setattr(rc, "get_or_create_folder",
+                        lambda *a: pytest.fail("créé le dossier Reçus"))
+    ingest = mock.Mock()
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
+
+    reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                       data={"dossier_id": "d1"})
+    assert reponse.status_code == 302
+    assert "erreur=" in reponse.headers["Location"]
+    from urllib.parse import parse_qs, urlparse
+    erreur = parse_qs(urlparse(reponse.headers["Location"]).query)["erreur"]
+    assert erreur == [si.INVALID_UID_MESSAGE]
+    ingest.assert_not_called()
+    assert manifeste["files"][0]["etat"] == "reçu"
+
+
 def test_verser_non_versable_refuse_sans_ingestion(web, monkeypatch):
     manifeste = _manifeste(_entree(name="photo.heic"))
     monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
