@@ -6,6 +6,7 @@ server-initiated messages). Notifications are acknowledged with an empty
 202. ``GET``/``DELETE`` fall through to Flask's automatic 405.
 """
 
+import re
 import time
 from typing import Any, Optional
 
@@ -242,6 +243,29 @@ def _initialize(params: dict) -> dict:
     }
 
 
+# The shape of a server-minted document id (Architecture Rule 6: UUIDv4).
+# Fixed-count character classes only — linear, nothing to backtrack over.
+_ID_SHAPE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+
+def _loggable_id(value: Any) -> Optional[str]:
+    """*value* when it is shaped like an id, else None.
+
+    A REFUSED call's `dossier_id` is still the caller's string: the schema
+    bounds it to 64 characters and nothing more, and the commonest handler
+    refusal is precisely « dossier introuvable ». A title or a party name
+    pasted into the argument must not reach the refusal log, where the
+    RedactionFilter does not scrub names. `fullmatch`, never `match` + `$`:
+    `$` also matches before a trailing newline.
+    """
+    if isinstance(value, str) and _ID_SHAPE.fullmatch(value):
+        return value
+    return None
+
+
 def _log_write_refused(name: str, reason: str, **fields: Any) -> None:
     """Log a refused WRITE call: the tool, a reason CODE, ids and counts.
 
@@ -347,11 +371,14 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         # The refusal is LOGGED by its reason code — the text below reaches
         # the client only. OBSERVABILITY.md promised an `mcp_write_refused`
         # burst as the stop-the-import signal long before either of these
-        # refusal paths emitted one.
+        # refusal paths emitted one. The dossier id only when id-shaped:
+        # a refused call's argument has been checked for length, not for
+        # being an id.
+        refused_dossier = _loggable_id(dossier_id)
         _log_write_refused(
             name,
             argument_reason,
-            **({"dossier_id": dossier_id} if span_attrs else {}),
+            **({"dossier_id": refused_dossier} if refused_dossier else {}),
         )
         # Raised outside the span, so its (user-derived) text never reaches
         # the exporter. It still reaches the client, which is the point.

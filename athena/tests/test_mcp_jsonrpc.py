@@ -572,9 +572,10 @@ def test_a_handler_refused_write_is_logged_by_reason_never_by_text(
         )
 
     monkeypatch.setattr(handlers, "create_note", refuse)
+    dossier_id = "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f"
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
         body = _call(write_client, "create_note", {
-            "dossier_id": "d1", "title": "T", "content": "C",
+            "dossier_id": dossier_id, "title": "T", "content": "C",
         }).get_json()
 
     assert body["error"]["code"] == -32602
@@ -582,11 +583,37 @@ def test_a_handler_refused_write_is_logged_by_reason_never_by_text(
     assert _events(caplog, "mcp_write_refused") == [{
         "event": "mcp_write_refused", "outcome": "refused",
         "tool": "create_note", "reason": "argument_refused",
-        "dossier_id": "d1",
+        "dossier_id": dossier_id,
     }]
     assert not _events(caplog, "mcp_write")
     assert "SECRÈTE" not in _logged_text(caplog)
     assert "Tremblay" not in _logged_text(caplog)
+
+
+@pytest.mark.parametrize("dossier_id", [
+    "Tremblay c. Lavoie",                                # a title, pasted
+    "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f\n",            # `$` would pass it
+    "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f Tremblay",     # an id, then a name
+])
+def test_a_refused_dossier_id_that_is_not_id_shaped_is_not_logged(
+    write_client, monkeypatch, caplog, dossier_id
+):
+    """The commonest handler refusal is « dossier introuvable », so a
+    refused call's `dossier_id` is exactly the one least likely to be an id:
+    the schema bounds it to 64 characters, nothing more. A name pasted into
+    it must not reach the log, which does not scrub names."""
+    def refuse(args):
+        raise tools.ToolArgumentError("Dossier introuvable.")
+
+    monkeypatch.setattr(handlers, "create_note", refuse)
+    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
+        _call(write_client, "create_note", {
+            "dossier_id": dossier_id, "title": "T", "content": "C",
+        })
+    (refused,) = _events(caplog, "mcp_write_refused")
+    assert refused["reason"] == "argument_refused"
+    assert "dossier_id" not in refused
+    assert "Tremblay" not in str(refused)
 
 
 def test_a_read_tool_handler_refusal_logs_no_write_refusal(client, caplog):
