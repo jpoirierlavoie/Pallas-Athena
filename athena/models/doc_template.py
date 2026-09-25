@@ -25,6 +25,7 @@ from werkzeug.utils import secure_filename
 
 from models import db, provenance
 from security import sanitize
+from utils import storage_identity
 from utils.docx_fill import validate_template
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.template_fields import classify_placeholders
@@ -56,6 +57,14 @@ KIND_LABELS = {
     "note": "Note (impression)",
 }
 
+# A replacement file is written under the uid segment of the STORED path;
+# when that path cannot name the owner, the replacement is refused (see
+# update_template) rather than written under a fallback prefix.
+TEMPLATE_PATH_INVALID_MESSAGE = (
+    "Le fichier de ce gabarit est rangé à un emplacement qui ne désigne pas "
+    "le propriétaire du cabinet : il ne peut pas être remplacé. Rien n'a été "
+    "modifié. Téléversez le nouveau fichier comme un nouveau gabarit."
+)
 MAX_TEMPLATE_SIZE = 10 * 1024 * 1024  # compressed .docx cap (also in docx_fill)
 DOCX_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -186,6 +195,12 @@ def create_template(
     user_id: str,
 ) -> tuple[Optional[dict], list[str]]:
     """Validate, extract placeholders, upload to Storage, persist the doc."""
+    # The uid FIRST — before the stream is read: a template must never be
+    # written under a prefix that is not the owner's (users/unknown/…).
+    try:
+        user_id = storage_identity.require_uid(user_id)
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return None, [str(exc)]
     file_errors = _validate_file(filename, file_size)
     if file_errors:
         return None, file_errors
@@ -349,6 +364,19 @@ def update_template(
     new_storage_path = None
 
     if file_stream is not None and filename:
+        # The user id segment is fixed at creation — the replacement reuses
+        # it from the stored path (users/{uid}/templates/{id}/{file}). A
+        # path that does not have that layout, or whose segment is not a
+        # usable uid, is REFUSED: the old code fell back to "unknown" and
+        # wrote the new file under users/unknown/, where it resolved and
+        # nothing ever looked wrong. Checked BEFORE the stream is read.
+        parts = old_storage_path.split("/")
+        try:
+            if len(parts) < 5 or parts[0] != "users" or parts[2] != "templates":
+                raise storage_identity.InvalidStorageUid()
+            user_segment = storage_identity.require_uid(parts[1])
+        except storage_identity.StorageIdentityUnavailable:
+            return None, [TEMPLATE_PATH_INVALID_MESSAGE]
         file_errors = _validate_file(filename, file_size or 0)
         if file_errors:
             return None, file_errors
@@ -364,10 +392,6 @@ def update_template(
         if errors:
             return None, errors
 
-        # The user id segment is fixed at creation — reuse it from the
-        # existing path (users/{uid}/templates/...).
-        parts = old_storage_path.split("/")
-        user_segment = parts[1] if len(parts) > 3 else "unknown"
         safe_filename = _safe_filename(filename)
         new_storage_path = (
             f"users/{user_segment}/templates/{template_id}/{safe_filename}"

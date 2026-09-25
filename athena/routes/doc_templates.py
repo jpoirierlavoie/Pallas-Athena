@@ -28,7 +28,6 @@ from flask import (
     render_template,
     request,
     send_file,
-    session,
     url_for,
 )
 from markupsafe import escape
@@ -61,6 +60,7 @@ from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
 from models.partie import display_name, get_partie, get_parties_bulk, list_parties
 from tz import MTL
 from utils.cabinet import cabinet_dict
+from utils import storage_identity
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import (
@@ -177,13 +177,18 @@ def template_create() -> Response | str:
     file_size = file.tell()
     file.seek(0)
 
-    template, errors = create_template(
-        file_stream=file,
-        filename=file.filename,
-        file_size=file_size,
-        metadata=metadata,
-        user_id=session.get("user_id", "unknown"),
-    )
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        template, errors = None, [str(exc)]
+    else:
+        template, errors = create_template(
+            file_stream=file,
+            filename=file.filename,
+            file_size=file_size,
+            metadata=metadata,
+            user_id=user_id,
+        )
     if errors:
         ctx = _template_context()
         ctx.update(template=metadata, errors=errors)
@@ -729,15 +734,20 @@ def generate() -> Response | str:
             ),
             "tags": ["gabarit"],
         }
-        doc, errors = upload_document(
-            dossier_id=dossier_id,
-            dossier_file_number=dossier.get("file_number", ""),
-            file_stream=io.BytesIO(filled),
-            filename=out_name,
-            file_size=len(filled),
-            metadata=metadata,
-            user_id=session.get("user_id", "unknown"),
-        )
+        try:
+            user_id = storage_identity.request_uid()
+        except storage_identity.StorageIdentityUnavailable as exc:
+            doc, errors = None, [str(exc)]
+        else:
+            doc, errors = upload_document(
+                dossier_id=dossier_id,
+                dossier_file_number=dossier.get("file_number", ""),
+                file_stream=io.BytesIO(filled),
+                filename=out_name,
+                file_size=len(filled),
+                metadata=metadata,
+                user_id=user_id,
+            )
         if errors:
             log_template_event(
                 "generation_failed", template_id=template_id,

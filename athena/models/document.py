@@ -18,6 +18,7 @@ from werkzeug.utils import secure_filename
 from models import concurrency, db, provenance
 from security import sanitize
 from tz import to_mtl
+from utils import storage_identity
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -460,6 +461,18 @@ def get_file_icon(file_type: str) -> str:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
+def _storage_uid(user_id: object) -> tuple[Optional[str], list[str]]:
+    """The uid a Storage path may be written under, or a French refusal.
+
+    ``utils.storage_identity.require_uid`` decides; this only turns its
+    exception into the model convention ``(value, errors)``.
+    """
+    try:
+        return storage_identity.require_uid(user_id), []
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return None, [str(exc)]
+
+
 def _prepare_document_record(
     dossier_id: str,
     dossier_file_number: str,
@@ -475,8 +488,13 @@ def _prepare_document_record(
 
     Validates the metadata (folder, category) and sanitizes the filename
     used in the Storage path — the raw client name is kept ONLY in
-    original_filename/display_name (display purposes).
+    original_filename/display_name (display purposes). The uid segment is
+    validated here too, where the path is built, whoever computed it: the
+    two public callers check it first as well, to refuse before any I/O.
     """
+    uid, uid_errors = _storage_uid(user_id)
+    if uid_errors:
+        return None, uid_errors
     merged = {**_default_doc(), **_sanitize_data(metadata)}
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
@@ -502,7 +520,7 @@ def _prepare_document_record(
         safe_filename = safe_filename[: 200 - len(ext)] + ext
     if not safe_filename or not safe_filename.lower().endswith(ext):
         safe_filename = "document" + ext
-    storage_path = f"users/{user_id}/dossiers/{dossier_id}/documents/{document_id}/{safe_filename}"
+    storage_path = f"users/{uid}/dossiers/{dossier_id}/documents/{document_id}/{safe_filename}"
 
     merged.update({
         "id": document_id,
@@ -536,6 +554,9 @@ def ingest_blob_as_document(
     bucket). The CALLER must have reload()ed *source_blob* (its .size is
     what the size policy is enforced on) and owns the source's cleanup.
     """
+    _, uid_errors = _storage_uid(user_id)
+    if uid_errors:
+        return None, uid_errors
     file_errors = _validate_file(filename, int(source_blob.size or 0))
     if file_errors:
         return None, file_errors
@@ -627,6 +648,9 @@ def upload_document(
 
     Returns (doc, errors).
     """
+    _, uid_errors = _storage_uid(user_id)
+    if uid_errors:
+        return None, uid_errors
     # Validate file
     file_errors = _validate_file(filename, file_size)
     if file_errors:
@@ -1212,6 +1236,9 @@ def build_folder_zip_url(
     from models.dossier import get_dossier
     from models.folder import get_folder, get_folder_tree
 
+    uid, uid_errors = _storage_uid(user_id)
+    if uid_errors:
+        return None, uid_errors
     dossier = get_dossier(dossier_id)
     if not dossier:
         return None, ["Dossier introuvable."]
@@ -1249,7 +1276,7 @@ def build_folder_zip_url(
     zip_name = _zip_component(
         f"{dossier.get('file_number', '')} - {root_name}".strip(" -")
     ) + ".zip"
-    zip_path = f"staging/{user_id}/exports/{uuid.uuid4()}/{zip_name}"
+    zip_path = f"staging/{uid}/exports/{uuid.uuid4()}/{zip_name}"
 
     try:
         bucket = storage.bucket()

@@ -1376,6 +1376,25 @@ Notes:
   that does not know the `pending`/`partial` states and will execute a
   same-key retry again — see the last bullet of §11 before writing through
   the connector on the older version.
+- **Storage identity (lot 0a, 2026-09-25):** every Storage path is now built
+  under a uid that `utils/storage_identity.py` has validated, and nothing can
+  write under `users/unknown/` or `staging/unknown/` any more — the routes used
+  to read the uid as `session.get("user_id", "unknown")`, and
+  `doc_template.update_template` fell back to `"unknown"` on a malformed stored
+  path. Before deploying that change, and whenever you want to confirm nothing
+  was ever written there, run this **read-only** check (it lists, it never
+  deletes; « One or more URLs matched no objects » is the GOOD answer):
+
+  ```bash
+  gcloud storage ls --recursive "gs://$FIREBASE_STORAGE_BUCKET/users/unknown/" --project=$PROJECT
+  gcloud storage ls --recursive "gs://$FIREBASE_STORAGE_BUCKET/staging/unknown/" --project=$PROJECT
+  ```
+
+  If either lists objects, **stop and inventory them before deploying**: their
+  Firestore `storage_path` still resolves (downloads keep working), but a
+  template stored there can no longer have its FILE replaced — the model now
+  refuses, rather than writing the new file under the same fallback prefix.
+  Nothing here moves or deletes them for you.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

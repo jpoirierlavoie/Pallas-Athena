@@ -25,7 +25,6 @@ from flask import (
     redirect,
     render_template,
     request,
-    session,
     url_for,
 )
 from werkzeug.utils import secure_filename
@@ -60,6 +59,7 @@ from security import safe_internal_redirect
 from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_admin_ledger_event, log_unexpected
+from utils import storage_identity
 from services.encaissements import projeter_paiement, reduire_paiement
 from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input
 
@@ -552,7 +552,10 @@ def api_televersement():
             "erreur": "Une pièce justificative doit faire entre 1 octet et 10 Mo."
         }), 422
 
-    user_id = session.get("user_id", "unknown")
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": str(exc)}), 503
     printable = "".join(ch for ch in nom if ch.isprintable())
     safe = secure_filename(printable) or "recu"
     objet = f"staging/{user_id}/{uuid.uuid4()}/{safe}"
@@ -585,7 +588,10 @@ def api_recu(tx_id: str):
     objet = str(donnees.get("objet") or "")
     nom = str(donnees.get("name") or "").strip() or "recu"
 
-    user_id = session.get("user_id", "unknown")
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": str(exc)}), 503
     if not objet.startswith(f"staging/{user_id}/"):
         return jsonify({"erreur": "Requête invalide."}), 400
     entry = al.get_transaction(tx_id)

@@ -49,6 +49,7 @@ from models.document import (
 from models import concurrency
 from routes import edit_conflict
 from routes._helpers import is_htmx
+from utils import storage_identity
 
 logger = logging.getLogger(__name__)
 from models.folder import (
@@ -257,9 +258,12 @@ def folder_zip():
     folder_id = request.args.get("folder_id", "").strip() or None
     if not dossier_id:
         return redirect(url_for("documents.document_list"))
-    url, errors = build_folder_zip_url(
-        dossier_id, folder_id, session.get("user_id", "unknown")
-    )
+    try:
+        uid = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        url, errors = None, [str(exc)]
+    else:
+        url, errors = build_folder_zip_url(dossier_id, folder_id, uid)
     if not url:
         return redirect(url_for(
             "documents.document_list",
@@ -342,7 +346,10 @@ def api_televersement():
         c for c in str(donnees.get("content_type") or "")
         if 32 <= ord(c) < 127
     )[:100] or "application/octet-stream"
-    user_id = session.get("user_id", "unknown")
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": str(exc)}), 503
     printable = "".join(ch for ch in nom if ch.isprintable())
     safe = secure_filename(printable) or "document"
     objet = f"staging/{user_id}/{uuid.uuid4()}/{safe}"
@@ -383,7 +390,10 @@ def api_finaliser():
     nom = str(donnees.get("name") or "").strip() or "document"
     dossier_id = str(donnees.get("dossier_id") or "").strip()
 
-    user_id = session.get("user_id", "unknown")
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        return jsonify({"erreur": str(exc)}), 503
     if not objet.startswith(f"staging/{user_id}/"):
         # Le client ne nomme jamais que SES objets staging — tout autre
         # chemin est une charge forgée.

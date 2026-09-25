@@ -9,7 +9,6 @@ from flask import (
     redirect,
     render_template,
     request,
-    session,
     url_for,
 )
 from markupsafe import escape
@@ -25,6 +24,7 @@ from pagination import (
     total_pages_of,
 )
 from security import safe_internal_redirect
+from utils import storage_identity
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_rate_fr, parse_cents_or_none
 from models.invoice import (
@@ -550,15 +550,20 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
         "genere_depuis": f"Générée depuis la facture {invoice_number}".strip(),
         "tags": ["note_honoraires"],
     }
-    doc, errors = upload_document(
-        dossier_id=dossier_id,
-        dossier_file_number=invoice.get("dossier_file_number", ""),
-        file_stream=io.BytesIO(filled),
-        filename=out_name,
-        file_size=len(filled),
-        metadata=metadata,
-        user_id=session.get("user_id", "unknown"),
-    )
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        doc, errors = None, [str(exc)]
+    else:
+        doc, errors = upload_document(
+            dossier_id=dossier_id,
+            dossier_file_number=invoice.get("dossier_file_number", ""),
+            file_stream=io.BytesIO(filled),
+            filename=out_name,
+            file_size=len(filled),
+            metadata=metadata,
+            user_id=user_id,
+        )
     if errors or not doc:
         log_template_event("generation_failed", template_id=template_id,
                            dossier_id=dossier_id, invoice_id=invoice_id,
