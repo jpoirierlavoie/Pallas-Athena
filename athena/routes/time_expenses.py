@@ -2,6 +2,7 @@
 
 import math
 from datetime import datetime, timezone
+from typing import Optional
 
 from markupsafe import escape
 
@@ -640,6 +641,62 @@ def _phase_form_data() -> tuple[str, str, str]:
     )
 
 
+def _phase_refusal(
+    errors: list[str],
+    *,
+    kind: str,
+    record_id: str,
+    existing: Optional[dict],
+    expected: Optional[str],
+    phase: str,
+    sous_phase: str,
+    return_to: str,
+) -> str:
+    """Re-render the phase form after a refused save (both kinds).
+
+    The read-only recap shows a STORED row, never one overlaid with the
+    submitted pair: its « Phase actuelle » line would otherwise name the
+    very pair this save failed to write — and on a stale refusal hide the
+    phase another writer just set, the one fact the banner is about. On a
+    stale refusal that row is the CURRENT one, from the same read that
+    supplied the etag the form now carries (a second read could show a
+    newer row under an older etag); otherwise it is the row the save was
+    attempted on. The submitted pair travels to the selector alone.
+    """
+    is_time = kind == "time_entry"
+    getter = get_time_entry if is_time else get_expense
+    reread: list[Optional[dict]] = []
+
+    def _current() -> Optional[dict]:
+        reread.append(getter(record_id))
+        return reread[-1]
+
+    errors, conflict, etag = edit_conflict.resolve_refusal(
+        errors,
+        submitted=expected,
+        reread=_current,
+        compare_url=(
+            url_for("time_expenses.time_entry_phase_edit", entry_id=record_id)
+            if is_time else
+            url_for("time_expenses.expense_phase_edit", expense_id=record_id)
+        ),
+    )
+    shown = (
+        (reread[-1] if conflict and reread else None)
+        or existing or {"id": record_id}
+    )
+    lister = list_time_entries_page if is_time else list_expenses_page
+    recent_rows, _ = lister(dossier_id=shown.get("dossier_id", ""), limit=10)
+    ctx = _phase_form_context(
+        {**shown, "etag": etag}, kind=kind, recent_rows=recent_rows
+    )
+    ctx.update(
+        errors=errors, conflict=conflict, return_to=return_to,
+        selected_phase=phase, selected_sous_phase=sous_phase,
+    )
+    return render_template("time_expenses/phase_form.html", **ctx)
+
+
 def _log_reclassement(item: dict, kind: str, sous_phase: str) -> None:
     """Codes and ids only — never a description, never an amount."""
     log_dossier_event(
@@ -681,28 +738,11 @@ def time_entry_phase_update(entry_id: str) -> str:
     )
 
     if errors:
-        errors, conflict, etag = edit_conflict.resolve_refusal(
-            errors,
-            submitted=expected,
-            reread=lambda: get_time_entry(entry_id),
-            compare_url=url_for(
-                "time_expenses.time_entry_phase_edit", entry_id=entry_id
-            ),
+        return _phase_refusal(
+            errors, kind="time_entry", record_id=entry_id,
+            existing=existing, expected=expected, phase=phase,
+            sous_phase=sous_phase, return_to=return_to,
         )
-        # On a stale refusal the read-only recap shows the CURRENT row —
-        # what the next save would reclassify. The selector keeps the
-        # submitted pair either way.
-        shown = (get_time_entry(entry_id) if conflict else None) or existing
-        recent_rows, _ = list_time_entries_page(
-            dossier_id=(shown or {}).get("dossier_id", ""), limit=10
-        )
-        ctx = _phase_form_context(
-            {**(shown or {"id": entry_id}), "phase": phase,
-             "sous_phase": sous_phase, "etag": etag},
-            kind="time_entry", recent_rows=recent_rows,
-        )
-        ctx.update(errors=errors, conflict=conflict, return_to=return_to)
-        return render_template("time_expenses/phase_form.html", **ctx)
 
     if changed:
         _log_reclassement(existing or {}, "time_entry", sous_phase or phase)
@@ -743,25 +783,11 @@ def expense_phase_update(expense_id: str) -> str:
     )
 
     if errors:
-        errors, conflict, etag = edit_conflict.resolve_refusal(
-            errors,
-            submitted=expected,
-            reread=lambda: get_expense(expense_id),
-            compare_url=url_for(
-                "time_expenses.expense_phase_edit", expense_id=expense_id
-            ),
+        return _phase_refusal(
+            errors, kind="expense", record_id=expense_id,
+            existing=existing, expected=expected, phase=phase,
+            sous_phase=sous_phase, return_to=return_to,
         )
-        shown = (get_expense(expense_id) if conflict else None) or existing
-        recent_rows, _ = list_expenses_page(
-            dossier_id=(shown or {}).get("dossier_id", ""), limit=10
-        )
-        ctx = _phase_form_context(
-            {**(shown or {"id": expense_id}), "phase": phase,
-             "sous_phase": sous_phase, "etag": etag},
-            kind="expense", recent_rows=recent_rows,
-        )
-        ctx.update(errors=errors, conflict=conflict, return_to=return_to)
-        return render_template("time_expenses/phase_form.html", **ctx)
 
     if changed:
         _log_reclassement(existing or {}, "expense", sous_phase or phase)

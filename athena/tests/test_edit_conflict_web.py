@@ -167,6 +167,15 @@ class FormCase:
     field: str                      # the stored field `form` writes
     marker: str                     # what `form` writes there
     rival_value: str = "RIVAL-9Z"
+    # The HTML proving the SUBMITTED value survived a re-render, when the
+    # bare marker cannot: every phase form prints every sub-code anyway
+    # (the selector embeds the whole taxonomy), so there only the
+    # selector's own state says what was kept.
+    kept: Optional[str] = None
+
+    @property
+    def evidence(self) -> str:
+        return self.kept or self.marker
 
 
 def _seed_partie(db, dossier_id):
@@ -300,6 +309,7 @@ CASES = [
         None, _time_phase_form,
         lambda d, m: {"phase": "PRE", "sous_phase": "CTS-02"},
         "sous_phase", "CTS-02", rival_value="PRE-01",
+        kept="sousPhase: 'CTS-02'",
     ),
     FormCase(
         "expense", "expense", "expenses", _seed_expense,
@@ -316,6 +326,7 @@ CASES = [
         None, _time_phase_form,
         lambda d, m: {"phase": "PRE", "sous_phase": "CTS-02"},
         "sous_phase", "CTS-02", rival_value="PRE-01",
+        kept="sousPhase: 'CTS-02'",
     ),
     FormCase(
         "note", "note", "notes", _seed_note,
@@ -522,6 +533,10 @@ def test_a_stale_save_writes_nothing_and_shows_the_banner(
     path = _path(case, record_id)
     _rival(db, path, case.field, case.rival_value)
     before = db.peek(path)
+    # The evidence is not on the form as it renders the stored record — or
+    # finding it after the refusal would prove nothing.
+    assert case.evidence not in (
+        client.get(case.edit_url(record_id)).get_data(as_text=True))
 
     resp = client.post(case.post_url(record_id), data={
         **case.form(dossier_id, case.marker), "expected_etag": shown})
@@ -530,7 +545,7 @@ def test_a_stale_save_writes_nothing_and_shows_the_banner(
     assert resp.status_code == 200
     assert BANNER in html
     # The submitted value is kept on the page…
-    assert case.marker in html
+    assert case.evidence in html
     # …the form now carries the CURRENT etag (the next save is deliberate)…
     assert _etags(html) == [RIVAL_ETAG]
     # …and the rival write survived intact: nothing was written.
@@ -613,6 +628,49 @@ def test_a_malformed_etag_is_a_french_400(client, db, dossier_id, case):
     assert resp.status_code == 400
     assert "Rien n'a été enregistré" in resp.get_data(as_text=True)
     assert db.peek(path) == before
+
+
+_PHASE_CASES = [c for c in CASES if c.kept]
+_RECAP_PHASE = re.compile(
+    r"Phase actuelle</span>\s*<span[^>]*>\s*([^<]*?)\s*</span>")
+
+
+def _recap_phase(html: str) -> str:
+    found = _RECAP_PHASE.findall(html)
+    assert len(found) == 1, found
+    return found[0]
+
+
+@pytest.mark.parametrize("case", _PHASE_CASES, ids=[c.id for c in _PHASE_CASES])
+def test_a_stale_phase_refusal_shows_the_phase_actually_stored(
+    client, db, dossier_id, case
+):
+    """« Phase actuelle » is the one line of the recap the banner is about:
+    another writer just set that phase. It read the SUBMITTED pair — the
+    pair this save failed to write — while the store held the rival's."""
+    from utils import phases
+
+    record_id, shown = _open(client, db, case, dossier_id)
+    _rival(db, _path(case, record_id), case.field, case.rival_value)
+    html = client.post(case.post_url(record_id), data={
+        **case.form(dossier_id, case.marker), "expected_etag": shown,
+    }).get_data(as_text=True)
+    assert BANNER in html
+    assert _recap_phase(html) == phases.SOUS_PHASE_LABELS[case.rival_value]
+    assert case.kept in html                 # the selector keeps the submission
+
+
+@pytest.mark.parametrize("case", _PHASE_CASES, ids=[c.id for c in _PHASE_CASES])
+def test_a_refused_phase_pair_is_not_shown_as_the_current_phase(
+    client, db, dossier_id, case
+):
+    record_id, shown = _open(client, db, case, dossier_id)
+    html = client.post(case.post_url(record_id), data={
+        **case.invalid(dossier_id, case.marker), "expected_etag": shown,
+    }).get_data(as_text=True)
+    assert BANNER not in html
+    assert _recap_phase(html) == "Non renseignée"   # what is stored
+    assert "sousPhase: 'CTS-02'" in html            # what was submitted
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -816,6 +874,26 @@ def test_a_stale_checkbox_asking_for_done_on_a_done_task_writes_nothing(
     assert again.status_code == 302
     assert db.peek(f"tasks/{task_id}") == after_first
     assert bumps == [f"dossier:{dossier_id}"]   # no second bump
+
+
+def test_the_reopen_controls_post_a_faire_and_reopen(
+    client, db, dossier_id, bumps
+):
+    """The completed list's ticked box and the detail page's « Rouvrir »
+    post `à_faire`. Swapped for `terminée`, they would be silent no-ops on
+    a done task — nothing written, nothing said — so they are pinned."""
+    task_id = _seed_task(db, dossier_id)
+    task_model.update_task(task_id, {"status": "terminée"})
+    listing = client.get("/taches/?status=terminée").get_data(as_text=True)
+    row = listing[listing.index(f'hx-post="/taches/{task_id}/toggle"'):]
+    assert row[:row.index(">")].count("""hx-vals='{"target": "à_faire"}'""") == 1
+    detail = client.get(f"/taches/{task_id}").get_data(as_text=True)
+    assert 'name="target" value="à_faire"' in detail
+
+    client.post(f"/taches/{task_id}/toggle", data={"target": "à_faire"})
+    stored = db.peek(f"tasks/{task_id}")
+    assert stored["status"] == "à_faire" and stored["completed_date"] is None
+    assert bumps == [f"dossier:{dossier_id}"]
 
 
 def test_reopening_an_open_task_keeps_en_cours(client, db, dossier_id, bumps):

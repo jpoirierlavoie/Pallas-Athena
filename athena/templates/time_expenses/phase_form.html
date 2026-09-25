@@ -99,9 +99,13 @@
     {# The cascading picker, shared with every other phased form.
        is_edit = false: reclassifying means ASSIGNING a code, so the select
        is required and offers no « Non renseignée ». « Hors phase » (HOR) is
-       the vocabulary's own answer for unclassifiable work. #}
-    {% set phase_value = item.phase or '' %}
-    {% set sous_phase_value = item.sous_phase or '' %}
+       the vocabulary's own answer for unclassifiable work.
+       A refused save re-renders with the SUBMITTED pair here only
+       (selected_phase / selected_sous_phase, from
+       routes/time_expenses._phase_refusal): the recap above always reads a
+       STORED row, so « Phase actuelle » never names a pair nothing wrote. #}
+    {% set phase_value = (selected_phase if selected_phase is defined else item.phase) or '' %}
+    {% set sous_phase_value = (selected_sous_phase if selected_sous_phase is defined else item.sous_phase) or '' %}
     {% set is_edit = False %}
     {% include "components/_phase_selector.html" %}
 
