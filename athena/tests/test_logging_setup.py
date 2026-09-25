@@ -747,20 +747,35 @@ def test_every_emitted_mcp_event_is_a_member_of_the_literal():
     from utils.logging_setup import McpEvent
 
     racine = pathlib.Path(__file__).resolve().parent.parent
+    # First-party code only. A developer's `venv/` or `.venv/` sits under
+    # this directory (both are gitignored, and a sibling sweep already had
+    # to skip `.venv`): parsing third-party site-packages would make this
+    # test slow at best, and fail on a file that is not UTF-8 at worst.
+    hors_code = {"tests", "venv", "node_modules", "__pycache__",
+                 "static", "templates"}
     emis: dict[str, str] = {}
+    non_litteraux: list[str] = []
     for chemin in sorted(racine.rglob("*.py")):
-        if "tests" in chemin.relative_to(racine).parts:
+        parties = chemin.relative_to(racine).parts
+        if any(p in hors_code or p.startswith(".") for p in parties[:-1]):
             continue
         arbre = ast.parse(chemin.read_text(encoding="utf-8"))
         for noeud in ast.walk(arbre):
-            if not isinstance(noeud, ast.Call) or not noeud.args:
+            if not isinstance(noeud, ast.Call):
                 continue
             f = noeud.func
             nom = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
-            premier = noeud.args[0]
-            if nom == "log_mcp_event" and isinstance(premier, ast.Constant):
-                emis[premier.value] = f"{chemin.relative_to(racine)}:{noeud.lineno}"
+            if nom != "log_mcp_event":
+                continue
+            ou = f"{chemin.relative_to(racine)}:{noeud.lineno}"
+            premier = noeud.args[0] if noeud.args else None
+            if isinstance(premier, ast.Constant):
+                emis[premier.value] = ou
+            else:
+                # A computed event name would escape both sweeps at once.
+                non_litteraux.append(ou)
     assert "mcp_idempotency_store_failure" in emis  # non-vacuous
+    assert not non_litteraux, non_litteraux
     hors_type = {e: ou for e, ou in emis.items() if e not in get_args(McpEvent)}
     assert not hors_type, hors_type
 

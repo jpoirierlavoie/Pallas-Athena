@@ -141,8 +141,10 @@ def validate_args(schema: dict, args: Any) -> list[str]:
     Supported keywords: ``type`` (object, string, integer, number, boolean,
     array, null — or a LIST of those for nullable fields), ``properties``,
     ``required``, ``enum``, ``minimum``, ``maximum``, ``maxLength``,
-    ``minLength``, ``minItems``, ``maxItems``, ``items`` (one level),
-    ``anyOf``, ``additionalProperties: false``. Empty list = valid.
+    ``minLength``, ``minItems``, ``maxItems``, ``items`` (a single schema,
+    applied to every element — recursively, so an object inside an array is
+    validated in full), ``anyOf``, ``additionalProperties: false``. Empty
+    list = valid.
 
     Despite the name, this validates OUTPUT payloads too: the conformance
     tests run every handler and check its real payload against the declared
@@ -154,6 +156,11 @@ def validate_args(schema: dict, args: Any) -> list[str]:
     how ``minItems``/``maxItems`` sat declared on the bulk phase tools,
     advertised to the client and enforced by nothing but the handler,
     until 2026-09-25. Implement a keyword here before a schema relies on it.
+    The same holds for three FORMS of listed keywords: an unknown ``type``
+    name accepts any value, an ``additionalProperties`` SCHEMA (anything
+    but ``false``) is ignored, and a tuple-form ``items`` list crashes the
+    walk. ``tests/test_mcp_tools.py`` refuses all of these in every
+    declared schema.
     """
     return _validate_value(schema, args, "arguments")
 

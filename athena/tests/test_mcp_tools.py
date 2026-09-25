@@ -163,9 +163,33 @@ _ENFORCED_KEYWORDS = frozenset({
 _ANNOTATION_KEYWORDS = frozenset({"description"})
 
 
+def _keyword_form(key: str, value) -> str:
+    """The keyword as the validator SEES it — its name, or a flagged form.
+
+    A known name is not enough: three keywords are enforced in ONE value
+    form only, and ignored in every other, without a word.
+    """
+    if key == "type":
+        # `_type_ok` answers True for a name it does not know, so an unknown
+        # type accepts ANY value. Probed on the real validator, not listed:
+        # a known name refuses a bare object().
+        names = value if isinstance(value, (list, tuple)) else [value]
+        unknown = [t for t in names if tools._type_ok(t, object())]
+        if unknown:
+            return f"type={unknown}"
+    elif key == "additionalProperties" and not isinstance(value, bool):
+        # Only `false` is enforced (`true` constrains nothing, like absence).
+        # A SCHEMA for the extra keys — the free-key dictionary the H.4 spec
+        # weighs (B2) — is ignored whole.
+        return "additionalProperties=<schema>"
+    elif key == "items" and not isinstance(value, dict):
+        return f"items=<{type(value).__name__}>"
+    return key
+
+
 def _schema_keywords(schema: dict, where: str, found: set) -> None:
     for key, value in schema.items():
-        found.add((key, where))
+        found.add((_keyword_form(key, value), where))
         if key == "properties":
             for prop_name, sub in value.items():
                 _schema_keywords(sub, f"{where}.{prop_name}", found)
@@ -174,8 +198,6 @@ def _schema_keywords(schema: dict, where: str, found: set) -> None:
         elif key == "anyOf":
             for index, branch in enumerate(value):
                 _schema_keywords(branch, f"{where}|{index}", found)
-        elif key == "additionalProperties" and isinstance(value, dict):
-            _schema_keywords(value, f"{where}{{*}}", found)
 
 
 def test_no_schema_declares_a_keyword_the_validator_would_ignore():
@@ -196,6 +218,34 @@ def test_no_schema_declares_a_keyword_the_validator_would_ignore():
         if key not in _ENFORCED_KEYWORDS | _ANNOTATION_KEYWORDS
     )
     assert not unknown, unknown
+
+
+@pytest.mark.parametrize("fragment, value, outcome", [
+    ({"type": "uuid"}, 12, "accepted"),                        # unknown type
+    ({"type": ["string", "date"]}, 12, "accepted"),            # one unknown
+    ({"type": "object", "additionalProperties": {"type": "integer"}},
+     {"x": "not an integer"}, "accepted"),                     # schema form
+    ({"type": "array", "items": [{"type": "integer"}]}, ["x"],
+     "crashes"),                                               # tuple form
+])
+def test_the_keyword_guard_flags_the_forms_the_validator_ignores(
+    fragment, value, outcome
+):
+    """The guard's premise, pinned on the real validator: none of these
+    fragments REFUSES the value it claims to refuse — three accept it
+    silently, the tuple form crashes the walk (a 200 « internal error » on
+    the endpoint) — and the guard flags every one. If the validator ever
+    enforces one of these forms, the first assertion fails, and the guard
+    is updated in the same commit."""
+    if outcome == "accepted":
+        assert tools.validate_args(fragment, value) == []
+    else:
+        with pytest.raises(AttributeError):
+            tools.validate_args(fragment, value)
+    found: set = set()
+    _schema_keywords(fragment, "probe", found)
+    flagged = {k for k, _ in found} - (_ENFORCED_KEYWORDS | _ANNOTATION_KEYWORDS)
+    assert flagged, found
 
 
 # ── Money / date formatting ─────────────────────────────────────────────
