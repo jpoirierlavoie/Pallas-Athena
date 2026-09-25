@@ -593,8 +593,15 @@ def test_une_ligne_ecrite_par_un_autre_pendant_le_lot_est_refusee_seule(
         {"time_entry_id": "e3", "sous_phase": "PRE-01"},
     ]})
     assert [r["outcome"] for r in payload["results"]] == ["applied", "refused"]
-    assert payload["results"][1]["reason"].startswith(
-        "Cette entrée de temps a été modifiée")
+    reason = payload["results"][1]["reason"]
+    assert reason.startswith("Cette entrée de temps a été modifiée")
+    # Un élément de lot n'accepte AUCUN expected_etag (le schéma le refuse) :
+    # le remède dit de relire et de renvoyer la ligne, jamais de « refaire
+    # la modification avec son etag actuel » — qui mènerait droit à un refus
+    # de schéma. Et la ligne seule n'a pas été écrite : la voisine l'a été.
+    assert "etag" not in reason
+    assert "renvoyez la ligne" in reason and "Cette ligne n'a pas été écrite" in reason
+    assert "Rien n'a été écrit" not in reason
     assert many.peek("timeentries/e2")["sous_phase"] == "PRE-01"
     rival = many.peek("timeentries/e3")
     assert rival["sous_phase"] == "AUD-02" and rival["etag"] == "etag-rival"

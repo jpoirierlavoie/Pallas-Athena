@@ -3710,7 +3710,9 @@ def _optional_phase_pair(args: dict) -> Optional[tuple[str, str]]:
     return _resolve_phase_pair(args)
 
 
-def _stale_message(tool: str, subject: str, current: Optional[dict]) -> str:
+def _stale_message(
+    tool: str, subject: str, current: Optional[dict], *, bulk: bool = False
+) -> str:
     """The French refusal of an outdated edit — naming WHEN, never WHAT.
 
     The time of the last write is named (it tells the caller its read is
@@ -3719,15 +3721,30 @@ def _stale_message(tool: str, subject: str, current: Optional[dict]) -> str:
     the via could name the wrong writer. Content is never quoted. The
     readers named are the tool's own ``"etag_readers"`` declaration — the
     same ones its ``expected_etag`` description names.
+
+    The remedy names « l'enregistrement », never a pronoun: the subjects
+    differ in gender (« Ce contact », « Cette entrée de temps »), and a
+    « Relisez-le » after a feminine subject is a French error on a text
+    the caller reads. *bulk* is the per-row reason of a batch
+    reclassification: a batch item accepts no ``expected_etag`` (its schema
+    refuses one), so telling that caller to « redo it with the current
+    etag » would send it straight into a schema refusal — the remedy there
+    is to re-read the row and send it again.
     """
     when = iso_mtl(_as_utc((current or {}).get("updated_at")))
     last = f" (dernière écriture : {when})" if when else ""
     readers = " ou ".join(TOOLS[tool].get("etag_readers") or ())
     reread = f" ({readers})" if readers else ""
+    if bulk:
+        return (
+            f"{subject} pendant le traitement du lot{last}. Cette ligne n'a "
+            f"pas été écrite : relisez l'enregistrement{reread}, puis "
+            "renvoyez la ligne dans un nouvel appel."
+        )
     return (
         f"{subject} depuis votre lecture{last}. Rien n'a été écrit. "
-        f"Relisez-le{reread} et refaites la modification avec son etag "
-        "actuel."
+        f"Relisez l'enregistrement{reread} et refaites la modification "
+        "avec son etag actuel."
     )
 
 
@@ -4512,7 +4529,8 @@ def _set_phase_impl(
                     errors, tool=tool, subject=stale_subject,
                     reread=lambda: bulk_getter([row["id"]]).get(row["id"]),
                 )
-            row["reason"] = _stale_message(tool, stale_subject, None)
+            row["reason"] = _stale_message(
+                tool, stale_subject, None, bulk=bulk)
             refused += 1
             results.append(_phase_result_row(row, doc, "refused"))
             continue

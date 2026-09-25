@@ -2355,8 +2355,10 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
-            "Moves to optional in plan lot 1, when update_task adopts the "
-            "same primitive; a same-state call already writes nothing."
+            "Moves to optional in plan lot 1, with the update_task tool: "
+            "the model's update_task already accepts expected_etag, but "
+            "this handler does not pass one yet (a same-state call writes "
+            "nothing)."
         ),
         "handler": "complete_task",
     },

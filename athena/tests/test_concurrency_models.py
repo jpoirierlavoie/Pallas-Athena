@@ -605,6 +605,10 @@ def test_a_stale_expected_etag_is_refused_and_nothing_is_written(
     for reader in tools.TOOLS[tool]["etag_readers"]:
         assert reader in message
     assert before["etag"] not in message  # never an etag to retry blind with
+    # The remedy names the record, never a pronoun: the subjects differ in
+    # gender (« Cette entrée de temps… Relisez-le » shipped once).
+    assert "Relisez l'enregistrement" in message
+    assert "Relisez-le" not in message and "Relisez-la" not in message
     assert db.peek(path) == before
     assert _row_commits(db, path) == []
 
