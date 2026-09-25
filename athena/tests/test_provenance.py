@@ -45,9 +45,11 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from flask import Blueprint, Flask  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
+    import dav.sync as dav_sync
     import mcp.handlers as handlers
     import mcp.write_support as write_support
     from models import invoice as invoice_model
+    from models import note as note_model
     from models import provenance
     from models import task as task_model
     from models import time_entry as time_entry_model
@@ -654,3 +656,34 @@ def test_the_invoice_source_flips_carry_the_writer(monkeypatch):
     assert flipped["updated_via"] == "mcp" and flipped["etag"] != "e0"
     assert flipped["mcp_updated_at"] is not None
     assert fake.peek(f"invoices/{invoice['id']}")["created_via"] == "mcp"
+
+
+def test_create_then_append_note_emits_the_stored_etag(monkeypatch):
+    """End to end through the real handler, run_write and the real note
+    model: the write payload's etag IS the stored one, and the append
+    reports the NEW etag, never the one it read."""
+    fake = install(monkeypatch, note_model, dav_sync, write_support)
+    created = handlers.create_note({"title": "Recherche", "content": "Texte."})
+    note = created["note"]
+    stored = fake.peek(f"notes/{note['id']}")
+    assert note["etag"] == stored["etag"]
+    assert note["created_via"] == note["updated_via"] == "mcp"
+    assert note["mcp_updated_at"] is not None
+    assert stored["created_via"] == "mcp"
+
+    appended = handlers.append_to_note(
+        {"note_id": note["id"], "content": "Suite."})
+    after = fake.peek(f"notes/{note['id']}")
+    assert appended["note"]["etag"] == after["etag"] != stored["etag"]
+    assert appended["note"]["created_via"] == "mcp"
+    assert appended["note"]["updated_via"] == "mcp"
+
+    with _web_request():
+        note_model.update_note(note["id"], {"pinned": True})
+    web = fake.peek(f"notes/{note['id']}")
+    assert web["updated_via"] == "web"
+    assert web["mcp_updated_at"] == after["mcp_updated_at"]
+    row = handlers.get_note({"note_id": note["id"]})["note"]
+    assert row["etag"] == web["etag"]
+    assert row["updated_via"] == "web" and row["created_via"] == "mcp"
+    assert row["mcp_updated_at"] == appended["note"]["mcp_updated_at"]

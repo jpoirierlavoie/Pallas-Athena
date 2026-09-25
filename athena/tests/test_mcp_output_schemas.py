@@ -213,6 +213,13 @@ _EXPENSE_SUMMARY = {"total_expenses": 5000, "unbilled_expenses": 5000}
 _INVOICE_SUMMARY = {"count": 1, "total_invoiced": 150000,
                     "total_paid": 0, "total_outstanding": 150000}
 
+# The provenance + concurrency stamps a document carries since 2026-09-25
+# (models/provenance.py). Folded into ONE branch of each reader below, so
+# the schemas are validated against populated values as well as against the
+# ''/null a legacy document yields.
+_PROV = {"etag": "etag-7", "created_via": "web", "updated_via": "mcp",
+         "mcp_updated_at": DT}
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Conformance — one real-handler run per anyOf branch
@@ -277,7 +284,7 @@ def test_get_dossier_both_branches_conform(monkeypatch):
         lambda i: _dossier_doc(
             valeur=1500000, flat_fee=500000,
             contingency_percent=2500, date_avis=DT, prise_action_date=DT,
-            closed_date=DT,
+            closed_date=DT, **_PROV,
             # Full July-2026 party shape: roles + avocat per entry.
             clients=[{"id": "p1", "name": "Jean Tremblay",
                       "roles": ["défendeur", "demandeur reconventionnel"],
@@ -317,7 +324,8 @@ def test_list_notes_conforms(monkeypatch):
         did = dossier_id or ""
         return [{"id": "n1", "dossier_id": did, "title": "Veille",
                  "content": "Texte", "category": "recherche",
-                 "pinned": False, "created_at": DT, "updated_at": DT},
+                 "pinned": False, "created_at": DT, "updated_at": DT,
+                 **_PROV},
                 {"id": "n2", "dossier_id": did,
                  "title": "Théorie de la cause", "content": "Corps",
                  "category": "stratégie", "pinned": False,
@@ -342,7 +350,7 @@ def test_get_note_both_branches_conform(monkeypatch):
                    "dossier_file_number": "2026-001", "dossier_title": "T",
                    "title": "Note", "content": "Corps",
                    "category": "recherche", "pinned": True,
-                   "created_at": DT, "updated_at": DT})
+                   "created_at": DT, "updated_at": DT, **_PROV})
     _conforms("get_note", handlers.get_note({"note_id": "n1"}))
 
     # The analyse note (read-only flag emitted True)
@@ -477,7 +485,8 @@ def test_list_time_entries_conforms(monkeypatch):
                         "date": DATE_ONLY, "description": "Rédaction",
                         "hours": 1.5, "rate": 30000, "amount": 45000,
                         "billable": True, "invoiced": True,
-                        "invoice_id": "inv-1"}], None))
+                        "invoice_id": "inv-1", **_PROV,
+                        "created_via": "mcp"}], None))
     _conforms("list_time_entries", handlers.list_time_entries({}))
 
 
@@ -1425,3 +1434,182 @@ def test_get_document_text_not_found_conforms(monkeypatch):
     payload = handlers.get_document_text({"document_id": "absent"})
     _conforms("get_document_text", payload)
     assert payload["found"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Provenance & concurrency stamps (plan lot 0a, étape 3)
+# ══════════════════════════════════════════════════════════════════════
+
+_PROV_KEYS = ("etag", "created_via", "updated_via", "mcp_updated_at")
+# created_via was REQUIRED on these two rows before provenance existed (it
+# read « 'mcp' or '' »); it stays required there, and nowhere else.
+_PREEXISTING_REQUIRED = {
+    ("list_time_entries", "created_via"), ("list_expenses", "created_via"),
+}
+
+
+def _objects(node, path=""):
+    """Every object schema in *node*, with a readable path."""
+    if isinstance(node, dict):
+        if isinstance(node.get("properties"), dict):
+            yield path, node
+            for key, sub in node["properties"].items():
+                yield from _objects(sub, f"{path}.{key}")
+        for key in ("items", "anyOf", "oneOf", "allOf"):
+            sub = node.get(key)
+            if isinstance(sub, dict):
+                yield from _objects(sub, f"{path}[{key}]")
+            elif isinstance(sub, list):
+                for i, branch in enumerate(sub):
+                    yield from _objects(branch, f"{path}[{key}{i}]")
+
+
+def test_provenance_keys_are_never_auto_required():
+    """Added to existing contracts, they must never become a key a strict
+    client can reject a response over — nor one a replayed write result
+    stored before 2026-09-25 (the 24 h idempotency cache) would lack."""
+    offenders = []
+    for tool, schema in OUTPUT_SCHEMAS.items():
+        for path, obj in _objects(schema, tool):
+            for key in obj.get("required", []):
+                if key in _PROV_KEYS and (tool, key) not in _PREEXISTING_REQUIRED:
+                    offenders.append(f"{path}: {key}")
+    assert not offenders, offenders
+
+
+def test_the_preexisting_created_via_stays_required():
+    for tool in ("list_time_entries", "list_expenses"):
+        row = OUTPUT_SCHEMAS[tool]["properties"]["items"]["items"]
+        assert "created_via" in row["required"], tool
+        assert not set(row["required"]) & {"etag", "updated_via",
+                                           "mcp_updated_at"}, tool
+
+
+def test_every_timestamped_object_says_how_it_was_written():
+    """An object that says WHEN it was written also says by which path, and
+    carries the token an edit would pass back as expected_etag."""
+    missing = []
+    seen = 0
+    for tool, schema in OUTPUT_SCHEMAS.items():
+        for path, obj in _objects(schema, tool):
+            props = obj["properties"]
+            if "created_at" in props or "updated_at" in props:
+                seen += 1
+                lacking = [k for k in _PROV_KEYS if k not in props]
+                if lacking:
+                    missing.append(f"{path}: {lacking}")
+    assert not missing, missing
+    assert seen >= 15, seen  # not vacuous
+
+
+def _dossier_world(monkeypatch, doc):
+    for model, summary in (
+        (handlers.hearing_model, "get_hearing_summary"),
+        (handlers.note_model, "get_notes_summary"),
+        (handlers.document_model, "get_document_summary"),
+    ):
+        monkeypatch.setattr(model, summary, lambda d: {"total": 1})
+    monkeypatch.setattr(handlers.task_model, "get_task_summary",
+                        lambda d, today=None: {"total": 1})
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol_summary",
+                        lambda d, today=None: {"total": 1})
+    monkeypatch.setattr(handlers.time_entry_model, "get_time_summary",
+                        lambda d: dict(_TIME_SUMMARY))
+    monkeypatch.setattr(handlers.expense_model, "get_expense_summary",
+                        lambda d: dict(_EXPENSE_SUMMARY))
+    monkeypatch.setattr(handlers.invoice_model, "get_invoice_summary",
+                        lambda d: dict(_INVOICE_SUMMARY))
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: doc)
+
+
+def _stamped(record: dict) -> dict:
+    return {k: record[k] for k in _PROV_KEYS}
+
+
+_EMITTED = {"etag": "etag-7", "created_via": "web", "updated_via": "mcp",
+            "mcp_updated_at": tools.iso_mtl(DT)}
+_LEGACY = {"etag": "", "created_via": "", "updated_via": "",
+           "mcp_updated_at": None}
+_BOTH_STATES = pytest.mark.parametrize(
+    "stored, emitted", [(_PROV, _EMITTED), ({}, _LEGACY)],
+    ids=["stamped", "legacy"],
+)
+
+
+@_BOTH_STATES
+def test_get_dossier_and_get_partie_emit_their_etag_and_provenance(
+    monkeypatch, stored, emitted,
+):
+    """The two records update_dossier / update_partie edit bypassed
+    _stamps: a model reading them got no etag to pass back."""
+    _dossier_world(monkeypatch, _dossier_doc(**stored))
+    payload = handlers.get_dossier({"dossier_id": "d1"})
+    _conforms("get_dossier", payload)
+    assert _stamped(payload["dossier"]) == emitted
+
+    monkeypatch.setattr(handlers.partie_model, "get_partie",
+                        lambda i: {**_partie_doc(), **stored})
+    monkeypatch.setattr(handlers.dossier_model, "list_dossiers_for_partie",
+                        lambda i: [])
+    payload = handlers.get_partie({"partie_id": "p1"})
+    _conforms("get_partie", payload)
+    assert _stamped(payload["partie"]) == emitted
+
+
+@_BOTH_STATES
+def test_note_readers_emit_etag_and_provenance(monkeypatch, stored, emitted):
+    note = {"id": "n1", "dossier_id": "", "title": "Veille",
+            "content": "Texte", "category": "recherche", "pinned": False,
+            "created_at": DT, "updated_at": DT, **stored}
+    monkeypatch.setattr(handlers.note_model, "get_note", lambda i: dict(note))
+    monkeypatch.setattr(handlers.note_model, "list_notes",
+                        lambda **kw: [dict(note)])
+    payload = handlers.get_note({"note_id": "n1"})
+    _conforms("get_note", payload)
+    assert _stamped(payload["note"]) == emitted
+    payload = handlers.list_notes({})
+    _conforms("list_notes", payload)
+    assert _stamped(payload["items"][0]) == emitted
+
+
+@_BOTH_STATES
+def test_the_note_write_result_carries_the_written_stamps(
+    write_world, monkeypatch, stored, emitted,
+):
+    """The note write payload bypassed _stamps too. (That the etag emitted
+    is the one STORED is proven end to end over the real model in
+    tests/test_provenance.py; here, the contract.)"""
+    monkeypatch.setattr(
+        handlers.note_model, "create_note",
+        lambda data: ({**data, "id": "n-new", "created_at": DT,
+                       "updated_at": DT, **stored}, []))
+    payload = handlers.create_note({"dossier_id": "d1", "title": "T",
+                                    "content": "Corps."})
+    _conforms("create_note", payload)
+    assert _stamped(payload["note"]) == emitted
+
+
+@pytest.mark.parametrize("stored, expected", [
+    ("mcp", "mcp"),   # the old meaning survives: this connector recorded it
+    (None, ""),       # a legacy row recorded in the application
+    ("web", "web"),   # the widened vocabulary
+])
+def test_billing_rows_keep_the_created_via_contract(monkeypatch, stored, expected):
+    row = {"id": "e1", "dossier_id": "d1", "date": DATE_ONLY,
+           "description": "R", "hours": 1.0, "rate": 30000, "amount": 30000,
+           "billable": True, "invoiced": False}
+    if stored is not None:
+        row["created_via"] = stored
+    monkeypatch.setattr(handlers.time_entry_model, "list_time_entries_page",
+                        lambda **kw: ([row], None))
+    payload = handlers.list_time_entries({})
+    _conforms("list_time_entries", payload)
+    assert payload["items"][0]["created_via"] == expected
+
+
+def test_billing_created_via_description_documents_both_vocabularies():
+    for tool in ("list_time_entries", "list_expenses"):
+        text = (OUTPUT_SCHEMAS[tool]["properties"]["items"]["items"]
+                ["properties"]["created_via"]["description"])
+        assert "web | dav | mcp | cron | script" in text, tool
+        assert "« mcp »" in text and "''" in text, tool

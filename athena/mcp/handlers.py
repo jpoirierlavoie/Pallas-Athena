@@ -266,15 +266,26 @@ def _phase_pair(doc: dict) -> dict:
 
 
 def _stamps(doc: dict) -> dict:
-    """The created_at/updated_at pair every row now carries (PA-G05).
+    """The stamps every row carries: when, and — since 2026-09-25 — by
+    which path, plus the concurrency token.
 
-    Both are stored on every entity (Architecture Rule 7) — the gap was
-    emission-only. True instants → iso_mtl, nullable for pre-Rule-7 legacy
-    docs. Note updated_at is NOISY: DAV round-trips, protocol-step syncs
-    and bulk folder moves all re-stamp it without content changing."""
+    created_at/updated_at (PA-G05) are stored on every entity (Architecture
+    Rule 7) — the gap was emission-only. True instants → iso_mtl, nullable
+    for pre-Rule-7 legacy docs. Note updated_at is NOISY: DAV round-trips,
+    protocol-step syncs and bulk folder moves all re-stamp it without
+    content changing.
+
+    etag is the stored concurrency token ('' on a legacy doc that never had
+    one). created_via/updated_via/mcp_updated_at are what the models stamp
+    (models/provenance.py): '' / null on a document not written since
+    provenance existed — never a guess."""
     return {
         "created_at": iso_mtl(_as_utc(doc.get("created_at"))),
         "updated_at": iso_mtl(_as_utc(doc.get("updated_at"))),
+        "etag": str(doc.get("etag") or ""),
+        "created_via": str(doc.get("created_via") or ""),
+        "updated_via": str(doc.get("updated_via") or ""),
+        "mcp_updated_at": iso_mtl(_as_utc(doc.get("mcp_updated_at"))),
     }
 
 
@@ -782,8 +793,9 @@ def get_dossier(args: dict) -> dict:
                 for sig in (d.get("significations") or [])
                 if isinstance(sig, dict)
             ],
-            "created_at": iso_mtl(_as_utc(d.get("created_at"))),
-            "updated_at": iso_mtl(_as_utc(d.get("updated_at"))),
+            # get_dossier bypassed _stamps until 2026-09-25, so the record
+            # update_dossier edits carried no etag and no provenance.
+            **_stamps(d),
         }
     )
     _money(record, "hourly_rate", d.get("hourly_rate", 0))
@@ -1197,8 +1209,7 @@ def list_notes(args: dict) -> dict:
             "category": n.get("category", ""),
             "pinned": bool(n.get("pinned")),
             "is_analyse": bool(n.get("is_analyse")),
-            "created_at": iso_mtl(_as_utc(n.get("created_at"))),
-            "updated_at": iso_mtl(_as_utc(n.get("updated_at"))),
+            **_stamps(n),
             "content_preview": (n.get("content", "") or "")[:_NOTE_PREVIEW_CHARS],
         }
         for n in page
@@ -1238,8 +1249,7 @@ def get_note(args: dict) -> dict:
             "category": note.get("category", ""),
             "pinned": bool(note.get("pinned")),
             "is_analyse": bool(note.get("is_analyse")),
-            "created_at": iso_mtl(_as_utc(note.get("created_at"))),
-            "updated_at": iso_mtl(_as_utc(note.get("updated_at"))),
+            **_stamps(note),
         },
     }
 
@@ -1556,8 +1566,9 @@ def get_partie(args: dict) -> dict:
         "kyc_document_ids": p.get("kyc_document_ids", []),
         "mandataires": p.get("mandataires", []),
         "notes": p.get("notes", ""),
-        "created_at": iso_mtl(_as_utc(p.get("created_at"))),
-        "updated_at": iso_mtl(_as_utc(p.get("updated_at"))),
+        # Same gap as get_dossier: the card update_partie edits now carries
+        # its etag and provenance.
+        **_stamps(p),
     }
     return {"found": True, "partie": card, "dossiers": dossier_refs}
 
@@ -1835,8 +1846,9 @@ def list_time_entries(args: dict) -> dict:
             "billable": bool(e.get("billable")),
             "invoiced": bool(e.get("invoiced")),
             "invoice_id": e.get("invoice_id") or None,
-            "created_via": e.get("created_via", ""),
             **_phase_pair(e),
+            # created_via comes from _stamps: the same stored value, now
+            # over a wider vocabulary (see the schema description).
             **_stamps(e),
         }
         _money(row, "rate", e.get("rate", 0))
@@ -1870,8 +1882,9 @@ def list_expenses(args: dict) -> dict:
             "taxable": bool(e.get("taxable")),
             "invoiced": bool(e.get("invoiced")),
             "invoice_id": e.get("invoice_id") or None,
-            "created_via": e.get("created_via", ""),
             **_phase_pair(e),
+            # created_via comes from _stamps: the same stored value, now
+            # over a wider vocabulary (see the schema description).
             **_stamps(e),
         }
         _money(row, "amount", e.get("amount", 0))
@@ -2568,8 +2581,8 @@ def _write_result(
             "title": note.get("title", ""),
             "category": note.get("category", ""),
             "content_length": len(note.get("content", "") or ""),
-            "created_at": iso_mtl(_as_utc(note.get("created_at"))),
-            "updated_at": iso_mtl(_as_utc(note.get("updated_at"))),
+            # The note AS WRITTEN — so the etag is the new one.
+            **_stamps(note),
         },
         # Two distinct facts, deliberately not collapsed into one: whether
         # the sync trigger actually fired, and whether the phone will ever
