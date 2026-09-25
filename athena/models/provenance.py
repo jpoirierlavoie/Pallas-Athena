@@ -12,7 +12,10 @@ etag, so one can never move without the other:
   « Claude a modifié ceci le … » survives the next phone sync.
 
 The value domain is closed: :data:`VALID_VIA`. ``''`` (absent) on a record
-means « written before 2026-09-25 », never « written by the application ».
+means « not recorded » — written before this module was deployed, or a kind
+of record whose writers do not stamp yet (protocol steps) — never « written
+by the application ». Deliberately no date: the boundary is the DEPLOY, not
+the commit, and nothing here can know when that happens.
 
 Why the stamp lives in the MODEL and not in the callers. The models merge
 ``{**existing, **data}`` then write the whole document, so a caller-set

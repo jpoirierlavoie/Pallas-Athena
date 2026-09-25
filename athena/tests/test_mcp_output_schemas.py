@@ -11,6 +11,7 @@ branch.
 """
 
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from unittest import mock
@@ -1613,3 +1614,82 @@ def test_billing_created_via_description_documents_both_vocabularies():
                 ["properties"]["created_via"]["description"])
         assert "web | dav | mcp | cron | script" in text, tool
         assert "« mcp »" in text and "''" in text, tool
+
+
+_ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+
+def test_provenance_texts_name_no_boundary_date():
+    """The line between « path not recorded » and « path recorded » is the
+    day provenance was DEPLOYED, which no commit can know: a date in these
+    texts (the first draft said « before 2026-09-25 ») is false for every
+    record written between that day and the deploy."""
+    offenders = []
+    for tool, schema in OUTPUT_SCHEMAS.items():
+        for path, obj in _objects(schema, tool):
+            for key in _PROV_KEYS:
+                text = obj["properties"].get(key, {}).get("description", "")
+                if _ISO_DATE.search(text):
+                    offenders.append(f"{path}.{key}: {text}")
+    assert not offenders, offenders
+
+
+def _step_row_objects():
+    """Every protocol-step row, found by the one key only a step row has."""
+    for tool, schema in OUTPUT_SCHEMAS.items():
+        for path, obj in _objects(schema, tool):
+            if "status_stored" in obj["properties"]:
+                yield path, obj
+
+
+def test_step_rows_say_steps_are_unstamped_and_nothing_else_does():
+    rows = list(_step_row_objects())
+    assert len(rows) >= 2, rows  # list_protocol_steps + get_agenda
+    for path, obj in rows:
+        for key in _PROV_KEYS:
+            text = obj["properties"][key]["description"]
+            assert "not stamped yet" in text, (path, key)
+    step_paths = {path for path, _ in rows}
+    for tool, schema in OUTPUT_SCHEMAS.items():
+        for path, obj in _objects(schema, tool):
+            if path in step_paths:
+                continue
+            for key in _PROV_KEYS:
+                text = obj["properties"].get(key, {}).get("description", "")
+                assert "not stamped yet" not in text, (path, key)
+
+
+def test_steps_really_are_unstamped_while_their_rows_say_so(monkeypatch):
+    """The carve-out above is only true while it is true. A step written
+    through the real model (shared fake Firestore) under the connector
+    stores none of the four keys — its PROTOCOL is stamped instead — and its
+    row emits ''/null. The day steps gain an etag (plan lot 1), this test
+    fails, and the step-row texts must change with it."""
+    from datetime import date
+
+    from models import provenance
+    from tests._fake_firestore import install
+
+    protocol_model = handlers.protocol_model
+    fake = install(monkeypatch, protocol_model)
+    fake.seed("protocols/p1", {
+        "id": "p1", "dossier_id": "d1", "title": "Protocole",
+        "protocol_type": "conventionnel", "status": "actif",
+        "etag": "e0", "created_at": DT, "updated_at": DT,
+    })
+    fake.seed("protocols/p1/steps/s1", {
+        **protocol_model._default_step(), "id": "s1", "order": 1,
+        "title": "Interrogatoire", "deadline_date": DATE_ONLY,
+        "created_at": DT, "updated_at": DT,
+    })
+    with provenance.writing_via("mcp", tool="t"):
+        _, errors = protocol_model.update_step("p1", "s1", {"notes": "Suivi."})
+    assert errors == []
+
+    step = fake.peek("protocols/p1/steps/s1")
+    assert step["notes"] == "Suivi."  # the write did land
+    assert not set(step) & set(_PROV_KEYS), step
+    assert fake.peek("protocols/p1")["updated_via"] == "mcp"
+
+    row = handlers._step_row(step, date(2026, 9, 25))
+    assert {k: row[k] for k in _PROV_KEYS} == _LEGACY
