@@ -201,6 +201,45 @@ def test_exists_precondition_and_plain_delete_of_a_missing_document(db):
         _doc(db, "a/nope").delete(option=db.write_option(exists=True))
 
 
+def test_a_write_that_changes_nothing_keeps_the_previous_update_time(db):
+    """The documented WriteResult contract: « If the write did not actually
+    change the document, this will be the previous update_time. » A fake
+    that bumped it anyway would make a `last_update_time` precondition — the
+    idempotency claim's release, a conditional delete — refuse where
+    production accepts, and a test would pin a guarantee production lacks."""
+    first = _doc(db, "a/b").set({"v": 1, "m": {"p": [1, 2]}})
+    again = _doc(db, "a/b").set({"m": {"p": [1, 2]}, "v": 1})  # key order is irrelevant
+    assert again.update_time == first.update_time
+    assert db.stored_update_time("a/b") == first.update_time
+    same_field = _doc(db, "a/b").update({"v": 1})
+    assert same_field.update_time == first.update_time
+    # …so a precondition captured before those writes still holds.
+    _doc(db, "a/b").update({"v": 2}, option=db.write_option(last_update_time=first.update_time))
+    assert db.peek("a/b")["v"] == 2
+
+
+def test_a_type_change_is_a_change_even_where_python_sees_equality(db):
+    """`True == 1` in Python; a stored bool and a stored int are different
+    Firestore values, so the write DOES change the document."""
+    first = _doc(db, "a/b").set({"flag": True})
+    second = _doc(db, "a/b").set({"flag": 1})
+    assert second.update_time > first.update_time
+
+
+def test_a_server_timestamp_always_changes_the_document(db):
+    first = _doc(db, "a/b").set({"at": firestore.SERVER_TIMESTAMP})
+    second = _doc(db, "a/b").set({"at": firestore.SERVER_TIMESTAMP})
+    assert second.update_time > first.update_time
+
+
+def test_an_identical_external_write_neither_races_nor_invalidates(db):
+    ts = _doc(db, "a/b").set({"v": 1}).update_time
+    db.external_write("a/b", {"v": 1})
+    assert db.stored_update_time("a/b") == ts
+    _doc(db, "a/b").delete(option=db.write_option(last_update_time=ts))
+    assert db.peek("a/b") is None
+
+
 def test_an_external_writer_invalidates_a_captured_update_time(db):
     ts = _doc(db, "a/b").set({"v": 1}).update_time
     db.external_write("a/b", {"v": "other process"})
@@ -285,8 +324,19 @@ def test_a_batch_over_the_write_cap_is_refused_whole():
     assert db.peek_collection("a") == {}
 
 
-def test_the_default_write_cap_is_the_documented_500():
-    assert FakeFirestore().max_writes_per_commit == 500
+def test_there_is_no_write_count_cap_by_default():
+    """Firestore release notes, 2023-03-29: « Firestore no longer limits the
+    number of writes that can be passed to a Commit operation or performed
+    in a transaction. Previously, the limit was 500. » A fake that still
+    refused the 501st write would let a test assert a refusal production
+    never gives."""
+    db = FakeFirestore()
+    assert db.max_writes_per_commit is None
+    batch = db.batch()
+    for i in range(501):
+        batch.set(_doc(db, f"a/d{i}"), {"i": i})
+    batch.commit()
+    assert len(db.peek_collection("a")) == 501
 
 
 def test_a_commit_hook_can_fail_a_commit_and_nothing_applies(db):
@@ -401,8 +451,10 @@ def test_a_stale_read_aborts_and_the_real_decorator_retries_on_fresh_data(db):
 
 def test_a_transaction_that_keeps_losing_the_race_gives_up(db):
     db.seed("a/counter", {"n": 0})
+    # A value the counter never held before: an identical write is a no-op
+    # that races nothing (see the no-op tests below).
     db.add_commit_hook(
-        lambda info: info.transaction and db.external_write("a/counter", {"n": info.index})
+        lambda info: info.transaction and db.external_write("a/counter", {"n": 1000 + info.index})
     )
 
     @firestore.transactional

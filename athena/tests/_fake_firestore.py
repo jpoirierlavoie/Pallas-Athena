@@ -44,7 +44,12 @@ What the fake SERVER implements (the documented Firestore contract):
   ``write_option(last_update_time=…)`` mismatch → ``FailedPrecondition``;
   ``write_option(exists=True)`` on a missing document → ``NotFound``;
 * atomic commits: every write of a batch or a transaction applies, or none
-  does; all writes of one commit share one ``update_time``;
+  does; every write that CHANGES its document takes the commit's one
+  ``update_time``, and a write that changes nothing keeps the document's
+  previous ``update_time`` (the documented ``WriteResult`` contract: « If the
+  write did not actually change the document, this will be the previous
+  update_time ») — so a ``last_update_time`` precondition captured before a
+  no-op write still matches, as it does in production;
 * transactions that BUFFER their writes until commit (the real client does
   the buffering; the server applies them atomically) and that ABORT at
   commit when a document they read — or the result set of a query they
@@ -56,8 +61,13 @@ What the fake SERVER implements (the documented Firestore contract):
   legal;
 * refusal of invalid document ids at RPC time (``""``, ``.``, ``..``,
   ``__reserved__``) — the client builds such a reference without complaint;
-* the per-commit write cap the repo documents (``dav/sync.py``
-  ``_BATCH_CHUNK``, ``models/folder.py``): 500 by default, configurable;
+* an OPTIONAL per-commit write-count cap, off by default. Firestore has had
+  none since 2023-03-29 (release notes: « Firestore no longer limits the
+  number of writes that can be passed to a Commit operation or performed in
+  a transaction. Previously, the limit was 500. »). The « 500 » that
+  ``dav/sync.py`` and ``models/folder.py`` cite is that retired limit; a test
+  that wants to prove chunking against an enforced ceiling passes
+  ``max_writes_per_commit=``;
 * queries: ``==``/``!=``/range/``in``/``not-in``/``array_contains``/
   ``array_contains_any``, ``IS_NULL``/``IS_NOT_NULL``/``IS_NAN``/
   ``IS_NOT_NAN``, AND/OR composites, ``order_by`` (a document missing an
@@ -73,14 +83,13 @@ does not have, and silently pretending would be worse than saying so:
 
 * composite INDEXES. A query the production server would refuse for want of
   an index succeeds here. CLAUDE.md item 7 remains a deploy-time check;
-* document-size and field-depth limits, and the multi-inequality ordering
-  rules of the server;
+* document-size and field-depth limits, the 10 MiB request-size limit, the
+  transaction time limit, and the multi-inequality ordering rules of the
+  server;
 * real lock contention: a concurrent writer is modelled by
   :meth:`FakeFirestore.external_write` (or a commit hook), and a
   transaction that read the affected document aborts at commit — the
-  serializable outcome the real server guarantees by locking;
-* whether a no-op write bumps ``update_time``: here every committed write
-  does.
+  serializable outcome the real server guarantees by locking.
 
 ``get_all`` answers in REVERSE request order. The real service documents no
 order at all, so any order is faithful; a fixed non-request order makes a
@@ -153,10 +162,12 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=_UTC)
 _CLOCK_START_US = int((datetime(2026, 1, 1, tzinfo=_UTC) - _EPOCH).total_seconds()) * 1_000_000
 _TICK_US = 1_000
 
-# The per-commit cap the repo documents (dav/sync.py and models/folder.py
-# chunk at 450 « because Firestore caps a batch at 500 operations »). Kept
-# as the default so a chunk size raised past it fails here first.
-DEFAULT_MAX_WRITES_PER_COMMIT = 500
+# No write-count cap by default: production has none since 2023-03-29 (see
+# the module docstring). dav/sync.py and models/folder.py still chunk at 450
+# « because Firestore caps a batch at 500 operations » — that comment
+# predates the change. A fake that refused 501 writes would make a test
+# assert a refusal production never gives.
+DEFAULT_MAX_WRITES_PER_COMMIT: Optional[int] = None
 
 _Op = _query_types.StructuredQuery.FieldFilter.Operator
 _Unary = _query_types.StructuredQuery.UnaryFilter.Operator
@@ -358,6 +369,19 @@ def _project(data: dict, paths: Iterable[str]) -> dict:
     return out
 
 
+def _same_fields(a: dict, b: dict) -> bool:
+    """True when two documents hold the same Firestore VALUES.
+
+    Compared as encoded protobufs, never as Python dicts: Python's ``==``
+    calls ``True == 1`` equal and would hide a bool → int change, while the
+    stored values are typed. Map entries compare order-insensitively.
+    """
+    return (
+        _document_types.MapValue(fields=_helpers.encode_dict(a))._pb
+        == _document_types.MapValue(fields=_helpers.encode_dict(b))._pb
+    )
+
+
 def _reject_nested_arrays(value_pb, where: str) -> None:
     """Firestore refuses an array that DIRECTLY contains an array."""
     kind = value_pb.WhichOneof("value_type")
@@ -402,7 +426,7 @@ class _FakeServer:
         "batch_get_documents", "run_query", "run_aggregation_query",
     })
 
-    def __init__(self, client: "FakeFirestore", max_writes_per_commit: int) -> None:
+    def __init__(self, client: "FakeFirestore", max_writes_per_commit: Optional[int]) -> None:
         self._client = client
         self._prefix = client._database_string + "/documents"
         self.max_writes_per_commit = max_writes_per_commit
@@ -795,7 +819,7 @@ class _FakeServer:
         for hook in list(self.commit_hooks):
             hook(info)  # may raise: the commit then applies nothing
 
-        if len(writes) > self.max_writes_per_commit:
+        if self.max_writes_per_commit is not None and len(writes) > self.max_writes_per_commit:
             raise gexc.InvalidArgument(
                 f"maximum {self.max_writes_per_commit} writes allowed per request "
                 f"(got {len(writes)})"
@@ -939,6 +963,13 @@ class _FakeServer:
         transform_results = [
             _helpers.encode_value(self._apply_transform(data, t, commit_us)) for t in transforms
         ]
+        if current is not None and _same_fields(current.data, data):
+            # « If the write did not actually change the document, this will
+            # be the previous update_time » (WriteResult). The document is
+            # left exactly as it was — update_time included.
+            return _write_types.WriteResult(
+                update_time=_us_to_pb(current.update_us), transform_results=transform_results,
+            )
         created = current.create_us if current is not None else commit_us
         working[rel] = _StoredDoc(data=data, create_us=created, update_us=commit_us)
         return _write_types.WriteResult(
@@ -1001,6 +1032,8 @@ class _FakeServer:
         normalized = self.normalize(data, rel)
         now = self.tick()
         current = self.docs.get(rel)
+        if current is not None and _same_fields(current.data, normalized):
+            return  # a write that changes nothing keeps its update_time
         created = current.create_us if current is not None else now
         self.docs[rel] = _StoredDoc(data=normalized, create_us=created, update_us=now)
 
@@ -1029,7 +1062,7 @@ class FakeFirestore(_RealClient):
         self,
         project: str = "fake-project",
         *,
-        max_writes_per_commit: int = DEFAULT_MAX_WRITES_PER_COMMIT,
+        max_writes_per_commit: Optional[int] = DEFAULT_MAX_WRITES_PER_COMMIT,
     ) -> None:
         super().__init__(project=project, credentials=AnonymousCredentials())
         self._fake_server = _FakeServer(self, max_writes_per_commit)
@@ -1053,9 +1086,11 @@ class FakeFirestore(_RealClient):
     def external_write(self, path: str, data: dict) -> None:
         """Simulate ANOTHER process writing *path* (outside any transaction).
 
-        Advances the document's ``update_time``, so a transaction that read
+        Advances the document's ``update_time`` — so a transaction that read
         it aborts at commit and a ``last_update_time`` precondition taken
-        before it no longer matches.
+        before it no longer matches — PROVIDED *data* differs from what is
+        stored. Writing identical data changes nothing, exactly as a real
+        no-op write does: to model a concurrent writer, write a new value.
         """
         self._fake_server.direct_write(_clean_rel(path), data)
 
@@ -1093,7 +1128,7 @@ class FakeFirestore(_RealClient):
         return self._fake_server.commits
 
     @property
-    def max_writes_per_commit(self) -> int:
+    def max_writes_per_commit(self) -> Optional[int]:
         return self._fake_server.max_writes_per_commit
 
     def reads_outside_transactions(self) -> list[ReadRecord]:

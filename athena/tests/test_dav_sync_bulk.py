@@ -63,12 +63,23 @@ def _tombstone_commits(fake):
 # ── record_tombstones_bulk ─────────────────────────────────────────────────
 
 
-def test_the_chunk_fits_under_the_per_commit_cap():
-    """_BATCH_CHUNK is the only thing keeping one commit under the cap the
-    repo documents; the fake enforces that cap, so this pins the margin."""
-    from tests._fake_firestore import DEFAULT_MAX_WRITES_PER_COMMIT
+def test_no_commit_exceeds_the_chunk_even_under_an_enforced_ceiling(monkeypatch):
+    """Firestore dropped its 500-writes-per-commit limit on 2023-03-29, so
+    the fake enforces none by default and the « 500 » in dav/sync.py's comment
+    is the retired limit. The chunk still bounds each commit (request size,
+    one failure's blast radius); a store whose ceiling IS the chunk accepts
+    the whole drain, which it could not if one commit carried more."""
+    from tests._fake_firestore import FakeFirestore
 
-    assert 0 < dav_sync._BATCH_CHUNK <= DEFAULT_MAX_WRITES_PER_COMMIT
+    chunk = dav_sync._BATCH_CHUNK
+    fake = install(monkeypatch, dav_sync, fake=FakeFirestore(max_writes_per_commit=chunk))
+    fake.seed(SYNC_DOC, {"ctag": "ctag-0", "sync_token": "ctag-0"})
+    ids = [f"r{i:04d}" for i in range(2 * chunk + 1)]
+
+    dav_sync.record_tombstones_bulk(NAME, ids)
+
+    assert len(fake.peek_collection(TOMBSTONES)) == len(ids)
+    assert max(len(c.ops) for c in fake.commits) == chunk
 
 
 def test_bulk_reads_the_ctag_once_and_commits_in_chunks(fake, ctag_calls):
@@ -77,7 +88,9 @@ def test_bulk_reads_the_ctag_once_and_commits_in_chunks(fake, ctag_calls):
 
     dav_sync.record_tombstones_bulk(NAME, ids)
 
-    assert ctag_calls == [NAME]  # ONE read, not one per resource
+    assert ctag_calls == [NAME]  # ONE read, not one per resource…
+    # …and the store saw exactly that: one lookup of the sync document.
+    assert [(r.rpc, r.paths) for r in fake.reads] == [("batch_get_documents", (SYNC_DOC,))]
     sizes = [len(c.ops) for c in _tombstone_commits(fake)]
     assert sizes == [chunk, chunk, 1]
     assert all(kind == "set" for c in fake.commits for kind, _p in c.ops)
