@@ -861,3 +861,81 @@ def test_two_parallel_significations_both_survive_or_one_is_refused(
     handlers.record_signification(dict(args))
     assert {s["partie_id"] for s in db.peek(path)["significations"]} == {
         "p1", "p2"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. « …or the last write result » — the etag a CHAIN of writes presents
+# ══════════════════════════════════════════════════════════════════════
+#
+# Every `expected_etag` description sends the caller to « your latest read
+# … or the last write result ». Until the lot 0a critique that was true of
+# the edit tools' results only: create_time_entry / create_expense handed
+# back no etag, and the three dossier recorders none of the dossier's (the
+# review's correction — a TOP-LEVEL `dossier_etag`, never inside the
+# signification or event entity, an array entry with no etag of its own).
+
+
+@pytest.mark.parametrize("creator, editor, id_key, edit", [
+    ("create_time_entry", "update_time_entry", "time_entry_id",
+     {"description": "Révision"}),
+    ("create_expense", "update_expense", "expense_id",
+     {"description": "Timbre (corrigé)"}),
+])
+def test_a_created_entry_hands_back_the_etag_its_next_edit_presents(
+    monkeypatch, creator, editor, id_key, edit,
+):
+    db = _e2e_db(monkeypatch)
+    dossier_id = _dossier_with_parties(db)
+    args = {"dossier_id": dossier_id, "date": "2026-03-04",
+            "description": "Premier jet"}
+    args.update({"hours": 1.5} if creator == "create_time_entry"
+                else {"amount_cents": 5000, "category": "timbre_judiciaire"})
+    created = getattr(handlers, creator)(args)
+    entity = created["entity"]
+    coll = "timeentries" if creator == "create_time_entry" else "expenses"
+    assert entity["etag"] == db.peek(f"{coll}/{entity['id']}")["etag"]
+
+    edited = getattr(handlers, editor)(
+        {id_key: entity["id"], **edit, "expected_etag": entity["etag"]})
+    assert edited["entity"]["etag"] == db.peek(f"{coll}/{entity['id']}")["etag"]
+
+
+@pytest.mark.parametrize("recorder, args", [
+    ("complete_dossier", {"sommaire": "Rempli par Claude."}),
+    ("record_signification", {"partie_id": "p2", "date": "2026-07-15",
+                              "mode": "huissier"}),
+    ("record_prescription_event", {"type": "interruption_depot",
+                                   "date": "2026-05-15"}),
+])
+def test_a_recorder_hands_back_the_dossier_etag_update_dossier_presents(
+    monkeypatch, recorder, args,
+):
+    db = _e2e_db(monkeypatch)
+    dossier_id = _dossier_with_parties(db)
+    result = getattr(handlers, recorder)({"dossier_id": dossier_id, **args})
+    stored = db.peek(f"dossiers/{dossier_id}")
+    assert result["dossier_etag"] == stored["etag"]
+    assert "etag" not in (result.get("entity") or {})   # an array entry
+
+    edited = handlers.update_dossier({
+        "dossier_id": dossier_id, "sommaire": "Deuxième version.",
+        "expected_etag": result["dossier_etag"]})
+    assert edited["entity"]["etag"] == db.peek(f"dossiers/{dossier_id}")["etag"]
+
+
+def test_the_handed_back_etags_are_declared_and_never_required():
+    """A result replayed from `mcp_idempotency` may predate the key (24 h
+    cache): declared, typed, never required — the `_written_etag` rule."""
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+
+    for tool in ("complete_dossier", "record_signification",
+                 "record_prescription_event"):
+        schema = OUTPUT_SCHEMAS[tool]
+        assert schema["properties"]["dossier_etag"]["type"] == "string", tool
+        assert "dossier_etag" not in schema.get("required", []), tool
+        entity = schema["properties"].get("entity", {})
+        assert "etag" not in entity.get("properties", {}), tool
+    for tool in ("create_time_entry", "create_expense"):
+        entity = OUTPUT_SCHEMAS[tool]["properties"]["entity"]
+        assert entity["properties"]["etag"]["type"] == "string", tool
+        assert "etag" not in entity.get("required", []), tool

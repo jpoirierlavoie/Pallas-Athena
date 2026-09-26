@@ -632,8 +632,11 @@ def _write_protocol_keys() -> dict[str, Any]:
     }
 
 
-def _written_entity(extra: dict[str, Any]) -> dict:
-    """The WP16 creators' entity snapshot — common core + per-tool keys."""
+def _written_entity(
+    extra: dict[str, Any], optional: tuple[str, ...] = ()
+) -> dict:
+    """The WP16 creators' entity snapshot — common core + per-tool keys.
+    *optional* names keys added to an existing contract (``etag``)."""
     props: dict[str, Any] = {
         "id": _str("The stored id."),
         "dossier_id": _str("Empty for a « Général » (standalone) entity."),
@@ -644,12 +647,25 @@ def _written_entity(extra: dict[str, Any]) -> dict:
                       "or ISO-Montréal for a timed event."),
     }
     props.update(extra)
-    return _obj(props)
+    return _obj(props, optional=optional)
+
+
+def _dossier_etag() -> dict[str, Any]:
+    """``dossier_etag`` — the dossier's etag AS STORED after a recorder
+    wrote to it (review correction, lot 0a). Top-level, never inside the
+    signification/event entity, which is an ARRAY ENTRY with no etag of
+    its own. Optional for the same reason as :func:`_written_etag`."""
+    return {
+        "dossier_etag": _str(
+            "The DOSSIER's etag as stored after this write — pass it as "
+            "update_dossier's `expected_etag` instead of re-reading."),
+    }
 
 
 def _entity_write_result(
     entity_extra: dict[str, Any], *, dav: bool, verb: str = "created",
     extra: Optional[dict[str, Any]] = None, relocates: bool = False,
+    optional: tuple[str, ...] = (), entity_optional: tuple[str, ...] = (),
 ) -> dict:
     """Result contract of a WP16 creator / WP17 recorder.
 
@@ -672,7 +688,7 @@ def _entity_write_result(
     props: dict[str, Any] = {
         verb: {"type": "boolean", "enum": [True]},
         "entity_type": _str(),
-        "entity": _written_entity(entity_extra),
+        "entity": _written_entity(entity_extra, entity_optional),
         "warnings": _arr(_str(), "French, human-readable; empty when clean."),
         **_write_protocol_keys(),
     }
@@ -693,7 +709,7 @@ def _entity_write_result(
             "retry.")
     if extra:
         props.update(extra)
-    return _obj(props)
+    return _obj(props, optional=optional)
 
 
 def _record_prescription_event_result() -> dict:
@@ -702,7 +718,8 @@ def _record_prescription_event_result() -> dict:
     base = _entity_write_result({
         "type": _str(),
         "reference": _str(),
-    }, dav=False, verb="recorded")
+    }, dav=False, verb="recorded",
+        extra=_dossier_etag(), optional=("dossier_etag",))
     base["properties"]["prescription_status"] = _str(
         "courante | interrompue | echue | imprescriptible | a_verifier — "
         "derived after the event.")
@@ -1922,7 +1939,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
         **_money("rate"),
         **_money("amount"),
-    }, dav=False),
+        **_written_etag(),
+    }, dav=False, entity_optional=("etag",)),
 
     "create_expense": _entity_write_result({
         "category": _str(),
@@ -1930,7 +1948,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "phase": _str("Phase du litige (code, '' = non renseignée)."),
         "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
         **_money("amount"),
-    }, dav=False),
+        **_written_etag(),
+    }, dav=False, entity_optional=("etag",)),
 
     "complete_dossier": _obj({
         "completed": {"type": "boolean", "enum": [True]},
@@ -1947,13 +1966,15 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "prescription_status": _str(),
         "warnings": _arr(_str()),
         **_write_protocol_keys(),
-    }),
+        **_dossier_etag(),
+    }, optional=("dossier_etag",)),
 
     "record_signification": _entity_write_result({
         "partie_id": _str(),
         "mode": _str(),
         "confirmee": _bool(),
-    }, dav=False, verb="recorded"),
+    }, dav=False, verb="recorded",
+        extra=_dossier_etag(), optional=("dossier_etag",)),
 
     "record_prescription_event": _record_prescription_event_result(),
 

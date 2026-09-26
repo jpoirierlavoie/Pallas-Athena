@@ -5409,6 +5409,9 @@ def _create_time_entry_impl(args: dict) -> dict:
             "billable": bool(doc.get("billable")),
             "phase": doc.get("phase", ""),
             "sous_phase": doc.get("sous_phase", ""),
+            # The etag AS STORED: update_time_entry's `expected_etag` text
+            # sends the caller to « the last write result ».
+            "etag": concurrency.etag_of(doc),
         }
         _money(row, "rate", doc.get("rate", 0))
         _money(row, "amount", doc.get("amount", 0))
@@ -5474,6 +5477,7 @@ def _create_expense_impl(args: dict) -> dict:
             "taxable": bool(doc.get("taxable")),
             "phase": doc.get("phase", ""),
             "sous_phase": doc.get("sous_phase", ""),
+            "etag": concurrency.etag_of(doc),   # as stored; see create_time_entry
         }
         _money(row, "amount", doc.get("amount", 0))
         return row
@@ -5634,6 +5638,9 @@ def _complete_dossier_impl(args: dict) -> dict:
             "prescription_date": date_str(_as_utc(doc.get("prescription_date"))),
             "prescription_status": derived_p["status"],
             "warnings": [],
+            # The dossier's etag AS STORED (review correction, lot 0a): a
+            # following update_dossier presents it instead of re-reading.
+            "dossier_etag": concurrency.etag_of(doc),
         }
 
 
@@ -5744,7 +5751,10 @@ def _record_signification_impl(args: dict) -> dict:
          if s.get("id") == new_entry["id"]),
         new_entry,
     )
-    return _payload(stored)
+    result = _payload(stored)
+    # Top-level, never inside the entity (an array entry has no etag).
+    result["dossier_etag"] = concurrency.etag_of(updated)
+    return result
 
 
 # ── 29. record_prescription_event (WRITE, append-only) ──────────────────
@@ -5824,7 +5834,9 @@ def _record_prescription_event_impl(args: dict) -> dict:
          if e.get("id") == new_entry["id"]),
         new_entry,
     )
-    return _payload(stored, updated)
+    result = _payload(stored, updated)
+    result["dossier_etag"] = concurrency.etag_of(updated)
+    return result
 
 
 # ── 33. complete_task (WRITE — the only status change in the connector) ──
