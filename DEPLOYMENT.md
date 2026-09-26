@@ -1257,7 +1257,11 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   claude.ai BEFORE pushing, deploy, then re-add it and tick the boxes under
   the new text. Keep `MCP_WRITE_ENABLED` at `"true"` for that re-consent —
   consenting while it is `"false"` offers no box and yields a read-only
-  grant, without a word.
+  grant, without a word. This is the single-deploy form of the arm/disarm
+  procedure in the `MCP_WRITE_ENABLED` comment of `app.yaml` (§4.1's
+  pointer): with every token revoked BEFORE the push, nothing holds a grant
+  the new surface could reach, so the switch need not be armed. Either order
+  works; the one that fails is re-consenting while the switch is armed.
 - The consent screen has room for a **second, separate box**, « Autoriser la
   comptabilité » (scope `athena:comptabilite`). It appears only when
   `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**
