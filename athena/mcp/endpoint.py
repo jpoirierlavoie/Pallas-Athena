@@ -16,7 +16,7 @@ from mcp import (
     SUPPORTED_PROTOCOL_VERSIONS,
     mcp_bp,
 )
-from mcp import jsonrpc, tools
+from mcp import disclosure, jsonrpc, tools
 from mcp.bearer import (
     ScopeRequired,
     granted_scopes,
@@ -29,87 +29,13 @@ from security import limiter
 from utils.logging_setup import log_mcp_event, log_unexpected, sanitize_log_value
 from utils.tracing_setup import span
 
-# Instructions surfaced to the client model at initialize. The two
-# counts are DERIVED — recopied by hand they went stale twice, and a
-# model that is told « 29 read » looks for tools that are not there.
-INSTRUCTIONS = (
-    "Pallas Athena is a single-user Quebec civil litigation practice "
-    f"manager. {len(tools.TOOLS) - len(tools.WRITE_TOOLS)} tools read; "
-    f"{len(tools.WRITE_TOOLS)} write, in five families. "
-    "READ-CONTENT: `get_document_text` reads a stored document's TEXT "
-    "LAYER (PDF and .docx; take ids from list_documents; bounded per call "
-    "— follow next_page). A scanned page has no text layer and is reported "
-    "honestly (pages_without_text) — empty never means blank on paper, "
-    "and nothing is OCR'd. Document content is privileged: quote only "
-    "what the task requires. "
-    "ANALYSE: `record_document_analysis` records a document's "
-    "qualification. You supply a `sous_nature` from the closed table "
-    "(`get_reference_vocabulary`) and the `privileges` you identify; "
-    "the CODE derives the nature, the family, the protection level and "
-    "the document's category — never you. A level can only ever RISE: "
-    "a re-analysis retaining fewer privileges keeps the stored level "
-    "and flags the divergence, because under-protecting privileged "
-    "material is a professional fault while over-protecting merely "
-    "costs time. Only the lawyer, in the application, can lower one or "
-    "confirm a qualification. "
-    "CREATE: notes (`create_note`, `append_to_note`), tasks "
-    "(`create_task`), calendar events (`create_hearing`), billable time "
-    "(`create_time_entry`), expenses (`create_expense`), contacts "
-    "(`create_partie`), dossiers (`create_dossier`), plus three dossier "
-    "recorders — `complete_dossier` fills ONLY fields that are still empty "
-    "and refuses to overwrite anything, `record_signification` and "
-    "`record_prescription_event` append to the dossier's registers. "
-    "CORRECT — these REPLACE the values you name, and a field you omit is "
-    "left alone: `update_partie`, `update_dossier`, `update_time_entry` "
-    "and `update_expense` (the last two only while the entry is not yet "
-    "invoiced). `complete_task` closes a task and is the only STATUS "
-    "change here. "
-    "RECLASSIFY: `set_time_entry_phase` and `set_expense_phase` (plus "
-    "their `_bulk` forms, up to 50 rows a call) change ONLY the "
-    "litigation phase, and are the only tools that reach a row already "
-    "carried to an invoice. That is safe because the phase is on no "
-    "invoice — it feeds the dossier budget's actuals — and they cannot "
-    "touch hours, rate, amount or description. Use them to classify "
-    "historical work; use `update_time_entry` for anything else, and "
-    "only while the entry is unbilled. "
-    "IMPORT: `import_invoice` recreates an invoice the practice's previous "
-    "system already issued, under its own number and date. It NEVER "
-    "allocates a number — the year counter is untouched — its line items "
-    "can only come from real uninvoiced time entries and disbursements of "
-    "that dossier, and the invoice lands in brouillon. "
-    "Write tools appear only when the lawyer granted the `athena:write` "
-    "scope. NOTHING can EVER be DELETED here. This connector never records "
-    "a payment, never sends an invoice, never changes an invoice's status, "
-    "and never touches trust accounting, identity verification "
-    "or conflict-of-interest checks. On a document the ONE thing you "
-    "can write is its analysis; its file, its name and its folder are "
-    "read-only here. Billing an entry still freezes "
-    "everything about it EXCEPT its litigation phase. A dossier's status "
-    "is set at CREATION "
-    "and can never be changed here: closing one requires a DavX5 drain only "
-    "the application performs. "
-    "To undo an import: void the invoice IN THE APPLICATION — that releases "
-    "every time entry and disbursement it billed, and frees the number. "
-    "One indirect effect to know: completing a task that a "
-    "protocol step is linked to also completes that step, and if it was the "
-    "last open one the whole protocol closes. "
-    "A write is permanent and may sync "
-    "to the lawyer's phone — read the dossier before writing to it, and "
-    "confirm with the user unless a standing instruction (a scheduled "
-    "job, for example) already authorizes the write. Every write tool "
-    "accepts `idempotency_key` (any stable string "
-    "you choose; retrying with the SAME key within 24 h returns the "
-    "original result instead of duplicating). Always pass an "
-    "idempotency_key; if a write without one appeared to fail, re-read "
-    "(list/get) before retrying. Domain data (titles, notes, statuses, "
-    "categories) is in French; note content is Markdown in French, raw "
-    "HTML refused. Monetary amounts appear as integer `*_cents` plus a "
-    "formatted `*_display` string (CAD). Datetimes are ISO 8601 in "
-    "America/Montreal; date-only fields are `YYYY-MM-DD`. IDs are UUIDv4 "
-    "strings — pass them between tools verbatim. Start broad (get_agenda, "
-    "list_dossiers, search) and narrow with get_dossier / get_note / "
-    "list_* filters."
-)
+# Instructions surfaced to the client model at initialize — ASSEMBLED from
+# the disclosure registry (mcp/disclosure.py): the counts, the families and
+# the « never » statements are derived, so a lot that adds a family or lifts
+# a promise changes the registry and this text follows. Recopied by hand,
+# the counts went stale twice and the undo path stated a falsehood (« frees
+# the number »).
+INSTRUCTIONS = disclosure.build_instructions()
 
 SERVER_INFO = {
     "name": "pallas-athena",

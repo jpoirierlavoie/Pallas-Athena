@@ -41,7 +41,7 @@ from mcp import (
     oauth_bp,
     write_enabled,
 )
-from mcp import store, tools
+from mcp import disclosure, store, tools
 from security import csrf, limiter, sanitize
 from utils.logging_setup import log_mcp_event, log_unexpected
 
@@ -360,7 +360,17 @@ def authorize() -> Any:
     except _RedirectError as exc:
         redirect_uri = _param(request.args, "redirect_uri")
         return _redirect_with_error(redirect_uri, exc, _param(request.args, "state"))
-    return render_template("mcp/consent.html", error_message=None, params=params)
+    # What the screen describes is ASSEMBLED from the disclosure registry
+    # (mcp/disclosure.py) — the same source INSTRUCTIONS come from — so the
+    # page the lawyer reads cannot drift from the families actually granted.
+    return render_template(
+        "mcp/consent.html",
+        error_message=None,
+        params=params,
+        disclosure=disclosure.consent_context(
+            comptabilite_offered=params["comptabilite_offered"],
+        ),
+    )
 
 
 @oauth_bp.route("/oauth/authorize", methods=["POST"])

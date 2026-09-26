@@ -1,4 +1,4 @@
-"""The 49 MCP tool handlers — 27 read-only, plus 22 writes.
+"""The MCP tool handlers — the reads, plus the writes of mcp.tools.WRITE_TOOLS.
 
 Each handler takes the validated ``arguments`` dict and returns a
 JSON-serializable payload; the endpoint wraps it in the MCP envelope.
@@ -6,18 +6,18 @@ Handlers call EXISTING model/util functions only. Nothing here may assume a
 Flask request context.
 
 **Read handlers must never write to Firestore.** Only the handlers named in
-:data:`mcp.tools.WRITE_TOOLS` mutate anything. They fall in five families —
-CREATE (note, task, hearing, time entry, expense, partie, dossier, an
-appended register entry, a fill-only-if-empty dossier field), CORRECT
-(``update_partie``, ``update_dossier``, ``update_time_entry``,
-``update_expense``, and ``complete_task``'s status change), RECLASSIFY
-(the four ``set_*_phase`` tools), IMPORT (``import_invoice``) and ANALYSE
-(``record_document_analysis``, which replaces a document's stored category
-with one DERIVED from the closed sub-nature table) — and the writable
-collections are ``notes``, ``tasks``, ``hearings``, ``timeentries``,
-``expenses``, ``parties``, ``invoices`` (with its ``lineitems``
-subcollection), ``documents`` (with its append-only ``analyses`` journal)
-and ``dossiers``.
+:data:`mcp.tools.WRITE_TOOLS` mutate anything. Their families — and the
+counts — live in ONE place, :data:`mcp.disclosure.FAMILIES` (which
+``WRITE_TOOLS`` is derived from); the promises the connector makes about
+what it can NEVER do live beside them in :data:`mcp.disclosure.NEVERS`, each
+backed by a sweep of this module's syntax tree (tests/test_mcp_disclosure).
+Restating either here is how they drifted before. The writable collections
+are ``notes``, ``tasks``, ``hearings``, ``timeentries``, ``expenses``,
+``parties``, ``invoices`` (with its ``lineitems`` subcollection, and the
+``invoiced`` flips import_invoice causes on the two billing collections),
+``documents`` (its ``analyse`` cache, the DERIVED ``category`` and an
+append-only ``analyses`` journal entry — never the file, its name or its
+folder) and ``dossiers``.
 
 The versioned-drafts family (``save_draft``/``revise_draft``/``get_draft``/
 ``list_drafts``) LEFT this connector on 2026-09-02 with the internal chat
@@ -26,7 +26,8 @@ under a data-processing agreement, so the reason the chat existed — keeping
 privileged material out of a consumer product — no longer holds. Nothing
 was ever stored in ``chat_drafts``; the feature never saw use.
 **NOTHING is ever deleted**, no invoice status is ever set and no payment is
-ever recorded. That is why, for example, ``list_protocol_steps`` derives
+ever recorded (``mcp.disclosure.NEVERS`` — the sweep would catch a handler
+reaching one). That is why, for example, ``list_protocol_steps`` derives
 overdue status by date comparison instead of calling
 ``check_overdue_steps``, which writes. (Note the request path itself does
 write outside the tool path: ``bearer.stamp_token_last_used``,
@@ -4896,9 +4897,12 @@ def _import_invoice_impl(args: dict) -> dict:
         "warnings": [
             f"Les {n_entries} entrée(s) et {n_expenses} déboursé(s) sont "
             "maintenant marqués facturés : le connecteur ne peut plus les "
-            "modifier. Pour défaire cet import, annulez la facture dans "
-            "l'application — les entrées et déboursés redeviennent "
-            "modifiables et le numéro se libère.",
+            "modifier, sauf leur phase du litige (set_time_entry_phase, "
+            "set_expense_phase). Pour défaire cet import, annulez la "
+            "facture dans l'application — les entrées et déboursés "
+            "redeviennent modifiables ; le numéro reste attaché à la "
+            "facture annulée tant qu'elle n'est pas supprimée dans "
+            "l'application.",
             "La facture est au BROUILLON. Le connecteur ne change jamais le "
             "statut d'une facture ni n'inscrit un paiement : promouvez-la "
             "dans l'application (brouillon → envoyée, puis le paiement à sa "
@@ -5849,6 +5853,17 @@ def _complete_task_impl(args: dict) -> dict:
             f"Cette tâche est déjà « {current} ». La faire passer à "
             f"« {new_status} » réécrirait une décision : faites-le dans "
             "l'application si c'est voulu. Rien n'a été modifié."
+        )
+
+    # Closed → « en_cours » is a REOPEN, and it cascades: the model reverts
+    # the linked protocol step (and completed_date). The disclosure registry
+    # promises the connector never reopens a closed task (mcp/disclosure,
+    # « reopen_task »); reopening becomes its own tool in plan lot 1.
+    if current in _TERMINAL_STATUSES and new_status == "en_cours":
+        raise ToolArgumentError(
+            f"Cette tâche est close (« {current} ») : la remettre "
+            "« en_cours » la rouvrirait, et rouvrir une tâche se fait dans "
+            "l'application. Rien n'a été modifié."
         )
 
     data: dict[str, Any] = {"status": new_status}

@@ -94,7 +94,7 @@ def test_every_output_schema_is_rooted_at_an_object():
     """The MCP wire schema for Tool.outputSchema REQUIRES a top-level
     `type: "object"` (const). A bare-anyOf root is invalid, and the official
     SDK zod-parses the whole ListToolsResult — one invalid descriptor kills
-    all 19 tools at once, not just its own. Found by adversarial review
+    every tool at once, not just its own. Found by adversarial review
     against the official 2025-06-18 schema.json."""
     for name, schema in OUTPUT_SCHEMAS.items():
         assert schema.get("type") == "object", name

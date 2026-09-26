@@ -9,16 +9,17 @@ Exposes Pallas Athena's data to Claude as a custom connector:
 * ``mcp_bp`` — ``POST /mcp``: a stateless, JSON-response-mode Streamable
   HTTP server (initialize / ping / tools list + call). No SSE, no sessions.
 
-**Reads dominate; nothing is ever deleted.** The write tools are pinned in
-:data:`mcp.tools.WRITE_TOOLS`, in three families since lot Q (August 2026,
-the historical import): CREATE (notes, tasks, hearings, time entries,
-expenses, parties, dossiers, plus the recorders ``complete_dossier`` /
-``record_signification`` / ``record_prescription_event``), CORRECT (the
-four ``update_*`` tools and ``complete_task``), and IMPORT
-(``import_invoice``). :data:`mcp.tools.EDIT_TOOLS` is the subset that
-REPLACES a stored value, and it is what derives ``destructiveHint`` — the
-annotation stopped being a family constant the day an edit shipped.
-No tool deletes anything, sets an invoice status, or records a payment.
+**Reads dominate; nothing is ever deleted.** The write tools are
+:data:`mcp.tools.WRITE_TOOLS`, DERIVED from the disclosure registry
+:data:`mcp.disclosure.FAMILIES` — the ONE place the families, their members
+and their descriptions live, and from which both INSTRUCTIONS and the
+consent screen are assembled. What the connector can NEVER do lives beside
+them, in :data:`mcp.disclosure.NEVERS`, each promise backed by a sweep of
+the connector's syntax tree. Do not restate either here: hand-kept copies
+of this list went stale three times. :data:`mcp.tools.EDIT_TOOLS` is the
+subset that REPLACES a stored value, and it is what derives
+``destructiveHint`` — the annotation stopped being a family constant the
+day an edit shipped.
 
 Notes, tasks and hearings are DAV-exposed per dossier, and parties through
 the CardDAV addressbook; the models never bump a CTag — bumping lives in the

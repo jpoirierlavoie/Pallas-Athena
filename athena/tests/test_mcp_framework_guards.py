@@ -447,7 +447,11 @@ def test_every_input_schema_refuses_unknown_arguments():
 # (c) Edit-promising names ⊆ EDIT_TOOLS, and every other edit declared
 # ══════════════════════════════════════════════════════════════════════
 
-EDIT_NAME_PREFIXES = ("update_", "set_", "replace_", "move_", "reopen_", "void_")
+# The policy lives beside EDIT_TOOLS (mcp/tools.py); this guard reads it. The
+# six prefixes the guard shipped with are pinned as a floor, so the policy
+# can widen but never quietly lose one.
+EDIT_NAME_PREFIXES = tools.EDIT_NAME_PREFIXES
+_PREFIX_FLOOR = ("update_", "set_", "replace_", "move_", "reopen_", "void_")
 
 # Tools whose name promises an edit but which are NOT destructive. Empty.
 _PREFIX_EXEMPT: dict[str, str] = {}
@@ -463,11 +467,24 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "flips its sources to « facturée », after which the connector's "
         "update tools refuse them — undone only by voiding in the app"
     ),
+    "complete_task": (
+        "replaces the task's stored status and, through the model's "
+        "cascade, the linked protocol step's — up to closing the whole "
+        "protocol (plan lot 0a, disclosure step)"
+    ),
 }
 
 
 def _promises_an_edit(name: str) -> bool:
     return name.startswith(EDIT_NAME_PREFIXES)
+
+
+def test_the_edit_prefix_policy_only_ever_widens():
+    assert set(_PREFIX_FLOOR) <= set(EDIT_NAME_PREFIXES)
+    # « complete_ » would sweep complete_dossier in, which fills EMPTY
+    # fields only and replaces nothing.
+    assert not any(p.startswith("complete") for p in EDIT_NAME_PREFIXES)
+    assert "complete_dossier" not in tools.EDIT_TOOLS
 
 
 def test_every_edit_named_tool_is_an_edit_tool():

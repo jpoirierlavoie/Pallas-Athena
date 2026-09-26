@@ -475,9 +475,12 @@ def test_pending_only_shrinks_and_names_a_lot():
 
 
 def test_complete_task_edits_a_task_whose_form_is_protected():
-    """complete_task joins EDIT_TOOLS in the disclosure step; its record is
-    already covered, so that move needs no new form."""
+    """complete_task joined EDIT_TOOLS in the disclosure step (lot 0a); its
+    record was already covered, so that move needed no new form — and the
+    edit-tool map above now reaches it by membership."""
+    assert "complete_task" in tools.EDIT_TOOLS
     assert "task" in _FORMS
+    assert "task" in _edited_by_edit_tools()
 
 
 # ══════════════════════════════════════════════════════════════════════

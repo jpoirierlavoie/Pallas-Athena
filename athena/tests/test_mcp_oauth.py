@@ -570,9 +570,82 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     # The repair path exists and must be named: void_invoice releases every
     # source. The old copy called the freeze permanent, which was false.
     assert "annulez la facture dans l'application" in flat
+    # Lot 0a (disclosure step) — three sentences of this screen were false.
+    # Voiding does NOT free the number; only the notes, tasks and events the
+    # connector CREATES carry a dated mention (every write is journaled and
+    # stamped, none is « signed »); closing a task never reopens one.
+    assert "le numéro se libère" not in flat
+    assert "son numéro reste attaché à la facture annulée" in flat
+    assert "signée" not in flat
+    assert "Chaque écriture est horodatée" not in flat
+    assert "tâches et événements qu'il <strong>crée</strong>" in flat
+    assert "journalisé et marqué comme provenant de Claude" in flat
+    assert "<strong>sauf leur phase du litige</strong>" in flat
+    assert "<strong>rouvrir une tâche</strong>" in flat
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake):
+    """DERIVED, both ways: every write family's partial and every NEVER
+    bullet reach the page — so a family added to mcp/disclosure is
+    described to the lawyer by construction, and a promise deleted there
+    leaves the screen with it. The checkbox summary is the registry's."""
+    from mcp import disclosure
+
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge)
+    flat = _flat(page.data.decode("utf-8"))
+    context = disclosure.consent_context(comptabilite_offered=False)
+    app = client.application
+    with app.app_context():
+        for family in context["write_families"]:
+            partial = app.jinja_env.get_template(family.consent_template).render(
+                disclosure=context)
+            assert _flat(partial) in flat, family.key
+    for never in context["nevers"]:
+        assert f"<li>{_flat(str(never))}" in flat, never
+    # Rendered in registry order, the families before the « jamais » list.
+    first = [flat.index(_flat(app.jinja_env.get_template(
+        f.consent_template).render(disclosure=context))[:40])
+        for f in context["write_families"]]
+    assert first == sorted(first)
+    assert first[-1] < flat.index("ne peut <strong>jamais</strong> faire")
+    assert _flat(str(context["write_summary"])) in flat
+
+
+def test_the_write_block_uses_only_compiled_classes(client, fake):
+    """The family partials are new files: a class absent from the compiled
+    artifact silently does not apply (CLAUDE.md item 6)."""
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge)
+    body = page.data.decode("utf-8")
+    start = body.index('<p class="font-medium">Écritures (facultatif)</p>')
+    end = body.index("</form>", start)
+    classes = {c for block in re.findall(r'class="([^"]+)"', body[start:end])
+               for c in block.split()}
+    assert {"list-disc", "mt-3", "font-medium"} <= classes
+    css_path = next(iter(sorted(
+        (p for p in os.listdir(os.path.join(ATHENA_DIR, "static", "vendor"))
+         if re.fullmatch(r"app\.[0-9a-f]{8}\.css", p))
+    )))
+    with open(os.path.join(ATHENA_DIR, "static", "vendor", css_path), encoding="utf-8") as fh:
+        css = fh.read()
+    absent = []
+    for cls in sorted(classes):
+        needle = "." + re.sub(r"([:./])", r"\\\1", cls)
+        hits = [m.end() for m in re.finditer(re.escape(needle), css)]
+        if not any(i >= len(css) or not (css[i].isalnum() or css[i] in "-_\\")
+                   for i in hits):
+            absent.append(cls)
+    assert not absent, absent
 
 
 def test_unticked_checkbox_grants_read_only(client, fake):

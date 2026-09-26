@@ -29,6 +29,7 @@ from flask import Flask
 with mock.patch("google.cloud.firestore.Client"):
     import mcp as mcp_pkg
     import mcp.bearer as bearer
+    import mcp.disclosure as disclosure
     import mcp.endpoint as endpoint
     import mcp.handlers as handlers
     import mcp.store as store
@@ -226,6 +227,22 @@ def test_initialize_shape(client):
     # releases every source. Saying nothing would leave the model believing
     # an import is irreversible.
     assert "void the invoice IN THE APPLICATION" in instructions
+    # Lot 0a (disclosure step): the text is ASSEMBLED from mcp/disclosure,
+    # and three things it used to say were false. Voiding does NOT free the
+    # number; complete_task does not reopen; the family count is derived.
+    assert "frees the number" not in instructions
+    assert "the number stays on the voided invoice" in instructions
+    assert "never reopens a closed task" in instructions
+    assert "five families" not in instructions
+    families = [f for f in disclosure.FAMILIES if f.tools]
+    assert f"in {len(families)} families (" in instructions
+    # The lot 0a write-protocol rules the client model must follow.
+    assert "`expected_etag`" in instructions
+    assert "do NOT retry" in instructions
+    assert "`updated_via`" in instructions
+    # RECLASSIFY names the bulk tools literally, not as « their _bulk forms ».
+    assert "`set_time_entry_phase_bulk`" in instructions
+    assert "`set_expense_phase_bulk`" in instructions
 
 
 # ── tools/list & tools/call ─────────────────────────────────────────────

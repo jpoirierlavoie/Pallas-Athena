@@ -3943,6 +3943,28 @@ def test_the_other_terminal_state_is_refused_not_rewritten(ct):
     assert ct["updated"] is None
 
 
+@pytest.mark.parametrize("closed", ["terminée", "annulée"])
+def test_a_closed_task_is_never_put_back_en_cours(ct, bumps, closed):
+    """Closed → « en_cours » is a REOPEN: the model clears completed_date
+    and de-completes the linked step. The disclosure registry promises the
+    connector never reopens a closed task (mcp/disclosure, « reopen_task »),
+    and this refusal is what backs it — before lot 0a it went through and
+    the description called it a feature. Reopening gets its own tool in
+    plan lot 1; until then it is done in the application."""
+    ct["task"] = _ct_task(closed)
+    with pytest.raises(tools.ToolArgumentError, match="rouvrir une tâche se fait"):
+        handlers.complete_task({"task_id": "t1", "status": "en_cours"})
+    assert ct["updated"] is None            # update_task never reached
+    assert bumps["bump"] == []
+
+
+def test_an_open_task_may_still_be_put_en_cours(ct):
+    ct["task"] = _ct_task("à_faire")
+    payload = handlers.complete_task({"task_id": "t1", "status": "en_cours"})
+    assert ct["updated"] == {"status": "en_cours"}
+    assert payload["entity"]["status"] == "en_cours"
+
+
 def test_a_faire_is_refused(ct):
     """Reopening clears completed_date and DE-completes the linked step —
     an edit shaped like a destruction. It stays in the application."""

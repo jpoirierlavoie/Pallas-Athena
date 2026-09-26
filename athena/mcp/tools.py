@@ -20,7 +20,7 @@ from mcp import (
     comptabilite_enabled,
     write_enabled,
 )
-from mcp import coverage
+from mcp import coverage, disclosure
 from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
 # Pure module (no Firestore at import) — safe to derive enums from, unlike
@@ -656,33 +656,16 @@ _WRITE_ANNOTATIONS = {
     "openWorldHint": False,
 }
 
-# The single source of truth for which tools mutate. Enforcement
-# (mcp/endpoint.py) and advertisement (list_tool_descriptors) both derive
-# from it, so a new write tool cannot ship without declaring itself.
-WRITE_TOOLS: frozenset[str] = frozenset({
-    "record_document_analysis",
-    "create_note", "append_to_note",
-    # WP16 — the entity creators (create-only; no delete, no modify).
-    "create_task", "create_hearing", "create_time_entry", "create_expense",
-    # Lot 3 — the ONLY status change in the connector. Still no delete and
-    # no free-form edit: it closes a task, and that is all.
-    "complete_task",
-    # WP17 — dossier mutators: fill-only-if-empty + append-only recorders.
-    "complete_dossier", "record_signification", "record_prescription_event",
-    # Lot Q — la reprise de données historiques. Les créateurs restent
-    # additifs ; les update_* REMPLACENT une valeur nommée, ce qui les rend
-    # destructifs au sens de la spec MCP (voir EDIT_TOOLS).
-    "create_partie", "update_partie",
-    "create_dossier", "update_dossier",
-    "update_time_entry", "update_expense",
-    "import_invoice",
-    # Reclassement de phase (août 2026) — les SEULES écritures qui passent
-    # le mur `invoiced`, et elles ne peuvent toucher que phase/sous_phase :
-    # ce couple ne figure sur aucune facture, aucun gabarit, aucun
-    # sérialiseur DAV. Les update_* ci-dessus gardent leur refus intact.
-    "set_time_entry_phase", "set_expense_phase",
-    "set_time_entry_phase_bulk", "set_expense_phase_bulk",
-})
+# Which tools mutate. DERIVED from the disclosure registry
+# (mcp/disclosure.FAMILIES): a write tool belongs to exactly one family, and
+# the family is what describes it — in INSTRUCTIONS and on the consent
+# screen — so a new write tool cannot ship without declaring itself AND
+# being disclosed. Enforcement (mcp/endpoint.py) and advertisement
+# (list_tool_descriptors) both derive from this set. The literal pin in
+# tests/test_mcp_tools.test_write_tools_set_is_pinned stays as a second
+# tripwire, and tests/test_mcp_framework_guards (b) checks that membership
+# and each tool's declared scope are the same fact.
+WRITE_TOOLS: frozenset[str] = disclosure.write_tools()
 
 # Writes that REPLACE a stored value rather than adding one. Lot Q ended the
 # era where destructiveHint could be a family constant: « destructive » in
@@ -710,7 +693,25 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # l'erreur.
     "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
+    # complete_task REPLACES a task's stored status — and, through the
+    # model's cascade, the linked protocol step's, up to closing the whole
+    # protocol. It was left out while it was « the only status change »,
+    # which under-warned: a client uses the hint to decide whether to
+    # confirm with the user first (plan lot 0a, disclosure step).
+    "complete_task",
 })
+
+# Names that PROMISE an edit. A tool whose name starts with one of these must
+# be in EDIT_TOOLS (destructiveHint) unless exempted with a reason in
+# tests/test_mcp_framework_guards (c); an EDIT_TOOLS member without such a
+# name (record_document_analysis, import_invoice, complete_task) is declared
+# there with the reason it replaces or irreversibly flips a stored value.
+# Deliberately NOT « complete_ » — complete_dossier fills empty fields only.
+EDIT_NAME_PREFIXES: tuple[str, ...] = (
+    "update_", "set_", "replace_", "rewrite_", "move_", "void_", "reopen_",
+    "remove_", "reverse_", "clear_", "cancel_", "refuse_", "confirm_",
+    "reschedule_", "unlink_", "detach_",
+)
 
 # The idempotency POLICY of a write tool — declared per tool as the
 # ``"idempotency"`` spec key and read by mcp.write_support.run_write, never
@@ -2309,10 +2310,11 @@ TOOLS: dict[str, dict] = {
             "idempotentHint": True,
         },
         "description": (
-            "Close a task: « terminée », « annulée », or move it to "
-            "« en_cours ». The ONLY status change this connector can make — "
-            "it cannot reopen a task to « à_faire », edit its title or "
-            "delete it; those are done in the application. "
+            "Close a task: « terminée », « annulée », or move an OPEN task "
+            "to « en_cours ». The ONLY status change this connector can "
+            "make — it never reopens a closed task (neither to « à_faire » "
+            "nor to « en_cours »), edits its title or deletes it; those are "
+            "done in the application. "
             "CASCADE, and read this before calling: completing a task that "
             "a protocol step is linked to ALSO completes that step, exactly "
             "as ticking the box in the application does — and if it was the "
@@ -2321,10 +2323,10 @@ TOOLS: dict[str, dict] = {
             "what actually happened, re-read from the document after the "
             "write, never predicted. The cascade fires whenever the task "
             "belongs to a dossier under an active protocol. "
-            "Two asymmetries worth knowing: « annulée » triggers NO cascade, "
+            "One asymmetry worth knowing: « annulée » triggers NO cascade, "
             "so the linked step stays open and keeps appearing in the "
-            "briefing; and « en_cours » on an already-completed task "
-            "RE-OPENS the linked step. "
+            "agenda. « en_cours » on a task already « terminée » or "
+            "« annulée » is REFUSED — that would reopen it. "
             "Calling it on a task that already carries the requested status "
             "is a safe no-op (`already_completed: true`, nothing written) — "
             "which is what makes a scheduled job replayable. Asking for the "
@@ -2340,7 +2342,9 @@ TOOLS: dict[str, dict] = {
                     "enum": ["terminée", "annulée", "en_cours"],
                     "description": (
                         "Default « terminée ». « à_faire » is deliberately "
-                        "absent: reopening is done in the application."
+                        "absent, and « en_cours » is refused on a task "
+                        "already closed: reopening is done in the "
+                        "application."
                     ),
                 },
                 "completion_note": {
@@ -2528,8 +2532,10 @@ TOOLS: dict[str, dict] = {
             "on the client's invoice: write it as a billing narrative, in "
             "French, and never include provenance or internal notes — the "
             "entry is marked machine-created internally. rate_cents "
-            "defaults to the dossier's hourly rate. This connector can "
-            "never edit or delete the entry. Confirm with the user before "
+            "defaults to the dossier's hourly rate. It can be corrected "
+            "with update_time_entry only while not yet invoiced (its "
+            "litigation phase with set_time_entry_phase, even after); this "
+            "connector can never delete it. Confirm with the user before "
             "calling."
         ),
         "input_schema": {
@@ -2594,8 +2600,10 @@ TOOLS: dict[str, dict] = {
             "bailiff, expert, transcript, filing stamp… dossier_id is "
             "REQUIRED. The description prints verbatim on the client's "
             "invoice: billing narrative in French, no internal notes. "
-            "Amount in integer cents. This connector can never edit or "
-            "delete the entry. Confirm with the user before calling."
+            "Amount in integer cents. It can be corrected with "
+            "update_expense only while not yet invoiced (its litigation "
+            "phase with set_expense_phase, even after); this connector can "
+            "never delete it. Confirm with the user before calling."
         ),
         "input_schema": {
             "type": "object",
@@ -3111,8 +3119,11 @@ TOOLS: dict[str, dict] = {
             "The invoice lands in BROUILLON and stays there — this connector "
             "never sets an invoice status and never records a payment. "
             "Billing the sources freezes them: nothing here can modify them "
-            "afterwards, and the only way back is voiding the invoice in the "
-            "application, which releases every source."
+            "afterwards except their litigation phase (set_time_entry_phase "
+            "/ set_expense_phase), and the only way back is voiding the "
+            "invoice in the application, which releases every source — the "
+            "number itself stays on the voided invoice until the lawyer "
+            "deletes that invoice there."
         ),
         "input_schema": {
             "type": "object",
