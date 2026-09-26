@@ -24,6 +24,11 @@ What each guard buys:
     input schema is exactly what that policy says; and every tool that
     accepts one names read tools whose output declares the ``etag`` it
     expects — and hands the NEW etag back in its own result;
+(f) a write that reaches a DAV-exposed model (derived: a model whose
+    serializer the dav/ package calls) declares ``ctag_bumped`` +
+    ``dav_synced`` and reaches ``bump_ctag``, and a tool that declares them
+    really writes such a record — the design's hand-kept ``writes`` list,
+    derived from the handlers' call closure instead;
 (g) every tool under ``athena:comptabilite`` is a write that DEMANDS an
     ``idempotency_key`` (policy ``required``, listed in its schema) — armed
     now, vacuous on the real registry until plan lot 5, proven on a planted
@@ -40,6 +45,7 @@ import ast
 import inspect
 import os
 import pathlib
+import re
 import sys
 import textwrap
 from unittest import mock
@@ -734,6 +740,256 @@ def test_the_concurrency_guard_catches_a_reader_without_an_etag_and_a_result_wit
     found = concurrency_violations(
         registry, outputs, frozenset({"update_x"}), frozenset({"update_x"}))
     assert any("literally named `etag`" in v for v in found), found
+
+
+# ══════════════════════════════════════════════════════════════════════
+# (f) A write that reaches a DAV-exposed model reports its CTag bump
+# ══════════════════════════════════════════════════════════════════════
+#
+# CLAUDE.md, Change Impact item 1: a write to a DAV-exposed record that
+# skips `bump_ctag` desyncs DavX5 SILENTLY — the note is in Firestore and in
+# the web app, the phone never hears of it. The design's guard (f) wanted a
+# hand-declared `writes` list per tool; this is its DERIVED form, so it
+# cannot go stale the day a tool lands without the list:
+#
+# * a model module is DAV-exposed when it defines a `<x>_to_v…` serializer
+#   the dav/ package actually calls (derived from both sources — the legacy
+#   `dossier_to_vjournal`, which no DAV path calls, correctly stays out);
+# * a write tool DAV-writes when its handler's call closure inside
+#   mcp/handlers.py references a MUTATOR (`create_`, `update_`, …) of such a
+#   module;
+# * DAV-writes ⇔ its outputSchema declares `ctag_bumped` AND `dav_synced`,
+#   and a DAV writer's closure reaches `bump_ctag`.
+#
+# The schema half is what the conformance runs then hold the handler to: a
+# declared, required `ctag_bumped` the handler does not emit fails
+# test_mcp_output_schemas. The closure over-approximates (it follows every
+# module-level name a function mentions), so it can only ever flag MORE
+# writers, never hide one.
+
+_DAV_SERIALIZER = re.compile(r"^[a-z_]+_to_v(card|todo|event|journal)$")
+_MUTATOR_VERB = re.compile(
+    r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
+    r"delete|toggle|complete|attach|link|reopen|replace|remove|add)_"
+)
+_PACKAGE = _TESTS_DIR.parent
+
+
+def dav_exposed_models() -> set[str]:
+    """`models` modules whose records DavX5 syncs — derived, not listed."""
+    used = set()
+    for path in sorted((_PACKAGE / "dav").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and _DAV_SERIALIZER.match(node.attr):
+                used.add(node.attr)
+            elif isinstance(node, ast.Name) and _DAV_SERIALIZER.match(node.id):
+                used.add(node.id)
+            elif isinstance(node, ast.alias) and _DAV_SERIALIZER.match(node.name):
+                used.add(node.name)
+    exposed = set()
+    for path in sorted((_PACKAGE / "models").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+        if defined & used:
+            exposed.add(path.stem)
+    return exposed
+
+
+def module_index(source: str) -> tuple[dict, dict]:
+    """(module-level name → node, model alias → models module) of a source."""
+    tree = ast.parse(source)
+    defs: dict = {}
+    aliases: dict = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            defs[node.name] = node
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    defs[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if isinstance(node.target, ast.Name):
+                defs[node.target.id] = node.value
+        elif isinstance(node, ast.ImportFrom) and node.module == "models":
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+    return defs, aliases
+
+
+def reach(defs: dict, aliases: dict, start: str) -> tuple[set, set]:
+    """Every module-level name *start* can reach, and every
+    `(models module, attribute)` referenced on the way."""
+    names: set = set()
+    model_attrs: set = set()
+    stack, seen = [start], set()
+    while stack:
+        current = stack.pop()
+        if current in seen or current not in defs:
+            continue
+        seen.add(current)
+        for sub in ast.walk(defs[current]):
+            if isinstance(sub, ast.Name):
+                names.add(sub.id)
+                if sub.id in defs:
+                    stack.append(sub.id)
+            elif (isinstance(sub, ast.Attribute)
+                  and isinstance(sub.value, ast.Name)
+                  and sub.value.id in aliases):
+                model_attrs.add((aliases[sub.value.id], sub.attr))
+    return names, model_attrs
+
+
+def dav_writer_violations(
+    source: str, registry: dict, output_schemas: dict, write_tools,
+    exposed: set,
+) -> list[str]:
+    """Every breach of « DAV-writes ⇔ reports its CTag bump »."""
+    defs, aliases = module_index(source)
+    out: list[str] = []
+    for name in sorted(registry):
+        names, attrs = reach(defs, aliases, registry[name]["handler"])
+        mutated = sorted(f"{m}.{a}" for m, a in attrs
+                         if m in exposed and _MUTATOR_VERB.match(a))
+        is_write = name in write_tools
+        declares = (_declares_property(output_schemas[name], "ctag_bumped")
+                    and _declares_property(output_schemas[name], "dav_synced"))
+        if mutated and not is_write:
+            out.append(f"{name}: a READ tool reaches {mutated}")
+            continue
+        if not is_write:
+            continue
+        if mutated and not declares:
+            out.append(
+                f"{name}: writes a DAV-exposed record ({mutated}) but its "
+                "outputSchema does not declare ctag_bumped + dav_synced")
+        if mutated and "bump_ctag" not in names:
+            out.append(f"{name}: writes {mutated} but never reaches bump_ctag")
+        if declares and not mutated:
+            out.append(
+                f"{name}: declares ctag_bumped/dav_synced but writes no "
+                "DAV-exposed record — a sync that does not exist")
+    return out
+
+
+def _handlers_source() -> str:
+    return pathlib.Path(handlers.__file__).read_text(encoding="utf-8")
+
+
+def test_the_dav_exposed_models_are_derived_and_not_vacuous():
+    exposed = dav_exposed_models()
+    # Anchors, not an inventory: the four DavX5 surfaces of CLAUDE.md.
+    assert {"note", "task", "hearing", "partie"} <= exposed, exposed
+    # The legacy dossier VJOURNAL is serialized by no DAV path post-D1.
+    assert "dossier" not in exposed
+
+
+def test_every_dav_writer_reports_its_ctag_bump():
+    assert dav_writer_violations(
+        _handlers_source(), tools.TOOLS, OUTPUT_SCHEMAS, tools.WRITE_TOOLS,
+        dav_exposed_models(),
+    ) == []
+
+
+def test_the_dav_writer_guard_is_not_vacuous():
+    defs, aliases = module_index(_handlers_source())
+    exposed = dav_exposed_models()
+    writers = set()
+    for name in tools.WRITE_TOOLS:
+        _names, attrs = reach(defs, aliases, tools.TOOLS[name]["handler"])
+        if any(m in exposed and _MUTATOR_VERB.match(a) for m, a in attrs):
+            writers.add(name)
+    # One anchor per DAV surface the connector writes today.
+    assert {"create_note", "append_to_note", "create_task", "complete_task",
+            "create_hearing", "create_partie", "update_partie"} <= writers, writers
+
+
+def test_the_handlers_import_models_only_through_an_alias():
+    """The closure sees a model write only as `<alias>.<verb>_…`. A handler
+    importing a model FUNCTION directly (`from models.note import
+    update_note`) would write through a bare name the guard never maps to a
+    module — so that import form is refused outright."""
+    tree = ast.parse(_handlers_source())
+    direct = sorted(
+        f"line {node.lineno}: from {node.module} import …"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").startswith("models.")
+    )
+    assert direct == []
+
+
+def test_no_read_handler_reaches_run_write_through_a_helper():
+    """(a)'s converse, transitively: the direct-body check above cannot see a
+    read handler that delegates to a helper which calls run_write."""
+    defs, aliases = module_index(_handlers_source())
+    offenders = sorted(
+        name for name in set(tools.TOOLS) - tools.WRITE_TOOLS
+        if "run_write" in reach(defs, aliases, tools.TOOLS[name]["handler"])[0]
+    )
+    assert offenders == []
+
+
+_DAV_FIXTURE = '''
+from models import note as note_model
+from models import dossier as dossier_model
+
+def bump_ctag(c): ...
+
+def _bump(did):
+    bump_ctag(did)
+
+def good(args):
+    return run_write("good", args, lambda: _good_impl(args))
+
+def _good_impl(args):
+    note_model.update_note(args["id"], {})
+    _bump("x")
+    return {}
+
+def silent(args):
+    return run_write("silent", args, lambda: note_model.create_note({}))
+
+def undeclared(args):
+    return run_write("undeclared", args, lambda: _good_impl(args))
+
+def phantom(args):
+    return run_write("phantom", args, lambda: dossier_model.update_dossier("d", {}))
+
+def sneaky_read(args):
+    return _good_impl(args)
+'''
+
+
+def _fixture_world():
+    registry = {n: {"handler": n} for n in
+                ("good", "silent", "undeclared", "phantom", "sneaky_read")}
+    reporting = {"type": "object", "properties": {
+        "ctag_bumped": {"type": "boolean"}, "dav_synced": {"type": "boolean"}}}
+    plain = {"type": "object", "properties": {}}
+    outputs = {"good": reporting, "silent": reporting, "undeclared": plain,
+               "phantom": reporting, "sneaky_read": plain}
+    writes = frozenset({"good", "silent", "undeclared", "phantom"})
+    return registry, outputs, writes
+
+
+def test_the_dav_writer_guard_catches_what_it_claims():
+    registry, outputs, writes = _fixture_world()
+    found = dav_writer_violations(
+        _DAV_FIXTURE, registry, outputs, writes, {"note"})
+    assert not any(v.startswith("good:") for v in found), found
+    assert any(v.startswith("silent:") and "never reaches bump_ctag" in v
+               for v in found), found
+    assert any(v.startswith("undeclared:") and "does not declare" in v
+               for v in found), found
+    assert any(v.startswith("phantom:") and "a sync that does not exist" in v
+               for v in found), found
+    assert any(v.startswith("sneaky_read:") and "READ tool" in v
+               for v in found), found
+    # and the closure is what lets a read tool be caught through a helper
+    defs, aliases = module_index(_DAV_FIXTURE)
+    assert "run_write" not in reach(defs, aliases, "sneaky_read")[0]
+    assert "run_write" in reach(defs, aliases, "good")[0]
 
 
 # ══════════════════════════════════════════════════════════════════════
