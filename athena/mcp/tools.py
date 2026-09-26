@@ -2366,10 +2366,10 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
-            "Moves to optional in plan lot 1, with the update_task tool: "
-            "the model's update_task already accepts expected_etag, but "
-            "this handler does not pass one yet (a same-state call writes "
-            "nothing)."
+            "Accepts no expected_etag (plan lot 1's update_task will); the "
+            "handler compare-and-sets against the task it has just read, so "
+            "a change landing during the call is refused, never overwritten "
+            "(a same-state call writes nothing)."
         ),
         "handler": "complete_task",
     },

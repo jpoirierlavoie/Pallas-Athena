@@ -665,7 +665,7 @@ def test_append_to_note_conforms(write_world, monkeypatch):
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"})
     monkeypatch.setattr(
         handlers.note_model, "update_note",
-        lambda nid, data: ({"id": nid, "dossier_id": "d1",
+        lambda nid, data, *, expected_etag=None: ({"id": nid, "dossier_id": "d1",
                             "dossier_file_number": "2026-001",
                             "dossier_title": "Tremblay", "title": "Note",
                             "category": "recherche", "created_at": DT,
@@ -726,7 +726,7 @@ def test_complete_dossier_conforms(write_world, monkeypatch):
                         lambda: {"domaine": "", "action": "", "valeur": None})
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: ({**_dossier_doc(), **data}, []),
+        lambda did, data, *, expected_etag=None: ({**_dossier_doc(), **data}, []),
     )
     args = {"dossier_id": "d1", "domaine": "REC", "action": "REC-01",
             "valeur": 1190000}
@@ -742,7 +742,7 @@ def test_record_signification_conforms(write_world, monkeypatch):
                         lambda i: dict(dossier))
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: ({**dossier, **data}, []),
+        lambda did, data, *, expected_etag=None: ({**dossier, **data}, []),
     )
     payload = handlers.record_signification({
         "dossier_id": "d1", "partie_id": "p2", "date": "2026-07-15",
@@ -760,7 +760,7 @@ def test_record_prescription_event_conforms_and_derives(write_world, monkeypatch
                         lambda i: dict(dossier))
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: ({**dossier, **data}, []),
+        lambda did, data, *, expected_etag=None: ({**dossier, **data}, []),
     )
     payload = handlers.record_prescription_event({
         "dossier_id": "d1", "type": "interruption_depot",
@@ -1299,7 +1299,7 @@ def test_complete_task_conforms(write_world, monkeypatch):
     }
     monkeypatch.setattr(handlers.task_model, "get_task", lambda i: dict(task))
     monkeypatch.setattr(handlers.task_model, "update_task",
-                        lambda tid, data: ({**task, **data}, []))
+                        lambda tid, data, *, expected_etag=None: ({**task, **data}, []))
     monkeypatch.setattr(handlers.task_model, "_validate", lambda d: [])
     monkeypatch.setattr(handlers.protocol_model, "get_protocol_for_dossier",
                         lambda did, active_only=True: None)
@@ -1354,7 +1354,7 @@ def test_complete_task_already_closed_neither_bumps_nor_claims_a_sync(
     }
     monkeypatch.setattr(handlers.task_model, "get_task", lambda i: dict(task))
     monkeypatch.setattr(handlers.task_model, "update_task",
-                        lambda tid, data: pytest.fail(
+                        lambda tid, data, *, expected_etag=None: pytest.fail(
                             "un no-op ne doit jamais écrire"))
 
     payload = handlers.complete_task({"task_id": "t1"})

@@ -554,6 +554,17 @@ def build_instructions(
             "Omitted, the tool still refuses a change landing between its "
             "own read and its commit."
         )
+    # The writes that take no etag but rewrite what they READ (a note plus
+    # the appended block, a task's status and description, a dossier's
+    # registers) compare-and-set against their own read too (critique,
+    # lot 0a): a caller seeing their `stale_etag` refusal must know it is
+    # a race, and that the remedy is a re-read — not a changed argument.
+    parts.append(
+        "The writes that rewrite what they read — appending to a note, "
+        "closing a task, filling or appending to a dossier — refuse the "
+        "same way when the record changed during the call: nothing is "
+        "written; re-read, then send the call again."
+    )
     parts.append(
         "Every write tool accepts `idempotency_key` (any stable string you "
         "choose; retrying with the SAME key within 24 h returns the "

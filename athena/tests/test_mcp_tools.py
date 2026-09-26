@@ -1838,7 +1838,7 @@ def test_append_to_note_bumps_the_dossier_ctag(monkeypatch, bumps):
     monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
     monkeypatch.setattr(
         handlers.note_model, "update_note",
-        lambda nid, data: ({"id": nid, "dossier_id": "d1", **data}, []),
+        lambda nid, data, *, expected_etag=None: ({"id": nid, "dossier_id": "d1", **data}, []),
     )
     payload = handlers.append_to_note({"note_id": "n1", "content": "Suite"})
     assert bumps["bump"] == ["dossier:d1"]
@@ -1934,12 +1934,16 @@ def test_append_only_ever_updates_content(monkeypatch, bumps):
     seen = {}
     monkeypatch.setattr(
         handlers.note_model, "get_note",
-        lambda i: {"id": "n1", "dossier_id": "d1", "content": "A"},
+        lambda i: {"id": "n1", "dossier_id": "d1", "content": "A",
+                   "etag": "e-lu"},
     )
     monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: _wdossier())
+    handed = {}
 
-    def _update(nid, data):
+    def _update(nid, data, *, expected_etag=None):
+        # Widened (critique lot 0a): the handler compare-and-sets on its read.
         seen.update(data)
+        handed["expected_etag"] = expected_etag
         return {"id": nid, "dossier_id": "d1", **data}, []
 
     monkeypatch.setattr(handlers.note_model, "update_note", _update)
@@ -1948,6 +1952,9 @@ def test_append_only_ever_updates_content(monkeypatch, bumps):
     )
     assert set(seen) == {"content"}
     assert seen["content"].startswith("A")
+    # The content written is THAT read plus the block, so the write is
+    # guarded by THAT read's etag — never last-write-wins.
+    assert handed == {"expected_etag": "e-lu"}
 
 
 # ── WP16 creators: the pinned write invariants, per tool ────────────────
@@ -2131,7 +2138,7 @@ def test_complete_dossier_fills_only_the_empty_fields(monkeypatch):
     written = {}
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: (written.update(data)
+        lambda did, data, *, expected_etag=None: (written.update(data)
                            or ({**_wdossier_parties(), **data}, [])),
     )
     payload = handlers.complete_dossier({
@@ -2175,7 +2182,7 @@ def test_complete_dossier_default_value_counts_as_empty(monkeypatch):
     written = {}
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: (written.update(data)
+        lambda did, data, *, expected_etag=None: (written.update(data)
                            or ({**_wdossier_parties(), **data}, [])),
     )
     handlers.complete_dossier({"dossier_id": "d1", "hourly_rate": 35000})
@@ -2190,7 +2197,7 @@ def test_complete_dossier_identical_values_are_a_quiet_skip(monkeypatch):
     written = {}
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: (written.update(data)
+        lambda did, data, *, expected_etag=None: (written.update(data)
                            or ({**_wdossier_parties(), **data}, [])),
     )
     payload = handlers.complete_dossier({
@@ -2217,7 +2224,7 @@ def test_complete_dossier_court_file_number_derives_fill_only(monkeypatch):
     written = {}
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: (written.update(data)
+        lambda did, data, *, expected_etag=None: (written.update(data)
                            or ({**_wdossier_parties(), **data}, [])),
     )
     handlers.complete_dossier({
@@ -2258,7 +2265,7 @@ def test_record_signification_supersedes_marks_the_old_entry(monkeypatch):
     written = {}
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: (written.update(data)
+        lambda did, data, *, expected_etag=None: (written.update(data)
                            or ({**_wdossier_parties(), **data}, [])),
     )
     payload = handlers.record_signification({
@@ -2308,7 +2315,7 @@ def test_record_prescription_event_answers_the_question_it_was_called_for(
     written = {}
     monkeypatch.setattr(
         handlers.dossier_model, "update_dossier",
-        lambda did, data: (written.update(data) or ({**base, **data}, [])),
+        lambda did, data, *, expected_etag=None: (written.update(data) or ({**base, **data}, [])),
     )
     payload = handlers.record_prescription_event({
         "dossier_id": "d1", "type": "interruption_depot",
@@ -2465,7 +2472,7 @@ def test_append_does_not_claim_a_closed_dossier_when_the_lookup_merely_failed(
     monkeypatch.setattr(handlers.dossier_model, "get_dossier", lambda i: None)
     monkeypatch.setattr(
         handlers.note_model, "update_note",
-        lambda nid, data: ({"id": nid, "dossier_id": "d1", **data}, []),
+        lambda nid, data, *, expected_etag=None: ({"id": nid, "dossier_id": "d1", **data}, []),
     )
     payload = handlers.append_to_note({"note_id": "n1", "content": "B"})
     assert payload["ctag_bumped"] is True
@@ -2555,7 +2562,8 @@ def test_writes_carry_a_dated_provenance_stamp(monkeypatch, bumps, created):
         lambda i: {"id": "n1", "dossier_id": "d1", "content": "Original"},
     )
 
-    def _update(nid, data):
+    def _update(nid, data, *, expected_etag=None):
+        # Widened (critique lot 0a): the handler compare-and-sets on its read.
         seen.update(data)
         return {"id": nid, "dossier_id": "d1", **data}, []
 
@@ -3877,8 +3885,10 @@ def ct(monkeypatch, bumps):
     """complete_task's world: the model, the dossier, and no protocol."""
     state = {"task": _ct_task(), "updated": None, "protocol": None}
 
-    def _update(task_id, data):
+    def _update(task_id, data, *, expected_etag=None):
+        # Widened (critique lot 0a): the handler compare-and-sets on its read.
         state["updated"] = dict(data)
+        state["expected_etag"] = expected_etag
         return {**state["task"], **data}, []
 
     monkeypatch.setattr(handlers.task_model, "get_task",
@@ -3904,9 +3914,13 @@ def ct(monkeypatch, bumps):
 
 
 def test_complete_task_closes_and_bumps_once(ct, bumps):
+    ct["task"] = _ct_task(etag="e-lu")
     payload = handlers.complete_task({"task_id": "t1"})
     assert payload["completed"] is True
     assert ct["updated"] == {"status": "terminée"}
+    # Every verdict above was reached on THAT read: the write is guarded by
+    # its etag (critique lot 0a — a cancellation made in between refuses).
+    assert ct["expected_etag"] == "e-lu"
     assert payload["entity"]["status"] == "terminée"
     assert payload["entity"]["previous_status"] == "à_faire"
     assert bumps["bump"] == ["dossier:d1"]

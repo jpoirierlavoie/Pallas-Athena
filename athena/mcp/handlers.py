@@ -106,6 +106,8 @@ from utils.template_fields import selected_address
 from utils.validators import format_phone_display
 
 from mcp.tools import (
+    CONCURRENCY_OPTIONAL,
+    CONCURRENCY_REQUIRED,
     DOCUMENT_TEXT_MAX_CHARS,
     PHASE_BULK_MAX,
     TOOLS,
@@ -3015,7 +3017,20 @@ def _append_to_note_impl(args: dict) -> dict:
     # Whitelist of exactly one field: a stray dossier_id in the update would
     # move the note between dossiers — and between DAV collections, leaving
     # the origin collection un-bumped.
-    note, errors = note_model.update_note(note_id, {"content": combined})
+    #
+    # Compare-and-set against the note this handler READ (plan rule 3):
+    # `combined` is that read plus the block, and update_note sets the
+    # whole content — so an edit landing in between (the phone, another
+    # tab, a parallel append) used to be ERASED under a success envelope.
+    # It is now refused, and nothing is written.
+    note, errors = note_model.update_note(
+        note_id, {"content": combined},
+        expected_etag=concurrency.etag_of(existing),
+    )
+    _raise_if_stale(
+        errors, tool="append_to_note", subject="Cette note a été modifiée",
+        reread=lambda: note_model.get_note(note_id), readers=("get_note",),
+    )
     if errors:
         raise ToolArgumentError("; ".join(errors))
     result = _write_result(note, created=False, dossier=dossier)
@@ -3813,7 +3828,8 @@ def _optional_phase_pair(args: dict) -> Optional[tuple[str, str]]:
 
 
 def _stale_message(
-    tool: str, subject: str, current: Optional[dict], *, bulk: bool = False
+    tool: str, subject: str, current: Optional[dict], *, bulk: bool = False,
+    readers: Optional[tuple[str, ...]] = None,
 ) -> str:
     """The French refusal of an outdated edit — naming WHEN, never WHAT.
 
@@ -3832,11 +3848,27 @@ def _stale_message(
     refuses one), so telling that caller to « redo it with the current
     etag » would send it straight into a schema refusal — the remedy there
     is to re-read the row and send it again.
+
+    A tool that accepts NO ``expected_etag`` at all (``append_to_note``,
+    ``complete_task``, the three dossier recorders) still compare-and-sets
+    against its own read (plan rule 3); its remedy is « re-read, then send
+    the call again » — never « with its current etag », an argument its
+    schema refuses — and it names its *readers* explicitly, since it
+    declares no ``"etag_readers"``.
     """
     when = iso_mtl(_as_utc((current or {}).get("updated_at")))
     last = f" (dernière écriture : {when})" if when else ""
-    readers = " ou ".join(TOOLS[tool].get("etag_readers") or ())
-    reread = f" ({readers})" if readers else ""
+    named = readers if readers is not None else (
+        TOOLS[tool].get("etag_readers") or ())
+    reread = f" ({' ou '.join(named)})" if named else ""
+    accepts_etag = TOOLS[tool].get("concurrency") in (
+        CONCURRENCY_OPTIONAL, CONCURRENCY_REQUIRED)
+    if not bulk and not accepts_etag:
+        return (
+            f"{subject} depuis la lecture qui fondait cet appel{last}. "
+            f"Rien n'a été écrit. Relisez l'enregistrement{reread}, puis "
+            "renvoyez l'appel : il partira de la version actuelle."
+        )
     if bulk:
         return (
             f"{subject} pendant le traitement du lot{last}. Cette ligne n'a "
@@ -3851,12 +3883,14 @@ def _stale_message(
 
 
 def _stale_refusal(
-    tool: str, subject: str, current: Optional[dict]
+    tool: str, subject: str, current: Optional[dict],
+    readers: Optional[tuple[str, ...]] = None,
 ) -> ToolArgumentError:
     # A LITERAL reason code, as every refusal's (test_mcp_jsonrpc sweeps it
     # and requires it documented under `mcp_write_refused`).
     return ToolArgumentError(
-        _stale_message(tool, subject, current), reason="stale_etag"
+        _stale_message(tool, subject, current, readers=readers),
+        reason="stale_etag",
     )
 
 
@@ -3889,6 +3923,7 @@ def _expected_etag(
 def _raise_if_stale(
     errors: list[str], *, tool: str, subject: str,
     reread: Callable[[], Optional[dict]],
+    readers: Optional[tuple[str, ...]] = None,
 ) -> None:
     """Turn the model's concurrency refusal into the named French refusal.
 
@@ -3902,7 +3937,7 @@ def _raise_if_stale(
         current = reread()
     except Exception:
         current = None
-    raise _stale_refusal(tool, subject, current)
+    raise _stale_refusal(tool, subject, current, readers)
 
 
 def _refuse_if_invoiced(row: dict, kind: str) -> None:
@@ -5516,6 +5551,13 @@ def _is_unset(current: Any, default: Any) -> bool:
     return current == default
 
 
+# The recorders' stale subject. A trust entry regenerates the dossier's
+# etag too, so a movement of the client's funds since the read also
+# refuses a recorder — the refusal is right (the stored record changed)
+# and re-reading is the whole remedy, as for update_dossier.
+_DOSSIER_CHANGED = "Ce dossier a été modifié"
+
+
 # ── 27. complete_dossier (WRITE, fill-only-if-empty) ────────────────────
 
 def complete_dossier(args: dict) -> dict:
@@ -5595,7 +5637,17 @@ def _complete_dossier_impl(args: dict) -> dict:
         }
 
 
-    updated, errors = dossier_model.update_dossier(dossier_id, updates)
+    # Compare-and-set against the dossier read above (plan rule 3): the
+    # fill-only-if-empty verdict was reached on THAT read, so a value set
+    # in between must refuse the fill, never be overwritten by it.
+    updated, errors = dossier_model.update_dossier(
+        dossier_id, updates, expected_etag=concurrency.etag_of(dossier)
+    )
+    _raise_if_stale(
+        errors, tool="complete_dossier", subject=_DOSSIER_CHANGED,
+        reread=lambda: dossier_model.get_dossier(dossier_id),
+        readers=("get_dossier",),
+    )
     if errors:
         raise ToolArgumentError("; ".join(errors))
     return _payload(updated)
@@ -5672,8 +5724,18 @@ def _record_signification_impl(args: dict) -> dict:
             verb="recorded",
         )
 
+    # Compare-and-set against the dossier read above (plan rule 3):
+    # `cleaned` is THAT read's register plus the new entry, written back
+    # whole — two parallel calls used to each append to the same read, and
+    # the second silently erased the first one's signification.
     updated, errors = dossier_model.update_dossier(
-        dossier_id, {"significations": cleaned}
+        dossier_id, {"significations": cleaned},
+        expected_etag=concurrency.etag_of(dossier),
+    )
+    _raise_if_stale(
+        errors, tool="record_signification", subject=_DOSSIER_CHANGED,
+        reread=lambda: dossier_model.get_dossier(dossier_id),
+        readers=("get_dossier",),
     )
     if errors:
         raise ToolArgumentError("; ".join(errors))
@@ -5744,8 +5806,16 @@ def _record_prescription_event_impl(args: dict) -> dict:
         )
         return result
 
+    # Compare-and-set, for the reason record_signification gives: the
+    # register is written back whole from this handler's read.
     updated, errors = dossier_model.update_dossier(
-        dossier_id, {"prescription_events": cleaned}
+        dossier_id, {"prescription_events": cleaned},
+        expected_etag=concurrency.etag_of(dossier),
+    )
+    _raise_if_stale(
+        errors, tool="record_prescription_event", subject=_DOSSIER_CHANGED,
+        reread=lambda: dossier_model.get_dossier(dossier_id),
+        readers=("get_dossier",),
     )
     if errors:
         raise ToolArgumentError("; ".join(errors))
@@ -5879,10 +5949,11 @@ def _complete_task_impl(args: dict) -> dict:
         # own earlier text.
         data["description"] = _clean_entity_text(combined, "completion_note")
 
-    # A dry run must never announce a success the real call would refuse:
-    # update_task re-validates the WHOLE merged document, so a legacy task
-    # carrying an out-of-vocabulary category fails for a reason invisible
-    # in the application.
+    # The model guard, repeated so the refusal names its field (the dry run
+    # this once served left the protocol 2026-08-27): update_task
+    # re-validates the WHOLE merged document, so a legacy task carrying an
+    # out-of-vocabulary category fails for a reason invisible in the
+    # application.
     preview = {**task, **data}
     errors = task_model._validate(preview)
     if errors:
@@ -5890,7 +5961,18 @@ def _complete_task_impl(args: dict) -> dict:
 
     before = _linked_step(task)
 
-    updated, errors = task_model.update_task(task_id, data)
+    # Compare-and-set against the task read above (plan rule 3): every
+    # verdict here — same state, the other terminal state, a reopen — and
+    # the combined description were reached on THAT read. A cancellation
+    # made in the application in between used to be silently turned into a
+    # completion; it is now refused, and nothing is written (so no cascade).
+    updated, errors = task_model.update_task(
+        task_id, data, expected_etag=concurrency.etag_of(task)
+    )
+    _raise_if_stale(
+        errors, tool="complete_task", subject="Cette tâche a été modifiée",
+        reread=lambda: task_model.get_task(task_id), readers=("list_tasks",),
+    )
     if errors:
         raise ToolArgumentError("; ".join(errors))
 

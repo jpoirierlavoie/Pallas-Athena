@@ -26,6 +26,7 @@ connecteur (``run_write`` compris), sur les six outils qui acceptent
 ``expected_etag``.
 """
 
+import contextvars
 import os
 import sys
 from datetime import datetime, timezone
@@ -687,3 +688,176 @@ def test_a_chained_edit_presents_the_etag_the_first_one_returned(
         second_args = {**args, field: "Deuxième version"}
     second = getattr(handlers, tool)({**second_args, "expected_etag": etag1})
     assert second["entity"]["etag"] == db.peek(path)["etag"] != etag1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. Les écrivains SANS expected_etag comparent quand même à leur lecture
+# ══════════════════════════════════════════════════════════════════════
+#
+# Plan, règle 3 : « omis, le gestionnaire compare-et-écrit contre l'etag
+# qu'il vient de lire ». Les six outils d'édition l'ont reçu à l'étape 5 ;
+# cinq écrivains qui n'acceptent aucun etag calculent pourtant eux aussi
+# leur écriture à partir d'une LECTURE, puis la réécrivent entière :
+#
+# * append_to_note — le contenu stocké est « la note lue + le bloc » ;
+# * complete_task — chaque verdict (même état, l'autre état terminal, la
+#   réouverture refusée) et la description combinée viennent de la tâche lue ;
+# * complete_dossier — le « remplir si vide » a été jugé sur le dossier lu ;
+# * record_signification / record_prescription_event — le registre est la
+#   liste lue plus l'entrée neuve, réécrite en bloc.
+#
+# Sans garde, une écriture glissée entre la lecture et le commit était
+# EFFACÉE sous une enveloppe de succès — deux appels parallèles de Claude à
+# record_signification, et la première signification disparaissait. La
+# critique du lot 0a leur donne la comparaison ; ce qui suit la prouve sur
+# le vrai magasin, avec les vrais gestionnaires et les vrais modèles.
+
+
+def _dossier_with_parties(db):
+    doc, errors = dossier_model.create_dossier({
+        "file_number": "2026-002", "title": "Tremblay c. Lavoie",
+        "clients": [{"id": "p1", "name": "Jean Tremblay",
+                     "roles": ["demandeur"]}],
+        "opposing_parties": [{"id": "p2", "name": "Paul Lavoie",
+                              "roles": ["défendeur"]}],
+    })
+    assert errors == [], errors
+    return doc["id"]
+
+
+# tool → (collection, factory, arguments(id), getter, rival fields,
+#         the stored field a successful call writes)
+_OWN_READ_CASES = {
+    "append_to_note": (
+        "notes", _note, lambda i: {"note_id": i, "content": "Suite."},
+        (note_model, "get_note"), {"content": "Réécrite au téléphone."},
+        "content"),
+    "complete_task": (
+        "tasks", _task, lambda i: {"task_id": i},
+        (task_model, "get_task"), {"status": "annulée"},
+        "status"),
+    "complete_dossier": (
+        "dossiers", _dossier_with_parties,
+        lambda i: {"dossier_id": i, "sommaire": "Rempli par Claude."},
+        (dossier_model, "get_dossier"), {"sommaire": "Écrit dans l'appli."},
+        "sommaire"),
+    "record_signification": (
+        "dossiers", _dossier_with_parties,
+        lambda i: {"dossier_id": i, "partie_id": "p2",
+                   "date": "2026-07-15", "mode": "huissier"},
+        (dossier_model, "get_dossier"), {"rival": True},
+        "significations"),
+    "record_prescription_event": (
+        "dossiers", _dossier_with_parties,
+        lambda i: {"dossier_id": i, "type": "interruption_depot",
+                   "date": "2026-05-15"},
+        (dossier_model, "get_dossier"), {"rival": True},
+        "prescription_events"),
+}
+_OWN = pytest.mark.parametrize("tool", sorted(_OWN_READ_CASES),
+                               ids=sorted(_OWN_READ_CASES))
+
+
+def _own_setup(monkeypatch, tool):
+    db = _e2e_db(monkeypatch)
+    coll, factory, make_args, *_rest = _OWN_READ_CASES[tool]
+    row_id = factory(db)
+    db.reset_logs()
+    return db, f"{coll}/{row_id}", make_args(row_id)
+
+
+def test_the_own_read_cases_are_the_writes_that_rewrite_what_they_read():
+    """Not derived (nothing in the registry says « computes from a read »),
+    so pinned from both sides: none of them accepts an expected_etag, and
+    none of the tools that do is listed twice."""
+    for tool in _OWN_READ_CASES:
+        assert "expected_etag" not in tools.TOOLS[tool]["input_schema"][
+            "properties"], tool
+    assert not set(_OWN_READ_CASES) & set(_HANDLER_CASES)
+
+
+@_OWN
+def test_a_write_racing_the_handlers_read_is_refused_never_erased(
+    monkeypatch, tool,
+):
+    db, path, args = _own_setup(monkeypatch, tool)
+    _c, _f, _a, (module, name), rival, _field = _OWN_READ_CASES[tool]
+    real = getattr(module, name)
+    fired = []
+
+    def racing(*a, **kw):
+        result = real(*a, **kw)
+        if not fired:                  # right after the HANDLER's read
+            fired.append(True)
+            db.external_write(path, {**db.peek(path), **rival,
+                                     "etag": "e-rival"})
+        return result
+
+    monkeypatch.setattr(module, name, racing)
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        getattr(handlers, tool)(dict(args))
+
+    assert fired and excinfo.value.reason == "stale_etag"
+    message = str(excinfo.value)
+    assert "Rien n'a été écrit" in message and "renvoyez l'appel" in message
+    # Its schema refuses an expected_etag: the remedy never asks for one.
+    assert "etag actuel" not in message
+    stored = db.peek(path)
+    assert stored["etag"] == "e-rival"
+    for key, value in rival.items():
+        assert stored[key] == value          # the rival's write SURVIVES
+    assert _row_commits(db, path) == []
+
+
+@_OWN
+def test_without_a_race_the_guarded_write_commits_once(monkeypatch, tool):
+    db, path, args = _own_setup(monkeypatch, tool)
+    before = db.peek(path)
+    field = _OWN_READ_CASES[tool][5]
+
+    getattr(handlers, tool)(dict(args))
+
+    stored = db.peek(path)
+    assert stored[field] != before.get(field)
+    assert stored["updated_via"] == "mcp"
+    (commit,) = _row_commits(db, path)
+    assert commit.transaction is not None    # the guarded, transactional path
+
+
+def test_two_parallel_significations_both_survive_or_one_is_refused(
+    monkeypatch,
+):
+    """The concrete loss: Claude records two significations in PARALLEL.
+    Both handlers read the same register; before the guard, the second
+    write erased the first entry. Now the loser is refused and the winner's
+    entry is kept — the caller re-reads and sends it again."""
+    db, path, args = _own_setup(monkeypatch, "record_signification")
+    real = dossier_model.get_dossier
+    state = {"reads": 0}
+
+    def interleaved(dossier_id):
+        doc = real(dossier_id)
+        state["reads"] += 1
+        if state["reads"] == 1:
+            # The SECOND call runs to completion right after the first
+            # call's read — the parallel tool call. In a FRESH context, as a
+            # separate request has: nested in this one, its commit would be
+            # handed up to the first call's writing block (models.provenance)
+            # and read there as the first call's own.
+            monkeypatch.setattr(dossier_model, "get_dossier", real)
+            contextvars.Context().run(handlers.record_signification, {
+                **args, "partie_id": "p1", "date": "2026-07-16"})
+            monkeypatch.setattr(dossier_model, "get_dossier", interleaved)
+        return doc
+
+    monkeypatch.setattr(dossier_model, "get_dossier", interleaved)
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        handlers.record_signification(dict(args))
+    assert excinfo.value.reason == "stale_etag"
+    (kept,) = db.peek(path)["significations"]
+    assert kept["partie_id"] == "p1"
+
+    # The re-sent call, on a fresh read, adds its entry beside the other.
+    handlers.record_signification(dict(args))
+    assert {s["partie_id"] for s in db.peek(path)["significations"]} == {
+        "p1", "p2"}
