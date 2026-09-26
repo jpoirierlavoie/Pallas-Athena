@@ -1244,6 +1244,20 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 - In claude.ai: **Settings → Connectors → Add custom connector →**
   `https://yourdomain.example/mcp`, then complete Firebase login + MFA on the
   consent screen and click **« Autoriser »**.
+- **Read the consent screen before ticking.** Its write block — one
+  paragraph per write family, then the list of what the connector can
+  NEVER do, then the box's summary — is assembled from
+  `athena/mcp/disclosure.py`, the same registry INSTRUCTIONS come from, and
+  each « never » is backed by a sweep of the connector's code. The scope is
+  frozen when you click « Autoriser »: a later release that changes what a
+  write tool can do (a new family, a lifted « never », or a behaviour change
+  such as lot 0a's `complete_task` refusing to reopen a closed task) reaches
+  the token you already hold **silently**. So for such a release:
+  `python -m scripts.revoke_mcp_tokens` and remove the connector in
+  claude.ai BEFORE pushing, deploy, then re-add it and tick the boxes under
+  the new text. Keep `MCP_WRITE_ENABLED` at `"true"` for that re-consent —
+  consenting while it is `"false"` offers no box and yields a read-only
+  grant, without a word.
 - The consent screen has room for a **second, separate box**, « Autoriser la
   comptabilité » (scope `athena:comptabilite`). It appears only when
   `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**

@@ -26,8 +26,11 @@ GST/QST, hearings, tasks, case protocols, notes, procedural documents, and
 - **Notes** (Markdown) and a **document store** with folders and signed URLs
 - **Gabarits** — user-managed Word templates filled from case data
 - **DavX5 sync** (CardDAV / CalDAV / VTODO / VJOURNAL) and an **MCP connector**
-  exposing data to Claude — read-only by default; note creation and appending
-  require an explicit `athena:write` grant ticked on the consent screen
+  exposing data to Claude — read-only by default; writes (notes, tasks,
+  events, time, disbursements, contacts, dossiers, corrections, imports,
+  document analysis — never a deletion or a payment) need the
+  `athena:write` grant, and accounting the separate `athena:comptabilite`
+  grant (dormant until a tool carries it), each ticked on the consent screen
 
 ## Tech stack
 
