@@ -51,8 +51,23 @@ def test_every_tool_declares_an_output_schema():
     assert set(OUTPUT_SCHEMAS) == set(tools.TOOLS)
 
 
-def test_descriptors_ship_the_output_schema_and_title_mirror():
-    for d in tools.list_tool_descriptors():
+@pytest.mark.parametrize("with_accounting_tool", [False, True])
+def test_descriptors_ship_the_output_schema_and_title_mirror(
+    monkeypatch, with_accounting_tool
+):
+    # Every switch ON: `list_tool_descriptors()` drops no scope but still
+    # applies the kill switches, and MCP_COMPTABILITE_ENABLED defaults to
+    # FALSE — so without this an accounting tool (plan lot 5) would be
+    # skipped here in silence. The equality makes any other hiding loud.
+    if with_accounting_tool:
+        from tests import _dummy_accounting
+
+        _dummy_accounting.register(monkeypatch)
+    monkeypatch.setattr(tools, "write_enabled", lambda: True)
+    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+    descriptors = tools.list_tool_descriptors()
+    assert {d["name"] for d in descriptors} == set(tools.TOOLS)
+    for d in descriptors:
         assert d["outputSchema"] is OUTPUT_SCHEMAS[d["name"]]
         # 2025-03-26 clients read the display name from annotations.title.
         assert d["annotations"]["title"] == d["title"]

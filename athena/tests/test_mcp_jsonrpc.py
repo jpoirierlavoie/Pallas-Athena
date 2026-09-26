@@ -1115,8 +1115,8 @@ def test_every_refusal_reason_is_a_stable_code_and_documented():
     reasons = found["raised"] | found["logged"] | {tools.DEFAULT_REFUSAL_REASON}
     # Non-vacuous: the sweep must see every path this commit wires.
     assert reasons >= {
-        "insufficient_scope", "write_disabled", "schema_invalid",
-        "argument_refused", "idempotency_conflict",
+        "insufficient_scope", "write_disabled", "comptabilite_disabled",
+        "schema_invalid", "argument_refused", "idempotency_conflict",
     }, reasons
     bad = sorted(r for r in reasons if not _REASON_CODE.match(str(r)))
     assert not bad, bad

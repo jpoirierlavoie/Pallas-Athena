@@ -522,8 +522,21 @@ def test_annotation_overrides_touch_only_the_idempotency_hint():
             )
 
 
-def test_the_advertised_safety_hints_follow_the_registry():
-    for d in tools.list_tool_descriptors(None):
+@pytest.mark.parametrize("with_accounting_tool", [False, True])
+def test_the_advertised_safety_hints_follow_the_registry(monkeypatch, with_accounting_tool):
+    """Every switch ON: `list_tool_descriptors(None)` drops no scope but
+    still applies the kill switches, and MCP_COMPTABILITE_ENABLED defaults
+    to FALSE — so without this an accounting tool (plan lot 5) would have
+    its hints go unchecked in silence, and a money write advertised
+    `readOnlyHint: true` would pass. The equality makes any hiding loud; the
+    dummy run proves the accounting subset is really enumerated."""
+    if with_accounting_tool:
+        _dummy_accounting.register(monkeypatch)
+    monkeypatch.setattr(tools, "write_enabled", lambda: True)
+    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
+    descriptors = tools.list_tool_descriptors(None)
+    assert {d["name"] for d in descriptors} == set(tools.TOOLS)
+    for d in descriptors:
         ann = d["annotations"]
         is_write = d["name"] in tools.WRITE_TOOLS
         assert ann["readOnlyHint"] is (not is_write), d["name"]

@@ -338,7 +338,12 @@ def test_write_tools_set_is_pinned():
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
 
-def test_annotations_split_both_directions():
+def test_annotations_split_both_directions(monkeypatch):
+    # Every switch ON: list_tool_descriptors() still applies the kill
+    # switches, and MCP_COMPTABILITE_ENABLED defaults to FALSE — an
+    # accounting tool (plan lot 5) must have its hints checked here too.
+    monkeypatch.setattr(tools, "write_enabled", lambda: True)
+    monkeypatch.setattr(tools, "comptabilite_enabled", lambda: True)
     descriptors = {d["name"]: d for d in tools.list_tool_descriptors()}
     # Derive : le garde-fou du compte vit a test_registry_shape, une
     # seule fois. Deux copies, c'est une copie qui derive.

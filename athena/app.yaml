@@ -47,8 +47,9 @@ env_variables:
   MCP_ENABLED: "true"
   # The SECOND kill switch: "false" removes every write tool from
   # tools/list — the accounting ones below included — refuses it at
-  # tools/call, and hides the consent checkboxes — reads are untouched. It was absent from this file until lot Q and so ran
-  # on the config.py default ("true"), which meant the switch existed in code
+  # tools/call, and hides the consent checkboxes — reads are untouched. It
+  # was absent from this file until lot Q and so ran on the config.py
+  # default ("true"), which meant the switch existed in code
   # and could not actually be flipped without a code change. State it
   # explicitly, both to make the effective value readable and to give the
   # arm/disarm procedure something to edit.

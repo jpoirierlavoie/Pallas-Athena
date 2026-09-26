@@ -626,6 +626,12 @@ def test_write_kill_switch_removes_the_checkbox_and_refuses_the_grant(fake):
         "/oauth/authorize", query_string=_authorize_params(client_doc, challenge)
     )
     assert 'name="grant_write"' not in page.data.decode("utf-8")
+    # No box on the page, so the line may not point at one « ci-dessous »
+    # (it did until lot 0a); it states the read-only outcome instead.
+    flat = " ".join(page.data.decode("utf-8").split())
+    assert "Le connecteur ne pourra rien créer ni modifier." in flat
+    assert "Sans la case ci-dessous" not in flat
+    assert "aucune des cases" not in flat
     token_match = re.search(rb'name="csrf_token" value="([^"]+)"', page.data)
     form = _authorize_params(client_doc, challenge)
     form["csrf_token"] = token_match.group(1).decode()
