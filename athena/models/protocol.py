@@ -11,7 +11,7 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db, provenance
 from security import sanitize
-from utils.logging_setup import log_unexpected, sanitize_log_value
+from utils.logging_setup import log_unexpected
 
 logger = logging.getLogger(__name__)
 
@@ -1268,8 +1268,14 @@ def _sync_task_status(task_id: str, step_status: str) -> None:
             update_task(task_id, {"status": "terminée"})
         elif step_status in ("à_venir", "en_cours"):
             update_task(task_id, {"status": "à_faire"})
-    except Exception as exc:
-        logger.warning("_sync_task_status failed for task %s: %s", task_id, exc)
+    except Exception:
+        # Swallowed on purpose — the step write it follows has committed —
+        # but never SILENTLY: a task left out of step with its step is a
+        # data inconsistency, so it goes through the typed helper (plan
+        # rule 14 — the raw logger.warning of the cascade is gone). Ids
+        # only; the traceback is scrubbed by the RedactionFilter.
+        log_unexpected("protocol cascade: task status sync failed",
+                       task_id=task_id, step_status=step_status)
     finally:
         _SYNCING.discard(task_id)
 
@@ -1292,8 +1298,6 @@ def _check_protocol_completion(protocol_id: str) -> None:
                 "status": "complété",
                 **provenance.update_fields(now),
             })
-        except Exception as exc:
-            logger.warning(
-                "_check_protocol_completion failed for %s: %s",
-                sanitize_log_value(protocol_id), exc,
-            )
+        except Exception:
+            log_unexpected("protocol cascade: completion check failed",
+                           protocol_id=protocol_id)

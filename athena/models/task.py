@@ -513,7 +513,13 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
                         )
                     return  # Found and synced — done
     except Exception:
-        pass  # Sync failure should not break the task update
+        # A sync failure must not break the task update (it has committed),
+        # but it used to vanish with no trace at all — while complete_task
+        # tells its caller « la synchronisation du modèle avale ses
+        # erreurs ». Now it is an ERROR through the typed helper (plan
+        # rule 14): ids only, traceback scrubbed by the RedactionFilter.
+        log_unexpected("protocol cascade: step sync failed",
+                       task_id=task_id, task_status=new_task_status)
     finally:
         _SYNCING.discard(task_id)
 
