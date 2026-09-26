@@ -2227,8 +2227,8 @@ TOOLS: dict[str, dict] = {
             "de-duplication and a retry creates a second note. Raw HTML tags "
             "are rejected (Markdown autolinks like <https://…> are converted "
             "automatically); write plain Markdown. Defaults to category "
-            "'recherche'. Every note is stamped with a « Ajouté par Claude » "
-            "provenance line."
+            "'recherche'. Every note opens with a dated « Note rédigée par "
+            "Claude le … » provenance line."
         ),
         "input_schema": {
             "type": "object",
@@ -2855,8 +2855,10 @@ TOOLS: dict[str, dict] = {
             "WRITE — REPLACES the values you name; a field you omit is "
             "untouched. Correct a transcription error BEFORE the entry is "
             "invoiced: once it is, neither this connector nor the "
-            "application can modify it, and the only way back is voiding the "
-            "invoice in the application (which releases every source). "
+            "application can correct it — only its litigation phase stays "
+            "reclassifiable (set_time_entry_phase) — and the only way back "
+            "is voiding the invoice in the application (which releases "
+            "every source). "
             "`amount` is never yours to set — the model recomputes it as "
             "hours × rate, and forces 0 on a non-billable entry. "
             "Omitting `billable` leaves it as it is: never send it « just in "
@@ -2914,7 +2916,8 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE — REPLACES the values you name; a field you omit is "
             "untouched. Same wall as update_time_entry: once the "
-            "disbursement is invoiced nothing here can touch it. "
+            "disbursement is invoiced nothing here can correct it — only "
+            "its litigation phase stays reclassifiable (set_expense_phase). "
             "Unlike a time entry, `amount_cents` IS yours — the model never "
             "recomputes a disbursement, so a historical amount survives "
             "exactly. "

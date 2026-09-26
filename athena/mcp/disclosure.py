@@ -572,8 +572,10 @@ def build_instructions(
         "Provenance: every record this connector writes directly is stamped "
         "`updated_via` \"mcp\" (and `created_via` \"mcp\" when it created "
         "it), with the time of its last connector write in "
-        "`mcp_updated_at` — shown on the read rows; the notes, tasks and "
-        "events it CREATES also carry a dated « … par Claude le … » line."
+        "`mcp_updated_at` — returned by the read rows whose output schema "
+        "declares those keys, which not every read does; the notes, tasks "
+        "and events it CREATES also carry a dated « … par Claude le … » "
+        "line."
     )
     parts.append(_FORMATS_EN)
     return " ".join(parts)

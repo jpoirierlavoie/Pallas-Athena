@@ -61,18 +61,35 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
                                            # carry a dated mention
     "can never edit or delete the entry",  # update_time_entry / update_expense
     "re-opens the linked step",            # complete_task now refuses it
+    # create_note's stamp is « Note rédigée par Claude le … »; « Ajouté par
+    # Claude » is append_to_note's separator.
+    "« ajouté par claude » provenance line",
+    # Cancelling a linked task triggers NO cascade (models/task
+    # ._sync_protocol_step acts on « terminée » only): only TERMINATING it
+    # completes the step.
+    "clore une tâche rattachée à une étape de protocole complète",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »
     r"ne peut plus les modifier(?!, sauf)",       # the phase stays reclassifiable
     r"nothing here can modify them afterwards(?! except)",
+    # The same billing-freeze claim in its other phrasings: set_*_phase
+    # reaches an invoiced row (and so does the application's phase form).
+    r"ne modifie(?:nt)? (?:jamais )?une entrée facturée",
+    r"définitivement immodifiables",
+    r"nothing here can touch it",
+    r"neither this connector nor the application can modify it",
 )
 
 
 def _connector_files() -> dict[str, pathlib.Path]:
+    """Every connector module, SUBPACKAGES included — a never swept over
+    ``mcp/*.py`` alone would stop seeing a handler moved one level down."""
+    root = _ATHENA / "mcp"
     return {
-        f"mcp/{p.name}": p
-        for p in sorted((_ATHENA / "mcp").glob("*.py"))
+        "mcp/" + p.relative_to(root).as_posix(): p
+        for p in sorted(root.rglob("*.py"))
+        if "__pycache__" not in p.parts
     }
 
 
@@ -401,13 +418,16 @@ def test_the_registry_is_pure():
     a service. (mcp.tools derives WRITE_TOOLS from it at import, so a model
     import here would pull Firestore into every tools import.)"""
     tree = ast.parse((_ATHENA / "mcp" / "disclosure.py").read_text(encoding="utf-8"))
-    top = set()
-    for node in tree.body:
+    # EVERY import, the lazy ones inside functions included: a model
+    # imported lazily in a builder would still run Firestore at the first
+    # consent render. (The lazy `from mcp import tools` is the one allowed.)
+    imported = set()
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            top.update(a.name for a in node.names)
+            imported.update(a.name for a in node.names)
         elif isinstance(node, ast.ImportFrom):
-            top.add(node.module or "")
-    assert top <= {"__future__", "dataclasses", "typing", "markupsafe", "mcp"}, top
+            imported.add(node.module or "")
+    assert imported <= {"__future__", "dataclasses", "typing", "markupsafe", "mcp"}, imported
 
 
 def test_the_registry_names_forbidden_calls_only_as_strings():
@@ -482,6 +502,12 @@ def test_the_false_claim_detector_is_not_vacuous():
     assert not _false_claims_in("le connecteur ne peut plus les modifier, sauf leur phase")
     assert _false_claims_in("nothing here can modify them afterwards, and")
     assert not _false_claims_in("nothing here can modify them afterwards except")
+    assert _false_claims_in("Le connecteur ne modifie jamais une entrée facturée")
+    assert _false_claims_in("ni l'application ne modifient une entrée facturée")
+    assert not _false_claims_in("Le connecteur ne corrige jamais une entrée facturée")
+    assert _false_claims_in("once invoiced nothing here can touch it.")
+    assert _false_claims_in(
+        "neither this connector nor the application can modify it, and")
 
 
 def test_complete_task_describes_the_refusal_it_now_makes():

@@ -196,9 +196,10 @@ def _entree_facturee_sans_facture(ctx: dict) -> Optional[str]:
         return None
     return (
         f"{len(ghosts)} entrée(s) portent « facturée » avec une facture "
-        "introuvable dans ce dossier. Elles sont définitivement immodifiables "
-        "tant que la référence n'est pas levée : ni le connecteur ni "
-        "l'application ne modifient une entrée facturée."
+        "introuvable dans ce dossier. Elles restent figées tant que la "
+        "référence n'est pas levée : ni le connecteur ni l'application ne "
+        "corrigent une entrée facturée — seule sa phase du litige reste "
+        "reclassable."
     )
 
 

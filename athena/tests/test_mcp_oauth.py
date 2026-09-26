@@ -618,6 +618,12 @@ def test_the_write_block_is_assembled_from_the_disclosure_registry(client, fake)
     assert first == sorted(first)
     assert first[-1] < flat.index("ne peut <strong>jamais</strong> faire")
     assert _flat(str(context["write_summary"])) in flat
+    # The known false claims are absent from the rendered screen too — the
+    # list is the one test_mcp_disclosure sweeps the connector's strings
+    # with, shared rather than re-typed here, so a partial cannot bring
+    # back a sentence the registry's texts were purged of.
+    from tests.test_mcp_disclosure import _false_claims_in
+    assert _false_claims_in(flat) == []
 
 
 def test_the_write_block_uses_only_compiled_classes(client, fake):

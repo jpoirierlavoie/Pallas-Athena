@@ -3919,8 +3919,10 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
         return
     raise ToolArgumentError(
         f"{kind} est déjà porté(e) à la facture "
-        f"{row.get('invoice_id') or '(inconnue)'}. Le connecteur ne modifie "
-        "jamais une entrée facturée et ne peut pas annuler une facture. "
+        f"{row.get('invoice_id') or '(inconnue)'}. Le connecteur ne corrige "
+        "jamais une entrée facturée — seule sa phase du litige reste "
+        "reclassable (set_time_entry_phase, set_expense_phase) — et ne peut "
+        "pas annuler une facture. "
         "Pour la libérer : annulez la facture dans l'application — ses "
         "entrées et déboursés redeviennent modifiables."
     )
