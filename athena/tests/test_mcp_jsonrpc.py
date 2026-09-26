@@ -824,6 +824,48 @@ def test_a_refused_dossier_id_that_is_not_id_shaped_is_not_logged(
     assert "Tremblay" not in str(refused)
 
 
+@pytest.mark.parametrize("given, logged", [
+    ("Tremblay c. Lavoie", None),                        # a title, pasted
+    ("0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f\n", None),     # `$` would pass it
+    ("0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f",
+     "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f"),              # an id: kept
+])
+def test_the_span_and_the_tool_call_line_carry_only_an_id_shaped_dossier(
+    client, monkeypatch, caplog, given, logged
+):
+    """A SUCCESSFUL call can carry a name too: a read tool answers an
+    unknown dossier with an empty list, not a refusal. Until 2026-09-25 the
+    raw argument reached the `mcp.tool.*` span attribute and every
+    `mcp_tool_call` line — while OBSERVABILITY.md promised « UUIDs only »
+    there — although the refusal line had already learnt the shape check."""
+    spans = []
+
+    class _Span:
+        def __init__(self, name, **attrs):
+            spans.append((name, attrs))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(endpoint, "span", _Span)
+    monkeypatch.setattr(handlers, "list_notes", lambda args: {"notes": []})
+    with caplog.at_level(logging.INFO, logger="pallas.mcp"):
+        body = _call(client, "list_notes", {"dossier_id": given}).get_json()
+    assert "error" not in body
+    ((name, attrs),) = [(n, a) for n, a in spans if n.startswith("mcp.tool.")]
+    assert name == "mcp.tool.list_notes"
+    (call,) = _events(caplog, "mcp_tool_call")
+    if logged is None:
+        assert "dossier_id" not in attrs and "dossier_id" not in call
+        assert "Tremblay" not in _logged_text(caplog)
+    else:
+        assert attrs == {"dossier_id": logged}
+        assert call["dossier_id"] == logged
+
+
 def test_a_read_tool_handler_refusal_logs_no_write_refusal(client, caplog):
     with caplog.at_level(logging.INFO, logger="pallas.mcp"):
         body = _call(client, "compute_judicial_deadline", {

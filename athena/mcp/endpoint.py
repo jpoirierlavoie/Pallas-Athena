@@ -257,9 +257,17 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
             jsonrpc.INVALID_PARAMS, "; ".join(validation_errors)
         )
 
-    dossier_id = arguments.get("dossier_id")
+    # The span attribute and every `mcp_tool_call` line carry the dossier
+    # only when it is SHAPED like an id. On any path — success included (a
+    # read tool answers an unknown dossier with an empty list, not a
+    # refusal) — the argument is still the caller's string, bounded to 64
+    # characters by the schema and nothing more: a title or a party name
+    # pasted into it would reach Cloud Trace and the tool-call log, which
+    # the RedactionFilter does not scrub for names (OBSERVABILITY.md:
+    # `dossier_id` span attributes are « UUIDs only »).
+    dossier_id = _loggable_id(arguments.get("dossier_id"))
     span_attrs: dict[str, Any] = {}
-    if isinstance(dossier_id, str) and dossier_id:
+    if dossier_id:
         span_attrs["dossier_id"] = dossier_id
 
     handler = tools.get_handler(name)
@@ -342,14 +350,14 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
         # The refusal is LOGGED by its reason code — the text below reaches
         # the client only. OBSERVABILITY.md promised an `mcp_write_refused`
         # burst as the stop-the-import signal long before either of these
-        # refusal paths emitted one. The dossier id only when id-shaped:
-        # a refused call's argument has been checked for length, not for
+        # refusal paths emitted one. The dossier id only when id-shaped
+        # (`dossier_id` above is already the shape-checked value): a
+        # refused call's argument has been checked for length, not for
         # being an id.
-        refused_dossier = _loggable_id(dossier_id)
         _log_write_refused(
             name,
             argument_reason,
-            **({"dossier_id": refused_dossier} if refused_dossier else {}),
+            **({"dossier_id": dossier_id} if dossier_id else {}),
         )
         # Raised outside the span, so its (user-derived) text never reaches
         # the exporter. It still reaches the client, which is the point.
