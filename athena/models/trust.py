@@ -592,6 +592,9 @@ def _build_transaction_doc(
         "description": description,
         "status": status,
         "cleared_date": _midnight_utc(cleared_date) if cleared_date else None,
+        # Plan rule 5: WHO cleared, beside WHEN (created_via/updated_via come
+        # from provenance.create_fields). "" while the entry is uncleared.
+        "cleared_via": provenance.current_via() if cleared_date else "",
         "reconciliation_id": reconciliation_id,
         "invoice_id": invoice_id,
         # Number of an invoice that predates Pallas Athéna (no invoice row to
@@ -905,6 +908,8 @@ def _clear_entries(
             update = {
                 "status": "compensée",
                 "cleared_date": cd,
+                # Plan rule 5 — survives later writes, unlike updated_via.
+                "cleared_via": provenance.current_via(),
                 **provenance.update_fields(now),
             }
             if reconciliation_id is not None:
@@ -1728,6 +1733,7 @@ def complete_reconciliation(
             txn.update(ref, {
                 "status": "compensée",
                 "cleared_date": cd,
+                "cleared_via": provenance.current_via(),
                 "reconciliation_id": rec_id,
                 **provenance.update_fields(now),
             })
