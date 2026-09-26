@@ -1399,6 +1399,34 @@ Notes:
   template stored there can no longer have its FILE replaced — the model now
   refuses, rather than writing the new file under the same fallback prefix.
   Nothing here moves or deletes them for you.
+- **DAV relocation (lot 0a, 2026-09-25):** moving a task or a note to another
+  dossier in the web app now runs through `dav.sync.relocate_resource` (the
+  same calls in the same order as the hand-written blocks it replaced — pinned
+  by `tests/test_mcp_dav_resync.py`, but DavX5 fails silently, so check the
+  wire once after the deploy). Move a test task from dossier `D1` to `D2` in
+  the app (both `actif` or `en_attente` — a closed dossier's collection is
+  drained, not listed), then ask both collections for a full `sync-collection` REPORT (curl
+  prompts for the DAV password; it never goes on the command line):
+
+  ```bash
+  D1=first-dossier-id D2=second-dossier-id TASK=the-task-id
+  DAV_USER=you@yourdomain.example   # the AUTHORIZED_USER_EMAIL of app.yaml
+  BODY='<?xml version="1.0" encoding="utf-8"?><d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>'
+  for D in "$D1" "$D2"; do
+    echo "== dossier-$D"
+    # The multistatus is ONE line: -o keeps just this task's <D:response>.
+    curl -s -u "${DAV_USER:?}" -X REPORT \
+      -H "Content-Type: application/xml; charset=utf-8" --data "$BODY" \
+      "https://yourdomain.example/dav/dossier-$D/" \
+      | grep -o "<D:href>[^<]*$TASK\.ics</D:href>.\{0,120\}"
+  done
+  ```
+
+  Expected: under `D1` the task's href is followed by
+  `<D:status>HTTP/1.1 404 Not Found</D:status>` (its tombstone); under `D2` by
+  a `<D:propstat>` carrying its `getetag` (live). A task still live under `D1`,
+  or absent from `D2`, means the phone will keep the stale copy — stop and
+  investigate before relying on DavX5.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
