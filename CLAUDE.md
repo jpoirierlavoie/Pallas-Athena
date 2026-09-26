@@ -692,7 +692,20 @@ id:          UUIDv4 (also the document ID)
 created_at:  UTC datetime
 updated_at:  UTC datetime
 etag:        UUIDv4, regenerated on every write
+
+# Provenance (Lot 0a, 2026-09 — models/provenance.py). Additive, no
+# migration: a legacy document simply lacks the keys ('' = unknown).
+created_via:    "web" | "dav" | "mcp" | "cron" | "script"   # who created it
+updated_via:    same vocabulary — the LAST writer; stamped by the model in
+                the same statement that regenerates `etag` (a derived test
+                sweeps models/*.py for an etag write without it)
+mcp_updated_at: UTC datetime — the last write made THROUGH THE CONNECTOR;
+                sticky, a later web/DAV edit does not clear it
 ```
+
+Trust and administration register rows also carry **`cleared_via`**, write-once, stamped in the same
+transition as `cleared_date` — `updated_via` cannot stand in for it, since the row's next write
+overwrites it.
 
 ### `parties/{partieId}` — Contacts
 
