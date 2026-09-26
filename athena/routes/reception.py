@@ -797,9 +797,10 @@ def verser(inv_id: str, batch: str, seq: int):
         return _rediriger(erreur="Choisissez le dossier de destination.")
 
     # The uid the document is filed under (users/{uid}/dossiers/…), resolved
-    # BEFORE any I/O — in particular before get_or_create_folder below, which
-    # WRITES. Plan rule 8: through utils.storage_identity, never a raw session
-    # read (the model re-checks the uid, but only once the folder exists).
+    # before the quarantine blob is opened and before any WRITE — in
+    # particular get_or_create_folder below. Plan rule 8: through
+    # utils.storage_identity, never a raw session read (the model re-checks
+    # the uid, but only once the folder exists).
     try:
         user_id = storage_identity.request_uid()
     except storage_identity.StorageIdentityUnavailable as exc:
