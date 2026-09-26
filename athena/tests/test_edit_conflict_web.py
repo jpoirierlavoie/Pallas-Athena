@@ -25,6 +25,7 @@ formulaire web ici, ou figurer dans ``PENDING`` avec le lot qui le livrera.
 import ast
 import os
 import pathlib
+import html as html_module
 import re
 import sys
 from dataclasses import dataclass
@@ -979,6 +980,85 @@ def test_a_malformed_pin_target_is_refused(client, db, dossier_id, bumps):
     before = db.peek(f"notes/{note_id}")
     client.post(f"/notes/{note_id}/pin", data={"pinned": "oui"})
     assert db.peek(f"notes/{note_id}") == before and bumps == []
+
+
+# ── « Confirmer » une analyse : le troisième contrôle en un clic ────────
+#
+# Confirmer, c'est dire « j'ai vu ». Le bouton portait seulement le jeton
+# CSRF : un onglet ouvert AVANT que le connecteur ne réanalyse le document
+# confirmait, sous le nom du juriste, une qualification qu'il n'avait
+# jamais lue — niveau de protection compris — et faisait tomber la mention
+# « présumée » (category_source → « juriste »). Il porte désormais l'etag
+# de la version affichée (constat de la revue de l'étape 6, corrigé par la
+# critique du lot 0a).
+
+
+def _confirmable(db, dossier_id):
+    # Not previewable: the detail page never reaches Storage for a URL.
+    return _seed_document(db, dossier_id, analyse=dict(_ANALYSE),
+                          category="autre", category_source="analyse",
+                          file_type="application/zip", filename="lot.zip")
+
+
+def test_the_confirm_button_carries_the_displayed_etag(client, db, dossier_id):
+    doc_id = _confirmable(db, dossier_id)
+    html = client.get(f"/documents/{doc_id}").get_data(as_text=True)
+    form = html[html.index(f'action="/documents/{doc_id}/analyse/confirmer"'):]
+    form = form[:form.index("</form>")]
+    assert _etags(form) == ["e0"]
+
+
+def test_a_stale_confirm_confirms_nothing_and_says_so(client, db, dossier_id):
+    doc_id = _confirmable(db, dossier_id)
+    shown = _etags(client.get(f"/documents/{doc_id}").get_data(as_text=True))[0]
+    # The connector re-analyses the document meanwhile — a higher level.
+    reanalysed = db.peek("documents/doc1")
+    reanalysed["analyse"] = {**_ANALYSE, "niveau_protection": 3,
+                             "resume": "Nouvelle analyse"}
+    reanalysed["etag"] = RIVAL_ETAG
+    db.external_write("documents/doc1", reanalysed)
+    before = db.peek("documents/doc1")
+
+    resp = client.post(f"/documents/{doc_id}/analyse/confirmer",
+                       data={"expected_etag": shown})
+
+    assert resp.status_code == 302            # a 2xx-bound bounce (htmx rule)
+    assert db.peek("documents/doc1") == before
+    assert not before["analyse"].get("confirme")
+    assert before["category_source"] == "analyse"   # still « présumée »
+    shown_after = client.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "Rien n'a été confirmé" in html_module.unescape(shown_after)
+    assert _etags(shown_after) == [RIVAL_ETAG]      # the new version, to read
+
+
+def test_a_fresh_confirm_confirms_under_the_lawyers_name(client, db, dossier_id):
+    doc_id = _confirmable(db, dossier_id)
+    shown = _etags(client.get(f"/documents/{doc_id}").get_data(as_text=True))[0]
+    resp = client.post(f"/documents/{doc_id}/analyse/confirmer",
+                       data={"expected_etag": shown})
+    assert resp.status_code == 302 and "erreur" not in resp.headers["Location"]
+    stored = db.peek("documents/doc1")
+    assert stored["analyse"]["confirme"] is True
+    assert stored["analyse"]["confirme_par"] == "test@example.com"
+    assert stored["category_source"] == "juriste"
+    assert stored["etag"] != shown
+
+
+def test_a_confirm_from_a_page_without_the_field_keeps_the_old_behaviour(
+    client, db, dossier_id
+):
+    doc_id = _confirmable(db, dossier_id)
+    client.post(f"/documents/{doc_id}/analyse/confirmer", data={})
+    assert db.peek("documents/doc1")["analyse"]["confirme"] is True
+
+
+def test_the_detail_page_shows_a_confirm_refusal(client, db, dossier_id):
+    """The route always bounced its refusals on ?erreur=, and the page never
+    read it: « Aucune analyse à confirmer. » vanished too."""
+    doc_id = _seed_document(db, dossier_id, file_type="application/zip")
+    resp = client.post(f"/documents/{doc_id}/analyse/confirmer", data={})
+    html = client.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "Aucune analyse à confirmer." in html
 
 
 # ══════════════════════════════════════════════════════════════════════

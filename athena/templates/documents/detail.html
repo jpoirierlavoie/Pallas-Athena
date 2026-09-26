@@ -106,6 +106,9 @@
       </div>
     </div>
 
+    {% if erreur %}
+    <div role="alert" class="text-red-600 text-sm mb-4">{{ erreur }}</div>
+    {% endif %}
     {% include "documents/_analyse.html" %}
 
   {# Provenance du portail — champs DISTINCTS depuis le 2026-08-27.

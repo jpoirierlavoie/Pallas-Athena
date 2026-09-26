@@ -1879,12 +1879,25 @@ def update_analyse(
 
 
 def confirmer_analyse(
-    document_id: str, par: str
+    document_id: str, par: str, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Le SEUL chemin passant `confirme` à vrai (§7). Aucun automatisme."""
+    """Le SEUL chemin passant `confirme` à vrai (§7). Aucun automatisme.
+
+    ``expected_etag`` (mot-clé) — l'etag de la page d'où le juriste a
+    cliqué « Confirmer ». Confirmer, c'est dire « j'ai vu » : sans lui, un
+    onglet ouvert AVANT que le connecteur ne réanalyse le document
+    confirmait, sous le nom du juriste, une qualification qu'il n'avait
+    jamais lue — un niveau de protection compris. Donné, l'écriture ne
+    s'engage que contre cette version (``models.concurrency``, dans une
+    transaction) ; périmé, rien n'est écrit et la liste d'erreurs porte
+    ``STALE_ETAG_ERROR``. ``None`` (une page rendue avant que le bouton ne
+    porte l'etag) est l'ancien ``set()``, inchangé.
+    """
     existing = get_document(document_id)
     if not existing:
         return None, ["Document introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
     champ = dict(existing.get("analyse") or {})
     if not champ.get("sous_nature"):
         return None, ["Aucune analyse à confirmer."]
@@ -1900,7 +1913,15 @@ def confirmer_analyse(
         now,
     )
     try:
-        db.collection(COLLECTION).document(document_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(document_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Document introuvable."]
     except Exception:
         log_unexpected("document analyse confirm failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

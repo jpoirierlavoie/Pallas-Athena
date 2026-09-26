@@ -6,7 +6,8 @@ Les dix mutateurs qui gagnent ``expected_etag`` le 2026-09-25 :
 ``expense.update_expense`` / ``set_expense_phase`` — ceux que le connecteur
 modifie — et ``note.update_note``, ``task.update_task``,
 ``document.update_metadata`` / ``update_analyse`` — ceux des enregistrements
-que le connecteur écrit déjà et dont les formulaires web recevront l'etag.
+que le connecteur écrit déjà et dont les formulaires web recevront l'etag —,
+plus ``document.confirmer_analyse`` (le bouton « Confirmer » d'une analyse).
 
 Chacun tourne ici au-dessus du faux Firestore partagé (le client est le
 vrai), et l'on relit ce qui est STOCKÉ. Pour chacun :
@@ -176,6 +177,12 @@ _CASES = {
                            i, {"resume": "Lettre au confrère."},
                            par="juriste", **kw),
                        None, None),
+    # Not an edit form but a one-click control (critique, lot 0a): the
+    # « Confirmer » button of an analysis says « I read THIS version ».
+    "confirmer_analyse": ("documents", _analysed_document,
+                          lambda i, **kw: document_model.confirmer_analyse(
+                              i, "juriste@example.com", **kw),
+                          "category_source", "juriste"),
 }
 _ALL = pytest.mark.parametrize("case", sorted(_CASES), ids=sorted(_CASES))
 
@@ -192,6 +199,7 @@ _GETTERS = {
     "update_task": (task_model, "get_task"),
     "update_metadata": (document_model, "get_document"),
     "update_analyse": (document_model, "get_document"),
+    "confirmer_analyse": (document_model, "get_document"),
 }
 
 

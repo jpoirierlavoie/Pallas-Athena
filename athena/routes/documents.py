@@ -226,6 +226,10 @@ def document_detail(document_id: str) -> str:
         "documents/detail.html",
         analyses=analyses,
         document=doc,
+        # Le refus de « Confirmer » voyage sur une redirection 2xx
+        # (?erreur=) ; la page ne le lisait pas, si bien qu'un refus — y
+        # compris « Aucune analyse à confirmer. » — ne paraissait jamais.
+        erreur=sanitize(request.args.get("erreur", ""), max_length=300),
         signed_url=signed_url,
         category_labels=CATEGORY_LABELS,
         folder_breadcrumb=folder_breadcrumb,
@@ -977,6 +981,13 @@ def folder_tree_partial() -> str:
         dossier_id=dossier_id,
     )
 
+_CONFIRM_STALE = (
+    "Ce document a été modifié depuis l'affichage de la page — une "
+    "nouvelle analyse, par exemple. Rien n'a été confirmé : relisez "
+    "l'analyse ci-dessous, puis confirmez de nouveau."
+)
+
+
 @documents_bp.route("/<document_id>/analyse/confirmer", methods=["POST"])
 @login_required
 def analyse_confirmer(document_id: str):
@@ -987,9 +998,16 @@ def analyse_confirmer(document_id: str):
     conséquences, et une supposition de modèle ne doit pas se présenter
     avec l'autorité d'une détermination de l'avocat.
     """
+    # La version que la page affichait (plan, règle 11) : confirmer une
+    # analyse qu'un autre écrivain — le connecteur qui réanalyse, un autre
+    # onglet — a remplacée depuis, ce serait signer ce qu'on n'a pas lu.
+    # Absent (page d'avant) → aucun contrôle ; illisible → 400 français.
+    expected = edit_conflict.submitted_etag()
     _, erreurs = document_model.confirmer_analyse(
-        document_id, session.get("user_email") or ""
+        document_id, session.get("user_email") or "", expected_etag=expected
     )
+    if concurrency.is_stale(erreurs):
+        erreurs = [_CONFIRM_STALE]
     # Un refus voyage sur une redirection 2xx : htmx n'échange que les 2xx,
     # et un fragment rendu en 4xx ne paraîtrait jamais.
     return redirect(url_for(

@@ -103,8 +103,11 @@
   {% endif %}
 
   <div class="mt-3 flex flex-wrap items-center gap-3">
+    {% from "components/_edit_conflict.html" import etag_field %}
     <form method="POST" action="{{ url_for('documents.analyse_confirmer', document_id=document.id) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {#- Confirmer, c'est dire « j'ai vu CETTE version » (plan, règle 11). #}
+      {{ etag_field(document) }}
       <button type="submit"
               class="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg">
         Confirmer
