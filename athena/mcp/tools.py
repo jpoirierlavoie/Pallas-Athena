@@ -3,8 +3,9 @@
 The registry maps tool names to their metadata and handler name (resolved
 lazily against :mod:`mcp.handlers` to avoid a circular import). Every tool
 is read-only (``readOnlyHint``) **except the members of** :data:`WRITE_TOOLS`,
-which require the ``athena:write`` scope. Every schema sets
-``additionalProperties: false``.
+which require the ``athena:write`` scope — or, for the subset
+:data:`ACCOUNTING_TOOLS`, the separate ``athena:comptabilite`` scope (empty
+until plan lot 5). Every schema sets ``additionalProperties: false``.
 """
 
 import json
@@ -12,7 +13,13 @@ import re
 from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
-from mcp import SCOPE_READ, SCOPE_WRITE, write_enabled
+from mcp import (
+    SCOPE_COMPTABILITE,
+    SCOPE_READ,
+    SCOPE_WRITE,
+    comptabilite_enabled,
+    write_enabled,
+)
 from mcp import coverage
 from mcp.output_schemas import OUTPUT_SCHEMAS
 from tz import to_mtl
@@ -3681,23 +3688,77 @@ TOOLS: dict[str, dict] = {
 }
 
 
+# The accounting tools (plan decision D1): trust and administration register
+# entries, behind their OWN scope and their own kill switch. DERIVED from the
+# declared scope, never listed by hand — a tool joins by declaring
+# ``"scope": SCOPE_COMPTABILITE``, which is also what gates it at
+# tools/call. Every member is ALSO a member of WRITE_TOOLS (pinned by
+# tests/test_mcp_framework_guards: a non-read scope IS the write gate), so the
+# write protocol, the write audit, the write-time token revalidation and the
+# master switch MCP_WRITE_ENABLED all reach it by construction.
+#
+# EMPTY until plan lot 5: the scope, the switch and the consent box ship
+# dormant, and nothing lands under them before the model fixes they rely on.
+ACCOUNTING_TOOLS: frozenset[str] = frozenset(
+    name for name, spec in TOOLS.items()
+    if spec.get("scope") == SCOPE_COMPTABILITE
+)
+
+# The kill switches a tool can be off under, by their environment names —
+# what the tools/call refusal says, so the operator reads the variable to
+# flip rather than a paraphrase of it.
+WRITE_SWITCH = "MCP_WRITE_ENABLED"
+COMPTABILITE_SWITCH = "MCP_COMPTABILITE_ENABLED"
+
+
 def required_scope(name: str) -> str:
-    """Scope a tool needs. Unlisted tools default to read — never to write."""
+    """Scope a tool needs. Unlisted tools default to read — never to write.
+
+    An accounting tool needs ``athena:comptabilite`` and ONLY that (plus the
+    read baseline every /mcp call demands): ``athena:write`` does not stand
+    in for it, so a token granted writes alone never reaches one.
+    """
     return TOOLS[name].get("scope", SCOPE_READ)
 
 
+def unavailable_reason(name: str) -> Optional[str]:
+    """The kill switch that keeps *name* off, or ``None`` when it is live.
+
+    Two switches, nested. ``MCP_WRITE_ENABLED`` is the master: it governs
+    every write, accounting included, and it is the one NAMED when both are
+    off — it is off, and no other change will bring the tool back while it
+    stays off. ``MCP_COMPTABILITE_ENABLED`` governs the accounting subset
+    alone. A read tool is never switched off here (``MCP_ENABLED`` 404s the
+    whole endpoint instead, upstream of any tool).
+    """
+    if name in WRITE_TOOLS and not write_enabled():
+        return WRITE_SWITCH
+    if name in ACCOUNTING_TOOLS and not comptabilite_enabled():
+        return COMPTABILITE_SWITCH
+    return None
+
+
 def tool_available(name: str) -> bool:
-    """False when a write tool is off via the MCP_WRITE_ENABLED kill switch."""
-    return name not in WRITE_TOOLS or write_enabled()
+    """False when a kill switch keeps *name* off (see :func:`unavailable_reason`).
+
+    The tools/list filter reads this, and the tools/call gate reads
+    :func:`unavailable_reason` — the same decision, so a tool is never
+    advertised yet refused, nor hidden yet callable.
+    """
+    return unavailable_reason(name) is None
 
 
 def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict]:
     """Registry entries in MCP tools/list wire format, filtered by scope.
 
-    A read-only connection must not see the write tools: advertising them
-    would have the client model call one and take a 403 on every attempt,
-    and ``_forbidden`` does not feed the failure brake — an unthrottled
-    refusal loop. ``granted=None`` means "no filtering" (tests, docs).
+    A read-only connection must not see the write tools, nor a write
+    connection the accounting tools: advertising them would have the client
+    model call one and take a 403 on every attempt, and ``_forbidden`` does
+    not feed the failure brake — an unthrottled refusal loop. The filter is
+    by each tool's OWN scope, so the two grants are independent: read +
+    comptabilite shows the reads and the accounting tools, and nothing of
+    athena:write. ``granted=None`` means "no scope filtering" (tests, docs)
+    — the kill switches still apply.
     """
     scopes = granted if granted is not None else None
     out = []

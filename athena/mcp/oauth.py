@@ -33,13 +33,15 @@ from config import Config
 from mcp import (
     ALLOWED_REDIRECT_URIS,
     MCP_RESOURCE,
+    SCOPE_COMPTABILITE,
     SCOPE_READ,
     SCOPE_WRITE,
     SCOPES_SUPPORTED,
+    comptabilite_enabled,
     oauth_bp,
     write_enabled,
 )
-from mcp import store
+from mcp import store, tools
 from security import csrf, limiter, sanitize
 from utils.logging_setup import log_mcp_event, log_unexpected
 
@@ -254,25 +256,29 @@ def _validate_authorize_request(source: dict) -> dict:
         )
 
     # Scope handling has one invariant: `scope` here is the READ BASELINE
-    # and never contains SCOPE_WRITE, no matter what the client asked for.
-    # Write is added in authorize_decision() and only from the visible
-    # checkbox, so the page the user read and the grant that is minted can
-    # never disagree (the hidden `scope` input is attacker-modifiable).
-    # SCOPE_READ is always forced in: bearer.py demands it on EVERY /mcp
-    # call, so a write-only grant would be a permanently dead connector.
+    # and never contains SCOPE_WRITE nor SCOPE_COMPTABILITE, no matter what
+    # the client asked for. Each is added in authorize_decision() and only
+    # from its OWN visible checkbox, so the page the user read and the grant
+    # that is minted can never disagree (the hidden `scope` input is
+    # attacker-modifiable). SCOPE_READ is always forced in: bearer.py
+    # demands it on EVERY /mcp call, so a write-only (or accounting-only)
+    # grant would be a permanently dead connector.
     scope = _param(source, "scope")
     write_requested = False
+    comptabilite_requested = False
     if scope:
         requested = [s for s in scope.split() if s in SCOPES_SUPPORTED]
         if not requested:
             raise _RedirectError("invalid_scope")
         write_requested = SCOPE_WRITE in requested
+        comptabilite_requested = SCOPE_COMPTABILITE in requested
     granted_scope = SCOPE_READ
 
     resource = _param(source, "resource")
     if resource and resource != MCP_RESOURCE:
         raise _RedirectError("invalid_target")
 
+    comptabilite_offered = _comptabilite_offered()
     return {
         "client_id": client_id,
         "client_name": client.get("client_name", _DEFAULT_CLIENT_NAME),
@@ -287,7 +293,39 @@ def _validate_authorize_request(source: dict) -> dict:
         # client asked for write so the copy can say so.
         "write_requested": write_requested,
         "write_offered": write_enabled(),
+        # The accounting grant, same shape. `comptabilite_offered` is
+        # computed HERE, from server state, on the GET that renders the box
+        # and again on the POST that honours it — never read from the form.
+        "comptabilite_requested": comptabilite_requested,
+        "comptabilite_offered": comptabilite_offered,
+        # What the box would grant, by the tools' own French titles — the
+        # one description of the scope that cannot drift from the registry.
+        "comptabilite_tool_titles": (
+            sorted(tools.TOOLS[n]["title"] for n in tools.ACCOUNTING_TOOLS)
+            if comptabilite_offered else []
+        ),
     }
+
+
+def _comptabilite_offered() -> bool:
+    """May the consent screen offer the accounting box — and a tick on it
+    be honoured?
+
+    Three server-side conditions, all required:
+
+    * the master write switch — an accounting tool is a write, off whenever
+      writes are, so offering its box then would grant tools that are gone;
+    * the accounting switch (``MCP_COMPTABILITE_ENABLED``, default off);
+    * at least ONE tool that actually carries ``athena:comptabilite``.
+
+    The third keeps the box off the screen before plan lot 5, whatever the
+    switch says. A box that grants nothing would be a false statement — and
+    a scope minted under it would silently reach the first accounting tool
+    the day it deploys, under a screen that never described it.
+    """
+    return bool(
+        write_enabled() and comptabilite_enabled() and tools.ACCOUNTING_TOOLS
+    )
 
 
 def _append_query(uri: str, params: dict) -> str:
@@ -353,6 +391,16 @@ def authorize_decision() -> Any:
     granted_scope = params["scope"]
     if request.form.get("grant_write") == "on" and write_enabled():
         granted_scope = f"{granted_scope} {SCOPE_WRITE}"
+    # The ONLY path to an accounting grant, and independent of the write
+    # box: its own tick, honoured only while the box is OFFERED — which
+    # `_comptabilite_offered` recomputed for this POST from server state, so
+    # a forged field is refused while the switch is off AND while no tool
+    # carries the scope (a grant then would reach the first one to deploy).
+    if (
+        request.form.get("grant_comptabilite") == "on"
+        and params["comptabilite_offered"]
+    ):
+        granted_scope = f"{granted_scope} {SCOPE_COMPTABILITE}"
 
     try:
         code = store.create_auth_code(
@@ -372,6 +420,7 @@ def authorize_decision() -> Any:
         client_id=params["client_id"],
         scope=granted_scope,
         write_granted=SCOPE_WRITE in granted_scope.split(),
+        comptabilite_granted=SCOPE_COMPTABILITE in granted_scope.split(),
     )
     query = {"code": code}
     if params["state"]:

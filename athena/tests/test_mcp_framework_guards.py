@@ -24,6 +24,10 @@ What each guard buys:
     input schema is exactly what that policy says; and every tool that
     accepts one names read tools whose output declares the ``etag`` it
     expects — and hands the NEW etag back in its own result;
+(g) every tool under ``athena:comptabilite`` is a write that DEMANDS an
+    ``idempotency_key`` (policy ``required``, listed in its schema) — armed
+    now, vacuous on the real registry until plan lot 5, proven on a planted
+    one and on the dummy the scope tests register;
 (i) no write output declares a property that would persist privileged
     content or a capability URL into the `mcp_idempotency` replay cache, and
     no output at all declares a signed-URL or storage-path property;
@@ -55,6 +59,8 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import mcp.write_support as write_support
     from mcp.output_schemas import OUTPUT_SCHEMAS
+
+from tests import _dummy_accounting  # noqa: E402
 
 _TESTS_DIR = pathlib.Path(__file__).resolve().parent
 
@@ -333,6 +339,96 @@ def test_every_write_tool_declares_its_idempotency_policy():
         assert spec.get("idempotency") in tools.IDEMPOTENCY_POLICIES, name
         if spec["idempotency"] == tools.IDEMPOTENCY_REQUIRED:
             assert "idempotency_key" in spec["input_schema"].get("required", []), name
+
+
+# ══════════════════════════════════════════════════════════════════════
+# (g) Accounting: its own scope, and a key it DEMANDS
+# ══════════════════════════════════════════════════════════════════════
+#
+# Plan decision D1 + rule 7. The trust and administration registers are
+# append-only — a mistake is corrected by a reversal, never erased — so a
+# money write retried without a key is a SECOND entry that no tool can take
+# back. Every tool under athena:comptabilite must therefore demand an
+# `idempotency_key` (policy `required`, so the store fails CLOSED) and list
+# it in its schema's `required`. It must also be a write, or it would slip
+# past the write gate, the write audit and the master switch.
+#
+# Vacuous on the real registry until plan lot 5 — which is why the rule
+# lives in ONE pure function, proven below on a planted registry: it is
+# ARMED now, and the first accounting tool meets it the moment it is
+# declared rather than when someone remembers to write this test.
+
+
+def accounting_violations(registry: dict, accounting_tools, write_tools) -> list[str]:
+    """Every breach of the accounting contract in *registry*."""
+    out: list[str] = []
+    for name, spec in sorted(registry.items()):
+        declared = spec.get("scope") == mcp.SCOPE_COMPTABILITE
+        if declared is not (name in accounting_tools):
+            out.append(
+                f"{name}: ACCOUNTING_TOOLS membership contradicts its declared scope")
+        if not declared:
+            continue
+        if name not in write_tools:
+            out.append(
+                f"{name}: an accounting tool outside WRITE_TOOLS escapes the write gate")
+        if spec.get("idempotency") != tools.IDEMPOTENCY_REQUIRED:
+            out.append(
+                f"{name}: an accounting tool must declare idempotency 'required'")
+        if "idempotency_key" not in spec["input_schema"].get("required", []):
+            out.append(
+                f"{name}: an accounting tool must list idempotency_key in required")
+    return out
+
+
+def test_the_real_registry_honours_the_accounting_contract():
+    assert accounting_violations(
+        tools.TOOLS, tools.ACCOUNTING_TOOLS, tools.WRITE_TOOLS) == []
+
+
+def test_the_dummy_accounting_tool_honours_the_contract(monkeypatch):
+    """The dummy the scope tests register (tests/_dummy_accounting.py) is
+    shaped like a lot-5 tool. Were it not, those tests would prove the
+    gates on a tool that could never ship."""
+    name = _dummy_accounting.register(monkeypatch)
+    assert name in tools.ACCOUNTING_TOOLS
+    assert accounting_violations(
+        tools.TOOLS, tools.ACCOUNTING_TOOLS, tools.WRITE_TOOLS) == []
+
+
+def _planted_accounting(**spec_over) -> dict:
+    spec = {
+        "scope": mcp.SCOPE_COMPTABILITE,
+        "idempotency": tools.IDEMPOTENCY_REQUIRED,
+        "input_schema": {"type": "object", "properties": {},
+                         "required": ["idempotency_key"]},
+    }
+    spec.update(spec_over)
+    return {"record_x": spec}
+
+
+@pytest.mark.parametrize("over, sets, fragment", [
+    ({}, None, None),  # the well-formed world is clean
+    ({"idempotency": tools.IDEMPOTENCY_OPTIONAL}, None, "idempotency 'required'"),
+    ({"idempotency": None}, None, "idempotency 'required'"),
+    ({"input_schema": {"type": "object", "properties": {}, "required": []}},
+     None, "idempotency_key in required"),
+    ({}, {"write": frozenset()}, "escapes the write gate"),
+    ({}, {"accounting": frozenset()}, "contradicts its declared scope"),
+    ({"scope": mcp.SCOPE_WRITE}, None, "contradicts its declared scope"),
+])
+def test_the_accounting_guard_catches_what_it_claims(over, sets, fragment):
+    registry = _planted_accounting(**over)
+    sets = sets or {}
+    found = accounting_violations(
+        registry,
+        sets.get("accounting", frozenset({"record_x"})),
+        sets.get("write", frozenset({"record_x"})),
+    )
+    if fragment is None:
+        assert found == []
+    else:
+        assert any(fragment in v for v in found), found
 
 
 def test_every_input_schema_refuses_unknown_arguments():

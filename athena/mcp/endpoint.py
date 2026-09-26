@@ -276,13 +276,28 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
 
     # Authorization BEFORE argument validation and before any handler runs,
     # so a refused write never touches the model layer.
-    if not tools.tool_available(name):
+    # The refusal names the switch that is actually OFF — the master write
+    # switch, or the accounting one — so the operator reading it flips the
+    # right variable. Two literal reason codes, never a computed one (the
+    # refusal-reason sweep in test_mcp_jsonrpc reads them from the source).
+    switch = tools.unavailable_reason(name)
+    if switch == tools.COMPTABILITE_SWITCH:
+        log_mcp_event(
+            "mcp_write_refused", "refused", tool=name,
+            reason="comptabilite_disabled",
+        )
+        raise jsonrpc.JsonRpcError(
+            jsonrpc.INVALID_PARAMS,
+            "Accounting tools are disabled on this server "
+            f"({tools.COMPTABILITE_SWITCH}).",
+        )
+    if switch is not None:
         log_mcp_event(
             "mcp_write_refused", "refused", tool=name, reason="write_disabled"
         )
         raise jsonrpc.JsonRpcError(
             jsonrpc.INVALID_PARAMS,
-            "Write tools are disabled on this server (MCP_WRITE_ENABLED).",
+            f"Write tools are disabled on this server ({switch}).",
         )
     needed = tools.required_scope(name)
     if needed not in granted_scopes():
@@ -290,6 +305,9 @@ def _tools_call(params: dict, protocol_version: str) -> dict:
     if name in tools.WRITE_TOOLS:
         # Re-read the live token: the bearer success cache is a read-path
         # optimization and must not let a revoked token mutate the file.
+        # `needed` is the tool's OWN scope — athena:comptabilite for an
+        # accounting tool — so the live token must still carry THAT one;
+        # athena:write never stands in for it.
         revalidate_for_write(needed, name)
 
     arguments = params.get("arguments")

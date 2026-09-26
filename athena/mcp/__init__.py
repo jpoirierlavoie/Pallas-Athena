@@ -28,11 +28,20 @@ contact**, or the item lands in Firestore, shows up in the web UI, and DavX5
 silently never re-syncs it. All writes run through
 ``mcp/write_support.run_write`` (``idempotency_key``).
 
-Two independent kill switches, both defaulting to on:
+Three kill switches, nested from the widest to the narrowest:
 
-* ``MCP_ENABLED`` — when false, every route in both blueprints 404s.
-* ``MCP_WRITE_ENABLED`` — when false, the write tools disappear from
-  ``tools/list`` and are refused at ``tools/call``; reads are unaffected.
+* ``MCP_ENABLED`` (default on) — when false, every route in both
+  blueprints 404s.
+* ``MCP_WRITE_ENABLED`` (default on) — when false, EVERY write tool
+  disappears from ``tools/list`` and is refused at ``tools/call``, the
+  accounting ones included, and the consent screen offers no write box at
+  all; reads are unaffected.
+* ``MCP_COMPTABILITE_ENABLED`` (default OFF) — when false, the accounting
+  tools (``mcp.tools.ACCOUNTING_TOOLS``, the ``athena:comptabilite``
+  scope) disappear and are refused the same way, and the consent screen
+  does not offer their box. Money is fail-closed: a forgotten variable
+  leaves accounting off. No tool carries the scope before plan lot 5, so
+  until then the switch, the scope and the box are dormant.
 """
 
 from flask import Blueprint, abort, current_app
@@ -65,7 +74,22 @@ SCOPE_READ: str = "athena:read"
 # consent screen — never from the client's requested `scope` alone, so the
 # page the user read and the grant that is minted can never disagree.
 SCOPE_WRITE: str = "athena:write"
-SCOPES_SUPPORTED: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE)
+# The accounting grant (plan decision D1): trust and administration register
+# entries. Its OWN unticked consent box, never implied by athena:write and
+# never implying it — a token holding write alone cannot reach an accounting
+# tool, by construction (required_scope + the tools/list filter + the
+# write-time revalidation all demand THIS scope). Like write, it is added
+# only from the visible checkbox in oauth.authorize_decision, offered only
+# while write AND accounting are switched on AND at least one tool carries
+# the scope (a box that grants nothing would be a false statement), frozen
+# at issuance and copied verbatim across refresh rotation. An RFC 6749
+# scope-token: ASCII, no accent — « comptabilite », not « comptabilité ».
+SCOPE_COMPTABILITE: str = "athena:comptabilite"
+# Advertised in the RFC 8414 / RFC 9728 metadata. Every scope but read gates
+# a write: tests/test_mcp_framework_guards checks WRITE_TOOLS membership
+# against the non-read scopes of THIS tuple, so a scope joins the write gate
+# by being listed here — and a tool declaring an unlisted scope fails it.
+SCOPES_SUPPORTED: tuple[str, ...] = (SCOPE_READ, SCOPE_WRITE, SCOPE_COMPTABILITE)
 
 # Token / code lifetimes (seconds).
 ACCESS_TOKEN_TTL: int = 3600
@@ -101,7 +125,10 @@ oauth_bp.before_request(_kill_switch)
 
 
 def write_enabled() -> bool:
-    """True when the note-write tools are live (``MCP_WRITE_ENABLED``).
+    """True when the write tools are live (``MCP_WRITE_ENABLED``).
+
+    The MASTER write switch: it governs every member of
+    ``mcp.tools.WRITE_TOOLS``, the accounting tools included.
 
     Read through ``current_app.config`` so the switch can be flipped by a
     redeploy without touching code, and falls back to :class:`Config` when
@@ -111,6 +138,22 @@ def write_enabled() -> bool:
         return bool(current_app.config.get("MCP_WRITE_ENABLED", Config.MCP_WRITE_ENABLED))
     except RuntimeError:  # outside an app context
         return bool(Config.MCP_WRITE_ENABLED)
+
+
+def comptabilite_enabled() -> bool:
+    """True when the accounting tools may be live (``MCP_COMPTABILITE_ENABLED``).
+
+    Necessary, not sufficient: an accounting tool is a write, so it is ALSO
+    off whenever :func:`write_enabled` is false. Same resolution as
+    :func:`write_enabled` — the application config first, :class:`Config`
+    outside an application context — and the same fail-closed default seen
+    from the other side: ``Config`` defaults it to FALSE.
+    """
+    try:
+        return bool(current_app.config.get(
+            "MCP_COMPTABILITE_ENABLED", Config.MCP_COMPTABILITE_ENABLED))
+    except RuntimeError:  # outside an app context
+        return bool(Config.MCP_COMPTABILITE_ENABLED)
 
 
 def register_mcp(app) -> None:

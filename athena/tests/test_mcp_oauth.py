@@ -27,6 +27,8 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.bearer as bearer
     import mcp.store as store
 
+from tests import _dummy_accounting  # noqa: E402
+
 UTC = timezone.utc
 ATHENA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -322,7 +324,12 @@ def test_authorization_server_metadata(client):
     assert doc["registration_endpoint"] == f"{ORIGIN}/oauth/register"
     assert doc["code_challenge_methods_supported"] == ["S256"]
     assert doc["token_endpoint_auth_methods_supported"] == ["none"]
-    assert doc["scopes_supported"] == ["athena:read", "athena:write"]
+    # The accounting scope is ADVERTISED even while dormant (plan lot 0a):
+    # a client may request it, and the consent screen alone decides whether
+    # it is ever granted — the same rule athena:write has always followed.
+    assert doc["scopes_supported"] == [
+        "athena:read", "athena:write", "athena:comptabilite"
+    ]
 
 
 def test_protected_resource_metadata_both_paths(client):
@@ -334,6 +341,9 @@ def test_protected_resource_metadata_both_paths(client):
         assert doc["resource"] == f"{ORIGIN}/mcp"
         assert doc["authorization_servers"] == [ORIGIN]
         assert doc["bearer_methods_supported"] == ["header"]
+        assert doc["scopes_supported"] == [
+            "athena:read", "athena:write", "athena:comptabilite"
+        ]
 
 
 # ── Dynamic Client Registration ─────────────────────────────────────────
@@ -671,6 +681,256 @@ def test_refresh_rotation_preserves_the_write_grant(client, fake):
     assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
         "athena:read athena:write"
     )
+
+
+# ── Accounting grant (athena:comptabilite) — dormant until plan lot 5 ────
+#
+# Its OWN unticked box, offered only while MCP_WRITE_ENABLED and
+# MCP_COMPTABILITE_ENABLED are on AND at least one tool carries the scope.
+# No real tool does before lot 5, so the rendering half is exercised on the
+# DUMMY accounting tool of tests/_dummy_accounting.py; the dormant half on
+# the real registry.
+
+_ACCOUNTING_BLOCK_RE = re.compile(
+    r'<div class="[^"]*">\s*<p class="font-medium">Comptabilité \(facultatif\)</p>'
+    r".*?</div>",
+    re.DOTALL,
+)
+_ACCOUNTING_LABEL_RE = re.compile(
+    r'<label[^>]*>\s*<input type="checkbox" name="grant_comptabilite".*?</label>',
+    re.DOTALL,
+)
+
+
+def _accounting_app(monkeypatch, *, tool=True, **config):
+    if tool:
+        _dummy_accounting.register(monkeypatch)
+    config.setdefault("MCP_COMPTABILITE_ENABLED", True)
+    return _make_app(**config).test_client()
+
+
+def _granted(client, fake, client_doc, challenge, *, scope="athena:read", **ticks):
+    """Consent with the given boxes ticked; return the STORED code scope."""
+    form, _ = _consent_form(client, client_doc, challenge, scope=scope)
+    for box in ticks:
+        form[box] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    return fake.codes[store.sha256_hex(code)]["scope"]
+
+
+def test_the_accounting_box_is_dormant_while_no_tool_carries_the_scope(fake):
+    """The real registry — lots 0 to 4 — with the switch ON: no block, no
+    box, and a forged tick grants nothing. A box that granted nothing would
+    be a false statement, and a scope minted under it would silently reach
+    the first accounting tool the day it deploys."""
+    client = _make_app(MCP_COMPTABILITE_ENABLED=True).test_client()
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    form, page = _consent_form(client, client_doc, challenge)
+    body = page.data.decode("utf-8")
+    flat = " ".join(body.split())
+    assert 'name="grant_comptabilite"' not in body
+    assert "Comptabilité (facultatif)" not in flat
+    assert "Autoriser la comptabilité" not in flat
+    # The page speaks of the ONE box it offers, and forbids trust plainly.
+    assert "Sans la case ci-dessous" in flat
+    assert "aucune des cases" not in flat
+    assert "sauf avec la case" not in flat
+    form["grant_write"] = "on"
+    form["grant_comptabilite"] = "on"          # forged past the missing control
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:write"
+
+
+def test_the_accounting_box_renders_unticked_and_lists_its_tools(fake, monkeypatch):
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge)
+    body = page.data.decode("utf-8")
+    flat = " ".join(body.split())
+    checkbox = re.search(r'<input type="checkbox" name="grant_comptabilite"[^>]*>', body)
+    assert checkbox and "checked" not in checkbox.group(0)
+    assert "Autoriser la comptabilité (fidéicommis et administration)" in flat
+    assert "Comptabilité (facultatif)" in flat
+    # What the box grants is the registry's own list of titles, not prose.
+    assert _dummy_accounting.DUMMY_TITLE in flat
+    assert "l'une ne donne jamais l'autre" in flat
+    # The write box is still there, independent.
+    assert 'name="grant_write"' in body
+    # In number with the boxes, and the two « jamais » the box lifts are
+    # qualified — the page never forbids what it offers two blocks down.
+    assert "Si vous ne cochez aucune des cases ci-dessous" in flat
+    assert "Sans la case ci-dessous" not in flat
+    assert "sauf par une écriture aux registres comptables" in flat
+    assert "(sauf avec la case «&nbsp;Autoriser la comptabilité&nbsp;»)" in flat
+    assert "Le client a demandé cet accès" not in _ACCOUNTING_LABEL_RE.search(body).group(0)
+
+
+def test_the_accounting_block_uses_only_compiled_classes(fake, monkeypatch):
+    """A class absent from the compiled artifact silently does not apply,
+    and adding one is the seven-file fan-out of CLAUDE.md item 6: the block
+    reuses the write block's class strings verbatim."""
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    _, page = _consent_form(client, client_doc, challenge)
+    body = page.data.decode("utf-8")
+    html = _ACCOUNTING_BLOCK_RE.search(body).group(0) + _ACCOUNTING_LABEL_RE.search(body).group(0)
+    classes = {c for block in re.findall(r'class="([^"]+)"', html) for c in block.split()}
+    assert {"bg-amber-50", "text-indigo-600", "focus:ring-indigo-500"} <= classes
+    css_path = next(iter(sorted(
+        (p for p in os.listdir(os.path.join(ATHENA_DIR, "static", "vendor"))
+         if re.fullmatch(r"app\.[0-9a-f]{8}\.css", p))
+    )))
+    with open(os.path.join(ATHENA_DIR, "static", "vendor", css_path), encoding="utf-8") as fh:
+        css = fh.read()
+    absent = []
+    for cls in sorted(classes):
+        needle = "." + re.sub(r"([:./])", r"\\\1", cls)
+        hits = [m.end() for m in re.finditer(re.escape(needle), css)]
+        if not any(i >= len(css) or not (css[i].isalnum() or css[i] in "-_\\")
+                   for i in hits):
+            absent.append(cls)
+    assert not absent, absent
+
+
+def test_ticking_the_accounting_box_alone_grants_read_and_comptabilite(fake, monkeypatch):
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    verifier, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge)
+    form["grant_comptabilite"] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read athena:comptabilite"
+    body = _exchange(client, client_doc, code, verifier).get_json()
+    assert body["scope"] == "athena:read athena:comptabilite"
+
+
+def test_ticking_both_boxes_grants_all_three_scopes(fake, monkeypatch):
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    assert _granted(
+        client, fake, client_doc, challenge,
+        grant_write=True, grant_comptabilite=True,
+    ) == "athena:read athena:write athena:comptabilite"
+
+
+def test_the_write_box_never_grants_comptabilite(fake, monkeypatch):
+    """Independent in both directions, even with the accounting box on the
+    page: ticking writes alone yields read + write, nothing more."""
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    assert _granted(
+        client, fake, client_doc, challenge,
+        scope="athena:read athena:write athena:comptabilite", grant_write=True,
+    ) == "athena:read athena:write"
+
+
+@pytest.mark.parametrize("config", [
+    {"MCP_COMPTABILITE_ENABLED": False},
+    {"MCP_WRITE_ENABLED": False},
+], ids=["accounting_switch_off", "write_switch_off"])
+def test_a_forged_accounting_grant_is_refused_when_the_box_is_not_offered(
+    fake, monkeypatch, config
+):
+    """With a tool under the scope, but a switch off, the box is absent and
+    a forged tick is refused — recomputed on the POST from server state,
+    never read from the (attacker-modifiable) form."""
+    client = _accounting_app(monkeypatch, **config)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    form, page = _consent_form(client, client_doc, challenge)
+    assert 'name="grant_comptabilite"' not in page.data.decode("utf-8")
+    form["grant_comptabilite"] = "on"
+    form["comptabilite_offered"] = "True"      # a hidden field would change nothing
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert "athena:comptabilite" not in fake.codes[store.sha256_hex(code)]["scope"].split()
+
+
+@pytest.mark.parametrize("tool", [False, True], ids=["dormant", "offered"])
+def test_a_client_may_request_comptabilite_but_never_obtains_it_unticked(
+    fake, monkeypatch, tool
+):
+    """Requesting the scope is legitimate (it is advertised) — never
+    `invalid_scope` — and it only ever informs the page: the hidden `scope`
+    field is the READ baseline, and nothing but the tick escalates."""
+    client = _accounting_app(monkeypatch, tool=tool)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    form, page = _consent_form(client, client_doc, challenge, scope="athena:comptabilite")
+    assert page.status_code == 200
+    assert 'name="scope" value="athena:read"' in page.data.decode("utf-8")
+    if tool:
+        label = _ACCOUNTING_LABEL_RE.search(page.data.decode("utf-8")).group(0)
+        assert "Le client a demandé cet accès" in " ".join(label.split())
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    assert fake.codes[store.sha256_hex(code)]["scope"] == "athena:read"
+
+
+def _rotate(client, client_doc, refresh_token):
+    return client.post(
+        "/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_doc["client_id"],
+        },
+    ).get_json()
+
+
+def test_refresh_rotation_preserves_the_comptabilite_grant(fake, monkeypatch):
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    verifier, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge)
+    form["grant_comptabilite"] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    first = _exchange(client, client_doc, code, verifier).get_json()
+    rotated = _rotate(client, client_doc, first["refresh_token"])
+    assert rotated["scope"] == "athena:read athena:comptabilite"
+    assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
+        "athena:read athena:comptabilite"
+    )
+
+
+def test_refresh_rotation_never_adds_comptabilite(fake, monkeypatch):
+    """A write family, the accounting box offered on the page it came from:
+    rotation copies the frozen grant verbatim — it never grows into
+    accounting."""
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    verifier, challenge = _pkce_pair()
+    form, _ = _consent_form(client, client_doc, challenge)
+    form["grant_write"] = "on"
+    code = _code_from(client.post("/oauth/authorize", data=form))
+    first = _exchange(client, client_doc, code, verifier).get_json()
+    rotated = _rotate(client, client_doc, first["refresh_token"])
+    assert rotated["scope"] == "athena:read athena:write"
+    assert fake.tokens[store.sha256_hex(rotated["access_token"])]["scope"] == (
+        "athena:read athena:write"
+    )
+
+
+def test_the_consent_line_says_whether_accounting_was_granted(fake, monkeypatch, caplog):
+    import logging
+
+    client = _accounting_app(monkeypatch)
+    client_doc = _register_client(fake)
+    _, challenge = _pkce_pair()
+    seen = []
+    for ticks in ({}, {"grant_comptabilite": True}):
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="pallas.mcp"):
+            _granted(client, fake, client_doc, challenge, **ticks)
+        (line,) = [
+            r.json_fields for r in caplog.records
+            if getattr(r, "json_fields", {}).get("event") == "mcp_consent"
+        ]
+        seen.append((line["write_granted"], line["comptabilite_granted"]))
+    assert seen == [(False, False), (False, True)]
 
 
 # ── Token endpoint ──────────────────────────────────────────────────────

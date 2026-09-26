@@ -37,8 +37,15 @@
       le transit.
     </p>
     <p class="text-sm text-gray-500 mb-6">
-      Sans la case ci-dessous, le connecteur ne peut rien créer ni
-      modifier. Vous pouvez révoquer cet accès en tout temps.
+      {# In number with the boxes actually offered: the accounting box is
+         offered only beside the write one (mcp/oauth._comptabilite_offered),
+         and with neither there is no box to refer to at all. #}
+      {% if params.comptabilite_offered %}Si vous ne cochez aucune des cases
+      ci-dessous, le connecteur ne peut rien créer ni modifier.
+      {%- elif params.write_offered %}Sans la case ci-dessous, le connecteur
+      ne peut rien créer ni modifier.
+      {%- else %}Le connecteur ne pourra rien créer ni modifier.
+      {%- endif %} Vous pouvez révoquer cet accès en tout temps.
     </p>
 
     {% if params.write_offered %}
@@ -97,14 +104,23 @@
         <strong>jamais</strong> faire&nbsp;:</p>
       <ul class="list-disc list-inside mt-1 space-y-1">
         <li><strong>supprimer</strong> quoi que ce soit&nbsp;;</li>
-        <li>inscrire ou encaisser un <strong>paiement</strong>&nbsp;;</li>
+        {# The two « jamais » the accounting box lifts, qualified only while
+           that box is on this very page — so the screen never forbids,
+           two blocks up, what it offers to grant two blocks down. #}
+        <li>inscrire ou encaisser un <strong>paiement</strong>
+          {%- if params.comptabilite_offered %} — sauf par une écriture aux
+          registres comptables, avec la case «&nbsp;Autoriser la
+          comptabilité&nbsp;»{% endif %}&nbsp;;</li>
         <li>envoyer une facture, changer son statut ou l'annuler&nbsp;;</li>
         <li><strong>émettre un nouveau numéro de facture</strong>&nbsp;: le
           compteur annuel de l'application n'est jamais touché&nbsp;;</li>
         <li>changer le statut d'un dossier — fermer un dossier doit vider sa
           collection DavX5, ce que seule l'application fait&nbsp;;</li>
-        <li>toucher au <strong>fidéicommis</strong>, à la vérification
-          d'identité ou à la vérification des conflits d'intérêts&nbsp;;</li>
+        <li>toucher au <strong>fidéicommis</strong>
+          {%- if params.comptabilite_offered %} (sauf avec la case
+          «&nbsp;Autoriser la comptabilité&nbsp;»){% endif %}, à la
+          vérification d'identité ou à la vérification des conflits
+          d'intérêts&nbsp;;</li>
         <li><strong>modifier ou supprimer un document</strong> — la lecture
           de leur contenu, elle, est couverte par l'accès en lecture
           ci-dessus.</li>
@@ -127,6 +143,36 @@
         et ses déboursés redeviennent modifiables et le numéro se libère.
         Chaque écriture est horodatée et signée «&nbsp;Claude&nbsp;». Les
         éléments créés se synchronisent vers votre téléphone via DavX5.
+      </p>
+    </div>
+    {% endif %}
+
+    {% if params.comptabilite_offered %}
+    {# DORMANT until plan lot 5. Offered only while MCP_WRITE_ENABLED and
+       MCP_COMPTABILITE_ENABLED are both on AND at least one tool carries
+       the athena:comptabilite scope (mcp/oauth._comptabilite_offered) — so
+       in lots 0-4 it never renders. The tool list is DERIVED from the
+       registry's French titles: the box can neither describe a tool that
+       does not exist nor omit one that does. The class strings are the
+       write block's, verbatim (no Tailwind recompile). #}
+    <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+      <p class="font-medium">Comptabilité (facultatif)</p>
+      <p class="mt-1">
+        Une <strong>autorisation distincte</strong> de celle des écritures.
+        Si vous cochez «&nbsp;Autoriser la comptabilité&nbsp;», ce connecteur
+        pourra se servir des outils suivants, qui portent sur les
+        <strong>registres comptables</strong> — fidéicommis et
+        administration&nbsp;:
+      </p>
+      <ul class="list-disc list-inside mt-2 space-y-1">
+        {% for title in params.comptabilite_tool_titles %}
+        <li>{{ title }}</li>
+        {% endfor %}
+      </ul>
+      <p class="mt-3">
+        Sans cette case, <strong>aucun</strong> de ces outils n'est
+        accessible, même si vous autorisez les écritures. Et elle ne donne,
+        à elle seule, aucun autre droit d'écriture.
       </p>
     </div>
     {% endif %}
@@ -163,6 +209,26 @@
             paiement, jamais un nouveau numéro de
             facture.{% if params.write_requested %} Le client a demandé
             cet accès.{% endif %}
+          </span>
+        </span>
+      </label>
+      {% endif %}
+
+      {% if params.comptabilite_offered %}
+      {# The ONLY path to an accounting grant — its OWN tick, independent of
+         the write box. Default unchecked; the server honours it only while
+         the box is offered (recomputed on the POST), so a forged field is
+         refused whenever this block would not have rendered. #}
+      <label class="flex items-start gap-3 p-4 bg-gray-50 rounded-xl cursor-pointer">
+        <input type="checkbox" name="grant_comptabilite" value="on"
+               class="w-4 h-4 mt-0.5 flex-shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+        <span class="text-sm text-gray-700">
+          <span class="font-medium">Autoriser la comptabilité (fidéicommis et administration)</span>
+          <span class="block text-gray-500 mt-1">
+            Se servir des outils comptables énumérés ci-dessus. Indépendante
+            de la case des écritures&nbsp;: l'une ne donne jamais
+            l'autre.{% if params.comptabilite_requested %} Le client a
+            demandé cet accès.{% endif %}
           </span>
         </span>
       </label>

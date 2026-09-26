@@ -46,8 +46,8 @@ env_variables:
   # https://athena.poirierlavoie.ca in config.py.
   MCP_ENABLED: "true"
   # The SECOND kill switch: "false" removes every write tool from
-  # tools/list, refuses it at tools/call, and hides the consent checkbox —
-  # reads are untouched. It was absent from this file until lot Q and so ran
+  # tools/list — the accounting ones below included — refuses it at
+  # tools/call, and hides the consent checkboxes — reads are untouched. It was absent from this file until lot Q and so ran
   # on the config.py default ("true"), which meant the switch existed in code
   # and could not actually be flipped without a code change. State it
   # explicitly, both to make the effective value readable and to give the
@@ -56,11 +56,6 @@ env_variables:
   # ARM IT ("false") BEFORE deploying a lot that WIDENS the write surface.
   # A scope is frozen at issuance, so a token granted under an older consent
   # screen keeps working — and would silently reach the new tools the moment
-  # they deploy, under a screen that never described them.
-  #
-  # ARM IT ("false") BEFORE deploying a lot that WIDENS the write surface.
-  # A scope is frozen at issuance, so a token granted under an older consent
-  # screen keeps working and would silently reach the new tools the moment
   # they deploy, under a screen that never described them.
   #
   # THE ORDER IS NOT OBVIOUS, AND GETTING IT WRONG COSTS A ROUND TRIP.
@@ -79,6 +74,32 @@ env_variables:
   # Step 3 before step 4 is the part that is easy to get backwards. It is
   # safe because step 2 already left no token to escalate.
   MCP_WRITE_ENABLED: "true"
+  # The THIRD kill switch, and the only MCP one that defaults to OFF (money
+  # is fail-closed): "false" removes the accounting tools — scope
+  # athena:comptabilite, trust and administration register entries — from
+  # tools/list, refuses them at tools/call, and hides their consent box
+  # (« Autoriser la comptabilité »). MCP_WRITE_ENABLED is the master above
+  # it: when that one is "false", accounting is off whatever this says.
+  #
+  # DORMANT UNTIL PLAN LOT 5. No tool carries the scope yet, so the box is
+  # never offered — mcp/oauth.py offers it only while write AND accounting
+  # are on AND at least one tool carries the scope — and "true" here would
+  # change nothing. Leave it "false" until Lot 5 has deployed.
+  #
+  # SAME DOUBLE DUTY, SAME TRAP. While it is "false" the consent screen
+  # shows no accounting box, so a re-consent performed then silently
+  # yields a grant WITHOUT athena:comptabilite. An athena:write token can
+  # never reach an accounting tool (it needs its own scope), so arming the
+  # write switch is never required for this one:
+  #
+  #   1. deploy the lot with this "false"          → the tools land dead
+  #   2. revoke every token (scripts.revoke_mcp_tokens)
+  #   3. set "true" + deploy                       → the box comes back
+  #   4. only now: re-add the connector in claude.ai and tick the boxes
+  #
+  # In an incident, "false" + deploy stops accounting ONLY; the write switch
+  # above stops every write, accounting included.
+  MCP_COMPTABILITE_ENABLED: "false"
   # Cloud Trace resource labels (instance, zone, service). Since OTel SDK
   # 1.42 (PR #5145) resource detectors are loaded ONLY when this is set —
   # Google's migration guide still claims the GCP detector is picked up

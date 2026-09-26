@@ -90,11 +90,20 @@ class Config:
     # resource identifier; it must never be derived from request.host
     # (Host-header trust). Override locally for MCP Inspector testing.
     MCP_ENABLED: bool = os.environ.get("MCP_ENABLED", "true").lower() == "true"
-    # Second, narrower kill switch: turns the two note-write tools off
-    # (they vanish from tools/list and are refused at tools/call) without
+    # Second, narrower kill switch: turns EVERY write tool off — the
+    # accounting ones included (they vanish from tools/list, are refused at
+    # tools/call, and the consent screen offers no write box) — without
     # taking the read-only connector down with them.
     MCP_WRITE_ENABLED: bool = (
         os.environ.get("MCP_WRITE_ENABLED", "true").lower() == "true"
+    )
+    # Third, narrowest: the accounting tools (scope athena:comptabilite,
+    # plan lot 5) and their consent box. Defaults to FALSE — the one MCP
+    # switch that does: money is fail-closed, so a variable forgotten in a
+    # yaml leaves accounting OFF rather than on. Dormant until a tool
+    # carries the scope; see the arming comment in app.yaml.
+    MCP_COMPTABILITE_ENABLED: bool = (
+        os.environ.get("MCP_COMPTABILITE_ENABLED", "false").lower() == "true"
     )
     MCP_CANONICAL_ORIGIN: str = os.environ.get(
         "MCP_CANONICAL_ORIGIN", "https://athena.poirierlavoie.ca"

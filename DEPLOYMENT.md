@@ -159,7 +159,8 @@ integrations an adopter cannot otherwise discover without reading `config.py`.
 | `SESSION_LIFETIME_HOURS` | ○ | `12` | Server-side session lifetime |
 | `RATE_LIMIT_LOGIN` | ○ | `5 per minute` | Login rate limit |
 | `MCP_ENABLED` | ○ | `true` | `false` → all `/mcp` + `/oauth/*` routes 404 |
-| `MCP_WRITE_ENABLED` | ○ | `true` | `false` → the 22 write tools vanish from `tools/list`, are refused at `tools/call`, and the consent checkbox disappears; reads are untouched. Its arm/disarm procedure is **deploy-ordered** — see the comment in `app.yaml` — which is why it is deliberately not editable at runtime |
+| `MCP_WRITE_ENABLED` | ○ | `true` | `false` → the 22 write tools vanish from `tools/list`, are refused at `tools/call`, and the consent checkboxes disappear; reads are untouched. It is the **master** write switch: the accounting tools below are writes, so `false` stops them too, whatever `MCP_COMPTABILITE_ENABLED` says. Its arm/disarm procedure is **deploy-ordered** — see the comment in `app.yaml` — which is why it is deliberately not editable at runtime |
+| `MCP_COMPTABILITE_ENABLED` | ○ | **`false`** | The accounting switch — the only MCP switch that defaults to **off** (money is fail-closed: forgetting the variable leaves accounting off). `false` → the accounting tools (scope `athena:comptabilite`, a separate consent box « Autoriser la comptabilité ») vanish from `tools/list`, are refused at `tools/call`, and their box is not offered. **Dormant**: no tool carries the scope before plan lot 5, so the box is never offered and `true` changes nothing yet. Same double duty and same deploy order as `MCP_WRITE_ENABLED` — re-consenting while it is `false` silently yields a grant without accounting; see `app.yaml` |
 | `MCP_CANONICAL_ORIGIN` | ○ | owner domain in [config.py](athena/config.py) | OAuth issuer — **must be your domain** |
 | `TRACE_SAMPLE_RATIO` | ○ | `0.1` | Trace sampling (read by `utils/tracing_setup.py`, not by `config.py`) |
 | `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` | ✔ (prod) | — | `gcp`. Read by the **OpenTelemetry SDK itself**: since SDK 1.42 the resource detectors load *only* when it is set. Needed in **both** yamls — each service runs its own `tracing_setup` in its own process |
@@ -1243,6 +1244,13 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
 - In claude.ai: **Settings → Connectors → Add custom connector →**
   `https://yourdomain.example/mcp`, then complete Firebase login + MFA on the
   consent screen and click **« Autoriser »**.
+- The consent screen has room for a **second, separate box**, « Autoriser la
+  comptabilité » (scope `athena:comptabilite`). It appears only when
+  `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**
+  at least one tool carries that scope — none does before plan lot 5, so
+  today there is nothing to tick, whatever `MCP_COMPTABILITE_ENABLED` says.
+  A write grant never reaches an accounting tool: each box grants its own
+  scope, and only its own.
 - **Run no MCP write during a deploy window — and none after a rollback
   past the idempotency claim** (plan lot 0a: `mcp/write_support.py` with its
   `pending` status). Since that release a write CLAIMS its `idempotency_key`
