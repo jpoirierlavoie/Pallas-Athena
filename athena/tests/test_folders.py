@@ -431,6 +431,60 @@ def test_parallel_ensures_never_fork_the_system_folder(store, monkeypatch):
     assert second_errors == []
     assert first["id"] == second["id"] == folder.system_folder_id("d1", "projets")
     assert [f["name"] for f in _folders(store).values()] == ["Projets"]
+    # Review of T2: the loser READ BACK the winner's folder — it did not
+    # overwrite it. A `set()` at the deterministic id would pass every
+    # assertion above (one folder, one id) while replacing the winner's
+    # record; the etag is what tells the two apart.
+    stored = store.peek(f"folders/{first['id']}")
+    assert stored["etag"] == second["etag"] == first["etag"]
+
+
+def test_the_loser_of_the_race_never_overwrites_the_existing_folder(store, monkeypatch):
+    """Review of T2 — the create() / AlreadyExists contract on its own: the
+    system folder exists (created an instant ago by another generation) but
+    this call's read predates it. Its create() meets AlreadyExists and it
+    reads the stored folder back; nothing it built is written."""
+    fid = folder.system_folder_id("d1", "projets")
+    _seed_folder(store, fid, "Projets", system_role="projets", etag="e-premier")
+    monkeypatch.setattr(folder, "_all_folders", lambda dossier_id: [])
+
+    got, errors = folder.ensure_system_folder("d1", "projets")
+
+    assert errors == [] and got["etag"] == "e-premier"
+    assert store.peek(f"folders/{fid}")["etag"] == "e-premier"
+    assert store.peek(f"folders/{fid}")["created_at"] == T0
+
+
+def test_parallel_adoptions_stamp_the_legacy_folder_once(store, monkeypatch):
+    """Two generations on a dossier holding a legacy « Projets »: the second
+    adoption runs entirely between the first's read and its transaction.
+    The transaction re-reads the folder, sees the stamp, and returns it —
+    one stamp, one `system_folder_adopted` line, never a second folder."""
+    _seed_folder(store, "legacy", "Projets")
+    events = []
+    monkeypatch.setattr(
+        folder, "log_dossier_event",
+        lambda event, dossier_id, **kw: events.append((event, kw)),
+    )
+    real_read = folder._all_folders
+    interleaved = []
+
+    def _read_then_let_the_other_call_run(dossier_id):
+        rows = real_read(dossier_id)
+        if not interleaved:
+            interleaved.append(None)
+            interleaved[0] = folder.ensure_system_folder(dossier_id, "projets")
+        return rows
+
+    monkeypatch.setattr(folder, "_all_folders", _read_then_let_the_other_call_run)
+    first, errors = folder.ensure_system_folder("d1", "projets")
+
+    second, second_errors = interleaved[0]
+    assert errors == second_errors == []
+    assert first["id"] == second["id"] == "legacy"
+    assert first["etag"] == second["etag"] == store.peek("folders/legacy")["etag"]
+    assert [e for e, _kw in events] == ["system_folder_adopted"]
+    assert list(_folders(store)) == ["legacy"]
 
 
 def test_legacy_adoption_stamps_the_oldest_and_logs_the_fork(store, monkeypatch):
