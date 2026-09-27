@@ -488,6 +488,66 @@ def test_a_stale_designation_button_designates_nothing_and_says_why(store, web):
     assert "Rien n&#39;a été désigné" in page
 
 
+def test_a_double_tap_on_designate_does_not_say_designate_it_again(store, web):
+    """T3 review: the second POST of a double tap carries the SAME etag,
+    now stale. The page it lands on shows « Actif » and no button — the
+    banner must not tell the lawyer to designate it again."""
+    db, _ = store
+    tid = _create()
+    etag = db.peek(f"doc_templates/{tid}")["etag"]
+    first = web.post(f"/gabarits/{tid}/activer", data={"expected_etag": etag})
+    assert "message=" in first.headers["Location"]
+    second = web.post(f"/gabarits/{tid}/activer", data={"expected_etag": etag})
+    assert second.status_code == 302
+    assert "erreur=" not in second.headers["Location"]
+    page = web.get(second.headers["Location"]).get_data(as_text=True)
+    assert "déjà le gabarit actif" in page and "rien n&#39;a été modifié" in page
+    assert "désignez-le de nouveau" not in page
+    assert _holders(db, "note_honoraires") == [tid]
+
+
+def test_a_failed_delete_says_so_on_the_page(store, web):
+    """T3 review: the detail page's delete is a plain POST; a refusal used
+    to redirect to the page with no word — a failed delete read as a dialog
+    that had merely closed."""
+    db, bucket = store
+    tid = _create()
+
+    def boom(info):
+        if any(op == "delete" and p == f"doc_templates/{tid}"
+               for op, p in info.ops):
+            raise RuntimeError("commit refusé")
+
+    remove = db.add_commit_hook(boom)
+    resp = web.post(f"/gabarits/{tid}/delete")
+    remove()
+    assert resp.status_code == 302
+    assert db.peek(f"doc_templates/{tid}") is not None
+    page = web.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "Erreur lors de la suppression" in page
+    assert 'role="alert"' in page
+
+
+@pytest.mark.parametrize("url", [
+    "/gabarits/{tid}/download",
+    "/gabarits/{tid}/versions/1/download",
+])
+def test_a_download_that_cannot_be_signed_says_so_on_the_page(
+    store, web, monkeypatch, url
+):
+    """T3 review: a signing failure bounced back to the page silently (the
+    current file) or claimed the file « introuvable » (a version)."""
+    db, _ = store
+    tid = _create()
+    monkeypatch.setattr(tpl, "_signed_download_url", lambda *a, **k: None)
+    resp = web.get(url.format(tid=tid))
+    assert resp.status_code == 302
+    assert "erreur=" in resp.headers["Location"]
+    page = web.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "n&#39;a pas pu être téléchargé" in page
+    assert "le lien de téléchargement n&#39;a pas pu être créé" in page
+
+
 def test_the_page_names_the_template_the_kind_uses_now(store, web):
     db, _ = store
     a, b = _create("Papier A"), _create("Papier B")

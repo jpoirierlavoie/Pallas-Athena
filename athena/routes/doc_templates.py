@@ -417,10 +417,22 @@ def template_delete(template_id: str) -> Response | str:
         return redirect(target)
     # Failure: keep the user on the template (it still exists) rather than
     # silently redirecting to the list as if the delete had worked. The
-    # detail page's delete is a plain POST form → the non-HTMX branch.
+    # detail page's delete is a plain POST form → the non-HTMX branch,
+    # which now CARRIES the refusal (T3 review): it used to redirect to the
+    # page with no word at all, so a failed delete read as a dialog that
+    # had merely closed.
     if _is_htmx():
         return f'<div class="text-red-600 text-sm">{escape(error)}</div>'  # 200 — htmx swaps
-    return redirect(url_for("doc_templates.template_detail", template_id=template_id))
+    return _detail_redirect(template_id, erreur=error)
+
+
+# No signed URL could be minted: the file is gone, OR the signing call
+# (IAM signBlob) failed. The two are indistinguishable here, so the message
+# names both rather than assert « introuvable » on a transient failure.
+_DOWNLOAD_FAILED = (
+    "Le fichier n'a pas pu être téléchargé : il est introuvable, ou le lien "
+    "de téléchargement n'a pas pu être créé. Réessayez dans un instant."
+)
 
 
 @doc_templates_bp.route("/<template_id>/download")
@@ -428,7 +440,8 @@ def template_delete(template_id: str) -> Response | str:
 def template_download(template_id: str) -> Response | str:
     url = get_signed_url(template_id)
     if not url:
-        return redirect(url_for("doc_templates.template_detail", template_id=template_id))
+        # Said on the page (T3 review) — it used to bounce back silently.
+        return _detail_redirect(template_id, erreur=_DOWNLOAD_FAILED)
     return redirect(url)
 
 
@@ -449,6 +462,18 @@ def template_activate(template_id: str) -> Response:
     )
     if errors:
         if concurrency.is_stale(errors):
+            # A double tap (a slow phone) sends the SAME etag twice: the
+            # first designates, the second is stale. Its answer must not
+            # tell the lawyer to designate again a template the page now
+            # shows « Actif » with no button (T3 review) — when the template
+            # IS the designation now, say that, and that nothing changed.
+            current = get_template(template_id)
+            if is_active(current):
+                return _detail_redirect(template_id, message=(
+                    "Ce gabarit est déjà le gabarit actif des « "
+                    f"{ACTIVE_KIND_NAMES.get(current.get('kind'), '')} » : "
+                    "rien n'a été modifié."
+                ))
             errors = [_ACTIVATE_STALE]
         return _detail_redirect(template_id, erreur=errors[0])
     kind = template.get("kind", "")
@@ -495,9 +520,7 @@ def template_version_restore(template_id: str, version: int) -> Response:
 def template_version_download(template_id: str, version: int) -> Response:
     url = get_version_signed_url(template_id, version)
     if not url:
-        return _detail_redirect(
-            template_id, erreur="Le fichier de cette version est introuvable."
-        )
+        return _detail_redirect(template_id, erreur=_DOWNLOAD_FAILED)
     return redirect(url)
 
 
