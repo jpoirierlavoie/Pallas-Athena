@@ -54,14 +54,18 @@
         {% for h in short_term_hearings %}
           <a href="/audiences/{{ h.id }}" class="flex items-start gap-3 py-2.5 hover:bg-gray-50 -mx-2 px-2 rounded-lg transition-colors">
             <div class="flex-shrink-0 w-12 text-center">
+              {# The civil day: an all-day hearing is stored at midnight UTC,
+                 which to_mtl reads as the evening BEFORE
+                 (models.hearing.occurrence_day). #}
+              {% set hday = (h.start_datetime if h.all_day else (h.start_datetime|to_mtl)) if h.start_datetime else none %}
               <p class="text-xs text-gray-400 uppercase">
-                {{ h.start_datetime|to_mtl|default("—") and (h.start_datetime|to_mtl).strftime('%a') if h.start_datetime else '—' }}
+                {{ hday.strftime('%a') if hday else '—' }}
               </p>
               <p class="text-lg font-semibold text-gray-900">
-                {{ (h.start_datetime|to_mtl).strftime('%d') if h.start_datetime else '—' }}
+                {{ hday.strftime('%d') if hday else '—' }}
               </p>
               <p class="text-xs text-gray-400">
-                {{ (h.start_datetime|to_mtl).strftime('%b') if h.start_datetime else '' }}
+                {{ hday.strftime('%b') if hday else '' }}
               </p>
             </div>
             <div class="flex-1 min-w-0">
@@ -198,7 +202,7 @@
           <a href="/audiences/{{ h.id }}" class="flex items-center gap-3 py-2 hover:bg-gray-50 -mx-2 px-2 rounded-lg transition-colors">
             <div class="flex-shrink-0 text-xs text-gray-500 w-20">
               {% if h.start_datetime %}
-                {{ (h.start_datetime|to_mtl).strftime('%d %b %Y') }}
+                {{ (h.start_datetime if h.all_day else (h.start_datetime|to_mtl)).strftime('%d %b %Y') }}
               {% else %}
                 —
               {% endif %}

@@ -465,3 +465,133 @@ def test_the_dossier_hearing_counts_split_by_civil_day(monkeypatch):
     ]})
     summary = hm.get_hearing_summary("d1")
     assert summary == {"total": 6, "upcoming": 2, "past": 2}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. The date LABELS — the display half of the same rule
+# ══════════════════════════════════════════════════════════════════════
+#
+# The windows above list today's all-day hearing ON its day; every surface
+# then printed its date through to_mtl — the evening BEFORE (00:00 UTC on
+# the 15th = 20:00 on the 14th). Listed on the 15th, labelled the 14th.
+# An all-day hearing's stored date IS its civil day (occurrence_day).
+
+_ALLDAY_TODAY = _hearing("allday-today", datetime(2026, 10, 15, tzinfo=UTC),
+                         all_day=True)
+
+
+@pytest.fixture
+def allday_client(monkeypatch):
+    """ONE hearing in the store — today's all-day one — and an app with the
+    two blueprints its pages link to."""
+    fake = install(monkeypatch, hm)
+    fake.seed("hearings/allday-today", dict(_ALLDAY_TODAY))
+    app = Flask(__name__, template_folder="../templates")
+    app.secret_key = "t"
+    app.jinja_env.globals.update(
+        csrf_token=lambda: "tok", ms=ms, csp_nonce=lambda: "n"
+    )
+    app.jinja_env.filters["to_mtl"] = to_mtl
+    app.jinja_env.filters["jsattr"] = lambda v: v
+    app.register_blueprint(rh.hearings_bp)
+    app.register_blueprint(rd.dossiers_bp)
+    monkeypatch.setattr(rh, "today_mtl", lambda: TODAY)
+    monkeypatch.setattr(rd, "get_dossier", lambda i: {
+        "id": "d1", "file_number": "2026-001", "title": "Tremblay c. Lavoie",
+        "status": "actif"})
+    monkeypatch.setattr(rd, "_attach_prescription_warnings", lambda rows: None)
+    monkeypatch.setattr(rd.deadlines, "today_mtl", lambda: TODAY)
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s["user_id"] = "u"
+        s["expires_at"] = datetime.now(UTC) + timedelta(hours=1)
+    return c
+
+
+def _day_badge(body: str) -> set[str]:
+    """The two-digit day numbers the page prints in a date badge."""
+    import re
+    return set(re.findall(r'leading-none">(\d\d)</span>', body))
+
+
+def test_the_list_badge_prints_an_all_day_hearing_on_its_own_day(
+    allday_client
+):
+    body = _listed(allday_client)
+    assert "T-allday-today" in body
+    assert _day_badge(body) == {"15"}            # the 14th on the old code
+    compact = "".join(body.split())
+    assert ">jeu<" in compact and ">mer<" not in compact   # Thursday 15
+
+
+def test_the_detail_page_prints_an_all_day_hearing_on_its_own_day(
+    allday_client
+):
+    resp = allday_client.get("/audiences/allday-today")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "15 octobre 2026" in body
+    assert "14 octobre 2026" not in body
+
+
+def test_the_dossier_tab_badge_prints_an_all_day_hearing_on_its_own_day(
+    allday_client
+):
+    body = allday_client.get("/dossiers/d1/tab/audiences",
+                             headers={"HX-Request": "true"}).get_data(
+                                 as_text=True)
+    assert "T-allday-today" in body
+    assert _day_badge(body) == {"15"}
+
+
+def test_no_template_prints_a_hearing_start_date_through_to_mtl_alone():
+    """The sweep behind the renders: a hearing's start goes through to_mtl
+    only to print an HOUR; every DATE alone (day, weekday, month, year) of
+    it takes the all-day branch first. A new template printing
+    ``(h.start_datetime|to_mtl).strftime('%d')`` would put every all-day
+    hearing on the evening before, with nothing else to notice it."""
+    import pathlib
+    import re
+    templates = pathlib.Path(__file__).resolve().parent.parent / "templates"
+    use = re.compile(
+        r"\((?:h|hearing)\.start_datetime\s*\|\s*to_mtl\)(\.[a-z_]+(?:\([^)]*\))?)")
+    offenders = []
+    for path in templates.rglob("*.html"):
+        for m in use.finditer(path.read_text(encoding="utf-8")):
+            # An HOUR may be printed (a timed event's, possibly with its
+            # date — the Réception rendez-vous card); never a date alone.
+            if "%H" not in m.group(1):
+                offenders.append(f"{path.relative_to(templates)}: {m.group(0)}")
+    assert offenders == [], offenders
+
+
+def test_the_dashboard_hearing_labels_take_the_all_day_branch():
+    """No test renders the real dashboard (its route test captures the
+    context instead), so its two hearing lists are pinned here on the
+    template's OWN expressions, run through Jinja with the real to_mtl:
+    today's all-day hearing reads « 15 », a 21:00 hearing its Montréal day,
+    and a row without a start the dash."""
+    import pathlib
+    import re
+    import jinja2
+    source = (pathlib.Path(__file__).resolve().parent.parent / "templates"
+              / "dashboard" / "index.html").read_text(encoding="utf-8")
+    jinja2.Environment().parse(source)     # the page still compiles
+    short = re.search(r"\{% set hday = .*? %\}", source).group(0)
+    long_ = re.search(
+        r"\{\{ \(h\.start_datetime if h\.all_day else "
+        r"\(h\.start_datetime\|to_mtl\)\)\.strftime\('%d %b %Y'\) \}\}",
+        source).group(0)
+    env = jinja2.Environment()
+    env.filters["to_mtl"] = to_mtl
+    tpl = env.from_string(
+        "{% for h in hs %}" + short
+        + "[{{ hday.strftime('%d') if hday else '—' }}"
+        + "{% if h.start_datetime %}|" + long_ + "{% endif %}]{% endfor %}")
+    out = tpl.render(hs=[
+        _ALLDAY_TODAY,
+        _hearing("timed-today-21h", _mtl(2026, 10, 15, 21)),
+        {"all_day": False, "start_datetime": None},
+    ])
+    # %b is the process locale's month name — pin the DAYS only.
+    assert re.fullmatch(r"\[15\|15 \S+ 2026\]\[15\|15 \S+ 2026\]\[—\]", out), out

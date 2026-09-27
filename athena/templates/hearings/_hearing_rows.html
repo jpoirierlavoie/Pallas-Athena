@@ -28,11 +28,15 @@
     {# Date badge #}
     <div class="w-12 h-12 rounded-lg bg-gray-50 flex flex-col items-center justify-center flex-shrink-0 {{ 'border-l-4 border-indigo-500' if not is_past else 'border-l-4 border-gray-300' }}">
       {% if h.start_datetime and h.start_datetime.strftime is defined %}
+      {# The civil day: an all-day hearing is stored at midnight UTC, which
+         to_mtl reads as the evening BEFORE (models.hearing.occurrence_day,
+         the rule the lists filter on). #}
+      {% set hday = h.start_datetime if h.all_day else (h.start_datetime|to_mtl) %}
       <span class="text-[10px] font-medium text-gray-500 uppercase leading-none">
         {% set day_names = ['lun', 'mar', 'mer', 'jeu', 'ven', 'sam', 'dim'] %}
-        {{ day_names[(h.start_datetime|to_mtl).weekday()] }}
+        {{ day_names[hday.weekday()] }}
       </span>
-      <span class="text-lg font-bold text-gray-900 leading-none">{{ (h.start_datetime|to_mtl).strftime('%d') }}</span>
+      <span class="text-lg font-bold text-gray-900 leading-none">{{ hday.strftime('%d') }}</span>
       {% endif %}
     </div>
 
@@ -85,7 +89,7 @@
     {% if h.start_datetime and h.start_datetime.strftime is defined %}
     <div class="text-xs text-gray-400 flex-shrink-0 text-right">
       {% set month_names = ['', 'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juill.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'] %}
-      {{ month_names[(h.start_datetime|to_mtl).month] }}
+      {{ month_names[(h.start_datetime if h.all_day else (h.start_datetime|to_mtl)).month] }}
     </div>
     {% endif %}
   </div>
