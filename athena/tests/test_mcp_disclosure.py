@@ -303,8 +303,15 @@ def _calls_to(tree: ast.AST, call: str) -> int:
     )
 
 
-def violations(files: dict[str, str]) -> list[str]:
-    """Every breach of every NEVER in *files* ({relative path: source})."""
+def violations(
+    files: dict[str, str], *, tool_code: "frozenset[str] | set[str]" = (
+        disclosure.TOOL_CODE_MODULES),
+) -> list[str]:
+    """Every breach of every NEVER in *files* ({relative path: source}).
+
+    *tool_code* — the modules the tool-code patterns (a bare ``.delete()``)
+    also apply to: the registry's TOOL_CODE_MODULES, plus, for the real
+    sweep, every service module a connector module reaches."""
     out: list[str] = []
     for rel, source in sorted(files.items()):
         if rel in disclosure.SWEEP_EXCLUDED:
@@ -314,7 +321,7 @@ def violations(files: dict[str, str]) -> list[str]:
         modules = _imported_modules(tree)
         for never in disclosure.NEVERS:
             patterns = list(never.forbidden)
-            if rel in disclosure.TOOL_CODE_MODULES:
+            if rel in tool_code:
                 patterns += list(never.forbidden_in_tool_code)
             for pattern in patterns:
                 for ident in sorted(refs):
@@ -335,8 +342,83 @@ def _sources() -> dict[str, str]:
     return {rel: p.read_text(encoding="utf-8") for rel, p in _connector_files().items()}
 
 
+def _service_names(source: str) -> set[str]:
+    """The ``services`` modules a source imports, in any form."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "services":
+                names.update(alias.name for alias in node.names)
+            elif node.module.startswith("services."):
+                names.add(node.module.split(".", 2)[1])
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("services."):
+                    names.add(alias.name.split(".", 2)[1])
+    return names
+
+
+def services_reached(
+    files: dict[str, str], read: "dict[str, str] | None" = None,
+) -> dict[str, str]:
+    """``{"services/X.py": source}`` of every service module the connector
+    modules in *files* import — transitively (a service importing a
+    service). *read* maps a service name to its source (tests); the disk
+    otherwise.
+
+    Since lot 1b (L6) the protocol tools write THROUGH a service
+    (``services/protocoles.py``, the door the web routes use), so a sweep
+    of the ``mcp`` package alone would no longer prove what a « never »
+    promises: a service reached by a tool could call a forbidden model
+    function — a ``delete_step`` in a step edit — with the sweep green."""
+    out: dict[str, str] = {}
+    pending = sorted({n for src in files.values() for n in _service_names(src)})
+    while pending:
+        name = pending.pop()
+        rel = f"services/{name}.py"
+        if rel in out:
+            continue
+        if read is not None:
+            source = read.get(name)
+        else:
+            path = _ATHENA / "services" / f"{name}.py"
+            source = path.read_text(encoding="utf-8") if path.exists() else None
+        if source is None:
+            continue
+        out[rel] = source
+        pending.extend(sorted(_service_names(source) - {
+            r.split("/", 1)[1][:-3] for r in out}))
+    return out
+
+
 def test_no_connector_module_breaks_a_never():
-    assert violations(_sources()) == []
+    sources = _sources()
+    reached = services_reached(sources)
+    assert violations(
+        {**sources, **reached},
+        tool_code=disclosure.TOOL_CODE_MODULES | set(reached),
+    ) == []
+
+
+def test_the_sweep_follows_the_services_the_tools_reach():
+    """Non-vacuous: the protocol service is swept, and a forbidden call
+    planted in a service a connector module imports — in each import
+    form — is reported, including a bare ``.delete()`` (tool code)."""
+    assert "services/protocoles.py" in services_reached(_sources())
+    planted = {"relay": "from services import deep as d\n",
+               "deep": "note_model.delete_note(n)\nref.delete()\n"}
+    for form in ("from services import relay as r\n",
+                 "from services.relay import something\n",
+                 "import services.relay\n"):
+        files = {"mcp/probe.py": form}
+        reached = services_reached(files, read=planted)
+        assert set(reached) == {"services/relay.py", "services/deep.py"}
+        found = violations({**files, **reached},
+                           tool_code=set(reached))
+        assert any(v.startswith("services/deep.py: delete forbids "
+                                "delete_note") for v in found), found
+        assert any(v == "services/deep.py: delete forbids delete"
+                   for v in found), found
 
 
 def test_the_sweep_reads_every_connector_module_but_the_registry():
