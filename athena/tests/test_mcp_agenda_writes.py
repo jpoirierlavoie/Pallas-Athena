@@ -373,6 +373,25 @@ def test_reopen_task_cascades_into_an_auto_closed_protocol(fake):
     assert any("de nouveau « actif »" in w for w in payload["warnings"])
 
 
+def test_reopen_task_says_when_the_cascade_could_not_be_reread(
+    fake, monkeypatch,
+):
+    """get_protocol answers None on a read error: the report must say it
+    could not look, never hand back protocol_reopened: false beside empty
+    statuses — a reader takes that for « the protocol stayed closed » while
+    the cascade reopened it (revue L5)."""
+    _protocol(fake, status="complété", closed_by="auto")
+    _step(fake, "s1", status="complété", task="t1")
+    _task(fake, "t1", status="terminée")
+    monkeypatch.setattr(handlers.protocol_model, "get_protocol",
+                        lambda protocol_id: None)
+    effect = handlers.reopen_task({"task_id": "t1"})["protocol_step_effect"]
+    assert fake.peek(f"protocols/{P}")["status"] == "actif"   # it DID reopen
+    assert effect["linked_step_found"] is True
+    assert effect["step_status_after"] == ""
+    assert "n'a pas pu être relu" in effect["note"]
+
+
 @pytest.mark.parametrize("closed_by, other", [("web", False), ("auto", True)])
 def test_reopen_task_refuses_when_the_step_cannot_follow(fake, closed_by, other):
     _protocol(fake, status="complété", closed_by=closed_by)

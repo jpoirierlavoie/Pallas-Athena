@@ -813,12 +813,16 @@ def _task_status_effect() -> dict:
         "step_id": _str(),
         "step_title": _str(),
         "step_status_before": _str(),
-        "step_status_after": _str("RE-READ after the write."),
+        "step_status_after": _str(
+            "RE-READ after the write; '' when that re-read failed (then "
+            "`note` says so)."),
         "protocol_status_before": _str(),
-        "protocol_status_after": _str("RE-READ after the write."),
+        "protocol_status_after": _str(
+            "RE-READ after the write; '' when that re-read failed."),
         "protocol_reopened": _bool(
             "true = the protocol the cascade had closed is « actif » "
-            "again: its deadlines are back in get_agenda."),
+            "again: its deadlines are back in get_agenda. Meaningless when "
+            "the re-read failed (`note`)."),
         "note": _str("French; empty when there is nothing to add."),
     })
 

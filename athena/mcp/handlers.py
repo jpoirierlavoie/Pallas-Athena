@@ -6527,20 +6527,30 @@ def _reopen_no_effect() -> dict:
     }
 
 
-def _reread_step_state(protocol_id: str, step_id: str) -> tuple[str, str]:
-    """``(step_status, protocol_status)`` re-read AFTER the write.
+def _reread_step_state(
+    protocol_id: str, step_id: str
+) -> Optional[tuple[str, str]]:
+    """``(step_status, protocol_status)`` re-read AFTER the write, or
+    ``None`` when that re-read produced nothing to report.
 
     The cascade runs after the task commit and logs rather than raises, so
-    a predicted outcome could be false; one keyed read reports what IS."""
+    a predicted outcome could be false; one keyed read reports what IS.
+    ``get_protocol`` answers ``None`` on a read ERROR as well as on an
+    absence, and a step it no longer lists has no status to report: both
+    are ``None`` here, so the caller says « not re-read » instead of
+    reporting an empty status — which a reader would take for « the
+    protocol did not reopen »."""
     try:
         protocol = protocol_model.get_protocol(protocol_id)
     except Exception:
-        return "", ""
+        return None
     if not protocol:
-        return "", ""
+        return None
     step = next((s for s in protocol.get("steps", []) or []
                  if s.get("id") == step_id), None)
-    return (step or {}).get("status", ""), protocol.get("status", "")
+    if step is None:
+        return None
+    return step.get("status", ""), protocol.get("status", "")
 
 
 def reopen_task(args: dict) -> dict:
@@ -6619,7 +6629,8 @@ def _reopen_task_impl(args: dict) -> dict:
         protocol, step = before
         protocol_id = protocol.get("id", "")
         step_id = step.get("id", "")
-        step_after, protocol_after = _reread_step_state(protocol_id, step_id)
+        reread = _reread_step_state(protocol_id, step_id)
+        step_after, protocol_after = reread if reread is not None else ("", "")
         effect.update({
             "checked": True,
             "linked_step_found": True,
@@ -6634,7 +6645,15 @@ def _reopen_task_impl(args: dict) -> dict:
                 protocol.get("status", "") != "actif"
                 and protocol_after == "actif"),
         })
-        if step.get("status") == "complété" and step_after == "complété":
+        if reread is None:
+            effect["note"] = (
+                "La tâche est enregistrée, mais l'état de l'étape liée et de son "
+                "protocole n'a pas pu être relu après l'écriture : "
+                "step_status_after, protocol_status_after et "
+                "protocol_reopened ne disent donc rien. Vérifiez le "
+                "protocole dans l'application."
+            )
+        elif step.get("status") == "complété" and step_after == "complété":
             effect["note"] = (
                 "L'étape liée est restée « complété » : sa synchronisation "
                 "a échoué après l'écriture de la tâche. Vérifiez le "
