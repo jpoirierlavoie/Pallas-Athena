@@ -86,6 +86,21 @@ NO_DOSSIER_PURPOSES = ("intérêts", "frais_bancaires", "correction")
 # create route/path so reversal stays the sole way to produce one (§3.2, §5.2).
 REVERSAL_PURPOSE = "correction"
 
+# ── Withdrawal rules of RLRQ c. B-1, r. 5 (verified 2026-09-25, D14) ───────
+# Art. 58: fees and disbursements leave the general trust account « seulement
+# par chèque tiré à l'ordre de l'avocat ou par virement à un compte qui n'est
+# pas un compte en fidéicommis » — the two methods a fee payment may use.
+FEE_WITHDRAWAL_METHODS = ("chèque", "virement")
+# Art. 57: no cash withdrawal from a general trust account, « sous réserve de
+# l'article 72 »: a lawyer who must refund, « en tout ou en partie », a sum of
+# 7 500 $ or more RECEIVED in cash must refund it in cash. The threshold is on
+# the sum RECEIVED, not on the refund (a partial refund of a 10 000 $ cash
+# receipt MUST be in cash) — so the rule is verified against the receipt the
+# refund cites (``cash_receipt_id``), never against the refund's own amount.
+CASH_METHOD = "comptant"
+CASH_REFUND_PURPOSE = "remise_client"
+CASH_REFUND_THRESHOLD = 750_000  # cents — 7 500 $, art. 72
+
 VALID_RECONCILIATION_STATUSES = ("brouillon", "complétée")
 
 # ── French display labels ──────────────────────────────────────────────────
@@ -368,6 +383,32 @@ _ABORT_MESSAGES = {
     ),
     "compensation_future": "La date de compensation ne peut être dans le futur.",
     "compensation_erreur": "Erreur lors de la compensation. Veuillez réessayer.",
+    "mode_retrait_honoraires": (
+        "Un paiement d'honoraires ne se retire du fidéicommis que par chèque à "
+        "l'ordre de l'avocat ou par virement à un compte qui n'est pas en "
+        "fidéicommis (art. 58, RLRQ c. B-1, r. 5). Choisissez le mode « Chèque » "
+        "ou « Virement »."
+    ),
+    "retrait_espèces_interdit": (
+        "Un retrait en espèces du compte général en fidéicommis est interdit "
+        "(art. 57, RLRQ c. B-1, r. 5). Seule exception (art. 72) : rembourser au "
+        "client, en espèces, tout ou partie d'une somme de 7 500 $ ou plus reçue "
+        "en espèces — choisissez alors l'objet « Remise au client » et indiquez "
+        "l'écriture de recette en espèces remboursée."
+    ),
+    "recette_espèces_introuvable": (
+        "L'écriture de recette en espèces indiquée est introuvable."
+    ),
+    "recette_espèces_invalide": (
+        "L'écriture indiquée n'est pas une recette en espèces de 7 500 $ ou plus, "
+        "non contre-passée, reçue pour ce client dans ce dossier et ce compte : "
+        "un remboursement en espèces n'est permis que dans ce cas (art. 72, "
+        "RLRQ c. B-1, r. 5)."
+    ),
+    "remboursement_espèces_excède": (
+        "Le remboursement en espèces dépasse la somme reçue en espèces par cette "
+        "écriture (remboursements en espèces antérieurs compris)."
+    ),
     # The reconciliation lock floor (D14, 2026-09-25) — admin_ledger's
     # wording, plus the period so the lawyer knows WHICH reconciliation.
     "période_verrouillée": (
@@ -648,6 +689,7 @@ def _build_transaction_doc(
     balance_after_client: int,
     now: datetime,
     invoice_external_ref: str = "",
+    cash_receipt_id: str = "",
     status: str = "en_circulation",
     cleared_date=None,
     reconciliation_id: Optional[str] = None,
@@ -697,6 +739,9 @@ def _build_transaction_doc(
         # Number of an invoice that predates Pallas Athéna (no invoice row to
         # link). Recorded, NOT verifiable — see the create guard.
         "invoice_external_ref": invoice_external_ref,
+        # Art. 72: the cash RECEIPT a cash refund repays ("" on every other
+        # entry) — the only thing that makes a cash withdrawal lawful.
+        "cash_receipt_id": cash_receipt_id,
         "reverses_id": reverses_id,
         "reversed_by_id": reversed_by_id,
         "related_transaction_id": related_transaction_id,
@@ -729,6 +774,16 @@ def _precheck_reason(clean: dict) -> Optional[str]:
         return "objet_invalide"
     if method not in VALID_METHODS:
         return "mode_invalide"
+    # Art. 58 — a fee payment leaves trust by cheque or by transfer, never by
+    # a traite, a direct deposit or cash.
+    if purpose == "virement_honoraires" and method not in FEE_WITHDRAWAL_METHODS:
+        return "mode_retrait_honoraires"
+    # Art. 57 — no cash withdrawal, save the art. 72 refund, which must cite
+    # the cash receipt it refunds (verified inside the transaction).
+    if direction == "déboursé" and method == CASH_METHOD and (
+        purpose != CASH_REFUND_PURPOSE or not (clean.get("cash_receipt_id") or "").strip()
+    ):
+        return "retrait_espèces_interdit"
     if not counterparty:
         return "contrepartie_requise"
     if (dossier_id is None) != (client_id is None):
@@ -783,6 +838,13 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     if purpose != "virement_honoraires":
         invoice_id = None
         invoice_external_ref = ""
+    # The art. 72 receipt reference only means something on a cash
+    # withdrawal (the precheck already demands it there); the form's hidden
+    # field may still submit it on any other entry — drop it, like the
+    # invoice fields above.
+    cash_receipt_id = (clean.get("cash_receipt_id") or "").strip()
+    if not (direction == "déboursé" and method == CASH_METHOD):
+        cash_receipt_id = ""
     amount = int(clean["amount"])
     tx_date = clean.get("date")
 
@@ -790,6 +852,10 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     counter_ref = db.collection(COUNTERS_COLLECTION).document(_counter_id(account_id))
     dossier_ref = db.collection(DOSSIERS_COLLECTION).document(dossier_id) if dossier_id else None
     invoice_ref = db.collection(INVOICES_COLLECTION).document(invoice_id) if invoice_id else None
+    receipt_ref = (
+        db.collection(TRANSACTIONS_COLLECTION).document(cash_receipt_id)
+        if cash_receipt_id else None
+    )
     tx_id = str(uuid.uuid4())
     tx_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
     now = datetime.now(timezone.utc)
@@ -825,6 +891,26 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
                 raise _TxnAbort("facture_introuvable")
             invoice = i_snap.to_dict()
 
+        # The art. 72 cash receipt and every cash refund already citing it —
+        # both inside the transaction, so two refunds racing for the same
+        # receipt cannot together exceed it (the query joins the read-set).
+        receipt = None
+        prior_refunds = 0
+        if receipt_ref is not None:
+            r_snap = receipt_ref.get(transaction=txn)
+            if not r_snap.exists:
+                raise _TxnAbort("recette_espèces_introuvable")
+            receipt = r_snap.to_dict()
+            refunds_q = db.collection(TRANSACTIONS_COLLECTION).where(
+                filter=FieldFilter("cash_receipt_id", "==", cash_receipt_id)
+            )
+            for snap in refunds_q.stream(transaction=txn):
+                prior = snap.to_dict() or {}
+                # A reversed refund put the money back (annulée pair, or a
+                # correction recette): it no longer counts.
+                if not prior.get("reversed_by_id"):
+                    prior_refunds += int(prior.get("amount", 0))
+
         # 2. GUARDS
         if account.get("status") != "actif":
             raise _TxnAbort("compte_fermé")
@@ -836,6 +922,24 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
             last_date = _as_utc(last_tx.get("date"))
             if last_date is not None and _as_utc(tx_date).date() < last_date.date():
                 raise _TxnAbort("antidatage_refusé")
+        # Art. 72 — the cash refund must cite a genuine cash RECEIPT of 7 500 $
+        # or more, for this client, in this dossier and account, still
+        # standing (a reversed receipt was never received), and the refunds
+        # in cash may not exceed what it brought in.
+        if receipt is not None:
+            if (
+                receipt.get("account_id") != account_id
+                or receipt.get("direction") != "recette"
+                or receipt.get("method") != CASH_METHOD
+                or receipt.get("purpose") == REVERSAL_PURPOSE
+                or receipt.get("reversed_by_id")
+                or receipt.get("dossier_id") != dossier_id
+                or receipt.get("client_id") != client_id
+                or int(receipt.get("amount", 0)) < CASH_REFUND_THRESHOLD
+            ):
+                raise _TxnAbort("recette_espèces_invalide")
+            if prior_refunds + amount > int(receipt.get("amount", 0)):
+                raise _TxnAbort("remboursement_espèces_excède")
         # A fee transfer must be BACKED BY AN INVOICE. Two ways to satisfy that:
         #   1. a linked Pallas Athéna invoice — fully verifiable (issued, same
         #      dossier, amount <= solde dû); or
@@ -888,6 +992,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
             client_id=client_id, reference=clean.get("reference", ""),
             description=clean.get("description", ""), invoice_id=invoice_id,
             invoice_external_ref=invoice_external_ref,
+            cash_receipt_id=cash_receipt_id,
             balance_after_account=book_after_account,
             balance_after_client=book_after_client, now=now,
         )
@@ -1988,6 +2093,30 @@ def get_transaction(tx_id: str) -> Optional[dict]:
     except Exception:
         log_unexpected("trust transaction read failed")
         return None
+
+
+def find_transaction_by_sequence(account_id: str, sequence: int) -> Optional[dict]:
+    """The entry numbered *sequence* in *account_id* (« Écriture n° N ») —
+    how the lawyer names an entry on a form — or ``None``.
+
+    ``sequence >= N`` ordered ``sequence ASC``, limit 1, then an equality
+    check in Python: the query shape the existing ``(account_id ASC,
+    sequence ASC)`` composite serves, rather than a two-equality query whose
+    index-merge support a trust form should not bet on. Read errors
+    PROPAGATE — the caller must tell « no such entry » from « could not
+    read »."""
+    q = (
+        db.collection(TRANSACTIONS_COLLECTION)
+        .where(filter=FieldFilter("account_id", "==", account_id))
+        .where(filter=FieldFilter("sequence", ">=", int(sequence)))
+        .order_by("sequence")
+        .limit(1)
+    )
+    for snap in q.stream():
+        row = snap.to_dict() or {}
+        if int(row.get("sequence", 0)) == int(sequence):
+            return row
+    return None
 
 
 def list_transactions(

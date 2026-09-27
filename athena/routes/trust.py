@@ -296,6 +296,10 @@ def _entry_form_data() -> dict:
         # invoice NUMBER (resolved to an id below) or an external number.
         "invoice_number": f.get("invoice_number", "").strip(),
         "invoice_external_ref": f.get("invoice_external_ref", "").strip(),
+        # Art. 72: the NUMBER of the cash receipt a cash refund repays, as
+        # the register shows it (« Écriture n° 12 ») — resolved to its id
+        # below; kept as typed so a refusal re-renders it.
+        "cash_receipt_sequence": f.get("cash_receipt_sequence", "").strip(),
         "reference": f.get("reference", "").strip(),
         "description": f.get("description", "").strip(),
         "date": _parse_date(f.get("date", "")),
@@ -324,6 +328,36 @@ def _resolve_invoice_number(data: dict) -> list[str]:
     if not matches:
         return [f"Aucune facture « {number} » dans ce dossier de Pallas Athéna."]
     data["invoice_id"] = matches[0]["id"]
+    return []
+
+
+def _resolve_cash_receipt(data: dict) -> list[str]:
+    """Resolve the art. 72 cash-receipt NUMBER to its id
+    (``data['cash_receipt_id']``). Only on a cash withdrawal — the one entry
+    the model requires it on; anywhere else the (hidden) field is ignored. A
+    number that does not resolve is a hard error, never a silent drop that
+    would leave the model to refuse with a vaguer message."""
+    data["cash_receipt_id"] = None
+    raw = (data.get("cash_receipt_sequence") or "").strip().lstrip("#").strip()
+    if (
+        not raw
+        or data.get("direction") != "déboursé"
+        or data.get("method") != trust.CASH_METHOD
+    ):
+        return []
+    if not raw.isdigit() or int(raw) <= 0:
+        return ["Le numéro de l'écriture de recette en espèces doit être un nombre entier."]
+    try:
+        found = trust.find_transaction_by_sequence(data.get("account_id", ""), int(raw))
+    except Exception:
+        log_unexpected("trust: cash receipt lookup failed")
+        return [
+            "Impossible de vérifier l'écriture de recette en espèces pour le "
+            "moment. Veuillez réessayer."
+        ]
+    if found is None:
+        return [f"Aucune écriture n° {int(raw)} dans ce compte."]
+    data["cash_receipt_id"] = found["id"]
     return []
 
 
@@ -466,7 +500,7 @@ def entry_create():
     # correction is reserved for reversals — refuse it at the route (spec §7).
     if data.get("purpose") == "correction":
         data["purpose"] = ""
-    errors = _resolve_invoice_number(data)
+    errors = _resolve_invoice_number(data) + _resolve_cash_receipt(data)
     admin_account_id = request.form.get("admin_account_id", "").strip()
     # D-4 (2026-08-17) : un paiement d'honoraires NOMME son compte
     # d'administration. Sans lui, les fonds quittent le fidéicommis sans la

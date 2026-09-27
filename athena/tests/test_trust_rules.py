@@ -16,6 +16,12 @@ antérieur (vérifié en le rétablissant, commit par commit) :
    solde aux livres à cette date ou ses ensembles de résurrection : la
    conciliation close cessait, en silence, de se prouver. Le plancher se lit
    DANS la transaction et le refus nomme la conciliation.
+3. **Art. 57 / 72 et art. 58** (RLRQ c. B-1, r. 5, vérifiés le 2026-09-25).
+   Aucun retrait en espèces, sauf le remboursement en espèces de tout ou
+   partie d'une somme de 7 500 $ ou plus REÇUE en espèces — vérifié contre
+   la recette citée (``cash_receipt_id``), le seuil portant sur la somme
+   reçue et non sur le remboursement. Un paiement d'honoraires ne sort que
+   par chèque ou par virement.
 
 Le banc est le faux Firestore partagé (``tests/_fake_firestore.py``) : le
 client, ses transactions et la boucle de reprise de ``transactional`` sont
@@ -431,3 +437,222 @@ def test_le_refus_de_creation_s_affiche_au_formulaire(fake, client, monkeypatch)
     assert resp.status_code == 400
     assert "conciliation complétée au 2026-08-31" in resp.get_data(as_text=True)
     assert fake.peek_collection("trust_transactions") == {}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3. Art. 57 / 72 (espèces) et art. 58 (retrait d'honoraires)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _cash_receipt(amount: int = 800000, day: int = 3, **over) -> dict:
+    """A CLEARED cash receipt — the only thing art. 72 lets a cash refund
+    repay (and cleared, so the overdraft control releases the funds)."""
+    fields = dict(amount=amount, date=_d(2026, 9, day), method="comptant")
+    fields.update(over)
+    r = _create(**fields)
+    _, errs = trust.clear_transaction(r["id"], _d(2026, 9, day))
+    assert errs == []
+    return r
+
+
+def _refund(receipt_id, amount: int, day: int = 10, **over):
+    fields = dict(direction="déboursé", purpose="remise_client", method="comptant",
+                  amount=amount, date=_d(2026, 9, day), cash_receipt_id=receipt_id)
+    fields.update(over)
+    return trust.create_transaction(_entry(**fields))
+
+
+@pytest.mark.parametrize("method", ["traite", "dépôt_direct", "comptant"])
+def test_un_paiement_d_honoraires_ne_sort_que_par_cheque_ou_virement(fake, monkeypatch, method):
+    """Art. 58 : « seulement par chèque tiré à l'ordre de l'avocat ou par
+    virement à un compte qui n'est pas un compte en fidéicommis »."""
+    _evening(monkeypatch)
+    _funded(day=2)
+    before = fake.peek("dossiers/dos1")
+    _, errs = trust.create_transaction(_entry(
+        direction="déboursé", purpose="virement_honoraires", method=method,
+        amount=10000, date=_d(2026, 9, 5), invoice_external_ref="P-12",
+    ))
+    assert errs == [trust._ABORT_MESSAGES["mode_retrait_honoraires"]]
+    assert "art. 58" in errs[0]
+    assert fake.peek("dossiers/dos1") == before
+
+
+@pytest.mark.parametrize("method", ["chèque", "virement"])
+def test_le_cheque_et_le_virement_restent_permis(fake, monkeypatch, method):
+    _evening(monkeypatch)
+    _funded(day=2)
+    entry, errs = trust.create_transaction(_entry(
+        direction="déboursé", purpose="virement_honoraires", method=method,
+        amount=10000, date=_d(2026, 9, 5), invoice_external_ref="P-12",
+    ))
+    assert errs == [] and entry["method"] == method
+
+
+@pytest.mark.parametrize("purpose", ["déboursé_tiers", "règlement", "autre", "remise_client"])
+def test_aucun_retrait_en_especes_sans_la_recette_de_l_article_72(fake, monkeypatch, purpose):
+    """Art. 57 : un déboursé en espèces est refusé — y compris une remise au
+    client qui ne cite pas la recette en espèces qu'elle rembourse."""
+    _evening(monkeypatch)
+    _cash_receipt()
+    before = fake.peek("dossiers/dos1")
+    _, errs = trust.create_transaction(_entry(
+        direction="déboursé", purpose=purpose, method="comptant",
+        amount=10000, date=_d(2026, 9, 5),
+    ))
+    assert errs == [trust._ABORT_MESSAGES["retrait_espèces_interdit"]]
+    assert "art. 57" in errs[0] and "art. 72" in errs[0]
+    assert fake.peek("dossiers/dos1") == before
+
+
+def test_une_recette_en_especes_reste_permise(fake, monkeypatch):
+    """L'art. 57 vise le RETRAIT : recevoir des espèces demeure permis."""
+    _evening(monkeypatch)
+    r = _create(method="comptant", amount=50000, date=_d(2026, 9, 5))
+    assert r["method"] == "comptant" and r["cash_receipt_id"] == ""
+
+
+def test_le_remboursement_en_especes_de_l_article_72(fake, monkeypatch):
+    """Tout ou partie d'une somme de 7 500 $ ou plus reçue en espèces se
+    rembourse en espèces — un remboursement PARTIEL compris (le seuil porte
+    sur la somme reçue, jamais sur le remboursement)."""
+    _evening(monkeypatch)
+    receipt = _cash_receipt(amount=800000)
+    first, errs = _refund(receipt["id"], 300000)
+    assert errs == []
+    assert fake.peek(f"trust_transactions/{first['id']}")["cash_receipt_id"] == receipt["id"]
+    second, errs = _refund(receipt["id"], 500000, day=11)
+    assert errs == []
+    # Cumulative refunds may not exceed what the receipt brought in.
+    _, errs = _refund(receipt["id"], 1, day=12)
+    assert errs == [trust._ABORT_MESSAGES["remboursement_espèces_excède"]]
+
+
+def test_un_remboursement_contre_passe_ne_compte_plus(fake, monkeypatch):
+    _evening(monkeypatch)
+    receipt = _cash_receipt(amount=800000)
+    first, errs = _refund(receipt["id"], 800000)
+    assert errs == []
+    _, errs = trust.reverse_transaction(first["id"], "erreur de montant")
+    assert errs == []
+    # Dated today: the reversal (dated today) closes the register's order.
+    again, errs = _refund(receipt["id"], 800000, day=25)
+    assert errs == [] and again is not None
+
+
+@pytest.mark.parametrize("label,over", [
+    ("moins de 7 500 $", dict(amount=749999)),
+    ("reçue par chèque", dict(method="chèque")),
+])
+def test_la_recette_citee_doit_etre_des_especes_de_7500_ou_plus(fake, monkeypatch, label, over):
+    _evening(monkeypatch)
+    receipt = _cash_receipt(**over)
+    _, errs = _refund(receipt["id"], 1000)
+    assert errs == [trust._ABORT_MESSAGES["recette_espèces_invalide"]], label
+
+
+def test_la_recette_citee_doit_etre_celle_du_meme_client(fake, monkeypatch):
+    _evening(monkeypatch)
+    other = _cash_receipt(amount=900000, dossier_id="dos2", client_id="c2")
+    _cash_receipt(amount=900000, day=4)  # funds dos1/c1 so only the rule bites
+    _, errs = _refund(other["id"], 1000)
+    assert errs == [trust._ABORT_MESSAGES["recette_espèces_invalide"]]
+
+
+def test_une_recette_contre_passee_ne_se_rembourse_pas(fake, monkeypatch):
+    _evening(monkeypatch)
+    receipt = _cash_receipt(amount=900000)
+    _cash_receipt(amount=900000, day=4)
+    _, errs = trust.reverse_transaction(receipt["id"], "dépôt erroné")
+    assert errs == []
+    _, errs = _refund(receipt["id"], 1000, day=25)
+    assert errs == [trust._ABORT_MESSAGES["recette_espèces_invalide"]]
+
+
+def test_une_recette_citee_introuvable_est_refusee(fake, monkeypatch):
+    _evening(monkeypatch)
+    _cash_receipt()
+    _, errs = _refund("nope", 1000)
+    assert errs == [trust._ABORT_MESSAGES["recette_espèces_introuvable"]]
+
+
+def test_deux_remboursements_concurrents_ne_depassent_pas_la_recette(fake, monkeypatch):
+    """Les remboursements déjà inscrits se lisent DANS la transaction : un
+    remboursement rival commis pendant l'écriture la fait rejouer, et le
+    cumul refuse."""
+    _evening(monkeypatch)
+    receipt = _cash_receipt(amount=800000)
+    fired = []
+
+    def _rival_refund(info):
+        if not fired and any(p.startswith("trust_transactions/") for _k, p in info.ops):
+            fired.append(True)
+            fake.external_write("trust_transactions/rival", {
+                "id": "rival", "account_id": "acc1", "direction": "déboursé",
+                "method": "comptant", "purpose": "remise_client", "amount": 600000,
+                "cash_receipt_id": receipt["id"], "reversed_by_id": None,
+                "sequence": 99, "date": _d(2026, 9, 9),
+            })
+
+    remove = fake.add_commit_hook(_rival_refund)
+    try:
+        _, errs = _refund(receipt["id"], 300000)
+    finally:
+        remove()
+    assert fired
+    assert errs == [trust._ABORT_MESSAGES["remboursement_espèces_excède"]]
+
+
+def test_le_champ_cache_de_l_article_72_est_ignore_hors_especes(fake, monkeypatch):
+    _evening(monkeypatch)
+    receipt = _cash_receipt()
+    entry, errs = trust.create_transaction(_entry(
+        amount=1000, date=_d(2026, 9, 5), cash_receipt_id=receipt["id"],
+    ))
+    assert errs == []
+    assert fake.peek(f"trust_transactions/{entry['id']}")["cash_receipt_id"] == ""
+
+
+def _cash_form(**over) -> dict:
+    form = {
+        "account_id": "acc1", "direction": "déboursé", "amount": "3 000,00",
+        "purpose": "remise_client", "method": "comptant", "counterparty": "Jean",
+        "dossier_id": "dos1", "client_id": "c1", "date": "2026-09-10",
+    }
+    form.update(over)
+    return form
+
+
+def test_le_formulaire_resout_le_numero_de_la_recette_en_especes(fake, client, monkeypatch):
+    _evening(monkeypatch)
+    receipt = _cash_receipt(amount=800000)
+    resp = client.post("/fideicommis/", data=_cash_form(
+        cash_receipt_sequence=str(receipt["sequence"])))
+    assert resp.status_code == 302, resp.get_data(as_text=True)
+    refunds = [t for t in fake.peek_collection("trust_transactions").values()
+               if t.get("cash_receipt_id") == receipt["id"]]
+    assert len(refunds) == 1 and refunds[0]["amount"] == 300000
+
+
+def test_le_formulaire_dit_chaque_refus_des_especes(fake, client, monkeypatch):
+    _evening(monkeypatch)
+    _cash_receipt(amount=800000)
+    # No receipt cited: art. 57.
+    page = client.post("/fideicommis/", data=_cash_form())
+    assert page.status_code == 400
+    assert "art. 57" in page.get_data(as_text=True)
+    # An unknown number: named, never silently dropped.
+    page = client.post("/fideicommis/", data=_cash_form(cash_receipt_sequence="42"))
+    assert page.status_code == 400
+    html = page.get_data(as_text=True)
+    assert "Aucune écriture n° 42 dans ce compte." in html
+    assert 'value="42"' in html  # the typed number survives the re-render
+    page = client.post("/fideicommis/", data=_cash_form(cash_receipt_sequence="douze"))
+    assert "doit être un nombre entier" in page.get_data(as_text=True)
+    # Art. 58 on a fee payment by cash.
+    page = client.post("/fideicommis/", data=_cash_form(
+        purpose="virement_honoraires", invoice_external_ref="P-1",
+        admin_account_id="ops1"))
+    assert page.status_code == 400
+    assert "art. 58" in page.get_data(as_text=True)
+    assert len(fake.peek_collection("trust_transactions")) == 1
