@@ -164,6 +164,56 @@ def test_surrounding_spaces_are_trimmed_not_refused(store):
     assert store.peek(f"folders/{created['id']}")["name"] == "Pièces"
 
 
+@pytest.mark.parametrize("name", [
+    "lignesuite",      # NEL — a C1 control
+    "ligne suite",      # LINE SEPARATOR
+    "ligne suite",      # PARAGRAPH SEPARATOR
+    "ab",                # CSI — a C1 control
+])
+def test_every_invisible_line_break_is_refused(store, name):
+    """Review of T2 — FAILS on T2's check (``ord(c) < 32 or == 127``): the
+    C1 controls and U+2028/U+2029 are line breaks too (``str.splitlines``,
+    a browser), and they were stored in the name unseen."""
+    created, errors = folder.create_folder("d1", name)
+    assert created is None and folder.NAME_CONTROL in errors
+    assert _folders(store) == {}
+
+
+def test_names_that_look_identical_are_duplicates_whatever_their_normalization(store):
+    """Review of T2 — FAILS without NFC folding: « Pièces » precomposed
+    (NFC) and decomposed (NFD) passed the duplicate check side by side, and
+    a decomposed « Reçus du portail » slipped past the reserved root name."""
+    import unicodedata
+
+    nfd = lambda text: unicodedata.normalize("NFD", text)  # noqa: E731
+    first, errors = folder.create_folder("d1", "Pièces")
+    assert errors == [] and nfd("Pièces") != "Pièces"
+    twin, errors = folder.create_folder("d1", nfd("Pièces"))
+    assert twin is None and errors == [folder.DUPLICATE_HERE]
+    reserved, errors = folder.create_folder("d1", nfd("Reçus du portail"))
+    assert reserved is None and "réservé" in errors[0]
+    # A rename that only changes the normalization is not a duplicate of
+    # the folder itself.
+    _r, errors, changed = folder.rename_folder("d1", first["id"], nfd("Pièces"))
+    assert errors == [] and changed is True
+    assert list(_folders(store)) == [first["id"]]
+
+
+def test_legacy_adoption_keeps_the_old_lookup_exactly(store):
+    """The legacy match stays the deleted get_or_create_folder's own lookup
+    (trimmed, case-insensitive, NOT normalized): an older hand-made folder
+    whose name is the DECOMPOSED « Reçus du portail » was never the one the
+    application filed into, so it is not adopted over the app's own."""
+    import unicodedata
+
+    _seed_folder(store, "main", unicodedata.normalize("NFD", "Reçus du portail"),
+                 created_at=T0 - timedelta(days=30))
+    _seed_folder(store, "app", "Reçus du portail", created_at=T0)
+    adopted, errors = folder.ensure_system_folder("d1", "portail")
+    assert errors == [] and adopted["id"] == "app"
+    assert not store.peek("folders/main").get("system_role")
+
+
 def test_an_unknown_dossier_is_refused(store):
     """FAILS on the old code: nothing checked the dossier, so a folder could
     be written on an id no dossier bears (routes/documents never did)."""

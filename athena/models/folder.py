@@ -36,6 +36,7 @@ Lot 2A, step T2 (2026-09-27) — hardened before the connector reaches it:
 
 import hashlib
 import logging
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from typing import Iterable, Optional
@@ -147,16 +148,46 @@ class _Refused(Exception):
 
 
 def _fold(name: object) -> str:
-    """The comparison form of a folder name: trimmed, case-folded."""
+    """The comparison form of a folder name: trimmed, case-folded.
+
+    Deliberately NOT Unicode-normalized: it is the lookup the deleted
+    ``get_or_create_folder`` made (``strip().lower()`` against the NFC
+    constants), which is what decides which LEGACY folder holds the app's
+    generated documents (:func:`_legacy_candidates`). Every other comparison
+    uses :func:`_fold_equivalent`.
+    """
     return name.strip().casefold() if isinstance(name, str) else ""
 
 
-_RESERVED_ROOT_NAMES = {_fold(n): role for role, n in SYSTEM_FOLDER_NAMES.items()}
+def _fold_equivalent(name: object) -> str:
+    """:func:`_fold` after NFC normalization — the form two names that LOOK
+    identical share (review of T2). « Pièces » can arrive precomposed (NFC,
+    U+00E8) or decomposed (NFD, e + U+0300); unnormalized, the two passed
+    the duplicate check side by side, and a decomposed « Reçus du portail »
+    slipped past the reserved-root-name rule.
+    """
+    if not isinstance(name, str):
+        return ""
+    return unicodedata.normalize("NFC", name).strip().casefold()
+
+
+_RESERVED_ROOT_NAMES = {
+    _fold_equivalent(n): role for role, n in SYSTEM_FOLDER_NAMES.items()
+}
 
 
 def _reserved_role(name: object) -> str:
-    """The system role whose name *name* is (case-insensitively), or ``''``."""
-    return _RESERVED_ROOT_NAMES.get(_fold(name), "")
+    """The system role whose name *name* is (case-insensitively, whatever
+    its Unicode normalization), or ``''``."""
+    return _RESERVED_ROOT_NAMES.get(_fold_equivalent(name), "")
+
+
+def _is_invisible_break(char: str) -> bool:
+    """A control character (C0, DEL and C1 — Unicode category ``Cc``) or a
+    line/paragraph separator (``Zl``/``Zp``, U+2028/U+2029). The review of
+    T2 found U+0085 (NEL), U+2028 and U+2029 accepted: each is a line break
+    to ``str.splitlines`` and to a browser, and none shows in the name."""
+    return unicodedata.category(char) in ("Cc", "Zl", "Zp")
 
 
 def _name_errors(name: object) -> list[str]:
@@ -171,7 +202,7 @@ def _name_errors(name: object) -> list[str]:
         errors.append(NAME_TOO_LONG)
     if "/" in name or "\\" in name:
         errors.append(NAME_SLASH)
-    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+    if any(_is_invisible_break(c) for c in name):
         errors.append(NAME_CONTROL)
     if len(name) <= MAX_NAME_LENGTH and sanitize(name, max_length=MAX_NAME_LENGTH) != name:
         errors.append(NAME_CHEVRONS)
@@ -325,12 +356,13 @@ def _name_taken(
     name: str,
     exclude_id: Optional[str] = None,
 ) -> bool:
-    """A folder of *name* (case-insensitive) already sits in *parent_id*."""
-    wanted = _fold(name)
+    """A folder of *name* (case-insensitive, whatever its Unicode
+    normalization) already sits in *parent_id*."""
+    wanted = _fold_equivalent(name)
     return any(
         (f.get("parent_folder_id") or None) == (parent_id or None)
         and f.get("id") != exclude_id
-        and _fold(f.get("name")) == wanted
+        and _fold_equivalent(f.get("name")) == wanted
         for f in folders
     )
 
