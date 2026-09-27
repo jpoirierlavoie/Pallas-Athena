@@ -414,6 +414,35 @@ def test_cancelling_says_the_outlook_copy_goes_and_keeps_it_in_dav(fake):
     assert fake.peek("dav_sync/dossier:d1/tombstones/h1") is None
 
 
+def test_undoing_a_cancellation_is_said_never_silent(fake):
+    """The « jamais » list promises no cancellation is undone in silence
+    (mcp/disclosure « uncancel »). A status that takes an event OUT of
+    annulée is an explicit argument — and the result says what follows:
+    back in get_agenda, the Outlook copy recreated (review, lot 1b L7 —
+    the result said nothing before)."""
+    _hearing(fake, status="annulée")
+    payload = handlers.update_hearing({"hearing_id": "h1",
+                                       "status": "confirmée"})
+    assert _stored(fake)["status"] == "confirmée"
+    assert payload["previous_status"] == "annulée"
+    assert payload["outlook_mirror"] == "follows"
+    assert handlers._HEARING_UNCANCELLED in payload["warnings"]
+    # A confirmed Bookings rendez-vous has no Outlook copy of ours: its
+    # own sentence, beside the D10 warning.
+    _booking(fake, "b1", confirmation="", status="annulée")
+    booking = handlers.update_hearing({"hearing_id": "b1",
+                                       "status": "confirmée"})
+    assert handlers._BOOKINGS_UNCANCELLED in booking["warnings"]
+    assert handlers._HEARING_UNCANCELLED not in booking["warnings"]
+    assert handlers._BOOKINGS_NOT_UPDATED in booking["warnings"]
+    # Other edits of a cancelled event say nothing of the kind.
+    _hearing(fake, "h2", status="annulée")
+    notes_only = handlers.update_hearing({"hearing_id": "h2",
+                                          "location": "Salle 1"})
+    assert not {handlers._HEARING_UNCANCELLED,
+                handlers._BOOKINGS_UNCANCELLED} & set(notes_only["warnings"])
+
+
 def test_terminee_is_refused_on_a_future_day_only(fake):
     _hearing(fake)   # 15 October; today is frozen at 1 October
     before = _stored(fake)
@@ -598,6 +627,23 @@ def test_create_hearing_defaults_are_echoed(fake):
     assert (entity["status"], entity["modalite"], entity["reminder_minutes"],
             entity["conference_uri"], entity["serie_id"], entity["source"]) == (
         "à_confirmer", "présentiel", 1440, "", "", "")
+
+
+def test_an_all_day_end_is_described_as_it_is_emitted():
+    """The entity's all-day `end` is the stored end's date — `date` itself
+    for a one-day event (create_hearing stores start + 1 h). Its schema
+    text called it « exclusive » without reserve, which read a one-day
+    event as a zero-length one (review, lot 1b L7). The text states both
+    cases now; this pins it against the value the tools emit."""
+    from mcp import output_schemas
+
+    text = output_schemas._hearing_entity_extra()["end"]["description"]
+    assert "equal to `date` for a one-day event" in text
+    start = datetime(2026, 11, 3, tzinfo=UTC)
+    entity = handlers._hearing_entity({
+        "id": "h", "title": "t", "all_day": True, "start_datetime": start,
+        "end_datetime": start + timedelta(hours=1)})
+    assert entity["end"] == entity["date"] == "2026-11-03"
 
 
 def test_create_hearing_refuses_what_a_creation_cannot_record(fake):

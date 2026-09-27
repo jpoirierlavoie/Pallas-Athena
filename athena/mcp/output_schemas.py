@@ -764,8 +764,10 @@ _HEARING_ENTITY_ADDED: tuple[str, ...] = (
 
 def _hearing_entity_extra() -> dict[str, Any]:
     return {
-        "end": _nstr("ISO-8601 Montréal for a timed event; YYYY-MM-DD "
-                     "(exclusive) for an all-day one."),
+        "end": _nstr("ISO-8601 Montréal for a timed event. All-day: the "
+                     "stored end's YYYY-MM-DD — equal to `date` for a "
+                     "one-day event; a LATER date is the exclusive end of a "
+                     "multi-day one."),
         "status": _str("confirmée | à_confirmer | reportée | annulée | "
                        "terminée."),
         "modalite": _str("présentiel | visioconférence | téléphonique."),

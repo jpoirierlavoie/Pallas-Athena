@@ -5839,6 +5839,17 @@ _HEARING_CANCELLED = (
     "calendrier Outlook est retirée au prochain cycle (10 minutes au plus), "
     "et le téléphone le montre annulé."
 )
+# The other direction, said as loudly: a status that takes an event OUT of
+# « annulée » undoes a cancellation, and the « jamais » list promises that
+# never happens in silence (mcp/disclosure NEVERS « uncancel »).
+_HEARING_UNCANCELLED = (
+    "L'événement n'est plus annulé : il revient dans get_agenda et sur le "
+    "téléphone, et sa copie Outlook est recréée au prochain cycle."
+)
+_BOOKINGS_UNCANCELLED = (
+    "Le rendez-vous n'est plus annulé dans Athéna : il revient dans "
+    "get_agenda et sur le téléphone."
+)
 # A confirmed Bookings rendez-vous the CLIENT has since moved or cancelled
 # on the Bookings side (the sync records a divergence, never overwrites a
 # confirmed event): an edit here would build on a slot the client may no
@@ -6213,6 +6224,10 @@ def _hearing_edit_payload(
             warnings.append(_BOOKINGS_DIVERGENCE_UNSEEN)
     elif wrote and "status" in changed and doc.get("status") == "annulée":
         warnings.append(_HEARING_CANCELLED)
+    if (wrote and "status" in changed and previous_status == "annulée"
+            and doc.get("status") != "annulée"):
+        warnings.append(_BOOKINGS_UNCANCELLED if bookings
+                        else _HEARING_UNCANCELLED)
     if wrote:
         warnings.extend(_modality_warnings(doc, args))
     warnings.extend(notes)
