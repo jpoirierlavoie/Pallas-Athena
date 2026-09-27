@@ -81,6 +81,9 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "jamais rouvrir une tâche close",                # consent, CORRECT
     "ajout à la fin — jamais de modification",       # consent, CREATE
     "en lecture seule via le connecteur",            # append_to_note refusal
+    # update_note (revue L5): only a « <…> » span is refused — the sanitizer
+    # deletes exactly that; a lone « < » is stored intact.
+    "unpaired angle brackets are refused",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

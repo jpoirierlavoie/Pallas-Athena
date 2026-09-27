@@ -529,6 +529,18 @@ def test_update_note_refuses_rather_than_losing_text(fake, content, fragment):
     assert fake.peek("notes/n1")["content"] == "Premier jet."
 
 
+def test_update_note_keeps_a_lone_angle_bracket(fake):
+    """Only a « <…> » SPAN is refused — the sanitizer deletes exactly that.
+    A lone « < » is stored intact, so the description must not say that
+    unpaired brackets are refused (it did; revue L5)."""
+    _note(fake)
+    handlers.update_note({"note_id": "n1", "expected_etag": "e-n1",
+                          "content": "Si a < b, la clause s'applique."})
+    assert fake.peek("notes/n1")["content"].endswith(
+        "Si a < b, la clause s'applique.")
+    assert "unpaired" not in tools.TOOLS["update_note"]["description"]
+
+
 def test_update_note_converts_autolinks(fake):
     _note(fake)
     handlers.update_note({"note_id": "n1", "expected_etag": "e-n1",
@@ -661,6 +673,21 @@ def test_edit_analyse_appends_under_a_dated_line_never_a_separator(fake):
         + handlers.format_date_fr(handlers._today_mtl())
         + "*\n\nLa preuve documentaire est mince.")
     assert _bloc_body(note["content"], "F") in body   # kept byte for byte
+
+
+def test_edit_analyse_empty_replace_keeps_only_the_revision_line(fake):
+    """« replace » with "" empties the bloc's text but keeps the dated line
+    saying a version was replaced (and kept) — the schema text says so
+    instead of promising an empty bloc (revue L5)."""
+    note = _analyse(fake)
+    handlers.edit_analyse({"dossier_id": "d1", "expected_etag": note["etag"],
+                           "operations": [{"bloc": "C", "mode": "replace",
+                                           "content": ""}]})
+    body = _bloc_body(fake.peek(f"notes/{note['id']}")["content"], "C")
+    assert body.strip() == _today_stamp(handlers._BLOC_REVISION_STAMP)
+    mode = (tools.TOOLS["edit_analyse"]["input_schema"]["properties"]
+            ["operations"]["items"]["properties"]["mode"]["description"])
+    assert "revision line" in mode
 
 
 def test_edit_analyse_several_operations_make_one_revision(fake):

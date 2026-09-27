@@ -2353,9 +2353,9 @@ TOOLS: dict[str, dict] = {
             "`content` replaces the WHOLE body: read it with get_note, edit, "
             "send it back complete, with `expected_etag`. The replaced text "
             "is kept in the note's revision history and a dated « Révisée "
-            "par Claude » line opens the new body. Raw HTML or unpaired "
-            "angle brackets are refused, never stripped; an over-long body "
-            "is refused, never truncated. Refuses the « Théorie de la "
+            "par Claude » line opens the new body. Text between angle "
+            "brackets (raw HTML) is refused, never stripped; an over-long "
+            "body is refused, never truncated. Refuses the « Théorie de la "
             "cause » (is_analyse): use edit_analyse. To add at the end, "
             "prefer append_to_note."
         ),
@@ -2453,7 +2453,8 @@ TOOLS: dict[str, dict] = {
                                 "enum": ["replace", "append"],
                                 "description": (
                                     "replace = the bloc's whole body (\"\" "
-                                    "empties it); append = add at its end."
+                                    "empties it, bar the dated revision "
+                                    "line); append = add at its end."
                                 ),
                             },
                             "content": {
