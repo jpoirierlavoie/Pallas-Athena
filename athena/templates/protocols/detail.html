@@ -22,6 +22,19 @@
     </div>
   </div>
 
+  {# ── Rebond du bouton d'étape (compléter / rouvrir) : un refus, un clic
+     resté sans effet parce que l'étape était déjà dans cet état, ce que
+     la cascade a laissé de côté (tâche liée annulée) ou la fermeture du
+     protocole. Ils reviennent par redirection (?erreur= / ?message=) :
+     ce bouton est un formulaire pleine page, et un fragment 4xx ne
+     s'affiche jamais. Classes : celles de invoices/detail.html. #}
+  {% if erreur %}
+  <div role="alert" class="mb-4 p-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl">{{ erreur }}</div>
+  {% endif %}
+  {% if message %}
+  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">{{ message }}</div>
+  {% endif %}
+
   {# ── Header card ─────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
     <div class="flex items-start gap-4">
@@ -286,12 +299,17 @@
 
               {# Action buttons #}
               <div class="flex items-center gap-1 flex-shrink-0">
-                {# Complete/uncomplete button #}
+                {# Complete/uncomplete button — posts the state it was
+                   RENDERED to reach, never « toggle »: a page left open
+                   while the phone or the connector changed the step can no
+                   longer do the opposite of what it shows. #}
                 <form method="post"
                       action="{{ url_for('protocols.step_complete', protocol_id=protocol.id, step_id=step.id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="target" value="{{ 'à_venir' if is_completed else 'complété' }}">
                   <button type="submit"
                           title="{{ 'Rouvrir' if is_completed else 'Compléter' }}"
+                          aria-label="{{ 'Rouvrir' if is_completed else 'Compléter' }}"
                           class="p-1.5 rounded-lg transition-colors
                                  {{ 'text-green-600 hover:bg-green-100' if is_completed else 'text-gray-400 hover:bg-gray-100 hover:text-green-600' }}">
                     {{ ms('check', 20) }}

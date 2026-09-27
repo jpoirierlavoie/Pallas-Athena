@@ -27,7 +27,6 @@ from models.protocol import (
     VALID_STATUSES,
     add_step,
     check_overdue_steps,
-    complete_step,
     create_protocol,
     delete_protocol,
     delete_step,
@@ -36,6 +35,7 @@ from models.protocol import (
     list_protocols,
     recompute_deadlines,
     regime_mismatch,
+    set_step_status,
     update_protocol,
     update_step,
 )
@@ -197,6 +197,9 @@ def protocol_detail(protocol_id: str) -> str:
 
     ctx = _template_context()
     ctx["protocol"] = protocol
+    # The step button's outcome (step_complete) comes back as a redirect.
+    ctx["erreur"] = request.args.get("erreur", "")
+    ctx["message"] = request.args.get("message", "")
 
     # Compute progress
     steps = protocol.get("steps", [])
@@ -381,21 +384,88 @@ def step_update(protocol_id: str, step_id: str) -> str:
     return redirect(target)
 
 
+def _step_target(protocol_id: str, step_id: str) -> str:
+    """The state the step button was rendered to reach.
+
+    Every button posts ``target`` (``complété`` or ``à_venir``) since
+    2026-09-26. A page rendered before that posts nothing: its intent is
+    read off the STORED status, the way the old toggle did — the very
+    staleness the target removes, accepted only for pages already open at
+    deploy time.
+    """
+    target = request.form.get("target")
+    if target is not None:
+        return target.strip()
+    protocol = get_protocol(protocol_id) or {}
+    step = next(
+        (s for s in protocol.get("steps", []) if s.get("id") == step_id), {}
+    )
+    return "à_venir" if step.get("status") == "complété" else "complété"
+
+
+# What the lawyer is told after a click, beyond the step itself.
+_STEP_ALREADY = {
+    "complété": "Cette étape était déjà complétée — rien n'a été changé.",
+    "à_venir": "Cette étape était déjà ouverte — rien n'a été changé.",
+}
+_TASK_SYNC_NOTICE = {
+    "skipped_cancelled": (
+        "La tâche liée est annulée : elle n'a pas été modifiée."
+    ),
+    "failed": (
+        "La tâche liée n'a pas pu être mise à jour — vérifiez-la depuis sa "
+        "fiche."
+    ),
+    "missing": "La tâche liée est introuvable : elle n'a pas été modifiée.",
+}
+
+
+def _step_notice(target: str, outcome: dict) -> str:
+    """The French banner for a committed (or no-op) step click, or ``""``."""
+    if not outcome.get("changed"):
+        return _STEP_ALREADY.get(target, "")
+    parts = []
+    notice = _TASK_SYNC_NOTICE.get(outcome.get("task_sync", ""))
+    if notice:
+        parts.append("Étape mise à jour. " + notice)
+    if outcome.get("protocol_closed"):
+        parts.append(
+            "Toutes les étapes sont complétées : le protocole est maintenant "
+            "complété."
+        )
+    return " ".join(parts)
+
+
 @protocols_bp.route("/<protocol_id>/steps/<step_id>/complete", methods=["POST"])
 @login_required
 def step_complete(protocol_id: str, step_id: str) -> str:
-    """Toggle step completion status."""
-    step, errors = complete_step(protocol_id, step_id)
+    """Complete or reopen a step, as the clicked button asked.
 
-    if errors and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{escape(errors[0])}</div>', 422
+    Never a toggle (``set_step_status``): a stale page asking for the state
+    the step is already in writes nothing and cascades nothing. The linked
+    task's DAV collection is bumped by the cascade itself. Every outcome
+    travels back as a redirect with ``?erreur=`` / ``?message=`` — the
+    button is a full-page form, and a 4xx fragment would never render
+    (the old route also redirected a refusal SILENTLY on this form).
+    """
+    target = _step_target(protocol_id, step_id)
+    _step, errors, outcome = set_step_status(protocol_id, step_id, target)
 
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
+    params = {}
+    if errors:
+        params["erreur"] = errors[0]
+    else:
+        notice = _step_notice(target, outcome)
+        if notice:
+            params["message"] = notice
+
+    target_url = url_for(
+        "protocols.protocol_detail", protocol_id=protocol_id, **params
+    )
+    resp = redirect(target_url)
     if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+        resp.headers["HX-Redirect"] = target_url
+    return resp
 
 
 @protocols_bp.route("/<protocol_id>/steps/<step_id>/delete", methods=["POST"])

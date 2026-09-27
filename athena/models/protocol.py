@@ -8,10 +8,11 @@ from typing import Optional
 from utils import deadlines, phases
 from utils.deadlines import compute_deadline as _judicial_deadline
 
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import db, provenance
 from security import sanitize
-from utils.logging_setup import log_unexpected
+from utils.logging_setup import log_protocol_event, log_unexpected
 
 logger = logging.getLogger(__name__)
 
@@ -895,48 +896,158 @@ def delete_step(
         return False, "Erreur lors de la suppression. Veuillez réessayer."
 
 
+# The two states a one-click step control can ask for. `en_cours` and
+# `en_retard` are never a target: `en_retard` is derived from the deadline
+# (check_overdue_steps), and neither is offered by any control.
+STEP_STATUS_TARGETS: tuple[str, ...] = ("complété", "à_venir")
+
+
+class _StepRefusal(Exception):
+    """A set_step_status refusal found inside its transaction."""
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(reason)
+        self.message = message
+        self.reason = reason
+
+
+def _step_already_at(status: str, target: str) -> bool:
+    """True when a step in *status* already is what *target* asks for.
+
+    « à_venir » asks for an OPEN step, so a step already open in any form —
+    à_venir, en_cours, or en_retard (the deadline-derived stamp) — is
+    already there: reopening it would erase the en_cours/en_retard state
+    for nothing.
+    """
+    if target == "complété":
+        return status == "complété"
+    return status != "complété"
+
+
+def set_step_status(
+    protocol_id: str, step_id: str, target: str
+) -> tuple[Optional[dict], list[str], dict]:
+    """Complete (``complété``) or reopen (``à_venir``) a step — never a toggle.
+
+    Returns ``(step, errors, outcome)``. ``outcome`` reports what happened
+    beyond the step — ``changed`` (False: the step already was *target*, and
+    NOTHING was written or cascaded), ``task_id`` (the linked task, if any),
+    ``task_sync`` (:func:`_sync_task_status`'s word, or ``"none"``) and
+    ``protocol_closed`` (completing the last open step closes the protocol).
+
+    Why not :func:`complete_step`: it toggles, so a page rendered before the
+    phone, a second tab or the connector changed the step does the OPPOSITE
+    of what the lawyer clicked, and cascades that opposite into the linked
+    task. Here the caller names the state it wants, and a step already in it
+    is a no-op — no etag churn, no cascade, no CTag bump.
+
+    The status write is a partial ``update()`` of ``status`` /
+    ``completed_date`` / ``updated_at`` (plus the protocol's stamp), decided
+    and staged in ONE transaction on the step it re-reads: a write landing
+    between the read and the commit aborts it, and the retry decides again
+    on the new state instead of overwriting it. The task cascade and the
+    completion check run after the commit — they follow a committed write,
+    so they report instead of raising (``outcome``), as they always have.
+
+    No protocol-status gate here: a step of a completed or suspended
+    protocol changes as it always did. (Reopening an auto-closed protocol
+    is lot 1a.)
+    """
+    outcome: dict = {
+        "changed": False, "task_id": None, "task_sync": "none",
+        "protocol_closed": False,
+    }
+    if target not in STEP_STATUS_TARGETS:
+        log_protocol_event("step_status_refused", protocol_id,
+                           outcome="refused", reason="statut_invalide",
+                           step_id=step_id)
+        return None, ["Statut d'étape demandé invalide."], outcome
+
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
+    step_ref = proto_ref.collection(STEPS_SUBCOLLECTION).document(step_id)
+    now = datetime.now(timezone.utc)
+
+    @firestore.transactional
+    def _apply(txn) -> tuple[dict, str, bool]:
+        # Reads first: the real client refuses a transactional read after
+        # a staged write.
+        proto_snap = proto_ref.get(transaction=txn)
+        step_snap = step_ref.get(transaction=txn)
+        if not proto_snap.exists:
+            raise _StepRefusal("Protocole introuvable.", "protocole_introuvable")
+        if not step_snap.exists:
+            raise _StepRefusal("Étape introuvable.", "etape_introuvable")
+        step = dict(step_snap.to_dict() or {})
+        step.setdefault("id", step_id)
+        before = step.get("status", "")
+        if _step_already_at(before, target):
+            return step, before, False
+        fields = {
+            "status": target,
+            "completed_date": now if target == "complété" else None,
+            "updated_at": now,
+        }
+        txn.update(step_ref, fields)
+        txn.update(proto_ref, provenance.update_fields(now))
+        return {**step, **fields}, before, True
+
+    try:
+        step, before, changed = _apply(db.transaction())
+    except _StepRefusal as refusal:
+        log_protocol_event("step_status_refused", protocol_id,
+                           outcome="refused", reason=refusal.reason,
+                           step_id=step_id)
+        return None, [refusal.message], outcome
+    except Exception:
+        log_unexpected("protocol step status write failed",
+                       protocol_id=protocol_id, step_id=step_id)
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], outcome
+
+    if not changed:
+        return step, [], outcome
+    provenance.note_commit(COLLECTION, protocol_id)
+
+    outcome["changed"] = True
+    linked = step.get("linked_task_id")
+    if linked:
+        outcome["task_id"] = linked
+        outcome["task_sync"] = _sync_task_status(
+            linked, target, protocol_id=protocol_id)
+    if target == "complété":
+        outcome["protocol_closed"] = _check_protocol_completion(protocol_id)
+
+    log_protocol_event(
+        "step_status_set", protocol_id, step_id=step_id,
+        from_status=before, to_status=target,
+        task_sync=outcome["task_sync"],
+        protocol_closed=outcome["protocol_closed"],
+    )
+    return step, [], outcome
+
+
 def complete_step(
     protocol_id: str, step_id: str
 ) -> tuple[Optional[dict], list[str]]:
-    """Mark a step as complete, sync linked task. Returns (step_doc, errors)."""
+    """DEPRECATED toggle, kept for compatibility. Returns (step_doc, errors).
+
+    It reads the step and asks :func:`set_step_status` for the OPPOSITE
+    state — so a caller holding a stale view still flips it the wrong way.
+    That is why nothing in ``routes/`` or ``mcp/`` calls it any more (a test
+    pins the absence): name the target with :func:`set_step_status`.
+    """
     protocol = get_protocol(protocol_id)
     if not protocol:
         return None, ["Protocole introuvable."]
 
-    target_step = None
-    for s in protocol.get("steps", []):
-        if s["id"] == step_id:
-            target_step = s
-            break
+    target_step = next(
+        (s for s in protocol.get("steps", []) if s.get("id") == step_id), None
+    )
     if not target_step:
         return None, ["Étape introuvable."]
 
-    now = datetime.now(timezone.utc)
-
-    if target_step.get("status") == "complété":
-        # Un-complete: revert to à_venir
-        new_data = {
-            "status": "à_venir",
-            "completed_date": None,
-        }
-    else:
-        new_data = {
-            "status": "complété",
-            "completed_date": now,
-        }
-
-    step, errors = update_step(protocol_id, step_id, new_data)
-    if errors:
-        return None, errors
-
-    # Sync linked task if present
-    if step and step.get("linked_task_id"):
-        _sync_task_status(step["linked_task_id"], step["status"])
-
-    # Check if all steps are complete — auto-complete protocol
-    _check_protocol_completion(protocol_id)
-
-    return step, []
+    target = "à_venir" if target_step.get("status") == "complété" else "complété"
+    step, errors, _outcome = set_step_status(protocol_id, step_id, target)
+    return step, errors
 
 
 def recompute_deadlines(
@@ -1256,18 +1367,119 @@ def _auto_create_tasks_for_steps(
 _SYNCING: set[str] = set()  # Circular sync guard
 
 
-def _sync_task_status(task_id: str, step_status: str) -> None:
-    """Sync task status when protocol step status changes."""
+def cascaded_task_status(
+    step_status: str, task_status: str
+) -> tuple[Optional[str], Optional[str]]:
+    """What a step's new status does to its linked task — pure.
+
+    Returns ``(new_task_status, skip_reason)``: ``(None, None)`` means the
+    task already agrees (nothing to write); a ``skip_reason`` means the
+    task is deliberately LEFT ALONE and the skip is worth a trace.
+
+    * A CANCELLED task is never touched, in either direction. Completing
+      its step used to turn « annulée » into « terminée », reopening it
+      turned it into « à_faire » — the lawyer's cancellation silently
+      rewritten, the harm ``complete_task`` already refuses on the task
+      side (``tache_annulee``).
+    * ``complété`` → the task is done (``terminée``).
+    * ``à_venir`` (a reopen) → a DONE task reopens to ``à_faire``; an open
+      one (``à_faire`` or ``en_cours``) is already « not done » and keeps
+      its state — the old cascade demoted ``en_cours`` to ``à_faire``.
+    * ``en_cours`` → ``à_faire`` advances to ``en_cours``; a done task is
+      never downgraded by it (``tache_terminee``).
+    * Any other step status (``en_retard`` is a deadline stamp) cascades
+      nothing.
+    """
+    if step_status not in ("complété", "à_venir", "en_cours"):
+        return None, None
+    if task_status == "annulée":
+        return None, "tache_annulee"
+    if step_status == "complété":
+        return (None, None) if task_status == "terminée" else ("terminée", None)
+    if step_status == "à_venir":
+        return ("à_faire", None) if task_status == "terminée" else (None, None)
+    # step en_cours
+    if task_status == "terminée":
+        return None, "tache_terminee"
+    return ("en_cours", None) if task_status == "à_faire" else (None, None)
+
+
+def _sync_task_status(
+    task_id: str, step_status: str, *, protocol_id: str = ""
+) -> str:
+    """Carry a step's new status to its linked task. Returns what happened.
+
+    ``"synced"`` (the task was written, and its DAV collection bumped),
+    ``"noop"`` (it already agreed), ``"skipped_cancelled"`` (a cancelled
+    task, left alone — :func:`cascaded_task_status`), ``"skipped"`` (a done
+    task an ``en_cours`` step would have downgraded), ``"missing"`` (the
+    linked task was not found), ``"failed"`` (the write was refused or
+    raised), ``"none"`` (re-entered through the sync guard).
+
+    The task write compare-and-sets against the version this function just
+    read: the decision above was made on it, and a write landing in between
+    (the phone cancelling the task) must be decided again, not overwritten.
+    One re-read is allowed; a second conflict reports ``"failed"``.
+
+    The CTag bump lives HERE, not in a route — a documented in-model bump,
+    like :func:`_auto_create_tasks_for_steps`. This write is made behind the
+    caller's back on a DAV-exposed record: the web step route never bumped,
+    so the phone never learned that the task was completed or reopened.
+    Every caller of the cascade now bumps by construction. The bump is
+    guarded on its own: the task write it follows has committed.
+
+    Never raises: the step write it follows has committed. Failures are
+    logged (ids only) and reported.
+    """
     if task_id in _SYNCING:
-        return
+        return "none"
     _SYNCING.add(task_id)
     try:
-        from models.task import update_task
+        from dav.sync import bump_ctag, collection_for
+        from models import concurrency
+        from models.task import get_task, update_task
 
-        if step_status == "complété":
-            update_task(task_id, {"status": "terminée"})
-        elif step_status in ("à_venir", "en_cours"):
-            update_task(task_id, {"status": "à_faire"})
+        for _attempt in range(2):
+            task = get_task(task_id)
+            if task is None:
+                log_protocol_event("cascade_task_skipped", protocol_id,
+                                   outcome="refused",
+                                   reason="tache_introuvable",
+                                   task_id=task_id, step_status=step_status)
+                return "missing"
+            current = task.get("status", "")
+            new_status, skip_reason = cascaded_task_status(step_status, current)
+            if skip_reason is not None:
+                log_protocol_event("cascade_task_skipped", protocol_id,
+                                   reason=skip_reason, task_id=task_id,
+                                   step_status=step_status,
+                                   task_status=current)
+                return ("skipped_cancelled" if skip_reason == "tache_annulee"
+                        else "skipped")
+            if new_status is None:
+                return "noop"
+            doc, errors = update_task(
+                task_id, {"status": new_status},
+                expected_etag=concurrency.etag_of(task),
+            )
+            if errors and concurrency.is_stale(errors):
+                continue
+            if errors or doc is None:
+                log_protocol_event("cascade_task_skipped", protocol_id,
+                                   outcome="refused",
+                                   reason="ecriture_refusee",
+                                   task_id=task_id, step_status=step_status)
+                return "failed"
+            try:
+                bump_ctag(collection_for(doc.get("dossier_id")))
+            except Exception:
+                log_unexpected("protocol cascade: task CTag bump failed",
+                               task_id=task_id)
+            return "synced"
+        log_protocol_event("cascade_task_skipped", protocol_id,
+                           outcome="refused", reason="concurrence",
+                           task_id=task_id, step_status=step_status)
+        return "failed"
     except Exception:
         # Swallowed on purpose — the step write it follows has committed —
         # but never SILENTLY: a task left out of step with its step is a
@@ -1276,19 +1488,20 @@ def _sync_task_status(task_id: str, step_status: str) -> None:
         # only; the traceback is scrubbed by the RedactionFilter.
         log_unexpected("protocol cascade: task status sync failed",
                        task_id=task_id, step_status=step_status)
+        return "failed"
     finally:
         _SYNCING.discard(task_id)
 
 
-def _check_protocol_completion(protocol_id: str) -> None:
-    """Auto-complete protocol if all steps are complete."""
+def _check_protocol_completion(protocol_id: str) -> bool:
+    """Auto-complete protocol if all steps are complete. True when it closed."""
     protocol = get_protocol(protocol_id)
     if not protocol:
-        return
+        return False
 
     steps = protocol.get("steps", [])
     if not steps:
-        return
+        return False
 
     all_complete = all(s.get("status") == "complété" for s in steps)
     if all_complete and protocol.get("status") == "actif":
@@ -1298,6 +1511,8 @@ def _check_protocol_completion(protocol_id: str) -> None:
                 "status": "complété",
                 **provenance.update_fields(now),
             })
+            return True
         except Exception:
             log_unexpected("protocol cascade: completion check failed",
                            protocol_id=protocol_id)
+    return False

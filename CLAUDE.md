@@ -523,6 +523,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_reception_rdv.py         # L2: confirm/refuse/divergence routes + partie linkage + badge
 │   │   ├── test_partie_kyc.py            # Audit fix: KYC dates stamped only on transitions
 │   │   ├── test_protocol_summary.py      # Audit fix: 7-day window + calendar-date overdue
+│   │   ├── test_protocol_step_status.py  # Lot 0b: non-toggle step button, the cascade never
+│   │   │                                 # un-cancels a task, and bumps the task's collection
 │   │   ├── test_protocol_regime.py       # Audit fix: regime gate at create + regime_mismatch
 │   │   ├── test_audit_events.py          # audit_events journal: best-effort write, bounded read
 │   │   ├── test_prescription_events.py   # derive_prescription: depot/reconnaissance/suspension,
@@ -1937,7 +1939,7 @@ Time entries live at the prefix root; expenses live under `/depenses`. No `/heur
 | `/protocoles/<id>/delete` | POST | Delete |
 | `/protocoles/<id>/steps` | POST | Add a custom step |
 | `/protocoles/<id>/steps/<step_id>` | POST | Update step (deadline, notes, status) |
-| `/protocoles/<id>/steps/<step_id>/complete` | POST | Toggle step completion (syncs linked task) |
+| `/protocoles/<id>/steps/<step_id>/complete` | POST | Set the step to the posted `target` (`complété` \| `à_venir`) — **never a toggle** since lot 0b: a same-state click writes nothing (`set_step_status`). Cascades to the linked task (never an `annulée` one) and bumps that task's DAV collection; every outcome comes back as `?erreur=` / `?message=` on the detail page (a page posting no `target` — rendered before the deploy — falls back to the stored-status reading) |
 | `/protocoles/<id>/steps/<step_id>/delete` | POST | Delete (blocked when `mandatory`) |
 
 > There are no separate `/protocoles/<id>/complete` or `/protocoles/<id>/suspend` routes today — protocol completion happens automatically via `_check_protocol_completion`, and status changes go through the regular update form.
@@ -2333,15 +2335,16 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `list_protocols_for_dossier(dossier_id) -> list[dict]` — newest first, without steps
 - `list_protocols(status_filter=None, ...)`
 - `add_step`, `update_step` (blocked when `deadline_locked`), `delete_step` (blocked when `mandatory`)
-- `complete_step(protocol_id, step_id)` — toggles (its own un-complete branch reverts a `complété` step); fires `_sync_task_status` and may trigger `_check_protocol_completion`
+- `set_step_status(protocol_id, step_id, target) -> (step, errors, outcome)` (lot 0b) — **non-toggle**, `target` ∈ `STEP_STATUS_TARGETS` (`complété`, `à_venir`). The decision and the partial step `update()` (+ protocol stamp) run in ONE transaction on the re-read step, so a racing write is decided again, never overwritten; a step already at the target (for `à_venir`: any open status — `en_cours`/`en_retard` included) writes and cascades NOTHING. `outcome` = `{changed, task_id, task_sync, protocol_closed}`. No protocol-status gate (lot 1a adds it, with the reopen of an auto-closed protocol). The web step button calls it — never `complete_step`
+- `complete_step(protocol_id, step_id)` — DEPRECATED toggle, now a wrapper that reads the step and asks `set_step_status` for the opposite state; nothing in `routes/` or `mcp/` may call it (`tests/test_protocol_step_status.py` sweeps)
 - `recompute_deadlines(protocol_id, new_start_date)` — for offset-based steps; uses `utils.deadlines.compute_deadline`
 - `check_overdue_steps(protocol_id) -> int` — flips `status → en_retard` on past-due, non-completed steps
 - `get_protocol_summary(dossier_id) -> {has_protocol, has_history, total, completed, overdue, upcoming, ...}`
 - `get_current_phase_for_dossier(dossier_id) -> (phase, sous_phase)` — Phase O : « l'étape courante » = première étape non complétée dans l'ordre du protocole actif ; son annotation est le défaut suggéré des formulaires temps/dépense/tâche. `("","")` sans protocole/annotation. **~10 lectures — payé UNIQUEMENT au GET d'un formulaire qui connaît déjà son dossier**, jamais sur DAV ni sur un formulaire vierge (règle `_linked_step`). Fail-open (une suggestion ne casse jamais un rendu).
 - `list_urgent_steps(cutoff, limit=50) -> list[dict]` — replaces the dashboard N+1: ONE `collection_group("steps")` query (status in active set + deadline ≤ cutoff, 3× over-fetch) + ONE batched `get_all` of distinct parent protocols; only steps of `actif` protocols survive, enriched with `_protocol_title`/`_protocol_id`/`_dossier_file_number`. Needs the `steps` COLLECTION_GROUP index.
-- `_sync_task_status(task_id, step_status)` — uses `_SYNCING` guard (separate set from `task.py`)
+- `_sync_task_status(task_id, step_status, *, protocol_id='') -> str` — uses `_SYNCING` guard (separate set from `task.py`). Reads the task, applies the pure table `cascaded_task_status` (a CANCELLED task is never touched either way; a reopen reopens only a `terminée` task; an `en_cours` step never downgrades a done one), compare-and-sets the write against the task it read (one re-read on conflict), then **bumps the task's DAV collection itself** — the second documented in-model bump. Returns `synced`/`noop`/`skipped_cancelled`/`skipped`/`missing`/`failed`/`none`; never raises
 - `_auto_create_tasks_for_steps(protocol)` — creates a task per step and links it via `linked_task_id`
-- `_check_protocol_completion(protocol_id)` — auto-transitions to `complété` when all mandatory steps are done
+- `_check_protocol_completion(protocol_id) -> bool` — auto-transitions to `complété` when ALL steps are `complété` (not only the mandatory ones), and says whether it did
 
 ### `models/document.py` + `models/folder.py`
 
@@ -2718,6 +2721,7 @@ Call sites that must bump CTags:
 - Task dossier reassignment → tombstone + bump for OLD collection (incl. the standalone `tasks` collection), `remove_tombstone` + bump for NEW — through `dav.sync.relocate_resource` since lot 0a (`routes/tasks.task_update`)
 - `notes` CRUD → `bump_ctag(f"dossier:{dossier_id}")`; delete → `record_tombstone` + bump; dossier reassignment → tombstone + bump for OLD collection, `remove_tombstone` + bump for NEW (same shape as tasks — added July 2026; a bare bump on delete left the note on the phone forever) — through `dav.sync.relocate_resource` since lot 0a (`routes/notes.note_update`). `routes/hearings.hearing_update` still carries its own block, on purpose: it compares raw ids, so switching it would change its behaviour on `None` vs `""` (see « Relocation » above)
 - `protocol._auto_create_tasks_for_steps` → bump per task created
+- `protocol._sync_task_status` → bump the linked task's collection after a cascaded status write (lot 0b — the web step route bumped nothing, so the phone never learned a task was completed or reopened by its step)
 - All DAV PUT/DELETE handlers already bump their own CTag
 - Dossier deletion → `clear_tombstones(f"dossier:{id}")` + `delete_sync_state(f"dossier:{id}")` (no `"dossiers"` sync collection exists post-D1)
 
@@ -2787,7 +2791,8 @@ Both directions sync status changes between a task and its linked protocol step:
 - Step completed → task marked `terminée`
 - Task completed → step marked `complété`
 - Task reopened → step reverted to `à_venir`
-- Step reopened → task reverted to `à_faire`
+- Step reopened → a `terminée` task reverted to `à_faire` (an `en_cours` one stays in progress)
+- A task `annulée` is **never** rewritten by its step, in either direction (lot 0b — it used to become `terminée` or `à_faire`, the lawyer's cancellation silently undone); the page says so
 
 Implemented via two helpers: `_sync_task_status` in `protocol.py`, `_sync_protocol_step` in `task.py`. Both use a module-level `_SYNCING: set[str]` guard to prevent infinite recursion. Cross-protocol search iterates active protocols (tractable for single-user dataset size).
 

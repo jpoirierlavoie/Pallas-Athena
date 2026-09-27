@@ -35,7 +35,8 @@ _SECRET = "Tremblay c. Lavoie — texte privilégié"
 # The cascade functions, by module. Any NEW cascade function joins here.
 _CASCADE = {
     "task.py": ("_sync_protocol_step",),
-    "protocol.py": ("_sync_task_status", "_check_protocol_completion"),
+    "protocol.py": ("_sync_task_status", "_check_protocol_completion",
+                    "set_step_status"),
 }
 
 
@@ -65,11 +66,19 @@ def test_a_failed_step_sync_is_logged_with_ids_only(monkeypatch, caplog):
 
 
 def test_a_failed_task_sync_is_logged_with_ids_only(monkeypatch, caplog):
+    # Since lot 0b the cascade READS the task before writing it (a cancelled
+    # task is left alone), so the read is stubbed with a real, open task: on
+    # the mocked client it would otherwise hand back a MagicMock and reach
+    # the write only by accident.
+    monkeypatch.setattr(task_model, "get_task", lambda tid: {
+        "id": tid, "status": "à_faire", "etag": "e0", "dossier_id": "d1"})
+
     def _boom(task_id, data, **kw):
         raise RuntimeError(_SECRET)
     monkeypatch.setattr(task_model, "update_task", _boom)
     with caplog.at_level(logging.INFO):
-        protocol_model._sync_task_status("task-2", "complété")
+        outcome = protocol_model._sync_task_status("task-2", "complété")
+    assert outcome == "failed"
     (record,) = _unexpected(caplog)
     assert record.getMessage() == "protocol cascade: task status sync failed"
     assert _fields(record) == {"event": "unexpected", "task_id": "task-2",
@@ -101,6 +110,13 @@ def _function(module: str, name: str) -> ast.FunctionDef:
                 if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
+# What counts as « logged » in an except handler: the unexpected-error
+# helper, or — for a REFUSAL raised on purpose inside a transaction
+# (set_step_status's _StepRefusal, lot 0b) — the family's typed event
+# helper with a machine reason. Never a raw logger call (swept above).
+_LOGGING_HELPERS = {"log_unexpected", "log_protocol_event"}
+
+
 def test_no_cascade_function_logs_raw_or_swallows_silently():
     """Swept on the source, so a re-introduced `pass` or `logger.warning`
     fails here even where no test drives that branch."""
@@ -119,7 +135,7 @@ def test_no_cascade_function_logs_raw_or_swallows_silently():
                     logs = [n for b in node.body for n in ast.walk(b)
                             if isinstance(n, ast.Call)
                             and isinstance(n.func, ast.Name)
-                            and n.func.id == "log_unexpected"]
+                            and n.func.id in _LOGGING_HELPERS]
                     if not body or not logs:
                         offenders.append(
                             f"{module}:{name} swallows an exception unlogged")

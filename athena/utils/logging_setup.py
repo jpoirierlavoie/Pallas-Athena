@@ -475,6 +475,7 @@ _PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
 _PALLAS_HEARING = logging.getLogger("pallas.hearing")
 _PALLAS_SETTINGS = logging.getLogger("pallas.settings")
 _PALLAS_INVOICE = logging.getLogger("pallas.invoice")
+_PALLAS_PROTOCOL = logging.getLogger("pallas.protocol")
 
 
 AuthEvent = Literal[
@@ -670,6 +671,17 @@ InvoiceEvent = Literal[
     "invoice_refused",
 ]
 InvoiceOutcome = Literal["success", "refused"]
+# Protocol steps and their linked-task cascade (lot 0b, 2026-09-26). A step
+# status change rewrites a DAV-exposed task behind the caller's back; before
+# this family neither the change nor a cascade that deliberately left the
+# task alone (a cancelled task is never un-cancelled) left a trace. IDs,
+# statuses and machine reasons only: never a step or task title.
+ProtocolEvent = Literal[
+    "step_status_set",
+    "step_status_refused",
+    "cascade_task_skipped",
+]
+ProtocolOutcome = Literal["success", "refused"]
 # Portail client (spec L1). One vocabulary for BOTH processes: the portal
 # service emits the portail_* client-facing events, the main service emits
 # the task/reconciliation/courriel/réception ones — Cloud Logging separates
@@ -1097,6 +1109,33 @@ def log_invoice_event(
     _emit(_PALLAS_INVOICE, level, event, fields)
 
 
+def log_protocol_event(
+    event: ProtocolEvent,
+    protocol_id: str,
+    *,
+    outcome: ProtocolOutcome = "success",
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit a protocol-step event — logger ``pallas.protocol``.
+
+    ``success`` emits at INFO, ``refused`` at WARNING. ``reason`` is a short
+    machine-stable code (``tache_annulee``, ``etape_introuvable``…) — never
+    the French message. IDs and statuses only: a step or task TITLE names
+    the case, and the ``RedactionFilter`` does not scrub names or free text.
+    """
+    fields: dict[str, Any] = {
+        "event": event,
+        "outcome": outcome,
+        "protocol_id": protocol_id,
+        **extra,
+    }
+    if reason is not None:
+        fields["reason"] = reason
+    level = logging.INFO if outcome == "success" else logging.WARNING
+    _emit(_PALLAS_PROTOCOL, level, event, fields)
+
+
 def log_unexpected(
     message: str,
     *,
@@ -1139,6 +1178,7 @@ __all__: Iterable[str] = (
     "log_hearing_series_event",
     "log_mcp_event",
     "log_portail_event",
+    "log_protocol_event",
     "log_security_event",
     "log_settings_event",
     "log_template_event",
