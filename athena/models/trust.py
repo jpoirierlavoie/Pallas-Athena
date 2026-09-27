@@ -445,6 +445,15 @@ _ABORT_MESSAGES = {
         "conciliation. Inscrivez l'écriture à une date postérieure au {detail} "
         "et précisez la date réelle dans la description."
     ),
+    # The floor IS today (a reconciliation completed on its own period_end):
+    # « a date after the floor » would be tomorrow, which date_future
+    # refuses — the message must not prescribe what the model then refuses.
+    "période_verrouillée_jour": (
+        "Une conciliation complétée couvre déjà la date d'aujourd'hui "
+        "(conciliation au {detail}) : aucune écriture ne peut être datée "
+        "d'aujourd'hui ou d'avant. Inscrivez-la demain et précisez la date "
+        "réelle dans la description."
+    ),
     "compensation_période_verrouillée": (
         "La date de compensation tombe dans une période déjà conciliée "
         "(conciliation complétée au {detail}) — elle réécrirait une preuve "
@@ -954,7 +963,13 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
         if account.get("status") != "actif":
             raise _TxnAbort("compte_fermé")
         if lock_floor is not None and _as_utc(tx_date).date() <= lock_floor.date():
-            raise _TxnAbort("période_verrouillée", detail=_floor_label(lock_floor))
+            # A floor ON today leaves no date to advise: « after the floor »
+            # is tomorrow, which the future-date guard refuses.
+            raise _TxnAbort(
+                "période_verrouillée_jour"
+                if lock_floor.date() >= today_mtl() else "période_verrouillée",
+                detail=_floor_label(lock_floor),
+            )
         if dossier_id is not None and client_id not in (dossier.get("client_ids") or []):
             raise _TxnAbort("client_hors_dossier")
         if last_tx is not None:
@@ -1341,6 +1356,12 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
     """
     reason = (reason or "").strip()
     if not reason:
+        # Logged like every other refusal (OBSERVABILITY: a refused reversal
+        # logs under trust_transaction_refused) — reason code only.
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            transaction_id=tx_id, reason="motif_requis", operation="reverse",
+        )
         return None, [_ABORT_MESSAGES["motif_requis"]]
 
     orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
@@ -1646,12 +1667,21 @@ def create_inter_dossier_transfer(
     two linked ``compensée`` legs (§6.4). The overdraft control applies to the
     source leg. ``account_id`` is required here (the spec signature omitted it,
     but every leg needs an account); a single « général » account is the norm."""
+    precheck = None
     if (from_dossier_id, from_client_id) == (to_dossier_id, to_client_id):
-        return None, [_ABORT_MESSAGES["transfert_identique"]]
-    if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
-        return None, [_ABORT_MESSAGES["montant_invalide"]]
-    if method not in VALID_METHODS:
-        return None, [_ABORT_MESSAGES["mode_invalide"]]
+        precheck = "transfert_identique"
+    elif not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+        precheck = "montant_invalide"
+    elif method not in VALID_METHODS:
+        precheck = "mode_invalide"
+    if precheck:
+        # The read-free refusals log too, as the create path's prechecks do.
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            account_id=account_id or None, dossier_id=from_dossier_id or None,
+            reason=precheck, operation="transfer",
+        )
+        return None, [_ABORT_MESSAGES[precheck]]
 
     description = sanitize(description or "", max_length=2000)
     reference = sanitize(reference or "", max_length=2000)

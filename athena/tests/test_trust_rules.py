@@ -396,6 +396,28 @@ def test_la_compensation_en_lot_dit_pourquoi(fake, client, monkeypatch):
     assert "réécrirait une preuve" in page
 
 
+def test_le_jour_meme_du_plancher_le_refus_de_creation_dit_demain(fake, monkeypatch):
+    """Une conciliation complétée le jour même de sa fin de période : le
+    message ordinaire conseillait « une date postérieure au » plancher —
+    c'est-à-dire demain, que la garde des dates futures refuse aussitôt. Un
+    refus ne prescrit jamais ce que le modèle refuse ensuite (revue, lot 0b)."""
+    _evening(monkeypatch)
+    _completed(fake, _d(2026, 9, 25))
+    _, errs = trust.create_transaction(_entry(date=_d(2026, 9, 25)))
+    assert errs == [trust._abort_message("période_verrouillée_jour", "2026-09-25")]
+    assert "demain" in errs[0] and "postérieure" not in errs[0]
+    # What the ordinary message would have advised is refused today:
+    assert trust.create_transaction(_entry(date=_d(2026, 9, 26)))[1] == [
+        trust._ABORT_MESSAGES["date_future"]
+    ]
+    # A floor in the PAST keeps the ordinary advice (a later date exists).
+    _completed(fake, _d(2026, 8, 31), rec_id="rec0")
+    fake.external_delete("trust_reconciliations/rec1")
+    _, errs = trust.create_transaction(_entry(date=_d(2026, 8, 20)))
+    assert errs == [trust._abort_message("période_verrouillée", "2026-08-31")]
+    assert fake.peek_collection("trust_transactions") == {}
+
+
 def test_une_contre_passation_refusee_quand_la_conciliation_couvre_aujourd_hui(fake, monkeypatch):
     _evening(monkeypatch)
     r = _create(date=_d(2026, 9, 20))
@@ -853,12 +875,19 @@ def test_contre_passer_un_volet_contre_passe_les_deux(fake, monkeypatch, which):
 
 
 def test_la_contre_passation_d_un_virement_est_tout_ou_rien(fake, monkeypatch):
-    """Une panne au commit n'applique RIEN — ni l'un ni l'autre volet."""
+    """Une panne au commit n'applique RIEN — ni l'un ni l'autre volet.
+
+    Le commit refusé portait les DEUX corrections et les DEUX volets
+    d'origine (revue, lot 0b) : sans cette assertion, le test passait sur le
+    code antérieur, qui ne contre-passait qu'un volet — une panne n'y
+    appliquait rien non plus."""
     _evening(monkeypatch)
     source, recipient = _transfer()
     before = fake.peek_collection("trust_transactions")
+    attempted: list[set] = []
 
     def _boom(info):
+        attempted.append({path for _kind, path in info.ops})
         raise RuntimeError("commit refusé")
 
     remove = fake.add_commit_hook(_boom)
@@ -868,6 +897,12 @@ def test_la_contre_passation_d_un_virement_est_tout_ou_rien(fake, monkeypatch):
         remove()
     assert errs
     assert fake.peek_collection("trust_transactions") == before
+    assert len(attempted) == 1
+    ops = attempted[0]
+    assert {f"trust_transactions/{source['id']}",
+            f"trust_transactions/{recipient['id']}"} <= ops
+    assert sum(1 for p in ops if p.startswith("trust_transactions/")) == 4
+    assert {"dossiers/dos1", "dossiers/dos2", "trust_accounts/acc1"} <= ops
 
 
 def test_le_destinataire_qui_a_depense_les_fonds_ne_se_voit_pas_mis_a_decouvert(fake, monkeypatch):
@@ -995,3 +1030,37 @@ def test_une_reference_de_recette_malformee_est_un_refus_jamais_une_erreur(fake,
     _, errs = _refund(bad, 1000)
     assert errs == [trust._ABORT_MESSAGES["recette_espèces_introuvable"]]
     assert fake.peek_collection("trust_transactions") == before
+
+
+def test_les_refus_sans_lecture_de_la_contre_passation_et_du_virement_se_journalisent(
+    fake, monkeypatch
+):
+    """OBSERVABILITY.md annonce qu'un refus de contre-passation ou de virement
+    se journalise sous ``trust_transaction_refused`` : ses refus SANS lecture
+    (motif manquant ; virement vers soi-même, montant ou mode invalide)
+    sortaient pourtant sans trace (revue, lot 0b). Codes et identifiants
+    seulement — jamais un nom ni un montant."""
+    calls: list = []
+    monkeypatch.setattr(
+        trust, "log_trust_event",
+        lambda event, outcome="success", **kw: calls.append((event, outcome, kw)),
+    )
+    assert trust.reverse_transaction("tx1", "   ")[1] == [trust._ABORT_MESSAGES["motif_requis"]]
+    for args in (
+        ("acc1", "dos1", "c1", "dos1", "c1", 100, "", "virement", ""),
+        ("acc1", "dos1", "c1", "dos2", "c2", 0, "", "virement", ""),
+        ("acc1", "dos1", "c1", "dos2", "c2", 100, "", "espèces", ""),
+    ):
+        assert trust.create_inter_dossier_transfer(*args)[1]
+    refused = [(kw.get("operation"), kw.get("reason"))
+               for event, outcome, kw in calls
+               if event == "trust_transaction_refused" and outcome == "refused"]
+    assert refused == [
+        ("reverse", "motif_requis"),
+        ("transfer", "transfert_identique"),
+        ("transfer", "montant_invalide"),
+        ("transfer", "mode_invalide"),
+    ]
+    allowed = {"transaction_id", "account_id", "dossier_id", "reason", "operation"}
+    assert all(set(kw) <= allowed for _e, _o, kw in calls)
+    assert fake.peek_collection("trust_transactions") == {}
