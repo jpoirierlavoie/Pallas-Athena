@@ -146,13 +146,18 @@ def test_a_resolvable_dossier_gets_its_labels(client, monkeypatch, bumps):
     monkeypatch.setattr(rh, "get_hearing", lambda hid: {
         "id": hid, "dossier_id": "d1", "title": "Audience"})
 
-    def _update(hid, data):
+    def _update(hid, data, **kw):
+        # Widened in lot 1a (L4): the route now always hands the form's
+        # version to the model. This form carries no field → None, the
+        # legacy unchecked save.
         seen.update(data)
+        seen["_kw"] = kw
         return {**data, "id": hid}, []
 
     monkeypatch.setattr(rh, "update_hearing", _update)
     r = client.post("/audiences/h1", data=_form(dossier_id="d1"))
     assert r.status_code == 302
+    assert seen["_kw"] == {"expected_etag": None}
     assert seen["dossier_file_number"] == "2026-001"
     assert seen["dossier_title"] == "Tremblay c. Lavoie"
     assert bumps == ["dossier:d1"]
@@ -225,8 +230,9 @@ def test_saving_an_all_day_form_unchanged_writes_the_same_slot(
     html = _edit_page(client, monkeypatch, hearing)
     seen = {}
 
-    def _update(hid, data):
+    def _update(hid, data, **kw):
         seen.update(data)
+        assert kw == {"expected_etag": None}
         return {**hearing, **data}, []
 
     monkeypatch.setattr(rh, "update_hearing", _update)
@@ -257,7 +263,7 @@ def test_switching_an_all_day_hearing_to_a_time_keeps_its_day(
     html = _edit_page(client, monkeypatch, hearing)
     seen = {}
     monkeypatch.setattr(rh, "update_hearing",
-                        lambda hid, d: (seen.update(d) or ({**hearing, **d}, [])))
+                        lambda hid, d, **kw: (seen.update(d) or ({**hearing, **d}, [])))
     client.post("/audiences/h1", data=_form(
         start_date=_value(html, "start_date"), start_time="09:30",
         end_time="10:30"))

@@ -51,6 +51,9 @@
     {{ 'Modifier l\'audience' if hearing and hearing.id else 'Nouvelle audience' }}
   </h1>
 
+  {% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+  {{ conflict_banner(conflict) }}
+
   {# ── Errors ────────────────────────────────────────────────── #}
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -67,6 +70,7 @@
         action="{{ url_for('hearings.hearing_update', hearing_id=hearing.id) if hearing and hearing.id else url_for('hearings.hearing_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(hearing) }}
     <input type="hidden" name="return_to" value="{{ return_to or '' }}">
 
     {# Dossier selector (optional — standalone agenda events have no dossier) #}

@@ -12,7 +12,7 @@ import icalendar
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import dav_ids, db, provenance
+from models import concurrency, dav_ids, db, provenance
 from security import sanitize
 from tz import MTL, mtl_to_utc, to_mtl
 from utils import deadlines
@@ -871,6 +871,7 @@ def update_hearing(
     data: dict,
     *,
     server_fields: Optional[dict] = None,
+    expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing hearing. Returns (updated_doc, errors).
 
@@ -880,6 +881,14 @@ def update_hearing(
     anything is read. Presence-merge as before: a key present overwrites,
     an absent key survives. The slot is renormalized (see
     :func:`_renormalize_slot`) and ``dav_href`` recomputed.
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one (``models.concurrency``) — a stale one
+    returns ``[STALE_ETAG_ERROR]`` and writes nothing. It is compared right
+    after the read, before any validation: the useful answer to an outdated
+    view is « re-read », not the first field error the outdated view trips.
+    ``None`` (the DAV PUT, the Bookings sync, a page rendered before its
+    form carried an etag) is the unchanged single ``set()``.
     """
     errors = update_key_errors(data, server_fields)
     if errors:
@@ -888,6 +897,8 @@ def update_hearing(
     existing = get_hearing(hearing_id)
     if not existing:
         return None, ["Audience introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
 
     merged = {
         **existing,
@@ -906,7 +917,15 @@ def update_hearing(
     provenance.stamp_update(merged, now)
 
     try:
-        db.collection(COLLECTION).document(hearing_id).set(merged)
+        concurrency.commit_document(
+            db.collection(COLLECTION).document(hearing_id), merged,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Audience introuvable."]
     except Exception:
         log_unexpected("hearing write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

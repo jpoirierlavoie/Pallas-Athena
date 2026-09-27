@@ -59,6 +59,7 @@ from models.dossier import (
     get_dossier,
     VALID_COURTS,
 )
+from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, enrich_dossier_labels, is_htmx, parse_date_input
 
 hearings_bp = Blueprint("hearings", __name__, url_prefix="/audiences")
@@ -673,21 +674,33 @@ def hearing_update(hearing_id: str) -> str:
     existing_hearing = get_hearing(hearing_id)
     old_dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
 
+    # The version the form was rendered from (routes/edit_conflict.py):
+    # None for a page opened before the field existed — the legacy,
+    # unchecked save. A stale one is refused by the model, nothing written.
+    expected = edit_conflict.submitted_etag()
     data = _form_data()
     data, link_errors = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
 
     hearing, errors = (
         (None, link_errors) if link_errors
-        else update_hearing(hearing_id, data)
+        else update_hearing(hearing_id, data, expected_etag=expected)
     )
 
     if errors:
+        errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_hearing(hearing_id),
+            compare_url=url_for("hearings.hearing_detail", hearing_id=hearing_id),
+        )
         data["id"] = hearing_id
         data["dossier_file_number"] = data.get("dossier_file_number", request.form.get("dossier_display", ""))
         data["dossier_title"] = data.get("dossier_title", "")
         ctx = _template_context()
-        ctx.update(hearing=data, errors=errors, return_to=return_to)
+        ctx.update(
+            hearing=data, errors=errors, conflict=conflict, return_to=return_to
+        )
         return render_template("hearings/form.html", **ctx)
 
     # A hearing moved between collections (dossier <-> dossier, or to/from

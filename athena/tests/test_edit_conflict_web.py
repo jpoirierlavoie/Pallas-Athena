@@ -51,6 +51,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import document as document_model
     from models import dossier as dossier_model
     from models import expense as expense_model
+    from models import hearing as hearing_model
     from models import note as note_model
     from models import partie as partie_model
     from models import protocol as protocol_model
@@ -58,6 +59,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import time_entry as time_entry_model
     import routes.documents as documents_routes
     import routes.dossiers as dossiers_routes
+    import routes.hearings as hearings_routes
     import routes.notes as notes_routes
     import routes.parties as parties_routes
     import routes.protocols as protocols_routes
@@ -118,7 +120,8 @@ def client(db):
     for bp in (parties_routes.parties_bp, dossiers_routes.dossiers_bp,
                time_expenses_routes.time_expenses_bp,
                documents_routes.documents_bp, notes_routes.notes_bp,
-               tasks_routes.tasks_bp, protocols_routes.protocols_bp):
+               tasks_routes.tasks_bp, protocols_routes.protocols_bp,
+               hearings_routes.hearings_bp):
         app.register_blueprint(bp)
     c = app.test_client()
     with c.session_transaction() as s:
@@ -284,6 +287,25 @@ def _time_phase_form(dossier_id, sous_phase):
     return {"phase": sous_phase.split("-")[0], "sous_phase": sous_phase}
 
 
+def _seed_hearing(db, dossier_id):
+    doc, errors = hearing_model.create_hearing({
+        "dossier_id": dossier_id, "title": "Audience",
+        "hearing_type": "audience", "status": "confirmée",
+        "start_datetime": datetime(2026, 10, 15, 13, tzinfo=UTC),
+        "end_datetime": datetime(2026, 10, 15, 14, tzinfo=UTC),
+        "notes": "Premier"})
+    assert errors == [], errors
+    return doc["id"]
+
+
+def _hearing_form(dossier_id, notes, *, title="Audience"):
+    return {"dossier_id": dossier_id, "title": title, "notes": notes,
+            "hearing_type": "audience", "status": "confirmée",
+            "start_date": "2026-10-15", "start_time": "09:00",
+            "end_time": "10:00", "reminder_minutes": "1440",
+            "modalite": "présentiel"}
+
+
 def _seed_protocol(db, dossier_id):
     doc, errors = protocol_model.create_protocol(
         dossier_id, "conventionnel", DT,
@@ -387,6 +409,17 @@ CASES = [
         None, _document_form,
         lambda d, m: _document_form(d, m, category="inventée"),
         "notes_internes", "SOUMIS-7Q4",
+    ),
+    # Lot 1a (L4): the hearing edit form. Like the protocol forms below,
+    # no connector write modifies a hearing yet (update_hearing is lot
+    # 1b's), so the derived map does not require it — wired first, as the
+    # plan orders, and its cycle proved like every other.
+    FormCase(
+        "hearing", "hearing", "hearings", _seed_hearing,
+        lambda i: f"/audiences/{i}/edit", lambda i: f"/audiences/{i}",
+        "/audiences/new", _hearing_form,
+        lambda d, m: _hearing_form(d, m, title=""),
+        "notes", "SOUMIS-7Q4",
     ),
     # Lot 1a (L2): the protocol edit form and a step's inline form. No
     # connector write reaches a protocol yet (lot 1b), so these forms are
@@ -1197,7 +1230,7 @@ def test_the_component_uses_no_filter_and_no_global():
 # ══════════════════════════════════════════════════════════════════════
 
 _ROUTE_FILES = ("parties.py", "dossiers.py", "time_expenses.py",
-                "documents.py", "notes.py", "tasks.py")
+                "documents.py", "notes.py", "tasks.py", "hearings.py")
 
 
 def test_expected_etag_never_enters_a_model_payload():

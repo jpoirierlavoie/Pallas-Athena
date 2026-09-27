@@ -334,6 +334,75 @@ def test_unlink_goes_through_server_fields(fake):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 2 bis. La version lue (lot 1a, L4) — expected_etag
+# ══════════════════════════════════════════════════════════════════════
+#
+# The web edit form now hands the model the etag it was rendered from.
+# Before, every update_hearing was a blind full-document set(): a tab left
+# open over a phone edit (or the Bookings sync's silent slot update)
+# rewrote the stale slot in silence.
+
+
+def test_a_current_etag_commits_and_moves_the_etag(fake):
+    _seed_timed(fake)
+    doc, errors = h.update_hearing("h1", {"notes": "Salle 2.08"},
+                                   expected_etag="e0")
+    assert errors == []
+    stored = _stored(fake)
+    assert stored["notes"] == "Salle 2.08"
+    assert stored["etag"] == doc["etag"] != "e0"
+
+
+def test_a_stale_etag_writes_nothing(fake):
+    _seed_timed(fake)
+    before = _stored(fake)
+    doc, errors = h.update_hearing("h1", {"notes": "x"}, expected_etag="old")
+    assert doc is None
+    assert errors == [h.concurrency.STALE_ETAG_ERROR]
+    assert _stored(fake) == before
+
+
+def test_a_stale_etag_is_answered_before_validation(fake):
+    """« Re-read » is the useful answer to an outdated view — not the first
+    field error the outdated view happens to trip."""
+    _seed_timed(fake)
+    _doc, errors = h.update_hearing("h1", {"title": ""}, expected_etag="old")
+    assert errors == [h.concurrency.STALE_ETAG_ERROR]
+
+
+def test_a_write_landing_between_the_read_and_the_commit_is_refused(fake):
+    """The comparison runs INSIDE the transaction: another writer racing the
+    commit (the Bookings sync, the phone) makes the save refuse, never
+    overwrite."""
+    _seed_timed(fake)
+    raced = []
+
+    def _race(_info):
+        if not raced:
+            raced.append(1)
+            doc = _stored(fake)
+            doc.update(notes="Écrit par le téléphone", etag="e-phone")
+            fake.external_write("hearings/h1", doc)
+
+    remove = fake.add_commit_hook(_race)
+    try:
+        doc, errors = h.update_hearing("h1", {"notes": "x"},
+                                       expected_etag="e0")
+    finally:
+        remove()
+    assert doc is None and errors == [h.concurrency.STALE_ETAG_ERROR]
+    assert _stored(fake)["notes"] == "Écrit par le téléphone"
+
+
+def test_no_etag_is_the_unchanged_legacy_write(fake):
+    """The DAV PUT and the Bookings sync pass none: last write wins, as
+    before — their own guards (If-Match, lastModified) are elsewhere."""
+    _seed_timed(fake, etag="e-other")
+    doc, errors = h.update_hearing("h1", {"notes": "x"})
+    assert errors == [] and _stored(fake)["notes"] == "x"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 3. Le PUT DAV (la vraie route)
 # ══════════════════════════════════════════════════════════════════════
 
