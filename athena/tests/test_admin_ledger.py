@@ -829,9 +829,10 @@ def test_sum_invoice_receipts_excludes_a_reversed_compensee(store):
 
 
 def test_reverse_trust_linked_needs_the_flag(store):
+    # Lot 0b (B6): the trust link is a KEYWORD — never a data key.
     entry, _ = al.create_transaction(
-        _new(direction="recette", kind="recette_autre", category="",
-             trust_transaction_id="trust-tx-1")
+        _new(direction="recette", kind="recette_autre", category=""),
+        trust_transaction_id="trust-tx-1",
     )
     _, errs = al.reverse_transaction(entry["id"], "essai")
     assert "fidéicommis" in errs[0]
@@ -1123,8 +1124,8 @@ def test_list_invoice_receipts_sans_identifiant_ne_requete_pas(store):
 
 def test_find_by_trust_transaction(store):
     al.create_transaction(
-        _new(direction="recette", kind="recette_autre", category="",
-             trust_transaction_id="ttx9")
+        _new(direction="recette", kind="recette_autre", category=""),
+        trust_transaction_id="ttx9",
     )
     found = al.find_by_trust_transaction("ttx9")
     assert found and found["trust_transaction_id"] == "ttx9"
@@ -1153,11 +1154,11 @@ def test_list_by_trust_transaction_rend_tout_pas_le_premier(store):
     """find_by_trust_transaction lit deux lignes puis n'en rend qu'une : son
     .limit(2) détecte le doublon et jette le signal. Une reprise qui décide
     d'écrire ou non a besoin du signal."""
-    a, _ = al.create_transaction(_encaissement(amount=30000,
-                                              trust_transaction_id="ttx1"))
+    a, _ = al.create_transaction(_encaissement(amount=30000),
+                                 trust_transaction_id="ttx1")
     store["invoices"]["fac1"]["amount_paid"] = 30000
-    b, _ = al.create_transaction(_encaissement(amount=20000,
-                                              trust_transaction_id="ttx1"))
+    b, _ = al.create_transaction(_encaissement(amount=20000),
+                                 trust_transaction_id="ttx1")
     assert al.find_by_trust_transaction("ttx1")["id"] in (a["id"], b["id"])
     assert [r["id"] for r in al.list_by_trust_transaction("ttx1")] == [
         a["id"], b["id"]]
@@ -1181,10 +1182,10 @@ def test_list_by_trust_transaction_echoue_FERME(store, monkeypatch):
 
 def test_list_by_trust_transaction_est_ordonnee_du_plus_ancien(store):
     tardif, _ = al.create_transaction(_encaissement(
-        amount=10000, date=_d(2026, 3, 9), trust_transaction_id="ttx1"))
+        amount=10000, date=_d(2026, 3, 9)), trust_transaction_id="ttx1")
     store["invoices"]["fac1"]["amount_paid"] = 10000
     ancien, _ = al.create_transaction(_encaissement(
-        amount=5000, date=_d(2026, 1, 4), trust_transaction_id="ttx1"))
+        amount=5000, date=_d(2026, 1, 4)), trust_transaction_id="ttx1")
     assert [r["id"] for r in al.list_by_trust_transaction("ttx1")] == [
         ancien["id"], tardif["id"]]
 

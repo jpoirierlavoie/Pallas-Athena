@@ -533,10 +533,12 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
             if v.get("invoice_external_ref"):
                 description += f" (facture d'origine {v['invoice_external_ref']})"
             description += " — reprise historique"
+            # Le lien au virement voyage en MOT-CLÉ : le modèle refuse un
+            # trust_transaction_id glissé dans les données (lot 0b). Le sens
+            # n'est plus envoyé : le modèle le déduit du type (« recette »).
             ecriture, erreurs = al.create_transaction({
                 "account_id": compte_id,
                 "kind": "encaissement_facture" if facture else "recette_autre",
-                "direction": "recette",
                 "amount": montant,
                 "method": "virement",
                 "counterparty": v.get("client_name") or "Fidéicommis",
@@ -545,8 +547,7 @@ def appliquer(compte_id: str, actions: list[dict]) -> list[str]:
                 "reference": v.get("reference", ""),
                 "invoice_id": facture["id"] if facture else None,
                 "dossier_id": None if facture else (v.get("dossier_id") or None),
-                "trust_transaction_id": v.get("id"),
-            })
+            }, trust_transaction_id=v.get("id"))
             if erreurs:
                 return [f"{v.get('id')} : {erreurs[0]}"]
             print(f"  ✔ {_date_str(v.get('date'))} "

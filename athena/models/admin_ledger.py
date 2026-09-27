@@ -399,6 +399,11 @@ _ABORT_MESSAGES = {
         "supprime. Contre-passez-la : le paiement enregistré sur la facture "
         "sera réduit d'autant."
     ),
+    "lien_fideicommis_réservé": (
+        "Le lien avec une écriture du fidéicommis ne s'inscrit pas ici : la "
+        "recette d'un paiement d'honoraires est créée par le paiement au "
+        "fidéicommis lui-même."
+    ),
     "écriture_liée_fideicommis": (
         "Cette recette provient d'un paiement d'honoraires du fidéicommis. "
         "Contre-passez plutôt le virement au fidéicommis — la recette suivra."
@@ -806,7 +811,9 @@ def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
 # ── create_transaction ─────────────────────────────────────────────────────
 
 
-def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
+def create_transaction(
+    data: dict, *, trust_transaction_id: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
     """Append one entry to an administration register, transactionally.
 
     The economic ``date`` is FREE in the past (down to the lock floor — a
@@ -818,8 +825,25 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     (the LIVE balance — stricter than trust's frozen amount_due check), on
     an ``opérations`` account only. Returns ``(entry, [])`` or
     ``(None, [french_errors])``.
+
+    ``trust_transaction_id`` — the fee payment this recette mirrors — is a
+    KEYWORD, and a ``trust_transaction_id`` key inside ``data`` is REFUSED
+    (``lien_fideicommis_réservé``). The link makes the entry uneditable,
+    undeletable and reversible only from the trust side
+    (``_entry_lock_reason``), so it must never ride in a payload a form or
+    a tool argument can fill: ``request.form`` and MCP arguments build
+    ``data`` and cannot reach a keyword. Its callers are the trust fee
+    payment (``routes/trust._creer_recette_administration``) and the
+    reprise script (``scripts/reprise_encaissements``).
     """
     clean = _sanitize_data(data)
+    if "trust_transaction_id" in clean:
+        log_admin_ledger_event(
+            "admin_transaction_refused", "refused",
+            account_id=clean.get("account_id") or None,
+            reason="lien_fideicommis_réservé",
+        )
+        return None, [_ABORT_MESSAGES["lien_fideicommis_réservé"]]
     if not clean.get("account_id"):
         return None, [_ABORT_MESSAGES["compte_introuvable"]]
     ventilation, reason = _validate_business(clean)
@@ -839,7 +863,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     tx_date = clean.get("date")
     dossier_id = clean.get("dossier_id") or None
     invoice_id = clean.get("invoice_id") or None
-    trust_transaction_id = clean.get("trust_transaction_id") or None
+    trust_transaction_id = trust_transaction_id or None
     if kind != "encaissement_facture":
         invoice_id = None
     elif not invoice_id:

@@ -13,6 +13,12 @@ rétablissant) ; les autres sont des témoins du chemin web.
    rapports lisaient « recette ». Le modèle dérive désormais un sens absent,
    refuse un sens nommé qui contredit le type, et une modification qui
    change le type re-dérive le sens.
+2. **Le lien au fidéicommis ne voyage qu'en mot-clé.** Un
+   ``trust_transaction_id`` glissé dans les données est refusé ; le paiement
+   d'honoraires du fidéicommis et le script de reprise — ses deux seuls
+   auteurs — le passent en mot-clé, basculés dans le MÊME commit (l'ordre
+   critique relevé par la revue du lot 5), et le paiement web crée toujours
+   sa recette de bout en bout.
 
 Le banc est le faux Firestore partagé (``tests/_fake_firestore.py``) : le
 client, ses transactions et la boucle de reprise de ``transactional`` sont
@@ -305,3 +311,208 @@ def test_un_formulaire_sans_type_dit_le_type(fake, client):
     assert resp.status_code == 400
     assert "Le type d&#39;opération est invalide." in resp.get_data(as_text=True)
     assert fake.peek_collection("admin_transactions") == {}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 2. Le lien au fidéicommis ne voyage qu'en MOT-CLÉ
+# ══════════════════════════════════════════════════════════════════════
+#
+# Une recette qui porte un trust_transaction_id est verrouillée : ni
+# modifiable, ni supprimable, contre-passable seulement depuis le
+# fidéicommis (_entry_lock_reason). Ce lien ne doit donc jamais voyager dans
+# des données qu'un formulaire ou un argument d'outil sait remplir. Le
+# modèle le refuse dans ``data`` ; ses deux seuls auteurs — le paiement
+# d'honoraires du fidéicommis et le script de reprise — le passent en
+# mot-clé, basculés DANS LE MÊME COMMIT que le refus : sans quoi chaque
+# paiement d'honoraires web aurait, au déploiement suivant, sorti l'argent
+# du fidéicommis sans recette d'administration (la classe de l'incident de
+# juillet 2026).
+
+
+@pytest.mark.parametrize("valeur", ["ttx1", None, ""])
+def test_un_lien_au_fideicommis_dans_les_donnees_est_refuse(fake, refusals, valeur):
+    """Régression — l'ancien modèle lisait le lien dans ``data`` et le
+    stockait (ou stockait None sans rien dire)."""
+    entry, errs = al.create_transaction(_recette(trust_transaction_id=valeur))
+    assert entry is None
+    assert errs == [al._ABORT_MESSAGES["lien_fideicommis_réservé"]]
+    assert fake.peek_collection("admin_transactions") == {}
+    assert _ledger(fake) == 0
+    assert refusals == ["lien_fideicommis_réservé"]
+
+
+def test_le_mot_cle_pose_le_lien_et_verrouille_l_ecriture(fake):
+    """Régression — le mot-clé n'existait pas (TypeError sur l'ancien code)."""
+    entry, errs = al.create_transaction(_recette(), trust_transaction_id="ttx1")
+    assert errs == [], errs
+    stored = fake.peek(f"admin_transactions/{entry['id']}")
+    assert stored["trust_transaction_id"] == "ttx1"
+    assert al._entry_lock_reason(stored, None) == "écriture_liée_fideicommis"
+
+
+def test_sans_mot_cle_aucun_lien(fake):
+    entry, errs = al.create_transaction(_recette())
+    assert errs == [], errs
+    assert fake.peek(f"admin_transactions/{entry['id']}")["trust_transaction_id"] is None
+
+
+def test_le_formulaire_d_administration_ne_pose_jamais_le_lien(fake, client):
+    """Témoin : le champ forgé n'est même pas lu par la route."""
+    resp = client.post("/administration/", data=_form(trust_transaction_id="ttx1"))
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert _only_entry(fake)["trust_transaction_id"] is None
+
+
+# ── Le paiement d'honoraires web crée toujours sa recette, de bout en bout ──
+
+
+def _seed_trust(fake) -> None:
+    from models import trust
+
+    fake.seed("trust_accounts/acc1", {
+        "id": "acc1", "name": "Général", "status": "actif",
+        "account_type": "général", "book_balance": 0, "bank_balance": 0,
+        "etag": "e0",
+    })
+    fake.seed("dossiers/dos1", {
+        "id": "dos1", "file_number": "2026-001", "title": "T c. X",
+        "client_ids": ["c1"], "clients": [{"id": "c1", "name": "Jean Tremblay"}],
+        "trust_balance": 0, "trust_balance_by_client": {},
+        "trust_cleared_by_client": {},
+    })
+    fake.seed("invoices/inv1", {
+        "id": "inv1", "invoice_number": "2026-F040", "dossier_id": "dos1",
+        "dossier_file_number": "2026-001", "dossier_title": "T c. X",
+        "status": "envoyée", "total": 114975, "retainer_applied": 0,
+        "amount_due": 114975, "amount_paid": 0,
+    })
+    # A cleared deposit: the funds the overdraft control will release.
+    receipt, errs = trust.create_transaction({
+        "account_id": "acc1", "direction": "recette", "amount": 100000,
+        "purpose": "dépôt_client", "method": "chèque", "counterparty": "Client",
+        "dossier_id": "dos1", "client_id": "c1", "date": _d(2026, 9, 2),
+        "description": "", "reference": "",
+    })
+    assert errs == [], errs
+    _, errs = trust.clear_transaction(receipt["id"], _d(2026, 9, 2))
+    assert errs == [], errs
+
+
+def _fee_form(**over) -> dict:
+    f = {
+        "account_id": "acc1", "direction": "déboursé", "amount": "500,00",
+        "purpose": "virement_honoraires", "method": "chèque",
+        "counterparty": "Me Jason Poirier Lavoie", "dossier_id": "dos1",
+        "client_id": "c1", "date": "2026-09-05",
+        "invoice_number": "2026-F040", "admin_account_id": "ops1",
+    }
+    f.update(over)
+    return f
+
+
+def _fee_entry(fake) -> dict:
+    fees = [t for t in fake.peek_collection("trust_transactions").values()
+            if t.get("purpose") == "virement_honoraires"]
+    assert len(fees) == 1, fees
+    return fees[0]
+
+
+def test_le_paiement_d_honoraires_cree_sa_recette_liee(fake, client):
+    """Régression de l'ORDRE (revue du lot 5, critique) : ce test échoue si
+    le refus du modèle part sans la bascule de routes/trust — vérifié en
+    rétablissant routes/trust seul. La recette naît liée, en recette, et le
+    paiement s'inscrit sur la facture ; aucune bannière d'échec."""
+    _seed_trust(fake)
+    resp = client.post("/fideicommis/", data=_fee_form())
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert "avertissement" not in resp.location
+    fee = _fee_entry(fake)
+    recette = _only_entry(fake)
+    assert recette["trust_transaction_id"] == fee["id"]
+    assert recette["kind"] == "encaissement_facture"
+    assert recette["direction"] == "recette"
+    assert recette["invoice_id"] == "inv1"
+    assert recette["amount"] == 50000
+    assert _ledger(fake) == 50000
+    assert fake.peek("invoices/inv1")["amount_paid"] == 50000
+
+
+def test_le_paiement_sur_facture_papier_cree_une_autre_recette_liee(fake, client):
+    _seed_trust(fake)
+    resp = client.post("/fideicommis/", data=_fee_form(
+        invoice_number="", invoice_external_ref="F-1999-12"))
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert "avertissement" not in resp.location
+    fee = _fee_entry(fake)
+    recette = _only_entry(fake)
+    assert recette["trust_transaction_id"] == fee["id"]
+    assert recette["kind"] == "recette_autre"
+    assert recette["direction"] == "recette"
+    assert recette["invoice_id"] is None
+    assert "F-1999-12" in recette["description"]
+    assert fake.peek("invoices/inv1")["amount_paid"] == 0
+
+
+def test_la_reprise_pose_le_lien_en_mot_cle(fake):
+    """Régression de l'ORDRE, côté script : la reprise historique inscrit sa
+    recette liée, compensée, et crédite la facture — sur le vrai modèle."""
+    from scripts import reprise_encaissements as rep
+
+    fake.seed("invoices/fac1", {
+        "id": "fac1", "invoice_number": "2025-F010", "dossier_id": "dos1",
+        "dossier_file_number": "2025-001", "dossier_title": "T c. X",
+        "status": "envoyée", "total": 50000, "retainer_applied": 0,
+        "amount_due": 50000, "amount_paid": 0,
+    })
+    virement = {
+        "id": "ttx1", "date": _d(2026, 9, 3), "amount": 50000, "sequence": 3,
+        "client_name": "Jean Tremblay", "dossier_id": "dos1",
+        "dossier_file_number": "2025-001", "reference": "",
+        "invoice_external_ref": "",
+    }
+    facture = dict(fake.peek("invoices/fac1"))
+    echecs = rep.appliquer("ops1", [{
+        "virement": virement, "facture": facture, "mode": "encaissement",
+        "montant": 50000, "etat": "à_créer", "ecriture": None,
+    }])
+    assert echecs == [], echecs
+    recette = _only_entry(fake)
+    assert recette["trust_transaction_id"] == "ttx1"
+    assert recette["kind"] == "encaissement_facture"
+    assert recette["direction"] == "recette"
+    assert recette["status"] == "compensée"
+    assert fake.peek("invoices/fac1")["amount_paid"] == 50000
+
+
+def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
+    """Balayage DÉRIVÉ de l'arbre (tests exclus) : aucun appel à
+    ``create_transaction`` ne porte la clé ``trust_transaction_id`` dans son
+    dictionnaire de données. Le refus du modèle est bruyant, mais côté
+    fidéicommis il ne s'affiche qu'en bannière APRÈS le retrait des fonds —
+    un nouvel appelant fautif doit tomber ici, avant le déploiement."""
+    import ast
+
+    offenders = []
+    for path in sorted(_ATHENA.rglob("*.py")):
+        rel = path.relative_to(_ATHENA).as_posix()
+        if rel.startswith(("tests/", "venv/", ".venv/")) or "/site-packages/" in rel:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if name != "create_transaction" or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Dict) and any(
+                isinstance(k, ast.Constant) and k.value == "trust_transaction_id"
+                for k in first.keys
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert offenders == []
+    # The sweep sees the two legitimate callers — it is not vacuous.
+    trust_src = (_ATHENA / "routes" / "trust.py").read_text(encoding="utf-8")
+    reprise_src = (_ATHENA / "scripts" / "reprise_encaissements.py").read_text(encoding="utf-8")
+    assert "trust_transaction_id=entry.get(\"id\")" in trust_src
+    assert "trust_transaction_id=v.get(\"id\")" in reprise_src

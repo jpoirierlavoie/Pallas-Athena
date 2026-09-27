@@ -450,10 +450,13 @@ def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
     )
     if not invoice_id and entry.get("invoice_external_ref"):
         description += f" (facture {entry['invoice_external_ref']})"
+    # The link to the trust entry travels as a KEYWORD: the model refuses a
+    # trust_transaction_id inside the data dict (lot 0b — only this helper
+    # and the reprise script mint a trust-linked recette). No direction is
+    # sent either: the model derives « recette » from the kind.
     recette, errors = admin_ledger.create_transaction({
         "account_id": admin_account_id,
         "kind": "encaissement_facture" if invoice_id else "recette_autre",
-        "direction": "recette",
         "amount": int(entry.get("amount", 0)),
         "method": "virement",
         "counterparty": entry.get("client_name", "") or "Fidéicommis",
@@ -462,8 +465,7 @@ def _creer_recette_administration(entry: dict, admin_account_id: str) -> bool:
         "reference": entry.get("reference", ""),
         "invoice_id": invoice_id,
         "dossier_id": None if invoice_id else (entry.get("dossier_id") or None),
-        "trust_transaction_id": entry.get("id"),
-    })
+    }, trust_transaction_id=entry.get("id"))
     if errors or recette is None:
         log_trust_event(
             "trust_transaction_created", "refused",

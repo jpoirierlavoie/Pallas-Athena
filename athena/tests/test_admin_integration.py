@@ -274,11 +274,15 @@ def _virement(**over):
 
 
 def test_creer_recette_administration_invoice_backed(monkeypatch):
-    created = {}
+    """Réécrit au lot 0b (B6) : le lien au fidéicommis voyage en MOT-CLÉ —
+    le modèle refuse désormais un trust_transaction_id glissé dans les
+    données — et le sens n'est plus envoyé (le modèle le déduit du type)."""
+    created, keywords = {}, {}
     monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
 
-    def _ct(data):
+    def _ct(data, **kw):
         created.update(data)
+        keywords.update(kw)
         return {**data, "id": "adm1"}, []
     monkeypatch.setattr(al, "create_transaction", _ct)
     monkeypatch.setattr(
@@ -288,7 +292,9 @@ def test_creer_recette_administration_invoice_backed(monkeypatch):
     assert rt._creer_recette_administration(_virement(), "ops1") is True
     assert created["kind"] == "encaissement_facture"
     assert created["invoice_id"] == "fac1"
-    assert created["trust_transaction_id"] == "ttx1"
+    assert keywords == {"trust_transaction_id": "ttx1"}
+    assert "trust_transaction_id" not in created
+    assert "direction" not in created
     assert created["amount"] == 60000
     assert created["counterparty"] == "Jean Tremblay"
 
@@ -297,8 +303,9 @@ def test_creer_recette_administration_external_ref(monkeypatch):
     created = {}
     monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
 
-    def _ct(data):
+    def _ct(data, **kw):
         created.update(data)
+        created["_kw"] = kw
         return {**data, "id": "adm1"}, []
     monkeypatch.setattr(al, "create_transaction", _ct)
 
@@ -307,6 +314,7 @@ def test_creer_recette_administration_external_ref(monkeypatch):
     assert created["kind"] == "recette_autre"
     assert created["invoice_id"] is None
     assert "F-1999-12" in created["description"]
+    assert created["_kw"] == {"trust_transaction_id": "ttx1"}
 
 
 def test_creer_recette_refuses_an_unknown_admin_account(monkeypatch):
@@ -317,7 +325,7 @@ def test_creer_recette_refuses_an_unknown_admin_account(monkeypatch):
 def test_creer_recette_failure_is_a_banner_never_an_exception(monkeypatch):
     monkeypatch.setattr(rt, "_comptes_administration", lambda: ([{"id": "ops1"}], True))
     monkeypatch.setattr(al, "create_transaction",
-                        lambda data: (None, ["Compte d'administration introuvable."]))
+                        lambda data, **kw: (None, ["Compte d'administration introuvable."]))
     assert rt._creer_recette_administration(_virement(), "ops1") is False
 
 

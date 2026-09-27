@@ -306,7 +306,7 @@ def test_une_projection_ratee_arrete_TOUT(monkeypatch, base):
     l'application. Continuer la boucle multiplierait ce cas."""
     faites = []
     monkeypatch.setattr(rep.al, "create_transaction",
-                        lambda d: (faites.append(d) or {
+                        lambda d, **kw: (faites.append(d) or {
                             "id": f"adm{len(faites)}", "status": "compensée",
                             "invoice_id": d["invoice_id"], "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
@@ -328,9 +328,9 @@ def test_l_execution_n_ecrit_JAMAIS_au_fideicommis(monkeypatch, base):
     """Le chemin automatisé du logiciel n'écrit jamais vers le fidéicommis ;
     la reprise non plus. Le lien vit sur l'écriture d'administration."""
     monkeypatch.setattr(rep.al, "create_transaction",
-                        lambda d: ({"id": "adm1", "status": "compensée",
-                                    "invoice_id": d["invoice_id"],
-                                    "date": d["date"]}, []))
+                        lambda d, **kw: ({"id": "adm1", "status": "compensée",
+                                          "invoice_id": d["invoice_id"],
+                                          "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
     monkeypatch.setattr(rep, "get_invoice", lambda i: _facture(status="envoyée"))
     monkeypatch.setattr("services.encaissements.projeter_paiement", lambda e: True)
@@ -350,10 +350,14 @@ def test_l_execution_n_ecrit_JAMAIS_au_fideicommis(monkeypatch, base):
 
 def test_l_ecriture_porte_le_virement_et_la_facture(monkeypatch, base):
     """Le lien machine choisi par le juriste, et la provenance en clair — sans
-    quoi rien ne distinguerait une reprise d'une saisie contemporaine."""
-    vues = {}
+    quoi rien ne distinguerait une reprise d'une saisie contemporaine.
+
+    Réécrit au lot 0b (B6) : le lien voyage en MOT-CLÉ (le modèle refuse un
+    trust_transaction_id glissé dans les données) et le sens n'est plus
+    envoyé — le modèle le déduit du type."""
+    vues, mots_cles = {}, {}
     monkeypatch.setattr(rep.al, "create_transaction",
-                        lambda d: (vues.update(d) or {
+                        lambda d, **kw: (vues.update(d) or mots_cles.update(kw) or {
                             "id": "adm1", "status": "compensée",
                             "invoice_id": d["invoice_id"], "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
@@ -365,10 +369,11 @@ def test_l_ecriture_porte_le_virement_et_la_facture(monkeypatch, base):
         "facture": _facture(), "mode": "encaissement", "montant": 50000,
         "etat": "à_créer", "ecriture": None}])
 
-    assert vues["trust_transaction_id"] == "ttx1"
+    assert mots_cles == {"trust_transaction_id": "ttx1"}
+    assert "trust_transaction_id" not in vues
     assert vues["invoice_id"] == "fac1"
     assert vues["kind"] == "encaissement_facture"
-    assert vues["direction"] == "recette"
+    assert "direction" not in vues
     assert "reprise historique" in vues["description"]
     assert "WP1820000001-01" in vues["description"]
 
@@ -377,9 +382,9 @@ def test_une_recette_autre_ne_porte_aucune_facture(monkeypatch, base):
     """Un virement qui ne peut pas s'imputer entier se porte SANS lien de
     facture — jamais en deux morceaux, ce qui défairait la clé
     d'idempotence."""
-    vues = {}
+    vues, mots_cles = {}, {}
     monkeypatch.setattr(rep.al, "create_transaction",
-                        lambda d: (vues.update(d) or {
+                        lambda d, **kw: (vues.update(d) or mots_cles.update(kw) or {
                             "id": "adm1", "status": "compensée",
                             "invoice_id": None, "date": d["date"]}, []))
     monkeypatch.setattr(rep.al, "clear_transaction", lambda i, d: (None, []))
@@ -391,7 +396,7 @@ def test_une_recette_autre_ne_porte_aucune_facture(monkeypatch, base):
                             "etat": "à_créer", "ecriture": None}])
     assert vues["kind"] == "recette_autre"
     assert vues["invoice_id"] is None
-    assert vues["trust_transaction_id"] == "ttx1"
+    assert mots_cles == {"trust_transaction_id": "ttx1"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
