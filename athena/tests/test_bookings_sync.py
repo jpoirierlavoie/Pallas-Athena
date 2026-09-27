@@ -376,6 +376,51 @@ def test_sync_runs_and_returns_counters(client, monkeypatch, spy):
     assert r.status_code == 200 and body["actif"] is True and body["crees"] == 1
 
 
+def test_an_unreadable_lookup_aborts_the_cycle_before_any_write(
+    client, monkeypatch, spy
+):
+    """THE defect (lot 1a, L4): list_bookings_all answered [] on a read
+    failure, so every reservation of the window was created AGAIN as a
+    fresh à_confirmer card, each cycle of the outage — duplicates carrying
+    the real event's Graph id, whose refusal in Réception would cancel the
+    client's actual meeting. The cycle now aborts, nothing written, 200."""
+    monkeypatch.setattr(Config, "BOOKINGS_SYNC_ACTIVE", True)
+    for k, v in [("GRAPH_TENANT_ID", "t"), ("GRAPH_CLIENT_ID", "c"),
+                 ("GRAPH_CLIENT_SECRET", "s"), ("GRAPH_SENDER_UPN", "r@x")]:
+        monkeypatch.setattr(Config, k, v)
+    monkeypatch.setattr(tb.graph_calendrier, "lister_reservations",
+                        lambda debut, fin: [_ev("ical-1")])
+
+    def _down():
+        raise RuntimeError("firestore down")
+
+    monkeypatch.setattr(h, "list_bookings_all", _down)
+    events = []
+    monkeypatch.setattr(tb, "log_bookings_event",
+                        lambda event, outcome="success", **kw:
+                        events.append((event, outcome, kw.get("reason"))))
+    r = client.get("/taches/bookings/sync", headers={"X-Appengine-Cron": "true"})
+    assert r.status_code == 200 and r.get_json()["erreur"] == "firestore"
+    assert spy.creates == [] and spy.updates == []
+    assert events == [("bookings_sync_erreur_graph", "failure",
+                       "lecture_firestore")]
+
+
+def test_the_lookup_reader_propagates(monkeypatch):
+    """The model half: no silent [] any more."""
+    from tests._fake_firestore import install
+    from google.api_core import exceptions as gexc
+    fake = install(monkeypatch, h)
+    server = fake._fake_server
+
+    def failing(request, metadata=None, **kwargs):
+        raise gexc.ServiceUnavailable("injected query failure")
+
+    monkeypatch.setattr(server, "run_query", failing)
+    with pytest.raises(gexc.ServiceUnavailable):
+        h.list_bookings_all()
+
+
 def test_debug_payload_never_logs_the_subject(monkeypatch, caplog):
     """PII: the predicate-tuning debug log must NOT contain the meeting
     subject (it embeds the client name); only booleans + domains."""

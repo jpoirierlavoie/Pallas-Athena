@@ -542,15 +542,19 @@ def list_bookings_all() -> list[dict]:
     every cycle. **Never call this from a UI/DAV/MCP path** — those must keep
     ``refusée`` hidden (see :func:`_filter_confirmation`). Single-field
     ``source`` equality → auto-indexed, no composite index.
+
+    A read failure PROPAGATES (lot 1a, L4). It used to answer ``[]``, which
+    the sync reads as « no prior import »: every reservation in the window
+    was then created AGAIN as a fresh ``à_confirmer`` card, once per
+    10-minute cycle for as long as the outage lasted — and the duplicates
+    share the real event's ``graph_event_id``, so refusing one in Réception
+    cancels the client's actual meeting. The caller aborts the cycle
+    instead (``routes/taches_bookings.sync``).
     """
-    try:
-        query = db.collection(COLLECTION).where(
-            filter=FieldFilter("source", "==", "bookings")
-        )
-        return [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
-    except Exception:
-        logger.warning("list_bookings_all: query failed")
-        return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("source", "==", "bookings")
+    )
+    return [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
 
 
 # ── Bookings rendez-vous: the Réception reads and the decision write ────

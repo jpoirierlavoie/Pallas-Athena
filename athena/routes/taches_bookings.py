@@ -25,7 +25,7 @@ from models import hearing
 from tz import to_mtl
 from utils import graph_calendrier
 from utils.graph import GraphError, GraphNotConfigured
-from utils.logging_setup import log_bookings_event
+from utils.logging_setup import log_bookings_event, log_unexpected
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +242,11 @@ def _debug_payload(bruts: list[dict], mots_cles: tuple) -> None:
         )
 
 
+class ImportsIllisibles(Exception):
+    """The prior Bookings imports could not be read: the cycle is aborted
+    before any write (see the lookup in :func:`_synchroniser`)."""
+
+
 def _synchroniser(integ: dict, provenance: str) -> dict:
     """Read the window, reconcile by graph_ical_uid, return the counters.
 
@@ -271,9 +276,16 @@ def _synchroniser(integ: dict, provenance: str) -> dict:
     # whose best-effort Outlook cancel failed would return from calendarView
     # and be re-imported as a fresh à_confirmer every cycle. list_bookings_all
     # bypasses the confirmation filter for this ONE sync-internal caller.
+    # It is STRICT: read as « aucun import », an outage would re-create every
+    # reservation of the window as a duplicate card — sharing the real
+    # event's Graph id, so refusing it would cancel the client's meeting.
+    try:
+        anterieurs = hearing.list_bookings_all()
+    except Exception as exc:
+        raise ImportsIllisibles() from exc
     existants = {
         h["graph_ical_uid"]: h
-        for h in hearing.list_bookings_all()
+        for h in anterieurs
         if h.get("graph_ical_uid")
     }
 
@@ -401,6 +413,14 @@ def sync():
             "bookings_sync_erreur_graph", "failure", reason="graph_error"
         )
         return jsonify({"actif": True, "erreur": "graph"}), 200
+    except ImportsIllisibles:
+        # Nothing was written: the lookup precedes every create and update.
+        # 200 for the same reason as a Graph outage — the next cycle retries.
+        log_unexpected("bookings sync: prior imports unreadable")
+        log_bookings_event(
+            "bookings_sync_erreur_graph", "failure", reason="lecture_firestore"
+        )
+        return jsonify({"actif": True, "erreur": "firestore"}), 200
 
     log_bookings_event("bookings_sync_execute", **counters)
     return jsonify({"actif": True, **counters})
