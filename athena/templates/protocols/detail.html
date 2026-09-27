@@ -2,8 +2,11 @@
 {% block title %}{{ protocol.title }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+{# step_form : un formulaire d'étape refusé (conflit ou erreur) revient
+   OUVERT sur ce qui a été soumis — la route le précalcule. #}
 <div class="max-w-4xl mx-auto px-4 py-6"
-     x-data="{ addStepOpen: false, editStepId: null, deleteOpen: false }">
+     x-data="{ addStepOpen: false, editStepId: {{ step_form.step_id|jsattr if step_form else 'null' }}, deleteOpen: false }">
 
   {# ── Back + actions ──────────────────────────────────────────── #}
   <div class="flex items-center justify-between mb-6">
@@ -34,6 +37,7 @@
   {% if message %}
   <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">{{ message }}</div>
   {% endif %}
+  {{ conflict_banner(conflict) }}
 
   {# ── Header card ─────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
@@ -188,6 +192,7 @@
            fossil only a browser page load writes and nothing ever clears. #}
         {% set is_overdue = step._days_remaining is not none and step._days_remaining < 0 and not is_completed %}
         {% set is_upcoming = step._days_remaining is not none and step._days_remaining >= 0 and step._days_remaining <= 7 and not is_completed %}
+        {% set sf = step_form if step_form and step_form.step_id == step.id else none %}
 
         <div class="relative flex gap-4 pb-6 last:pb-0">
           {# Timeline dot #}
@@ -339,19 +344,30 @@
                     action="{{ url_for('protocols.step_update', protocol_id=protocol.id, step_id=step.id) }}"
                     class="flex flex-wrap items-end gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {{ etag_field({'id': step.id, 'etag': sf.etag}) if sf else etag_field(step) }}
                 <div class="flex-1 min-w-[140px]">
                   <label class="block text-xs text-gray-500 mb-0.5">Échéance</label>
                   <input type="date" name="deadline_date"
-                         value="{{ step.deadline_date.strftime('%Y-%m-%d') if step.deadline_date and step.deadline_date.strftime is defined else '' }}"
+                         value="{{ sf.deadline_date if sf and sf.deadline_date is not none else (step.deadline_date.strftime('%Y-%m-%d') if step.deadline_date and step.deadline_date.strftime is defined else '') }}"
                          class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 </div>
                 <div class="flex-1 min-w-[140px]">
                   <label class="block text-xs text-gray-500 mb-0.5">Notes</label>
                   <input type="text" name="notes"
-                         value="{{ step.notes or '' }}"
+                         value="{{ sf.notes if sf and sf.notes is not none else (step.notes or '') }}"
                          placeholder="Notes…"
                          class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 </div>
+                {# Confirmer la date suggérée SANS la changer : enregistrer la
+                   même date ne confirme plus rien (une simple note la
+                   « confirmait », et le recalcul l'aurait figée). #}
+                {% if not step.get('date_confirmed', true) %}
+                <label class="flex items-center gap-2 text-xs text-gray-500">
+                  <input type="checkbox" name="confirm_date" value="1" {{ 'checked' if sf and sf.confirm_date }}
+                         class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                  Confirmer cette date
+                </label>
+                {% endif %}
                 <button type="submit"
                         class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">
                   OK
@@ -374,10 +390,11 @@
                     action="{{ url_for('protocols.step_update', protocol_id=protocol.id, step_id=step.id) }}"
                     class="flex flex-wrap items-end gap-2">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                {{ etag_field({'id': step.id, 'etag': sf.etag}) if sf else etag_field(step) }}
                 <div class="flex-1 min-w-[200px]">
                   <label class="block text-xs text-gray-500 mb-0.5">Notes</label>
                   <input type="text" name="notes"
-                         value="{{ step.notes or '' }}"
+                         value="{{ sf.notes if sf and sf.notes is not none else (step.notes or '') }}"
                          placeholder="Notes…"
                          class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 </div>

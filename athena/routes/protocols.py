@@ -25,20 +25,17 @@ from models.protocol import (
     STEP_STATUS_LABELS,
     VALID_PROTOCOL_TYPES,
     VALID_STATUSES,
-    add_step,
     check_overdue_steps,
-    create_protocol,
     delete_protocol,
     delete_step,
     get_protocol,
     get_protocol_for_dossier,
     list_protocols,
     regime_mismatch,
-    set_step_status,
-    update_protocol,
-    update_step,
 )
+from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input
+from services import protocoles as protocol_service
 
 protocols_bp = Blueprint("protocols", __name__, url_prefix="/protocoles")
 
@@ -145,33 +142,38 @@ def protocol_create() -> str:
         ctx.update(dossier=None, protocol=None, errors=["Dossier introuvable."])
         return render_template("protocols/form.html", **ctx)
 
-    data = {
-        "title": f.get("title", "").strip() or "Protocole de l'instance",
-        # The dossier field is `tribunal` — a `court` key has never existed
-        # on dossiers, so this copy silently wrote "" on every protocol
-        # ever created (scripts/backfill_protocol_court.py heals the
-        # existing docs).
-        "court": dossier.get("tribunal", ""),
-        "dossier_file_number": dossier.get("file_number", ""),
-        "dossier_title": dossier.get("title", ""),
-        "notes": f.get("notes", "").strip(),
-    }
-
-    protocol, errors = create_protocol(
-        dossier_id=dossier_id,
-        protocol_type=protocol_type,
-        start_date=start_date,
-        data=data,
-        auto_create_tasks=auto_create_tasks,
+    # The service builds the protocol's snapshot fields from the dossier
+    # (court = its tribunal, the file number and title labels). Linked
+    # tasks only when asked: the service defaults to none, and the wizard
+    # passes its checkbox — unchecked by default — explicitly.
+    protocol, errors, report = protocol_service.create_protocol(
+        dossier, protocol_type, start_date,
+        title=f.get("title", ""), notes=f.get("notes", ""),
+        create_linked_tasks=auto_create_tasks,
     )
 
     if errors:
         ctx = _template_context()
-        ctx.update(dossier=dossier, protocol=data, errors=errors,
+        shown = {
+            "title": f.get("title", "").strip()
+            or protocol_service.DEFAULT_TITLE,
+            "notes": f.get("notes", "").strip(),
+            "protocol_type": protocol_type,
+            "start_date": start_date,
+        }
+        ctx.update(dossier=dossier, protocol=shown, errors=errors,
                    regime_mismatches=_regime_mismatches(dossier))
         return render_template("protocols/form.html", **ctx)
 
-    target = url_for("protocols.protocol_detail", protocol_id=protocol["id"])
+    params = {}
+    if report["tasks_failed"] or report["tasks_linked"] < report["tasks_created"]:
+        params["message"] = (
+            "Protocole créé. Certaines tâches liées n'ont pas pu être "
+            "créées ou rattachées à leur étape — vérifiez les étapes sans "
+            "« Voir la tâche liée »."
+        )
+    target = url_for("protocols.protocol_detail", protocol_id=protocol["id"],
+                     **params)
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -186,9 +188,35 @@ def protocol_create() -> str:
 @login_required
 def protocol_detail(protocol_id: str) -> str:
     """Render the protocol detail view with timeline."""
+    # The step button's and the step forms' outcomes come back as a
+    # redirect carrying ?erreur= / ?message=.
+    return _render_detail(
+        protocol_id,
+        erreur=request.args.get("erreur", ""),
+        message=request.args.get("message", ""),
+    )
+
+
+def _render_detail(
+    protocol_id: str,
+    *,
+    erreur: str = "",
+    message: str = "",
+    conflict: dict | None = None,
+    step_form: dict | None = None,
+):
+    """The detail page — also the 200 re-render of a refused step edit.
+
+    *step_form* keeps a refused inline step form OPEN with what was
+    submitted (``step_id``, ``deadline_date`` as posted, ``notes``,
+    ``confirm_date``) and the etag it now stands for: the submitted one on
+    a validation error, the current one after a conflict (the banner then
+    says why, and a second save is a deliberate overwrite).
+    """
     # Flips first (check_overdue_steps reads + writes internally), then ONE
     # fresh read — the old read→check→reload chain streamed the whole steps
-    # subcollection three times per detail view.
+    # subcollection three times per detail view. The flip is a derived
+    # stamp: it never regenerates a step's etag.
     check_overdue_steps(protocol_id)
     protocol = get_protocol(protocol_id)
     if not protocol:
@@ -196,9 +224,10 @@ def protocol_detail(protocol_id: str) -> str:
 
     ctx = _template_context()
     ctx["protocol"] = protocol
-    # The step button's outcome (step_complete) comes back as a redirect.
-    ctx["erreur"] = request.args.get("erreur", "")
-    ctx["message"] = request.args.get("message", "")
+    ctx["erreur"] = erreur
+    ctx["message"] = message
+    ctx["conflict"] = conflict
+    ctx["step_form"] = step_form
 
     # Compute progress
     steps = protocol.get("steps", [])
@@ -241,10 +270,63 @@ def protocol_edit(protocol_id: str) -> str:
     return render_template("protocols/form.html", **ctx)
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _alignment_notice(report: dict) -> list[str]:
+    """What happened to the linked tasks of the steps that moved."""
+    parts = []
+    if report.get("aligned"):
+        parts.append(_count(report["aligned"], "tâche liée a suivi son étape",
+                            "tâches liées ont suivi leur étape") + ".")
+    diverged = report.get("diverged", 0)
+    if diverged == 1:
+        parts.append("1 tâche liée garde sa propre échéance, modifiée à la "
+                     "main : elle n'a pas été déplacée.")
+    elif diverged:
+        parts.append(f"{diverged} tâches liées gardent leur propre échéance, "
+                     "modifiée à la main : elles n'ont pas été déplacées.")
+    stuck = report.get("failed", 0) + report.get("missing", 0)
+    if stuck:
+        parts.append(
+            _count(stuck, "tâche liée n'a pas pu être mise à jour",
+                   "tâches liées n'ont pas pu être mises à jour")
+            + " — vérifiez depuis la fiche de la tâche.")
+    return parts
+
+
+def _update_notice(report: dict) -> str:
+    """The banner after a protocol save, or ``""`` when nothing moved."""
+    preserved = report.get("preserved_completed", 0) + report.get(
+        "preserved_confirmed", 0)
+    if not report.get("moved") and not preserved:
+        return ""
+    parts = [
+        "Date de début modifiée : "
+        + _count(report.get("moved", 0), "échéance recalculée",
+                 "échéances recalculées") + "."
+    ]
+    if preserved:
+        parts.append(
+            _count(preserved, "échéance conservée", "échéances conservées")
+            + " (étape complétée ou date confirmée).")
+    parts += _alignment_notice(report)
+    return " ".join(parts)
+
+
 @protocols_bp.route("/<protocol_id>", methods=["POST"])
 @login_required
 def protocol_update(protocol_id: str) -> str:
-    """Handle protocol metadata edit."""
+    """Handle protocol metadata edit.
+
+    The form carries the etag it was rendered from: a protocol changed
+    meanwhile — a step completed on the phone that closed it, a second
+    tab — re-renders at 200 with the amber banner and the submitted
+    values, never overwritten. A start-date change recomputes the steps in
+    the model's own write and carries their linked tasks along (service).
+    """
+    expected = edit_conflict.submitted_etag()
     f = request.form
     data = {
         "title": f.get("title", "").strip(),
@@ -265,15 +347,27 @@ def protocol_update(protocol_id: str) -> str:
     if not protocol:
         return redirect(url_for("dossiers.dossier_list"))
 
-    updated, errors = update_protocol(protocol_id, data)
+    _updated, errors, report = protocol_service.update_protocol(
+        protocol_id, data, expected_etag=expected)
 
     if errors:
+        errors, conflict, etag = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: get_protocol(protocol_id),
+            compare_url=url_for("protocols.protocol_detail",
+                                protocol_id=protocol_id),
+        )
+        shown = {**protocol, **data, "id": protocol_id, "etag": etag}
         dossier = get_dossier(protocol["dossier_id"]) if protocol.get("dossier_id") else None
         ctx = _template_context()
-        ctx.update(protocol=protocol, dossier=dossier, errors=errors, edit_mode=True)
+        ctx.update(protocol=shown, dossier=dossier, errors=errors,
+                   conflict=conflict, edit_mode=True)
         return render_template("protocols/form.html", **ctx)
 
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
+    notice = _update_notice(report)
+    target = url_for("protocols.protocol_detail", protocol_id=protocol_id,
+                     **({"message": notice} if notice else {}))
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -337,23 +431,38 @@ def step_add(protocol_id: str) -> str:
         "phase": f.get("phase", ""),
     }
 
-    step, errors = add_step(protocol_id, step_data)
+    # No linked task from the web form (it offers none) — said explicitly.
+    _step, errors, _report = protocol_service.add_step(
+        protocol_id, step_data, create_linked_task=False)
 
-    if errors and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{escape(errors[0])}</div>', 422
-
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
+    # A refusal travels as a 2xx redirect with ?erreur=: the old 422
+    # fragment was never swapped by htmx, and this is a full-page form.
+    target = url_for("protocols.protocol_detail", protocol_id=protocol_id,
+                     **({"erreur": errors[0]} if errors else {}))
+    resp = redirect(target)
     if _is_htmx():
-        resp = redirect(target)
         resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return resp
+
+
+def _stored_step(protocol_id: str, step_id: str) -> dict | None:
+    protocol = get_protocol(protocol_id) or {}
+    return next((s for s in protocol.get("steps", []) or []
+                 if s.get("id") == step_id), None)
 
 
 @protocols_bp.route("/<protocol_id>/steps/<step_id>", methods=["POST"])
 @login_required
 def step_update(protocol_id: str, step_id: str) -> str:
-    """Update a step (deadline, notes, etc.)."""
+    """Update a step (deadline, notes, explicit date confirmation).
+
+    The inline form carries the step's etag. A refusal — a stale etag (the
+    phone, a second tab or the connector changed the step), a locked or
+    cleared deadline — re-renders the page at 200 with that step's form
+    open on the submitted values: the old 422 fragment was never swapped.
+    A changed deadline carries the linked task along (service).
+    """
+    expected = edit_conflict.submitted_etag()
     f = request.form
     data = {}
 
@@ -365,18 +474,43 @@ def step_update(protocol_id: str, step_id: str) -> str:
     # the « Compléter / Rouvrir » button (set_step_status) only — a status
     # written here skipped the task cascade and the completion check, and
     # the model now refuses it.
+    if f.get("confirm_date"):
+        data["confirm_date"] = True
 
-    step, errors = update_step(protocol_id, step_id, data)
+    step, errors, report = protocol_service.update_step(
+        protocol_id, step_id, data, expected_etag=expected)
 
-    if errors and _is_htmx():
-        return f'<div class="text-red-600 text-sm p-3">{escape(errors[0])}</div>', 422
+    if errors:
+        errors, conflict, etag = edit_conflict.resolve_refusal(
+            errors,
+            submitted=expected,
+            reread=lambda: _stored_step(protocol_id, step_id),
+            compare_url=url_for("protocols.protocol_detail",
+                                protocol_id=protocol_id),
+        )
+        return _render_detail(
+            protocol_id,
+            erreur=" ".join(errors),
+            conflict=conflict,
+            step_form={
+                "step_id": step_id,
+                "deadline_date": f.get("deadline_date"),
+                "notes": f.get("notes"),
+                "confirm_date": bool(f.get("confirm_date")),
+                "etag": etag,
+            },
+        )
 
-    target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
+    notice = ""
+    if report.get("aligned") or report.get("diverged") or report.get(
+            "failed") or report.get("missing"):
+        notice = " ".join(["Échéance modifiée."] + _alignment_notice(report))
+    target = url_for("protocols.protocol_detail", protocol_id=protocol_id,
+                     **({"message": notice} if notice else {}))
+    resp = redirect(target)
     if _is_htmx():
-        resp = redirect(target)
         resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    return resp
 
 
 def _step_target(protocol_id: str, step_id: str) -> str:
@@ -435,6 +569,10 @@ def _step_notice(target: str, outcome: dict) -> str:
             "Toutes les étapes sont complétées : le protocole est maintenant "
             "complété."
         )
+    if outcome.get("protocol_reopened"):
+        parts.append(
+            "Le protocole, fermé à sa dernière étape, est de nouveau actif."
+        )
     return " ".join(parts)
 
 
@@ -451,7 +589,8 @@ def step_complete(protocol_id: str, step_id: str) -> str:
     (the old route also redirected a refusal SILENTLY on this form).
     """
     target = _step_target(protocol_id, step_id)
-    _step, errors, outcome = set_step_status(protocol_id, step_id, target)
+    _step, errors, outcome = protocol_service.set_step_status(
+        protocol_id, step_id, target)
 
     params = {}
     if errors:

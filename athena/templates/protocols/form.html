@@ -2,6 +2,7 @@
 {% block title %}{{ 'Modifier le protocole' if protocol and protocol.id else 'Nouveau protocole' }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
 <div class="max-w-2xl mx-auto px-4 py-6"
      x-data="{
        protocolType: '{{ (protocol.protocol_type or '') if protocol else '' }}',
@@ -27,6 +28,8 @@
     {{ 'Modifier le protocole' if edit_mode is defined and edit_mode else 'Nouveau protocole' }}
   </h1>
 
+  {{ conflict_banner(conflict) }}
+
   {# ── Errors ────────────────────────────────────────────────── #}
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -43,6 +46,9 @@
         action="{{ url_for('protocols.protocol_update', protocol_id=protocol.id) if edit_mode is defined and edit_mode and protocol and protocol.id else url_for('protocols.protocol_create') }}"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {# L'etag de la version affichée — en modification seulement (un
+       protocole qui a un id) ; absent d'une création. #}
+    {{ etag_field(protocol) }}
     {% if dossier %}
     <input type="hidden" name="dossier_id" value="{{ dossier.id }}">
     {% endif %}

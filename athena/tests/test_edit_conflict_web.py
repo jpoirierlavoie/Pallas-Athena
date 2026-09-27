@@ -53,12 +53,14 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import expense as expense_model
     from models import note as note_model
     from models import partie as partie_model
+    from models import protocol as protocol_model
     from models import task as task_model
     from models import time_entry as time_entry_model
     import routes.documents as documents_routes
     import routes.dossiers as dossiers_routes
     import routes.notes as notes_routes
     import routes.parties as parties_routes
+    import routes.protocols as protocols_routes
     import routes.tasks as tasks_routes
     import routes.time_expenses as time_expenses_routes
     from routes import edit_conflict
@@ -116,7 +118,7 @@ def client(db):
     for bp in (parties_routes.parties_bp, dossiers_routes.dossiers_bp,
                time_expenses_routes.time_expenses_bp,
                documents_routes.documents_bp, notes_routes.notes_bp,
-               tasks_routes.tasks_bp):
+               tasks_routes.tasks_bp, protocols_routes.protocols_bp):
         app.register_blueprint(bp)
     c = app.test_client()
     with c.session_transaction() as s:
@@ -282,6 +284,42 @@ def _time_phase_form(dossier_id, sous_phase):
     return {"phase": sous_phase.split("-")[0], "sous_phase": sous_phase}
 
 
+def _seed_protocol(db, dossier_id):
+    doc, errors = protocol_model.create_protocol(
+        dossier_id, "conventionnel", DT,
+        {"title": "Protocole", "notes": "Premier"})
+    assert errors == [], errors
+    return doc["id"]
+
+
+def _protocol_form(dossier_id, notes, *, status="actif"):
+    return {"title": "Protocole", "notes": notes, "status": status,
+            "start_date": "2026-03-04"}
+
+
+# A step's record id is its path under « protocols »: the page that edits
+# it is its PROTOCOL's detail page, where it is the only step (one inline
+# form, one etag). A template step (mandatory) so that clearing its
+# deadline is the refusal the invalid payload needs.
+_STEP_DEADLINE = datetime(2099, 12, 1, tzinfo=UTC)
+
+
+def _seed_protocol_step(db, dossier_id):
+    pid = _seed_protocol(db, dossier_id)
+    db.seed(f"protocols/{pid}/steps/s1", {
+        **protocol_model._default_step(), "id": "s1", "order": 1,
+        "title": "Réponse", "deadline_date": _STEP_DEADLINE,
+        "deadline_offset_days": 15, "mandatory": True, "notes": "Premier",
+        "date_confirmed": True, "created_at": DT, "updated_at": DT,
+        "etag": "e-step-1",
+    })
+    return f"{pid}/steps/s1"
+
+
+def _step_form(dossier_id, notes, *, deadline="2099-12-01"):
+    return {"deadline_date": deadline, "notes": notes}
+
+
 CASES = [
     FormCase(
         "partie", "partie", "parties", _seed_partie,
@@ -349,6 +387,25 @@ CASES = [
         None, _document_form,
         lambda d, m: _document_form(d, m, category="inventée"),
         "notes_internes", "SOUMIS-7Q4",
+    ),
+    # Lot 1a (L2): the protocol edit form and a step's inline form. No
+    # connector write reaches a protocol yet (lot 1b), so these forms are
+    # not REQUIRED by the derived map above — they are wired first, as the
+    # plan orders (1a before 1b), and their cycle is proved like every other.
+    FormCase(
+        "protocol", "protocol", "protocols", _seed_protocol,
+        lambda i: f"/protocoles/{i}/edit", lambda i: f"/protocoles/{i}",
+        None, _protocol_form,
+        lambda d, m: _protocol_form(d, m, status="inventé"),
+        "notes", "SOUMIS-7Q4",
+    ),
+    FormCase(
+        "protocol_step", "protocol", "protocols", _seed_protocol_step,
+        lambda i: f"/protocoles/{i.split('/')[0]}",
+        lambda i: f"/protocoles/{i.split('/')[0]}/steps/{i.split('/')[2]}",
+        None, _step_form,
+        lambda d, m: _step_form(d, m, deadline=""),
+        "notes", "SOUMIS-7Q4",
     ),
 ]
 _CASE_IDS = [c.id for c in CASES]
