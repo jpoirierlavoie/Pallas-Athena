@@ -317,11 +317,12 @@ _IDEMPOTENT_WRITES = frozenset({
     # add_protocol_step adds a second step, and a second create_protocol
     # is refused (one actif per dossier), not answered with the first.
     "update_protocol", "update_protocol_step",
-    # Lot 1b (L7). Values already stored write nothing (update_hearing); the
-    # same decision twice writes nothing and never re-contacts the client
-    # (decide_rendez_vous). create_hearing_series is NOT here: a second call
-    # without the key would write a second series.
-    "update_hearing", "decide_rendez_vous",
+    # Lot 1b (L7). The same decision twice writes nothing and never
+    # re-contacts the client (decide_rendez_vous). NOT here: update_hearing
+    # — its notes_append appends again on an identical call — and
+    # create_hearing_series, a second call without the key being a second
+    # series.
+    "decide_rendez_vous",
 })
 
 

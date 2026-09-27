@@ -3221,10 +3221,12 @@ TOOLS: dict[str, dict] = {
     },
     "update_hearing": {
         "title": "Modifier un événement du calendrier",
-        "annotations": {
-            # Values already stored write nothing: a replay is a no-op.
-            "idempotentHint": True,
-        },
+        # NOT idempotentHint, unlike update_task / update_note: values
+        # already stored write nothing, but `notes_append` appends AGAIN on
+        # every identical call — so « calling repeatedly with the same
+        # arguments has no additional effect » would be false for one of its
+        # arguments, and the hint is what a client trusts before a blind
+        # retry. The family default (false) is the honest one here.
         "description": (
             "WRITE — REPLACES the fields you name; a field you omit is "
             "untouched, and values already stored write nothing. "
@@ -3306,7 +3308,9 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "Appended under a dated « Ajouté par Claude » line; "
                         "the notes as stored must still fit 2000 characters "
-                        "(refused otherwise). Not with notes."
+                        "(refused otherwise). A repeated call appends again "
+                        "— retry only with the same idempotency_key. Not "
+                        "with notes."
                     ),
                 },
                 "status": {

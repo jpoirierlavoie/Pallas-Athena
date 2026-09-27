@@ -427,6 +427,27 @@ def test_notes_replace_append_and_their_ceiling(fake):
     assert _stored(fake) == before
 
 
+def test_an_append_repeats_so_the_tool_never_claims_idempotence(fake):
+    """Two identical notes_append calls append twice — which is why
+    update_hearing, unlike update_task, does NOT advertise idempotentHint:
+    a client trusts the hint before a blind retry. The key is the retry
+    armour, and a same-key retry appends once."""
+    _hearing(fake)
+    handlers.update_hearing({"hearing_id": "h1", "notes_append": "Ajout."})
+    handlers.update_hearing({"hearing_id": "h1", "notes_append": "Ajout."})
+    assert _stored(fake)["notes"].count("Ajout.") == 2
+    descriptor = next(d for d in tools.list_tool_descriptors()
+                      if d["name"] == "update_hearing")
+    assert descriptor["annotations"]["idempotentHint"] is False
+
+    _hearing(fake, "h2")
+    args = {"hearing_id": "h2", "notes_append": "Une fois.",
+            "idempotency_key": "cle-ajout-001"}
+    handlers.update_hearing(dict(args))
+    handlers.update_hearing(dict(args))
+    assert _stored(fake, "h2")["notes"].count("Une fois.") == 1
+
+
 def test_an_unsafe_link_is_refused_naming_the_field(fake):
     _hearing(fake)
     before = _stored(fake)
@@ -624,6 +645,10 @@ def test_a_series_is_one_atomic_batch_that_carries_its_own_bump(
     assert [o["etag"] for o in payload["occurrences"]] == [
         stored[o["id"]]["etag"] for o in payload["occurrences"]]
     assert payload["rule_label"] == "Chaque semaine — 3 occurrences"
+    # Every occurrence says the connector wrote it (models/provenance).
+    assert {(d["created_via"], d["updated_via"]) for d in stored.values()} == {
+        ("mcp", "mcp")}
+    assert all(d.get("mcp_updated_at") for d in stored.values())
     assert logged == [("series_created", payload["serie_id"],
                        {"occurrences": 3, "dossier_id": "d1",
                         "frequence": "hebdomadaire", "ctag_bumped": True,
