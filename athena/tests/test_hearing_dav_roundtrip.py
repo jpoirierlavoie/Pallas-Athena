@@ -200,3 +200,121 @@ def test_a_status_changed_on_the_phone_reaches_the_store(fake, client):
                 edit=lambda b: b.replace("STATUS:TENTATIVE",
                                          "STATUS:CONFIRMED"))
     assert fake.peek("hearings/h1")["status"] == "confirmée"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Le suffixe de DESCRIPTION
+# ══════════════════════════════════════════════════════════════════════
+
+VISIO = "https://teams.example.com/l/meetup?a=1,2;b=3"
+BLOCK = "\n".join([
+    "Dossier: 2026-001 - Tremblay c. Lavoie",
+    "Type: Audience",
+    "Modalité: Visioconférence",
+    f"Visioconférence: {VISIO}",
+    "Cour: Cour supérieure",
+    "Juge: Hon. Roy",
+])
+
+
+def _visio(**over) -> dict:
+    return _hearing(modalite="visioconférence", conference_uri=VISIO,
+                    court="Cour supérieure", judge="Hon. Roy", **over)
+
+
+def _description(ical: str) -> str:
+    import icalendar
+    for comp in icalendar.Calendar.from_ical(ical).walk():
+        if comp.name == "VEVENT":
+            return str(comp.get("description") or "")
+    return ""
+
+
+def test_the_serializer_and_the_stripper_share_one_block():
+    hearing = _visio(notes="Apporter les pièces")
+    assert h.dav_description_suffix(hearing) == BLOCK
+    assert _description(h.hearing_to_vevent(hearing)) == (
+        f"Apporter les pièces\n{BLOCK}")
+    assert h.dav_description_suffix({"title": "T"}) == ""
+
+
+def test_the_visio_line_is_still_served_to_the_phone():
+    """The Android calendar drops CONFERENCE: the DESCRIPTION line is the
+    only place the link renders. Stripping its ECHO must not stop serving
+    it."""
+    desc = _description(h.hearing_to_vevent(_visio(notes="")))
+    assert f"Visioconférence: {VISIO}" in desc
+
+
+@pytest.mark.parametrize("incoming, expected", [
+    (f"Texte\n{BLOCK}", "Texte"),
+    ("Texte\r\n" + BLOCK.replace("\n", "\r\n"), "Texte"),
+    (BLOCK, ""),
+    (BLOCK.replace("\n", "\r\n"), ""),
+    # Legacy damage: blocks accumulated before the fix peel off too — every
+    # one of them is the serializer's own output, never the lawyer's text.
+    (f"Texte\n{BLOCK}\n{BLOCK}\n{BLOCK}", "Texte"),
+    # Anything that is not EXACTLY the block is the lawyer's: left alone.
+    (f"Texte\n{BLOCK} (bis)", f"Texte\n{BLOCK} (bis)"),
+    (f"Texte {BLOCK}", f"Texte {BLOCK}"),
+    ("Juge: Hon. Roy", "Juge: Hon. Roy"),
+    ("", ""),
+])
+def test_only_the_exact_serializer_block_is_stripped(incoming, expected):
+    data = {"notes": incoming}
+    h.strip_dav_description_suffix(data, _visio())
+    assert data["notes"] == expected
+
+
+def test_no_notes_key_stays_no_notes_key():
+    """Non-effacement: a VEVENT without DESCRIPTION must not gain an empty
+    notes key (update_hearing merges, and a present-but-empty key erases)."""
+    data = {"title": "T"}
+    h.strip_dav_description_suffix(data, _visio())
+    assert "notes" not in data
+
+
+def test_the_non_effacement_of_the_conference_link_is_untouched():
+    """The strip works on notes only: a VEVENT without CONFERENCE still
+    omits conference_uri/modalite, so the stored link survives."""
+    ical = _replace_line(h.hearing_to_vevent(_visio(notes="N")),
+                         "CONFERENCE", None)
+    ical = _replace_line(ical, "X-PALLAS-MODALITE", None)
+    data = h.vevent_to_hearing(ical)
+    h.strip_dav_description_suffix(data, _visio(notes="N"))
+    assert "conference_uri" not in data and "modalite" not in data
+    assert data["notes"] == "N"
+
+
+@pytest.mark.parametrize("notes", ["Apporter les pièces", ""])
+def test_putting_back_an_unchanged_vevent_does_not_grow_the_notes(
+    fake, client, notes
+):
+    """The round trip the phone performs on every edit of ANY field. On the
+    old code the stored notes gained the whole metadata block each time."""
+    fake.seed("hearings/h1", _visio(notes=notes, etag="e0"))
+    for _ in range(3):
+        _round_trip(client, "/dav/dossier-d1/h1.ics")
+    stored = fake.peek("hearings/h1")
+    assert stored["notes"] == notes
+    assert stored["conference_uri"] == VISIO
+    assert stored["modalite"] == "visioconférence"
+
+
+def test_a_phone_edit_of_the_notes_keeps_the_edit_and_drops_the_block(
+    fake, client
+):
+    fake.seed("hearings/h1", _visio(notes="Apporter les pièces", etag="e0"))
+    _round_trip(client, "/dav/dossier-d1/h1.ics",
+                edit=lambda b: b.replace("Apporter les pièces",
+                                         "Apporter les pièces et le cahier"))
+    assert fake.peek("hearings/h1")["notes"] == (
+        "Apporter les pièces et le cahier")
+
+
+def test_legacy_accumulated_blocks_heal_on_the_next_phone_edit(fake, client):
+    fake.seed("hearings/h1",
+              _visio(notes=f"Apporter les pièces\n{BLOCK}\n{BLOCK}",
+                     etag="e0"))
+    _round_trip(client, "/dav/dossier-d1/h1.ics")
+    assert fake.peek("hearings/h1")["notes"] == "Apporter les pièces"

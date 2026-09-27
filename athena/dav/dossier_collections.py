@@ -60,6 +60,7 @@ from models.hearing import (
     get_hearing,
     hearing_to_vevent,
     list_hearings,
+    strip_dav_description_suffix as strip_hearing_description_suffix,
     update_hearing,
     vevent_to_hearing,
 )
@@ -814,6 +815,11 @@ def _put_hearing(
         # payload may set, so it is dropped here rather than 422-ing every
         # phone edit.
         data.pop("vevent_uid", None)
+        # The phone sends back the DESCRIPTION it was served, metadata lines
+        # included; stored as-is, every phone edit grew the notes by one
+        # « Dossier:/Type:/Modalité:/… » block. `existing` is what the phone
+        # was served.
+        strip_hearing_description_suffix(data, existing)
         updated, errors = update_hearing(resource_id, data)
         if errors:
             logger.warning(

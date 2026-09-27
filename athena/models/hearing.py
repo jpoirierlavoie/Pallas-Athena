@@ -1169,6 +1169,98 @@ def get_hearing_summary(dossier_id: str) -> dict:
 # ── RFC-5545 VEVENT serialization ─────────────────────────────────────────
 
 
+# What hearing_to_vevent puts between the notes and the metadata lines, and
+# between the metadata lines themselves.
+_DESCRIPTION_SEPARATOR = "\n"
+
+
+def dav_description_suffix(hearing: dict) -> str:
+    """The metadata lines ``hearing_to_vevent`` appends to DESCRIPTION, or
+    ``""``.
+
+    Display for the phone, never part of the hearing's notes — see
+    :func:`strip_dav_description_suffix` for why that distinction had to
+    become code. Order is fixed: Dossier, Type, Modalité, Visioconférence,
+    Cour, Juge.
+    """
+    lines: list[str] = []
+    # Standalone agenda events have no dossier — omit the line entirely.
+    if hearing.get("dossier_id"):
+        lines.append(
+            f"Dossier: {hearing.get('dossier_file_number', '')} - "
+            f"{hearing.get('dossier_title', '')}"
+        )
+    if hearing.get("hearing_type"):
+        label = HEARING_TYPE_LABELS.get(
+            hearing["hearing_type"], hearing["hearing_type"]
+        )
+        lines.append(f"Type: {label}")
+    # Modalité in DESCRIPTION only (visible in every client). NOT in
+    # CATEGORIES — that would add a second colored tile in a jtx-style client.
+    if hearing.get("modalite"):
+        lines.append(
+            "Modalité: "
+            f"{MODALITE_LABELS.get(hearing['modalite'], hearing['modalite'])}"
+        )
+    # The video link ALSO goes in DESCRIPTION, not only in the RFC 7986
+    # CONFERENCE property: VEVENTs sync to the device CALENDAR (Google
+    # Calendar via DavX5), whose Android CalendarContract has no conferencing
+    # field — DavX5 drops CONFERENCE and the link never shows. Google Calendar
+    # renders a bare URL in the description as a tappable link (user report
+    # 2026-07-24, Pixel 10 Pro). CONFERENCE is kept for standards-aware
+    # clients.
+    if (hearing.get("modalite") == "visioconférence"
+            and hearing.get("conference_uri")):
+        lines.append(f"Visioconférence: {hearing['conference_uri']}")
+    if hearing.get("court"):
+        lines.append(f"Cour: {hearing['court']}")
+    if hearing.get("judge"):
+        lines.append(f"Juge: {hearing['judge']}")
+    return _DESCRIPTION_SEPARATOR.join(lines)
+
+
+def strip_dav_description_suffix(data: dict, existing: dict) -> dict:
+    """Take the serializer's metadata lines back off an incoming DESCRIPTION.
+
+    ``vevent_to_hearing`` reads DESCRIPTION whole into ``notes``, and the
+    phone sends back the text it was served — metadata lines included.
+    Stored as notes, those lines came back once more on the next GET, so
+    every edit made on the phone (of ANY field) grew the notes by one
+    « Dossier:/Type:/Modalité:/… » block, until the 2000-character ceiling
+    truncated the lawyer's own text.
+
+    Exactly the serializer's output is removed, and nothing else: the block
+    built from *existing* (what the phone was last served) when the text
+    ends with ``"\\n" + block`` or IS the block — in LF or CRLF form. It is
+    peeled repeatedly, which also heals the blocks legacy edits already
+    accumulated (each one the serializer's own output). Any other text, a
+    retouched line included, is left untouched. A *data* without ``notes``
+    is returned unchanged (non-effacement: an absent key must stay absent).
+    The conference link stays in the DESCRIPTION the phone is SERVED; only
+    its echo is kept out of the notes.
+
+    Called by the DAV PUT UPDATE branch only. Mutates *data*; returns it.
+    """
+    suffix = dav_description_suffix(existing)
+    text = data.get("notes")
+    if not suffix or not isinstance(text, str):
+        return data
+    blocks = (suffix, suffix.replace("\n", "\r\n"))
+    # CRLF separator first: tried after "\n", it would match the tail of a
+    # "\r\n" join and leave a stray "\r" on the lawyer's text.
+    tails = tuple(sep + b for sep in ("\r\n", "\n") for b in blocks)
+    while True:
+        if text in blocks:
+            text = ""
+            break
+        tail = next((t for t in tails if text.endswith(t)), None)
+        if tail is None:
+            break
+        text = text[: -len(tail)]
+    data["notes"] = text
+    return data
+
+
 # Hearing status → RFC 5545 VEVENT STATUS. The map is LOSSY — five statuses,
 # three values — so « reportée » and « terminée » read back as « à_confirmer »
 # and « confirmée » from STATUS alone, and every phone edit (of ANY field)
@@ -1248,38 +1340,15 @@ def hearing_to_vevent(hearing: dict) -> str:
     if hearing.get("location"):
         event.add("location", hearing["location"])
 
-    # DESCRIPTION — combine notes with dossier info
-    desc_parts = []
-    if hearing.get("notes"):
-        desc_parts.append(hearing["notes"])
-    # Standalone agenda events have no dossier — omit the line entirely.
-    if hearing.get("dossier_id"):
-        desc_parts.append(
-            f"Dossier: {hearing.get('dossier_file_number', '')} - {hearing.get('dossier_title', '')}"
-        )
-    if hearing.get("hearing_type"):
-        label = HEARING_TYPE_LABELS.get(hearing["hearing_type"], hearing["hearing_type"])
-        desc_parts.append(f"Type: {label}")
-    # Modalité in DESCRIPTION only (visible in every client). NOT in
-    # CATEGORIES — that would add a second colored tile in a jtx-style client.
-    if hearing.get("modalite"):
-        desc_parts.append(
-            f"Modalité: {MODALITE_LABELS.get(hearing['modalite'], hearing['modalite'])}"
-        )
-    # The video link ALSO goes in DESCRIPTION, not only in the RFC 7986
-    # CONFERENCE property below: VEVENTs sync to the device CALENDAR (Google
-    # Calendar via DavX5), whose Android CalendarContract has no conferencing
-    # field — DavX5 drops CONFERENCE and the link never shows. Google Calendar
-    # renders a bare URL in the description as a tappable link (user report
-    # 2026-07-24, Pixel 10 Pro). CONFERENCE is kept for standards-aware clients.
-    if hearing.get("modalite") == "visioconférence" and hearing.get("conference_uri"):
-        desc_parts.append(f"Visioconférence: {hearing['conference_uri']}")
-    if hearing.get("court"):
-        desc_parts.append(f"Cour: {hearing['court']}")
-    if hearing.get("judge"):
-        desc_parts.append(f"Juge: {hearing['judge']}")
-    if desc_parts:
-        event.add("description", "\n".join(desc_parts))
+    # DESCRIPTION — the notes, then the metadata lines. The lines are built
+    # by dav_description_suffix, which the PUT path uses to take them back
+    # OFF (strip_dav_description_suffix): one builder, so the two can never
+    # drift apart.
+    notes = hearing.get("notes") or ""
+    suffix = dav_description_suffix(hearing)
+    description = _DESCRIPTION_SEPARATOR.join(p for p in (notes, suffix) if p)
+    if description:
+        event.add("description", description)
 
     # CONFERENCE (RFC 7986 §5.11) — only for a video event with a link. Kept
     # for standards-aware clients even though the Android calendar drops it
@@ -1412,7 +1481,10 @@ def vevent_to_hearing(ical_str: str) -> dict:
         if location:
             data["location"] = str(location)
 
-        # DESCRIPTION → notes (just the first line; rest is metadata)
+        # DESCRIPTION → notes, WHOLE. The metadata lines hearing_to_vevent
+        # appended are still on it: only the caller knows which lines the
+        # phone was served, so the DAV UPDATE branch takes them off
+        # (strip_dav_description_suffix).
         desc = component.get("description")
         if desc:
             data["notes"] = str(desc)
