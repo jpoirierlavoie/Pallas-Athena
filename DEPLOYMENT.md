@@ -1503,6 +1503,77 @@ Notes:
   full resync, silently). During a Firestore blip a PROPFIND/REPORT now
   answers 500 and DavX5 retries; tombstones are still written. Nothing to do
   at deploy time.
+- **Trust register (lot 0b, B5):** before deploying, run the **read-only**
+  integrity script:
+
+  ```bash
+  python -m scripts.verify_trust_integrity
+  ```
+
+  Until lot 0b a « Virement inter-dossiers » between two clients of the SAME
+  dossier credited the recipient without debiting the source: the dossier's
+  stored per-client balances then disagree with the register. A line
+  `dossier …/…: trust_balance_by_client stocké … ≠ recalculé …` (or
+  `trust_cleared_by_client`) names that damage — already in the data, not
+  caused by the deploy. The script repairs nothing, and the overdraft control
+  reads the stored cleared balance, so decide each one by hand before relying
+  on it. After the deploy the model refuses, on the web as it will on the
+  connector: an entry, a clearing, a reversal or a transfer that falls in a
+  period a completed reconciliation covers (the message names its end date);
+  a future date; a cash (« comptant ») disbursement other than the art. 72
+  refund of a sum of 7 500 $ or more received in cash; a fee payment by any
+  method other than cheque or transfer (art. 58); a fee payment on an invoice
+  that imputes a provision. The two new queries ride existing indexes
+  (`trust_transactions(account_id ASC, sequence ASC)` for the art. 72 receipt
+  lookup, `trust_reconciliations(account_id ASC, period_end DESC)` for the
+  lock floor) — nothing to deploy.
+- **Invoice void (lot 0b, B1):** voiding now reads, inside ONE transaction,
+  the `trust_transactions`, `admin_transactions`, `timeentries` and
+  `expenses` rows whose `invoice_id` names the invoice — single-field
+  equalities the automatic index serves (no `fieldOverride` exempts
+  `invoice_id`), and the invoice page reads the trust rows too. The suite's
+  fake store does not model indexes, so watch the FIRST void in production:
+  a red « Erreur lors de l'annulation » banner beside an `invoice void
+  failed` ERROR carrying `FAILED_PRECONDITION` would mean an index is
+  missing (nothing is written — the void fails closed).
+- **Tasks, hearings and the step button on the phone (lot 0b, B3/B4):** five
+  DAV fixes the suite pins through the real routes, on a store that is not
+  DavX5. The plan requires the hearing STATUS round trip to be checked on the
+  device, so do all five once after the deploy:
+  1. *A task created on the phone keeps its URL.* PUT a throw-away VTODO,
+     then GET the same href:
+
+     ```bash
+     D=an-active-dossier-id
+     DAV_USER=you@yourdomain.example   # the AUTHORIZED_USER_EMAIL of app.yaml
+     RID=$(python -c "import uuid; print(uuid.uuid4())")
+     printf 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//curl//test//FR\r\nBEGIN:VTODO\r\nUID:curl-%s\r\nDTSTAMP:20260101T000000Z\r\nCREATED:20260101T000000Z\r\nSUMMARY:Test curl\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n' "$RID" > /tmp/test.ics
+     curl -s -o /dev/null -w '%{http_code}\n' -u "${DAV_USER:?}" -X PUT \
+       -H "Content-Type: text/calendar; charset=utf-8" -H "If-None-Match: *" \
+       --data-binary @/tmp/test.ics "https://yourdomain.example/dav/dossier-$D/$RID.ics"
+     curl -s -u "${DAV_USER:?}" "https://yourdomain.example/dav/dossier-$D/$RID.ics" | grep UID
+     ```
+
+     Expected: `201`, then `UID:curl-<the same id>`; a 404 on the GET means
+     the fix is not live. Delete the test task in the app afterwards. Tasks
+     created on the phone BEFORE the deploy keep their server id — their
+     phone-side copy is the orphan.
+  2. *The step button reaches the phone.* In the app, click « Compléter » on
+     a protocol step that has a linked task; sync jtx: the task shows
+     completed. Click « Rouvrir »: it comes back open.
+  3. *A hearing keeps « Reportée ».* Set a test hearing to « Reportée » in the
+     app, sync, move it by an hour in the Android calendar, sync again, and
+     open it in the app: still « Reportée ». The served `.ics` carries
+     `STATUS:TENTATIVE` and `X-PALLAS-STATUS:reportée`. If DavX5 turns out to
+     drop the X-property, the status reads back as before the fix (degraded,
+     never corrupted) — note it and report it.
+  4. *Notes stop growing.* Edit that hearing's time three times on the
+     phone, and a task's title three times in jtx: neither the hearing's
+     notes nor the task's description gains a « Dossier: … » block, and the
+     hearing's `Visioconférence:` line (if it has a link) is still served.
+  5. *A deleted series leaves the phone.* Only if you use series: delete a
+     series one of whose occurrences was moved to another dossier; that
+     occurrence disappears from the phone too.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
