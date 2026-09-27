@@ -1811,13 +1811,19 @@ Notes:
      juriste. », and the result reads `graph_cancelled: true`,
      `client_notified: true`. The same call with the SAME key:
      `idempotent_replay: true` and no second mail.
-  5. *A confirmed Bookings rendez-vous is edited locally only.* Book a
-     second slot, `decide_rendez_vous` `confirmer` with `lier_partie: false`
-     (or true when a contact carries the alias): it appears in the calendar
-     and on the phone. `update_hearing` with another `start_time` on it: the
-     result carries the warning that Outlook, the client and free/busy are
-     NOT updated, `outlook_mirror: "not_mirrored"` — and the Outlook meeting
-     is indeed unchanged.
+  5. *A confirmed Bookings rendez-vous changes only by its dossier and
+     notes (D10).* Book a second slot, `decide_rendez_vous` `confirmer`
+     with `lier_partie: false` (or true when a contact carries the alias):
+     it appears in the calendar and on the phone. `update_hearing` with
+     another `start_time` on it: REFUSED, naming `start_time` and pointing
+     to Outlook — `list_hearings` still reads the old hour and the Outlook
+     meeting is unchanged. `update_hearing` with a `dossier_id` (and a
+     `notes_append`): written, `moved: true`, `outlook_mirror:
+     "not_mirrored"`, the event leaves « Général » for the dossier's
+     collection on the phone — and the Outlook meeting is still
+     unchanged. Then move the meeting by an hour IN OUTLOOK: within 10
+     minutes Réception (« Rendez-vous ») shows the divergence, and
+     « Appliquer » carries the new hour into Athéna.
 
   Then update BOTH copies of the claude.ai skill `pallas-athena` the same
   day. What lot 1 made false there: « 49 outils : 27 en lecture, 22 en
@@ -1845,8 +1851,9 @@ Notes:
   the `expected_etag` workflow (never retry blindly after `stale_etag`),
   the two cascades (a completion can close a protocol, a reopen
   reactivates it), `list_hearings` `bookings: "pending"` and the Bookings
-  warnings (a refusal notifies the client with a fixed text; editing a
-  confirmed rendez-vous leaves Outlook and the client untouched).
+  warnings (a refusal notifies the client with a fixed text; a
+  confirmed rendez-vous changes here only by its dossier and notes —
+  rescheduling or cancelling it is refused and done in Outlook).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
