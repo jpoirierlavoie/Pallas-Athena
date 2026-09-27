@@ -386,6 +386,21 @@ _REVISION_FIELD_ERROR = (
 _UNGUARDED_ATTEMPTS = 3
 
 
+def _same_text(a: str, b: str) -> bool:
+    """True when two note bodies differ at most by their line endings.
+
+    A browser submits a textarea with CRLF, and the phone hands the same
+    text back with LF (RFC 5545 escapes a line break as a backslash-n): a jtx
+    edit of a note's CATEGORY alone re-sends a web-authored body that is
+    byte-different and word-for-word identical. That is no replacement, and
+    it must not file a revision the lawyer would take for an edit.
+    """
+    def _lf(text: str) -> str:
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    return a == b or _lf(a) == _lf(b)
+
+
 def update_note(
     note_id: str,
     data: dict,
@@ -414,8 +429,9 @@ def update_note(
     a version, else against the etag this function just read, so the
     snapshot is exactly the text overwritten; a caller that named none and
     loses that race is re-read and re-merged (:data:`_UNGUARDED_ATTEMPTS`)
-    rather than refused. An unchanged content writes no snapshot, and the
-    write keeps its legacy shape.
+    rather than refused. An unchanged content — line endings aside
+    (:func:`_same_text`: the phone hands a web-authored body back in LF) —
+    writes no snapshot, and the write keeps its legacy shape.
 
     ``revision`` (keyword-only) only NAMES what was replaced
     (``"content:rewrite"``, ``"bloc:C"``…); omitted, the snapshot is filed
@@ -476,7 +492,7 @@ def update_note(
         extra_sets: list = []
         revision_id = ""
         previous_content = existing.get("content", "") or ""
-        if (merged.get("content") or "") != previous_content:
+        if not _same_text(merged.get("content") or "", previous_content):
             try:
                 rev_ref, rev_data = revision_model.build_revision(
                     parent_collection=COLLECTION,

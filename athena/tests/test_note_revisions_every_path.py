@@ -230,6 +230,26 @@ def test_a_dav_put_that_keeps_the_content_leaves_no_revision(fake, dav):
     assert _revisions(fake) == []
 
 
+def test_a_web_authored_body_handed_back_in_lf_is_no_replacement(fake, dav):
+    """A browser submits a textarea in CRLF; the phone hands the SAME text
+    back in LF (RFC 5545). A jtx edit of the category alone must not file
+    a revision the lawyer would read as an edit of the text."""
+    stored = _seed(fake, content="Ligne 1\r\nLigne 2\r\n\r\nFin")
+    body = note_model.note_to_vjournal({**stored, "category": "stratégie"})
+    assert "Ligne 1\\nLigne 2" in body        # the wire form: LF escaped
+    resp = _put(dav, body.encode("utf-8"))
+    assert resp.status_code == 204
+    after = fake.peek(f"notes/{NID}")
+    assert after["category"] == "stratégie"
+    assert after["content"] == "Ligne 1\nLigne 2\n\nFin"
+    assert _revisions(fake) == []
+    # A real change of the words, in the same line-ending mix, still does.
+    body = note_model.note_to_vjournal({**after, "content": "Ligne 1\nAutre"})
+    assert _put(dav, body.encode("utf-8")).status_code == 204
+    (rev,) = _revisions(fake)
+    assert rev["previous_value"] == "Ligne 1\nLigne 2\n\nFin"
+
+
 def test_two_phone_edits_keep_two_revisions_in_order(fake, dav):
     _seed(fake)
     assert _put(dav, _vjournal("Deuxième.")).status_code == 204
