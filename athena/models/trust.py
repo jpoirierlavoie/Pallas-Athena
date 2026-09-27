@@ -777,6 +777,13 @@ def _build_transaction_doc(
     }
 
 
+def _cash_receipt_id(clean: dict) -> str:
+    """The cited art. 72 receipt id, as a stripped string ("" when absent) —
+    coerced, so a non-string from a future caller is a refusal, not a crash."""
+    value = clean.get("cash_receipt_id")
+    return str(value).strip() if value else ""
+
+
 def _precheck_reason(clean: dict) -> Optional[str]:
     """Guards that need no Firestore read (spec §5 step 2, the cheap subset).
 
@@ -808,10 +815,14 @@ def _precheck_reason(clean: dict) -> Optional[str]:
         return "mode_retrait_honoraires"
     # Art. 57 — no cash withdrawal, save the art. 72 refund, which must cite
     # the cash receipt it refunds (verified inside the transaction).
-    if direction == "déboursé" and method == CASH_METHOD and (
-        purpose != CASH_REFUND_PURPOSE or not (clean.get("cash_receipt_id") or "").strip()
-    ):
-        return "retrait_espèces_interdit"
+    if direction == "déboursé" and method == CASH_METHOD:
+        receipt_id = _cash_receipt_id(clean)
+        if purpose != CASH_REFUND_PURPOSE or not receipt_id:
+            return "retrait_espèces_interdit"
+        # A document id never holds « / » — such a value would build an
+        # invalid reference and surface as a generic 500, not a refusal.
+        if "/" in receipt_id:
+            return "recette_espèces_introuvable"
     if not counterparty:
         return "contrepartie_requise"
     if (dossier_id is None) != (client_id is None):
@@ -870,7 +881,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     # withdrawal (the precheck already demands it there); the form's hidden
     # field may still submit it on any other entry — drop it, like the
     # invoice fields above.
-    cash_receipt_id = (clean.get("cash_receipt_id") or "").strip()
+    cash_receipt_id = _cash_receipt_id(clean)
     if not (direction == "déboursé" and method == CASH_METHOD):
         cash_receipt_id = ""
     amount = int(clean["amount"])

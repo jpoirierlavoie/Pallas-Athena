@@ -982,3 +982,16 @@ def test_le_refus_du_destinataire_s_affiche(fake, client, monkeypatch):
     resp = client.post(f"/fideicommis/{source['id']}/contrepasser", data={"reason": "x"})
     assert resp.status_code == 400
     assert "créerait un découvert" in resp.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("bad", ["a/b", 12345])
+def test_une_reference_de_recette_malformee_est_un_refus_jamais_une_erreur(fake, monkeypatch, bad):
+    """Un identifiant contenant « / » construirait une référence invalide, et
+    un non-texte faisait lever ``.strip()`` : tous deux finissaient en
+    « Erreur lors de la sauvegarde » au lieu d'un refus qui dit pourquoi."""
+    _evening(monkeypatch)
+    _cash_receipt()
+    before = fake.peek_collection("trust_transactions")
+    _, errs = _refund(bad, 1000)
+    assert errs == [trust._ABORT_MESSAGES["recette_espèces_introuvable"]]
+    assert fake.peek_collection("trust_transactions") == before
