@@ -94,6 +94,16 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "this connector can never edit or delete it",
     "the connector sends nothing outside",
     "n'envoie jamais rien",
+    # Lot 1b (L8, the text sweep): update_note replaces a note's text, so
+    # an append CAN be undone here; update_dossier (lot Q) replaces a set
+    # dossier value, so neither « the lawyer's act, in the app » nor « never
+    # overwritten by the connector » holds; and an auto-closed protocol is
+    # reopened by reopen_task, not only in the application.
+    "cannot be undone through this connector",
+    "the lawyer's act, in the app",
+    "jamais écrasés par le connecteur",
+    "rouvrez-le dans l'application si ce n'était pas voulu",
+    "nothing outbound at all",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

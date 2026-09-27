@@ -547,8 +547,12 @@ def _write_protocol_props() -> dict:
 #   refused rather than overwritten. The tool names, in ``"etag_readers"``,
 #   the read tools whose rows carry the etag it expects.
 # * ``required`` — ``expected_etag`` is demanded (content replacement,
-#   outbound actions — plan rule 3). No tool declares it yet; one that does
-#   lists it in its input schema's ``required``.
+#   outbound actions — plan rule 3), and listed in the input schema's
+#   ``required``. ``decide_rendez_vous`` (the outbound one) declares it since
+#   lot 1b. ``update_note`` and ``edit_analyse`` stay ``optional`` at the
+#   spec level because only SOME of their calls replace content: their
+#   handlers demand the etag exactly when they do (a note's ``content``,
+#   the théorie's ``operations``/``full``) and refuse its absence.
 # * ``exempt`` — the tool accepts no ``expected_etag``; ``"concurrency_reason"``
 #   says why, in one sentence a reviewer can check.
 CONCURRENCY_OPTIONAL = "optional"
@@ -778,14 +782,16 @@ EDIT_NAME_PREFIXES: tuple[str, ...] = (
 #
 # * ``optional`` — an ``idempotency_key`` is accepted, not demanded. The
 #   store fails OPEN: a Firestore blip on the claim must not block a
-#   legitimate first write. Every existing write tool is ``optional``.
+#   legitimate first write. Every write tool but the two below is
+#   ``optional``.
 # * ``required`` — the key is demanded (a call without one is refused), and
 #   the store fails CLOSED: an unreadable claim refuses the call rather than
 #   risk a second write, and a failure before any commit keeps the claim
 #   ``pending`` so a same-key retry is refused until the caller re-reads.
-#   Reserved for money, outbound and series tools (plan rule 7); no tool
-#   declares it yet. A tool that does must also list ``idempotency_key`` in
-#   its input schema's ``required`` (pinned by test_mcp_framework_guards).
+#   Reserved for money, outbound and series tools (plan rule 7): since lot
+#   1b ``create_hearing_series`` (a series) and ``decide_rendez_vous`` (the
+#   outbound one) declare it. Such a tool must also list ``idempotency_key``
+#   in its input schema's ``required`` (pinned by test_mcp_framework_guards).
 IDEMPOTENCY_OPTIONAL = "optional"
 IDEMPOTENCY_REQUIRED = "required"
 IDEMPOTENCY_POLICIES: tuple[str, ...] = (IDEMPOTENCY_OPTIONAL, IDEMPOTENCY_REQUIRED)
@@ -2486,9 +2492,9 @@ TOOLS: dict[str, dict] = {
         "description": (
             "WRITE. Append Markdown to the END of an existing note, under a "
             "dated « Ajouté par Claude » separator. Purely additive: existing "
-            "content is never modified or removed, and the append cannot be "
-            "undone through this connector. Use get_note first to read what "
-            "is already there. If the call appears to fail, re-read the note "
+            "content is never modified or removed here (replacing text is "
+            "update_note, which keeps the replaced version). Use get_note "
+            "first to read what is already there. If the call appears to fail, re-read the note "
             "with get_note before retrying — a retry appends a second copy. "
             "Fails explicitly (rather than truncating) when the note would "
             "exceed its storage ceiling. Refuses the « Théorie de la cause » "
@@ -2685,10 +2691,10 @@ TOOLS: dict[str, dict] = {
             "a protocol step is linked to ALSO completes that step, exactly "
             "as ticking the box in the application does — and if it was the "
             "last open step, THE WHOLE PROTOCOL closes and its deadlines "
-            "stop appearing in get_agenda. `protocol_step_effect` reports "
-            "what actually happened, re-read from the document after the "
-            "write, never predicted. The cascade fires whenever the task "
-            "belongs to a dossier under an active protocol. "
+            "stop appearing in get_agenda (reopen_task on the task reopens "
+            "both). `protocol_step_effect` reports what actually happened "
+            "to the step linked in the active protocol of the task's "
+            "dossier, re-read after the write, never predicted. "
             "One asymmetry worth knowing: « annulée » triggers NO cascade, "
             "so the linked step stays open and keeps appearing in the "
             "agenda. « en_cours » on a task already « terminée » or "
@@ -3533,8 +3539,8 @@ TOOLS: dict[str, dict] = {
             "value in dispute, prescription starting point… A field that "
             "already carries a different value is NEVER overwritten: the "
             "whole call is refused listing the conflicting fields, and "
-            "nothing is written (changing a set value is the lawyer's act, "
-            "in the app). Filling court_file_number also derives the "
+            "nothing is written (changing a set value is update_dossier's "
+            "job). Filling court_file_number also derives the "
             "judicial metadata exactly as the web form does. Money in "
             "integer cents; contingency_percent in basis points "
             "(2500 = 25 %); dates YYYY-MM-DD. Confirm with the user "

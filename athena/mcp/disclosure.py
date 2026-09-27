@@ -346,8 +346,19 @@ _REGISTER_WRITERS: tuple[str, ...] = (
 NEVERS: tuple[Never, ...] = (
     Never(
         key="delete",
-        fr="<strong>supprimer</strong> quoi que ce soit",
-        en="NOTHING can EVER be DELETED here.",
+        # Lot 1b made cancelling a CAPABILITY (a task, an event, a Bookings
+        # request): the promise is about Athéna's records, which a
+        # cancellation keeps — the Outlook side of a cancelled event or of a
+        # refused request is disclosed by its family, beside the capability.
+        fr=(
+            "<strong>supprimer</strong> quoi que ce soit dans Athéna — "
+            "annuler une tâche ou un événement les conserve, avec leur "
+            "statut"
+        ),
+        en=(
+            "NOTHING in Athéna can EVER be DELETED here: a cancelled task or "
+            "event is kept, with its status."
+        ),
         forbidden=(r"delete_\w+", r"record_deletion"),
         # The protocol layer deletes its own bookkeeping (an expired OAuth
         # client, a released idempotency claim) — never a user record. The
@@ -379,7 +390,10 @@ NEVERS: tuple[Never, ...] = (
         # (void_invoice is its thin wrapper): the sweep matches names
         # exactly, so both must be named.
         forbidden=("update_status", "void_invoice", "void_invoice_report"),
-        # Nothing outbound at all: the connector sends no email.
+        # Sending an invoice is an email: the connector never imports the
+        # email module. (Its ONE outbound effect since lot 1b, a refused
+        # Bookings request's Outlook cancellation, goes through Graph's
+        # calendar /cancel — never utils.courriel; see client_message.)
         forbidden_modules=("utils.courriel",),
     ),
     Never(
@@ -708,8 +722,8 @@ def build_instructions(
         "it), with the time of its last connector write in "
         "`mcp_updated_at` — returned by the read rows whose output schema "
         "declares those keys, which not every read does; the notes, tasks "
-        "and events it CREATES, and the note text it REPLACES, also carry a "
-        "dated « … par Claude le … » line."
+        "and events it CREATES, and the text it APPENDS to or REPLACES in a "
+        "note, also carry a dated « … par Claude le … » line."
     )
     parts.append(_FORMATS_EN)
     return " ".join(parts)

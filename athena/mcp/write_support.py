@@ -104,14 +104,17 @@ A release is a ``delete()`` under the ``last_update_time`` the claim's own
 The policy is read from the registry — ``mcp.tools.idempotency_policy``,
 the tool's ``"idempotency"`` spec key — never passed by the handler.
 
-* ``optional`` (every tool today): the store fails OPEN. A Firestore blip on
+* ``optional`` (every write tool but the two ``required`` ones below): the
+  store fails OPEN. A Firestore blip on
   the claim must not block a legitimate first write; the call runs
   unclaimed, and afterwards a best-effort ``create()`` stores its result so
   a later retry can still replay (``op="record"``). The uncovered window —
   store down, retry — merely degrades to the pre-claim behaviour.
-* ``required``: the key is demanded (``idempotency_required``) and the store
-  fails CLOSED (``idempotency_store_unavailable``): nothing executes when
-  the claim cannot be established.
+* ``required`` (``create_hearing_series`` and ``decide_rendez_vous`` since
+  lot 1b — a series, and the one outbound effect): the key is demanded
+  (``idempotency_required``) and the store fails CLOSED
+  (``idempotency_store_unavailable``): nothing executes when the claim
+  cannot be established.
 
 Failing open is only tenable if the failure is SEEN: each one is logged as
 ``mcp_idempotency_store_failure`` (tool, op, exception class — never the

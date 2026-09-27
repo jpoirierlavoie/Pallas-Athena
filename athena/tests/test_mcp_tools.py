@@ -2195,11 +2195,18 @@ def test_complete_dossier_conflict_is_atomic(monkeypatch):
         raise AssertionError("conflict must refuse BEFORE update_dossier")
 
     monkeypatch.setattr(handlers.dossier_model, "update_dossier", _must_not_run)
-    with pytest.raises(tools.ToolArgumentError, match="jamais écrasés"):
+    # Rewritten deliberately (lot 1b, L8): the refusal said « jamais écrasés
+    # par le connecteur » and sent the caller to the application — false
+    # since lot Q, when update_dossier began to replace a set value. It now
+    # says complete_dossier never overwrites, and names the tool that does.
+    with pytest.raises(tools.ToolArgumentError,
+                       match="complete_dossier n'écrase jamais") as refused:
         handlers.complete_dossier({
             "dossier_id": "d1", "domaine": "CON",       # conflicts
             "sommaire": "Nouveau résumé.",              # would fill
         })
+    assert "update_dossier" in str(refused.value)
+    assert "dans l'application" not in str(refused.value)
 
 
 def test_complete_dossier_default_value_counts_as_empty(monkeypatch):

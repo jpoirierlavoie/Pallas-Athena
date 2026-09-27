@@ -12,12 +12,17 @@ counts — live in ONE place, :data:`mcp.disclosure.FAMILIES` (which
 what it can NEVER do live beside them in :data:`mcp.disclosure.NEVERS`, each
 backed by a sweep of this module's syntax tree (tests/test_mcp_disclosure).
 Restating either here is how they drifted before. The writable collections
-are ``notes``, ``tasks``, ``hearings``, ``timeentries``, ``expenses``,
-``parties``, ``invoices`` (with its ``lineitems`` subcollection, and the
-``invoiced`` flips import_invoice causes on the two billing collections),
-``documents`` (its ``analyse`` cache, the DERIVED ``category`` and an
-append-only ``analyses`` journal entry — never the file, its name or its
-folder) and ``dossiers``.
+are ``notes`` (with their write-once ``revisions`` subcollection, lot 1b),
+``tasks``, ``hearings``, ``protocols`` (with their ``steps`` subcollection,
+lot 1b), ``timeentries``, ``expenses``, ``parties``, ``invoices`` (with its
+``lineitems`` subcollection, and the ``invoiced`` flips import_invoice
+causes on the two billing collections), ``documents`` (its ``analyse``
+cache, the DERIVED ``category`` and an append-only ``analyses`` journal
+entry — never the file, its name or its folder) and ``dossiers``. ONE path
+reaches outside Firestore: ``decide_rendez_vous``'s refusal, through
+``services/rendez_vous``, cancels the Outlook meeting of a pending Bookings
+request (Graph ``/cancel``, with the service's fixed text) — the connector's
+only outbound effect, and a « never » of the registry forbids any other.
 
 The versioned-drafts family (``save_draft``/``revise_draft``/``get_draft``/
 ``list_drafts``) LEFT this connector on 2026-09-02 with the internal chat
@@ -6728,12 +6733,14 @@ def _complete_dossier_impl(args: dict) -> dict:
     if conflicts:
         # ATOMIC refusal: a partial fill would leave the caller guessing
         # which half happened. « Add missing fields » never overwrites —
-        # changing a non-empty value is the lawyer's act, in the app.
+        # replacing a non-empty value is update_dossier's job (since lot Q;
+        # this text still sent the caller to the application until lot 1b's
+        # text sweep).
         raise ToolArgumentError(
-            "Champs déjà renseignés (jamais écrasés par le connecteur) : "
+            "Champs déjà renseignés (complete_dossier n'écrase jamais) : "
             + ", ".join(sorted(conflicts))
-            + ". Rien n'a été écrit. Retirez-les de l'appel, ou modifiez-les "
-            "dans l'application."
+            + ". Rien n'a été écrit. Retirez-les de l'appel ; pour remplacer "
+            "une valeur, c'est update_dossier, avec l'accord de l'avocat."
         )
     if not updates:
         raise ToolArgumentError(
@@ -6991,9 +6998,14 @@ def _linked_step(task: dict) -> Optional[dict]:
     it — no unbounded scan, and zero cost for a « Général » task.
     Best-effort by construction: a task moved between dossiers before that
     rule would evade it (``protocol.find_step_for_task``'s firm-wide
-    fallback still reaches it; lot 1b switches this lookup to it), which is
-    why the result is DISCLOSED as an observation and never presented as a
-    guarantee.
+    fallback still reaches it — the MODEL's cascade uses it), which is why
+    the result is DISCLOSED as an observation and never presented as a
+    guarantee, and why the tool description says where it looks. Lot 1a
+    planned to switch this lookup to ``find_step_for_task``; lot 1b kept it
+    (the fallback streams every actif protocol of the firm, a second time
+    for each completion, and pays it for every « Général » task this
+    lookup costs nothing for) — ``reopen_task``, whose feasibility the
+    model decides BEFORE the write, is the one that reads through it.
     """
     dossier_id = task.get("dossier_id") or ""
     if not dossier_id:
@@ -7228,8 +7240,8 @@ def _complete_task_payload(
         payload["warnings"].append(
             "C'était la dernière étape ouverte : le PROTOCOLE ENTIER est "
             "passé à « complété ». Ses étapes n'apparaîtront plus dans "
-            "get_agenda. Rouvrez-le dans l'application si ce n'était pas "
-            "voulu."
+            "get_agenda. Si ce n'était pas voulu : reopen_task sur cette "
+            "tâche rouvre l'étape et réactive le protocole (ou l'application)."
         )
     return payload
 
