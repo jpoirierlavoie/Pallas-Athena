@@ -316,6 +316,8 @@ peut être retirée.
 
 Always emitted at ERROR with traceback. This is what `main.py`'s `errorhandler(Exception)` calls — it surfaces to Cloud Error Reporting via the `pallas-athena` log. The traceback text is PII-scrubbed by `RedactionFilter` before emission (see "PII redaction policy" above for the Error Reporting grouping trade-off).
 
+Messages added in lot 0b B7 (2026-09-27), each a DEGRADED path that keeps working: « dav tombstone token read failed » (`collection` — `dav.sync` could not read a collection's token to stamp a tombstone; the tombstone is written anyway, stamped `""`, and the stored token is NOT reset — before, the same blip rewrote it and forced every DAV client into a full resync); « partie mandataire reference check failed » (the reverse mandataire scan of `update_partie` could not run: the role/type change is refused, fail closed — CardDAV answers 503); « list_prescription_alerts: derivation failed » (one dossier `derive_prescription` cannot read: alerted `a_verifier` on its raw date instead of emptying the whole alert list).
+
 ## Adding a new event type
 
 1. Extend the relevant `Literal` in `utils/logging_setup.py` (or add a new helper for a new domain).

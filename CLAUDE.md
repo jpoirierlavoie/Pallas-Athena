@@ -2725,8 +2725,8 @@ Pre-D1, dossiers were exposed as VJOURNAL entries at `/dav/journals/`. This misu
 ### `dav/sync.py` API
 
 ```python
-get_ctag(collection_name: str) -> str
-get_ctags_bulk(names: list[str]) -> dict[str, str]   # single db.get_all read (root PROPFIND)
+get_ctag(collection_name: str) -> str   # absent → first token via create(); a FAILED read RAISES, never resets (lot 0b)
+get_ctags_bulk(names: list[str]) -> dict[str, str]   # single db.get_all read (root PROPFIND); absent → create()
 get_sync_token(collection_name: str) -> str   # currently returns the ctag
 bump_ctag(collection_name: str) -> str
 record_tombstone(collection_name: str, resource_id: str) -> None
@@ -2740,6 +2740,8 @@ delete_sync_state(collection_name: str) -> None   # removes the dav_sync doc (ru
 relocation_plan(resource_id, *, old_dossier_id, new_dossier_id, created=False) -> tuple[(op, collection), ...]
 relocate_resource(resource_id, *, old_dossier_id, new_dossier_id, created=False) -> None  # runs the plan; raises on the 1st failure
 ```
+
+> **A failed ctag read is not an absent document (lot 0b, 2026-09-27).** `get_ctag` used to swallow ANY read exception and then `set()` a fresh token over the stored one: a transient Firestore blip reset the collection's sync token, and every DAV client holding the real one was pushed into a full resync — no error anywhere. It now keeps three outcomes apart: document present → its token; read OK and document ABSENT → a first token written with `create()` (a racing bump or initialiser wins and is served — `AlreadyExists`, never an overwrite; `get_ctags_bulk` does the same); read FAILED → the exception propagates and nothing is written. A DAV PROPFIND/REPORT therefore answers **500** on the blip (DavX5 retries, nothing lost). The tombstone writers (`record_tombstone`, `record_tombstones_bulk`) read the token only to STAMP it — nothing filters on a tombstone's `sync_token` — so they degrade instead: the tombstone is still written, stamped `""`, with an `unexpected` line « dav tombstone token read failed »; a failed tombstone WRITE still raises. `tests/test_dav_sync_ctag.py`.
 
 > **Relocation (lot 0a, 2026-09-25).** A resource whose dossier changes LEAVES one collection and ENTERS another; the ORDER lives in ONE place, `relocation_plan`, keyed on `collection_for` scopes and never on raw ids (`None` and `""` are both « Général »): a real move is `record_tombstone(old)` → `bump_ctag(old)` → `remove_tombstone(new)` → `bump_ctag(new)`; a creation is `remove_tombstone(new)` + `bump_ctag(new)`; anything else one `bump_ctag(new)`. Two executors run it: `relocate_resource` (loud — the first failure raises, the route's path) and `mcp.handlers._dav_resync` (every step under its own guard and every step attempted, because the write is already committed — returns `(new_ok, old_ok)`; `_bump_note_ctag` is its no-move case). A handler that MOVES a record passes `previous_dossier_id` to `handlers._entity_write_result`, which then emits `previous_collection_cleared` (`false` = the old collection could not be told, a stale copy may stay on the phone) — and must declare it with `output_schemas._entity_write_result(…, relocates=True)`: `tests/test_mcp_dav_resync.py` derives the tool ↔ key pairing from the handlers, and no tool relocates before Lot 1. The same file pins the parity with the three hand-written route blocks it generalizes, transcribed as they stood at 65a6d17, and drives the real `task_update`/`note_update` routes — which now CALL `relocate_resource` — against those transcripts, call for call. `routes/hearings.py`'s block was NOT switched: it compares RAW ids, so it differs on exactly `(None, "")`/`("", None)` — a spurious tombstone-and-remove in « Général » plus a second bump — and the switch was allowed only where it changes nothing (Lot 1, which adopts the helper for hearing moves, decides that behaviour change on purpose).
 

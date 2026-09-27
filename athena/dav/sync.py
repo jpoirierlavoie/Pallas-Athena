@@ -18,8 +18,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from google.api_core.exceptions import AlreadyExists
+
 from models import db
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -56,25 +58,75 @@ def _sync_ref(collection_name: str):
     return db.collection(SYNC_COLLECTION).document(collection_name)
 
 
-def get_ctag(collection_name: str) -> str:
-    """Return the current CTag for a collection. Creates the doc if missing."""
-    ref = _sync_ref(collection_name)
-    try:
-        doc = ref.get()
-        if doc.exists:
-            return doc.to_dict().get("ctag", "")
-    except Exception as exc:
-        logger.warning(
-            "get_ctag failed for %s: %s", sanitize_log_value(collection_name), exc
-        )
-    # Initialise with a fresh ctag
+def _initialise_ctag(ref) -> str:
+    """Give a collection that has NO sync document its first token.
+
+    ``create()``, never ``set()``: this path runs because a read found the
+    document ABSENT, and between that read and this write a concurrent
+    initialiser or ``bump_ctag`` may have stored a token — overwriting it
+    would silently invalidate the token that caller just handed out. On
+    ``AlreadyExists`` the stored token is served instead.
+    """
     ctag = str(uuid.uuid4())
-    ref.set({
-        "ctag": ctag,
-        "sync_token": ctag,
-        "updated_at": datetime.now(timezone.utc),
-    })
+    try:
+        ref.create({
+            "ctag": ctag,
+            "sync_token": ctag,
+            "updated_at": datetime.now(timezone.utc),
+        })
+    except AlreadyExists:
+        snap = ref.get()  # propagates: never guess a token
+        if not snap.exists:
+            raise
+        return (snap.to_dict() or {}).get("ctag", "")
     return ctag
+
+
+def get_ctag(collection_name: str) -> str:
+    """Return the current CTag for a collection. Creates the doc if missing.
+
+    Three outcomes, kept apart (lot 0b, 2026-09-27):
+
+    * the document exists → its stored token;
+    * the read SUCCEEDED and found no document → a first token is created
+      (lazy initialisation, as before — with ``create()``, see
+      :func:`_initialise_ctag`);
+    * the read FAILED → the exception PROPAGATES and nothing is written.
+
+    The last one used to be swallowed and followed by a ``set()`` of a fresh
+    token OVER the stored one: a transient read blip reset the collection's
+    sync token, and every DAV client holding the real one was pushed into a
+    full resync, with no error anywhere. A read path must never write over a
+    token. Callers: a DAV PROPFIND/REPORT answers 500 on the failure
+    (DavX5 retries, nothing is lost); the tombstone writers read the token
+    only to stamp it (see :func:`_tombstone_token`) and degrade instead.
+    """
+    ref = _sync_ref(collection_name)
+    doc = ref.get()  # propagates a read failure — never a reset
+    if doc.exists:
+        return (doc.to_dict() or {}).get("ctag", "")
+    return _initialise_ctag(ref)
+
+
+def _tombstone_token(collection_name: str) -> str:
+    """The token a tombstone is stamped with — best effort, never a write.
+
+    A tombstone's ``sync_token`` is informational: nothing filters on it
+    (``get_tombstones`` reports by TTL — sync tokens are non-monotonic
+    UUIDs), and the caller bumps the CTag right after. What matters is that
+    the TOMBSTONE is written: it is the only removal signal in this sync
+    model, so a failed token read must not prevent it. It is stamped ``""``
+    (« unknown ») and the failure logged — and, unlike before, the stored
+    token is never reset on the way.
+    """
+    try:
+        return get_ctag(collection_name)
+    except Exception:
+        log_unexpected(
+            "dav tombstone token read failed",
+            collection=sanitize_log_value(collection_name),
+        )
+        return ""
 
 
 def get_ctags_bulk(names: list[str]) -> dict[str, str]:
@@ -95,9 +147,14 @@ def get_ctags_bulk(names: list[str]) -> dict[str, str]:
             found[snap.id] = (snap.to_dict() or {}).get("ctag", "")
     ctags: dict[str, str] = {}
     for name in names:
-        ctag = found.get(name)
+        if name not in found:
+            # ABSENT (the read succeeded): lazy first token, as get_ctag —
+            # created, never set over a token a racing writer just stored.
+            ctags[name] = _initialise_ctag(_sync_ref(name))
+            continue
+        ctag = found[name]
         if not ctag:
-            # Initialise with a fresh ctag (same lazy behaviour as get_ctag)
+            # Present but token-less: nothing to lose, repaired in place.
             ctag = str(uuid.uuid4())
             _sync_ref(name).set({
                 "ctag": ctag,
@@ -125,12 +182,16 @@ def bump_ctag(collection_name: str) -> str:
 
 
 def record_tombstone(collection_name: str, resource_id: str) -> None:
-    """Record that a resource was deleted (for sync-collection 404 reports)."""
+    """Record that a resource was deleted (for sync-collection 404 reports).
+
+    The token read is best effort (:func:`_tombstone_token`): a failed read
+    stamps « » and the tombstone is still written; a failed WRITE raises.
+    """
     _sync_ref(collection_name).collection("tombstones").document(
         resource_id
     ).set({
         "deleted_at": datetime.now(timezone.utc),
-        "sync_token": get_ctag(collection_name),
+        "sync_token": _tombstone_token(collection_name),
     })
 
 
@@ -189,13 +250,14 @@ def record_tombstones_bulk(
     the collection listing, the CTag was never bumped, and nothing remains to
     tell DavX5 to look. One read plus ``ceil(N / 450)`` commits instead.
 
-    Read-side sibling of :func:`get_ctags_bulk`. Failures propagate — a caller
-    deleting on the strength of this must not mistake a write failure for a
-    completed drain.
+    Read-side sibling of :func:`get_ctags_bulk`. WRITE failures propagate —
+    a caller deleting on the strength of this must not mistake a write
+    failure for a completed drain. A failed token READ does not: the
+    tombstones are written anyway, stamped « » (:func:`_tombstone_token`).
     """
     if not resource_ids:
         return
-    token = get_ctag(collection_name)
+    token = _tombstone_token(collection_name)
     now = datetime.now(timezone.utc)
     tombstones = _sync_ref(collection_name).collection("tombstones")
     for start in range(0, len(resource_ids), _BATCH_CHUNK):
