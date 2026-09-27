@@ -1574,6 +1574,29 @@ Notes:
   5. *A deleted series leaves the phone.* Only if you use series: delete a
      series one of whose occurrences was moved to another dossier; that
      occurrence disappears from the phone too.
+- **Protocols and their tasks (lot 1a, L2):** no index, no data migration —
+  legacy protocols read `closed_by` as « not recorded » and are therefore
+  never reactivated automatically; legacy steps read an empty etag. What
+  changes on screen, to announce: a protocol or step form left open while
+  something changed elsewhere is refused with the amber banner; the step
+  button refuses on a suspended protocol or one completed by hand
+  (« réactivez-le… »); a new start date no longer moves completed steps nor
+  confirmed CS dates, and moves the linked tasks still on the old date; a
+  note saved on a CS step no longer confirms its date (new « Confirmer cette
+  date » box); a task linked from a step can no longer change dossier. Check
+  the phone once after the deploy:
+  1. *A reopened task reactivates its protocol.* On a test dossier, create a
+     protocol with one custom step and a linked task (or use the wizard's
+     « Créer les tâches automatiquement »), complete the task in jtx, sync:
+     the step is completed and the protocol reads « Complété ». Reopen the
+     task in jtx, sync: the step reads « À venir » and the protocol
+     « Actif » again.
+  2. *A linked task stays in its dossier.* Move that task to another
+     dossier's list in jtx: the sync reports an error (422) and the task
+     stays in its list — delete the test protocol and task afterwards.
+  3. *A moved deadline reaches the phone.* Edit that step's deadline in the
+     app: the linked task's due date follows on the next sync (a `REPORT
+     sync-collection` of `/dav/dossier-<id>/` returns a new token).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

@@ -199,10 +199,15 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   ├── services/                   # Main-service orchestration (multi-subsystem operations)
 │   │   ├── portail_emission.py     # Invitation émission/renvoi: Firebase user + claim merge +
 │   │   │                           # email-link + Graph email (manual-link fallback)
-│   │   └── encaissements.py        # Projection Lot P d'un encaissement sur sa facture
-│   │                               # (projeter/reduire_paiement — hissées de
-│   │                               # routes/admin_ledger le 2026-08-26 ; appelées par
-│   │                               # admin_ledger, trust et la reprise)
+│   │   ├── encaissements.py        # Projection Lot P d'un encaissement sur sa facture
+│   │   │                           # (projeter/reduire_paiement — hissées de
+│   │   │                           # routes/admin_ledger le 2026-08-26 ; appelées par
+│   │   │                           # admin_ledger, trust et la reprise)
+│   │   └── protocoles.py           # Lot 1a (L2) : la porte des routes protocoles (et du
+│   │                               # connecteur au lot 1b) — création depuis le dossier,
+│   │                               # tâches liées sur DEMANDE seulement, et
+│   │                               # align_linked_tasks (une tâche suit l'échéance de son
+│   │                               # étape si elle y était encore ; bump par collection)
 │   │
 │   ├── models/                     # Firestore data access layer
 │   │   ├── __init__.py             # Exposes `db` (Firestore client singleton) + aggregation_values() helper
@@ -1261,10 +1266,19 @@ Notes live in `/dav/dossier-{id}/{noteId}.ics` as VJOURNAL resources alongside t
     "court": str,
     "notes": str,
     "status": "actif" | "complété" | "suspendu",
+    # Lot 1a — WHO took it out of « actif », and when (cleared on
+    # reactivation). "auto" = its last step's completion closed it
+    # (_check_protocol_completion): the ONE closure the cascade undoes by
+    # itself (reopening a step or its linked task reactivates it, if no
+    # other protocol of the dossier is actif). Any other value is the
+    # provenance path of a deliberate completion OR suspension (web, mcp…).
+    # "" / absent = not recorded (legacy): never reopened automatically.
+    "closed_by": "" | "auto" | "web" | "mcp" | ...,
+    "closed_at": datetime | None,
 }
 ```
 
-A dossier may have **multiple protocols** over its lifetime, but **at most one `actif`** at any time.
+A dossier may have **multiple protocols** over its lifetime, but **at most one `actif`** at any time — checked FAIL-CLOSED inside the transaction that writes (creation, reactivation through `update_protocol`, the reopen of an auto-closed protocol), never by a reader that answers « none » on a read error.
 
 ### `protocols/{protocolId}/steps/{stepId}` — Protocol steps (subcollection)
 
@@ -1282,7 +1296,17 @@ A dossier may have **multiple protocols** over its lifetime, but **at most one `
     "linked_task_id": UUIDv4 | None,
     "linked_hearing_id": UUIDv4 | None,
     "notes": str,
-    "date_confirmed": bool,               # CS suggested-date acknowledgement
+    "date_confirmed": bool,               # CS suggested-date acknowledgement — set
+                                          # ONLY by an actual date change or an
+                                          # explicit confirmation since lot 1a (a
+                                          # notes-only save used to set it)
+    "date_confirmed_at": datetime | None, # lot 1a — when it was confirmed; what makes
+                                          # a CS date « truly confirmed » for the
+                                          # recompute (legacy: the date differing from
+                                          # the template's computation is the proof)
+    # Rule 7 since lot 1a: `etag` + `created_via`/`updated_via`/`mcp_updated_at`,
+    # stamped by every step write — EXCEPT check_overdue_steps' derived
+    # « en_retard » stamp (a page view must not invalidate a held etag).
     "phase": str,                         # Phase O — annotation de phase du litige :
     "sous_phase": str,                    # les gabarits CQ/CS la portent (mapping
                                           # approuvé 2026-08-10, épinglé par test) ;
@@ -1950,17 +1974,17 @@ Time entries live at the prefix root; expenses live under `/depenses`. No `/heur
 |-------|--------|---------|
 | `/protocoles/` | GET | List |
 | `/protocoles/new` | GET | Creation wizard (dossier → type → start date) |
-| `/protocoles/` | POST | Create |
+| `/protocoles/` | POST | Create — through `services/protocoles.create_protocol` (court = the dossier's tribunal; linked tasks only when the wizard's checkbox, unchecked by default, is ticked) |
 | `/protocoles/<id>` | GET | Detail (timeline view) |
-| `/protocoles/<id>/edit` | GET | Edit form |
-| `/protocoles/<id>` | POST | Update protocol metadata (incl. start-date recompute) |
+| `/protocoles/<id>/edit` | GET | Edit form (carries the protocol's `expected_etag`) |
+| `/protocoles/<id>` | POST | Update title / notes / status / start date (lot 1a) — etag-checked (a stale form re-renders at 200 with the amber banner); a status is forwarded only when posted (the old default « actif » reactivated anything); a new start date recomputes the steps IN the model's write — completed steps and truly confirmed CS dates stay — and their linked tasks follow if still on the old date; the banner says what moved, stayed and followed |
 | `/protocoles/<id>/delete` | POST | Delete |
-| `/protocoles/<id>/steps` | POST | Add a custom step |
-| `/protocoles/<id>/steps/<step_id>` | POST | Update step (deadline, notes, status) |
+| `/protocoles/<id>/steps` | POST | Add a custom step (never a linked task from the web form); a refusal comes back as `?erreur=` (the 422 fragment never rendered) |
+| `/protocoles/<id>/steps/<step_id>` | POST | Update step — deadline, notes, and `confirm_date` (the « Confirmer cette date » box of an unconfirmed CS step). Etag-checked; a posted `status` is NEVER forwarded; a refusal re-renders the page at 200 with THAT step's form open on the submission; a changed deadline carries the linked task along |
 | `/protocoles/<id>/steps/<step_id>/complete` | POST | Set the step to the posted `target` (`complété` \| `à_venir`) — **never a toggle** since lot 0b: a same-state click writes nothing (`set_step_status`). Cascades to the linked task (never an `annulée` one) and bumps that task's DAV collection; every outcome comes back as `?erreur=` / `?message=` on the detail page (a page posting no `target` — rendered before the deploy — falls back to the stored-status reading) |
 | `/protocoles/<id>/steps/<step_id>/delete` | POST | Delete (blocked when `mandatory`) |
 
-> There are no separate `/protocoles/<id>/complete` or `/protocoles/<id>/suspend` routes today — protocol completion happens automatically via `_check_protocol_completion`, and status changes go through the regular update form.
+> There are no separate `/protocoles/<id>/complete` or `/protocoles/<id>/suspend` routes today — protocol completion happens automatically via `_check_protocol_completion`, and status changes go through the regular update form. Since lot 1a the step button refuses on a suspended protocol or one closed on purpose (« réactivez-le… »), and reopening a step of a protocol its last step closed reactivates it.
 
 ### `documents.py` — `/documents/*`
 
@@ -2337,7 +2361,8 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `list_urgent_tasks(cutoff, limit=50) -> list[dict]` — server-side `status in (à_faire, en_cours) AND due_date <= cutoff`, ordered + bounded (dashboard; needs the `tasks` composite index)
 - `set_task_completion(task_id, target) -> (doc, errors, changed)` (2026-09-25) — the web checkbox's writer: `target` ∈ `COMPLETION_TARGETS` (`terminée`/`à_faire`), SET, never toggled. The same state is a no-op (no write, no cascade — `à_faire` on an `en_cours` task included), a cancelled task is refused both ways, and the status write compare-and-sets against the version just read
 - `toggle_task_complete(task_id) -> tuple[Optional[dict], list[str]]` — flips `à_faire` ↔ `terminée` (and sends `annulée` back to `à_faire`); fires `_sync_protocol_step`. **No caller since 2026-09-25** — kept only because `test_mcp_tools` pins that the connector never calls it
-- `_sync_protocol_step(task_id, new_status)` — bidirectional sync; uses module-level `_SYNCING` set to prevent loops
+- `update_task(task_id, data, *, expected_etag=None)` — refuses (lot 1a) a `dossier_id` that CHANGES the dossier of a task linked from a protocol step (`STEP_LINKED_MOVE_REFUSED`; looked up STRICTLY through `protocol.find_step_for_task`, a read error refusing with `STEP_LINK_CHECK_FAILED`) — web form, jtx move (DAV 422) and connector alike; an unchanged `dossier_id` (the form posts it on every save) triggers no lookup
+- `_sync_protocol_step(task_id, new_status, *, dossier_id=None)` — the task → step half of the cascade (lot 1a): finds the step with `protocol.find_step_for_task` and moves it with `protocol.set_step_status` — the ONE rule of a step's status — so a reopened task reopens a completed step AND reactivates a protocol the cascade had closed (if no other is actif); a suspended or deliberately closed protocol does not follow (the model logs the refusal). `annulée` asks nothing of the step. Module-level `_SYNCING` guard; never raises (the task has committed)
 - `get_task_summary(dossier_id) -> dict`
 - `task_to_vtodo(task) -> str` — VTODO with PRIORITY, STATUS, DUE, COMPLETED, CATEGORIES, and `RELATED-TO;RELTYPE=PARENT:{note_vjournal_uid}` when `related_note_id` is set
 - `vtodo_to_task(ical_str) -> dict` — inverse, resolves RELATED-TO via `note._find_note_by_vjournal_uid`. Reads DESCRIPTION WHOLE — the dossier line is still on it, and only the caller knows which line the phone was served (`strip_dav_description_suffix`)
@@ -2356,22 +2381,25 @@ Every model exports the standard CRUD set. Module-specific additions:
 
 ### `models/protocol.py`
 - `get_template(protocol_type) -> list[dict]` — returns CQ/CS template (hardcoded `CQ_TEMPLATE_STEPS` / `CS_TEMPLATE_STEPS`) or `[]` for `conventionnel`
-- `create_protocol(dossier_id, protocol_type, start_date, data)` — rejects if active protocol exists; auto-generates steps from the template; optionally calls `_auto_create_tasks_for_steps`
+- `create_protocol(dossier_id, protocol_type, start_date, data, auto_create_tasks=False)` — `data` limited to title/notes/court/dossier labels (any other key REFUSED); always « actif »; generates stamped template steps; the one-actif rule is read INSIDE the transaction that writes (`_get_active_protocols_strict` — a read error refuses with `ACTIVE_CHECK_FAILED`, a protocol activated before the commit aborts it). The fail-open `_get_active_protocols` is gone. Callers go through `services/protocoles.create_protocol`
+- `find_step_for_task(task_id, dossier_id) -> (protocol, step) | None` (lot 1a) — every protocol of the dossier (actif first), then the firm's actif protocols (the fallback the cascade always scanned); PROPAGATES read errors; no collection-group query
 - `get_protocol(protocol_id)` — returns protocol with `steps` attached
 - `get_protocol_for_dossier(dossier_id, active_only=True)`
 - `list_protocols_for_dossier(dossier_id) -> list[dict]` — newest first, without steps
 - `list_protocols(status_filter=None, ...)`
-- `add_step`, `update_step` (blocked when `deadline_locked`), `delete_step` (blocked when `mandatory`)
-- `set_step_status(protocol_id, step_id, target) -> (step, errors, outcome)` (lot 0b) — **non-toggle**, `target` ∈ `STEP_STATUS_TARGETS` (`complété`, `à_venir`). The decision and the partial step `update()` (+ protocol stamp) run in ONE transaction on the re-read step, so a racing write is decided again, never overwritten; a step already at the target (for `à_venir`: any open status — `en_cours`/`en_retard` included) writes and cascades NOTHING. `outcome` = `{changed, task_id, task_sync, protocol_closed}`. No protocol-status gate (lot 1a adds it, with the reopen of an auto-closed protocol). The web step button calls it — never `complete_step`
+- `add_step(protocol_id, step_data)` (lot 1a) — only title/description/cpc_reference/deadline_date/notes/phase/sous_phase (anything else REFUSED); pins mandatory/locked False, no offset, « à venir », no linked task; the step and the protocol's refreshed `end_date` commit in one transaction
+- `update_step(protocol_id, step_id, data, *, expected_etag=None)` (lot 1a) — only deadline/notes/phase/sous_phase/title/description/cpc_reference + the `confirm_date` flag; a posted `status` is refused (`STEP_STATUS_NOT_EDITABLE` — status goes through `set_step_status`); on a template (mandatory) step the C.p.c. text is locked (`LEGAL_TEXT_LOCKED`) and the deadline cannot be cleared; `deadline_locked` keeps the deadline; `date_confirmed` (+ `date_confirmed_at`) only on a real date CHANGE or `confirm_date`; a changed deadline refreshes `end_date` and returns `_deadline_changed` (transient); nothing changed → nothing written. `delete_step` (blocked when `mandatory`)
+- `set_step_status(protocol_id, step_id, target, *, expected_etag=None) -> (step, errors, outcome)` — **non-toggle**, `target` ∈ `STEP_STATUS_TARGETS` (`complété`, `à_venir`). A step already at the target writes and cascades NOTHING, whatever the etag. Otherwise, in ONE transaction: `expected_etag`; the protocol GATE (lot 1a) — actif accepts both, a protocol closed by the cascade (`closed_by == CLOSED_BY_AUTO`) accepts a reopen that reactivates it, anything else refuses (« réactivez-le … »); the reactivation's one-actif check, fail-closed, refused BEFORE any write; then the step and the protocol commit together. `outcome` = `{changed, task_id, task_sync, protocol_closed, protocol_reopened}`. The web step button, the task cascade and (lot 1b) the connector all go through it — never `complete_step`
 - `complete_step(protocol_id, step_id)` — DEPRECATED toggle, now a wrapper that reads the step and asks `set_step_status` for the opposite state; nothing in `routes/` or `mcp/` may call it (`tests/test_protocol_step_status.py` sweeps)
-- `recompute_deadlines(protocol_id, new_start_date)` — for offset-based steps; uses `utils.deadlines.compute_deadline`
-- `check_overdue_steps(protocol_id) -> int` — flips `status → en_retard` on past-due, non-completed steps
+- `update_protocol(protocol_id, data, *, expected_etag=None)` (lot 1a) — only title/notes/court/start_date/status (protocol_type, dossier_id… REFUSED); ONE transaction: → « actif » obeys the one-actif rule (fail-closed; there was NO guard) and clears `closed_by`/`closed_at`; → complété/suspendu stamps `closed_by` = the writing path; a CHANGED start date recomputes the steps in the same write (`_recompute_plan`: only template steps, never a completed one nor a truly confirmed CS date — `_date_truly_confirmed`) and refreshes `end_date`, the report in `protocol["_recompute"]` (transient); nothing changed → nothing written
+- `recompute_deadlines(protocol_id, new_start_date)` — kept for compatibility: `update_protocol` with only a start date
+- `check_overdue_steps(protocol_id) -> int` — flips `status → en_retard` on past-due, non-completed steps; a derived stamp that NEVER regenerates the step etag
 - `get_protocol_summary(dossier_id) -> {has_protocol, has_history, total, completed, overdue, upcoming, ...}`
 - `get_current_phase_for_dossier(dossier_id) -> (phase, sous_phase)` — Phase O : « l'étape courante » = première étape non complétée dans l'ordre du protocole actif ; son annotation est le défaut suggéré des formulaires temps/dépense/tâche. `("","")` sans protocole/annotation. **~10 lectures — payé UNIQUEMENT au GET d'un formulaire qui connaît déjà son dossier**, jamais sur DAV ni sur un formulaire vierge (règle `_linked_step`). Fail-open (une suggestion ne casse jamais un rendu).
 - `list_urgent_steps(cutoff, limit=50) -> list[dict]` — replaces the dashboard N+1: ONE `collection_group("steps")` query (status in active set + deadline ≤ cutoff, 3× over-fetch) + ONE batched `get_all` of distinct parent protocols; only steps of `actif` protocols survive, enriched with `_protocol_title`/`_protocol_id`/`_dossier_file_number`. Needs the `steps` COLLECTION_GROUP index.
 - `_sync_task_status(task_id, step_status, *, protocol_id='') -> str` — uses `_SYNCING` guard (separate set from `task.py`). Reads the task, applies the pure table `cascaded_task_status` (a CANCELLED task is never touched either way; a reopen reopens only a `terminée` task; an `en_cours` step never downgrades a done one), compare-and-sets the write against the task it read (one re-read on conflict), then **bumps the task's DAV collection itself** — the second documented in-model bump. Returns `synced`/`noop`/`skipped_cancelled`/`skipped`/`missing`/`failed`/`none`; never raises
-- `_auto_create_tasks_for_steps(protocol)` — creates a task per step and links it via `linked_task_id`
-- `_check_protocol_completion(protocol_id) -> bool` — auto-transitions to `complété` when ALL steps are `complété` (not only the mandatory ones), and says whether it did
+- `create_linked_tasks(protocol_id, protocol, steps) -> {created, linked, failed}` (ex-`_auto_create_tasks_for_steps`) — one task per step, EACH step its own attempt (one outer try used to abort the rest), linked through `_link_task_to_step` (a stamped step write); bumps per task created
+- `_check_protocol_completion(protocol_id) -> bool` — in ONE transaction on the protocol and its steps as they stand at commit, auto-transitions an « actif » protocol to `complété` when ALL steps are `complété` (not only the mandatory ones), stamping `closed_by = "auto"` + `closed_at`, and says whether it did
 
 ### `models/document.py` + `models/folder.py`
 
@@ -2762,7 +2790,8 @@ Call sites that must bump CTags:
 - `notes` CRUD → `bump_ctag(f"dossier:{dossier_id}")`; delete → `record_tombstone` + bump; dossier reassignment → tombstone + bump for OLD collection, `remove_tombstone` + bump for NEW (same shape as tasks — added July 2026; a bare bump on delete left the note on the phone forever) — through `dav.sync.relocate_resource` since lot 0a (`routes/notes.note_update`)
 - Hearing dossier reassignment → the same, through `dav.sync.relocate_resource` since lot 1a (`routes/hearings.hearing_update`). Its former block compared RAW ids, so a hearing stored with `None` saved as `""` (both « Général ») recorded a tombstone, removed it and bumped twice; that was the one behaviour the switch changed, deliberately
 - The DAV PUT move branches (`dav/dossier_collections._put_task` / `_put_note` / `_put_hearing`, UPDATE of a resource PUT into another collection) → `relocate_resource` AFTER the write (lot 1a). Hearings and tasks used to tombstone + bump the old collection BEFORE the update, so a refused edit (422) left a tombstone for a resource that never moved; notes never tombstoned the old collection at all, and the phone kept both copies
-- `protocol._auto_create_tasks_for_steps` → bump per task created
+- `protocol.create_linked_tasks` (ex-`_auto_create_tasks_for_steps`) → bump per task created
+- `services/protocoles.align_linked_tasks` → one bump per collection whose tasks it moved to their step's new deadline (lot 1a)
 - `protocol._sync_task_status` → bump the linked task's collection after a cascaded status write (lot 0b — the web step route bumped nothing, so the phone never learned a task was completed or reopened by its step)
 - All DAV PUT/DELETE handlers already bump their own CTag
 - Dossier deletion → `clear_tombstones(f"dossier:{id}")` + `delete_sync_state(f"dossier:{id}")` (no `"dossiers"` sync collection exists post-D1)
@@ -2836,7 +2865,10 @@ Both directions sync status changes between a task and its linked protocol step:
 - Step reopened → a `terminée` task reverted to `à_faire` (an `en_cours` one stays in progress)
 - A task `annulée` is **never** rewritten by its step, in either direction (lot 0b — it used to become `terminée` or `à_faire`, the lawyer's cancellation silently undone); the page says so
 
-Implemented via two helpers: `_sync_task_status` in `protocol.py`, `_sync_protocol_step` in `task.py`. Both use a module-level `_SYNCING: set[str]` guard to prevent infinite recursion. Cross-protocol search iterates active protocols (tractable for single-user dataset size).
+- Task reopened after its step CLOSED the protocol → the step reopens and the protocol is reactivated (lot 1a), provided no other protocol of the dossier is actif; a protocol suspended or closed on purpose never follows (the refusal is logged)
+- A task linked from a step never changes dossier (lot 1a — refused in `update_task`)
+
+Implemented via two helpers: `_sync_task_status` in `protocol.py`, `_sync_protocol_step` in `task.py` (which, since lot 1a, delegates to `protocol.set_step_status` — one rule for the step's status, from both sides). Both use a module-level `_SYNCING: set[str]` guard to prevent infinite recursion. The step of a task is found by `protocol.find_step_for_task`: the dossier's protocols, then the firm's actif ones (tractable for single-user dataset size).
 
 ### Court file number parsing
 
@@ -3007,6 +3039,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **One client-facing rendering per document — the invoice detail page is a DATA sheet.** Since August 2026 it shows only what is stored (identification, frozen billing snapshot, line items, totals, live Solde, payment form, notes); the firm letterhead, the « FACTURE » title, the paper layout and the whole `@media print` block are gone, and `_firm_info()` left `routes/invoices.py` with them. The client document is the **Word note d'honoraires** (`/factures/<id>/note-docx`), whose letterhead lives in the gabarit. Re-adding a screen facsimile would recreate two renderings of one invoice that must agree for ever — and they would drift, because only one of them is what the client actually receives. `tests/test_invoice_detail.py` renders the template and pins both halves (data present, facsimile markers absent). Two details worth keeping: the tax RATES come from the invoice's own `gst_rate`/`qst_rate` (an invoice issued under another rate must read back under it — never hardcode « 5 % »/« 9,975 % » in markup again), and the disbursement bucket is `type != "fee"` (the `invoice_docx` rule), so a line item of an unexpected type can never vanish from the one page whose job is to show everything the invoice holds.
 - **`invoice.amount_due` is NOT a balance.** It is `total − retainer_applied` frozen at issuance and never updated, so it stays non-zero on a fully paid invoice; `balance_of` is the live figure. **`payment_basis` distinguishes silence from fact**: `"none"` means nothing was RECORDED, not that nothing was paid — the 21 pre-August invoices were deliberately not backfilled, so they all read that way until the lawyer enters them. And the two firm-wide « outstanding » definitions **deliberately disagree**: `get_outstanding_total` sums `amount_due` over `envoyée`+`en_retard`, while `get_dossier.summaries.invoices.total_outstanding` sums `total`, counts `brouillon` and treats `payée` as settled. « Fixing » the latter would change a money value the 07:00 briefing already reads; both definitions are stated verbatim in the tool descriptions and pinned by a test that explains why.
 
+- **A protocol's `closed_by` decides whether the cascade may undo a closure — and only `"auto"` qualifies** (lot 1a). Reopening a step, or the task linked to one, reactivates a protocol ONLY when its last step's completion closed it (`_check_protocol_completion` stamps `closed_by = "auto"`); a completion or suspension decided by someone (`closed_by` = the provenance path) — or recorded before the field existed (`""`) — stays closed, and the step button says « réactivez-le ». The reactivation obeys the one-actif rule, read INSIDE the transaction and FAIL-CLOSED, and is refused BEFORE any write: a step never lands open inside a closed protocol. On the task side the task has already committed when the step refuses, so the refusal can only be LOGGED (`step_status_refused`) — the one inconsistency the rule cannot prevent. Related trap: a CS step's `date_confirmed` was set by EVERY inline-form save (the form posts the unchanged deadline beside the notes), so the recompute never trusts the flag alone — `date_confirmed_at` (lot 1a) or a date that differs from the template's computation is the proof.
 - **`complete_task` cascades into the protocol, and that is the app's own behaviour — not an invention.** It goes through `models/task.update_task`, so `_sync_protocol_step` completes the linked step and `_check_protocol_completion` can close the WHOLE protocol; `list_urgent_steps` keeps only `actif` protocols, so a closure silently empties that dossier's deadline feed in the briefing. The lawyer accepted this (2026-08-02). Two properties make it tenable (a third, the `dry_run` preview of the cascade, was retired 2026-08-27): the step is **RE-READ after the write** and its real state reported, because `_sync_protocol_step` swallows every exception and a predicted « complété » could be a lie; and a French warning names the closure. **`toggle_task_complete` must NEVER be called** — it is a four-state toggle that sends `annulée` *and* `terminée` back to `à_faire`, silently un-cancelling a cancelled task. `à_faire` is refused as a status (reopening clears `completed_date` and de-completes the step), and since lot 0a so is a closed task (`terminée`/`annulée`) put back `en_cours` — it was the same reopen through another door, announced in the description as a feature, and the disclosure registry now promises « never reopens a closed task » (`reopen_task` NEVER, backed by `test_a_closed_task_is_never_put_back_en_cours`) until plan lot 1 ships `reopen_task`; asking for the other terminal state on an already-closed task is refused rather than rewriting the lawyer's decision; and the same state twice writes **nothing at all**, which is what makes a scheduled job replayable — that no-op is the ONE caller of `_entity_write_result(wrote=False)`, and it is what must keep the CTag unbumped (see the `dry_run` gotcha: the flag that used to carry this was the preview's, under a name that said something else). `idempotentHint` is therefore **per tool**, not per family. And `complete_task` is a member of `EDIT_TOOLS` since lot 0a (`destructiveHint: true`): it replaces a stored status, and the old « only a status change » exclusion under-warned. ⚠ If a scheduled claude.ai task calls it unattended and its client starts asking for confirmation, grant the tool in that task's settings — never lower the hint.
 
 - **A compliance report must never build a manquement out of a failed read.** `list_protocols` and `get_parties_bulk` both fail open to empty. Unguarded, `PROTO_ABSENT` would fire on EVERY dossier at once (a false-manquement storm), and a client would be reported unverified — a regulatory accusation founded on an error. `get_coverage_report` therefore SUPPRESSES the affected checks, lists them in `scope.checks_skipped`, and sets `data_completeness.protocol_index_complete` / `kyc_checked` to false. **A shortened report must never pass for a clean one.** The same reasoning gives `list_notes`/`list_documents` their `dossier_status_matched` count: zero rows with zero matched dossiers explains WHY the answer is empty instead of asserting the firm holds no such record.
