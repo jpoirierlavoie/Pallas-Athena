@@ -1386,12 +1386,27 @@ def delete_series(
     return rows, []
 
 
-def unlink_hearing(hearing_id: str) -> tuple[Optional[dict], list[str]]:
+def unlink_hearing(
+    hearing_id: str,
+    data: Optional[dict] = None,
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
     """Détacher une occurrence : elle devient une audience ordinaire.
 
     Un seul champ change de part et d'autre — il n'y a ni maître à promouvoir
     ni index à renuméroter, ce qui est précisément pourquoi toutes les
     occurrences sont égales.
+
+    ``data`` (lot 1b, L7) : des champs de contenu (:data:`UPDATE_FIELDS`)
+    écrits dans la MÊME écriture que le détachement — l'outil
+    ``update_hearing`` du connecteur détache une occurrence ET la déplace
+    (ou la corrige) d'un seul commit, si bien qu'aucun lecteur ne la voit
+    jamais à mi-chemin : déplacée vers un autre dossier mais encore dans sa
+    série. Une clé hors de :data:`UPDATE_FIELDS` est refusée comme par
+    :func:`update_hearing`. ``expected_etag`` (mot-clé) : le contrat de
+    :func:`update_hearing` — une version périmée n'écrit rien. Sans les deux,
+    l'appel d'avant, octet pour octet (la route web « Détacher »).
     """
     existing = get_hearing(hearing_id)
     if not existing:
@@ -1399,7 +1414,9 @@ def unlink_hearing(hearing_id: str) -> tuple[Optional[dict], list[str]]:
     if not existing.get("serie_id"):
         return None, ["Cette audience ne fait pas partie d'une série."]
     return update_hearing(
-        hearing_id, {}, server_fields={"serie_id": "", "serie_rule": None}
+        hearing_id, dict(data or {}),
+        server_fields={"serie_id": "", "serie_rule": None},
+        expected_etag=expected_etag,
     )
 
 

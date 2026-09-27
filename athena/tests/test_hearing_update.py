@@ -333,6 +333,50 @@ def test_unlink_goes_through_server_fields(fake):
     assert stored["serie_id"] == "" and stored["serie_rule"] is None
 
 
+def test_unlink_can_carry_a_move_in_the_same_commit(fake):
+    """Lot 1b (L7): the connector detaches an occurrence AND moves it in ONE
+    write — no reader ever sees it moved yet still in its series. One
+    commit on the document, the dav_href recomputed for the new dossier."""
+    _seed_timed(fake, serie_id="s1", serie_rule={"freq": "hebdomadaire"})
+    fake.reset_logs()
+    doc, errors = h.unlink_hearing(
+        "h1", {"dossier_id": "d2", "dossier_file_number": "2026-002",
+               "dossier_title": "Roy c. Gagnon"},
+        expected_etag="e0",
+    )
+    assert errors == []
+    stored = _stored(fake)
+    assert stored["serie_id"] == "" and stored["serie_rule"] is None
+    assert stored["dossier_id"] == "d2"
+    assert stored["dav_href"] == "/dav/dossier-d2/h1.ics"
+    assert stored["etag"] == doc["etag"] != "e0"
+    commits = [c for c in fake.commits
+               if any(p == "hearings/h1" for _k, p in c.ops)]
+    assert len(commits) == 1 and commits[0].transaction is not None
+
+
+def test_a_stale_unlink_writes_nothing(fake):
+    _seed_timed(fake, serie_id="s1", serie_rule={"freq": "hebdomadaire"})
+    before = _stored(fake)
+    doc, errors = h.unlink_hearing("h1", {"notes": "x"},
+                                   expected_etag="old")
+    assert doc is None
+    assert errors == [h.concurrency.STALE_ETAG_ERROR]
+    assert _stored(fake) == before
+
+
+def test_unlink_refuses_a_key_outside_the_content_fields(fake):
+    """The carried fields are CONTENT fields: a server-owned key cannot
+    ride along the detachment (the update_hearing whitelist, unchanged)."""
+    _seed_timed(fake, serie_id="s1")
+    before = _stored(fake)
+    doc, errors = h.unlink_hearing("h1", {"confirmation": "à_confirmer"})
+    assert doc is None
+    assert errors == [
+        "Le champ « confirmation » ne peut pas être modifié par cette voie."]
+    assert _stored(fake) == before
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2 bis. La version lue (lot 1a, L4) — expected_etag
 # ══════════════════════════════════════════════════════════════════════
