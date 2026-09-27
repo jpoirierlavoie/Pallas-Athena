@@ -1715,9 +1715,16 @@ Notes:
      total cap at the end of lot 1b, every tool under its 8 KB cap; a red
      build there means a description to TRIM, never a cap to raise.
 
-  No index, no data migration, no cron change, no Tailwind class, no web
-  form change (the models' `require_active` flag is passed by the connector
-  only). Then, on scratch dossiers — DavX5 fails silently, so the
+  No index, no data migration, no cron change, no Tailwind class. One WEB
+  change ships with it (D17, 2026-09-27), to announce: a protocol that is
+  not « actif » can no longer take a new step nor a step edit on ANY path —
+  the model refuses them for the web as for the connector (lot 1b had the
+  connector alone ask, through a `require_active` flag now gone) — and its
+  page hides those controls behind an amber banner, « Ce protocole n'est
+  pas actif : réactivez-le (Modifier le protocole → Statut « Actif ») avant
+  de modifier ses étapes. », keeping only the « Rouvrir » of a completed
+  step when the protocol was closed by its last step (which reactivates
+  it). Then, on scratch dossiers — DavX5 fails silently, so the
   `REPORT sync-collection` is the proof and the phone the confirmation:
 
   **A. Tasks, notes, the théorie (L5).**
@@ -1826,6 +1833,17 @@ Notes:
      unchanged. Then move the meeting by an hour IN OUTLOOK: within 10
      minutes Réception (« Rendez-vous ») shows the divergence, and
      « Appliquer » carries the new hour into Athéna.
+
+  **D. The web follows the same rules (D17).**
+  1. *A protocol that is not « actif » takes no step change, anywhere.*
+     Suspend a scratch protocol (Modifier le protocole → Statut
+     « Suspendu »): its page shows the amber banner, no « + Ajouter une
+     étape », no « Modifier » / « Ajouter une note » on a step, no
+     « Compléter ». `add_protocol_step` on it is refused too. Reactivate it:
+     every control is back. On a protocol its last step closed
+     (`closed_by: auto` in `list_protocol_steps`), the page still offers
+     « Rouvrir » on a completed step, and clicking it makes the protocol
+     « actif » again.
 
   Then update BOTH copies of the claude.ai skill `pallas-athena` the same
   day. What lot 1 made false there: « 49 outils : 27 en lecture, 22 en

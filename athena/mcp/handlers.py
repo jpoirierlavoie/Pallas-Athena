@@ -8361,9 +8361,10 @@ def _inactive_protocol_refusal(protocol: dict) -> ToolArgumentError:
 
 
 def _is_inactive_error(errors: list[str]) -> bool:
-    """The model's « protocol not actif » refusals — of a field edit
-    (``require_active``) or of a step status — in any status: the protocol
-    may have closed between the handler's read and the transaction."""
+    """The model's « protocol not actif » refusals — of a step addition or
+    field edit (every caller's rule since D17) or of a step status — in any
+    status: the protocol may have closed between the handler's read and
+    the transaction."""
     messages = set()
     for status in protocol_model.VALID_STATUSES:
         messages.add(protocol_model.inactive_protocol_edit_error(status))
@@ -8801,7 +8802,7 @@ def _add_protocol_step_impl(args: dict) -> dict:
 
     make_task = args.get("create_linked_task") is True
     step, errors, report = protocol_service.add_step(
-        protocol_id, data, create_linked_task=make_task, require_active=True)
+        protocol_id, data, create_linked_task=make_task)
     if errors:
         if _is_inactive_error(errors):
             raise _inactive_protocol_refusal(
@@ -8968,7 +8969,6 @@ def _edit_protocol_step_fields(args: dict, protocol: dict, step: dict) -> dict:
 
     result, errors, report = protocol_service.update_step(
         protocol_id, step_id, data, expected_etag=expected,
-        require_active=True,
     )
     _raise_if_stale(
         errors, tool="update_protocol_step", subject=_STEP_SUBJECT,

@@ -16,6 +16,7 @@ from utils import deadlines, phases
 from models.audit_event import record_deletion
 from models.dossier import get_dossier
 from models.protocol import (
+    CLOSED_BY_AUTO,
     PROTOCOL_TYPE_COLORS,
     PROTOCOL_TYPE_LABELS,
     PROTOCOL_TYPE_SHORT_LABELS,
@@ -198,6 +199,22 @@ def protocol_detail(protocol_id: str) -> str:
     )
 
 
+# The page's banner on a protocol that is not « actif » (D17, 2026-09-27):
+# its steps can be neither added nor edited — the MODEL refuses both on
+# every path — so the page hides those controls and says why, rather than
+# offering buttons that can only be refused.
+INACTIVE_STEPS_BANNER = (
+    "Ce protocole n'est pas actif : réactivez-le (Modifier le protocole → "
+    "Statut « Actif ») avant de modifier ses étapes."
+)
+# ... except the one change the model still accepts there: reopening a
+# completed step of a protocol the CASCADE closed, which reactivates it.
+AUTO_CLOSED_REOPEN_HINT = (
+    "Rouvrir une étape complétée le réactive aussi : il a été fermé par sa "
+    "dernière étape."
+)
+
+
 def _render_detail(
     protocol_id: str,
     *,
@@ -229,6 +246,16 @@ def _render_detail(
     ctx["message"] = message
     ctx["conflict"] = conflict
     ctx["step_form"] = step_form
+    # The model's D17 rule, mirrored for the controls: add/edit only on an
+    # « actif » protocol; on one the cascade closed, the reopen button of a
+    # completed step stays (set_step_status reactivates the protocol).
+    status = protocol.get("status", "")
+    ctx["steps_editable"] = status == "actif"
+    ctx["steps_reopenable"] = (
+        status == "complété" and protocol.get("closed_by") == CLOSED_BY_AUTO
+    )
+    ctx["inactive_banner"] = INACTIVE_STEPS_BANNER
+    ctx["auto_closed_hint"] = AUTO_CLOSED_REOPEN_HINT
 
     # Compute progress
     steps = protocol.get("steps", [])

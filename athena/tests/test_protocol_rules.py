@@ -933,36 +933,55 @@ def test_the_strict_reader_tells_absent_from_unreadable(fake, monkeypatch):
     assert protocol_model.get_protocol(P) is None       # the fail-open one
 
 
+# D17 (2026-09-27): the « actif » rule for steps is EVERY caller's. It was
+# the connector's choice (``require_active``) until then, and these two
+# tests pinned that the web path — passing nothing — still added to and
+# edited the steps of any protocol. The flag is gone; the rule is one.
+
 @pytest.mark.parametrize("status, closed_by", [
     ("suspendu", "web"), ("complété", "auto"), ("complété", "web"),
 ])
-def test_add_step_can_require_an_active_protocol(fake, status, closed_by):
+def test_add_step_refuses_a_protocol_that_is_not_active(
+    fake, status, closed_by,
+):
     _protocol(fake, status=status, closed_by=closed_by)
     before = _snapshot(fake)
-    step, errors = protocol_model.add_step(
-        P, {"title": "Étape"}, require_active=True)
+    step, errors = protocol_model.add_step(P, {"title": "Étape"})
     assert step is None
     assert errors == [protocol_model.inactive_protocol_edit_error(status)]
     assert _snapshot(fake) == before
-    # The web path passes nothing: its behaviour is unchanged.
-    step, errors = protocol_model.add_step(P, {"title": "Étape"})
-    assert errors == [] and _step_doc(fake, step["id"])["title"] == "Étape"
+    # The refusal names the web's way out.
+    assert "réactivez-le" in errors[0]
+    with pytest.raises(TypeError):
+        protocol_model.add_step(P, {"title": "Étape"}, require_active=False)
 
 
-def test_update_step_can_require_an_active_protocol(fake):
-    _protocol(fake, status="suspendu", closed_by="web")
+@pytest.mark.parametrize("status, closed_by", [
+    ("suspendu", "web"), ("complété", "auto"), ("complété", "web"),
+])
+def test_update_step_refuses_a_protocol_that_is_not_active(
+    fake, status, closed_by,
+):
+    _protocol(fake, status=status, closed_by=closed_by)
     _step(fake, "s1", etag="se0")
     before = _snapshot(fake)
-    step, errors = protocol_model.update_step(
-        P, "s1", {"notes": "x"}, require_active=True)
+    step, errors = protocol_model.update_step(P, "s1", {"notes": "x"})
     assert step is None
-    assert errors == [protocol_model.inactive_protocol_edit_error("suspendu")]
+    assert errors == [protocol_model.inactive_protocol_edit_error(status)]
     assert _snapshot(fake) == before
     # A request that changes nothing needs no open protocol.
-    step, errors = protocol_model.update_step(
-        P, "s1", {"notes": ""}, require_active=True)
+    step, errors = protocol_model.update_step(P, "s1", {"notes": ""})
     assert errors == [] and step["etag"] == "se0"
-    # Without the flag (the web form), the edit lands as before.
+    with pytest.raises(TypeError):
+        protocol_model.update_step(P, "s1", {"notes": "x"},
+                                   require_active=False)
+
+
+def test_an_active_protocol_still_takes_step_additions_and_edits(fake):
+    _protocol(fake)
+    _step(fake, "s1", etag="se0")
+    step, errors = protocol_model.add_step(P, {"title": "Étape"})
+    assert errors == [] and _step_doc(fake, step["id"])["title"] == "Étape"
     step, errors = protocol_model.update_step(P, "s1", {"notes": "x"})
     assert errors == [] and _step_doc(fake, "s1")["notes"] == "x"
 

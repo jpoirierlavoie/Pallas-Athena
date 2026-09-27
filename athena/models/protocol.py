@@ -1260,17 +1260,20 @@ MANDATORY_DEADLINE_REQUIRED = (
 
 
 def inactive_protocol_edit_error(status: str) -> str:
-    """The refusal of a step write on a protocol that is not « actif »,
-    when the caller asked for one (``require_active``)."""
+    """The refusal of a step addition or edit on a protocol that is not
+    « actif » — on every path since D17 (2026-09-27): the web form, the
+    connector, any caller. It names the web's way out; the connector maps
+    it onto its own (``update_protocol``, ``mcp/handlers``)."""
     label = STATUS_LABELS.get(status, status).lower()
     return (
-        f"Ce protocole est « {label} » : ses étapes ne se modifient pas tant "
-        "qu'il n'est pas réactivé. Rien n'a été enregistré."
+        f"Ce protocole est « {label} » : réactivez-le (Modifier le protocole "
+        "→ Statut « Actif ») avant de modifier ses étapes. Rien n'a été "
+        "enregistré."
     )
 
 
 def add_step(
-    protocol_id: str, step_data: dict, *, require_active: bool = False,
+    protocol_id: str, step_data: dict,
 ) -> tuple[Optional[dict], list[str]]:
     """Add a custom step at the end of a protocol. Returns (step, errors).
 
@@ -1281,11 +1284,13 @@ def add_step(
     commit in ONE transaction — the step's order is taken from the steps as
     they stand at commit.
 
-    ``require_active`` — the caller's choice (the connector's, since lot
-    1b; the web form keeps adding to any protocol): a protocol that is not
-    « actif » AS READ IN THE TRANSACTION refuses the step, nothing written.
-    A step added to a completed protocol is an open step inside a closed
-    timeline, which no completion check will ever revisit.
+    A protocol that is not « actif » AS READ IN THE TRANSACTION refuses
+    the step, nothing written (:func:`inactive_protocol_edit_error`) — for
+    EVERY caller since D17 (2026-09-27); it was the connector's choice
+    (``require_active``) until then, and the web form added to any
+    protocol. A step added to a completed protocol is an open step inside
+    a closed timeline, which no completion check will ever revisit; one
+    added to a suspended protocol changes a timeline its owner froze.
     """
     unknown = sorted(set(step_data) - _STEP_CREATE_FIELDS)
     if unknown:
@@ -1323,7 +1328,7 @@ def add_step(
         protocol = snap.to_dict() or {}
         steps = _read_steps(proto_ref, txn)
         status = protocol.get("status", "")
-        if require_active and status != "actif":
+        if status != "actif":
             raise _Refusal(inactive_protocol_edit_error(status),
                            "protocole_non_actif")
         doc = {
@@ -1360,7 +1365,6 @@ def update_step(
     data: dict,
     *,
     expected_etag: Optional[str] = None,
-    require_active: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
     """Update a step's deadline, notes, phase or (custom steps) text.
 
@@ -1385,11 +1389,16 @@ def update_step(
       unchanged date beside a note (it did, on every save, and the
       recompute rule relies on the flag), stamped ``date_confirmed_at``;
     * a changed deadline refreshes the protocol's ``end_date``;
-    * ``require_active`` (the caller's choice — the connector's since lot
-      1b; the web keeps editing the steps of any protocol) refuses a
-      protocol that is not « actif » as read in the transaction;
-    * nothing changed → nothing written (before the ``require_active``
-      gate: a request that changes nothing needs no open protocol).
+    * a protocol that is not « actif » as read in the transaction is
+      refused (:func:`inactive_protocol_edit_error`) — for every caller
+      since D17 (2026-09-27; the connector's ``require_active`` choice
+      until then, the web edited the steps of any protocol);
+    * nothing changed → nothing written (before the « actif » gate: a
+      request that changes nothing needs no open protocol).
+
+    The one way to change a step of a protocol that is not « actif » is
+    :func:`set_step_status` reopening a step of a protocol the cascade
+    closed (``closed_by == CLOSED_BY_AUTO``), which reactivates it.
     """
     data = dict(data)
     unknown = sorted(set(data) - _STEP_EDITABLE)
@@ -1455,7 +1464,7 @@ def update_step(
                for k in set(merged) | set(existing)):
             return existing, False, None, False
         status = protocol.get("status", "")
-        if require_active and status != "actif":
+        if status != "actif":
             raise _Refusal(inactive_protocol_edit_error(status),
                            "protocole_non_actif")
         provenance.stamp_update(merged, now)

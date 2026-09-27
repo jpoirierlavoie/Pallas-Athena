@@ -41,7 +41,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from services import protocoles as protocol_service
 
 from flask import Flask  # noqa: E402
-from markupsafe import Markup  # noqa: E402
+from markupsafe import Markup, escape  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
 from tz import to_mtl  # noqa: E402
@@ -496,6 +496,116 @@ def test_reopening_a_step_of_an_auto_closed_protocol_is_announced(client, fake):
     assert params["message"] == ("Le protocole, fermé à sa dernière étape, "
                                  "est de nouveau actif.")
     assert fake.peek(f"protocols/{P}")["status"] == "actif"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5 bis. Un protocole non actif (D17, 2026-09-27) : la règle du connecteur
+#        vaut aussi pour le web
+# ══════════════════════════════════════════════════════════════════════
+#
+# Le modèle refuse désormais d'ajouter ou de modifier une étape d'un
+# protocole qui n'est pas « actif », quel que soit l'appelant ; la page
+# masque ces commandes et dit comment le réactiver. Seule exception, celle
+# du modèle : rouvrir une étape complétée d'un protocole fermé par la
+# cascade (closed_by « auto ») le réactive.
+
+_INACTIVE = [("suspendu", "web"), ("complété", "web"), ("complété", "auto")]
+# As the page prints them: Jinja escapes the apostrophe.
+_BANNER = str(escape(protocols_routes.INACTIVE_STEPS_BANNER))
+_HINT = str(escape(protocols_routes.AUTO_CLOSED_REOPEN_HINT))
+
+
+@pytest.mark.parametrize("status, closed_by", _INACTIVE)
+def test_a_web_step_addition_on_an_inactive_protocol_is_refused(
+    client, fake, status, closed_by,
+):
+    _protocol(fake, status=status, closed_by=closed_by)
+    params = _params(client.post(f"/protocoles/{P}/steps", data={
+        "title": "Plaidoirie", "deadline_date": "2099-06-01"}))
+    assert params == {
+        "erreur": protocol_model.inactive_protocol_edit_error(status)}
+    assert "réactivez-le (Modifier le protocole" in params["erreur"]
+    assert fake.peek_collection(f"protocols/{P}/steps") == {}
+
+
+@pytest.mark.parametrize("status, closed_by", _INACTIVE)
+def test_a_web_step_edit_on_an_inactive_protocol_is_refused_at_200(
+    client, fake, status, closed_by,
+):
+    _protocol(fake, status=status, closed_by=closed_by)
+    _step(fake, "s1")
+    before = fake.peek(f"protocols/{P}/steps/s1")
+    resp = client.post(f"/protocoles/{P}/steps/s1", data={
+        "deadline_date": "2099-06-01", "notes": "Vu",
+        "expected_etag": "se-s1"})
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "avant de modifier ses étapes" in html
+    assert fake.peek(f"protocols/{P}/steps/s1") == before
+
+
+@pytest.mark.parametrize("status, closed_by", _INACTIVE)
+def test_an_inactive_protocol_page_shows_the_banner_and_hides_the_controls(
+    client, fake, status, closed_by,
+):
+    _protocol(fake, status=status, closed_by=closed_by)
+    _step(fake, "s1")                       # open
+    _step(fake, "s2", order=2, status="complété")
+    html = client.get(f"/protocoles/{P}").get_data(as_text=True)
+    assert _BANNER in html
+    assert "+ Ajouter une étape" not in html
+    assert f'action="/protocoles/{P}/steps"' not in html
+    assert f'action="/protocoles/{P}/steps/s1"' not in html
+    assert f'action="/protocoles/{P}/steps/s2"' not in html
+    # Neither inline edit opener (« Modifier » / « Ajouter une note »).
+    assert "editStepId = 's1'" not in html
+    assert "editStepId = 's2'" not in html
+    assert "Ajouter une note" not in html
+    # The open step is never offered « Compléter » here.
+    assert f"/protocoles/{P}/steps/s1/complete" not in html
+    reopen = f"/protocoles/{P}/steps/s2/complete"
+    if closed_by == "auto":
+        # ... but the auto-closed protocol keeps the one path the model
+        # accepts: reopening a completed step, which reactivates it.
+        assert reopen in html
+        assert _HINT in html
+    else:
+        assert reopen not in html
+        assert _HINT not in html
+
+
+def test_an_active_protocol_page_keeps_every_step_control(client, fake):
+    _protocol(fake)
+    _step(fake, "s1")
+    html = client.get(f"/protocoles/{P}").get_data(as_text=True)
+    assert _BANNER not in html
+    assert "+ Ajouter une étape" in html
+    assert f'action="/protocoles/{P}/steps"' in html
+    assert f'action="/protocoles/{P}/steps/s1"' in html
+    assert f"/protocoles/{P}/steps/s1/complete" in html
+
+
+def test_the_auto_closed_reopen_still_works_from_the_page(client, fake):
+    """The exception the banner names, end to end: the reopen button the
+    page keeps reactivates the protocol, after which the controls return."""
+    _protocol(fake, status="complété", closed_by="auto")
+    _step(fake, "s1", status="complété")
+    _params(client.post(f"/protocoles/{P}/steps/s1/complete",
+                        data={"target": "à_venir"}))
+    assert fake.peek(f"protocols/{P}")["status"] == "actif"
+    html = client.get(f"/protocoles/{P}").get_data(as_text=True)
+    assert _BANNER not in html
+    assert "+ Ajouter une étape" in html
+
+
+def test_the_inactive_banner_uses_only_compiled_classes(client, fake):
+    _protocol(fake, status="suspendu", closed_by="web")
+    html = client.get(f"/protocoles/{P}").get_data(as_text=True)
+    banner = re.search(
+        r'<div role="status" class="([^"]+)">\s*'
+        + re.escape(_BANNER), html)
+    assert banner, "the banner is not rendered"
+    assert _absent_classes(set(banner.group(1).split())) == []
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -119,20 +119,18 @@ def add_step(
     step_data: dict,
     *,
     create_linked_task: bool = False,
-    require_active: bool = False,
 ) -> tuple[Optional[dict], list[str], dict]:
     """Add a custom step; optionally create and link its task.
 
     Report: ``task_created``, ``task_linked``. With a task, the step is
     re-read so the caller holds its CURRENT etag (the link is a step
     write). A protocol that cannot be re-read for the task's labels leaves
-    the step created and the task not — reported, never raised.
-    ``require_active`` is the model's (the connector passes it: a step is
-    never added to a protocol that is not « actif »).
+    the step created and the task not — reported, never raised. A
+    protocol that is not « actif » refuses the step for every caller (the
+    model's rule since D17, 2026-09-27).
     """
     report = {"task_created": False, "task_linked": False}
-    step, errors = protocol_model.add_step(
-        protocol_id, step_data, require_active=require_active)
+    step, errors = protocol_model.add_step(protocol_id, step_data)
     if step is None or not create_linked_task:
         return step, errors, report
     protocol = protocol_model.get_protocol(protocol_id)
@@ -155,19 +153,17 @@ def update_step(
     data: dict,
     *,
     expected_etag: Optional[str] = None,
-    require_active: bool = False,
 ) -> tuple[Optional[dict], list[str], dict]:
     """Edit a step; a changed deadline carries its linked task along.
 
     Report: the :data:`ALIGN_OUTCOMES` counts (all zero when the deadline
     did not change or the step links no task), plus ``tasks`` — the entry
     :func:`align_linked_tasks_detailed` made for the linked task, if the
-    deadline moved a step that links one. ``require_active`` is the
-    model's (the connector passes it).
+    deadline moved a step that links one. A protocol that is not « actif »
+    refuses the edit for every caller (the model's rule since D17).
     """
     step, errors = protocol_model.update_step(
-        protocol_id, step_id, data, expected_etag=expected_etag,
-        require_active=require_active)
+        protocol_id, step_id, data, expected_etag=expected_etag)
     if step is None:
         return None, errors, {**_empty_alignment(), "tasks": []}
     moved = step.pop("_deadline_changed", None)

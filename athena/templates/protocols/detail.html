@@ -38,6 +38,17 @@
   <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">{{ message }}</div>
   {% endif %}
   {{ conflict_banner(conflict) }}
+  {# ── Protocole non actif (D17, 2026-09-27) : le MODÈLE refuse d'en
+     ajouter ou d'en modifier les étapes, quel que soit le chemin — la page
+     masque donc ces commandes et dit comment le réactiver, plutôt que
+     d'offrir des boutons voués au refus. Seule exception, celle du
+     modèle : rouvrir une étape complétée d'un protocole que la cascade a
+     fermé (closed_by « auto ») le réactive. Classes : celles du rebond. #}
+  {% if not steps_editable %}
+  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    {{ inactive_banner }}{% if steps_reopenable %} {{ auto_closed_hint }}{% endif %}
+  </div>
+  {% endif %}
 
   {# ── Header card ─────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
@@ -117,7 +128,7 @@
   <div class="bg-white rounded-xl border border-gray-200 p-5">
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-sm font-semibold text-gray-900">Étapes</h2>
-      {% if protocol.protocol_type != 'cq_simplifié' or true %}
+      {% if steps_editable %}
       <button @click="addStepOpen = !addStepOpen"
               class="text-xs font-medium text-indigo-600 hover:text-indigo-700">
         + Ajouter une étape
@@ -125,7 +136,8 @@
       {% endif %}
     </div>
 
-    {# ── Add step form (collapsible) ────────────────────────────── #}
+    {# ── Add step form (collapsible) — « actif » protocols only ───── #}
+    {% if steps_editable %}
     <div x-show="addStepOpen" x-cloak class="mb-6 p-4 bg-gray-50 rounded-xl border border-gray-200">
       <form method="post"
             action="{{ url_for('protocols.step_add', protocol_id=protocol.id) }}"
@@ -177,6 +189,7 @@
         </div>
       </form>
     </div>
+    {% endif %}
 
     {# ── Step list (vertical timeline) ──────────────────────────── #}
     {% set steps = protocol.steps or [] %}
@@ -308,7 +321,10 @@
                 {# Complete/uncomplete button — posts the state it was
                    RENDERED to reach, never « toggle »: a page left open
                    while the phone or the connector changed the step can no
-                   longer do the opposite of what it shows. #}
+                   longer do the opposite of what it shows. On a protocol
+                   that is not « actif », only the reopen of a completed
+                   step of an auto-closed protocol is offered (D17). #}
+                {% if steps_editable or (steps_reopenable and is_completed) %}
                 <form method="post"
                       action="{{ url_for('protocols.step_complete', protocol_id=protocol.id, step_id=step.id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -321,6 +337,7 @@
                     {{ ms('check', 20) }}
                   </button>
                 </form>
+                {% endif %}
 
                 {# Delete button (non-mandatory only) #}
                 {% if not step.mandatory %}
@@ -338,8 +355,9 @@
               </div>
             </div>
 
-            {# Inline edit for deadline (CS / Conventionnel non-locked steps) #}
-            {% if not step.deadline_locked and not is_completed %}
+            {# Inline edit for deadline (CS / Conventionnel non-locked steps)
+               — « actif » protocols only (D17) #}
+            {% if steps_editable and not step.deadline_locked and not is_completed %}
             <div x-show="editStepId === '{{ step.id }}'" x-cloak class="mt-3 pt-3 border-t border-gray-200">
               <form method="post"
                     action="{{ url_for('protocols.step_update', protocol_id=protocol.id, step_id=step.id) }}"
@@ -384,7 +402,7 @@
                     class="mt-2 text-xs text-indigo-600 hover:text-indigo-700">
               Modifier
             </button>
-            {% elif not is_completed %}
+            {% elif steps_editable and not is_completed %}
             {# CQ locked steps can still edit notes #}
             <div x-show="editStepId === '{{ step.id }}'" x-cloak class="mt-3 pt-3 border-t border-gray-200">
               <form method="post"
@@ -424,10 +442,12 @@
     <div class="flex flex-col items-center justify-center py-8 text-center">
       {{ ms('assignment', 40, 'text-gray-300 mb-3') }}
       <p class="text-sm text-gray-500 mb-3">Aucune étape dans ce protocole.</p>
+      {% if steps_editable %}
       <button @click="addStepOpen = true"
               class="text-sm font-medium text-indigo-600 hover:text-indigo-700">
         + Ajouter une étape
       </button>
+      {% endif %}
     </div>
     {% endif %}
   </div>
