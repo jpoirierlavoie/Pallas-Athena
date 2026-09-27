@@ -276,6 +276,34 @@ def test_dashboard_short_term_excludes_cancelled(fake):
     assert "cancelled" not in {h["id"] for h in rows}
 
 
+def test_dashboard_index_reads_the_short_term_window_from_the_civil_day(
+    fake, monkeypatch
+):
+    """The route itself, not only its helper: index() must hand the
+    template the civil-day window. On the old code it read from the instant
+    `now` (10:00 on the 15th), after today's all-day hearing (00:00 UTC) and
+    today's 09:00 one — a helper test alone would stay green if the route
+    went back to _get_hearings_in_range(now, …)."""
+    _freeze_now(monkeypatch, dashboard, _mtl(2026, 10, 15, 10))
+    for name, value in (("_get_urgent_tasks", []),
+                        ("_get_urgent_protocol_steps", []),
+                        ("_get_prescription_alerts", []),
+                        ("_get_quick_stats", {})):
+        monkeypatch.setattr(dashboard, name, lambda *a, _v=value: _v)
+    seen = {}
+    monkeypatch.setattr(dashboard, "render_template",
+                        lambda name, **ctx: seen.update(ctx) or "")
+    app = Flask(__name__)
+    app.secret_key = "t"
+    app.register_blueprint(dashboard.dashboard_bp)
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s["user_id"] = "u"
+        s["expires_at"] = datetime.now(UTC) + timedelta(hours=1)
+    assert c.get("/").status_code == 200
+    assert {h["id"] for h in seen["short_term_hearings"]} == TODAY_OR_LATER
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 4. The /audiences list
 # ══════════════════════════════════════════════════════════════════════
@@ -369,3 +397,33 @@ def test_dossier_tab_shows_an_all_day_hearing_on_its_own_day(fake, monkeypatch):
         assert f"T-{hid}" in body, hid
     for hid in BEFORE_TODAY:
         assert f"T-{hid}" not in body, hid
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. The MCP get_dossier hearing counts (hearing_model.get_hearing_summary)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_the_dossier_hearing_counts_split_by_civil_day(monkeypatch):
+    """A FIFTH « from today on » reader the four windows above missed: the
+    counts behind get_dossier's summaries.hearings compared the start with
+    the instant « now ». At 21:00 on the 14th (01:00 UTC on the 15th) the
+    15th's all-day hearing — TOMORROW's — was counted « past », and the
+    14th's 09:00 hearing too, while the dossier tab lists both as upcoming.
+    """
+    _freeze_now(monkeypatch, hm, _mtl(2026, 10, 14, 21))
+    monkeypatch.setattr(hm.deadlines, "today_mtl", lambda: date(2026, 10, 14))
+    fake = install(monkeypatch, hm)
+    fake.seed_collection("hearings", {h["id"]: h for h in [
+        _hearing("allday-15", datetime(2026, 10, 15, tzinfo=UTC),
+                 all_day=True),
+        _hearing("timed-14-9h", _mtl(2026, 10, 14, 9)),
+        _hearing("allday-13", datetime(2026, 10, 13, tzinfo=UTC),
+                 all_day=True),
+        _hearing("cancelled-16", _mtl(2026, 10, 16, 9), status="annulée"),
+        _hearing("done-14", _mtl(2026, 10, 14, 8), status="terminée"),
+        {**_hearing("nostart", _mtl(2026, 10, 20, 9)),
+         "start_datetime": None},
+    ]})
+    summary = hm.get_hearing_summary("d1")
+    assert summary == {"total": 6, "upcoming": 2, "past": 2}

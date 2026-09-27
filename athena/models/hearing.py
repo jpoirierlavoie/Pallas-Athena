@@ -15,6 +15,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from models import dav_ids, db, provenance
 from security import sanitize
 from tz import MTL, mtl_to_utc, to_mtl
+from utils import deadlines
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
@@ -1264,16 +1265,39 @@ def unlink_hearing(hearing_id: str) -> tuple[Optional[dict], list[str]]:
 # ── Summary ──────────────────────────────────────────────────────────────
 
 
-def get_hearing_summary(dossier_id: str) -> dict:
-    """Return hearing counts for a dossier."""
+def get_hearing_summary(
+    dossier_id: str, today: Optional[date] = None
+) -> dict:
+    """Return hearing counts for a dossier (the MCP ``get_dossier``
+    ``summaries.hearings``).
+
+    « Upcoming » and « past » are split by CIVIL day (:func:`occurrence_day`
+    against the Montréal *today*), the rule every « from today on » surface
+    reads by since lot 1a. The counts compared ``start_datetime`` with the
+    instant « now »: an all-day hearing — stored at midnight UTC, 20:00/19:00
+    the evening BEFORE in Montréal — was counted « past » from the evening
+    before its own day, while the dossier « Calendrier » tab, ``get_agenda``
+    and the dashboard list it as today's. A row with no readable start is in
+    neither count (as before); a cancelled one is never « upcoming »; a
+    « terminée » one is always « past ».
+    """
     hearings = list_hearings(dossier_id=dossier_id)
-    now = datetime.now(timezone.utc)
-    upcoming = [h for h in hearings if h.get("start_datetime") and h["start_datetime"] > now and h.get("status") not in ("annulée", "terminée")]
-    past = [h for h in hearings if h.get("start_datetime") and h["start_datetime"] <= now or h.get("status") in ("terminée",)]
+    today = today or deadlines.today_mtl()
+    upcoming = past = 0
+    for hearing in hearings:
+        day = occurrence_day(hearing)
+        status = hearing.get("status")
+        if (
+            day is not None and day >= today
+            and status not in ("annulée", "terminée")
+        ):
+            upcoming += 1
+        if (day is not None and day < today) or status == "terminée":
+            past += 1
     return {
         "total": len(hearings),
-        "upcoming": len(upcoming),
-        "past": len(past),
+        "upcoming": upcoming,
+        "past": past,
     }
 
 
