@@ -1606,6 +1606,42 @@ Notes:
      app (a CS step's deadline is editable; a CQ one is locked by law): the
      linked task's due date follows on the next sync (a `REPORT
      sync-collection` of `/dav/dossier-<id>/` returns a new token).
+- **Notes and the théorie de la cause (lot 1a, L3):** no index, no data
+  migration (the new `notes/{id}/revisions/` documents are only written, on
+  the automatic index; deny-all `firestore.rules` already covers them). What
+  changes on screen, to announce: « Ajouter une théorie de la cause » now
+  refuses with a red banner when the dossier cannot be read (« Erreur de
+  lecture ») or already holds TWO théories (it used to go quiet, or show an
+  empty sheet); deleting a note that was modified in the meantime comes back
+  to the note with a red banner instead of returning silently to the list.
+  Deleting the théorie de la cause now leaves a write-once copy of its text in
+  Firestore (`notes/<id>/revisions/`, field `content:delete`) — nothing in
+  the app lists it yet; recover it from the Firestore console if ever needed.
+  Check once after the deploy, with curl (DavX5 fails silently):
+  1. *The théorie never changes dossier through DAV.* Take a dossier D1
+     whose théorie de la cause exists (its note id `NID` is in the URL of
+     « Modifier » on the Analyse tab) and a second active dossier D2. Fetch
+     it, then PUT the very same body into D2's collection:
+
+     ```bash
+     DAV_USER=you@yourdomain.example   # the AUTHORIZED_USER_EMAIL of app.yaml
+     curl -s -u "${DAV_USER:?}" "https://yourdomain.example/dav/dossier-$D1/$NID.ics" > /tmp/theorie.ics
+     curl -s -o /dev/null -w '%{http_code}\n' -u "${DAV_USER:?}" -X PUT \
+       -H "Content-Type: text/calendar; charset=utf-8" \
+       --data-binary @/tmp/theorie.ics "https://yourdomain.example/dav/dossier-$D2/$NID.ics"
+     curl -s -o /dev/null -w '%{http_code}\n' -u "${DAV_USER:?}" \
+       "https://yourdomain.example/dav/dossier-$D1/$NID.ics"
+     ```
+
+     Expected: `422`, then `200` — the théorie is still served from D1 and
+     the Analyse tab of D1 still shows it. A `204` on the PUT means the fix
+     is not live (and the théorie just moved to D2: move it back by
+     repeating the PUT towards D1).
+  2. *jtx Board still moves a théorie the way it always did.* jtx moves an
+     entry by creating a copy in the target list and deleting the original:
+     the copy becomes the target dossier's théorie only if that dossier has
+     none (otherwise an ordinary undated note), and the original's deletion
+     now leaves its snapshot. Nothing to do unless you move one.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

@@ -227,14 +227,16 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── provenance.py           # Lot 0a: created_via/updated_via/mcp_updated_at, stamped
 │   │   │                           # by the model that regenerates the etag; note_commit
 │   │   ├── concurrency.py          # Lot 0a: optimistic concurrency — commit_document /
-│   │   │                           # commit_fields re-read IN a transaction and write only
-│   │   │                           # if the etag is still the expected one; None = the
-│   │   │                           # plain legacy set()/update(), byte for byte
+│   │   │                           # commit_fields (+ commit_delete, lot 1a L3) re-read
+│   │   │                           # IN a transaction and write only if the etag is
+│   │   │                           # still the expected one; None = the plain legacy
+│   │   │                           # set()/update()/delete(), byte for byte
 │   │   ├── dav_ids.py              # Lot 0b (pure): the rule of what a DAV client may
 │   │   │                           # name — valid_resource_id + client_uid +
 │   │   │                           # DAV_ID_INVALID/TAKEN — shared by create_task and
 │   │   │                           # create_partie's dav_id=/dav_uid= create branches
-│   │   ├── revision.py             # Lot 0a (no caller yet — Lot 1's D8 primitive):
+│   │   ├── revision.py             # Lot 0a (D8's primitive; first callers lot 1a L3 —
+│   │   │                           # note.update_note(revision=…) and delete_note):
 │   │   │                           # write-once snapshots of REPLACED prose under
 │   │   │                           # {parent}/{id}/revisions/; build_revision RETURNS a
 │   │   │                           # pair for the caller's transaction and writes nothing
@@ -376,6 +378,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── invoice_docx.py         # Phase H.2: invoice → note-d'honoraires context (facture.* + rows + conditions)
 │   │   ├── markdown_docx.py        # Phase H.3: markdown → OOXML blocks (note printing; shares the
 │   │   │                           # screen's markdown pipeline constants — main.py imports them)
+│   │   ├── analyse_blocs.py        # Lot 1a L3 (pure, NO regex): locates the entête and
+│   │   │                           # the blocs A–H of the théorie de la cause by the
+│   │   │                           # LETTER of « ## Bloc X », the renderer's fence rules;
+│   │   │                           # replace_bloc / append_to_bloc / apply_operations /
+│   │   │                           # validate_full_rewrite / structure — refuses, never
+│   │   │                           # guesses (all 8 letters once), re-parses every result
 │   │   ├── note_docx.py            # Phase H.3: note → note-print context (note.* + the rich contenu)
 │   │   ├── cabinet.py              # cabinet.* firm dict — ONE authority (was duplicated in 2 routes)
 │   │   ├── storage_identity.py     # Lot 0a: the uid every Storage path is built under —
@@ -508,6 +516,13 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_notes_general.py   # Notes without a dossier: CTag bump + unknown-id guard
 │   │   ├── test_analyse_note.py    # Théorie de la cause: dateless VJOURNAL, include_analyse
 │   │   │                           #   contract, idempotent seed, edit-merge safety
+│   │   ├── test_analyse_note_rules.py  # Lot 1a L3, fake store: the model guard on every
+│   │   │                           #   path (web, DAV PUT), dateless for the analyse only,
+│   │   │                           #   revision in the same commit, strict lookup + ensure,
+│   │   │                           #   the delete snapshot (web + DAV, 412 on a race)
+│   │   ├── test_analyse_blocs.py   # utils/analyse_blocs: letter matching, fences, refusals
+│   │   │                           #   by letter only, byte-identical outside the target,
+│   │   │                           #   no regex, linear growth (50 K → 400 K)
 │   │   ├── test_mcp_output_schemas.py  # Conformance: real handlers vs declared outputSchema
 │   │   ├── test_mcp_tools.py
 │   │   ├── test_docx_fill.py
@@ -587,6 +602,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                                 # no write verb, nothing else reaches the subcollection
 │   │   │                                 # (by name, nor blindly: no recursive_delete/collections())
 │   │   │                                 # and every caller commits on the GUARDED path
+│   │   │                                 # (commit_document, or commit_delete for a
+│   │   │                                 # deleted note's snapshot)
 │   │   ├── test_concurrency_models.py    # the ten expected_etag mutators + the six MCP edit
 │   │   │                                 # tools end to end, cases DERIVED from signatures/registry
 │   │   ├── test_time_expense_races.py    # lot 0b: the REAL create_invoice committing mid-edit /
@@ -1255,6 +1272,8 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
 
 Notes live in `/dav/dossier-{id}/{noteId}.ics` as VJOURNAL resources alongside that dossier's VTODOs.
 
+**The théorie de la cause's rules live in the MODEL** (lot 1a L3): `update_note` never takes `is_analyse` from its data (no demotion, no second analyse note), refuses to move the analyse note to another dossier or to « Général » (`ANALYSE_DOSSIER_LOCKED_ERROR` — the web route keeps its identical guard as belt and braces), and ignores `dateless` for the analyse note ONLY — an ordinary note keeps its jtx Note ↔ Journal round trip. A replaced content can be snapshotted into `notes/{noteId}/revisions/` (see the revisions subcollection below), and deleting the analyse note always leaves one.
+
 ### `protocols/{protocolId}` — Case protocols
 
 ```python
@@ -1441,8 +1460,10 @@ connu), **aucun bump de CTag** (`documents` n'est pas exposée en DAV).
 ### `{parent}/{parentId}/revisions/{revisionId}` — Replaced prose (lot 0a, 2026-09-25)
 
 **Write-once** snapshots of a prose value just before a write REPLACES it
-(plan rule 4, D8). `models/revision.py` — **no caller yet**: Lot 1's note
-and théorie-de-la-cause edits are its first. The generalisation of the
+(plan rule 4, D8). `models/revision.py` — its callers are
+`models/note.update_note(expected_etag=…, revision=<field>)` (the connector's
+lot-1b tools pass it; the web form does not) and `models/note.delete_note`
+for the théorie de la cause (lot 1a L3). The generalisation of the
 analyses journal above, with one structural difference: `build_revision`
 **writes nothing** — it returns a `(reference, data)` pair the caller stages
 in ITS transaction (`models.concurrency.commit_document(extra_sets=[…])`), so
@@ -1453,8 +1474,12 @@ REQUIRED for every content replacement): with `expected_etag=None`,
 one by one, then the document — a replacement that then fails would leave
 its revision behind. A caller of `build_revision` must never take the
 legacy path — `tests/test_revision.py` refuses any function that builds a
-revision without committing it through `commit_document` with a non-None
-`expected_etag` (armed for Lot 1's first caller).
+revision without committing it through `commit_document` (or its twin
+`commit_delete`, the delete snapshot) with a non-None `expected_etag`;
+`update_note` REFUSES `revision=` without an etag rather than writing
+half-way. A note revision holds the note's WHOLE previous content whatever
+`field` names, and an unchanged content writes none; the returned document
+carries its id under the transient key `_revision_id` (never stored).
 
 ```python
 {
@@ -1462,12 +1487,15 @@ revision without committing it through `commit_document` with a non-None
     "parent_collection": "notes", # VALID_PARENT_COLLECTIONS — closed; a lot
                                   # adds its collection with its first caller
     "parent_id": str,
-    "field": "content" | "content:rewrite" | "bloc:entete" | "bloc:A".."bloc:H",
+    "field": "content" | "content:rewrite" | "bloc:entete" | "bloc:A".."bloc:H"
+           | "content:delete",   # the note itself was deleted (lot 1a L3)
     "previous_value": str,        # ≤ MAX_SNAPSHOT_CHARS (250 000 — 1 MiB at
                                   # 4 bytes/char), refused above, never cut
     "previous_length": int,
     "previous_etag": str,         # the version replaced ('' = pre-Rule-7)
-    "new_etag": str,              # the version the replacement stamps
+    "new_etag": str,              # the version the replacement stamps — ''
+                                  # for "content:delete" (no version follows),
+                                  # refused '' for every other field
     "via": str, "tool": str,      # models.provenance at build time
     "created_at": datetime,       # Rule-7 exception: NO updated_at, NO etag
 }
@@ -1478,11 +1506,19 @@ asked, fail-open) orders on `created_at` alone — the subcollection's
 automatic index, **no composite index**. `get_revision` RAISES on a read
 failure: a restore works from the truth. No verb updates or deletes a
 revision, and `tests/test_revision.py` refuses any OTHER module that
-addresses the subcollection by name — ⚠ because Firestore does not cascade,
-a note deleted in the app would leave its revisions (the full privileged
-prior text) behind, and whether to purge them with the note is **Lot 1's
-decision**, to be recorded here. Deny-all `firestore.rules` already covers
-subcollections (`{document=**}`).
+addresses the subcollection by name. **Lot 1's decision (1a L3): a note's
+revisions are KEPT when the note is deleted** — Firestore does not cascade,
+nothing in the application purges them (the analyses-journal doctrine), and
+the théorie de la cause goes further: `delete_note` snapshots its content
+(`content:delete`) and deletes it in ONE transaction guarded by the etag it
+read (`concurrency.commit_delete`), so the snapshot is exactly what
+disappeared and a delete racing an edit is refused (`STALE_ETAG_ERROR` —
+412 on DAV, a banner on the note page). The price is written down: the full
+privileged prior text outlives the note, and nothing in the app lists the
+revisions of a deleted note yet — recovery is a `get_revision` by id, until
+a versions view ships. A purge can only arrive as a new decision: the
+by-name and blind-cascade sweeps stay armed. Deny-all `firestore.rules`
+already covers subcollections (`{document=**}`).
 
 ### `dav_sync/{collectionName}` — DAV sync state
 
@@ -1877,7 +1913,7 @@ All UI routes require `@login_required` (in `auth.py`). DAV routes use `@dav_aut
 | `/dossiers/` | GET | List with status tabs (actif / en_attente / fermé / archivé / tous) |
 | `/dossiers/<id>` | GET | Detail (hub page). Reads `?tab=<leaf>` to pick the initial leaf (fallback `temps`) and derives the initial group |
 | `/dossiers/<id>/tab/<tab_name>` | GET | HTMX tab loader. Leaf slugs: `apercu` (cartes Juridiction/Recours/Prescription/Mandat), `temps` — default, `facturation`, `fideicommis`, `budget` (budget-vs-réalisé par phase), `audiences` (« Calendrier »), `taches`, `protocole`, `documents` (« Fichiers »), `notes`, `analyse` (théorie de la cause); legacy `agenda` maps to `audiences` |
-| `/dossiers/<id>/analyse/init` | POST | Create the dossier's « Théorie de la cause » note (idempotent — returns the existing one untouched; bumps `dossier:{id}` only on actual creation); responds with the re-rendered `_tab_analyse.html` fragment |
+| `/dossiers/<id>/analyse/init` | POST | Create the dossier's « Théorie de la cause » note through `note.ensure_analyse_note` (idempotent — returns the existing one untouched; bumps `dossier:{id}` only when it CREATED, which the model says). Its lookup fails CLOSED since lot 1a L3 (a read error or a duplicate is a refusal in the banner, nothing written — the old fail-open pre-check bumped for a creation that never happened); responds with the re-rendered `_tab_analyse.html` fragment, at **200** even on a refusal or an unknown dossier (htmx swaps no 4xx) |
 | `/dossiers/new` | GET | Create form |
 | `/dossiers/` | POST | Create submit |
 | `/dossiers/<id>/edit` | GET | Edit form |
@@ -1970,7 +2006,7 @@ Time entries live at the prefix root; expenses live under `/depenses`. No `/heur
 | `/notes/<id>` | POST | Update |
 | `/notes/<id>/pin` | POST | SETS the posted `pinned` (`1`/`0`), never flips — partial update of the flag (`note.set_pinned`), a no-op on the same state; a page without the field gets the old flip |
 | `/notes/<id>/gabarit-docx` | POST | **Phase H.3** — fill the note-print gabarit (kind `"note"`) from this note → **direct .docx download** (never saved to the dossier); markdown body → real Word formatting via `rich_values`; Analyse notes included; errors → redirect with `?gabarit_erreur=` banner |
-| `/notes/<id>/delete` | POST | Delete |
+| `/notes/<id>/delete` | POST | Delete. The théorie de la cause is snapshotted first (`delete_note`, lot 1a L3); a REFUSED delete (a race with an edit, a store error) returns to the note with a banner (`?suppression_erreur=`) instead of silently to the list |
 | `/notes/export/{csv,pdf}` | GET | Export |
 
 ### `protocols.py` — `/protocoles/*`
@@ -2380,7 +2416,11 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `get_notes_summary(dossier_id) -> dict` — includes the analyse note (its only caller is the MCP `get_dossier`, whose read paths expose it)
 - `list_notes(..., include_analyse=False)` / `list_notes_recent(..., include_analyse=False)` — the « Théorie de la cause » note is EXCLUDED by default (Notes views); the DAV collection paths, `_sync_dossier_dav_visibility` and the MCP note tools pass `True` (Python filter, no index — see Known Gotchas)
 - `ANALYSE_TITLE` / `_ANALYSE_SEED` — title + 8-block seed of the analyse note (verbatim from `SPEC_Analyse_theorie_de_la_cause.md` Annexe A)
-- `get_analyse_note(dossier_id)` / `has_analyse(dossier_id)` / `create_analyse_note(dossier_id)` — the Analyse leaf's single note; creation is idempotent, `category="stratégie"`, `dateless=True`, `is_analyse=True`; the CTag bump belongs to the route
+- `update_note(note_id, data, *, expected_etag=None, revision=None)` — the analyse rules on every path (lot 1a L3): `is_analyse` always ignored from *data*, `dateless` ignored for the analyse note only, a `dossier_id` that moves the analyse note refused with `ANALYSE_DOSSIER_LOCKED_ERROR`. `revision=<models.revision field>` snapshots the WHOLE replaced content into `notes/{id}/revisions/` in the same transaction (requires `expected_etag`, else refused; nothing when the content is unchanged; the returned doc carries `_revision_id`, never stored)
+- `delete_note(note_id)` — the analyse note is snapshotted (`content:delete`) and deleted in ONE etag-guarded transaction (`concurrency.commit_delete`); a race returns `STALE_ETAG_ERROR`. Ordinary notes: plain delete
+- `find_analyse_note_strict(dossier_id)` (lot 1a L3) — for WRITE paths: `None` only when the store says there is none; raises `AnalyseLookupError` on a read error and `AnalyseDuplicateError(count)` (a subclass) on several
+- `ensure_analyse_note(dossier_id) -> (note, errors, created)` — idempotent creation on the strict lookup; `created` True only when THIS call wrote the note (the caller bumps on it — the route, and the lot-1b tool). `create_analyse_note` is its two-member wrapper. Provenance comes from context, never an argument
+- `get_analyse_note(dossier_id)` / `has_analyse(dossier_id)` — DISPLAY ONLY (fail-open through `list_notes`; a duplicate resolves to the first match). The analyse note is `category="stratégie"`, `dateless=True`, `is_analyse=True`; the CTag bump belongs to the route
 - `note_to_vjournal(note) -> str` — VJOURNAL with SUMMARY (title), DESCRIPTION (content), CATEGORIES (category), X-ATHENA-PINNED if pinned; omits DTSTART when `dateless` (CREATED/DTSTAMP stay — the jtx NOT-NULL trap) and adds `X-PALLAS-ANALYSE:true` when `is_analyse`
 - `vjournal_to_note(ical_str) -> dict` — sets `dateless` from DTSTART's absence; sets `is_analyse` only when the X-prop is present (never an explicit False — `update_note`'s merge keeps the stored flag when a client strips unknown X- properties)
 
@@ -3017,7 +3057,8 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **The `athena:comptabilite` scope is DORMANT, and the box that grants it cannot appear before a tool carries it** (lot 0a). Offered only while `MCP_WRITE_ENABLED` AND `MCP_COMPTABILITE_ENABLED` are on AND `mcp.tools.ACCOUNTING_TOOLS` (derived from the declared scopes) is non-empty — recomputed server-side on the GET and on the POST, so a forged `grant_comptabilite` is refused in lots 0-4 whatever the switch says. `MCP_COMPTABILITE_ENABLED` defaults to `"false"` (money fails closed) and carries the `MCP_WRITE_ENABLED` double-duty trap: consenting while it is false yields a grant WITHOUT accounting, silently. An `athena:write` token can never reach an accounting tool (the tool's OWN scope is demanded at `required_scope`, in the `tools/list` filter and at `revalidate_for_write`), so the lot 5 train needs no write outage. The gates are tested on `tests/_dummy_accounting.py`, a fake tool registered by monkeypatch — tested on the empty real registry, each would pass vacuously.
 - **An MCP note write MUST bump the dossier CTag — nothing else will.** `models/note.py` never bumps (it does not even import `dav/`); bumping lives in the caller (`routes/notes.py`, `dav/dossier_collections.py`). A tool path that calls `create_note`/`update_note` and stops leaves the note in Firestore and visible in the web UI while **DavX5 silently never re-syncs it** — `_handle_sync_collection` short-circuits when the client's token equals the current one. The bump is wrapped in its own `try/except` in `mcp/handlers._bump_note_ctag` and surfaced as `dav_synced` + a French warning: letting it raise would report an already-committed write as a failure. Before lot 0a it hit `endpoint._tools_call`'s blanket `except Exception` as a retryable « internal error », and the model retried into a **duplicate note** (`create_note` mints a fresh UUID each call); since lot 0a the model's `note_commit` turns it into `CommittedWriteError` (« ENREGISTRÉE — NE PAS RÉESSAYER »), a same-key retry re-raises it from the `partial` entry, but a KEYLESS retry still writes a second note — so the bump keeps its own `try/except`.
 - **A note written to a `fermé`/`archivé` dossier never reaches the phone.** The root Depth:1 PROPFIND only advertises `actif`/`en_attente` dossiers, and `_dossier_is_active` drains the collection for the rest. The write is allowed (the register is legitimate post-closure) but the payload returns `dav_synced: false` plus an explicit French warning — never silence.
-- **The `include_analyse` contract is a per-CALLER decision, and getting it wrong fails silently in both directions.** The « Théorie de la cause » note (`is_analyse`, Analyse leaf) is excluded by `list_notes`/`list_notes_recent` **by default** so the Notes views and `/notes` never show it; the **DAV collection paths (`dav/dossier_collections.py`), `_sync_dossier_dav_visibility` and the MCP note reads (`mcp/handlers.list_notes`, `get_notes_summary`) MUST pass `include_analyse=True`** — a DAV caller left on the default makes the note vanish from DavX5 with no error anywhere (the collection simply stops listing it), and a forgotten exclusion on a new Notes view breaks the isolation the sheet exists for. MCP exposes it **read-only**: `list_notes`/`get_note` emit `is_analyse` (an outputSchema-contract field) and `append_to_note` refuses the note with a French message that never quotes its content. The note is `dateless` — `note_to_vjournal` omits DTSTART (jtx Board *Note*) while CREATED/DTSTAMP stay (the NOT-NULL trap) — and `vjournal_to_note` never writes an explicit `is_analyse=False`, so a client stripping unknown X- properties can't demote the stored flag through a PUT. Three guards protect the one-per-dossier singleton: the note edit form **locks the dossier picker** on an `is_analyse` note and `note_update` refuses a changed `dossier_id` (a moved/cleared analyse note would be invisible in every app view); `create_analyse_note`'s existence check queries Firestore **directly and fails CLOSED** (via `list_notes` it would swallow a read error into « no note yet » and seed a duplicate over the filled analysis); and the DAV PUT create branch **drops `is_analyse`** on the « Général » scope or when the target dossier already has its analyse note (a jtx move to an empty dossier keeps it).
+- **The `include_analyse` contract is a per-CALLER decision, and getting it wrong fails silently in both directions.** The « Théorie de la cause » note (`is_analyse`, Analyse leaf) is excluded by `list_notes`/`list_notes_recent` **by default** so the Notes views and `/notes` never show it; the **DAV collection paths (`dav/dossier_collections.py`), `_sync_dossier_dav_visibility` and the MCP note reads (`mcp/handlers.list_notes`, `get_notes_summary`) MUST pass `include_analyse=True`** — a DAV caller left on the default makes the note vanish from DavX5 with no error anywhere (the collection simply stops listing it), and a forgotten exclusion on a new Notes view breaks the isolation the sheet exists for. MCP exposes it **read-only**: `list_notes`/`get_note` emit `is_analyse` (an outputSchema-contract field) and `append_to_note` refuses the note with a French message that never quotes its content. The note is `dateless` — `note_to_vjournal` omits DTSTART (jtx Board *Note*) while CREATED/DTSTAMP stay (the NOT-NULL trap) — and `vjournal_to_note` never writes an explicit `is_analyse=False`, so a client stripping unknown X- properties can't demote the stored flag through a PUT. Three guards protect the one-per-dossier singleton, all in the MODEL since lot 1a L3: `update_note` refuses a changed `dossier_id` on an `is_analyse` note on EVERY path — before, only the web route did, and a jtx copy PUT into another collection MOVED the analysis where no app view lists it (the edit form still locks the picker and the route keeps its identical guard) — and never takes `is_analyse` from its data (no demotion, no second analyse note through a PUT); every WRITE-path lookup goes through `find_analyse_note_strict`, which **fails CLOSED** on a read error AND on a duplicate (the fail-open `get_analyse_note`, via `list_notes`, swallows a read error into « no note yet » — the DAV create branch used it and seeded a second théorie over the filled one; it now answers 503); and the DAV PUT create branch **drops `is_analyse`** on the « Général » scope or when the target dossier already has its analyse note (a jtx move to an empty dossier keeps it). `get_analyse_note` is for display only. ⚠ `dateless` is ignored on update for the analyse note ONLY: ignoring it on every note would break the ordinary Note ↔ Journal round trip `vjournal_to_note` feeds (the date the lawyer set on the phone stripped at the next sync).
+- **A bloc of the théorie de la cause is located by its LETTER, the renderer's way — and an operation refuses unless all eight letters are there exactly once** (`utils/analyse_blocs.py`, lot 1a L3). A bloc heading is a column-0 line starting « ## Bloc X » (X ∈ A–H, any case) followed by the end of the line or a non-alphanumeric character — so the lawyer's renamed title after the letter survives every operation. Headings follow Python-Markdown with `fenced_code` (the Analyse tab and the Word print): « #foo » IS a level-1 heading, and a fence is a code block only if a later line carries the SAME run with nothing after it — an unclosed fence is text, its « headings » are headings. Three traps. (a) **A missing letter blocks every bloc operation, not just one on that letter**: the deleted heading's text now sits in the PREVIOUS bloc's zone, so « the end of bloc E » is a guess. (b) **Every operation re-parses its result and refuses when a byte outside its target changed** — the pre-checks (no level-1/2 heading ATX or setext in the inserted text, no fence left open) cannot see an inserted, balanced fence pairing with one the lawyer left unclosed higher up and swallowing the next heading. (c) **No regex, by rule** (CWE-1333): lines are cut by `str.find` whose position only moves forward — never `str.splitlines`, which also cuts at U+2028 the renderer ignores. A wall-clock ceiling at the note's cap did NOT catch a broken find cache (the Python loop dominates at 100 K); the growth test at 50 K → 400 K does. Refusals name LETTERS only, never a heading's text or content.
 - **A note write must be validated on the string that is STORED, not on each field.** `TAG_RE`'s `[^<>]` body class includes `\n`, so a match spans arbitrarily many lines — and `append_to_note` sanitizes `existing + block` as one string. An unpaired `<` already sitting in the note (which the web form and DAV PUT both accept happily) plus any `>` in the addition (a Markdown blockquote is the obvious one) makes the regex **span the join** and delete the note's tail, the separator and the provenance stamp. Both halves pass a per-field check individually. The handler therefore asserts the post-condition `sanitize(combined) == combined` before writing, and the length check runs **first** (sanitize also truncates, so an over-long note would otherwise report the chevron reason).
 - **Tool refusal messages must not quote note content.** `utils/tracing_setup.span()` calls `record_exception` + `set_status(str(exc))` on anything crossing its boundary, and `_SanitizingSpanExporter` scrubs **attributes, not exception events** — an excerpt in a `ToolArgumentError` would ship privileged research to Cloud Trace. `endpoint._tools_call` catches `ToolArgumentError` **inside** the span and re-raises it outside; the messages describe the problem instead of sampling it.
 - **`security.sanitize` eats Markdown, data-dependently.** `_TAG_RE = <[^<>]*>` deletes every angle-bracket run: `<https://canlii.ca/t/abc>` vanishes with the citation, and `« si a < b et b > c »` loses « < b et b > », while `« a < b < c »` survives (the `[^<>]` body fails to match). The MCP write path normalizes autolinks to `[url](url)` and then **refuses** anything still matching `security.TAG_RE` — that public alias exists precisely so the handler's prediction cannot drift from what `sanitize` actually removes. Truncation is the same class of trap: `sanitize` cuts at `CONTENT_MAX_LENGTH` with no exception and no flag, so `append_to_note` checks the projected length **before** calling `update_note`.
