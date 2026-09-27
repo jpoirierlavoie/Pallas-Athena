@@ -1104,6 +1104,21 @@ def test_capability_detection_by_name_and_by_marker():
         assert not ws.capability_in(payload), payload
 
 
+def test_a_capability_in_another_case_or_a_v2_signature_is_caught():
+    """Revue de T5 — the name rule was case-sensitive, so ``Upload_URL``
+    or ``SIGNED_URL`` (the same capability) would have been stored; and the
+    markers knew only V4, while ``Blob.generate_signed_url`` still signs V2
+    (``GoogleAccessId=…&Signature=…``) when no ``version`` is passed."""
+    v2 = ("https://storage.googleapis.com/b/o?GoogleAccessId=sa%40p.iam."
+          "gserviceaccount.com&Expires=1&Signature=abc")
+    for payload in ({"Upload_URL": "x"}, {"a": {"SIGNED_URL": "x"}},
+                    {"Storage_Path": "users/u/x"}, {"URL": "x"},
+                    {"lien": v2}):
+        assert ws.capability_in(payload), payload
+    assert ws.is_capability_key("Download_Url")
+    assert not ws.is_capability_key("Conference_URI")
+
+
 def test_persist_stores_its_copy_and_the_caller_keeps_the_url(fake, hooks):
     seen = []
 

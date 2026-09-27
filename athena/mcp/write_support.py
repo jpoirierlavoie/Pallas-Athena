@@ -156,8 +156,9 @@ Both, or neither: a ``persist`` that strips what nothing puts back would
 replay a crippled result. Independently of any hook, what is about to be
 stored is SCANNED (:func:`capability_in`): a key named like a capability
 (``upload_url``, ``signed_url``, ``download_url``, ``storage_path``,
-``url``, ``*_url``) or a string carrying a signed-URL or session marker
-(``X-Goog-Signature``, ``X-Goog-Credential``, ``upload_id=``) is never
+``url``, ``*_url``, in any case) or a string carrying a signed-URL or
+session marker (``X-Goog-Signature``, ``X-Goog-Credential``, a V2
+``GoogleAccessId=``, ``upload_id=``) is never
 persisted — the result is then NOT stored at all, logged as a store failure
 (``error_type: CapabilityInResult``), and the claim stays ``pending``, so a
 same-key retry is refused as in flight rather than duplicated. A tool that
@@ -296,9 +297,12 @@ _PERSISTENCE_HOOKS: dict[str, PersistenceHooks] = {}
 # every declared output schema, applied here to every stored value.
 _CAPABILITY_KEYS = frozenset({"signed_url", "upload_url", "download_url",
                               "storage_path"})
-# What a GCS V4 signed URL (the signature and credential query parameters)
-# and a resumable-upload session URI (its upload_id) carry, lower-cased.
-_CAPABILITY_MARKERS = ("x-goog-signature", "x-goog-credential", "upload_id=")
+# What a GCS V4 signed URL (the signature and credential query parameters),
+# a V2 one (its GoogleAccessId — ``Blob.generate_signed_url`` still signs V2
+# when no ``version`` is passed) and a resumable-upload session URI (its
+# upload_id) carry, lower-cased.
+_CAPABILITY_MARKERS = ("x-goog-signature", "x-goog-credential",
+                       "googleaccessid=", "upload_id=")
 
 
 def register_persistence_hooks(
@@ -340,10 +344,12 @@ def persistence_tools() -> frozenset[str]:
 
 def is_capability_key(key: object) -> bool:
     """A key named like a capability: the four the connector's guards list,
-    ``url``, or anything ending in ``_url``."""
-    return isinstance(key, str) and (
-        key in _CAPABILITY_KEYS or key == "url" or key.endswith("_url")
-    )
+    ``url``, or anything ending in ``_url`` — in any case (``Upload_URL`` is
+    the same capability)."""
+    if not isinstance(key, str):
+        return False
+    key = key.lower()
+    return key in _CAPABILITY_KEYS or key == "url" or key.endswith("_url")
 
 
 def capability_in(value: object) -> bool:

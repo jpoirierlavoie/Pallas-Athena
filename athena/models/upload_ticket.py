@@ -742,6 +742,10 @@ def record_staged_digest(
     outcome = {"ok": True}
 
     def _fields(ticket: dict) -> Optional[dict]:
+        # Reset on EVERY attempt: the transactional decorator re-runs this
+        # after an Aborted, and a verdict left over from a discarded attempt
+        # would contradict what the committed attempt did.
+        outcome["ok"] = True
         stored = ticket.get("staged_sha256") or ""
         if stored == digest:
             return None
@@ -801,6 +805,12 @@ def complete_ticket(
 
     @firestore.transactional
     def _body(txn) -> Optional[dict]:
+        # Reset on EVERY attempt (the decorator re-runs this after an
+        # Aborted): an attempt whose write was DISCARDED must not leave
+        # « changed » behind, or a retry that finds the ticket already versé
+        # by the other finalizer would note a commit this call never made.
+        outcome["errors"] = []
+        outcome["changed"] = False
         ref = _ref(ticket_id)
         ticket = _snapshot_dict(ref.get(transaction=txn))
         if ticket is None:

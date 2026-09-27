@@ -556,6 +556,70 @@ def test_a_malformed_result_is_refused_before_any_read(fake, result):
     assert fake.reads == [] and _writes(fake) == []
 
 
+def test_a_retried_completion_notes_no_commit_it_did_not_make(fake):
+    """Revue de T5 — the transactional decorator RE-RUNS the body after an
+    Aborted. A stale holder's completion reads « en_cours », a reclaimer
+    completes the ticket (same reserved id, same result) before that
+    commit lands, the transaction aborts, and the retry finds it ALREADY
+    versé. The answer is the ticket, as before — but « changed » used to
+    survive from the discarded attempt, so the call noted a commit it never
+    made: a refusal after it would read « ENREGISTRÉE »."""
+    ticket, first = _claimed(fake)
+    path = f"{ut.COLLECTION}/{ticket['id']}"
+    result = {"document_id": ticket["reserved_document_id"]}
+    fired = []
+
+    def reclaimer_completes(info):
+        if not fired and ("update", path) in info.ops:
+            fired.append(info.index)
+            fake.external_write(path, {**_stored(fake, ticket["id"]),
+                                       "status": "versé", "result": result,
+                                       "claim_id": str(uuid.uuid4())})
+
+    remove = fake.add_commit_hook(reclaimer_completes)
+    try:
+        with provenance.writing_via("mcp", tool="finalize_upload"):
+            done, errors = ut.complete_ticket(
+                ticket["id"], claim_id=first.claim_id, result=result,
+                now=NOW + timedelta(minutes=3))
+            commits = provenance.committed_writes()
+    finally:
+        remove()
+    assert fired, "the race never happened"
+    assert errors == [] and done["status"] == "versé"
+    assert commits == ()
+
+
+def test_a_retried_digest_record_reports_what_the_committed_attempt_did(fake):
+    """Same trap in record_staged_digest: an attempt that saw ANOTHER digest
+    set « ok = False », a concurrent write cleared it, and the retry recorded
+    this digest — then answered False, telling its caller not to write a
+    replacement whose digest IS recorded."""
+    ticket, claim = _claimed(fake)
+    path = f"{ut.COLLECTION}/{ticket['id']}"
+    other = hashlib.sha256(b"autre").hexdigest()
+    digest = hashlib.sha256(b"x").hexdigest()
+    fake.external_write(path, {**_stored(fake, ticket["id"]),
+                               "staged_sha256": other})
+    fired = []
+
+    def cleared(info):
+        if not fired and info.ops == ():
+            fired.append(info.index)
+            fake.external_write(path, {**_stored(fake, ticket["id"]),
+                                       "staged_sha256": ""})
+
+    remove = fake.add_commit_hook(cleared)
+    try:
+        ok = ut.record_staged_digest(ticket["id"], claim_id=claim.claim_id,
+                                     sha256=digest)
+    finally:
+        remove()
+    assert fired, "the race never happened"
+    assert _stored(fake, ticket["id"])["staged_sha256"] == digest
+    assert ok is True
+
+
 def test_a_template_result_carries_its_version(fake):
     ticket = _open(fake, _gabarit_data("create"))
     claim = ut.claim_ticket(ticket["id"], now=NOW + timedelta(minutes=1))
