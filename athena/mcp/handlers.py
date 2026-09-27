@@ -1290,8 +1290,9 @@ def list_notes(args: dict) -> dict:
     category = args.get("category")
     search = args.get("query")
     # include_analyse=True: the MCP read paths EXPOSE the « Théorie de la
-    # cause » note (read-only — append_to_note refuses it). The model's
-    # default would silently hide it from Claude.
+    # cause » note (written only through edit_analyse since lot 1b —
+    # append_to_note and update_note refuse it). The model's default would
+    # silently hide it from Claude.
     if scope == "dossier":
         notes = note_model.list_notes(
             dossier_id=dossier_id, category=category, search=search,

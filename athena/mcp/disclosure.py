@@ -487,16 +487,22 @@ NEVERS: tuple[Never, ...] = (
     ),
     Never(
         key="client_message",
+        # « Tiers », never « extérieur » (review of L8): the AGENDA block
+        # discloses that an event's copy in the lawyer's OWN Outlook
+        # calendar follows a reschedule or a cancellation (the mirror cron)
+        # — an effect outside Athéna that reaches nobody else. What this
+        # promise confines is what reaches ANOTHER person.
         fr=(
             "<strong>rédiger un message</strong> destiné à un client ou à "
-            "un tiers — le seul effet extérieur possible est l'annulation "
+            "un tiers — le seul effet qui atteigne un tiers est l'annulation "
             "Outlook d'une demande de rendez-vous Bookings refusée, dont le "
             "texte est fixe"
         ),
         en=(
             "It never composes a message to anyone outside the practice: "
-            "its ONE outbound effect is the Outlook cancellation a refused "
-            "Bookings request sends, with a fixed text."
+            "its ONE effect reaching someone outside the practice is the "
+            "Outlook cancellation a refused Bookings request sends, with a "
+            "fixed text."
         ),
         # The Graph verbs that send or rewrite something in a mailbox or a
         # calendar, and the email module: no connector module and no

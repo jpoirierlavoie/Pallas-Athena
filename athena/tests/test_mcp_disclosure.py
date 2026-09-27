@@ -104,6 +104,11 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "jamais écrasés par le connecteur",
     "rouvrez-le dans l'application si ce n'était pas voulu",
     "nothing outbound at all",
+    # Review of L8: the AGENDA block of the SAME screen says a cancelled or
+    # moved event's copy in the lawyer's Outlook calendar follows (the
+    # mirror) — an effect outside Athéna. « Le seul effet extérieur » beside
+    # it was false; what the promise confines is what reaches a THIRD party.
+    "le seul effet extérieur possible",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »
