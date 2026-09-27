@@ -74,7 +74,9 @@ _MODULES = (partie_model, dossier_model, time_entry_model, expense_model,
 
 @pytest.fixture
 def db(monkeypatch):
-    return install(monkeypatch, *_MODULES)
+    # models.revision too: a note content change stages its revision since
+    # D17 (2026-09-27), and the reference must belong to the same store.
+    return install(monkeypatch, *_MODULES, revision_model)
 
 
 # ── Fabriques : chaque enregistrement naît par le VRAI créateur ──────────
@@ -216,7 +218,14 @@ _GETTERS = {
 # armed at their COMMIT instead — the rival lands after the transactional
 # read, and the real ``transactional`` retry must re-read and refuse.
 _READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
-_LEGACY_WITHOUT_ETAG = sorted(set(_CASES) - _READS_ONLY_IN_TRANSACTION)
+# D17 (2026-09-27): a note whose CONTENT changes keeps a revision on every
+# path, so even without an etag its write is the guarded transaction that
+# carries the snapshot (the model guards on the version it read). Its case
+# changes the content: it left the legacy list below, deliberately, for
+# the two tests after it.
+_CONTENT_REVISED_WITHOUT_ETAG = {"update_note"}
+_LEGACY_WITHOUT_ETAG = sorted(
+    set(_CASES) - _READS_ONLY_IN_TRANSACTION - _CONTENT_REVISED_WITHOUT_ETAG)
 
 
 def _arm_race(db, monkeypatch, case, path, rival) -> None:
@@ -404,6 +413,39 @@ def test_without_an_etag_a_billing_edit_is_last_write_wins_in_a_transaction(
     assert all(c.transaction is not None for c in db.commits)
     assert db.reads and all(r.transactional for r in db.reads)
     assert doc["etag"] == db.peek(path)["etag"] != "e-rival"
+
+
+def test_without_an_etag_a_note_content_change_carries_its_revision(db):
+    """Changed deliberately (D17): update_note took the plain legacy
+    ``set()`` above. The version is still not consulted — the rival etag
+    does not refuse the edit — but the replaced text is snapshotted, in the
+    SAME transaction as the write, guarded on the version the model read."""
+    row_id, path, edit = _setup(db, "update_note")
+    db.external_write(path, {**db.peek(path), "etag": "e-rival"})
+    db.reset_logs()
+
+    doc, errors = edit(row_id)
+
+    assert errors == [], errors
+    assert db.peek(path)["content"] == "Second jet."
+    assert len(db.commits) == 1 and db.commits[0].transaction is not None
+    ops = db.commits[0].ops
+    assert ("set", path) in ops and len(ops) == 2
+    (rev,) = db.peek_collection(f"{path}/revisions").values()
+    assert rev["previous_value"] == "Premier jet."
+    assert rev["previous_etag"] == "e-rival" and rev["new_etag"] == doc["etag"]
+
+
+def test_without_an_etag_a_note_edit_that_keeps_its_content_is_legacy(db):
+    """No content change, no revision — and then the plain legacy set()."""
+    row_id, path, _edit = _setup(db, "update_note")
+    doc, errors = note_model.update_note(row_id, {"title": "Titre revu"})
+    assert errors == [], errors
+    assert db.peek(path)["title"] == "Titre revu"
+    assert all(c.transaction is None for c in db.commits)
+    assert db.commits[-1].ops == (("set", path),)
+    assert db.peek_collection(f"{path}/revisions") == {}
+    assert "_revision_id" not in doc
 
 
 # ══════════════════════════════════════════════════════════════════════

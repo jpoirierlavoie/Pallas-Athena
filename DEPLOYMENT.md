@@ -1715,17 +1715,25 @@ Notes:
      total cap at the end of lot 1b, every tool under its 8 KB cap; a red
      build there means a description to TRIM, never a cap to raise.
 
-  No index, no data migration, no cron change, no Tailwind class. One WEB
-  change ships with it (D17, 2026-09-27), to announce: a protocol that is
-  not « actif » can no longer take a new step nor a step edit on ANY path —
-  the model refuses them for the web as for the connector (lot 1b had the
-  connector alone ask, through a `require_active` flag now gone) — and its
-  page hides those controls behind an amber banner, « Ce protocole n'est
-  pas actif : réactivez-le (Modifier le protocole → Statut « Actif ») avant
-  de modifier ses étapes. », keeping only the « Rouvrir » of a completed
-  step when the protocol was closed by its last step (which reactivates
-  it). Then, on scratch dossiers — DavX5 fails silently, so the
-  `REPORT sync-collection` is the proof and the phone the confirmation:
+  No index, no data migration, no cron change, no Tailwind class. Two WEB
+  changes ship with it (D17, 2026-09-27), to announce: (a) a protocol that
+  is not « actif » can no longer take a new step nor a step edit on ANY
+  path — the model refuses them for the web as for the connector (lot 1b
+  had the connector alone ask, through a `require_active` flag now gone) —
+  and its page hides those controls behind an amber banner, « Ce protocole
+  n'est pas actif : réactivez-le (Modifier le protocole → Statut
+  « Actif ») avant de modifier ses étapes. », keeping only the « Rouvrir »
+  of a completed step when the protocol was closed by its last step (which
+  reactivates it); (b) EVERY change of a note's content — the web form,
+  the phone, the connector — now keeps the replaced text in
+  `notes/{id}/revisions/` (lot 1b kept it for the connector's writes
+  only), and the note page says « Versions précédentes : N » once there is
+  one. A phone PUT that changes a note's text now commits in a transaction
+  (guarded on the version just read, re-read on a lost race —
+  last-write-wins is unchanged); one that changes only its title or
+  category is the same bare write as before. Then, on scratch dossiers —
+  DavX5 fails silently, so the `REPORT sync-collection` is the proof and
+  the phone the confirmation:
 
   **A. Tasks, notes, the théorie (L5).**
   1. *A move reaches the phone.* `update_task` with another `dossier_id`: a
@@ -1844,6 +1852,15 @@ Notes:
      (`closed_by: auto` in `list_protocol_steps`), the page still offers
      « Rouvrir » on a completed step, and clicking it makes the protocol
      « actif » again.
+  2. *No edit of a note's text is lost, whoever makes it.* On a scratch
+     note, change its text in the app, then in jtx Board on the phone and
+     sync: the note page reads « Versions précédentes : 2 », and Firestore
+     holds two documents under `notes/{id}/revisions/` — the original
+     text, replaced `via: web`, and the app's version, replaced `via: dav`
+     (`via` names the path that REPLACED it). Change only the
+     note's category on the phone: still 2. The `PUT` answers 204 with the
+     new `ETag`, and a `REPORT sync-collection` of `/dav/dossier-{id}/`
+     lists the note.
 
   Then update BOTH copies of the claude.ai skill `pallas-athena` the same
   day. What lot 1 made false there: « 49 outils : 27 en lecture, 22 en
@@ -1874,7 +1891,11 @@ Notes:
   warnings (a refusal notifies the client with a fixed text; a
   confirmed rendez-vous changes here only by its dossier and notes —
   rescheduling or cancelling it is refused and done in Outlook, any
-  other change by the lawyer in the application).
+  other change by the lawyer in the application); and, from D17, that a
+  note's replaced text is kept whoever replaced it (the app, the phone,
+  Claude — an append included), and that no step of a suspended or
+  completed protocol changes anywhere until it is reactivated (the one
+  exception: reopening a step of a protocol its last step closed).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

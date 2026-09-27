@@ -92,10 +92,16 @@
         {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
         {% set created = note.created_at|to_mtl if note.created_at and note.created_at.strftime is defined else None %}
         {% set updated = note.updated_at|to_mtl if note.updated_at and note.updated_at.strftime is defined else None %}
-        {% if created or updated %}
+        {# « Versions précédentes : N » (D17) — the texts this note's content
+           replaced, on any path (app, phone, connector), kept write-once in
+           notes/{id}/revisions/. Read-only count; nothing lists them here.
+           Shown only when the count was read and is not zero. #}
+        {% set versions = revision_count if revision_count else 0 %}
+        {% if created or updated or versions %}
         <p class="text-xs text-gray-500 mt-1">
           {%- if created %}Créée le {{ created.strftime('%d') }} {{ month_names[created.month] }} {{ created.strftime('%Y') }}{% endif %}
           {%- if updated and (not created or updated.date() != created.date()) %}{{ ' · ' if created }}Modifiée le {{ updated.strftime('%d') }} {{ month_names[updated.month] }} {{ updated.strftime('%Y') }}{% endif %}
+          {%- if versions %}{{ ' · ' if created or updated }}Versions précédentes&nbsp;: {{ versions }}{% endif %}
         </p>
         {% endif %}
       </div>

@@ -752,8 +752,14 @@ def test_the_invoice_source_flips_carry_the_writer(monkeypatch):
 def test_create_then_append_note_emits_the_stored_etag(monkeypatch):
     """End to end through the real handler, run_write and the real note
     model: the write payload's etag IS the stored one, and the append
-    reports the NEW etag, never the one it read."""
-    fake = install(monkeypatch, note_model, dav_sync, write_support)
+    reports the NEW etag, never the one it read.
+
+    The append also leaves a revision since D17 (2026-09-27): its reference
+    is built by ``models.revision``, which must share the fake store."""
+    from models import revision as revision_model
+
+    fake = install(monkeypatch, note_model, revision_model, dav_sync,
+                   write_support)
     created = handlers.create_note({"title": "Recherche", "content": "Texte."})
     note = created["note"]
     stored = fake.peek(f"notes/{note['id']}")
@@ -768,6 +774,9 @@ def test_create_then_append_note_emits_the_stored_etag(monkeypatch):
     assert appended["note"]["etag"] == after["etag"] != stored["etag"]
     assert appended["note"]["created_via"] == "mcp"
     assert appended["note"]["updated_via"] == "mcp"
+    (rev,) = fake.peek_collection(f"notes/{note['id']}/revisions").values()
+    assert rev["previous_value"] == stored["content"] and rev["via"] == "mcp"
+    assert rev["tool"] == "append_to_note"
 
     with _web_request():
         note_model.update_note(note["id"], {"pinned": True})

@@ -307,29 +307,28 @@ def test_get_notes_summary_counts_the_analyse_note(two_notes_db):
 def test_update_note_preserves_the_flags_and_created_at(monkeypatch):
     """The standard note form submits only 5 fields; update_note's partial
     merge must carry dateless/is_analyse/created_at through unchanged —
-    otherwise one edit re-dates the note in jtx and unhides it."""
-    stored = _analyse()
-    monkeypatch.setattr(note, "get_note", lambda i: dict(stored))
+    otherwise one edit re-dates the note in jtx and unhides it.
 
-    class _SetDB:
-        written = None
+    Rewritten for D17 (2026-09-27): a content change now commits through a
+    guarded transaction beside its revision, which the old stub ``db`` (a
+    bare ``set()`` recorder) cannot serve — the test runs on the shared
+    fake store and reads what is STORED."""
+    from models import revision as revision_model
+    from tests._fake_firestore import install
 
-        def collection(self, name):
-            return self
-
-        def document(self, doc_id):
-            return self
-
-        def set(self, data):
-            _SetDB.written = data
-
-    monkeypatch.setattr(note, "db", _SetDB())
+    fake = install(monkeypatch, note, revision_model)
+    fake.seed("notes/n-analyse", _analyse(etag="e0"))
     updated, errors = note.update_note("n-analyse", {
         "dossier_id": "d1", "title": note.ANALYSE_TITLE,
         "content": "## Bloc A — rempli", "category": "stratégie",
         "pinned": False,
     })
     assert errors == []
-    assert _SetDB.written["dateless"] is True
-    assert _SetDB.written["is_analyse"] is True
-    assert _SetDB.written["created_at"] == DT
+    written = fake.peek("notes/n-analyse")
+    assert written["content"] == "## Bloc A — rempli"
+    assert written["dateless"] is True
+    assert written["is_analyse"] is True
+    assert written["created_at"] == DT
+    # ... and the seed it replaced is on record (D17).
+    (rev,) = fake.peek_collection("notes/n-analyse/revisions").values()
+    assert rev["previous_value"] == note._ANALYSE_SEED

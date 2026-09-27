@@ -7,12 +7,14 @@ revisions/{uuid4}``. Nothing in the application could undo a replaced note
 until this module: the full-document ``set()`` models overwrite, and the
 previous text was gone.
 
-Its callers live in ``models/note.py``: ``update_note(revision=…)`` (D8:
-every replacement of note prose requires the current etag AND keeps a
-revision — the connector's tools of lot 1b pass it) and ``delete_note``,
-which snapshots the « Théorie de la cause » before deleting it (lot 1a,
-step L3). The module shipped inert in lot 0a so that its doctrine was
-pinned before its first caller.
+Its callers live in ``models/note.py``: ``update_note``, which snapshots
+the content it replaces on EVERY path — the web form, the DAV PUT from the
+phone, the connector's ``append_to_note``, ``update_note`` and
+``edit_analyse`` (D17, 2026-09-27; until then only the connector's tools
+asked, through ``revision=``, which now merely names the field) — and
+``delete_note``, which snapshots the « Théorie de la cause » before
+deleting it (lot 1a, step L3). The module shipped inert in lot 0a so that
+its doctrine was pinned before its first caller.
 
 A note revision always holds the note's WHOLE previous content, whatever
 ``field`` names: ``field`` says what the write replaced (one bloc, the
@@ -33,11 +35,13 @@ pins it by sweeping this module for any write call.
 Only the GUARDED branch is atomic: with ``expected_etag=None``,
 ``commit_document`` keeps the legacy order and writes its ``extra_sets``
 first, one by one, then the document — a replacement failing there would
-leave its revision behind. The plan makes the etag REQUIRED for every
-content replacement, and ``tests/test_revision.py`` refuses any caller that
-builds a revision without committing it through ``commit_document`` — or,
-for the snapshot a DELETE leaves, ``commit_delete`` — with a non-None
-``expected_etag``.
+leave its revision behind. So a revision always travels on the guarded
+branch: ``update_note`` guards on the caller's etag, or — for a caller that
+named none (a DAV PUT, a page older than its etag field) — on the etag it
+has just read, re-reading if a write beats it there. ``tests/test_revision.py``
+refuses any caller that builds a revision without committing it through
+``commit_document`` — or, for the snapshot a DELETE leaves,
+``commit_delete`` — with a non-None ``expected_etag``.
 
 The shape — a documented exception to Architecture Rule 7
 ---------------------------------------------------------
@@ -77,6 +81,9 @@ index of the subcollection, no composite index. By default it PROJECTS the
 snapshot text away: a listing shows when, by which path and how long; the
 text of one revision is :func:`get_revision`'s job, which RAISES on a read
 failure, because a restore must work from the truth or not at all.
+:func:`count_revisions` is one ``COUNT`` aggregation (no document read, no
+index) for the note page's « Versions précédentes : N » line, failing open
+to ``None`` — never to a ``0`` that would claim nothing was kept.
 """
 
 from __future__ import annotations
@@ -85,7 +92,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from models import db, provenance
+from models import aggregation_values, db, provenance
 from utils.logging_setup import log_unexpected
 
 SUBCOLLECTION = "revisions"
@@ -257,6 +264,35 @@ def list_revisions(
             "revision listing failed", parent_collection=parent_collection,
         )
         return []
+
+
+def count_revisions(parent_collection: str, parent_id: str) -> Optional[int]:
+    """How many revisions the parent holds, or ``None`` when unknown.
+
+    ONE ``COUNT`` aggregation over the parent's own subcollection — no
+    document read, no composite index (an unfiltered count needs none).
+    Fails OPEN to ``None``, never ``0``: it serves a display line
+    (« Versions précédentes : N » on the note page), and a failed read must
+    not claim that nothing was kept.
+    """
+    try:
+        parent_collection, parent_id = _check_parent(
+            parent_collection, parent_id
+        )
+    except RevisionRefused:
+        return None
+    try:
+        results = (
+            _revisions_ref(parent_collection, parent_id)
+            .count(alias="n")
+            .get()
+        )
+        return int(aggregation_values(results).get("n", 0) or 0)
+    except Exception:
+        log_unexpected(
+            "revision count failed", parent_collection=parent_collection,
+        )
+        return None
 
 
 def get_revision(

@@ -21,6 +21,7 @@ from dav.sync import (
     relocate_resource,
 )
 from models import concurrency
+from models import revision as revision_model
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from models.note import (
@@ -241,6 +242,10 @@ def note_detail(note_id: str) -> str:
     ctx["delete_error"] = _DELETE_ERRORS.get(
         request.args.get("suppression_erreur", "")
     )
+    # D17 — every change of a note's content, on any path, keeps the text
+    # it replaced (notes/{id}/revisions/). ONE count aggregation, display
+    # only: None (a failed read) prints nothing rather than « 0 ».
+    ctx["revision_count"] = revision_model.count_revisions("notes", note_id)
     return render_template("notes/detail.html", **ctx)
 
 

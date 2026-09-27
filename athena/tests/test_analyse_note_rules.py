@@ -298,20 +298,42 @@ def test_an_unchanged_content_leaves_no_revision(fake):
     assert fake.peek_collection(REV) == {}
 
 
+# D17 (2026-09-27): the no-etag case of this parametrisation pinned that a
+# revision asked WITHOUT an etag was refused (commit_document is atomic
+# only with one). Every content change now keeps a revision, whoever calls,
+# so the model guards the commit itself on the version it read — the case
+# moved to the test below it, which proves that commit is still ONE
+# transaction. An unknown or delete field stays refused.
 @pytest.mark.parametrize("kwargs", [
-    {"revision": "content"},                              # no etag
     {"revision": "titre", "expected_etag": "e0"},         # unknown field
+    {"revision": "titre"},                                # ... without etag
     {"revision": revision_model.DELETE_FIELD, "expected_etag": "e0"},
 ])
-def test_a_revision_on_the_unguarded_path_is_refused(fake, kwargs):
-    """commit_document is atomic only with an etag: without one, the
-    snapshot would be written first and could outlive a failed write."""
+def test_an_unknown_revision_field_is_refused(fake, kwargs):
     _seed(fake, _analyse())
     before = fake.peek(f"notes/{NID}")
     note, errors = note_model.update_note(NID, {"content": "Réécrite."}, **kwargs)
     assert note is None and errors
     assert fake.peek(f"notes/{NID}") == before
     assert fake.peek_collection(REV) == {}
+
+
+@pytest.mark.parametrize("kwargs", [{"revision": "content"}, {}])
+def test_a_revision_without_an_etag_is_taken_on_a_guarded_commit(
+    fake, kwargs,
+):
+    stored = _seed(fake, _analyse())
+    fake.reset_logs()
+    note, errors = note_model.update_note(NID, {"content": "Réécrite."},
+                                          **kwargs)
+    assert errors == []
+    (snap,) = fake.peek_collection(REV).values()
+    assert snap["previous_value"] == stored["content"]
+    assert snap["field"] == "content" and snap["previous_etag"] == "e0"
+    guarded = [c for c in fake.commits if c.transaction is not None]
+    assert len(guarded) == 1 and len(fake.commits) == 1
+    assert {p for _, p in guarded[0].ops} == {
+        f"notes/{NID}", f"{REV}/{note['_revision_id']}"}
 
 
 # ══════════════════════════════════════════════════════════════════════

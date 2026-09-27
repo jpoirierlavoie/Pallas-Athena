@@ -366,14 +366,24 @@ ANALYSE_DOSSIER_LOCKED_ERROR = (
     "modifié."
 )
 
-# A revision needs the guarded path: ``commit_document`` is atomic only with
-# an expected etag (``models/revision.py``). A caller asking for history
-# without naming the version it replaces is a programming error, refused
-# rather than written half-way.
-_REVISION_NEEDS_ETAG_ERROR = (
-    "Remplacement refusé : la version lue (etag) est requise pour conserver "
-    "la révision du texte remplacé."
+# The revision field a content replacement is filed under when the caller
+# names none — a web save, a DAV PUT, an append: the whole body replaced.
+CONTENT_REVISION_FIELD = "content"
+
+# A ``revision`` field outside ``models.revision.VALID_FIELDS`` (or the
+# delete snapshot's) is a programming error: refused, nothing written.
+_REVISION_FIELD_ERROR = (
+    "Remplacement refusé : champ de révision inconnu. Rien n'a été "
+    "enregistré."
 )
+
+# How many times a caller that asserted NO version (``expected_etag=None`` —
+# a DAV PUT, a page rendered before its form carried an etag) is re-read and
+# re-merged when a write lands between the model's read and its guarded
+# commit. The revision needs that guard (it must snapshot exactly what the
+# write replaces), but such a caller never asked to be refused: it keeps
+# its last-write-wins behaviour, now with the text it overwrote on record.
+_UNGUARDED_ATTEMPTS = 3
 
 
 def update_note(
@@ -389,19 +399,32 @@ def update_note(
     the stored etag is still that one (``models.concurrency``); a stale one
     returns ``[STALE_ETAG_ERROR]`` and writes nothing — which is what keeps
     a stale edit tab from erasing a block appended since it opened. ``None``
-    (DAV PUT, a page rendered before its form carried an etag) is the
-    unchanged single ``set()``.
+    (DAV PUT, a page rendered before its form carried an etag) asserts no
+    version: it is the unchanged single ``set()`` when the content does not
+    change, and last-write-wins when it does (below).
 
-    ``revision`` (keyword-only): the ``models.revision`` field this write
-    replaces (``"content"``, ``"content:rewrite"``, ``"bloc:C"``…). When the
-    stored content actually changes, the WHOLE content it replaces is
-    snapshotted write-once into ``notes/{id}/revisions/`` in the SAME
-    transaction as the replacement (plan rule 4, D8): both commit or
-    neither does. It requires ``expected_etag`` (refused otherwise, nothing
-    written). The returned document then carries the snapshot's id under
-    ``_revision_id`` — a transient key, never stored. The snapshot holds
-    the whole previous content whatever the field names: a restore needs
-    nothing else. An unchanged content writes no snapshot.
+    EVERY replacement of the stored content keeps a revision (D17,
+    2026-09-27 — until then only the connector's tools asked for one): the
+    web form, the DAV PUT from the phone, ``append_to_note``,
+    ``update_note``, ``edit_analyse``. When the content actually changes,
+    the WHOLE content it replaces is snapshotted write-once into
+    ``notes/{id}/revisions/`` in the SAME transaction as the replacement
+    (plan rule 4): both commit or neither does. The commit is therefore
+    always the GUARDED one — against ``expected_etag`` when the caller named
+    a version, else against the etag this function just read, so the
+    snapshot is exactly the text overwritten; a caller that named none and
+    loses that race is re-read and re-merged (:data:`_UNGUARDED_ATTEMPTS`)
+    rather than refused. An unchanged content writes no snapshot, and the
+    write keeps its legacy shape.
+
+    ``revision`` (keyword-only) only NAMES what was replaced
+    (``"content:rewrite"``, ``"bloc:C"``…); omitted, the snapshot is filed
+    under :data:`CONTENT_REVISION_FIELD`. A name outside
+    ``models.revision.VALID_FIELDS`` — or the delete snapshot's — is
+    refused, nothing written. The returned document carries the snapshot's
+    id under ``_revision_id`` — a transient key, never stored. The snapshot
+    holds the whole previous content whatever the field names: a restore
+    needs nothing else.
 
     The rules of the théorie de la cause live HERE, on every path — web,
     DAV PUT, connector:
@@ -418,75 +441,92 @@ def update_note(
       turned in jtx from a Note into a dated Journal entry (DTSTART added)
       it becomes dated, and back.
     """
-    existing = get_note(note_id)
-    if not existing:
-        return None, ["Note introuvable."]
-    if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
-    if revision is not None and (
-        expected_etag is None
-        or revision not in revision_model.VALID_FIELDS
-        or revision == revision_model.DELETE_FIELD
-    ):
-        return None, [_REVISION_NEEDS_ETAG_ERROR]
+    field = CONTENT_REVISION_FIELD if revision is None else revision
+    if (field not in revision_model.VALID_FIELDS
+            or field == revision_model.DELETE_FIELD):
+        return None, [_REVISION_FIELD_ERROR]
 
-    data = dict(data)
-    data.pop("is_analyse", None)
-    if existing.get("is_analyse"):
-        data.pop("dateless", None)
-        if "dossier_id" in data and (data.get("dossier_id") or "") != (
-            existing.get("dossier_id") or ""
-        ):
-            return None, [ANALYSE_DOSSIER_LOCKED_ERROR]
+    attempts = 1 if expected_etag is not None else _UNGUARDED_ATTEMPTS
+    for _attempt in range(attempts):
+        existing = get_note(note_id)
+        if not existing:
+            return None, ["Note introuvable."]
+        if not concurrency.matches(existing, expected_etag):
+            return None, [concurrency.STALE_ETAG_ERROR]
 
-    merged = {**existing, **_sanitize_data(data)}
+        changes = dict(data)
+        changes.pop("is_analyse", None)
+        if existing.get("is_analyse"):
+            changes.pop("dateless", None)
+            if "dossier_id" in changes and (
+                changes.get("dossier_id") or ""
+            ) != (existing.get("dossier_id") or ""):
+                return None, [ANALYSE_DOSSIER_LOCKED_ERROR]
 
-    errors = _validate(merged)
-    if errors:
-        return None, errors
+        merged = {**existing, **_sanitize_data(changes)}
 
-    now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
+        errors = _validate(merged)
+        if errors:
+            return None, errors
 
-    extra_sets: list = []
-    revision_id = ""
-    previous_content = existing.get("content", "") or ""
-    if revision is not None and merged.get("content", "") != previous_content:
+        now = datetime.now(timezone.utc)
+        provenance.stamp_update(merged, now)
+
+        read_etag = concurrency.etag_of(existing)
+        extra_sets: list = []
+        revision_id = ""
+        previous_content = existing.get("content", "") or ""
+        if (merged.get("content") or "") != previous_content:
+            try:
+                rev_ref, rev_data = revision_model.build_revision(
+                    parent_collection=COLLECTION,
+                    parent_id=note_id,
+                    field=field,
+                    previous_value=previous_content,
+                    previous_etag=read_etag,
+                    new_etag=merged["etag"],
+                    now=now,
+                )
+            except revision_model.RevisionRefused:
+                log_unexpected("note revision refused", field=field)
+                return None, [
+                    "Erreur lors de la sauvegarde. Veuillez réessayer."]
+            extra_sets.append((rev_ref, rev_data))
+            revision_id = rev_data["id"]
+
+        # A revision travels ONLY on the guarded commit (models/revision.py):
+        # a caller that named no version is guarded on the version just read.
+        guard = expected_etag
+        if extra_sets and guard is None:
+            guard = read_etag
+
         try:
-            rev_ref, rev_data = revision_model.build_revision(
-                parent_collection=COLLECTION,
-                parent_id=note_id,
-                field=revision,
-                previous_value=previous_content,
-                previous_etag=concurrency.etag_of(existing),
-                new_etag=merged["etag"],
-                now=now,
+            concurrency.commit_document(
+                db.collection(COLLECTION).document(note_id), merged,
+                expected_etag=guard,
+                read_etag=read_etag,
+                extra_sets=extra_sets,
             )
-        except revision_model.RevisionRefused:
-            log_unexpected("note revision refused", field=revision)
+        except concurrency.StaleWrite:
+            if expected_etag is None:
+                # This function guarded the commit ITSELF, for the revision:
+                # the caller asked for last-write-wins — read again.
+                continue
+            return None, [concurrency.STALE_ETAG_ERROR]
+        except concurrency.Vanished:
+            return None, ["Note introuvable."]
+        except Exception:
+            log_unexpected("note write failed")
             return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-        extra_sets.append((rev_ref, rev_data))
-        revision_id = rev_data["id"]
+        provenance.note_commit(COLLECTION, note_id)
 
-    try:
-        concurrency.commit_document(
-            db.collection(COLLECTION).document(note_id), merged,
-            expected_etag=expected_etag,
-            read_etag=concurrency.etag_of(existing),
-            extra_sets=extra_sets,
-        )
-    except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
-    except concurrency.Vanished:
-        return None, ["Note introuvable."]
-    except Exception:
-        log_unexpected("note write failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-    provenance.note_commit(COLLECTION, note_id)
+        if revision_id:
+            return {**merged, "_revision_id": revision_id}, []
+        return merged, []
 
-    if revision_id:
-        return {**merged, "_revision_id": revision_id}, []
-    return merged, []
+    log_unexpected("note write lost its race on every attempt",
+                   exc_info=False, note_id=note_id)
+    return None, [concurrency.STALE_ETAG_ERROR]
 
 
 def delete_note(note_id: str) -> tuple[bool, str]:
