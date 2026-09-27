@@ -1191,4 +1191,6 @@ def _extract_resource_id(href: str) -> str | None:
     if not href.endswith(".ics"):
         return None
     segment = href.rsplit("/", 1)[-1]
-    return segment.replace(".ics", "")
+    # The trailing extension only: ``replace()`` removed EVERY occurrence,
+    # so a client-chosen name holding « .ics » resolved to another id.
+    return segment.removesuffix(".ics")

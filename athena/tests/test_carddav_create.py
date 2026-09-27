@@ -186,3 +186,80 @@ def test_one_rule_for_every_dav_created_id():
     assert task_model.DAV_ID_TAKEN == dav_ids.DAV_ID_TAKEN
     assert pm.dav_ids is dav_ids
     assert carddav.valid_resource_id is dav_ids.valid_resource_id
+
+
+# ── A client-chosen name must round-trip as an href (lot 0b review) ──────
+#
+# The DAV layers emit every href UNENCODED (``f"/dav/addressbook/{id}.vcf"``)
+# while Flask DECODES the URL the client PUT to. Before lot 0b B3/B7 the id
+# was always a server UUID, so that asymmetry was invisible; with a
+# client-chosen name, a character that must be percent-encoded in a path
+# segment (a space, « % », « ? », « # », an accent…) was stored decoded and
+# listed back as a string that is not the client's href — not even a valid
+# URI — so a sync would re-read it as a new resource beside a deleted one.
+# The rule now accepts only a name that IS a valid URI path segment as-is.
+
+_NEEDS_ENCODING = ["a%20b", "a%25b", "a%3Fb", "a%23b", "caf%C3%A9",
+                   "a%22b", "a%3Cb%3E", "a%5Bb%5D", "a%5Cb", "a%7Bb%7D"]
+
+
+@pytest.mark.parametrize("quoted", _NEEDS_ENCODING)
+def test_a_name_that_needs_percent_encoding_is_refused_before_any_write(
+    fake, client, quoted
+):
+    resp = _put(client, f"/dav/addressbook/{quoted}.vcf", _vcard())
+    assert resp.status_code == 400
+    assert fake.peek_collection("parties") == {}
+
+
+@pytest.mark.parametrize("name, ok", [
+    (RID, True),
+    ("abc@example.com", True),
+    ("urn:uuid:5b2d8c1e", True),
+    ("A-z_0.9~!$&'()*+,;=", True),
+    ("x" * 128, True),
+    ("a b", False),
+    ("a%b", False),
+    ("a?b", False),
+    ("a#b", False),
+    ("café", False),
+    ('a"b', False),
+    ("a<b>", False),
+    ("a" + chr(92) + "b", False),  # a backslash
+    ("a|b", False),
+])
+def test_the_resource_id_rule_is_the_uri_path_segment_set(name, ok):
+    from models import dav_ids
+
+    assert dav_ids.valid_resource_id(name) is ok
+
+
+def test_an_accepted_name_is_listed_back_exactly_as_the_client_put_it(
+    fake, client
+):
+    """The href the collection lists for a client-created contact is the
+    href the client PUT to — character for character."""
+    name = "abc@example.com"
+    assert _put(client, f"/dav/addressbook/{name}.vcf", _vcard()).status_code == 201
+    report = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<d:sync-collection xmlns:d="DAV:"><d:sync-token/>'
+        b"<d:prop><d:getetag/></d:prop></d:sync-collection>"
+    )
+    resp = client.open("/dav/addressbook/", method="REPORT", data=report,
+                       headers={**AUTH, "Depth": "1"})
+    assert resp.status_code == 207
+    # Whatever the namespace prefix, the href text is the client's, verbatim.
+    assert f">/dav/addressbook/{name}.vcf</".encode() in resp.data
+
+
+def test_the_href_parsers_strip_only_the_trailing_extension():
+    """``replace(".vcf", "")`` removed EVERY occurrence, so a (valid)
+    client name holding « .vcf » resolved to another id on a multiget."""
+    import dav.dossier_collections as dc
+
+    assert carddav._extract_id_from_href(
+        "/dav/addressbook/a.vcf.b.vcf") == "a.vcf.b"
+    assert dc._extract_resource_id(
+        "/dav/dossier-d1/a.ics.b.ics") == "a.ics.b"
+    assert carddav._extract_id_from_href(f"/dav/addressbook/{RID}.vcf") == RID

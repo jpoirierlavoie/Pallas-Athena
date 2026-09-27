@@ -30,6 +30,20 @@ RESOURCE_ID_MAX_LENGTH = 128
 DAV_UID_MAX_LENGTH = 255
 
 
+# The characters a URI path segment may carry AS-IS (RFC 3986 « pchar »
+# minus the percent-escape): unreserved, sub-delims, « : » and « @ ». Every
+# href these DAV layers emit is built UNENCODED
+# (``f"/dav/addressbook/{id}.vcf"``) while Flask DECODES the URL a client
+# PUT to — so a stored id must never contain a character the client had to
+# percent-encode, or the collection would list back a string that is not
+# the client's href (not even a valid URI) and the next sync would read it
+# as a new resource beside a deleted one. Deliberately ASCII.
+_PATH_SEGMENT_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    "-._~!$&'()*+,;=:@"
+)
+
+
 def has_control_char(value: str) -> bool:
     """True when *value* holds a C0 control character or DEL."""
     return any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
@@ -38,20 +52,24 @@ def has_control_char(value: str) -> bool:
 def valid_resource_id(resource_id: object) -> bool:
     """True when a client-chosen DAV resource name may become a document id.
 
-    Firestore refuses ``/``, ``.``, ``..`` and ids of the reserved
-    ``__x__`` shape at write time; refusing them HERE lets the DAV layer
-    answer a clean 400 instead of a store error. Control characters and an
-    empty or over-long name are refused too.
+    The name must be a valid URI path segment as it stands (see
+    ``_PATH_SEGMENT_CHARS``): a space, « % », « ? », « # », an accent or
+    any other character a client must percent-encode is refused, because
+    the DAV layers echo the id back unencoded in every href. Firestore
+    refuses ``.``, ``..`` and ids of the reserved ``__x__`` shape at write
+    time; refusing them HERE lets the DAV layer answer a clean 400 instead
+    of a store error. An empty or over-long name is refused too (« / » and
+    control characters fall outside the allowed set).
     """
     if not isinstance(resource_id, str) or not resource_id:
         return False
     if len(resource_id) > RESOURCE_ID_MAX_LENGTH:
         return False
-    if "/" in resource_id or resource_id in (".", ".."):
+    if resource_id in (".", ".."):
         return False
     if resource_id.startswith("__") and resource_id.endswith("__"):
         return False
-    return not has_control_char(resource_id)
+    return all(c in _PATH_SEGMENT_CHARS for c in resource_id)
 
 
 def client_uid(uid: object) -> Optional[str]:

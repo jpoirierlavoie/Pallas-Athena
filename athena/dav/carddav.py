@@ -531,4 +531,6 @@ def _extract_id_from_href(href: str) -> str | None:
     if not href.endswith(".vcf"):
         return None
     segment = href.rsplit("/", 1)[-1]
-    return segment.replace(".vcf", "")
+    # The trailing extension only: ``replace()`` removed EVERY occurrence,
+    # so a client-chosen name holding « .vcf » resolved to another id.
+    return segment.removesuffix(".vcf")
