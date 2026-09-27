@@ -7188,6 +7188,15 @@ _STEP_FIELD_KEYS = (
 # The C.p.c. text of a template (mandatory) step — the law's.
 _STEP_LEGAL_KEYS = ("title", "description", "cpc_reference")
 _STEP_TASK_OUTCOMES = ("none",) + protocol_service.ALIGN_OUTCOMES
+# A CS template date sent back as it stands stays a SUGGESTION — said, since
+# « rien n'a été modifié » alone reads as « already confirmed ».
+_SUGGESTION_KEPT = (
+    "La date envoyée est celle que l'étape porte déjà : elle reste une "
+    "SUGGESTION du gabarit CS, qu'un changement de la date de début "
+    "déplacera. Le connecteur ne confirme qu'une date qu'il CHANGE ; la "
+    "confirmer telle quelle se fait dans l'application (« Confirmer cette "
+    "date »)."
+)
 
 
 def _read_protocol(protocol_id: str) -> dict:
@@ -7426,9 +7435,12 @@ def _create_protocol_impl(args: dict) -> dict:
     if ptype == "cs_ordinaire":
         warnings.append(
             "Protocole CS : les dates des étapes sont des SUGGESTIONS "
-            "(date_is_suggestion) tant qu'elles ne sont pas confirmées — "
-            "fixez chacune avec update_protocol_step (deadline_date). Une "
-            "date non confirmée suit la date de début si elle change."
+            "(date_is_suggestion) tant qu'elles ne sont pas confirmées, et "
+            "une suggestion suit la date de début si celle-ci change. Une "
+            "date CHANGÉE avec update_protocol_step (deadline_date) est "
+            "confirmée ; confirmer une suggestion telle quelle se fait dans "
+            "l'application (« Confirmer cette date ») — le connecteur ne le "
+            "fait pas."
         )
     if not steps:
         warnings.append(
@@ -7814,11 +7826,23 @@ def _edit_protocol_step_fields(args: dict, protocol: dict, step: dict) -> dict:
                 + protocol_model.MANDATORY_DEADLINE_REQUIRED)
 
     changed = _date_valued_changes(step, data, ("deadline_date",))
+    # A CS suggestion sent back UNCHANGED is not confirmed: the model
+    # confirms a date only when it changes (lot 1a — a notes save used to
+    # « confirm » every date it re-posted), and the connector has no
+    # confirmation flag. Silence here would let the caller believe the
+    # date is now fixed, until a new start date moves it.
+    kept_suggestion = (
+        "deadline_date" in data and "deadline_date" not in changed
+        and protocol_model.date_needs_confirmation(protocol, step)
+    )
     if not changed:
-        return _step_edit_payload(
+        payload = _step_edit_payload(
             protocol, step, step, changed=[], date_confirmed_now=False,
             linked=_no_linked_task(step), status_change=_no_status_change(),
             wrote=False)
+        if kept_suggestion:
+            payload["warnings"].append(_SUGGESTION_KEPT)
+        return payload
     expected = _expected_etag(
         args, step, tool="update_protocol_step", subject=_STEP_SUBJECT)
     if protocol.get("status", "") != "actif":
@@ -7860,10 +7884,13 @@ def _edit_protocol_step_fields(args: dict, protocol: dict, step: dict) -> dict:
         and bool(confirmed_at)
         and confirmed_at != step.get("date_confirmed_at")
     )
-    return _step_edit_payload(
+    payload = _step_edit_payload(
         protocol, step, result, changed=changed,
         date_confirmed_now=confirmed_now,
         linked=linked, status_change=_no_status_change(), wrote=True)
+    if kept_suggestion:
+        payload["warnings"].append(_SUGGESTION_KEPT)
+    return payload
 
 
 def _stored_step(protocol_id: str, step_id: str) -> Optional[dict]:

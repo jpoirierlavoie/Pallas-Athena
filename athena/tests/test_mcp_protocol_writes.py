@@ -755,3 +755,48 @@ def test_the_read_rows_carry_what_the_edits_need(fake):
     assert (row["phase"], row["sous_phase"]) == ("INT", "INT-01")
     assert row["phase_label"] and row["sous_phase_label"]
     assert row["deadline_offset_days"] == 30
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Revue L6 — ce que le connecteur promettait sans le faire
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_cs_suggestion_sent_back_unchanged_is_said_to_stay_one(fake):
+    """The CS warning told the caller to « fix each date » with
+    update_protocol_step (deadline_date), and the step brief that « setting
+    it confirms it ». The model confirms a date only when it CHANGES, and
+    the connector has no confirmation flag: a suggestion sent back as it
+    stands wrote nothing, answered « rien n'a été modifié » — and the next
+    start-date change moved the date the caller believed fixed."""
+    created = handlers.create_protocol({
+        "dossier_id": "d2", "protocol_type": "cs_ordinaire",
+        "start_date": "2026-09-01"})
+    cs_warning = next(w for w in created["warnings"] if "SUGGESTIONS" in w)
+    assert "Confirmer cette date" in cs_warning
+    assert "fixez chacune" not in cs_warning
+    pid = created["entity"]["id"]
+    steps = [s for s in created["steps"] if s["date_is_suggestion"]]
+    first, second = steps[0], steps[1]
+
+    same = handlers.update_protocol_step({
+        "protocol_id": pid, "step_id": first["id"],
+        "deadline_date": first["deadline_date"]})
+    assert same["changed_fields"] == []
+    assert any("reste une SUGGESTION" in w for w in same["warnings"])
+    assert _step_doc(fake, first["id"], pid)["date_confirmed"] is False
+
+    # The same when another field lands beside the unchanged date.
+    with_notes = handlers.update_protocol_step({
+        "protocol_id": pid, "step_id": second["id"],
+        "deadline_date": second["deadline_date"], "notes": "Vu."})
+    assert with_notes["changed_fields"] == ["notes"]
+    assert with_notes["date_confirmed_now"] is False
+    assert any("reste une SUGGESTION" in w for w in with_notes["warnings"])
+
+    # A CHANGED date is confirmed, and says nothing of the kind.
+    moved = handlers.update_protocol_step({
+        "protocol_id": pid, "step_id": second["id"],
+        "deadline_date": "2099-03-15"})
+    assert moved["date_confirmed_now"] is True
+    assert not any("reste une SUGGESTION" in w for w in moved["warnings"])

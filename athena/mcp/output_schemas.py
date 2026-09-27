@@ -940,8 +940,9 @@ def _step_brief() -> dict:
         "deadline_locked": _bool("A CQ C.p.c. deadline: never editable."),
         "date_is_suggestion": _bool(
             "true = a CS template date not yet confirmed: a new start "
-            "date moves it. Setting it (update_protocol_step "
-            "deadline_date) confirms it."),
+            "date moves it. CHANGING it (update_protocol_step "
+            "deadline_date) confirms it; the connector cannot confirm it "
+            "unchanged (the application's « Confirmer cette date » can)."),
         "linked_task_id": _nstr(),
         **_phase_pair(),
         "etag": _str(

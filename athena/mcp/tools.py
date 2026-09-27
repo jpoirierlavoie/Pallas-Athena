@@ -2870,8 +2870,10 @@ TOOLS: dict[str, dict] = {
             "protocol; reopening a step of a protocol that closed that way "
             "reactivates it (refused if another protocol is actif). "
             "Otherwise refused on a protocol that is not actif. A changed "
-            "deadline carries along a linked task still on the old date. "
-            "`status_change` and `linked_task` are re-read after the write."
+            "deadline carries along a linked task still on the old date "
+            "(`linked_task`), and confirms a CS date — one sent back "
+            "unchanged stays a suggestion (confirm it in the application). "
+            "`status_change` is re-read after the write."
         ),
         "input_schema": {
             "type": "object",
