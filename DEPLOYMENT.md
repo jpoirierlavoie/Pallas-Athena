@@ -1709,7 +1709,11 @@ Notes:
      — annuler une tâche ou un événement les conserve ».
   4. `tools/list` counts **60** (27 read, 33 write); `decide_rendez_vous`
      alone carries `openWorldHint: true`, and it and `create_hearing_series`
-     list `idempotency_key` as required.
+     list `idempotency_key` as required. The descriptor byte budget (plan
+     train step 4) is the deploy gate's
+     `tests/test_mcp_descriptor_budget.py` — about 175 KB of its 280 KB
+     total cap at the end of lot 1b, every tool under its 8 KB cap; a red
+     build there means a description to TRIM, never a cap to raise.
 
   No index, no data migration, no cron change, no Tailwind class, no web
   form change (the models' `require_active` flag is passed by the connector
