@@ -9,7 +9,8 @@ import vobject
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, concurrency, db, provenance
+from google.api_core.exceptions import AlreadyExists
+from models import aggregation_values, concurrency, dav_ids, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -418,8 +419,40 @@ def _migrate_mandataires(partie: Optional[dict]) -> Optional[dict]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+def create_partie(
+    data: dict,
+    *,
+    dav_id: Optional[str] = None,
+    dav_uid: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Validate, generate IDs, write to Firestore. Returns (doc, errors).
+
+    The id and the vCard UID are minted here — an ``id`` or ``vcard_uid``
+    inside *data* is DISCARDED, whoever sends it: honouring a forwarded
+    ``id`` would let a caller pick (and, through ``set()``, overwrite) an
+    existing contact. The web form, Réception and the connector all pass
+    dicts.
+
+    ``dav_id`` / ``dav_uid`` (keyword-only) serve ONE caller, the CardDAV
+    PUT create branch. A CardDAV client names the new resource in its URL
+    and carries its own UID; minting fresh ones stored the contact under an
+    id the phone never learns — every later GET/PUT of its href 404'd and a
+    duplicate with another UID synced down (lot 0b, 2026-09-27; the
+    ``create_task`` fix, lot 0b B3, for contacts). With ``dav_id`` the
+    document is written with ``create()``, never ``set()``: CardDAV reaches
+    this branch because its read found nothing, and that read FAILS OPEN (a
+    read error reads as « absent »), so a contact already stored under that
+    id is refused (``[DAV_ID_TAKEN]``) instead of silently overwritten. An
+    unusable name returns ``[DAV_ID_INVALID]``. ``dav_uid`` is kept only
+    when it can be stored verbatim (``dav_ids.client_uid``), and is ignored
+    without ``dav_id``. This is the documented Rule-6 exception for
+    CardDAV-created contacts: their document id is the client's name.
+    """
+    data.pop("id", None)
+    data.pop("vcard_uid", None)
+    if dav_id is not None and not dav_ids.valid_resource_id(dav_id):
+        return None, [dav_ids.DAV_ID_INVALID]
+
     data = _normalize(data)
     merged = {**_default_doc(), **_sanitize_data(data)}
     errors = _validate(merged)
@@ -427,8 +460,11 @@ def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    partie_id = str(uuid.uuid4())
-    vcard_uid = str(uuid.uuid4())
+    partie_id = dav_id if dav_id is not None else str(uuid.uuid4())
+    vcard_uid = (
+        (dav_ids.client_uid(dav_uid) if dav_id is not None else None)
+        or str(uuid.uuid4())
+    )
 
     merged.update(
         {
@@ -440,7 +476,13 @@ def create_partie(data: dict) -> tuple[Optional[dict], list[str]]:
     provenance.stamp_create(merged, now)
 
     try:
-        db.collection(COLLECTION).document(partie_id).set(merged)
+        ref = db.collection(COLLECTION).document(partie_id)
+        if dav_id is not None:
+            ref.create(merged)
+        else:
+            ref.set(merged)
+    except AlreadyExists:
+        return None, [dav_ids.DAV_ID_TAKEN]
     except Exception:
         log_unexpected("partie write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]

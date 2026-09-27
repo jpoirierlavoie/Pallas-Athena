@@ -34,6 +34,7 @@ from dav.xml_utils import (
     serialize_multistatus,
 )
 from models.audit_event import record_deletion
+from models.dav_ids import DAV_ID_INVALID, DAV_ID_TAKEN, valid_resource_id
 from models.partie import (
     MANDATAIRE_CHECK_UNAVAILABLE,
     create_partie,
@@ -45,7 +46,7 @@ from models.partie import (
     update_partie,
     vcard_to_partie,
 )
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_dav_operation, sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span
 
 logger = logging.getLogger(__name__)
@@ -340,6 +341,16 @@ def get_resource(partie_id: str) -> Response:
 @carddav_bp.route("/dav/addressbook/<partie_id>.vcf", methods=["PUT"])
 @dav_auth_required
 def put_resource(partie_id: str) -> Response:
+    # The URL names the resource, and a created contact is stored under that
+    # very name — so a name that can never be a document id is refused
+    # before any read (an existing contact necessarily has a valid id, so
+    # this never refuses an update).
+    if not valid_resource_id(partie_id):
+        log_dav_operation("put", "addressbook", status_code=400,
+                          reason="nom_invalide")
+        return Response("Bad Request — identifiant de ressource invalide.",
+                        status=400)
+
     # Conditional request handling
     if_match = request.headers.get("If-Match")
     if_none_match = request.headers.get("If-None-Match")
@@ -379,9 +390,23 @@ def put_resource(partie_id: str) -> Response:
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
-        # Create with the ID from the URL
-        data["id"] = partie_id
-        created, errors = create_partie(data)
+        # The URL names the new resource and the body carries its UID: the
+        # contact is stored under BOTH, or the phone's href 404s on every
+        # later GET/PUT and a duplicate with another UID syncs down.
+        uid = data.pop("vcard_uid", None)
+        created, errors = create_partie(data, dav_id=partie_id, dav_uid=uid)
+        if errors == [DAV_ID_TAKEN]:
+            # create() found a contact our fail-open read did not see (a
+            # read error, or a racing PUT): refused, never overwritten.
+            log_dav_operation("put", "addressbook", status_code=412,
+                              reason="id_pris")
+            return Response("Precondition Failed", status=412)
+        if errors == [DAV_ID_INVALID]:
+            log_dav_operation("put", "addressbook", status_code=400,
+                              reason="nom_invalide")
+            return Response(
+                "Bad Request — identifiant de ressource invalide.", status=400
+            )
         if errors:
             return _refused(partie_id, errors)
         # Resource (re)enters the collection — drop any stale tombstone

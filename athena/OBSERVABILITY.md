@@ -87,7 +87,7 @@ All emitted at INFO. Optional fields are omitted from the record when `None` so 
 | `propfind` | Collection / resource discovery |
 | `report` | `addressbook-multiget`, `calendar-multiget`, etc. |
 | `get` | Single resource fetch |
-| `put` | Create / update. A REFUSED VTODO create (lot 0b) carries `status_code` and `reason` ∈ `nom_invalide` (400 — the URL's resource name cannot become a document id), `id_pris` (412 — `create()` found a task the fail-open read missed: refused, never overwritten), `id_autre_composant` (412 — a note or an event already holds that id). Never the resource name itself: a client may name a resource after a UID that embeds an address |
+| `put` | Create / update. A REFUSED VTODO create (lot 0b, `collection_type: dossier`) or vCard create (lot 0b B7, `collection_type: addressbook` — a CardDAV PUT whose URL name cannot be an id is refused before any read, create or update alike) carries `status_code` and `reason` ∈ `nom_invalide` (400 — the URL's resource name cannot become a document id), `id_pris` (412 — `create()` found a task or contact the fail-open read missed: refused, never overwritten), `id_autre_composant` (412, VTODO only — a note or an event already holds that id). Never the resource name itself: a client may name a resource after a UID that embeds an address. A vCard the MODEL refuses (422, or 503 when the mandataire reverse check could not run) logs a WARNING on the module logger `dav.carddav` carrying the error COUNT only — never the text, which can name a contact |
 | `delete` | Resource removal |
 | `mkcol` | Collection creation (rare — DavX5 doesn't issue MKCOL today) |
 | `sync_collection` | Sync REPORT |
