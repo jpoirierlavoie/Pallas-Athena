@@ -675,7 +675,9 @@ def test_the_caller_sweep_finds_what_it_exists_for():
         "routes/documents.py:folder_zip",
         "routes/documents.py:api_finaliser",
         "routes/doc_templates.py:template_create",
-        "routes/doc_templates.py:generate",
+        # Lot 2A T4: the generation's save is the service's (one assembly
+        # for the popup and the connector); the route no longer uploads.
+        "services/gabarits.py:save_into_projets",
         "routes/invoices.py:invoice_note_docx",
         "routes/reception.py:verser",
     ):

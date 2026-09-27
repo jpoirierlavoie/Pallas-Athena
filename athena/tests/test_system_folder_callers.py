@@ -11,6 +11,14 @@ reason is shown (a 200 fragment — htmx only swaps a 2xx).
 
 Each refusal test FAILS on the old code, which saved at the root. The model
 itself is pinned over the real client in ``tests/test_folders.py``.
+
+Lot 2A, step T4: the gabarit generation's save moved into
+``services/gabarits.save_into_projets`` (the one assembly the popup and the
+connector share), so the gabarit tests below patch the SERVICE's seams —
+``get_dossier``, ``fill_docx``, ``ensure_system_folder``,
+``upload_document`` — where they used to patch the route's. What they pin
+is unchanged; the route-level pins over the real store are in
+``tests/test_gabarit_service.py``.
 """
 
 import os
@@ -32,6 +40,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.doc_templates as dt
     import routes.documents as rd
     import routes.invoices as ri
+    import services.gabarits as sg
     from models import folder as folder_model
 
 from flask import Flask  # noqa: E402
@@ -64,11 +73,11 @@ def gabarit(monkeypatch):
         "id": "t1", "name": "Lettre", "placeholders": [], "category": "autre",
         "version": 1,
     })
-    monkeypatch.setattr(dt, "get_dossier",
+    monkeypatch.setattr(sg, "get_dossier",
                         lambda did: {"id": "d1", "file_number": "2026-001"})
-    monkeypatch.setattr(dt, "_collect_values", lambda template: ({}, 0))
+    monkeypatch.setattr(sg, "cabinet_dict", lambda: {})
     monkeypatch.setattr(dt, "get_template_bytes", lambda tid: b"docx")
-    monkeypatch.setattr(dt, "fill_docx", lambda data, values: b"rempli")
+    monkeypatch.setattr(sg, "fill_docx", lambda data, values, **kw: b"rempli")
     events: list = []
     monkeypatch.setattr(dt, "log_template_event",
                         lambda event, **kw: events.append((event, kw)))
@@ -78,9 +87,9 @@ def gabarit(monkeypatch):
 def test_a_generation_without_projets_is_refused_never_saved_at_the_root(
     web, gabarit, monkeypatch,
 ):
-    monkeypatch.setattr(dt, "ensure_system_folder",
+    monkeypatch.setattr(sg, "ensure_system_folder",
                         lambda did, role: (None, [folder_model.READ_ERROR]))
-    monkeypatch.setattr(dt, "upload_document",
+    monkeypatch.setattr(sg, "upload_document",
                         lambda **kw: pytest.fail("enregistré hors de « Projets »"))
 
     reponse = web.post("/gabarits/generer",
@@ -107,8 +116,8 @@ def test_a_generation_files_into_the_system_folder_by_role(web, gabarit, monkeyp
         saved.update(kw)
         return {"id": "doc1"}, []
 
-    monkeypatch.setattr(dt, "ensure_system_folder", _ensure)
-    monkeypatch.setattr(dt, "upload_document", _upload)
+    monkeypatch.setattr(sg, "ensure_system_folder", _ensure)
+    monkeypatch.setattr(sg, "upload_document", _upload)
 
     reponse = web.post("/gabarits/generer",
                        data={"template_id": "t1", "dossier_id": "d1"})
@@ -126,9 +135,9 @@ def test_a_generation_resolves_the_uid_before_writing_the_folder(
     cannot name a Storage prefix (plan rule 8)."""
     with web.session_transaction() as s:
         s["user_id"] = "unknown"
-    monkeypatch.setattr(dt, "ensure_system_folder",
+    monkeypatch.setattr(sg, "ensure_system_folder",
                         lambda *a: pytest.fail("dossier « Projets » écrit"))
-    monkeypatch.setattr(dt, "upload_document",
+    monkeypatch.setattr(sg, "upload_document",
                         lambda **kw: pytest.fail("document enregistré"))
     reponse = web.post("/gabarits/generer",
                        data={"template_id": "t1", "dossier_id": "d1"},
@@ -218,5 +227,7 @@ def test_no_caller_finds_a_system_folder_by_name_any_more():
             if "get_or_create_folder(" in text:
                 offenders.append(str(path.relative_to(athena)))
     assert offenders == []
-    for module in (dt, ri):
+    # The gabarit route reaches « Projets » through the service since T4.
+    for module in (sg, ri):
         assert module.ensure_system_folder is folder_model.ensure_system_folder
+    assert not hasattr(dt, "ensure_system_folder")

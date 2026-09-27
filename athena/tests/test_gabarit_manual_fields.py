@@ -1,11 +1,18 @@
-"""Route-side handling of manual gabarit fields (Sept. 2026).
+"""Handling of submitted gabarit fields (Sept. 2026; hoisted lot 2A T4).
 
-Covers the two seams the popup owns: collecting a submitted value (defaults,
-the ALL-CAPS rule, and the option guard the ``<select>`` alone used to
-provide) and deciding whether a resolved value needs a ``<textarea>``.
+Covers the seam the popup owns: collecting a submitted value (defaults, the
+ALL-CAPS rule, the option guard the ``<select>`` alone used to provide, and
+each field's ceiling).
 
-Pure enough to run without Firestore: the Flask client is mocked away and the
-helpers are exercised inside a bare request context.
+Rewritten deliberately with lot 2A, step T4: the collection moved from the
+route's ``_collect_values`` to ``services.gabarits.values_from_submission``
+(one assembly for the popup and the connector), the option refusal became a
+``GenerationRefused`` (``manual_option_invalid``), and the one behaviour the
+hoist CHANGES is pinned here — a single-line value past its ceiling is now
+REFUSED, where the route cut it at 2 000 characters in silence.
+
+Pure enough to run without Firestore: the client is mocked away and no
+request context is needed any more.
 """
 
 import os
@@ -20,25 +27,24 @@ os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
 os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 import pytest
-from flask import Flask
 
 with mock.patch("google.cloud.firestore.Client"):
-    from routes.doc_templates import (
-        _MULTILINE_MAX_CHARS,
-        _SCALAR_MAX_CHARS,
-        _ManualOptionError,
-        _collect_values,
+    from services.gabarits import (
+        FIELD_PREFIX,
+        MANUAL_MAX_CHARS as _SCALAR_MAX_CHARS,
+        MULTILINE_MAX_CHARS as _MULTILINE_MAX_CHARS,
+        GenerationRefused,
+        values_from_submission,
     )
 from utils.template_fields import EMPTY_OPTION_VALUE
-
-app = Flask(__name__)
 
 BLANK_LINE = "\n\n"
 
 
 def _collect(placeholders, form):
-    with app.test_request_context("/gabarits/generer", method="POST", data=form):
-        return _collect_values({"placeholders": placeholders})
+    """The popup's form, as the route hands it to the service."""
+    submitted = {name: form.get(f"{FIELD_PREFIX}{name}", "") for name in placeholders}
+    return values_from_submission({"placeholders": placeholders}, submitted)
 
 
 # ── The option guard ───────────────────────────────────────────────────
@@ -48,9 +54,11 @@ def _collect(placeholders, form):
 # crafted POST could therefore print any mention at all.
 
 def test_a_value_outside_the_option_list_is_refused_by_name():
-    with pytest.raises(_ManualOptionError) as exc:
+    with pytest.raises(GenerationRefused) as exc:
         _collect(["privilège"], {"champ__privilège": "TOTALEMENT INVENTÉ"})
-    assert exc.value.field_name == "privilège"
+    assert exc.value.reason == "manual_option_invalid"
+    assert exc.value.field == "privilège"
+    assert "TOTALEMENT" not in exc.value.message     # never quotes the value
 
 
 def test_each_offered_option_is_accepted():
@@ -123,11 +131,19 @@ def test_a_multi_paragraph_value_is_not_truncated_at_the_scalar_cap():
     assert len(block) < _MULTILINE_MAX_CHARS
 
 
-def test_a_single_line_value_still_takes_the_scalar_cap():
+def test_a_single_line_manual_value_past_its_ceiling_is_refused_never_cut():
+    """Rewritten deliberately (lot 2A T4): this test pinned the TRUNCATION —
+    the letter printed the first 2 000 characters and nothing said so. A
+    value past its ceiling is now refused, naming the field."""
     values, _ = _collect(
-        ["objet_lettre"], {"champ__objet_lettre": "x" * (_SCALAR_MAX_CHARS + 500)}
+        ["objet_lettre"], {"champ__objet_lettre": "x" * _SCALAR_MAX_CHARS}
     )
-    assert len(values["objet_lettre"]) == _SCALAR_MAX_CHARS
+    assert len(values["objet_lettre"]) == _SCALAR_MAX_CHARS    # AT the cap: kept
+    with pytest.raises(GenerationRefused) as exc:
+        _collect(["objet_lettre"],
+                 {"champ__objet_lettre": "x" * (_SCALAR_MAX_CHARS + 1)})
+    assert exc.value.reason == "value_too_long"
+    assert exc.value.field == "objet_lettre"
 
 
 def test_blank_lines_survive_collection_so_the_expansion_can_fire():

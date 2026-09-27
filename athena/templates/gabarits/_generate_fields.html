@@ -150,10 +150,13 @@
         {% elif f.multiline %}
         {# A block value (one paragraph per party): an <input type=text> would
            strip its newlines and the paragraph expansion would never fire. #}
-        <textarea name="champ__{{ f.name }}" rows="5" maxlength="20000"
+        {# maxlength = the field's REAL ceiling (services.gabarits.field_ceiling),
+           the one the server refuses past — never a fixed 2000, under which a
+           prefilled 3 000-character sommaire could not be edited and sent. #}
+        <textarea name="champ__{{ f.name }}" rows="5" maxlength="{{ f.ceiling }}"
                   class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none">{{ f.value }}</textarea>
         {% else %}
-        <input type="text" name="champ__{{ f.name }}" maxlength="2000"
+        <input type="text" name="champ__{{ f.name }}" maxlength="{{ f.ceiling }}"
                value="{{ f.value }}"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
         {% endif %}

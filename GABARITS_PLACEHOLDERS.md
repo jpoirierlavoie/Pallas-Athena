@@ -47,6 +47,17 @@ and the syntax rules that govern them.
   single-line input would strip the newlines and the expansion would silently
   never fire. (This is what `{{dossier.sommaire}}` and the `_avec_adresse`
   party blocks rely on.)
+- **Each value has a ceiling, and past it the generation is REFUSED — never
+  cut** (since lot 2A, 2026-09-27): a manual field 2 000 characters, an auto
+  field 5 000 (the longest stored field, `dossier.sommaire`) or its own
+  resolved length when the server builds a longer one, a multi-paragraph
+  value 20 000. The popup's input stops you at the same number. Until then
+  every single-line value was silently CUT at 2 000 — a one-paragraph
+  sommaire lost its end in the letter.
+- **The popup's choices are checked when you generate.** A client or an
+  opposing party that is no longer on the dossier, or a destinataire that no
+  longer exists, refuses the generation with a message — it is never
+  replaced by the dossier's first party.
 - **Missing value → visible marker.** An auto field left blank renders as
   `[CHAMP MANQUANT : name]`; a prompted (manual) field left blank renders as
   `[À COMPLÉTER : name]`. Passthrough names get neither — the raw `{{name}}`

@@ -18,8 +18,6 @@ only (§11 of the Phase H spec).
 """
 
 import io
-from datetime import datetime
-from typing import Optional
 
 from flask import (
     Blueprint,
@@ -32,7 +30,6 @@ from flask import (
     url_for,
 )
 from markupsafe import escape
-from werkzeug.utils import secure_filename
 
 from auth import login_required
 from models import concurrency
@@ -60,48 +57,25 @@ from models.doc_template import (
     set_active_template,
     update_template,
 )
-from models.document import (
-    projet_document_name,
-    upload_document,
-)
-from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder
 from models.dossier import get_dossier
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
-from models.partie import display_name, get_partie, get_parties_bulk, list_parties
-from tz import MTL
-from utils.cabinet import cabinet_dict
+from models.partie import display_name, list_parties
+from services import gabarits
 from utils import storage_identity
-from utils.docx_fill import DocxFillError, fill_docx
-from utils.logging_setup import log_template_event, log_unexpected
-from utils.template_fields import (
-    classify_placeholders,
-    fallback_value,
-    manual_options,
-    manual_spec,
-    manual_value,
-    resolve_values,
-)
-from utils.tracing_setup import add_attributes, span
+from utils.deadlines import today_mtl
+from utils.logging_setup import log_template_event
+from utils.template_fields import classify_placeholders
+from utils.tracing_setup import add_attributes
 from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, is_htmx
 from security import sanitize
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
 
-class _ManualOptionError(ValueError):
-    """A manual field was submitted a value outside its option list."""
-
-    def __init__(self, field_name: str) -> None:
-        super().__init__(field_name)
-        self.field_name = field_name
-
-
-_SCALAR_MAX_CHARS = 2000
-# A multi-paragraph value (a party block) is a different animal from the
-# letter metadata _SCALAR_MAX_CHARS was drawn for: five parties with their
-# addresses already exceed it.
-_MULTILINE_MAX_CHARS = 20000
-_FIELD_PREFIX = "champ__"
+# The generation logic (slots, values and their ceilings, fill, save into
+# « Projets ») lives in services/gabarits.py since lot 2A, step T4 — one
+# assembly for this popup and for the connector. What stays here is the
+# request adapter.
 
 
 _is_htmx = is_htmx
@@ -614,126 +588,43 @@ def _arg(name: str) -> str:
     )
 
 
-def _first_id(entries: Optional[list]) -> str:
-    if entries:
-        return entries[0].get("id", "") or ""
-    return ""
-
-
-def _dossier_parties(dossier: Optional[dict]) -> dict:
-    """Every party of *dossier*, loaded in ONE round-trip: {id: partie doc}.
-
-    The dossier's clients[]/opposing_parties[] entries are name snapshots with
-    no address, so the role-scoped blocks need the documents themselves.
-    ``get_parties_bulk`` is a keyed ``db.get_all`` (no index) and fails OPEN to
-    ``{}`` — which degrades a block to names alone, never to an error: this is
-    a document-rendering aid, not a register.
-    """
-    if not dossier:
-        return {}
-    ids = [
-        e.get("id")
-        for e in (dossier.get("clients") or []) + (dossier.get("opposing_parties") or [])
-        if e.get("id")
-    ]
-    return get_parties_bulk(ids) if ids else {}
-
-
 def _fields_context(template: dict, destinataire_prefill: str = "") -> dict:
-    """Build the field-form context: slots, resolved values, defaults."""
-    dossier_id = _arg("dossier_id")
-    dossier = get_dossier(dossier_id) if dossier_id else None
-    if dossier is None:
-        dossier_id = ""
+    """Build the field-form context: slots, resolved values, defaults.
 
-    client_id = _arg("client_id")
-    adverse_id = _arg("adverse_id")
-    destinataire_id = _arg("destinataire_id") or destinataire_prefill
-
-    clients = (dossier or {}).get("clients", [])
-    opposing = (dossier or {}).get("opposing_parties", [])
-    if dossier:
-        valid_client_ids = {c.get("id") for c in clients}
-        if client_id not in valid_client_ids:
-            client_id = _first_id(clients)
-        valid_adverse_ids = {p.get("id") for p in opposing}
-        if adverse_id not in valid_adverse_ids:
-            adverse_id = _first_id(opposing)
-    else:
-        # No dossier: the client slot falls back to a free partie pick
-        # (spec §5); the adverse slot has no fallback.
-        adverse_id = ""
-
-    client = get_partie(client_id) if client_id else None
-    if client is None:
-        client_id = ""
-    adverse = get_partie(adverse_id) if adverse_id else None
-    destinataire = get_partie(destinataire_id) if destinataire_id else None
-    if destinataire is None:
-        destinataire_id = ""
-
-    today = datetime.now(MTL).date()
-    placeholders = template.get("placeholders", [])
-    resolved = resolve_values(
-        placeholders,
-        dossier=dossier,
-        client=client,
-        adverse=adverse,
-        destinataire=destinataire,
-        firm=cabinet_dict(),
-        today=today,
-        parties=_dossier_parties(dossier),
+    The popup RENDER resolves its slots LENIENTLY (``services.gabarits``):
+    the dossier picker carries the previous dossier's selection by
+    hx-include, and a selection that is not on the dossier is reset to its
+    first party — shown to the lawyer here, before anything is generated.
+    The generation POST resolves the same slots strictly and refuses."""
+    slots = gabarits.resolve_slots(
+        _arg("dossier_id"),
+        _arg("client_id"),
+        _arg("adverse_id"),
+        _arg("destinataire_id") or destinataire_prefill,
+        lenient=True,
     )
-
-    # Re-classify on every render so the field set is always correct — even
-    # for templates uploaded before this taxonomy (their stored *_fields
-    # lists may be stale). Only auto + manual fields become form inputs;
-    # passthrough placeholders (blocks, civilité, salutations, unknowns) are
-    # left in the .docx for the user to complete in Word, surfaced as a note.
-    classification = classify_placeholders(placeholders)
-    auto_set = set(classification.auto)
-    manual_set = set(classification.manual)
-    fields = []
-    for name in placeholders:
-        if name in auto_set:
-            kind = "auto"
-        elif name in manual_set:
-            kind = "manual"
-        else:
-            continue  # passthrough — not a form field
-        value = resolved.get(name, "")
-        options = None
-        if kind == "manual":
-            options = manual_options(name)
-            if not value:
-                value = (manual_spec(name) or {}).get("default", "") or ""
-        # A value carrying a blank line is a BLOCK: docx_fill clones the host
-        # paragraph once per chunk. It must round-trip through a <textarea> —
-        # an <input type=text> strips newlines by the HTML value-sanitization
-        # algorithm, which would flatten the party block into one line and the
-        # expansion would silently never fire.
-        multiline = "\n\n" in value.replace("\r\n", "\n")
-        fields.append({
-            "name": name, "kind": kind, "value": value,
-            "options": options, "multiline": multiline,
-        })
-
+    resolved = gabarits.resolve_auto_values(template, slots)
+    classification = classify_placeholders(template.get("placeholders", []))
     return {
         "template": template,
-        "dossier": dossier,
-        "dossier_id": dossier_id,
-        "clients": clients,
-        "opposing_parties": opposing,
-        "client_id": client_id,
-        "adverse_id": adverse_id,
-        "client": client,
-        "client_display": display_name(client) if client else "",
-        "destinataire": destinataire,
-        "destinataire_id": destinataire_id,
-        "destinataire_display": display_name(destinataire) if destinataire else "",
+        "dossier": slots.dossier,
+        "dossier_id": slots.dossier_id,
+        "clients": slots.clients,
+        "opposing_parties": slots.opposing_parties,
+        "client_id": slots.client_id,
+        "adverse_id": slots.adverse_id,
+        "client": slots.client,
+        "client_display": display_name(slots.client) if slots.client else "",
+        "destinataire": slots.destinataire,
+        "destinataire_id": slots.destinataire_id,
+        "destinataire_display": (
+            display_name(slots.destinataire) if slots.destinataire else ""),
         "partie_role_labels": PARTIE_ROLE_LABELS,
         "slots_required": sorted(classification.slots_required),
-        "fields": fields,
+        # Only auto + manual fields become form inputs; passthrough
+        # placeholders (blocks, civilité, salutations, unknowns) are left in
+        # the .docx for the user to complete in Word, surfaced as a note.
+        "fields": gabarits.form_fields(template, resolved),
         "passthrough_fields": classification.passthrough,
         "generated": None,
     }
@@ -785,50 +676,26 @@ def generate_fields() -> str:
     return render_template("gabarits/_generate_fields.html", **ctx)
 
 
-def _collect_values(template: dict) -> tuple[dict[str, str], int]:
-    """Pull one value per prompted placeholder from the form; blanks become
-    the visible French fallback strings (§6.7).
+_SLOT_REASONS = frozenset({"slot_foreign", "slot_unknown", "slot_ambiguous"})
 
-    Passthrough placeholders (former blocks, civilité, salutations, unknown
-    names) are omitted from the result, so :func:`fill_docx` leaves each
-    ``{{name}}`` verbatim in the output for the user to complete in Word.
-    Returns ``(values, missing)``.
-    """
-    classification = classify_placeholders(template.get("placeholders", []))
-    auto_set = set(classification.auto)
-    manual_set = set(classification.manual)
-    values: dict[str, str] = {}
-    missing = 0
-    for name in template.get("placeholders", []):
-        if name in auto_set:
-            is_auto = True
-        elif name in manual_set:
-            is_auto = False
-        else:
-            continue  # passthrough — leave {{name}} in the output for Word
-        raw = request.form.get(f"{_FIELD_PREFIX}{name}", "")
-        cap = _MULTILINE_MAX_CHARS if "\n" in raw else _SCALAR_MAX_CHARS
-        raw = raw[:cap]
-        if is_auto:
-            value = raw.strip()
-            if not value:
-                value = fallback_value(name, is_auto=True)
-                missing += 1
-        else:
-            options = manual_options(name)
-            if options and raw.strip() and raw.strip() not in {v for _, v in options}:
-                # The <select> is the only constraint on the browser side; a
-                # crafted or stale POST must not write an arbitrary mention
-                # into a letter. Refuse by name rather than coerce.
-                raise _ManualOptionError(name)
-            value = manual_value(name, raw)
-            # Compare against the marker itself rather than sniffing its
-            # prefix: a legitimate value could one day begin the same way, and
-            # the two would then be indistinguishable.
-            if value == fallback_value(name, is_auto=False):
-                missing += 1
-        values[name] = value
-    return values, missing
+
+def _generation_refused(template_id: str, exc: gabarits.GenerationRefused,
+                        *, dossier_id: str = "") -> Response | str:
+    """Say a refused generation where the lawyer will read it.
+
+    htmx 2.0.4 only swaps 2xx, so the popup gets a 200 fragment (a 4xx
+    would never render and the button would look dead). The no-JS direct
+    download is a plain POST: it lands on the template's page with the
+    refusal in its banner — until lot 2A T4 it landed there with no word."""
+    fields = {"template_id": template_id, "reason": exc.reason}
+    if dossier_id:
+        fields["dossier_id"] = dossier_id
+    if exc.reason in _SLOT_REASONS and exc.field.endswith("_id"):
+        fields["slot"] = exc.field[: -len("_id")]   # client|adverse|destinataire
+    log_template_event("generation_failed", **fields)
+    if _is_htmx():
+        return _champs_error(exc.message)
+    return _detail_redirect(template_id, erreur=exc.message)
 
 
 @doc_templates_bp.route("/generer", methods=["POST"])
@@ -846,141 +713,66 @@ def generate() -> Response | str:
         return redirect(url_for("doc_templates.template_list"))
 
     dossier_id = request.form.get("dossier_id", "").strip()
-    dossier = get_dossier(dossier_id) if dossier_id else None
-    if dossier_id and dossier is None:
-        # A dossier was selected at render time but no longer resolves —
-        # never fall through to the download branch (an HTMX submit would
-        # swap raw .docx bytes into the page).
-        log_template_event(
-            "generation_failed", template_id=template_id,
-            reason="dossier_not_found",
-        )
-        if _is_htmx():
-            return _champs_error(
-                "Le dossier sélectionné est introuvable. Fermez la fenêtre et réessayez."
-            )
-        return redirect(url_for("doc_templates.template_detail", template_id=template_id))
-
     try:
-        values, missing = _collect_values(template)
-    except _ManualOptionError as exc:
-        # htmx 2.0.4 only swaps 2xx, so _champs_error answers 200 — a 4xx
-        # fragment would never render and the button would look dead.
-        log_template_event(
-            "generation_failed", template_id=template_id,
-            reason="manual_option_invalid",
+        # STRICT: a selection that is not on the dossier (a contact removed
+        # since the popup rendered, a crafted form) is refused — never
+        # swapped for the dossier's first party. A dossier that no longer
+        # resolves is refused too: an HTMX submit must never fall through to
+        # the download branch (it would swap raw .docx bytes into the page).
+        slots = gabarits.resolve_slots(
+            dossier_id,
+            request.form.get("client_id", ""),
+            request.form.get("adverse_id", ""),
+            request.form.get("destinataire_id", ""),
         )
-        message = (
-            f"La valeur du champ « {exc.field_name} » ne figure pas dans "
-            "la liste proposée. Rouvrez la fenêtre et choisissez une option."
-        )
-        if _is_htmx():
-            return _champs_error(message)
-        return redirect(
-            url_for("doc_templates.template_detail", template_id=template_id)
-        )
+        # The server's own auto values set each auto field's real ceiling;
+        # the values FILLED are still the submitted ones — the lawyer may
+        # have edited a prefilled value in the popup.
+        resolved = gabarits.resolve_auto_values(template, slots)
+        submitted = {
+            name: request.form.get(f"{gabarits.FIELD_PREFIX}{name}", "")
+            for name in template.get("placeholders", [])
+        }
+        values, missing = gabarits.values_from_submission(
+            template, submitted, resolved=resolved)
+    except gabarits.GenerationRefused as exc:
+        return _generation_refused(template_id, exc)
+    dossier = slots.dossier
     add_attributes(template_id=template_id, field_count=len(values))
 
     docx_bytes = get_template_bytes(template_id)
     if docx_bytes is None:
-        log_template_event(
-            "generation_failed", template_id=template_id,
-            reason="template_file_unavailable",
-        )
-        if _is_htmx():
-            return _champs_error(
-                "Le fichier du gabarit est introuvable. Téléversez-le à nouveau."
-            )
-        return redirect(url_for("doc_templates.template_detail", template_id=template_id))
-
+        return _generation_refused(template_id, gabarits.GenerationRefused(
+            "template_file_unavailable", gabarits.TEMPLATE_FILE_UNAVAILABLE))
     try:
-        with span("template.fill", template_id=template_id, field_count=len(values)):
-            filled = fill_docx(docx_bytes, values)
-    except DocxFillError:
-        log_template_event(
-            "generation_failed", template_id=template_id, reason="template_invalid"
-        )
-        if _is_htmx():
-            return _champs_error("Le gabarit est invalide et n'a pas pu être rempli.")
-        return redirect(url_for("doc_templates.template_detail", template_id=template_id))
-    except Exception:
-        log_unexpected("template fill failed", template_id=template_id)
-        log_template_event(
-            "generation_failed", template_id=template_id, reason="fill_error"
-        )
-        if _is_htmx():
-            return _champs_error("Erreur lors de la génération. Veuillez réessayer.")
-        return redirect(url_for("doc_templates.template_detail", template_id=template_id))
+        filled, _demoted = gabarits.fill(
+            docx_bytes, values, template_id=template_id)
+    except gabarits.GenerationRefused as exc:
+        return _generation_refused(template_id, exc)
 
-    today = datetime.now(MTL).date()
-    reference = (dossier or {}).get("file_number", "")
-    display = projet_document_name(reference, template.get("name", "Gabarit"), today)
-    out_name = secure_filename(f"{display}.docx")
-    if not out_name.lower().endswith(".docx"):
-        out_name = f"projet_{today.isoformat()}.docx"
+    today = today_mtl()
+    display, out_name = gabarits.output_names(template, dossier, today)
 
     if dossier:
-        # The uid first, then « Projets »: nothing is written — not even the
-        # folder — for a request that could not file the document anyway.
         try:
-            user_id = storage_identity.request_uid()
-        except storage_identity.StorageIdentityUnavailable as exc:
-            user_id, uid_errors = None, [str(exc)]
-        else:
-            uid_errors = []
-        folder = None
-        if not uid_errors:
-            # Found by its ROLE, at its deterministic id (lot 2A, T2). A
-            # failure REFUSES: the old get_or_create_folder answered None
-            # and the document was saved at the dossier root instead.
-            folder, folder_errors = ensure_system_folder(
-                dossier_id, SYSTEM_ROLE_PROJETS
+            # The uid first: nothing is written — not even « Projets » —
+            # for a request that could not file the document anyway.
+            try:
+                user_id = storage_identity.request_uid()
+            except storage_identity.StorageIdentityUnavailable as exc:
+                raise gabarits.GenerationRefused("save_failed", str(exc)) from exc
+            doc = gabarits.save_into_projets(
+                template=template, dossier=dossier, filled=filled,
+                uid=user_id, today=today,
             )
-            if folder is None:
-                log_template_event(
-                    "generation_failed", template_id=template_id,
-                    dossier_id=dossier_id, reason="projets_unavailable",
-                )
-                message = (folder_errors[0] if folder_errors else
-                           "Le dossier « Projets » est indisponible. Réessayez.")
-                if _is_htmx():
-                    return _champs_error(message)
-                return redirect(url_for("doc_templates.template_detail", template_id=template_id))
-        metadata = {
-            "category": template.get("category", "autre"),
-            "folder_id": folder["id"] if folder else None,
-            "display_name": display,
-            "genere_depuis": (
-                f"Généré depuis le gabarit «{template.get('name', '')}» "
-                f"v{template.get('version', 1)}"
-            ),
-            "tags": ["gabarit"],
-        }
-        if uid_errors:
-            doc, errors = None, uid_errors
-        else:
-            doc, errors = upload_document(
-                dossier_id=dossier_id,
-                dossier_file_number=dossier.get("file_number", ""),
-                file_stream=io.BytesIO(filled),
-                filename=out_name,
-                file_size=len(filled),
-                metadata=metadata,
-                user_id=user_id,
-            )
-        if errors:
-            log_template_event(
-                "generation_failed", template_id=template_id,
-                dossier_id=dossier_id, reason="save_failed",
-            )
-            if _is_htmx():
-                return _champs_error(errors[0])
-            return redirect(url_for("doc_templates.template_detail", template_id=template_id))
+        except gabarits.GenerationRefused as exc:
+            return _generation_refused(template_id, exc,
+                                       dossier_id=slots.dossier_id)
 
         log_template_event(
             "document_generated",
             template_id=template_id,
-            dossier_id=dossier_id,
+            dossier_id=slots.dossier_id,
             saved_document_id=doc["id"],
             field_count=len(values),
             missing_count=missing,
@@ -988,14 +780,12 @@ def generate() -> Response | str:
         if not _is_htmx():
             # No-JS fallback: the saved document's page, not a fragment.
             return redirect(url_for("documents.document_detail", document_id=doc["id"]))
-        ctx = _fields_context(template)
-        ctx["generated"] = {
+        return render_template("gabarits/_generate_fields.html", generated={
             "document_id": doc["id"],
             "display_name": doc.get("display_name", out_name),
             "detail_url": url_for("documents.document_detail", document_id=doc["id"]),
             "download_url": url_for("documents.document_download", document_id=doc["id"]),
-        }
-        return render_template("gabarits/_generate_fields.html", **ctx)
+        })
 
     # No dossier: direct download. The form posts full-page in this state
     # (target=_blank) — an HTMX submit landing here would swap raw .docx
