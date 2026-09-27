@@ -27,8 +27,9 @@ pointing firebase.json at firestore.indexes.json):
 - tasks (status ASC, due_date ASC): serves ``list_urgent_tasks`` —
   status in (à_faire, en_cours) AND due_date <= cutoff, order_by due_date.
 - dossiers (status ASC, prescription_date ASC): serves
-  ``list_prescription_alerts`` — status == actif AND
-  prescription_date <= cutoff, order_by prescription_date.
+  ``list_prescription_alerts`` — ONE query per open status (status ==
+  actif, then status == en_attente) AND prescription_date <= cutoff,
+  order_by prescription_date, merged in Python (lot 0b).
 - steps (status ASC, deadline_date ASC) with queryScope COLLECTION_GROUP:
   serves ``protocol.list_urgent_steps`` — the collection-group query over
   every protocol's steps subcollection.

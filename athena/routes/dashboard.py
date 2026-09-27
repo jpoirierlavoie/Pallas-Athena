@@ -126,9 +126,9 @@ def _get_urgent_protocol_steps(now: datetime) -> list[dict]:
 def _get_prescription_alerts(now: datetime) -> list[dict]:
     """Return dossiers with prescription dates within 60 days.
 
-    Both filters (status actif, prescription_date <= cutoff) run
-    server-side, bounded, via ``list_prescription_alerts``; the
-    juridical-day computation stays here.
+    Both filters (status actif OR en_attente — one query per status —
+    and prescription_date <= cutoff) run server-side, bounded, via
+    ``list_prescription_alerts``; the juridical-day computation stays here.
     """
     try:
         from models.dossier import list_prescription_alerts

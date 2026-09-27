@@ -1508,17 +1508,30 @@ def count_open() -> int:
         return 0
 
 
-def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
-    """Return active dossiers with a prescription date on or before *cutoff*.
+# The statuses whose dossiers still carry a running limitation period. An
+# « en_attente » dossier is ON HOLD, not closed: its prescription keeps
+# running in law whatever the file's workflow state, so it must alert
+# exactly like an « actif » one. Until lot 0b (2026-09-27) the query read
+# ``status == actif`` only, and putting a dossier on hold silenced its
+# deadline on the dashboard AND in the MCP briefing, in perfect silence.
+PRESCRIPTION_ALERT_STATUSES: tuple[str, ...] = ("actif", "en_attente")
 
-    Both filters run server-side (``status == actif`` AND
-    ``prescription_date <= cutoff``), ordered by prescription_date ascending
-    and bounded — requires the ``dossiers`` composite index
-    (status ASC, prescription_date ASC); see ``firestore.indexes.json``.
-    Dossiers without a prescription date are excluded automatically: Firestore
-    range filters never match null/missing values, matching the previous
-    Python-side behaviour. Legacy party fields are migrated on read, like
-    every other dossier read path.
+
+def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
+    """Return open dossiers with a prescription date on or before *cutoff*.
+
+    « Open » means every status of :data:`PRESCRIPTION_ALERT_STATUSES`
+    (``actif`` and ``en_attente``). ONE query PER STATUS, each on the
+    existing ``dossiers`` composite index (status ASC, prescription_date
+    ASC) — ``status == <s>`` AND ``prescription_date <= cutoff``, ordered by
+    prescription_date ascending and bounded by *limit* — merged and sorted
+    here in Python. Never a single ``status in (…)`` + ``order_by``: that is
+    a different query shape, and a shape the index does not serve fails
+    until an index builds, degrading this view to an EMPTY LIST — the worst
+    possible failure mode for a limitation deadline. Dossiers without a
+    prescription date are excluded automatically: Firestore range filters
+    never match null/missing values. Legacy party fields are migrated on
+    read, like every other dossier read path.
 
     A dossier carrying a ``prise_action_date`` is dropped: the recourse has
     been filed, so the deadline no longer looms. That filter lives HERE, and
@@ -1536,49 +1549,85 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
       additive, with no migration). Every current alert would vanish, in
       silence.
 
-    Returns [] on failure (the dashboard degrades gracefully).
+    Each status query degrades ON ITS OWN: a failed read is logged and
+    skipped, so an outage of one never hides the other's alerts. The
+    « result window full » warning is likewise judged PER QUERY, on its RAW
+    count. Rows are de-duplicated by id: the two reads are not one
+    snapshot, so a dossier whose status flips between them would otherwise
+    alert twice. The result may therefore hold up to ``2 * limit`` rows.
+
+    Returns [] when every query failed (the dashboard degrades gracefully).
     """
-    try:
-        query = (
-            db.collection(COLLECTION)
-            .where(filter=FieldFilter("status", "==", "actif"))
-            .where(filter=FieldFilter("prescription_date", "<=", cutoff))
-            .order_by("prescription_date")
-            .limit(limit)
-        )
-        alerts = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
-        if len(alerts) >= limit:
-            # Prescription deadlines must never be silently truncated. Checked
-            # on the RAW count, before the silencing filter: a silenced
-            # dossier still consumes a slot, so a full window means real alerts
-            # are hidden beyond it — which must still be said.
-            logger.warning(
-                "list_prescription_alerts: result window full (limit=%d) — "
-                "some alerts may be hidden", limit,
+    raw: list[dict] = []
+    seen: set[str] = set()
+    for status in PRESCRIPTION_ALERT_STATUSES:
+        try:
+            query = (
+                db.collection(COLLECTION)
+                .where(filter=FieldFilter("status", "==", status))
+                .where(filter=FieldFilter("prescription_date", "<=", cutoff))
+                .order_by("prescription_date")
+                .limit(limit)
             )
-        # Silencing + the effective window run through derive_prescription
-        # (WP13): a depot event — or the legacy prise_action_date it folds
-        # in — silences (art. 2896: interrupted until judgment); a
-        # reconnaissance/suspension pushes the EFFECTIVE date, possibly past
-        # the cutoff. Events only push dates LATER, so the raw-date server
-        # query over-fetches, never under-fetches — no new index. Rows kept
-        # with no effective date are « a_verifier »: alerted, flagged
-        # unverified, never silently dropped.
-        out = []
-        for d in alerts:
+            rows = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
+        except Exception as exc:
+            logger.warning(
+                "list_prescription_alerts: query failed (status=%s): %s",
+                status, exc,
+            )
+            continue
+        if len(rows) >= limit:
+            # Prescription deadlines must never be silently truncated. Checked
+            # on the RAW count of THIS query, before the silencing filter: a
+            # silenced dossier still consumes a slot, so a full window means
+            # real alerts are hidden beyond it — which must still be said.
+            logger.warning(
+                "list_prescription_alerts: result window full "
+                "(status=%s, limit=%d) — some alerts may be hidden",
+                status, limit,
+            )
+        for d in rows:
+            key = d.get("id") or ""
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            raw.append(d)
+    # One merged chronology, oldest raw date first — the order each query
+    # already had on its own. Every row carries a date (the range filter
+    # excludes documents without one).
+    raw.sort(key=lambda d: d.get("prescription_date"))
+
+    # Silencing + the effective window run through derive_prescription
+    # (WP13): a depot event — or the legacy prise_action_date it folds
+    # in — silences (art. 2896: interrupted until judgment); a
+    # reconnaissance/suspension pushes the EFFECTIVE date, possibly past
+    # the cutoff. Events only push dates LATER, so the raw-date server
+    # query over-fetches, never under-fetches — no new index. Rows kept
+    # with no effective date are « a_verifier »: alerted, flagged
+    # unverified, never silently dropped.
+    out = []
+    for d in raw:
+        try:
             derived = derive_prescription(d)
-            if derived["status"] in ("interrompue", "imprescriptible"):
-                continue
-            eff = derived["date_effective"]
-            if eff is not None and eff > cutoff:
-                continue
-            d["prescription_status"] = derived["status"]
-            d["prescription_date_effective"] = eff
-            out.append(d)
-        return out
-    except Exception as exc:
-        logger.warning("list_prescription_alerts: query failed: %s", exc)
-        return []
+        except Exception as exc:
+            # A row the derivation cannot read is ALERTED as « a_verifier »
+            # on its raw date, never dropped — and it no longer empties the
+            # whole list, as it did through the old enclosing try.
+            logger.warning(
+                "list_prescription_alerts: derivation failed: %s",
+                type(exc).__name__,
+            )
+            derived = {"status": "a_verifier", "date_effective": None}
+        if derived["status"] in ("interrompue", "imprescriptible"):
+            continue
+        eff = derived["date_effective"]
+        if eff is not None and eff > cutoff:
+            continue
+        d["prescription_status"] = derived["status"]
+        d["prescription_date_effective"] = eff
+        out.append(d)
+    return out
 
 
 def count_dossiers_for_partie_strict(partie_id: str) -> int:
