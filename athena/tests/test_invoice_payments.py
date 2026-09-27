@@ -334,11 +334,13 @@ def test_une_payee_posee_a_la_main_se_rouvre(store):
 
 
 def test_une_payee_adossee_au_grand_livre_ne_se_rouvre_pas(store):
-    """Le piège que la réouverture ouvrirait : void_invoice ne refuse QUE le
-    statut « payée », jamais un montant encaissé. Sans ce garde,
-    « Rouvrir » puis « Annuler » libérerait les heures d'une facture
-    réellement encaissée — et rien ne l'attraperait, l'annulation ne touchant
-    pas amount_paid."""
+    """Le piège que la réouverture ouvrirait : « Rouvrir » puis « Annuler »
+    libérerait les heures d'une facture réellement encaissée. Jusqu'au
+    2026-09-26 ce garde était le SEUL rempart — void_invoice ne refusait que
+    le statut « payée », jamais un montant encaissé. Il refuse désormais
+    l'argent lui-même (tests/test_invoice_lifecycle.py) ; la sortie reste
+    fermée ici quand même, parce qu'un bouton qui s'affiche pour être refusé
+    est un défaut de conception."""
     store["doc"] = _invoice(status="payée", amount_paid=287437)
     ok, err = imod.update_status("inv1", "envoyée")
     assert ok is False
@@ -368,9 +370,12 @@ def test_en_retard_garde_une_sortie_non_destructive(store):
 
 
 def test_le_chemin_payee_envoyee_annulee_reste_ferme_sur_une_facture_encaissee(store):
-    """Bout en bout : la seule voie vers l'annulation d'une facture encaissée
-    passerait par sa réouverture, et elle est fermée. void_invoice n'a jamais
-    eu à regarder l'argent, et n'a toujours pas à le faire."""
+    """Bout en bout : la voie « Rouvrir » vers l'annulation d'une facture
+    encaissée est fermée. (Réécrit le 2026-09-26 : la docstring affirmait que
+    void_invoice « n'a toujours pas à regarder l'argent ». C'était faux dès
+    qu'une facture ENVOYÉE portait un paiement partiel — void l'annulait et
+    libérait ses heures, le paiement restant sur la facture annulée. Il
+    regarde désormais l'argent ; tests/test_invoice_lifecycle.py l'épingle.)"""
     store["doc"] = _invoice(status="payée", amount_paid=287437)
     assert "envoyée" not in imod.available_transitions(store["doc"])
     ok, _ = imod.void_invoice("inv1")

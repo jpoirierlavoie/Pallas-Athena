@@ -474,6 +474,7 @@ _PALLAS_PORTAIL = logging.getLogger("pallas.portail")
 _PALLAS_BOOKINGS = logging.getLogger("pallas.bookings")
 _PALLAS_HEARING = logging.getLogger("pallas.hearing")
 _PALLAS_SETTINGS = logging.getLogger("pallas.settings")
+_PALLAS_INVOICE = logging.getLogger("pallas.invoice")
 
 
 AuthEvent = Literal[
@@ -659,6 +660,16 @@ AdminLedgerEvent = Literal[
     "admin_export",
 ]
 AdminLedgerOutcome = Literal["success", "refused", "failure"]
+# Invoice lifecycle (lot 0b, 2026-09-26). Before this family a status change
+# and a void — the two operations that decide whether an invoice's hours can
+# be billed again — left NO trace at all. IDs, statuses, counts and machine
+# reasons only: never an invoice number, an amount, a client name.
+InvoiceEvent = Literal[
+    "invoice_status_changed",
+    "invoice_voided",
+    "invoice_refused",
+]
+InvoiceOutcome = Literal["success", "refused"]
 # Portail client (spec L1). One vocabulary for BOTH processes: the portal
 # service emits the portail_* client-facing events, the main service emits
 # the task/reconciliation/courriel/réception ones — Cloud Logging separates
@@ -1057,6 +1068,33 @@ def log_bookings_event(
         "failure": logging.ERROR,
     }[outcome]
     _emit(_PALLAS_BOOKINGS, level, event, fields)
+
+
+def log_invoice_event(
+    event: InvoiceEvent,
+    invoice_id: str,
+    *,
+    outcome: InvoiceOutcome = "success",
+    reason: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit an invoice lifecycle event — logger ``pallas.invoice``.
+
+    ``success`` emits at INFO, ``refused`` at WARNING. ``reason`` is a short
+    machine-stable code (``paiement_inscrit``, ``stale_etag``…) — never the
+    French refusal, which can quote an amount. The ``RedactionFilter`` does
+    not scrub amounts or names, so neither belongs in the fields.
+    """
+    fields: dict[str, Any] = {
+        "event": event,
+        "outcome": outcome,
+        "invoice_id": invoice_id,
+        **extra,
+    }
+    if reason is not None:
+        fields["reason"] = reason
+    level = logging.INFO if outcome == "success" else logging.WARNING
+    _emit(_PALLAS_INVOICE, level, event, fields)
 
 
 def log_unexpected(

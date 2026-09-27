@@ -283,13 +283,17 @@ def test_un_numero_importe_est_conserve_tel_quel(store):
 def test_un_import_ne_touche_jamais_le_compteur_annuel(store, monkeypatch):
     """L'épingle de la décision D-2.
 
-    Le générateur est remplacé par une explosion : s'il est seulement
-    ATTEINT, le test casse. Et le document compteur reste absent.
+    La référence du compteur est remplacée par une explosion : si elle est
+    seulement CONSTRUITE, le test casse. Et le document compteur reste
+    absent. (Depuis le 2026-09-26 l'allocation vit DANS la transaction de
+    create_invoice et `_generate_invoice_number` n'existe plus ;
+    `_invoice_counter_ref` est l'unique porte vers le compteur — l'amorçage
+    comme la lecture transactionnelle passent par elle.)
     """
-    def _boom():
+    def _boom(*_a, **_k):
         raise AssertionError("le compteur ne doit jamais être lu sur un import")
 
-    monkeypatch.setattr(invoice, "_generate_invoice_number", _boom)
+    monkeypatch.setattr(invoice, "_invoice_counter_ref", _boom)
     e = _entry(store, "e1")
     doc, errors = _create(store, entries=[e], invoice_number="2019-F014")
     assert errors == []

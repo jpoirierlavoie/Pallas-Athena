@@ -293,7 +293,10 @@ NEVERS: tuple[Never, ...] = (
             "It never sends an invoice and never changes an invoice's "
             "status — voiding included."
         ),
-        forbidden=("update_status", "void_invoice"),
+        # void_invoice_report is void_invoice's own body since 2026-09-26
+        # (void_invoice is its thin wrapper): the sweep matches names
+        # exactly, so both must be named.
+        forbidden=("update_status", "void_invoice", "void_invoice_report"),
         # Nothing outbound at all: the connector sends no email.
         forbidden_modules=("utils.courriel",),
     ),
@@ -307,7 +310,13 @@ NEVERS: tuple[Never, ...] = (
             "It never allocates an invoice number: the application's year "
             "counter is never read or advanced."
         ),
-        forbidden=("_generate_invoice_number", "_scan_max_invoice_seq"),
+        # The allocation moved INSIDE create_invoice's transaction
+        # (2026-09-26): the standalone _generate_invoice_number is gone, and
+        # these are the helpers that read or seed the year counter now.
+        forbidden=(
+            "_invoice_counter_ref", "_counter_seed", "_next_invoice_number",
+            "_scan_max_invoice_seq",
+        ),
         # create_invoice allocates from the counter whenever no number is
         # given — so every connector call must give one.
         required_keywords=(("create_invoice", "invoice_number"),),

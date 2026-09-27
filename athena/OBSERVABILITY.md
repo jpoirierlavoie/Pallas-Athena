@@ -217,6 +217,16 @@ Administration accounting (« comptabilité d'administration », August 2026) �
 | `admin_reconciliation_abandoned` | success | A draft was deleted |
 | `admin_export` | success | Journal CSV or PDF; `format`, `account_id`, `row_count` |
 
+### `log_invoice_event(event, invoice_id, *, outcome='success', reason=None, **extra)` — logger `pallas.invoice`
+
+Invoice lifecycle (lot 0b, 2026-09-26) — emitted by `models/invoice.py` itself, so every surface that changes a status or voids an invoice leaves the same trace. Before this family those two operations — the ones that decide whether an invoice's hours can be billed again — left **no log line at all**. `outcome` ∈ `{"success", "refused"}` → INFO / WARNING. `reason` is a machine-stable code, **never** the French refusal (it can quote an amount); never an invoice number, an amount, or a client name — the `RedactionFilter` scrubs neither.
+
+| `event` | Typical outcome | Notes |
+|---|---|---|
+| `invoice_status_changed` | success | `update_status` committed; `invoice_id`, `from_status`, `to_status` |
+| `invoice_voided` | success | `void_invoice` committed; `invoice_id`, `dossier_id`, `released_count`, `foreign_count` (sources that name ANOTHER invoice — billed again since, left untouched: a non-zero value is the trace of the read-then-set race on the time-entry form, worth investigating), `missing_count` (line-item sources whose document no longer exists) |
+| `invoice_refused` | refused | `operation` ∈ `status` \| `void`; `reason` ∈ `annulation_par_statut` (« annulée » asked of `update_status`), `transition_refusee`, `stale_etag`, `introuvable`, `deja_annulee`, `payee`, `paiement_fideicommis`, `paiement_inscrit`, `encaissement_administration`, `lignes_illisibles` |
+
 ### `log_portail_event(event, outcome='success', *, invitation_id=None, batch=None, dossier_id=None, document_id=None, reason=None, **extra)` — logger `pallas.portail`
 
 Portail client (spec L1). One vocabulary for **both services**: the portal process emits the client-facing events, the main service emits the task/reconciliation/courriel/Réception ones — Cloud Logging separates them by `resource.labels.module_id` (`portail` vs `default`; the log name `pallas-athena` is shared, so any alert filtering only on `logName` now also matches portal traffic). `outcome` ∈ `{"success", "refused", "failure"}` → INFO / WARNING / **ERROR** — a `failure` means work could be lost (enqueue failures, reconciliation repairs) and must reach error dashboards. **IDs and counts only**: a client's email, a file name, or a display label must NEVER appear in any field — the `RedactionFilter` auto-scrubs emails but not names/filenames, and portal identity is exactly what this boundary protects.

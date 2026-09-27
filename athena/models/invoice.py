@@ -16,11 +16,12 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, db, provenance
+from models import aggregation_values, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils.deadlines import today_mtl
-from utils.logging_setup import log_unexpected, sanitize_log_value
+from utils.format_fr import format_cents_fr
+from utils.logging_setup import log_invoice_event, log_unexpected, sanitize_log_value
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,56 @@ class _SourceConflictError(Exception):
 class _DuplicateNumberError(Exception):
     """Raised inside the creation transaction when an IMPORTED number is
     already borne by another invoice — aborts, never writes."""
+
+
+class _StatusRefused(Exception):
+    """Refusal raised inside the status transaction (aborts, never writes).
+
+    ``reason`` is the machine-stable code the observability event carries.
+    """
+
+    def __init__(self, message: str, reason: str = "transition_refusee") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class _VoidRefused(Exception):
+    """Refusal raised inside the void transaction (aborts, never writes).
+
+    ``reason`` is the machine-stable code the observability event carries;
+    the French sentence is ``str(exc)``.
+    """
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+# The two registers that can carry a payment imputed on an invoice. String
+# LITERALS on purpose — importing models.admin_ledger / models.trust here
+# would close an import cycle (both import this module). The test suite pins
+# them against each module's own TRANSACTIONS_COLLECTION.
+_ADMIN_TRANSACTIONS = "admin_transactions"
+_TRUST_TRANSACTIONS = "trust_transactions"
+
+# The keys ``create_invoice`` accepts from its caller's ``data``. Everything
+# else on the stored document is decided HERE — the number, the totals, the
+# retained sources, the provenance — and the payment state above all: a
+# caller-supplied ``status``/``amount_paid``/``paid_date`` used to reach
+# storage verbatim, which only the two callers' own whitelists prevented
+# (a « payée » invoice with a payment on no ledger is exactly what the
+# single-writer doctrine of 2026-08-17 exists to make impossible). A key
+# outside this set is dropped, never merged.
+_CREATE_DATA_KEYS = frozenset({
+    "dossier_id", "dossier_file_number", "dossier_title",
+    "client_id", "client_name", "billing_address",
+    "date", "due_date", "notes", "payment_terms",
+    "retainer_applied", "gst_number", "qst_number",
+    "legacy_ref",
+    # Honoured by provenance.stamp_create only when it is a VALID via — the
+    # connector's creators have always named themselves.
+    "created_via",
+})
 
 
 # Valid statuses and their French labels
@@ -71,7 +122,15 @@ STATUS_LABELS = {
 # corriger les statuts posés à la main AVANT cette doctrine. Elle est refermée
 # dès qu'un paiement est INSCRIT — voir available_transitions, sans quoi
 # « Rouvrir » puis « Annuler » libérerait les heures d'une facture réellement
-# encaissée (void_invoice ne regarde que le statut, jamais l'argent).
+# encaissée. (void_invoice regarde désormais l'argent lui-même — 2026-09-26 —
+# mais la sortie refermée reste la première ligne : un bouton ne s'affiche
+# pas pour être refusé.)
+#
+# « annulée » figure dans la table comme une ACTION offerte par la fiche, et
+# cette action emprunte void_invoice — jamais update_status, qui la refuse
+# d'entrée (le changement de statut nu laissait toutes les sources
+# facturées pour toujours : void refusait ensuite « déjà annulée » et
+# delete_invoice refusait les références restées accrochées).
 #
 # « en_retard » gagne « envoyée » pour une raison propre : rien n'écrit ce
 # statut automatiquement, donc il se pose à la main, et sans autre sortie
@@ -85,7 +144,36 @@ STATUS_TRANSITIONS = {
 }
 
 
-def available_transitions(invoice: dict) -> tuple[str, ...]:
+def _standing_admin_encaissement(row: dict) -> bool:
+    """An administration entry whose payment on its invoice still STANDS.
+
+    The predicate of ``models.admin_ledger.sum_invoice_receipts`` —
+    ``encaissement_facture``, not annulée, not contre-passée — copied rather
+    than imported (import cycle; the test suite pins the two against each
+    other on the same rows).
+    """
+    return (
+        row.get("kind") == "encaissement_facture"
+        and row.get("status") != "annulée"
+        and not row.get("reversed_by_id")
+    )
+
+
+def _standing_trust_fee_payment(row: dict) -> bool:
+    """A trust « paiement d'honoraires » (``virement_honoraires``) that still
+    stands: not annulée, not contre-passé. Its reversal is minted as a
+    ``correction`` row carrying no invoice_id, and the original gains
+    ``reversed_by_id`` — an annulée original is the uncleared case."""
+    return (
+        row.get("purpose") == "virement_honoraires"
+        and row.get("status") != "annulée"
+        and not row.get("reversed_by_id")
+    )
+
+
+def available_transitions(
+    invoice: dict, *, receipts: Optional[list[dict]] = None,
+) -> tuple[str, ...]:
     """Les transitions que CETTE facture peut réellement prendre.
 
     ``STATUS_TRANSITIONS`` est indexée sur le seul statut : elle ne sait pas
@@ -93,22 +181,34 @@ def available_transitions(invoice: dict) -> tuple[str, ...]:
     produit. C'est pourtant cette différence qui décide du chemin de
     correction — le premier se rouvre ici, le second se corrige par
     contre-passation, qui réduit le paiement ET rouvre la facture d'elle-même
-    (``routes/admin_ledger._reduire_paiement``).
+    (``services/encaissements.reduire_paiement``).
 
-    Sans ce filtre, la réouverture serait un trou : ``void_invoice`` ne refuse
-    que le statut ``payée``, jamais un ``amount_paid`` non nul, donc
-    « Rouvrir » puis « Annuler » libérerait les heures et dépenses d'une
-    facture réellement encaissée — et rien ne l'attraperait, l'annulation ne
-    touchant pas ``amount_paid``. Le solde dû figé reparaîtrait au passage à
-    sa valeur entière dans ``get_outstanding_total``.
+    Sans ce filtre, la réouverture serait un trou : « Rouvrir » puis
+    « Annuler » libérerait les heures et dépenses d'une facture réellement
+    encaissée. ``void_invoice`` le refuse désormais lui-même, mais une
+    autorité qui offrirait l'action pour la voir refusée serait un défaut de
+    conception.
+
+    Pour la même raison, « annulée » n'est plus offerte dès qu'un paiement
+    est INSCRIT (``amount_paid > 0``, quel que soit le statut) :
+    ``void_invoice`` la refuserait. *receipts* — les écritures
+    d'administration imputées sur la facture, que la fiche lit déjà
+    (``list_invoice_receipts``) — ferme aussi le cas de dérive où une
+    écriture tient encore alors que ``amount_paid`` vaut 0. Une fonction
+    pure ne voit que ce qu'on lui donne : le cas restant (un paiement
+    d'honoraires du fidéicommis sans recette d'administration) est refusé
+    par ``void_invoice``, dont la route affiche alors le motif en bandeau.
 
     UNE seule autorité, consommée par ``update_status`` ET par la fiche : un
     bouton qui s'affiche pour être refusé est un défaut de conception.
     """
     current = invoice.get("status", "")
     allowed = STATUS_TRANSITIONS.get(current, ())
-    if current == "payée" and int(invoice.get("amount_paid", 0) or 0) > 0:
-        return tuple(s for s in allowed if s != "envoyée")
+    paid = int(invoice.get("amount_paid", 0) or 0) > 0
+    if current == "payée" and paid:
+        allowed = tuple(s for s in allowed if s != "envoyée")
+    if paid or any(_standing_admin_encaissement(r) for r in (receipts or ())):
+        allowed = tuple(s for s in allowed if s != "annulée")
     return allowed
 
 # Tax rates stored as basis points (×100 for GST, ×1000 for QST precision)
@@ -302,48 +402,64 @@ def _scan_max_invoice_seq(prefix: str) -> int:
     return max_seq
 
 
-def _generate_invoice_number() -> str:
-    """Allocate the next year-sequential invoice number « YYYY-FNNN ».
+# « YYYY-FNNN » — the canonical scheme again since the 2026-08-12 user
+# decision (the per-file « {file_number}-NN » scheme of 2026-07-17 lasted
+# four weeks — the six invoices it minted keep their numbers for ever, an
+# accounting artifact sent to a client is never renumbered). The year is the
+# MONTRÉAL calendar year (``today_mtl`` — the house clock seam; the UTC year
+# would stamp a Dec 31 evening invoice with the next millésime). Sequence:
+# 3-digit zero-padded, rolling to 4+ past 999, from the monotonic
+# transactional counter ``counters/invoices-{year}`` — never reused, never
+# decremented; a deleted invoice leaves a hole. On the first use of a year
+# the counter is seeded by ``_scan_max_invoice_seq`` so pre-counter numbering
+# continues without duplicates (per-file numbers never match the « YYYY-F »
+# prefix and are ignored). A number is never guessed, which could mint a
+# colliding one: any failure aborts the creation.
+#
+# The allocation happens INSIDE ``create_invoice``'s own transaction
+# (2026-09-26). It used to run in a transaction of its own, committed BEFORE
+# the invoice's: a source conflict, a duplicate import number or any other
+# abort of the invoice transaction then left the number consumed with no
+# invoice under it — a hole in the fee-journal sequence the lawyer could not
+# explain. Now the counter write commits with the invoice or not at all.
+# There is deliberately no standalone allocator any more: one that commits on
+# its own IS the defect.
+#
+# An IMPORTED historical number never reaches the counter (user decision
+# 2026-08-16): ``create_invoice`` resolves it through
+# ``_clean_imported_number``, and on that path the counter is neither read
+# nor written.
 
-    The canonical scheme again since the 2026-08-12 user decision (the
-    per-file « {file_number}-NN » scheme of 2026-07-17 lasted four weeks —
-    the six invoices it minted keep their numbers for ever, an accounting
-    artifact sent to a client is never renumbered). The year is the
-    MONTRÉAL calendar year (``today_mtl`` — the house clock seam; the UTC
-    year would stamp a Dec 31 evening invoice with the next millésime).
-    Sequence: 3-digit zero-padded, rolling to 4+ past 999, from the
-    monotonic transactional counter ``counters/invoices-{year}`` — never
-    reused, never decremented; a deleted invoice leaves a hole. On the
-    first use of a year the counter is seeded by ``_scan_max_invoice_seq``
-    so pre-counter numbering continues without duplicates (per-file
-    numbers never match the « YYYY-F » prefix and are ignored). Any
-    failure propagates — a number is never guessed, which could mint a
-    colliding one.
 
-    An IMPORTED historical number never passes through here and never
-    advances the counter (user decision 2026-08-16): ``create_invoice``
-    resolves it through ``_clean_imported_number`` instead, so a refused
-    import consumes nothing and this function is not even called.
+def _invoice_counter_ref(year: str):
+    """The transactional counter of *year*'s « YYYY-F » sequence."""
+    return db.collection(COUNTERS_COLLECTION).document(f"invoices-{year}")
+
+
+def _counter_seed(counter_ref, prefix: str) -> int:
+    """The seed of a year's FIRST allocation: the highest number already
+    issued under *prefix*, or 0 when the counter already exists.
+
+    Read OUTSIDE the invoice transaction on purpose — a full-collection
+    stream does not belong inside one — and only when the counter document
+    is absent. A concurrent first-of-year creation computes the same seed;
+    both transactions then read the absent counter and contend, and the
+    loser's retry re-reads the counter the winner wrote. Raises on any read
+    failure: seeding from a guess could reissue a number.
     """
-    year = today_mtl().strftime("%Y")
-    prefix = f"{year}-F"
-    counter_ref = db.collection(COUNTERS_COLLECTION).document(f"invoices-{year}")
+    if counter_ref.get().exists:
+        return 0
+    return _scan_max_invoice_seq(prefix)
 
-    seed = 0
-    if not counter_ref.get().exists:
-        seed = _scan_max_invoice_seq(prefix)
 
-    transaction = db.transaction()
-
-    @firestore.transactional
-    def _allocate(txn: firestore.Transaction) -> int:
-        snapshot = counter_ref.get(transaction=txn)
-        current = int((snapshot.to_dict() or {}).get("seq", 0)) if snapshot.exists else 0
-        next_seq = max(current, seed) + 1
-        txn.set(counter_ref, {"seq": next_seq, "updated_at": datetime.now(timezone.utc)})
-        return next_seq
-
-    return f"{prefix}{_allocate(transaction):03d}"
+def _next_invoice_number(counter_snapshot, seed: int, prefix: str) -> tuple[str, int]:
+    """``(number, next_seq)`` from the counter as read INSIDE the transaction."""
+    current = (
+        int((counter_snapshot.to_dict() or {}).get("seq", 0))
+        if counter_snapshot.exists else 0
+    )
+    next_seq = max(current, seed) + 1
+    return f"{prefix}{next_seq:03d}", next_seq
 
 
 # ── Billing address snapshot ─────────────────────────────────────────────
@@ -584,12 +700,23 @@ def create_invoice(
       reconstruct.
 
     Ordering is the contract: a refused import consumes nothing and never
-    even reads the counter.
+    even reads the counter; a refused GENERATED invoice consumes nothing
+    either, since its number is allocated inside the same transaction that
+    writes the invoice (every read — sources, counter — before any write).
+
+    Only the keys of ``_CREATE_DATA_KEYS`` are taken from *data*; the
+    payment state is forced (``brouillon``, nothing paid): an invoice is born
+    unpaid, and only the accounting register may say otherwise.
     """
     from models.time_entry import COLLECTION as TE_COLLECTION, get_time_entry
     from models.expense import COLLECTION as EXP_COLLECTION, get_expense
 
-    merged = {**_default_doc(), **_sanitize_data(data)}
+    merged = {
+        **_default_doc(),
+        **_sanitize_data(
+            {k: v for k, v in (data or {}).items() if k in _CREATE_DATA_KEYS}
+        ),
+    }
 
     errors = _validate(merged)
     if not selected_entry_ids and not selected_expense_ids:
@@ -746,17 +873,25 @@ def create_invoice(
     # counter is touched. On the imported branch it is never touched at all.
     # Note the name `invoice_number` is NOT rebound — the transaction closure
     # below reads the parameter to decide whether to run the uniqueness read.
+    counter_ref = None
+    number_prefix = ""
+    seed = 0
     if invoice_number is None:
-        # Allocate the year-sequential invoice number via the transactional
-        # counter. Any failure aborts the creation — never fall back to a
-        # guessed number.
+        # The generated number is allocated INSIDE the invoice transaction
+        # below. Only the first-of-year seed is read here (see
+        # _counter_seed). Any failure aborts the creation — never fall back
+        # to a guessed number.
+        year = today_mtl().strftime("%Y")
+        number_prefix = f"{year}-F"
+        counter_ref = _invoice_counter_ref(year)
         try:
-            resolved_number = _generate_invoice_number()
-        except Exception as exc:
-            logger.error("create_invoice: invoice number allocation failed: %s", exc)
+            seed = _counter_seed(counter_ref, number_prefix)
+        except Exception:
+            log_unexpected("create_invoice: invoice number seeding failed")
             return None, [
                 "Impossible de générer le numéro de facture. Veuillez réessayer."
             ]
+        resolved_number = ""  # decided inside the transaction
     else:
         resolved_number, number_errors = _clean_imported_number(invoice_number)
         if number_errors:
@@ -771,6 +906,10 @@ def create_invoice(
         "qst_rate": QST_RATE_BPS,
         "retainer_applied": retainer_applied,
         "amount_due": totals["total"] - retainer_applied,
+        # Born unpaid, whatever the caller sent — see _CREATE_DATA_KEYS.
+        "status": "brouillon",
+        "amount_paid": 0,
+        "paid_date": None,
     })
     provenance.stamp_create(merged, now)
 
@@ -818,6 +957,19 @@ def create_invoice(
             if clash:
                 raise _DuplicateNumberError(resolved_number)
 
+        # The last READ: the year counter, generated path only. Read after
+        # the source checks so a conflict aborts before it is even looked
+        # at, and written below WITH the invoice — an abort of this
+        # transaction, for any reason, leaves the counter where it was.
+        next_seq = 0
+        if counter_ref is not None:
+            number, next_seq = _next_invoice_number(
+                counter_ref.get(transaction=txn), seed, number_prefix
+            )
+            merged["invoice_number"] = number
+
+        if counter_ref is not None:
+            txn.set(counter_ref, {"seq": next_seq, "updated_at": now})
         txn.set(invoice_ref, merged)
         for item in line_items:
             txn.set(
@@ -849,8 +1001,8 @@ def create_invoice(
     # number in a legal accounting register is invisible to the lawyer and
     # unrepairable without renumbering an artifact already sent to a client;
     # a blocked web form on a transient error is merely annoying.
-    except Exception as exc:
-        logger.error("create_invoice: transaction failed for %s: %s", invoice_id, exc)
+    except Exception:
+        log_unexpected("create_invoice: transaction failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, invoice_id)
 
@@ -1210,103 +1362,332 @@ class _PaymentRefused(Exception):
     """Refusal raised inside the payment transaction (aborts, never writes)."""
 
 
-def update_status(invoice_id: str, new_status: str) -> tuple[bool, str]:
-    """Transition an invoice to a new status. Returns (success, error)."""
-    invoice = get_invoice(invoice_id)
-    if not invoice:
-        return False, "Facture introuvable."
+#: Why « annulée » is refused by update_status — shown to the web user AND,
+#: later, to the connector. It names the one path that releases the sources.
+VOID_BY_STATUS_REFUSED = (
+    "Une facture ne s'annule pas par un changement de statut : utilisez "
+    "« Annuler » sur la fiche de la facture — c'est la seule voie qui libère "
+    "ses entrées de temps et ses déboursés."
+)
 
-    current = invoice.get("status", "")
-    allowed = available_transitions(invoice)
-    if new_status not in allowed:
-        # Nommer la voie plutôt que de refuser sèchement : la seule raison
-        # qu'une facture payée ait de rester fermée est qu'un encaissement
-        # l'adosse, et cet encaissement a son propre chemin de correction.
-        if current == "payée" and new_status == "envoyée":
-            return False, (
-                "Cette facture porte un encaissement inscrit au grand livre. "
-                "Contre-passez l'écriture dans « Administration » — la facture "
-                "rouvrira d'elle-même."
-            )
-        if new_status == "payée":
-            return False, (
-                "Une facture se marque payée par un encaissement inscrit au "
-                "registre d'administration, jamais à la main."
-            )
-        return False, f"Transition de « {STATUS_LABELS.get(current, current)} » vers « {STATUS_LABELS.get(new_status, new_status)} » non permise."
 
-    now = datetime.now(timezone.utc)
-    try:
-        db.collection(COLLECTION).document(invoice_id).update({
+def update_status(
+    invoice_id: str,
+    new_status: str,
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Transition an invoice to a new status. Returns (success, error).
+
+    « annulée » is refused FIRST, before anything is read: a bare status
+    write left every time entry and disbursement flagged invoiced for good
+    (``void_invoice`` then refused « déjà annulée » and ``delete_invoice``
+    refused the references still hanging on). Voiding goes through
+    :func:`void_invoice`, and only there.
+
+    The read, the checks and the write run in ONE transaction. They used to
+    be a read then an unconditional ``update()``, so a concurrent automatic
+    flip to « payée » by ``record_payment`` could be overwritten by
+    « en retard ». *expected_etag* — the version the caller's page was
+    rendered from — is compared INSIDE that transaction
+    (``models.concurrency``); ``None`` asserts nothing (a page rendered
+    before its form carried one, a script).
+    """
+    if new_status == "annulée":
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="status", reason="annulation_par_statut")
+        return False, VOID_BY_STATUS_REFUSED
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> str:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _StatusRefused("Facture introuvable.", "introuvable")
+        invoice = snap.to_dict() or {}
+        if not concurrency.matches(invoice, expected_etag):
+            raise concurrency.StaleWrite()
+
+        current = invoice.get("status", "")
+        if new_status not in available_transitions(invoice):
+            # Nommer la voie plutôt que de refuser sèchement : la seule raison
+            # qu'une facture payée ait de rester fermée est qu'un encaissement
+            # l'adosse, et cet encaissement a son propre chemin de correction.
+            if current == "payée" and new_status == "envoyée":
+                raise _StatusRefused(
+                    "Cette facture porte un encaissement inscrit au grand livre. "
+                    "Contre-passez l'écriture dans « Administration » — la facture "
+                    "rouvrira d'elle-même."
+                )
+            if new_status == "payée":
+                raise _StatusRefused(
+                    "Une facture se marque payée par un encaissement inscrit au "
+                    "registre d'administration, jamais à la main."
+                )
+            raise _StatusRefused(
+                f"Transition de « {STATUS_LABELS.get(current, current)} » vers "
+                f"« {STATUS_LABELS.get(new_status, new_status)} » non permise."
+            )
+
+        transaction.update(ref, {
             "status": new_status,
-            **provenance.update_fields(now),
+            **provenance.update_fields(datetime.now(timezone.utc)),
         })
-        return True, ""
+        return current
+
+    try:
+        previous = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="status", reason="stale_etag")
+        return False, concurrency.STALE_ETAG_ERROR
+    except _StatusRefused as refusal:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="status", reason=refusal.reason)
+        return False, str(refusal)
     except Exception:
-        log_unexpected("invoice operation failed")
+        log_unexpected("invoice status update failed")
         return False, "Erreur. Veuillez réessayer."
+    provenance.note_commit(COLLECTION, invoice_id)
+    log_invoice_event("invoice_status_changed", invoice_id,
+                      from_status=previous, to_status=new_status)
+    return True, ""
 
 
-def void_invoice(invoice_id: str) -> tuple[bool, str]:
-    """Void an invoice: set status to annulée and release linked entries/expenses.
+def void_invoice_report(
+    invoice_id: str,
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Void an invoice — status « annulée » — and release its sources.
 
-    All-or-nothing: every source release AND the status flip are committed in
-    a single batch. On any failure the invoice keeps its current status and
-    no source is left stranded as invoiced.
+    Returns ``(report, errors)``. The report::
+
+        {"invoice": <the invoice as written>,
+         "released_time_entry_ids": [...], "released_expense_ids": [...],
+         "foreign_source_ids": [...], "missing_source_ids": [...]}
+
+    ONE Firestore transaction, every read before any write:
+
+    * the invoice (its status, its etag, its ``amount_paid``);
+    * its line items, and the ``timeentries``/``expenses`` whose
+      ``invoice_id`` still names it — the UNION is released, so a void can
+      never leave behind a source ``delete_invoice`` would later find
+      stranded;
+    * the administration entries and the trust payments imputed on it.
+
+    Refused — nothing written — when the invoice is missing, already
+    annulée, payée, not the version *expected_etag* names, or when money
+    still stands on it: a recorded ``amount_paid``, a standing
+    ``encaissement_facture`` in « Administration », a standing
+    ``virement_honoraires`` in « Fidéicommis ». It used to check the status
+    only: voiding a partly paid invoice released its hours for re-billing
+    while the payment stayed on the voided invoice — the client billed
+    twice for the same work. The refusal names WHERE to reverse the
+    payment first: the trust register when a trust fee payment is involved
+    (it is the source of truth of that pair, and reverses the linked admin
+    receipt itself), « Administration » otherwise.
+
+    It NEVER refuses because of a source. A source whose ``invoice_id`` is
+    empty is released (a harmless write); one that names ANOTHER invoice
+    has been billed again since — it is left untouched and reported in
+    ``foreign_source_ids``; a source document that no longer exists has
+    nothing to release and is reported in ``missing_source_ids``. Refusing
+    on either would strand the invoice for good — the victims of the
+    read-then-set race on the time-entry form are exactly such invoices,
+    and the duplicate invoice the race produced is the one the lawyer needs
+    to void. What IS refused is a line-item subcollection that comes back
+    EMPTY under a non-zero subtotal: the reads could not tell which sources
+    to release, and guessing would be worse than stopping (fail closed —
+    as is any read that raises).
     """
     from models.time_entry import COLLECTION as TE_COLLECTION
     from models.expense import COLLECTION as EXP_COLLECTION
 
-    invoice = get_invoice(invoice_id)
-    if not invoice:
-        return False, "Facture introuvable."
+    invoice_ref = db.collection(COLLECTION).document(invoice_id)
 
-    current = invoice.get("status", "")
-    if current == "annulée":
-        return False, "Cette facture est déjà annulée."
-    if current == "payée":
-        return False, "Impossible d'annuler une facture déjà payée."
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = invoice_ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _VoidRefused("Facture introuvable.", "introuvable")
+        invoice = snap.to_dict() or {}
 
-    now = datetime.now(timezone.utc)
+        status = invoice.get("status", "")
+        if status == "annulée":
+            raise _VoidRefused("Cette facture est déjà annulée.", "deja_annulee")
+        if status == "payée":
+            raise _VoidRefused(
+                "Impossible d'annuler une facture déjà payée : contre-passez "
+                "d'abord l'encaissement qui l'a soldée, ou rouvrez-la si le "
+                "statut a été posé à la main.",
+                "payee",
+            )
+        if not concurrency.matches(invoice, expected_etag):
+            raise concurrency.StaleWrite()
 
-    try:
-        # Read all line items first to find source IDs
         items = [
-            item_doc.to_dict()
-            for item_doc in (
-                db.collection(COLLECTION)
-                .document(invoice_id)
-                .collection(LINE_ITEMS_SUB)
-                .stream()
+            d.to_dict() or {}
+            for d in invoice_ref.collection(LINE_ITEMS_SUB).stream(
+                transaction=transaction
             )
         ]
+        admin_rows = [
+            d.to_dict() or {}
+            for d in db.collection(_ADMIN_TRANSACTIONS)
+            .where(filter=FieldFilter("invoice_id", "==", invoice_id))
+            .stream(transaction=transaction)
+        ]
+        trust_rows = [
+            d.to_dict() or {}
+            for d in db.collection(_TRUST_TRANSACTIONS)
+            .where(filter=FieldFilter("invoice_id", "==", invoice_id))
+            .stream(transaction=transaction)
+        ]
 
-        batch = db.batch()
+        # Money first, the trust register first of all: it is the source of
+        # truth of a fee payment and of the admin receipt it minted.
+        standing_admin = [r for r in admin_rows if _standing_admin_encaissement(r)]
+        trust_linked = any(_standing_trust_fee_payment(r) for r in trust_rows) or any(
+            r.get("trust_transaction_id") for r in standing_admin
+        )
+        if trust_linked:
+            raise _VoidRefused(
+                "Cette facture est acquittée, en tout ou en partie, par un "
+                "paiement d'honoraires tiré du fidéicommis : contre-passez ce "
+                "paiement dans « Fidéicommis » (la recette d'administration "
+                "liée suit d'elle-même), puis annulez la facture. Rien n'a été "
+                "annulé.",
+                "paiement_fideicommis",
+            )
+        amount_paid = int(invoice.get("amount_paid", 0) or 0)
+        if amount_paid > 0:
+            raise _VoidRefused(
+                f"Cette facture porte un encaissement de "
+                f"{format_cents_fr(amount_paid)} : contre-passez l'écriture "
+                "dans « Administration », puis annulez la facture — sinon ses "
+                "heures redeviendraient facturables alors que le paiement "
+                "resterait sur une facture annulée. Rien n'a été annulé.",
+                "paiement_inscrit",
+            )
+        if standing_admin:
+            raise _VoidRefused(
+                "Une écriture d'encaissement du registre d'administration est "
+                "encore imputée sur cette facture : contre-passez-la dans "
+                "« Administration », puis annulez la facture. Rien n'a été "
+                "annulé.",
+                "encaissement_administration",
+            )
 
+        if not items and int(invoice.get("subtotal", 0) or 0) != 0:
+            raise _VoidRefused(
+                "Les lignes de cette facture sont introuvables alors que son "
+                "sous-total n'est pas nul : impossible de savoir quelles "
+                "entrées libérer. Rien n'a été annulé.",
+                "lignes_illisibles",
+            )
+
+        # The sources: every one a line item names, plus every one that
+        # still names this invoice. {(collection, id): data | None}.
+        sources: dict[tuple[str, str], Optional[dict]] = {}
+        for col in (TE_COLLECTION, EXP_COLLECTION):
+            for d in (
+                db.collection(col)
+                .where(filter=FieldFilter("invoice_id", "==", invoice_id))
+                .stream(transaction=transaction)
+            ):
+                sources[(col, d.id)] = d.to_dict() or {}
         for item in items:
             source_id = item.get("source_id", "")
             if not source_id:
-                continue
-
-            # Determine collection based on type
+                continue  # the named adjustment line — nothing to release
             col = TE_COLLECTION if item.get("type") == "fee" else EXP_COLLECTION
-            batch.update(db.collection(col).document(source_id), {
+            if (col, source_id) in sources:
+                continue
+            source_snap = (
+                db.collection(col).document(source_id).get(transaction=transaction)
+            )
+            sources[(col, source_id)] = (
+                (source_snap.to_dict() or {}) if source_snap.exists else None
+            )
+
+        now = datetime.now(timezone.utc)
+        report: dict = {
+            "released_time_entry_ids": [],
+            "released_expense_ids": [],
+            "foreign_source_ids": [],
+            "missing_source_ids": [],
+        }
+        releases = []
+        for (col, source_id), data in sources.items():
+            if data is None:
+                report["missing_source_ids"].append(source_id)
+                continue
+            points_at = data.get("invoice_id") or ""
+            if points_at and points_at != invoice_id:
+                report["foreign_source_ids"].append(source_id)
+                continue
+            releases.append((col, source_id))
+            key = (
+                "released_time_entry_ids" if col == TE_COLLECTION
+                else "released_expense_ids"
+            )
+            report[key].append(source_id)
+
+        # ── writes ──
+        for col, source_id in releases:
+            transaction.update(db.collection(col).document(source_id), {
                 "invoiced": False,
                 "invoice_id": None,
                 **provenance.update_fields(now),
             })
+        stamp = {"status": "annulée", **provenance.update_fields(now)}
+        transaction.update(invoice_ref, stamp)
+        for key in report:
+            report[key].sort()
+        report["invoice"] = {**invoice, **stamp}
+        return report
 
-        # Update invoice status in the same atomic commit
-        batch.update(db.collection(COLLECTION).document(invoice_id), {
-            "status": "annulée",
-            **provenance.update_fields(now),
-        })
+    try:
+        report = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="void", reason="stale_etag")
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except _VoidRefused as refusal:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="void", reason=refusal.reason)
+        return None, [str(refusal)]
+    except Exception:
+        log_unexpected("invoice void failed")
+        return None, ["Erreur lors de l'annulation. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, invoice_id)
+    log_invoice_event(
+        "invoice_voided", invoice_id,
+        dossier_id=report["invoice"].get("dossier_id", ""),
+        released_count=(
+            len(report["released_time_entry_ids"])
+            + len(report["released_expense_ids"])
+        ),
+        foreign_count=len(report["foreign_source_ids"]),
+        missing_count=len(report["missing_source_ids"]),
+    )
+    return report, []
 
-        batch.commit()
-        return True, ""
-    except Exception as exc:
-        logger.error("void_invoice failed for %s: %s", sanitize_log_value(invoice_id), exc)
-        return False, "Erreur lors de l'annulation. Veuillez réessayer."
+
+def void_invoice(
+    invoice_id: str, *, expected_etag: Optional[str] = None,
+) -> tuple[bool, str]:
+    """:func:`void_invoice_report` for a caller that needs only the verdict.
+
+    Returns ``(success, error)`` — the historical signature, kept for its
+    callers.
+    """
+    report, errors = void_invoice_report(invoice_id, expected_etag=expected_etag)
+    if errors:
+        return False, errors[0]
+    return True, ""
 
 
 def delete_invoice(invoice_id: str) -> tuple[bool, str]:

@@ -7,232 +7,244 @@ An invoice number is « YYYY-FNNN » again — the MONTRÉAL calendar year, the
 their numbers for ever — an accounting artifact sent to a client is never
 renumbered).
 
-Same import-stub approach as test_trust: stub whatever google/firebase lib is
-missing on a bare interpreter, and (in the integration fixture) patch
-invoice.firestore so @firestore.transactional is an identity decorator —
-otherwise the real decorator would drive the fake Transaction and fail.
+Rewritten on 2026-09-26 (lot 0b). The number used to be allocated by a
+standalone ``_generate_invoice_number()`` that committed the counter in a
+transaction of its OWN, before the invoice's: every abort of the invoice
+transaction — a source edited in between, a concurrent invoicing — burned a
+number and left a hole in the fee journal. The allocation now lives INSIDE
+``create_invoice``'s transaction, and there is no standalone allocator left
+to test. So every pin below goes through ``create_invoice``, on the shared
+fake Firestore (``tests/_fake_firestore.py`` — the client, its transactions
+and the ``transactional`` retry loop are the real ones), and asserts on what
+is STORED.
 """
 
-import importlib
-import importlib.util
-import sys
-import types
-from datetime import date
-from unittest import mock
-
 import os
+import sys
+import uuid
+from datetime import date, datetime, timezone
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def _avail(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except Exception:
-        return False
-
-
-def _stub(name, module):
-    parts = name.split(".")
-    for i in range(1, len(parts)):
-        pkg = ".".join(parts[:i])
-        if pkg not in sys.modules:
-            if _avail(pkg):
-                importlib.import_module(pkg)
-                continue
-            m = types.ModuleType(pkg)
-            m.__path__ = []
-            sys.modules[pkg] = m
-            if i > 1:
-                setattr(sys.modules[".".join(parts[: i - 1])], parts[i - 1], m)
-    sys.modules[name] = module
-    if len(parts) > 1:
-        setattr(sys.modules[".".join(parts[:-1])], parts[-1], module)
-
-
-if not _avail("google.cloud.firestore"):
-    _fs = types.ModuleType("google.cloud.firestore")
-    _fs.Client = mock.MagicMock(name="firestore.Client")
-    _fs.Query = type("Query", (), {"ASCENDING": "ASCENDING", "DESCENDING": "DESCENDING"})
-    _fs.Transaction = type("Transaction", (), {})
-    _fs.transactional = lambda fn: fn
-    _stub("google.cloud.firestore", _fs)
-if not _avail("google.cloud.firestore_v1.base_query"):
-    _bq = types.ModuleType("google.cloud.firestore_v1.base_query")
-    _bq.FieldFilter = type(
-        "FieldFilter", (), {"__init__": lambda s, field_path=None, op_string=None, value=None, **k: None}
-    )
-    _stub("google.cloud.firestore_v1.base_query", _bq)
-if not _avail("icalendar"):
-    _stub("icalendar", types.ModuleType("icalendar"))
-if not _avail("firebase_admin"):
-    _fa = types.ModuleType("firebase_admin")
-    _fa.__path__ = []
-    _stub("firebase_admin", _fa)
-    _stub("firebase_admin.auth", types.ModuleType("firebase_admin.auth"))
-
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 
 with mock.patch("google.cloud.firestore.Client"):
-    import models.invoice as invoice
+    from models import expense as expense_model
+    from models import invoice
+    from models import time_entry as time_entry_model
 
+from tests._fake_firestore import install  # noqa: E402
 
-# ── Fake Firestore (transactional counter + collection scan) ───────────────
-
-
-class _Snap:
-    def __init__(self, doc_id, data):
-        self.id = doc_id
-        self._data = data
-
-    @property
-    def exists(self):
-        return self._data is not None
-
-    def to_dict(self):
-        return dict(self._data) if self._data is not None else None
-
-
-class _Query:
-    def __init__(self, store, coll):
-        self._store = store
-        self._coll = coll
-        self._filters = []
-
-    def where(self, filter=None):
-        self._filters.append((filter.field_path, filter.op_string, filter.value))
-        return self
-
-    def stream(self, transaction=None):
-        rows = list(self._store.get(self._coll, {}).values())
-        for fp, _op, val in self._filters:
-            rows = [d for d in rows if d.get(fp) == val]
-        return [_Snap(d.get("id"), d) for d in rows]
-
-
-class _DocRef:
-    def __init__(self, store, coll, doc_id):
-        self._store = store
-        self._coll = coll
-        self.id = doc_id
-
-    def get(self, transaction=None):
-        return _Snap(self.id, self._store.get(self._coll, {}).get(self.id))
-
-    def set(self, data):
-        self._store.setdefault(self._coll, {})[self.id] = dict(data)
-
-
-class _Coll(_Query):
-    def document(self, doc_id):
-        return _DocRef(self._store, self._coll, doc_id)
-
-
-class _Txn:
-    def __init__(self, store):
-        self._store = store
-
-    def set(self, ref, data):
-        ref.set(data)
-
-
-class _DB:
-    def __init__(self, store):
-        self._store = store
-
-    def collection(self, name):
-        return _Coll(self._store, name)
-
-    def transaction(self):
-        return _Txn(self._store)
-
-
-class _FS:
-    transactional = staticmethod(lambda fn: fn)
-    Transaction = object
-
-    class Query:
-        ASCENDING = "ASCENDING"
-        DESCENDING = "DESCENDING"
-
-
-class _FF:
-    def __init__(self, field_path=None, op_string=None, value=None, **_k):
-        self.field_path = field_path
-        self.op_string = op_string
-        self.value = value
+UTC = timezone.utc
+DOSSIER = "d1"
+WHEN = datetime(2026, 6, 15, tzinfo=UTC)
+COUNTER = "counters/invoices-2026"
 
 
 @pytest.fixture
-def store(monkeypatch):
-    s = {"invoices": {}, "counters": {}}
-    monkeypatch.setattr(invoice, "db", _DB(s))
-    monkeypatch.setattr(invoice, "firestore", _FS)
-    monkeypatch.setattr(invoice, "FieldFilter", _FF)
+def fake(monkeypatch):
+    f = install(monkeypatch, invoice, time_entry_model, expense_model)
     # Millésime FIGÉ (jamais un offset dérivé de l'horloge — la leçon du
-    # test de retard du 2026-08-11) : le générateur lit today_mtl, pas
+    # test de retard du 2026-08-11) : le numéro lit today_mtl, pas
     # datetime.now, et ce gel est ce que pinne test_millesime_de_montreal.
     monkeypatch.setattr(invoice, "today_mtl", lambda: date(2026, 6, 15))
-    return s
+    return f
 
 
-# ── Le générateur annuel ───────────────────────────────────────────────────
+def _entry(fake, eid: str, *, etag: str = "e0") -> str:
+    fake.seed(f"timeentries/{eid}", {
+        "id": eid, "dossier_id": DOSSIER, "date": WHEN,
+        "description": "Rédaction", "hours": 1.0, "rate": 30000,
+        "amount": 30000, "billable": True, "invoiced": False,
+        "invoice_id": None, "etag": etag,
+    })
+    return eid
 
 
-def test_sequence_annuelle_monotone(store):
-    assert invoice._generate_invoice_number() == "2026-F001"
-    assert invoice._generate_invoice_number() == "2026-F002"
-    assert invoice._generate_invoice_number() == "2026-F003"
+def _create(fake, eid: str = ""):
+    eid = eid or _entry(fake, f"te-{uuid.uuid4().hex[:8]}")
+    return invoice.create_invoice(
+        DOSSIER, [eid], [], {"dossier_id": DOSSIER, "date": WHEN},
+    )
 
 
-def test_compteur_existant_continue_sans_reamorcage(store):
+def _number(fake) -> str:
+    doc, errors = _create(fake)
+    assert errors == [], errors
+    return doc["invoice_number"]
+
+
+# ── La séquence annuelle ──────────────────────────────────────────────────
+
+
+def test_sequence_annuelle_monotone(fake):
+    assert [_number(fake) for _ in range(3)] == [
+        "2026-F001", "2026-F002", "2026-F003"]
+    assert fake.peek(COUNTER)["seq"] == 3
+
+
+def test_compteur_existant_continue_sans_reamorcage(fake):
     # Le portrait de production du retour (2026-08-12) : compteur à 30 —
     # le prochain numéro est F031, jamais une réutilisation (un numéro
-    # alloué puis brûlé ou supprimé reste un trou pour toujours).
-    store["counters"]["invoices-2026"] = {"seq": 30}
-    assert invoice._generate_invoice_number() == "2026-F031"
+    # alloué puis supprimé reste un trou pour toujours).
+    fake.seed(COUNTER, {"seq": 30})
+    assert _number(fake) == "2026-F031"
 
 
-def test_amorcage_ignore_les_numeros_par_dossier(store):
+def test_amorcage_ignore_les_numeros_par_dossier(fake):
     # Premier usage d'une année SANS compteur : l'amorçage balaie les
     # factures existantes — les « YYYY-FNNN » comptent, les numéros par
     # dossier de la parenthèse 2026-07-17→2026-08-12 sont invisibles au
     # préfixe « 2026-F » et ne peuvent ni collisionner ni décaler la suite.
-    store["invoices"] = {
+    fake.seed_collection("invoices", {
         "i1": {"id": "i1", "invoice_number": "2026-F007"},
         "i2": {"id": "i2", "invoice_number": "2026-F012"},
         "i3": {"id": "i3", "invoice_number": "2026-001-05"},
         "i4": {"id": "i4", "invoice_number": "2026-028-02"},
-    }
-    assert invoice._generate_invoice_number() == "2026-F013"
+    })
+    assert _number(fake) == "2026-F013"
 
 
-def test_amorcage_sans_facture_annuelle_demarre_a_f001(store):
-    store["invoices"] = {
-        "i1": {"id": "i1", "invoice_number": "2026-001-05"},
-    }
-    assert invoice._generate_invoice_number() == "2026-F001"
+def test_amorcage_sans_facture_annuelle_demarre_a_f001(fake):
+    fake.seed("invoices/i1", {"id": "i1", "invoice_number": "2026-001-05"})
+    assert _number(fake) == "2026-F001"
 
 
-def test_millesime_de_montreal(store):
+def test_millesime_de_montreal(fake, monkeypatch):
     # Le préfixe suit le jour civil de MONTRÉAL (today_mtl — l'unique
     # horloge maison), plus l'année UTC : une facture du 31 décembre au
     # soir porte le millésime en cours. Pinné en pointant today_mtl sur
     # une autre année que celle de l'horloge murale.
-    invoice.today_mtl = lambda: date(2030, 12, 31)
-    assert invoice._generate_invoice_number() == "2030-F001"
+    monkeypatch.setattr(invoice, "today_mtl", lambda: date(2030, 12, 31))
+    assert _number(fake) == "2030-F001"
+    assert fake.peek("counters/invoices-2030")["seq"] == 1
 
 
-def test_debordement_a_quatre_chiffres_apres_f999(store):
-    store["counters"]["invoices-2026"] = {"seq": 999}
-    assert invoice._generate_invoice_number() == "2026-F1000"
+def test_debordement_a_quatre_chiffres_apres_f999(fake):
+    fake.seed(COUNTER, {"seq": 999})
+    assert _number(fake) == "2026-F1000"
 
 
-def test_scan_max_invoice_seq_tolere_les_suffixes_non_numeriques(store):
-    store["invoices"] = {
+def test_scan_max_invoice_seq_tolere_les_suffixes_non_numeriques(fake):
+    fake.seed_collection("invoices", {
         "i1": {"id": "i1", "invoice_number": "2026-F009"},
         "i2": {"id": "i2", "invoice_number": "2026-Fxx"},   # jamais émis par nous
         "i3": {"id": "i3", "invoice_number": ""},
-    }
+    })
     assert invoice._scan_max_invoice_seq("2026-F") == 9
+
+
+# ── L'allocation vit DANS la transaction de la facture (lot 0b) ───────────
+
+
+def test_un_conflit_de_source_ne_brule_aucun_numero(fake, monkeypatch):
+    """LA régression. Une source modifiée entre la pré-lecture et la relecture
+    transactionnelle fait avorter la création — c'était vrai avant. Mais le
+    numéro, lui, avait déjà été alloué et COMMIS par une transaction à part :
+    un trou dans la séquence, qu'aucun avocat ne pouvait expliquer au Barreau.
+    Le compteur doit rester où il était, et la facture suivante prendre le
+    numéro que celle-ci n'a pas eu. (Vérifié en rétablissant l'ancien
+    allocateur : le compteur passait à 8 et le test tombait.)"""
+    fake.seed(COUNTER, {"seq": 7})
+    eid = _entry(fake, "te1")
+    real_get = time_entry_model.get_time_entry
+    rivaled = []
+
+    def _pre_read_then_rival(entry_id):
+        doc = real_get(entry_id)
+        if not rivaled:
+            # Another tab edits the entry between the pre-read and the
+            # transaction: a new etag, as every model write mints.
+            stored = fake.peek(f"timeentries/{entry_id}")
+            stored.update(hours=2.0, amount=60000, etag="rival")
+            fake.external_write(f"timeentries/{entry_id}", stored)
+            rivaled.append(entry_id)
+        return doc
+
+    monkeypatch.setattr(time_entry_model, "get_time_entry", _pre_read_then_rival)
+    doc, errors = _create(fake, eid)
+    assert doc is None
+    assert "modifiées ou facturées entre-temps" in errors[0]
+    assert fake.peek(COUNTER)["seq"] == 7, "un avortement a brûlé un numéro"
+    assert fake.peek_collection("invoices") == {}
+    assert fake.peek(f"timeentries/{eid}")["invoiced"] is False
+
+    # La facture suivante reprend exactement là : aucun trou.
+    monkeypatch.setattr(time_entry_model, "get_time_entry", real_get)
+    assert _number(fake) == "2026-F008"
+
+
+def test_le_compteur_est_lu_dans_la_transaction_et_commis_avec_la_facture(fake):
+    """La forme qui rend le trou impossible : l'écriture du compteur voyage
+    dans LE MÊME commit que la facture, ses lignes et la bascule de ses
+    sources — jamais dans un commit à elle."""
+    fake.seed(COUNTER, {"seq": 4})
+    fake.reset_logs()
+    doc, errors = _create(fake)
+    assert errors == [], errors
+    counter_commits = [c for c in fake.commits
+                       if any(path == COUNTER for _kind, path in c.ops)]
+    assert len(counter_commits) == 1
+    paths = {path for _kind, path in counter_commits[0].ops}
+    assert f"invoices/{doc['id']}" in paths
+    assert counter_commits[0].transaction is not None
+    assert any(r.transactional and COUNTER in r.paths for r in fake.reads), (
+        "le compteur doit être relu DANS la transaction de la facture"
+    )
+
+
+def test_deux_premieres_factures_de_l_annee_concurrentes_ne_partagent_pas_un_numero(
+    fake,
+):
+    """Premier usage de l'année : les deux créations calculent le même
+    amorçage hors transaction, puis lisent un compteur ABSENT dans la leur.
+    Le premier commit gagne ; le second avorte (il a lu un document qui a
+    changé) et la boucle de reprise du vrai `transactional` relit le compteur
+    écrit par le gagnant."""
+    eid = _entry(fake, "te-late")
+    fired = []
+
+    def _winner_commits_first(info):
+        if not fired and any(p == COUNTER for _k, p in info.ops):
+            fired.append(info.index)
+            fake.external_write(COUNTER, {"seq": 1})
+
+    remove = fake.add_commit_hook(_winner_commits_first)
+    try:
+        doc, errors = _create(fake, eid)
+    finally:
+        remove()
+    assert errors == [], errors
+    assert fired, "the rival commit never ran — the test proves nothing"
+    assert doc["invoice_number"] == "2026-F002"
+    assert fake.peek(COUNTER)["seq"] == 2
+
+
+def test_un_echec_d_allocation_fait_avorter_la_creation(fake, monkeypatch):
+    """« Allocation failure aborts invoice creation » : jamais un numéro
+    deviné, jamais une facture sans numéro, jamais une source basculée."""
+    def _boom(_prefix):
+        raise RuntimeError("scan indisponible")
+
+    monkeypatch.setattr(invoice, "_scan_max_invoice_seq", _boom)
+    eid = _entry(fake, "te1")
+    doc, errors = _create(fake, eid)
+    assert doc is None
+    assert errors == [
+        "Impossible de générer le numéro de facture. Veuillez réessayer."]
+    assert fake.peek_collection("invoices") == {}
+    assert fake.peek(COUNTER) is None
+    assert fake.peek(f"timeentries/{eid}")["invoiced"] is False
+
+
+def test_l_allocateur_autonome_n_existe_plus():
+    """Un allocateur qui commet de son côté EST le défaut : s'il revenait,
+    un appelant pourrait de nouveau brûler un numéro hors de la transaction
+    de la facture."""
+    assert not hasattr(invoice, "_generate_invoice_number")

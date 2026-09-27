@@ -23,7 +23,7 @@ from pagination import (
     resolve_page,
     total_pages_of,
 )
-from security import safe_internal_redirect
+from security import safe_internal_redirect, sanitize
 from utils import storage_identity
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_rate_fr, parse_cents_or_none
@@ -42,7 +42,7 @@ from models.invoice import (
     list_invoices_page,
     list_line_items,
     update_status,
-    void_invoice,
+    void_invoice_report,
 )
 from models.admin_ledger import (
     METHOD_LABELS,
@@ -67,6 +67,7 @@ from utils.invoice_docx import build_invoice_context
 from utils.logging_setup import log_template_event, log_unexpected
 from utils.template_fields import classify_placeholders, fallback_value, manual_value
 from utils.tracing_setup import add_attributes, span
+from routes import edit_conflict
 from routes._helpers import is_htmx, parse_date_input
 
 invoices_bp = Blueprint("invoices", __name__, url_prefix="/factures")
@@ -404,11 +405,19 @@ def invoice_detail(invoice_id: str) -> str:
     fee_items = [i for i in items if i.get("type") == "fee"]
     expense_items = [i for i in items if i.get("type") != "fee"]
 
+    # The accounting entries imputed on this invoice. READ-ONLY: a payment
+    # is recorded in « Administration » and nowhere else, so this sheet
+    # reports rather than accepts. Fails open to [] — a display aid must
+    # not take the page down.
+    paiements = list_invoice_receipts(invoice_id)
+
     # Available status transitions. available_transitions, jamais la table :
     # elle seule sait qu'un « payée » adossé au grand livre ne se rouvre pas
-    # à la main. Un bouton qui s'afficherait pour être refusé serait un
-    # défaut de conception.
-    transitions = available_transitions(invoice)
+    # à la main, ni qu'une facture portant un paiement ne s'annule pas. Un
+    # bouton qui s'afficherait pour être refusé serait un défaut de
+    # conception. Les écritures déjà lues lui sont remises : une écriture
+    # debout sous un amount_paid à 0 (la dérive) ferme aussi « Annuler ».
+    transitions = available_transitions(invoice, receipts=paiements)
 
     ctx = _template_context()
     ctx.update(
@@ -423,14 +432,16 @@ def invoice_detail(invoice_id: str) -> str:
         # under a different rate must read back under that rate.
         gst_rate_display=format_rate_fr(invoice.get("gst_rate") or 0, 100),
         qst_rate_display=format_rate_fr(invoice.get("qst_rate") or 0, 1000),
-        # The accounting entries imputed on this invoice. READ-ONLY: a payment
-        # is recorded in « Administration » and nowhere else, so this sheet
-        # reports rather than accepts. Fails open to [] — a display aid must
-        # not take the page down.
-        paiements=list_invoice_receipts(invoice_id),
+        paiements=paiements,
         method_labels=METHOD_LABELS,
         tx_status_labels=TX_STATUS_LABELS,
         return_to=request.args.get("return_to", ""),
+        # Rebond des actions de la fiche (statut, annulation) : leur refus —
+        # ou ce qu'une annulation a laissé de côté — revient ici en bandeau.
+        # htmx n'échange que les 2xx, et ces boutons sont des formulaires
+        # pleine page : une redirection est la seule voie qui s'affiche.
+        erreur=sanitize(request.args.get("erreur", ""), max_length=500),
+        message=sanitize(request.args.get("message", ""), max_length=2000),
     )
     return render_template("invoices/detail.html", **ctx)
 
@@ -589,45 +600,69 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
 # ── Status transitions ──────────────────────────────────────────────────
 
 
+def _back_to_detail(invoice_id: str, **params: str):
+    """Redirect to the invoice sheet, carrying a banner in its query string.
+
+    The detail page's action buttons are full-page forms; a refusal used to
+    be dropped on the floor (the non-htmx branch redirected with nothing,
+    and the htmx branch answered a 422 htmx never swaps).
+    """
+    target = url_for(
+        "invoices.invoice_detail", invoice_id=invoice_id,
+        **{k: v for k, v in params.items() if v},
+    )
+    resp = redirect(target)
+    if _is_htmx():
+        resp.headers["HX-Redirect"] = target
+    return resp
+
+
 @invoices_bp.route("/<invoice_id>/status", methods=["POST"])
 @login_required
 def invoice_update_status(invoice_id: str) -> str:
-    """Update invoice status."""
+    """Update invoice status (never to « annulée » — that is /void)."""
+    expected = edit_conflict.submitted_etag()
     new_status = request.form.get("status", "").strip()
-    success, error = update_status(invoice_id, new_status)
-
-    target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
-
+    success, error = update_status(invoice_id, new_status, expected_etag=expected)
     if not success:
-        if _is_htmx():
-            return f'<div class="text-red-600 text-sm p-2">{escape(error)}</div>', 422
-        return redirect(target)
+        return _back_to_detail(invoice_id, erreur=error)
+    return _back_to_detail(invoice_id)
 
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+
+def _void_outcome_message(report: dict) -> str:
+    """What a successful void left aside, in French — '' when nothing was.
+
+    Ids only: they are what the lawyer needs to find the rows, and they
+    carry no client data.
+    """
+    parts = []
+    foreign = report.get("foreign_source_ids") or []
+    missing = report.get("missing_source_ids") or []
+    if foreign:
+        parts.append(
+            f"{len(foreign)} entrée(s) ou déboursé(s) de cette facture sont "
+            "aujourd'hui portés à une AUTRE facture et n'ont pas été "
+            f"touchés : {', '.join(foreign)}."
+        )
+    if missing:
+        parts.append(
+            f"{len(missing)} source(s) de ses lignes n'existent plus — rien à "
+            f"libérer : {', '.join(missing)}."
+        )
+    if not parts:
+        return ""
+    return "Facture annulée. " + " ".join(parts)
 
 
 @invoices_bp.route("/<invoice_id>/void", methods=["POST"])
 @login_required
 def invoice_void(invoice_id: str) -> str:
     """Void an invoice and release linked entries/expenses."""
-    success, error = void_invoice(invoice_id)
-
-    target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
-
-    if not success:
-        if _is_htmx():
-            return f'<div class="text-red-600 text-sm p-2">{escape(error)}</div>', 422
-        return redirect(target)
-
-    if _is_htmx():
-        resp = redirect(target)
-        resp.headers["HX-Redirect"] = target
-        return resp
-    return redirect(target)
+    expected = edit_conflict.submitted_etag()
+    report, errors = void_invoice_report(invoice_id, expected_etag=expected)
+    if errors:
+        return _back_to_detail(invoice_id, erreur=errors[0])
+    return _back_to_detail(invoice_id, message=_void_outcome_message(report))
 
 
 @invoices_bp.route("/<invoice_id>/delete", methods=["POST"])

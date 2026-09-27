@@ -10,6 +10,9 @@
    such. #}
 
 {% block content %}
+{# Importé DANS le bloc : un test qui ne rend que ce bloc ne verrait pas un
+   import de niveau racine (components/_edit_conflict.html). #}
+{% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-3xl mx-auto px-4 py-6">
 
   {# ── Back + actions ────────────────────────────────────────── #}
@@ -37,6 +40,7 @@
       <form method="post" action="{{ url_for('invoices.invoice_update_status', invoice_id=invoice.id) }}" class="inline"
             data-confirm="Rouvrir cette facture ? Le statut « payée » a été posé à la main, sans encaissement inscrit en comptabilité. La facture redeviendra « envoyée » et ne pourra repasser à « payée » que par un encaissement au registre d'administration.">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {{ etag_field(invoice) }}
         <input type="hidden" name="status" value="envoyée">
         <button type="submit"
                 class="px-3 py-1.5 text-sm font-medium text-amber-700 bg-white border border-gray-300 rounded-lg hover:bg-amber-50">
@@ -48,10 +52,13 @@
         {% if invoice.status == 'payée' and status == 'envoyée' %}
         {# déjà rendue ci-dessus, avec sa confirmation #}
         {% elif status == 'annulée' %}
-        {# Cancel uses the /void route to release linked entries/expenses #}
+        {# Cancel uses the /void route to release linked entries/expenses —
+           /status refuses « annulée » outright. available_transitions ne
+           l'offre pas sur une facture portant un paiement. #}
         <form method="post" action="{{ url_for('invoices.invoice_void', invoice_id=invoice.id) }}" class="inline"
               data-confirm="Annuler cette facture ? Les entrées de temps et dépenses seront libérées.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {{ etag_field(invoice) }}
           <button type="submit"
                   class="px-3 py-1.5 text-sm font-medium text-red-600 bg-white border border-gray-300 rounded-lg hover:bg-red-50">
             Annuler
@@ -60,6 +67,7 @@
         {% else %}
         <form method="post" action="{{ url_for('invoices.invoice_update_status', invoice_id=invoice.id) }}" class="inline">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {{ etag_field(invoice) }}
           <input type="hidden" name="status" value="{{ status }}">
           {% if status == 'envoyée' %}
           <button type="submit"
@@ -88,6 +96,17 @@
       {% endif %}
     </div>
   </div>
+
+  {# ── Rebond des actions de la fiche : le refus d'un changement de statut
+     ou d'une annulation, et ce qu'une annulation a laissé de côté. Ils
+     reviennent par redirection (?erreur= / ?message=) : ces boutons sont
+     des formulaires pleine page, et un fragment 4xx ne s'affiche jamais. #}
+  {% if erreur %}
+  <div role="alert" class="mb-4 p-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl">{{ erreur }}</div>
+  {% endif %}
+  {% if message %}
+  <div role="status" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">{{ message }}</div>
+  {% endif %}
 
   {# ── Note-d'honoraires generation result (HTMX target) ─────── #}
   <div id="note-docx-result"></div>
