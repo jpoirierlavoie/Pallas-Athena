@@ -1,6 +1,7 @@
 """Hearing (court date) Firestore CRUD and RFC-5545 VEVENT serialization."""
 
 import logging
+import unicodedata
 import uuid
 from datetime import date, datetime, time, timezone, timedelta
 from typing import NamedTuple, Optional
@@ -1168,6 +1169,30 @@ def get_hearing_summary(dossier_id: str) -> dict:
 # ── RFC-5545 VEVENT serialization ─────────────────────────────────────────
 
 
+# Hearing status → RFC 5545 VEVENT STATUS. The map is LOSSY — five statuses,
+# three values — so « reportée » and « terminée » read back as « à_confirmer »
+# and « confirmée » from STATUS alone, and every phone edit (of ANY field)
+# silently rewrote a postponed or finished hearing's status. The exact value
+# rides in X-PALLAS-STATUS (DavX5 keeps unknown X- properties, as it does
+# X-PALLAS-MODALITE); vevent_to_hearing honours it ONLY when
+# _DAV_STATUS[exact] equals the STATUS received, so a change made on the
+# phone always wins over the stale X-property. Keys are the full
+# VALID_STATUSES domain (pinned by test).
+_DAV_STATUS = {
+    "confirmée": "CONFIRMED",
+    "à_confirmer": "TENTATIVE",
+    "reportée": "TENTATIVE",
+    "annulée": "CANCELLED",
+    "terminée": "CONFIRMED",
+}
+# What STATUS alone reads back as (no or contradicted X-PALLAS-STATUS).
+_DAV_STATUS_REVERSE = {
+    "CONFIRMED": "confirmée",
+    "TENTATIVE": "à_confirmer",
+    "CANCELLED": "annulée",
+}
+
+
 def _to_utc(dt: datetime) -> datetime:
     """Coerce a datetime to timezone-aware UTC (for iCalendar UTC stamps)."""
     if dt.tzinfo is None:
@@ -1269,15 +1294,13 @@ def hearing_to_vevent(hearing: dict) -> str:
             parameters={"VALUE": "URI", "FEATURE": "VIDEO"},
         )
 
-    # STATUS mapping
-    status_map = {
-        "confirmée": "CONFIRMED",
-        "à_confirmer": "TENTATIVE",
-        "reportée": "TENTATIVE",
-        "annulée": "CANCELLED",
-        "terminée": "CONFIRMED",
-    }
-    event.add("status", status_map.get(hearing.get("status", ""), "TENTATIVE"))
+    # STATUS — RFC 5545 has three VEVENT values for five statuses, so the
+    # exact status ALSO travels as X-PALLAS-STATUS (see _DAV_STATUS for why
+    # the parser trusts it only when it agrees with STATUS).
+    status = hearing.get("status", "")
+    event.add("status", _DAV_STATUS.get(status, "TENTATIVE"))
+    if status in _DAV_STATUS:
+        event.add("x-pallas-status", status)
 
     # CATEGORIES
     if hearing.get("hearing_type"):
@@ -1394,16 +1417,23 @@ def vevent_to_hearing(ical_str: str) -> dict:
         if desc:
             data["notes"] = str(desc)
 
-        # STATUS
+        # STATUS — the exact status comes back through X-PALLAS-STATUS, but
+        # only when it still AGREES with the STATUS received: a status the
+        # user changed on the phone (TENTATIVE → CONFIRMED) contradicts the
+        # stale X-property and wins. An absent STATUS omits the key
+        # (non-effacement), whatever the X-property says.
         status = component.get("status")
         if status:
             status_str = str(status).upper()
-            reverse_map = {
-                "CONFIRMED": "confirmée",
-                "TENTATIVE": "à_confirmer",
-                "CANCELLED": "annulée",
-            }
-            data["status"] = reverse_map.get(status_str, "à_confirmer")
+            exact = unicodedata.normalize(
+                "NFC", str(component.get("x-pallas-status") or "")
+            )
+            if _DAV_STATUS.get(exact) == status_str:
+                data["status"] = exact
+            else:
+                data["status"] = _DAV_STATUS_REVERSE.get(
+                    status_str, "à_confirmer"
+                )
 
         # Custom X- properties
         dossier_id = component.get("x-pallas-dossier-id")
