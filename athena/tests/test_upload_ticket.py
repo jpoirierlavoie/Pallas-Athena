@@ -645,6 +645,19 @@ def test_a_refusal_settles_the_ticket_for_its_holder_only(fake):
         ut.refuse_ticket(ticket["id"], claim_id=claim.claim_id, reason="autre")
 
 
+def test_a_closed_ticket_s_refusal_names_a_new_idempotency_key():
+    """Revue de T5 — the write protocol tells a caller to REUSE its key on a
+    retry, and a replayed opening with that key rehydrates the SAME closed
+    ticket and refuses again for 24 h. « Ouvrez-en un nouveau » alone loops;
+    every refusal that sends the caller to a new ticket says « nouvelle
+    clé », and only the in-progress one — where waiting and retrying IS the
+    answer — does not."""
+    for reason in (ut.REASON_NOT_FOUND, ut.REASON_EXPIRED, ut.REASON_REFUSED,
+                   ut.REASON_CLOSED):
+        assert "NOUVELLE idempotency_key" in ut.message_for(reason), reason
+    assert "idempotency_key" not in ut.message_for(ut.REASON_BUSY)
+
+
 def test_get_open_ticket_is_a_read_that_names_why_not(fake):
     opened = _open(fake)
     assert ut.get_open_ticket(opened["id"], now=NOW) == (opened, "")

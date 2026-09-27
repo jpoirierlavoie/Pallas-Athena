@@ -170,24 +170,29 @@ REASON_REFUSED = "refuse"
 REASON_BUSY = "en_cours"
 REASON_CLOSED = "ferme"
 
+# « Ouvrez-en un nouveau » says WHICH key: the write protocol tells a caller
+# to REUSE its idempotency_key on a retry, and a replayed opening with that
+# key rehydrates the SAME closed ticket and refuses again, for the whole
+# 24 h window — without the clause, the natural reading loops.
+_NEW_TICKET = "ouvrez-en un nouveau, avec une NOUVELLE idempotency_key"
 _MESSAGES = {
     REASON_NOT_FOUND: (
-        "Ce ticket de téléversement est introuvable : ouvrez-en un nouveau."
+        f"Ce ticket de téléversement est introuvable : {_NEW_TICKET}."
     ),
     REASON_EXPIRED: (
         "Ce ticket de téléversement a expiré (il vaut une heure) : rien n'a "
-        "été versé. Ouvrez-en un nouveau ; un fichier envoyé trop tard est "
-        "effacé automatiquement."
+        f"été versé. {_NEW_TICKET[0].upper()}{_NEW_TICKET[1:]} ; un fichier "
+        "envoyé trop tard est effacé automatiquement."
     ),
     REASON_REFUSED: (
-        "Ce ticket de téléversement a déjà été refusé : ouvrez-en un nouveau."
+        f"Ce ticket de téléversement a déjà été refusé : {_NEW_TICKET}."
     ),
     REASON_BUSY: (
         "Une finalisation de ce ticket est déjà en cours : attendez quelques "
         "minutes, puis réessayez."
     ),
     REASON_CLOSED: (
-        "Ce ticket de téléversement est fermé : ouvrez-en un nouveau."
+        f"Ce ticket de téléversement est fermé : {_NEW_TICKET}."
     ),
 }
 _STORE_MESSAGE = (
