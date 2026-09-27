@@ -30,6 +30,14 @@ against ``inspect.signature`` of ``google.cloud.storage.blob.Blob`` on
 * ``Blob.download_as_bytes(start=None, end=None, …)`` — ``end`` INCLUSIVE.
 * ``Blob.upload_from_file(file_obj, …, content_type=None, …,
   if_generation_match=None, …)``.
+* ``Blob.upload_from_string(data, content_type='text/plain', client=None,
+  predefined_acl=None, if_generation_match=None, …)`` — ``str`` data is
+  UTF-8-encoded, as the library does; ``if_generation_match=0`` →
+  ``PreconditionFailed`` (412) when a live object exists (create-only).
+* ``Blob.time_created`` — the object's creation instant (``timeCreated``),
+  a timezone-aware ``datetime``; ``None`` before a reload, like every
+  other server property. :meth:`FakeBucket.put` takes ``time_created=``
+  so a test can plant an object that is already old.
 * ``Blob.create_resumable_upload_session(content_type=None, size=None,
   origin=None, …, if_generation_match=None, …)`` → a session URL string;
   :meth:`FakeBucket.complete_session` plays the browser's PUT.
@@ -46,6 +54,7 @@ import hashlib
 import itertools
 import zlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from google.api_core.exceptions import NotFound, PreconditionFailed
@@ -59,6 +68,8 @@ class StoredObject:
     generation: int
     content_type: Optional[str] = None
     content_disposition: Optional[str] = None
+    time_created: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def md5_hash(self) -> str:
@@ -99,10 +110,13 @@ class FakeBucket:
     # ── test setup / assertions ────────────────────────────────────────
 
     def put(self, name: str, data: bytes, *, content_type: Optional[str] = None,
-            content_disposition: Optional[str] = None) -> StoredObject:
+            content_disposition: Optional[str] = None,
+            time_created: Optional[datetime] = None) -> StoredObject:
         """Store *data* at *name* (a new generation), as another writer would."""
         obj = StoredObject(data, next(self._generations), content_type,
                            content_disposition)
+        if time_created is not None:
+            obj.time_created = time_created
         self.objects[name] = obj
         return obj
 
@@ -141,6 +155,7 @@ class FakeBlob:
         self.crc32c: Optional[str] = None
         self.content_type: Optional[str] = None
         self.content_disposition: Optional[str] = None
+        self.time_created: Optional[datetime] = None
 
     def _load(self, obj: StoredObject) -> None:
         self.size = len(obj.data)
@@ -149,6 +164,7 @@ class FakeBlob:
         self.crc32c = obj.crc32c
         self.content_type = obj.content_type
         self.content_disposition = obj.content_disposition
+        self.time_created = obj.time_created
 
     def _live(self) -> StoredObject:
         obj = self.bucket.objects.get(self.name)
@@ -178,6 +194,17 @@ class FakeBlob:
         data = file_obj.read() if size is None else file_obj.read(size)
         obj = self.bucket.put(
             self.name, data, content_type=content_type or self.content_type,
+            content_disposition=self.content_disposition)
+        self._load(obj)
+
+    def upload_from_string(self, data, content_type="text/plain", client=None,
+                           predefined_acl=None, if_generation_match=None,
+                           **_kwargs) -> None:
+        self.bucket._check_generation(self.name, if_generation_match)
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        obj = self.bucket.put(
+            self.name, bytes(data), content_type=content_type,
             content_disposition=self.content_disposition)
         self._load(obj)
 

@@ -57,6 +57,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import protocol as protocol_model
     from models import task as task_model
     from models import time_entry as time_entry_model
+    import routes.doc_templates as doc_templates_routes
     import routes.documents as documents_routes
     import routes.dossiers as dossiers_routes
     import routes.hearings as hearings_routes
@@ -121,7 +122,8 @@ def client(db):
                time_expenses_routes.time_expenses_bp,
                documents_routes.documents_bp, notes_routes.notes_bp,
                tasks_routes.tasks_bp, protocols_routes.protocols_bp,
-               hearings_routes.hearings_bp):
+               hearings_routes.hearings_bp,
+               doc_templates_routes.doc_templates_bp):
         app.register_blueprint(bp)
     c = app.test_client()
     with c.session_transaction() as s:
@@ -345,6 +347,23 @@ def _step_form(dossier_id, notes, *, deadline="2099-12-01"):
     return {"deadline_date": deadline, "notes": notes}
 
 
+def _seed_doc_template(db, dossier_id):
+    db.seed("doc_templates/tpl1", {
+        "id": "tpl1", "name": "Lettre", "description": "Premier",
+        "category": "correspondance", "kind": "gabarit",
+        "filename": "lettre.docx", "original_filename": "lettre.docx",
+        "file_size": 10, "version": 1, "placeholders": [],
+        "storage_path": "users/u1/templates/tpl1/v1/lettre.docx",
+        "created_at": DT, "updated_at": DT, "etag": "e-tpl-1",
+    })
+    return "tpl1"
+
+
+def _doc_template_form(dossier_id, description, *, name="Lettre"):
+    return {"name": name, "description": description,
+            "category": "correspondance", "kind": "gabarit"}
+
+
 CASES = [
     FormCase(
         "partie", "partie", "parties", _seed_partie,
@@ -435,6 +454,18 @@ CASES = [
         None, _protocol_form,
         lambda d, m: _protocol_form(d, m, status="inventé"),
         "notes", "SOUMIS-7Q4",
+    ),
+    # Lot 2A (step T3): the gabarit edit form. No connector write reaches a
+    # template yet (the connector's template tools are Lot 2's MCP
+    # release), so the derived map above does not REQUIRE it — wired first,
+    # as the plan orders (the (a) release before the tools), and its cycle
+    # proved like every other.
+    FormCase(
+        "doc_template", "doc_template", "doc_templates", _seed_doc_template,
+        lambda i: f"/gabarits/{i}/edit", lambda i: f"/gabarits/{i}",
+        "/gabarits/new", _doc_template_form,
+        lambda d, m: _doc_template_form(d, m, name=""),
+        "description", "SOUMIS-7Q4",
     ),
     FormCase(
         "protocol_step", "protocol", "protocols", _seed_protocol_step,

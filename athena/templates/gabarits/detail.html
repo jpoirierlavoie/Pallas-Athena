@@ -2,6 +2,9 @@
 {% block title %}{{ template.name }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{#- Imported INSIDE the block (never at root level): a test that renders
+    only this block would not see a root-level import. #}
+{% from "components/_edit_conflict.html" import etag_field %}
 <div class="max-w-4xl mx-auto px-4 py-6">
 
   {# ── Back + actions ──────────────────────────────────────────── #}
@@ -28,6 +31,15 @@
     </div>
   </div>
 
+  {# ── Bandeaux : ce qu'une action vient de faire, ou pourquoi elle a été
+       refusée (une redirection 2xx les porte — htmx n'échange que les 2xx). #}
+  {% if message %}
+  <div role="status" class="mb-4 p-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-700">{{ message }}</div>
+  {% endif %}
+  {% if erreur %}
+  <div role="alert" class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">{{ erreur }}</div>
+  {% endif %}
+
   {# ── Header card ─────────────────────────────────────────────── #}
   <div class="bg-white rounded-xl border border-gray-200 p-6 mb-4">
     <div class="flex items-center gap-2 flex-wrap mb-1">
@@ -35,6 +47,14 @@
       <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
         {{ category_labels.get(template.category, template.category) }}
       </span>
+      {% if special %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+        {{ kind_labels.get(template.kind, template.kind) }}
+      </span>
+      {% endif %}
+      {% if designated %}
+      <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">Actif</span>
+      {% endif %}
       <span class="text-xs text-gray-400">v{{ template.version }}</span>
     </div>
     {% if template.description %}
@@ -59,6 +79,46 @@
       </a>
     </div>
   </div>
+
+  {# ── Désignation « actif » (D11) — un seul gabarit par type spécial,
+       choisi ICI par le juriste, jamais par la récence ni par Claude. ── #}
+  {% if special %}
+  {% if designated %}
+  <div class="mb-4 p-4 bg-white border border-gray-200 rounded-xl text-sm text-gray-700">
+    <p>
+      Gabarit actif des « {{ active_kind_name }} » : c'est lui que la
+      génération utilise.
+      {%- if template.active_designated_at %}
+      Désigné le {{ (template.active_designated_at|to_mtl).strftime('%Y-%m-%d') }}.
+      {%- endif %}
+    </p>
+  </div>
+  {% else %}
+  <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    <p>
+      {%- if designation_unreadable %}
+      La désignation des gabarits « {{ active_kind_name }} » n'a pas pu être
+      lue — lecture impossible. Rechargez la page dans un instant.
+      {%- elif designated_other %}
+      Ce gabarit n'est pas le gabarit actif : les « {{ active_kind_name }} »
+      utilisent « {{ designated_other.name }} ».
+      {%- else %}
+      Aucun gabarit « {{ active_kind_name }} » n'est désigné comme actif : la
+      génération est refusée tant qu'aucun ne l'est.
+      {%- endif %}
+    </p>
+    <form method="POST" class="mt-2"
+          action="{{ url_for('doc_templates.template_activate', template_id=template.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {{ etag_field(template) }}
+      <button type="submit"
+              class="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg">
+        Désigner comme gabarit actif
+      </button>
+    </form>
+  </div>
+  {% endif %}
+  {% endif %}
 
   {# ── Split-run warnings ──────────────────────────────────────── #}
   {% if template.validation_warnings %}
@@ -109,6 +169,55 @@
     {% endif %}
   </div>
 
+  {# ── Versions (D11) — un remplacement ne détruit plus rien : chaque
+       fichier installé reste ici, et « Rétablir » en fait une NOUVELLE
+       version (l'historique ne fait que croître). ────────────────── #}
+  {% if versions %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Versions</h2>
+    <div class="divide-y divide-gray-100">
+      {% for v in versions %}
+      <div class="flex items-center justify-between gap-3 py-2">
+        <div class="min-w-0">
+          <p class="text-sm text-gray-900">
+            Version {{ v.version }}
+            {%- if v.version == current_version %}
+            <span class="text-xs text-gray-500">— en vigueur</span>
+            {%- endif %}
+          </p>
+          <p class="text-xs text-gray-500">
+            {{ v.original_filename or v.filename }}
+            {%- if v.created_at %} · installée le {{ (v.created_at|to_mtl).strftime('%Y-%m-%d') }}
+            {%- else %} · date d'installation inconnue
+            {%- endif %}
+            {%- if v.created_via == 'mcp' %} · par Claude (connecteur){% endif %}
+            {%- if v.restored_from %} · rétablie depuis la version {{ v.restored_from }}{% endif %}
+          </p>
+        </div>
+        {% if v.version != current_version %}
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <a href="{{ url_for('doc_templates.template_version_download', template_id=template.id, version=v.version) }}"
+             class="text-sm font-medium text-indigo-600 hover:text-indigo-700">
+            Télécharger
+          </a>
+          <form method="POST"
+                action="{{ url_for('doc_templates.template_version_restore', template_id=template.id, version=v.version) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {{ etag_field(template) }}
+            <button type="submit"
+                    title="Rétablir cette version (elle devient une nouvelle version)"
+                    class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+              Rétablir
+            </button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   {# ── Generation popup mount point ───────────────────────────── #}
   <div id="gabarit-modal"></div>
 
@@ -126,8 +235,14 @@
     <div class="p-6">
       <h3 class="text-base font-semibold text-gray-900 mb-2">Supprimer ce gabarit ?</h3>
       <p class="text-sm text-gray-600 mb-6">
-        Le fichier du gabarit sera supprimé. Les documents déjà générés
-        dans les dossiers ne seront pas touchés.
+        Le fichier du gabarit et toutes ses versions antérieures seront
+        supprimés. Les documents déjà générés dans les dossiers ne seront
+        pas touchés.
+        {%- if designated %}
+        C'est le gabarit actif des « {{ active_kind_name }} » : après sa
+        suppression, aucun ne sera désigné, et la génération sera refusée
+        jusqu'à ce que vous en désigniez un autre.
+        {%- endif %}
       </p>
       <div class="flex gap-3 justify-end">
         <button @click="open = false"

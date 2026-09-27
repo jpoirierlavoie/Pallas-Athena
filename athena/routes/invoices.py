@@ -55,7 +55,11 @@ from models.dossier import get_dossier, list_dossiers
 from models.partie import get_partie
 from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
-from models.doc_template import get_note_honoraires_template, get_template_bytes
+from models.doc_template import (
+    TemplateReadError,
+    get_note_honoraires_template,
+    get_template_bytes,
+)
 from models.document import (
     projet_document_name,
     upload_document,
@@ -461,6 +465,16 @@ def invoice_detail(invoice_id: str) -> str:
 # ── Note d'honoraires (Word) — Phase H.2 ────────────────────────────────
 
 
+NO_ACTIVE_NOTE_HONORAIRES = (
+    "Aucun gabarit « Note d'honoraires » n'est désigné comme actif : "
+    "désignez-en un dans Gabarits."
+)
+NOTE_TEMPLATE_UNREADABLE = (
+    "Le gabarit actif des notes d'honoraires n'a pas pu être lu — lecture "
+    "impossible. Rien n'a été généré : réessayez dans un instant."
+)
+
+
 def _note_error(message: str) -> str:
     """HTMX error fragment (status 200 so htmx 2.0.4 swaps it, like Phase H)."""
     return (
@@ -506,14 +520,18 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
             "Impossible de générer une note d'honoraires pour une facture annulée."
         )
 
-    template = get_note_honoraires_template()
+    # The DESIGNATED template (D11, lot 2A T3) — never « the most recent »:
+    # an edit of another template can no longer switch the letterhead of
+    # every client's note. None designated and an unreadable store are two
+    # different answers: the first names the fix, the second says retry.
+    try:
+        template = get_note_honoraires_template()
+    except TemplateReadError:
+        log_template_event("generation_failed", reason="template_read_failed")
+        return _note_error(NOTE_TEMPLATE_UNREADABLE)
     if not template:
         log_template_event("generation_failed", reason="no_note_template")
-        return _note_error(
-            "Aucun gabarit de note d'honoraires n'est configuré. Téléversez-en un "
-            "dans « Gabarits » et choisissez le type « Note d'honoraires "
-            "(facture) »."
-        )
+        return _note_error(NO_ACTIVE_NOTE_HONORAIRES)
     template_id = template["id"]
 
     dossier_id = invoice.get("dossier_id", "")

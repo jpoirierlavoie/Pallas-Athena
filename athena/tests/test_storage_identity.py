@@ -44,6 +44,7 @@ with mock.patch("google.cloud.firestore.Client"):
 from flask import Flask  # noqa: E402
 
 from tests._fake_firestore import install  # noqa: E402
+from tests._fake_gcs import FakeBucket  # noqa: E402
 from utils import storage_identity as si  # noqa: E402
 
 ATHENA = pathlib.Path(__file__).resolve().parent.parent
@@ -314,20 +315,13 @@ def _docx() -> bytes:
 
 @pytest.fixture()
 def gabarits(monkeypatch):
-    """A stored template on the shared fake + a recording Storage bucket."""
+    """A stored template on the shared fake Firestore + the fake bucket.
+
+    Rewritten deliberately with lot 2A, step T3: the bucket used to be a
+    MagicMock that recorded calls; it is now the realistic fake, so the
+    tests below assert what the bucket HOLDS (the replaced file is kept)."""
     fake = install(monkeypatch, tpl)
-    written: list[str] = []
-    deleted: list[str] = []
-
-    def _blob(name):
-        blob = mock.Mock()
-        blob.upload_from_string.side_effect = lambda *a, **k: written.append(name)
-        blob.delete.side_effect = lambda *a, **k: deleted.append(name)
-        blob.download_as_bytes.return_value = b"old"
-        return blob
-
-    bucket = mock.Mock()
-    bucket.blob.side_effect = _blob
+    bucket = FakeBucket()
     monkeypatch.setattr(tpl.storage, "bucket", lambda: bucket)
 
     def _seed(storage_path):
@@ -336,9 +330,10 @@ def gabarits(monkeypatch):
             "kind": "gabarit", "filename": "ancien.docx",
             "storage_path": storage_path, "version": 1, "etag": "e1",
         })
+        if storage_path:
+            bucket.put(storage_path, b"old")
 
-    return types.SimpleNamespace(fake=fake, seed=_seed,
-                                 written=written, deleted=deleted)
+    return types.SimpleNamespace(fake=fake, seed=_seed, bucket=bucket)
 
 
 @pytest.mark.parametrize("stored", [
@@ -353,37 +348,46 @@ def test_update_template_refuses_a_stored_path_that_names_no_owner(
     gabarits, stored
 ):
     gabarits.seed(stored)
-    got, errors = tpl.update_template(
+    before = dict(gabarits.bucket.objects)
+    got, errors, changed = tpl.update_template(
         "t1", {}, file_stream=_Stream(b""), filename="nouveau.docx",
         file_size=10,
     )
     assert got is None and errors == [tpl.TEMPLATE_PATH_INVALID_MESSAGE]
-    assert gabarits.written == [] and gabarits.deleted == []
+    assert changed is False
+    assert gabarits.bucket.objects == before     # nothing written, nothing deleted
     assert gabarits.fake.peek("doc_templates/t1")["storage_path"] == stored
 
 
 def test_update_template_replaces_the_file_under_the_same_owner(gabarits):
-    """The happy path still works — and still writes under the STORED uid."""
-    gabarits.seed(f"users/{REAL_UID}/templates/t1/ancien.docx")
+    """The happy path still works — and still writes under the STORED uid.
+
+    Rewritten deliberately with lot 2A, step T3 (D11): the new file lands
+    at its own ``v2`` path, and the replaced one is KEPT (it used to be
+    deleted — the previous version was lost)."""
+    old_path = f"users/{REAL_UID}/templates/t1/ancien.docx"
+    gabarits.seed(old_path)
     payload = _docx()
-    got, errors = tpl.update_template(
+    got, errors, changed = tpl.update_template(
         "t1", {}, file_stream=io.BytesIO(payload), filename="nouveau.docx",
         file_size=len(payload),
     )
-    assert errors == []
-    new_path = f"users/{REAL_UID}/templates/t1/nouveau.docx"
+    assert errors == [] and changed is True
+    new_path = f"users/{REAL_UID}/templates/t1/v2/nouveau.docx"
     assert got["storage_path"] == new_path and got["version"] == 2
-    assert gabarits.written == [new_path]
-    assert gabarits.deleted == [f"users/{REAL_UID}/templates/t1/ancien.docx"]
+    assert gabarits.bucket.objects[new_path].data == payload
+    assert gabarits.bucket.objects[old_path].data == b"old"   # kept
     assert gabarits.fake.peek("doc_templates/t1")["storage_path"] == new_path
 
 
 def test_a_metadata_only_update_needs_no_owner_segment(gabarits):
     """No file → no path is built, so a legacy path does not block a rename."""
     gabarits.seed("users/unknown/templates/t1/ancien.docx")
-    got, errors = tpl.update_template("t1", {"name": "Lettre (révisée)"})
-    assert errors == [] and got["name"] == "Lettre (révisée)"
-    assert gabarits.written == []
+    before = dict(gabarits.bucket.objects)
+    got, errors, changed = tpl.update_template("t1", {"name": "Lettre (révisée)"})
+    assert errors == [] and changed is True
+    assert got["name"] == "Lettre (révisée)"
+    assert gabarits.bucket.objects == before
 
 
 # ── 5. Les routes ──────────────────────────────────────────────────────────
@@ -555,8 +559,11 @@ def test_the_sweep_finds_the_builders_it_exists_for():
     for expected in (
         "models/document.py:_prepare_document_record",
         "models/document.py:build_folder_zip_url",
-        "models/doc_template.py:create_template",
-        "models/doc_template.py:update_template",
+        # Lot 2A, step T3: the gabarit paths are built in ONE place — every
+        # version's own ``v{N}`` object — which create, update and restore
+        # all call (the two entries it replaces named the two functions
+        # that each held their own f-string).
+        "models/doc_template.py:_template_object_path",
         "routes/documents.py:api_televersement",
         "routes/documents.py:api_finaliser",
         "routes/admin_ledger.py:api_televersement",

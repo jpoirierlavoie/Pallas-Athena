@@ -631,6 +631,9 @@ TemplateEvent = Literal[
     "template_uploaded",
     "template_updated",
     "template_deleted",
+    "template_activated",
+    "template_version_restored",
+    "template_edit_conflict",
     "document_generated",
     "generation_failed",
 ]

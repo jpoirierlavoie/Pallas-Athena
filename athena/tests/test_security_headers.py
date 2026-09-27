@@ -302,6 +302,10 @@ def test_generation_post_stays_at_1mb():
 def test_template_sub_routes_stay_at_1mb():
     # /gabarits/<id>/delete and friends are not upload paths.
     assert _post_size("/gabarits/abc-123/delete", _2MB) == 413
+    # Lot 2A T3: the designation and the restore carry no file — the
+    # restore copies bytes already stored, server-side.
+    assert _post_size("/gabarits/abc-123/activer", _2MB) == 413
+    assert _post_size("/gabarits/abc-123/versions/1/retablir", _2MB) == 413
 
 
 def test_other_routes_still_capped_at_1mb():

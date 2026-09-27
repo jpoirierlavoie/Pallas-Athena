@@ -1898,6 +1898,63 @@ Notes:
   Claude — an append included), and that no step of a suspended or
   completed protocol changes anywhere until it is reactivated (the one
   exception: reopening a step of a protocol its last step closed).
+- **Active gabarits (lot 2A, step T3, 2026-09-27) — run the designation
+  script against production BEFORE deploying this release.** Until T3 the
+  invoice note d'honoraires and the note print were filled from « the most
+  recently updated template of the kind », so any edit of another template
+  of that kind silently switched the letterhead printed on every client's
+  note. Since T3 the code reads ONLY the template the lawyer DESIGNATED
+  (`active_for`, set by « Désigner comme gabarit actif » on the template's
+  page) and has **no recency fallback**: a kind with no designation refuses
+  to generate (« Aucun gabarit … n'est désigné comme actif : désignez-en un
+  dans Gabarits. »). The script designates, for each kind that has none
+  yet, the template production is printing TODAY — the exact old rule —
+  and the OLD code ignores the new field, so running it first means there
+  is no outage window at all. Deploying first opens one: every note
+  d'honoraires and every note print refuses until the script runs.
+
+  From the repo, with Application Default Credentials (the script does NOT
+  read `.env`, and `config.py` resolves its required variables at import —
+  pass them inline; `GOOGLE_CLOUD_PROJECT` stops the client from inferring
+  another project from ADC):
+
+  ```bash
+  cd athena
+  export GOOGLE_CLOUD_PROJECT=$PROJECT FIREBASE_PROJECT_ID=$PROJECT \
+    FIREBASE_STORAGE_BUCKET=your-bucket-name \
+    AUTHORIZED_USER_EMAIL=you@example.com SECRET_KEY=unused-by-the-script
+  # 1. Simulation (the default): per kind, what it WOULD designate.
+  python -m scripts.designer_gabarits_actifs
+  # 2. Designate. Each designation runs in the model's own transaction,
+  #    against the etag just read — a template edited in between is
+  #    refused, never designated blind (re-run).
+  python -m scripts.designer_gabarits_actifs --apply
+  # 3. Re-run the simulation: every kind must read « déjà désigné » with NO
+  #    « [!] » line. Exit code 1 flags an anomaly (for instance a designation
+  #    that is not the template the old code prints).
+  python -m scripts.designer_gabarits_actifs
+  ```
+
+  Then deploy promptly: between the script and the deploy, the old code
+  still selects by recency, so editing or uploading a note d'honoraires /
+  note-print template in that window makes it print a template the new
+  code will not use (step 3's « [!] » line catches that — re-run it right
+  before pushing). After the deploy, open « Gabarits »: the designated template of
+  each kind carries the « Actif » badge. A kind with no template at all
+  (« aucun gabarit de ce type ») stays undesignated; upload one and
+  designate it on its page.
+
+  The same release keeps template FILE VERSIONS (D11): a replacement writes
+  a new object `users/{uid}/templates/{id}/v{N}/{file}` and records a
+  write-once `doc_templates/{id}/versions/{N}` entry — the previous object
+  is never overwritten nor deleted, and the template's page lists every
+  version with « Télécharger » and « Rétablir » (a restore becomes version
+  N+1). Templates created before T3 have no entry until their first
+  replacement records the file they had. **Manual Word check** (Change
+  Impact item 3): replace a scratch template's file, « Rétablir » the
+  first version, and open a document generated from the restored template
+  — it must open without repair. No index to deploy (single-field queries
+  only), no new secret, no new Tailwind class.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

@@ -28,25 +28,36 @@ from flask import (
     render_template,
     request,
     send_file,
+    session,
     url_for,
 )
 from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from auth import login_required
+from models import concurrency
 from models.audit_event import record_deletion
 from models.doc_template import (
+    ACTIVE_KIND_NAMES,
     CATEGORY_LABELS,
     DOCX_MIME,
     KIND_LABELS,
+    SPECIAL_KINDS,
     VALID_CATEGORIES,
     VALID_KINDS,
+    TemplateReadError,
     create_template,
     delete_template,
+    get_active_template,
     get_signed_url,
     get_template,
     get_template_bytes,
+    get_version_signed_url,
+    is_active,
     list_templates,
+    list_versions,
+    restore_template_version,
+    set_active_template,
     update_template,
 )
 from models.document import (
@@ -71,7 +82,9 @@ from utils.template_fields import (
     resolve_values,
 )
 from utils.tracing_setup import add_attributes, span
+from routes import edit_conflict
 from routes._helpers import dossier_search_fragment, is_htmx
+from security import sanitize
 
 doc_templates_bp = Blueprint("doc_templates", __name__, url_prefix="/gabarits")
 
@@ -111,7 +124,39 @@ def _template_context() -> dict:
         "valid_categories": VALID_CATEGORIES,
         "category_labels": CATEGORY_LABELS,
         "kind_labels": KIND_LABELS,
+        "special_kinds": SPECIAL_KINDS,
     }
+
+
+def _signer() -> str:
+    """Who acts: the signed-in lawyer's email (``auth.py`` sets
+    ``session["email"]``) — the same key the document routes read."""
+    return str(session.get("email") or "")
+
+
+def _detail_redirect(template_id: str, *, message: str = "",
+                     erreur: str = "") -> Response:
+    """Back to the template page with a banner. A refusal travels on a 2xx
+    page (the redirect target): htmx only swaps 2xx, and every form here is
+    a plain POST anyway."""
+    params = {}
+    if message:
+        params["message"] = message
+    if erreur:
+        params["erreur"] = erreur
+    return redirect(url_for(
+        "doc_templates.template_detail", template_id=template_id, **params))
+
+
+# The page a stale button was on no longer shows the template as it is.
+_ACTIVATE_STALE = (
+    "Ce gabarit a été modifié depuis l'affichage de la page. Rien n'a été "
+    "désigné : relisez-le ci-dessous, puis désignez-le de nouveau."
+)
+_RESTORE_STALE = (
+    "Ce gabarit a été modifié depuis l'affichage de la page. Rien n'a été "
+    "rétabli : relisez ses versions ci-dessous, puis recommencez."
+)
 
 
 def _kind_from_form(form) -> str:
@@ -209,6 +254,30 @@ def template_create() -> Response | str:
     return redirect(target)
 
 
+def _designation_context(template: dict) -> dict:
+    """What the page says about the « actif » designation (D11).
+
+    ``designated`` — this template is the one its kind uses; otherwise
+    ``designated_other`` is the template the kind uses now (``None`` when
+    none is designated) and ``designation_unreadable`` says the store
+    could not tell — never shown as « aucun n'est désigné ».
+    """
+    kind = template.get("kind") or "gabarit"
+    ctx = {
+        "special": kind in SPECIAL_KINDS,
+        "designated": is_active(template),
+        "designated_other": None,
+        "designation_unreadable": False,
+        "active_kind_name": ACTIVE_KIND_NAMES.get(kind, ""),
+    }
+    if ctx["special"] and not ctx["designated"]:
+        try:
+            ctx["designated_other"] = get_active_template(kind)
+        except TemplateReadError:
+            ctx["designation_unreadable"] = True
+    return ctx
+
+
 @doc_templates_bp.route("/<template_id>")
 @login_required
 def template_detail(template_id: str) -> Response | str:
@@ -225,6 +294,11 @@ def template_detail(template_id: str) -> Response | str:
         auto_fields=[n for n in placeholders if n in classification.auto],
         manual_fields=classification.manual,
         passthrough_fields=classification.passthrough,
+        versions=list_versions(template_id),
+        current_version=int(template.get("version") or 1),
+        erreur=sanitize(request.args.get("erreur", ""), max_length=300),
+        message=sanitize(request.args.get("message", ""), max_length=300),
+        **_designation_context(template),
     )
     return render_template("gabarits/detail.html", **ctx)
 
@@ -264,26 +338,58 @@ def template_update(template_id: str) -> Response | str:
         file_stream = file
         filename = file.filename
 
-    template, errors = update_template(
+    # The version the form was rendered from (plan rule 11, D9): a save
+    # over a template another writer changed since is refused, never a
+    # silent overwrite. Absent (a page older than the field) → no check.
+    submitted = edit_conflict.submitted_etag()
+    template, errors, changed = update_template(
         template_id,
         data,
         file_stream=file_stream,
         filename=filename,
         file_size=file_size,
+        expected_etag=submitted,
     )
     if errors:
+        errors, conflict, etag = edit_conflict.resolve_refusal(
+            errors,
+            submitted=submitted,
+            reread=lambda: get_template(template_id),
+            compare_url=url_for(
+                "doc_templates.template_detail", template_id=template_id),
+            # A browser can never re-fill a file input: say so, rather than
+            # let « conservés ci-dessous » cover a file that is not.
+            note=("Le fichier choisi n'a pas été conservé : sélectionnez-le "
+                  "de nouveau." if file_stream is not None else ""),
+        )
+        if conflict:
+            log_template_event("template_edit_conflict", template_id=template_id)
         ctx = _template_context()
-        merged = {**existing, **data}
-        ctx.update(template=merged, errors=errors, edit_mode=True)
+        merged = {**existing, **data, "etag": etag}
+        ctx.update(template=merged, errors=errors, conflict=conflict,
+                   edit_mode=True)
         return render_template("gabarits/form.html", **ctx)
 
-    log_template_event(
-        "template_updated",
-        template_id=template_id,
-        file_replaced=file_stream is not None,
-        version=template.get("version", 1),
-    )
-    target = url_for("doc_templates.template_detail", template_id=template_id)
+    version_before = int(existing.get("version") or 1)
+    version_after = int(template.get("version") or 1)
+    file_replaced = file_stream is not None and version_after != version_before
+    if changed:
+        log_template_event(
+            "template_updated",
+            template_id=template_id,
+            file_replaced=file_replaced,
+            version=version_after,
+        )
+    params = {}
+    if file_stream is not None and not file_replaced:
+        # The same bytes as the file in force: no new version (lot 2A, T3).
+        # Said, so the lawyer does not look for a version that was not made.
+        params["message"] = (
+            "Le fichier envoyé est identique au fichier en vigueur : aucune "
+            "nouvelle version n'a été créée."
+        )
+    target = url_for("doc_templates.template_detail", template_id=template_id,
+                     **params)
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -323,6 +429,75 @@ def template_download(template_id: str) -> Response | str:
     url = get_signed_url(template_id)
     if not url:
         return redirect(url_for("doc_templates.template_detail", template_id=template_id))
+    return redirect(url)
+
+
+@doc_templates_bp.route("/<template_id>/activer", methods=["POST"])
+@login_required
+def template_activate(template_id: str) -> Response:
+    """Désigne ce gabarit comme gabarit ACTIF de son type (D11).
+
+    Le SEUL chemin web vers ``set_active_template`` : seul le juriste
+    choisit la note d'honoraires et l'impression de note qu'impriment ses
+    documents — jamais le connecteur, jamais la récence. Le bouton porte
+    l'etag de la version affichée ; un refus voyage sur une redirection
+    vers la fiche, qui l'affiche.
+    """
+    expected = edit_conflict.submitted_etag()
+    template, errors = set_active_template(
+        template_id, par=_signer(), expected_etag=expected
+    )
+    if errors:
+        if concurrency.is_stale(errors):
+            errors = [_ACTIVATE_STALE]
+        return _detail_redirect(template_id, erreur=errors[0])
+    kind = template.get("kind", "")
+    log_template_event("template_activated", template_id=template_id, kind=kind)
+    return _detail_redirect(template_id, message=(
+        f"Ce gabarit est désormais le gabarit actif des "
+        f"« {ACTIVE_KIND_NAMES.get(kind, kind)} »."
+    ))
+
+
+@doc_templates_bp.route(
+    "/<template_id>/versions/<int:version>/retablir", methods=["POST"]
+)
+@login_required
+def template_version_restore(template_id: str, version: int) -> Response:
+    """Rétablit une version antérieure du fichier — comme une NOUVELLE
+    version : l'historique ne fait que croître, rien n'est réécrit (D11)."""
+    expected = edit_conflict.submitted_etag()
+    template, errors, changed = restore_template_version(
+        template_id, version, par=_signer(), expected_etag=expected
+    )
+    if errors:
+        if concurrency.is_stale(errors):
+            errors = [_RESTORE_STALE]
+        return _detail_redirect(template_id, erreur=errors[0])
+    if not changed:
+        return _detail_redirect(template_id, message=(
+            f"La version {version} est identique au fichier en vigueur : "
+            "rien n'a été rétabli."
+        ))
+    new_version = int(template.get("version") or 1)
+    log_template_event(
+        "template_version_restored", template_id=template_id,
+        restored_from=version, version=new_version,
+    )
+    return _detail_redirect(template_id, message=(
+        f"La version {version} a été rétablie : elle est maintenant la "
+        f"version {new_version} du gabarit."
+    ))
+
+
+@doc_templates_bp.route("/<template_id>/versions/<int:version>/download")
+@login_required
+def template_version_download(template_id: str, version: int) -> Response:
+    url = get_version_signed_url(template_id, version)
+    if not url:
+        return _detail_redirect(
+            template_id, erreur="Le fichier de cette version est introuvable."
+        )
     return redirect(url)
 
 

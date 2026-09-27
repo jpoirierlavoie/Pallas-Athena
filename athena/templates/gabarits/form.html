@@ -2,6 +2,9 @@
 {% block title %}{{ 'Modifier le gabarit' if edit_mode is defined and edit_mode else 'Nouveau gabarit' }} — Pallas Athena{% endblock %}
 
 {% block content %}
+{#- Imported INSIDE the block (never at root level): a test that renders
+    only this block would not see a root-level import. #}
+{% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
 <div class="max-w-2xl mx-auto px-4 py-6">
 
   <a href="{{ url_for('doc_templates.template_detail', template_id=template.id) if edit_mode is defined and edit_mode and template and template.id else url_for('doc_templates.template_list') }}"
@@ -13,6 +16,8 @@
   <h1 class="text-xl font-semibold text-gray-900 mb-6">
     {{ 'Modifier le gabarit' if edit_mode is defined and edit_mode else 'Nouveau gabarit' }}
   </h1>
+
+  {{ conflict_banner(conflict) }}
 
   {% if errors %}
   <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
@@ -29,6 +34,7 @@
         enctype="multipart/form-data"
         class="space-y-6">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if edit_mode is defined and edit_mode %}{{ etag_field(template) }}{% endif %}
 
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1.5">Nom *</label>
@@ -64,8 +70,9 @@
         « Note d'honoraires (facture) » : rempli depuis une facture (tables des
         honoraires et débours). « Note (impression) » : rempli depuis une note du
         bloc-notes ({% raw %}{{note.titre}}, {{note.contenu}}{% endraw %}, … —
-        voir GABARITS_PLACEHOLDERS.md §7). Pour chaque type, le gabarit le plus
-        récent est utilisé.
+        voir GABARITS_PLACEHOLDERS.md §7). Pour chacun de ces deux types, la
+        génération utilise le gabarit que vous avez désigné comme actif, sur
+        sa fiche — jamais simplement le plus récent.
       </p>
     </div>
 
@@ -87,7 +94,9 @@
         Document Word (.docx) contenant des champs
         <span class="font-medium">{{ '{{champ}}' }}</span> — 10 Mo max.
         {% if edit_mode is defined and edit_mode %}
-        Le remplacement du fichier incrémente la version et ré-extrait les champs.
+        Le remplacement du fichier crée une nouvelle version et ré-extrait les
+        champs ; la version précédente est conservée et peut être rétablie
+        depuis la fiche du gabarit.
         {% else %}
         Les champs seront extraits et affichés après le téléversement.
         {% endif %}

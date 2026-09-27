@@ -324,6 +324,11 @@ Deliberately **not resolved and not prompted** — these survive as literal
 
 ## 6. Note d'honoraires only (`kind="note_honoraires"`)
 
+The invoice's « Note d'honoraires (Word) » fills the template of this type
+that is **designated as active** on its page (« Désigner comme gabarit
+actif ») — never simply the most recent one (lot 2A, 2026-09-27); with none
+designated, generation refuses and says so.
+
 A note-d'honoraires template can use **everything above** for its header
 (`dossier.*`, `destinataire.*`, `cabinet.*`, `date.*`, and their flat aliases —
 the destinataire slot is the invoice's client), **plus** the following.
@@ -389,8 +394,11 @@ Wrap each section's table in its flag so an empty section disappears cleanly.
 The **note-print** template — the .docx the « Imprimer (Word) » button on a
 note's page (and on the Analyse tab) fills, streamed as a **direct download**
 (never saved into the dossier's documents). Upload it in « Gabarits » with the
-type **« Note (impression) »**; the most recently updated template of that
-kind is the one used. It can use everything above (`dossier.*`, `cabinet.*`,
+type **« Note (impression) »**, then **designate it** on its page
+(« Désigner comme gabarit actif »): the DESIGNATED template of that kind is
+the one used — since lot 2A (2026-09-27) there is no « most recently
+updated » fallback, and with none designated the print refuses, naming the
+fix. It can use everything above (`dossier.*`, `cabinet.*`,
 `date.*`, flat aliases — no destinataire slot in this flow) **plus**:
 
 ### `note.*` scalars

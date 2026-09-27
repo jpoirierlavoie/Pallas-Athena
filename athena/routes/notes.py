@@ -266,9 +266,15 @@ _DELETE_ERRORS = {
 # ── Impression via gabarit (kind « note », Phase H.3) ───────────────────
 
 _GABARIT_ERRORS = {
+    # The DESIGNATED note-print template (D11, lot 2A T3): no recency
+    # fallback, and a read failure is not « none designated ».
     "aucun_gabarit": (
-        "Aucun gabarit d'impression de note n'est configuré. Téléversez-en un "
-        "dans « Gabarits » et choisissez le type « Note (impression) »."
+        "Aucun gabarit « Note (impression) » n'est désigné comme actif : "
+        "désignez-en un dans Gabarits."
+    ),
+    "lecture_impossible": (
+        "Le gabarit actif d'impression des notes n'a pas pu être lu — "
+        "lecture impossible. Réessayez dans un instant."
     ),
     "fichier_introuvable": (
         "Le fichier du gabarit est introuvable. Téléversez-le à nouveau."
@@ -300,6 +306,7 @@ def note_gabarit_docx(note_id: str) -> Response:
 
     from models.doc_template import (
         DOCX_MIME,
+        TemplateReadError,
         get_note_template,
         get_template_bytes,
     )
@@ -318,7 +325,13 @@ def note_gabarit_docx(note_id: str) -> Response:
     if _is_htmx():
         return _gabarit_error_redirect(note_id, "htmx")
 
-    template = get_note_template()
+    try:
+        template = get_note_template()
+    except TemplateReadError:
+        log_template_event(
+            "generation_failed", reason="template_read_failed", note_id=note_id
+        )
+        return _gabarit_error_redirect(note_id, "lecture_impossible")
     if not template:
         log_template_event(
             "generation_failed", reason="no_note_print_template", note_id=note_id

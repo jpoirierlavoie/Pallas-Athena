@@ -10,6 +10,16 @@
         <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
           {{ category_labels.get(t.category, t.category) }}
         </span>
+        {% if t.kind in special_kinds %}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+          {{ kind_labels.get(t.kind, t.kind) }}
+        </span>
+        {#- « Actif » : le gabarit que le juriste a DÉSIGNÉ pour ce type (D11) —
+            jamais le plus récent. #}
+        {% if t.active_for == t.kind %}
+        <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">Actif</span>
+        {% endif %}
+        {% endif %}
         <span class="text-xs text-gray-400">v{{ t.version }}</span>
         {% if t.validation_warnings %}
         <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-amber-50 text-amber-700 border border-amber-200">
