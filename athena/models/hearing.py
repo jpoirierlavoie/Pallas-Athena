@@ -900,8 +900,68 @@ def occurrence_day(hearing: dict) -> "date | None":
     if not isinstance(start, datetime):
         return None
     if hearing.get("all_day"):
-        return start.date()
+        return _to_utc(start).date()
     return to_mtl(start).date()
+
+
+# ── Read windows judged by the civil day ────────────────────────────────
+# A window « from today on » cannot open on one instant: the two storage
+# conventions put the start of the same day at two different instants. An
+# all-day hearing of the 16th is stored at 00:00 UTC on the 16th (20:00 or
+# 19:00 on the 15th in Montréal); a timed hearing of the 16th starts at the
+# earliest at midnight MONTRÉAL, 04:00/05:00 UTC on the 16th. A window opened
+# at midnight Montréal therefore missed the day's all-day hearings (the 07:00
+# briefing never listed them), and one opened at the instant « now » lost
+# them from 20:00 the EVENING BEFORE. The rule: read from the earlier of the
+# two instants (midnight UTC), then judge every row by its civil day
+# (:func:`occurrence_day`). No index: the range stays on start_datetime alone.
+
+
+def civil_day_floor(day: date) -> datetime:
+    """The lowest ``start_datetime`` a hearing of civil day *day* or later
+    can carry: midnight UTC of *day*.
+
+    It precedes midnight Montréal by 4 h (EDT) or 5 h (EST), so a read from
+    it also brings back the previous evening's timed hearings (20:00 to
+    midnight in Montréal), which :func:`on_or_after_day` drops.
+    """
+    return _utc_midnight(day)
+
+
+def civil_day_ceiling(day: date) -> datetime:
+    """An EXCLUSIVE bound before which every hearing of civil day *day* or
+    earlier starts: midnight Montréal of the following day.
+
+    It also admits the next day's all-day hearings (stored at midnight UTC,
+    before midnight Montréal), which a filter on :func:`occurrence_day`
+    drops. Computed with ``mtl_to_utc`` on the civil date, never with a
+    fixed offset, so it holds across a daylight-saving change.
+    """
+    return mtl_to_utc(datetime.combine(day + _ONE_DAY, time()))
+
+
+def on_or_after_day(hearings: list[dict], day: date) -> list[dict]:
+    """The hearings whose civil day is *day* or later, order kept.
+
+    A row with no readable start is KEPT: the caller's window already
+    bounded it, and hiding it would lose a hearing rather than show it
+    badly dated (the dossier tab's historical behaviour).
+    """
+    kept = []
+    for hearing in hearings:
+        day_of = occurrence_day(hearing)
+        if day_of is None or day_of >= day:
+            kept.append(hearing)
+    return kept
+
+
+def before_day(hearings: list[dict], day: date) -> list[dict]:
+    """The hearings whose civil day precedes *day*, order kept — the exact
+    complement of :func:`on_or_after_day` over dated rows."""
+    return [
+        h for h in hearings
+        if (day_of := occurrence_day(h)) is not None and day_of < day
+    ]
 
 
 def _occurrence_slots(

@@ -51,6 +51,7 @@ from models.hearing import (
     HEARING_TYPE_LABELS,
     STATUS_LABELS as HEARING_STATUS_LABELS,
     list_hearings,
+    on_or_after_day,
 )
 from models.task import (
     CATEGORY_LABELS as TASK_CATEGORY_LABELS,
@@ -568,16 +569,16 @@ def dossier_tab(dossier_id: str, tab_name: str) -> str:
         ctx["category_labels"] = EXPENSE_CATEGORY_LABELS
 
     # Load hearing data for the audiences (Calendrier) tab. Forward-looking:
-    # anything dated strictly before today (Montréal calendar day — today's
-    # items stay) is hidden. Filtered in Python over the dossier-bounded fetch
-    # — no new Firestore index.
+    # anything whose CIVIL day is strictly before today (Montréal calendar —
+    # today's items stay) is hidden. Filtered in Python over the
+    # dossier-bounded fetch — no new Firestore index. The civil day is
+    # occurrence_day's, never to_mtl(start): an all-day hearing is stored at
+    # midnight UTC, which to_mtl reads as the evening BEFORE, so the tab
+    # hid every all-day hearing on its own day.
     if tab_name == "audiences":
-        today_mtl = to_mtl(datetime.now(timezone.utc)).date()
-        ctx["hearings"] = [
-            h for h in list_hearings(dossier_id=dossier_id)
-            if h.get("start_datetime") is None
-            or to_mtl(h["start_datetime"]).date() >= today_mtl
-        ]
+        ctx["hearings"] = on_or_after_day(
+            list_hearings(dossier_id=dossier_id), deadlines.today_mtl()
+        )
         ctx["hearing_type_labels"] = HEARING_TYPE_LABELS
         ctx["hearing_status_labels"] = HEARING_STATUS_LABELS
 

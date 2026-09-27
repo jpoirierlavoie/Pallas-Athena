@@ -525,18 +525,27 @@ def get_agenda(args: dict) -> dict:
     # response can never straddle two calendar days.
     today = deadlines.today_mtl()
 
-    # The window OPENS at midnight Montréal, not at the instant `now`.
-    # Anchoring on the instant dropped a 09:00 hearing at 09:01 from a
-    # window whose own `from` claimed the day was included.
-    window_start = datetime.combine(today, dtime.min, tzinfo=MTL).astimezone(
-        timezone.utc
-    )
+    # The window covers whole CIVIL days, `from` through `to`. It opened at
+    # the instant `now` first (a 09:00 hearing vanished at 09:01), then at
+    # midnight Montréal — after the midnight-UTC start of every all-day
+    # hearing of the day, so the 07:00 briefing never listed TODAY's. The
+    # read now starts at the earlier of the day's two instants
+    # (hearing_model.civil_day_floor) and each row is judged by its civil
+    # day (occurrence_day: the UTC date for an all-day hearing, the Montréal
+    # date for a timed one) — which also drops the previous evening's timed
+    # hearings the widened read brings back, and an all-day hearing of the
+    # day after `to` that falls before the instant `cutoff`.
+    window_to = cutoff.astimezone(MTL).date()
     raw_hearings = [
         h
-        for h in hearing_model.list_hearings_in_range(
-            min(window_start, now), cutoff, limit=100
+        for h in hearing_model.on_or_after_day(
+            hearing_model.list_hearings_in_range(
+                hearing_model.civil_day_floor(today), cutoff, limit=100
+            ),
+            today,
         )
         if h.get("status") != "annulée"
+        and (hearing_model.occurrence_day(h) or today) <= window_to
     ]
     raw_tasks = task_model.list_urgent_tasks(cutoff, limit=50)
     raw_steps = protocol_model.list_urgent_steps(cutoff, limit=50)
@@ -605,7 +614,7 @@ def get_agenda(args: dict) -> dict:
     return {
         "window": {
             "from": today.isoformat(),
-            "to": cutoff.astimezone(MTL).date().isoformat(),
+            "to": window_to.isoformat(),
             "days_ahead": days_ahead,
         },
         "hearings": hearings,

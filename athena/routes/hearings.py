@@ -37,6 +37,9 @@ from models.hearing import (
     VALID_MODALITES,
     VALID_REMINDER_MINUTES,
     VALID_STATUSES,
+    before_day,
+    civil_day_ceiling,
+    civil_day_floor,
     create_hearing,
     create_hearing_series,
     delete_hearing,
@@ -48,6 +51,7 @@ from models.hearing import (
     list_hearings_window,
     list_series,
     occurrence_day,
+    on_or_after_day,
     unlink_hearing,
     update_hearing,
 )
@@ -437,23 +441,41 @@ def hearing_list() -> str:
     else:
         # List view. Not paginated (matching the existing UX), but bounded
         # server-side instead of streaming the whole collection: the next
-        # 100 upcoming hearings (start_datetime >= now, chronological) and,
-        # only when a filter is active, the 100 most recent past ones
-        # (start_datetime < now, reverse chronological). Type/status filters
-        # apply in Python over each bounded window.
+        # 100 hearings from TODAY's civil day on (chronological) and, only
+        # when a filter is active, the 100 most recent before it (reverse
+        # chronological). Type/status filters apply in Python over each
+        # bounded window.
+        #
+        # The split is by CIVIL day (occurrence_day), never by the instant
+        # `now`: an all-day hearing is stored at midnight UTC — 20:00/19:00
+        # the evening before in Montréal — so a window opened at `now`
+        # dropped it from the evening before its own day. The upcoming read
+        # starts at civil_day_floor(today) (midnight UTC, the earlier of the
+        # day's two starts) and the past read ends before
+        # civil_day_ceiling(yesterday) (midnight Montréal); the rows the two
+        # reads share — the previous evening's timed hearings and today's
+        # all-day ones — are sent to exactly one side by occurrence_day.
+        # Today's timed hearings stay listed for the whole day, as on the
+        # dossier tab, the dashboard and the MCP agenda.
         #
         # The default view is forward-looking: past hearings (and cancelled
         # future ones) surface ONLY through the type/status filters — the
         # collapsed « Passées » disclosure was removed 2026-07-23. Skipping
         # the past-window query when nothing will display it saves the reads.
         filters_active = bool(hearing_type_filter or status_filter)
+        today = today_mtl()
 
         # Bookings (L2): include « à_confirmer » (badged) in the Calendar, but
         # drop annulée_client via _keep_calendar (D-L2-2). See the month view.
         upcoming_window = [
             h
-            for h in list_hearings_window(
-                now, direction="upcoming", include_unconfirmed=True
+            for h in on_or_after_day(
+                list_hearings_window(
+                    civil_day_floor(today),
+                    direction="upcoming",
+                    include_unconfirmed=True,
+                ),
+                today,
             )
             if _matches_filters(h, hearing_type_filter, status_filter)
             and _keep_calendar(h)
@@ -470,8 +492,13 @@ def hearing_list() -> str:
                 h for h in upcoming_window if h.get("status") == "annulée"
             ] + [
                 h
-                for h in list_hearings_window(
-                    now, direction="past", include_unconfirmed=True
+                for h in before_day(
+                    list_hearings_window(
+                        civil_day_ceiling(today - timedelta(days=1)),
+                        direction="past",
+                        include_unconfirmed=True,
+                    ),
+                    today,
                 )
                 if _matches_filters(h, hearing_type_filter, status_filter)
                 and _keep_calendar(h)

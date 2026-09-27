@@ -1,7 +1,7 @@
 """Dashboard route — Phase 11: at-a-glance summary after login."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from flask import Blueprint, render_template
 
@@ -19,9 +19,16 @@ dashboard_bp = Blueprint("dashboard", __name__)
 def index() -> str:
     """Render the main dashboard with schedule, urgent items, and stats."""
     now = datetime.now(timezone.utc)
+    today = now.astimezone(MTL).date()
 
-    # ── Short-term schedule: hearings in the next 7 days ──────────────
-    short_term_hearings = _get_hearings_in_range(now, now + timedelta(days=7))
+    # ── Short-term schedule: today's hearings and the next 7 days ─────
+    # From the start of TODAY's civil day, not from the instant `now`: an
+    # all-day hearing is stored at midnight UTC — 20:00/19:00 the evening
+    # before in Montréal — so a window opened at `now` dropped it from the
+    # evening before its own day. See _get_hearings_from_day.
+    short_term_hearings = _get_hearings_from_day(
+        today, now + timedelta(days=7)
+    )
 
     # ── Long-term planning: hearings in the next 2 months ─────────────
     long_term_hearings = _get_hearings_in_range(
@@ -61,6 +68,34 @@ def _get_hearings_in_range(date_from: datetime, date_to: datetime) -> list[dict]
     try:
         from models.hearing import list_hearings_in_range
         hearings = list_hearings_in_range(date_from, date_to)
+        return [
+            h for h in hearings
+            if h.get("status") not in ("annulée",)
+        ]
+    except Exception:
+        return []
+
+
+def _get_hearings_from_day(day: date, date_to: datetime) -> list[dict]:
+    """Non-cancelled hearings whose CIVIL day is *day* or later, starting no
+    later than *date_to*, chronologically.
+
+    The read opens at ``civil_day_floor(day)`` — midnight UTC, the earlier
+    of the day's two starts (an all-day hearing's) — and every row is then
+    judged by ``occurrence_day``, the one rule for a hearing's civil day
+    (the MCP ``get_agenda`` and the dossier « Calendrier » tab read the same
+    way). Today's timed hearings stay listed for the whole day, as they do
+    on those two surfaces.
+    """
+    try:
+        from models.hearing import (
+            civil_day_floor,
+            list_hearings_in_range,
+            on_or_after_day,
+        )
+        hearings = on_or_after_day(
+            list_hearings_in_range(civil_day_floor(day), date_to), day
+        )
         return [
             h for h in hearings
             if h.get("status") not in ("annulée",)

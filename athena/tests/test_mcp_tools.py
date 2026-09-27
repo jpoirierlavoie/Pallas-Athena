@@ -651,6 +651,9 @@ def test_get_agenda_filters_cancelled_and_formats_money(monkeypatch):
 
     monkeypatch.setattr(handlers.expense_model, "get_filtered_expense_totals",
                         lambda billable_filter=None, **kw: {"amount": 0})
+    # Since lot 1a every row the read returns is judged by its civil day, so
+    # the stubbed world must be coherent: « today » is the hearing's day.
+    _freeze_mtl_today(monkeypatch, date(2026, 7, 8))
     payload = handlers.get_agenda({"days_ahead": 7})
     assert [h["id"] for h in payload["hearings"]] == ["h1"]
     assert payload["hearings"][0]["start"] == "2026-07-08T14:00:00-04:00"
@@ -2756,18 +2759,21 @@ def _freeze_mtl_today(monkeypatch, value: date):
     monkeypatch.setattr(handlers.deadlines, "today_mtl", lambda: value)
 
 
-def test_get_agenda_window_opens_at_midnight_montreal(monkeypatch):
-    """The lower bound was the INSTANT now, so a 09:00 hearing vanished at
-    09:01 from a window whose own `from` claimed today was included."""
+def test_get_agenda_window_opens_at_the_civil_day_floor(monkeypatch):
+    """REWRITTEN in lot 1a — it pinned the defect. The lower bound was the
+    INSTANT now first (a 09:00 hearing vanished at 09:01), then midnight
+    MONTRÉAL (04:00 UTC in summer) — after the midnight-UTC start of every
+    all-day hearing of the day, so the 07:00 briefing never listed TODAY's.
+    The read now opens at midnight UTC of the Montréal day, the earlier of
+    the day's two starts."""
     captured = _agenda_world(monkeypatch)
     _freeze_mtl_today(monkeypatch, date(2026, 7, 31))
     payload = handlers.get_agenda({})
     assert payload["window"]["from"] == "2026-07-31"
     start = captured["hearing_start"]
-    # Midnight Montréal on the 31st = 04:00 UTC (EDT). The query must reach
-    # back to it, never start mid-morning.
-    assert start.astimezone(MTL).date() == date(2026, 7, 31)
-    assert start.astimezone(MTL).hour == 0
+    assert start == datetime(2026, 7, 31, tzinfo=UTC)
+    # It precedes midnight Montréal — the old bound — by the UTC offset.
+    assert start < datetime(2026, 7, 31, tzinfo=MTL)
 
 
 def test_get_agenda_is_stable_across_the_utc_day_boundary(monkeypatch):

@@ -261,7 +261,14 @@ def test_get_agenda_conforms(monkeypatch):
     monkeypatch.setattr(handlers.dossier_model, "count_open", lambda: 7)
     monkeypatch.setattr(handlers.invoice_model, "get_outstanding_total",
                         lambda: 150000)
-    _conforms("get_agenda", handlers.get_agenda({"days_ahead": 14}))
+    # The hearing row must reach the payload — get_agenda judges each row by
+    # its civil day since lot 1a, so « today » is frozen on the fixture's day
+    # (without it the row is dropped and the branch goes unchecked).
+    monkeypatch.setattr(handlers.deadlines, "today_mtl",
+                        lambda: datetime(2026, 9, 1).date())
+    payload = handlers.get_agenda({"days_ahead": 14})
+    assert [h["id"] for h in payload["hearings"]] == ["h1"]
+    _conforms("get_agenda", payload)
 
 
 def test_list_dossiers_conforms(monkeypatch):
