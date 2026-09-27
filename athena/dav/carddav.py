@@ -35,6 +35,7 @@ from dav.xml_utils import (
 )
 from models.audit_event import record_deletion
 from models.partie import (
+    MANDATAIRE_CHECK_UNAVAILABLE,
     create_partie,
     delete_partie,
     display_name,
@@ -373,11 +374,7 @@ def put_resource(partie_id: str) -> Response:
         # Update
         updated, errors = update_partie(partie_id, data)
         if errors:
-            logger.warning(
-                "CardDAV PUT validation failed for %s: %s",
-                sanitize_log_value(partie_id), sanitize_log_value(errors),
-            )
-            return Response("Données invalides.", status=422)
+            return _refused(partie_id, errors)
         bump_ctag(COLLECTION_NAME)
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
@@ -386,11 +383,7 @@ def put_resource(partie_id: str) -> Response:
         data["id"] = partie_id
         created, errors = create_partie(data)
         if errors:
-            logger.warning(
-                "CardDAV PUT validation failed for %s: %s",
-                sanitize_log_value(partie_id), sanitize_log_value(errors),
-            )
-            return Response("Données invalides.", status=422)
+            return _refused(partie_id, errors)
         # Resource (re)enters the collection — drop any stale tombstone
         remove_tombstone(COLLECTION_NAME, partie_id)
         bump_ctag(COLLECTION_NAME)
@@ -402,6 +395,37 @@ def put_resource(partie_id: str) -> Response:
         resp.headers["Preference-Applied"] = "return=minimal"
 
     return resp
+
+
+def _refused(partie_id: str, errors: list[str]) -> Response:
+    """The answer to a vCard the model refused.
+
+    422 with the model's own French reasons in the body: « Données
+    invalides. » alone hid the cause from a ``curl`` and from any client
+    that surfaces the server's text — notably the refusal to change the
+    role or type of a contact that represents another one. The LOG carries
+    the count only: a refusal can name a contact (« Mandataire « … » »,
+    « mandataire de … »), and the redaction filter never scrubs names.
+
+    A reverse-reference check that could not RUN is not the vCard's fault:
+    503 + ``Retry-After``, so the client retries the same PUT later instead
+    of treating it as a permanent refusal.
+    """
+    logger.warning(
+        "CardDAV PUT refused for %s: %d validation error(s)",
+        sanitize_log_value(partie_id), len(errors),
+    )
+    if errors == [MANDATAIRE_CHECK_UNAVAILABLE]:
+        resp = Response(
+            MANDATAIRE_CHECK_UNAVAILABLE, status=503,
+            content_type="text/plain; charset=utf-8",
+        )
+        resp.headers["Retry-After"] = "60"
+        return resp
+    return Response(
+        "Données invalides : " + " ".join(errors), status=422,
+        content_type="text/plain; charset=utf-8",
+    )
 
 
 # ── DELETE ─────────────────────────────────────────────────────────────────

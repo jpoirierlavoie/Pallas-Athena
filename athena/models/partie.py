@@ -664,6 +664,9 @@ def update_partie(
     errors = _validate(merged)
     if errors:
         return None, errors
+    errors = _mandataire_fitness_errors(partie_id, existing, merged)
+    if errors:
+        return None, errors
 
     now = datetime.now(timezone.utc)
     provenance.stamp_update(merged, now)
@@ -709,18 +712,31 @@ def update_partie(
     return merged, []
 
 
-def _find_mandataire_references(partie_id: str) -> list[str]:
-    """Return display names of parties listing *partie_id* as a mandataire.
+# The refusal when the reverse-reference check cannot be established. A
+# constant, so a caller can tell « could not verify » apart from a refusal
+# that names the represented contacts.
+MANDATAIRE_CHECK_UNAVAILABLE = (
+    "Impossible de vérifier si ce contact représente un autre contact : "
+    "rien n'a été enregistré. Veuillez réessayer."
+)
 
-    Streams the whole collection (single-user dataset, small) and also
-    checks the legacy single-mandataire field on not-yet-migrated docs.
+
+def list_mandataire_referrers(partie_id: str) -> list[dict]:
+    """Every OTHER partie that lists *partie_id* as one of its mandataires.
+
+    A STRICT read: errors propagate, so a caller that refuses on the
+    strength of the answer (``delete_partie``, the role/type guard of
+    ``update_partie``) fails CLOSED instead of reading an outage as « nobody
+    is represented ». Streams the whole collection (single-user dataset,
+    small) and also honours the legacy single-mandataire field of
+    not-yet-migrated documents. An empty id is refused before any read.
     """
-    # Fail CLOSED: errors propagate to delete_partie, which refuses the
-    # deletion when references cannot be established.
-    refs: list[str] = []
+    if not isinstance(partie_id, str) or not partie_id.strip():
+        raise ValueError("list_mandataire_referrers needs a partie id")
+    referrers: list[dict] = []
     for doc in db.collection(COLLECTION).stream():
         other = doc.to_dict()
-        if not other or other.get("id") == partie_id:
+        if not other or (other.get("id") or doc.id) == partie_id:
             continue
         ids = {
             str(entry.get("id") or "").strip()
@@ -731,8 +747,75 @@ def _find_mandataire_references(partie_id: str) -> list[str]:
         if legacy:
             ids.add(legacy)
         if partie_id in ids:
-            refs.append(display_name(other) or other.get("id", ""))
-    return refs
+            referrers.append(other)
+    return referrers
+
+
+def _find_mandataire_references(partie_id: str) -> list[str]:
+    """Return display names of parties listing *partie_id* as a mandataire.
+
+    Fail CLOSED: errors propagate to delete_partie, which refuses the
+    deletion when references cannot be established.
+    """
+    return [
+        display_name(other) or other.get("id", "")
+        for other in list_mandataire_referrers(partie_id)
+    ]
+
+
+def _joined_names(names: list[str]) -> str:
+    """« A, B, C et 2 autres » — the delete_partie wording, shared."""
+    shown = ", ".join(names[:3])
+    more = len(names) - 3
+    if more > 0:
+        shown += f" et {more} autre{'s' if more > 1 else ''}"
+    return shown
+
+
+def _mandataire_fitness_errors(
+    partie_id: str, existing: dict, merged: dict
+) -> list[str]:
+    """Refuse a role/type change that unfits this contact as a mandataire.
+
+    ``_validate`` checks the FORWARD rule only — each of MY mandataires must
+    be an individual of MY role. Nothing checked the reverse: changing the
+    role or the type of a contact that SOMEONE ELSE lists as mandataire left
+    that other contact violating the forward rule, so every later edit of
+    the REPRESENTED contact was refused — the web form and a CardDAV PUT
+    alike (422, which DavX5 swallows) — with nothing pointing at the cause.
+
+    The collection scan runs ONLY on an actual role or type change. It
+    refuses only when the NEW state breaks the rule for at least one
+    referrer (not an individual, or not that referrer's role): a change
+    that REPAIRS a legacy mismatch is never locked out. A failed scan
+    refuses (fail closed) with :data:`MANDATAIRE_CHECK_UNAVAILABLE`.
+    """
+    new_type = merged.get("type")
+    new_role = merged.get("contact_role")
+    if (
+        new_type == existing.get("type")
+        and new_role == existing.get("contact_role")
+    ):
+        return []
+    try:
+        referrers = list_mandataire_referrers(partie_id)
+    except Exception:
+        log_unexpected("partie mandataire reference check failed")
+        return [MANDATAIRE_CHECK_UNAVAILABLE]
+    broken = [
+        other for other in referrers
+        if new_type != "individual" or other.get("contact_role") != new_role
+    ]
+    if not broken:
+        return []
+    names = _joined_names(
+        [display_name(other) or other.get("id", "") for other in broken]
+    )
+    return [
+        f"Ce contact est mandataire de {names} : il doit rester une personne "
+        "physique du même rôle que chaque contact qu'il représente. Retirez "
+        "d'abord cette représentation, puis changez son rôle ou son type."
+    ]
 
 
 def delete_partie(partie_id: str) -> tuple[bool, str]:
@@ -772,10 +855,7 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
         )
 
     if referencing:
-        names = ", ".join(referencing[:3])
-        more = len(referencing) - 3
-        if more > 0:
-            names += f" et {more} autre{'s' if more > 1 else ''}"
+        names = _joined_names(referencing)
         return False, (
             f"Impossible de supprimer : ce contact est mandataire de {names}. "
             "Retirez d'abord cette représentation."
