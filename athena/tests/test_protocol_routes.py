@@ -527,3 +527,82 @@ def test_the_confirmation_box_uses_only_compiled_classes(client, fake):
     assert label, "the confirmation box is not rendered"
     assert _absent_classes(set(label.group(1).split())
                            | set(label.group(2).split())) == []
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Le détail que le connecteur rapporte (lot 1b, L6)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Le web dit des COMPTES dans un bandeau ; un outil du connecteur doit
+# nommer chaque étape déplacée ou conservée et chaque tâche, et dire si le
+# téléphone a été prévenu. Le service rend donc le détail À CÔTÉ des
+# comptes, sans rien changer à ceux-ci.
+
+
+def test_the_detailed_alignment_names_each_task_and_its_bump(fake):
+    _task(fake, "t1", due=OLD)
+    _task(fake, "t2", due=datetime(2026, 11, 9, tzinfo=UTC))   # by hand
+    counts, tasks = protocol_service.align_linked_tasks_detailed(
+        _moved("t1", "t2") + [{"step_id": "s-none", "old": OLD, "new": NEW,
+                               "linked_task_id": None}])
+    assert counts["aligned"] == 1 and counts["diverged"] == 1
+    assert tasks == [
+        {"task_id": "t1", "step_id": "s-t1", "outcome": "aligned",
+         "ctag_bumped": True},
+        {"task_id": "t2", "step_id": "s-t2", "outcome": "diverged",
+         "ctag_bumped": False},
+    ]
+
+
+def test_a_failed_bump_is_reported_not_claimed(fake, monkeypatch):
+    """The phone learns of a moved task through the bump alone: a caller
+    reporting the sync must be able to say when it did not happen."""
+    _task(fake, "t1", due=OLD)
+
+    def _down(_name):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(protocol_service, "bump_ctag", _down)
+    counts, tasks = protocol_service.align_linked_tasks_detailed(_moved("t1"))
+    assert counts["aligned"] == 1
+    assert tasks == [{"task_id": "t1", "step_id": "s-t1",
+                      "outcome": "aligned", "ctag_bumped": False}]
+    assert fake.peek("tasks/t1")["due_date"] == NEW   # the write did land
+
+
+def test_update_protocol_reports_what_moved_what_stayed_and_each_task(fake):
+    dossier = fake.peek("dossiers/d1")
+    proto, errors, _r = protocol_service.create_protocol(
+        dossier, "cq_simplifié", WHEN, create_linked_tasks=True)
+    assert errors == []
+    first = sorted(proto["steps"], key=lambda s: s["order"])[0]
+    _step_doc, errors, _o = protocol_service.set_step_status(
+        proto["id"], first["id"], "complété")
+    assert errors == []
+    _doc, errors, report = protocol_service.update_protocol(
+        proto["id"], {"start_date": START2})
+    assert errors == []
+    assert report["moved"] == len(report["moved_steps"]) == 6
+    assert report["preserved_steps"] == [{"step_id": first["id"],
+                                          "reason": "completed"}]
+    assert {t["step_id"] for t in report["tasks"]} == {
+        m["step_id"] for m in report["moved_steps"]}
+    assert all(t["outcome"] == "aligned" and t["ctag_bumped"]
+               for t in report["tasks"])
+    assert report["aligned"] == 6        # the web's counts, unchanged
+
+
+def test_update_step_reports_its_linked_task(fake):
+    _protocol(fake)
+    _step(fake, "s1", task="t1", deadline=OLD)
+    _task(fake, "t1", due=OLD)
+    step, errors, report = protocol_service.update_step(
+        P, "s1", {"deadline_date": NEW})
+    assert errors == []
+    assert report["aligned"] == 1
+    assert report["tasks"] == [{"task_id": "t1", "step_id": "s1",
+                                "outcome": "aligned", "ctag_bumped": True}]
+    # A notes-only edit moves nothing, and says so.
+    _s, errors, report = protocol_service.update_step(
+        P, "s1", {"notes": "Suivi"})
+    assert errors == [] and report["tasks"] == [] and report["aligned"] == 0

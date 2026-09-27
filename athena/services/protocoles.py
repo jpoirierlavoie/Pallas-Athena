@@ -119,6 +119,7 @@ def add_step(
     step_data: dict,
     *,
     create_linked_task: bool = False,
+    require_active: bool = False,
 ) -> tuple[Optional[dict], list[str], dict]:
     """Add a custom step; optionally create and link its task.
 
@@ -126,9 +127,12 @@ def add_step(
     re-read so the caller holds its CURRENT etag (the link is a step
     write). A protocol that cannot be re-read for the task's labels leaves
     the step created and the task not — reported, never raised.
+    ``require_active`` is the model's (the connector passes it: a step is
+    never added to a protocol that is not « actif »).
     """
     report = {"task_created": False, "task_linked": False}
-    step, errors = protocol_model.add_step(protocol_id, step_data)
+    step, errors = protocol_model.add_step(
+        protocol_id, step_data, require_active=require_active)
     if step is None or not create_linked_task:
         return step, errors, report
     protocol = protocol_model.get_protocol(protocol_id)
@@ -151,26 +155,31 @@ def update_step(
     data: dict,
     *,
     expected_etag: Optional[str] = None,
+    require_active: bool = False,
 ) -> tuple[Optional[dict], list[str], dict]:
     """Edit a step; a changed deadline carries its linked task along.
 
     Report: the :data:`ALIGN_OUTCOMES` counts (all zero when the deadline
-    did not change or the step links no task).
+    did not change or the step links no task), plus ``tasks`` — the entry
+    :func:`align_linked_tasks_detailed` made for the linked task, if the
+    deadline moved a step that links one. ``require_active`` is the
+    model's (the connector passes it).
     """
     step, errors = protocol_model.update_step(
-        protocol_id, step_id, data, expected_etag=expected_etag)
+        protocol_id, step_id, data, expected_etag=expected_etag,
+        require_active=require_active)
     if step is None:
-        return None, errors, _empty_alignment()
+        return None, errors, {**_empty_alignment(), "tasks": []}
     moved = step.pop("_deadline_changed", None)
-    report = _empty_alignment()
+    counts, tasks = _empty_alignment(), []
     if moved is not None and step.get("linked_task_id"):
-        report = align_linked_tasks([{
+        counts, tasks = align_linked_tasks_detailed([{
             "step_id": step_id,
             "old": moved["old"],
             "new": moved["new"],
             "linked_task_id": step["linked_task_id"],
         }], protocol_id=protocol_id)
-    return step, [], report
+    return step, [], {**counts, "tasks": tasks}
 
 
 def set_step_status(
@@ -202,12 +211,16 @@ def update_protocol(
     The recompute happens in the model's own transaction; the linked tasks
     of the steps it MOVED are then aligned. Report: ``moved``,
     ``preserved_completed``, ``preserved_confirmed`` and the
-    :data:`ALIGN_OUTCOMES` counts.
+    :data:`ALIGN_OUTCOMES` counts — what a banner says — plus the detail a
+    tool payload names step by step: ``moved_steps`` (``{step_id, old,
+    new, linked_task_id}``), ``preserved_steps`` (``{step_id, reason}``)
+    and ``tasks`` (:func:`align_linked_tasks_detailed`'s entries).
     """
     protocol, errors = protocol_model.update_protocol(
         protocol_id, data, expected_etag=expected_etag)
     report = {"moved": 0, "preserved_completed": 0, "preserved_confirmed": 0,
-              **_empty_alignment()}
+              **_empty_alignment(), "moved_steps": [], "preserved_steps": [],
+              "tasks": []}
     if protocol is None:
         return None, errors, report
     recompute = protocol.pop("_recompute", None) or {"moved": [],
@@ -215,8 +228,12 @@ def update_protocol(
     report["moved"] = len(recompute["moved"])
     for entry in recompute["preserved"]:
         report[f"preserved_{entry['reason']}"] += 1
-    report.update(align_linked_tasks(recompute["moved"],
-                                     protocol_id=protocol_id))
+    counts, tasks = align_linked_tasks_detailed(recompute["moved"],
+                                                protocol_id=protocol_id)
+    report.update(counts)
+    report["moved_steps"] = [dict(e) for e in recompute["moved"]]
+    report["preserved_steps"] = [dict(e) for e in recompute["preserved"]]
+    report["tasks"] = tasks
     return protocol, [], report
 
 
@@ -266,7 +283,25 @@ def align_linked_tasks(
     the writes, each bump guarded on its own. Returns the
     :data:`ALIGN_OUTCOMES` counts; never raises.
     """
+    counts, _tasks = align_linked_tasks_detailed(moved,
+                                                 protocol_id=protocol_id)
+    return counts
+
+
+def align_linked_tasks_detailed(
+    moved: Iterable[dict], *, protocol_id: str = ""
+) -> tuple[dict, list[dict]]:
+    """:func:`align_linked_tasks`, plus what happened to EACH task.
+
+    Returns ``(counts, tasks)``: the :data:`ALIGN_OUTCOMES` counts, and one
+    ``{task_id, step_id, outcome, ctag_bumped}`` entry per step that links
+    a task, in *moved*'s order. ``ctag_bumped`` is true only for an
+    ``aligned`` task whose collection's bump succeeded — the phone learns
+    of a moved task through that bump alone, so a caller reporting a sync
+    must be able to say when it did not happen. Never raises.
+    """
     report = _empty_alignment()
+    entries: list[dict] = []
     touched: set[str] = set()
     for entry in moved:
         task_id = entry.get("linked_task_id")
@@ -280,14 +315,28 @@ def align_linked_tasks(
                            protocol_id=protocol_id, task_id=task_id)
             outcome, dossier_id = "failed", None
         report[outcome] += 1
-        if outcome == "aligned":
-            touched.add(collection_for(dossier_id))
+        collection = collection_for(dossier_id) if outcome == "aligned" else ""
+        if collection:
+            touched.add(collection)
+        entries.append({"task_id": task_id,
+                        "step_id": entry.get("step_id", ""),
+                        "outcome": outcome, "collection": collection})
+    bumped: dict[str, bool] = {}
     for name in sorted(touched):
         try:
             bump_ctag(name)
+            bumped[name] = True
         except Exception:
+            bumped[name] = False
             log_unexpected("protocol: linked task alignment CTag bump failed",
                            protocol_id=protocol_id)
+    tasks = [
+        {"task_id": e["task_id"], "step_id": e["step_id"],
+         "outcome": e["outcome"],
+         "ctag_bumped": bool(e["collection"]) and bumped.get(
+             e["collection"], False)}
+        for e in entries
+    ]
     if any(report.values()):
         log_protocol_event(
             "linked_tasks_aligned", protocol_id,
@@ -295,4 +344,4 @@ def align_linked_tasks(
             else "success",
             **report,
         )
-    return report
+    return report, tasks
