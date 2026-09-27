@@ -907,6 +907,8 @@ def test_list_documents_conforms_on_both_scopes(monkeypatch):
     # Lot 2A T6: the folder-tree branch, and a filed row in both scopes (its
     # role resolved in dossier scope, null across the firm).
     docs[0]["folder_id"] = "f1"
+    monkeypatch.setattr(handlers.dossier_model, "get_dossier",
+                        lambda d: {"id": d, "file_number": "2026-001"})
     _conforms("list_documents", handlers.list_documents(
         {"dossier_id": "d1", "include_folders": True}))
     _conforms("list_documents", handlers.list_documents({"scope": "cabinet"}))

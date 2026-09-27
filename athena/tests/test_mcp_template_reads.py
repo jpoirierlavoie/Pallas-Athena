@@ -702,6 +702,17 @@ def test_cabinet_scope_leaves_a_filed_documents_role_unresolved(filed):
         handlers.list_documents({"scope": "cabinet", "include_folders": True})
 
 
+def test_include_folders_refuses_a_dossier_it_cannot_resolve(filed):
+    """Regression (T6 review): a mistyped dossier_id has no folder either,
+    and the call answered `folders: []`, `folders_truncated: false` — « this
+    dossier has no folder », the statement include_folders promises never to
+    make without knowing. The rows keep their old contract (none found)."""
+    with pytest.raises(tools.ToolArgumentError,
+                       match="`dossier_id` : aucun dossier lisible"):
+        handlers.list_documents({"dossier_id": "d1-typo", "include_folders": True})
+    assert handlers.list_documents({"dossier_id": "d1-typo"})["items"] == []
+
+
 def test_a_parent_cycle_neither_vanishes_nor_loops(store):
     """The application refuses to create one; a hand edit can. The walk
     must terminate and still LIST the folders (an empty path says why)."""

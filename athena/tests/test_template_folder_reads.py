@@ -180,6 +180,25 @@ def test_system_roles_follow_the_writers_rule():
     assert not folder_model.is_system_folder(legacy, [stamped_elsewhere, legacy])
 
 
+def test_every_folder_the_writers_protect_is_reported_system():
+    """Regression (T6 review): a SECOND folder stamped « projets » (a hand
+    edit — the deterministic id makes the application create only one) is
+    not the role's holder, and system_roles reported it ordinary ("") while
+    is_system_folder — the rename/move guard — refuses to touch it. The
+    connector would have offered to rename a folder the writer refuses."""
+    at_id = {"id": folder_model.system_folder_id("d", "projets"), "dossier_id": "d",
+             "name": "Projets", "parent_folder_id": None, "system_role": "projets"}
+    second = {"id": "z", "dossier_id": "d", "name": "Projets (2)",
+              "parent_folder_id": None, "system_role": "projets"}
+    ordinary = {"id": "o", "dossier_id": "d", "name": "Pièces",
+                "parent_folder_id": None, "system_role": ""}
+    pool = [second, at_id, ordinary]
+    roles = folder_model.system_roles(pool)
+    for folder in pool:
+        assert (folder["id"] in roles) == folder_model.is_system_folder(folder, pool)
+    assert roles == {at_id["id"]: "projets", "z": "projets"}
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 3. The generation service's read half
 # ══════════════════════════════════════════════════════════════════════

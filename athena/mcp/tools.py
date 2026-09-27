@@ -1743,8 +1743,9 @@ TOOLS: dict[str, dict] = {
                         "Dossier scope only: also return the dossier's "
                         "COMPLETE folder tree in `folders` — empty folders "
                         "included, whatever folder_id, query or page. An "
-                        "unreadable folder store is REFUSED, never "
-                        "reported as « no folder ». Default false."
+                        "unreadable folder store or an unknown dossier_id "
+                        "is REFUSED, never reported as « no folder ». "
+                        "Default false."
                     ),
                 },
                 "offset": _offset(),

@@ -1217,13 +1217,22 @@ def system_roles(folders: Iterable[dict]) -> dict[str, str]:
     folder carrying the role — when it is the oldest ROOT folder bearing
     the role's name: the legacy « Projets » that :func:`ensure_system_folder`
     would adopt. The same rule :func:`is_system_folder` applies, so what a
-    reader reports as protected is what the writers protect.
+    reader reports as protected is what the writers protect — including a
+    SECOND folder stamped with a role (only a hand edit makes one): it is not
+    the role's holder, yet ``is_system_folder`` protects every stamped
+    folder, so it is reported with its stamp, never as ordinary.
     """
-    return {
+    pool = list(folders)
+    roles = {
         holder["id"]: role
-        for role, holder in _role_holders(list(folders)).items()
+        for role, holder in _role_holders(pool).items()
         if holder.get("id")
     }
+    for folder in pool:
+        stamped = folder.get("system_role")
+        if stamped and folder.get("id"):
+            roles.setdefault(folder["id"], str(stamped))
+    return roles
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────

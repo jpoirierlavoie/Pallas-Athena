@@ -1622,6 +1622,15 @@ def list_documents(args: dict) -> dict:
             "de sens à l'échelle du cabinet. Retirez-le, ou passez un "
             "dossier_id."
         )
+    if include_folders and dossier_model.get_dossier(dossier_id) is None:
+        # A mistyped id has no folder either: answered unresolved, the tree
+        # would read « this dossier has no folder » — the one statement
+        # include_folders promises never to make without knowing.
+        raise ToolArgumentError(
+            "`dossier_id` : aucun dossier lisible ne porte cet identifiant — "
+            "prenez-le dans list_dossiers (ou réessayez : une lecture a pu "
+            "échouer)."
+        )
 
     kwargs: dict[str, Any] = {
         "dossier_id": dossier_id or None,
