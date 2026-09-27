@@ -187,6 +187,12 @@ def create_note(
         return None, [dav_ids.DAV_ID_INVALID]
 
     merged = {**_default_doc(), **_sanitize_data(data)}
+    if merged.get("is_analyse"):
+        # The théorie de la cause is a dateless jtx *Note*, on every path.
+        # update_note ignores « dateless » for it, so an analyse note BORN
+        # dated — a DAV create carrying X-PALLAS-ANALYSE and a DTSTART —
+        # could never be corrected afterwards (lot 1a L3 review).
+        merged["dateless"] = True
 
     errors = _validate(merged)
     if errors:

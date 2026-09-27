@@ -1241,9 +1241,11 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
         success, error = delete_note(resource_id)
         if not success and error == STALE_ETAG_ERROR:
             # The théorie de la cause is deleted with a snapshot of its text
-            # under an etag guard (models/note.delete_note): an edit that
-            # landed since this request read it refuses the delete, and the
-            # client must re-sync before it can delete what it never saw.
+            # under an etag guard (models/note.delete_note): an edit landing
+            # between the MODEL's read and the delete's commit refuses it,
+            # and the client re-syncs before deleting what it never saw. (The
+            # If-Match compared above is outside that transaction — the DAV
+            # layer's documented legacy path, models/concurrency.py.)
             log_dav_operation("delete", "dossier", dossier_id=dossier_id or None,
                               status_code=412, reason="modifiee_entre_temps")
             return Response("Precondition Failed", status=412)

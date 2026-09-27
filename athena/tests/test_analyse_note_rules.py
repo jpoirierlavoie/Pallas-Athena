@@ -686,3 +686,18 @@ def test_a_dav_created_theorie_in_an_empty_dossier_keeps_the_flag(fake, dav):
     assert resp.status_code == 201
     assert fake.peek("notes/n-copie")["is_analyse"] is True
     assert fake.peek("notes/n-copie")["dateless"] is True
+
+
+def test_a_dav_created_theorie_is_dateless_even_with_a_dtstart(fake, dav):
+    """Review of L3: update_note now IGNORES « dateless » for the analyse
+    note, so a théorie created dated — X-PALLAS-ANALYSE plus a DTSTART —
+    stayed a dated journal entry for ever, no later PUT able to fix it. The
+    model makes every analyse note dateless at birth."""
+    resp = _put(dav, "/dav/dossier-d2/n-copie.ics", _vjournal(dtstart=True))
+    assert resp.status_code == 201
+    stored = fake.peek("notes/n-copie")
+    assert stored["is_analyse"] is True
+    assert stored["dateless"] is True
+    served = dav.get("/dav/dossier-d2/n-copie.ics", headers=AUTH)
+    assert served.status_code == 200
+    assert "DTSTART" not in served.get_data(as_text=True)

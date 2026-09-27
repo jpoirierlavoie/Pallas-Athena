@@ -1272,7 +1272,7 @@ Subcollection under dossiers. Folders are Firestore-only; actual files stay at f
 
 Notes live in `/dav/dossier-{id}/{noteId}.ics` as VJOURNAL resources alongside that dossier's VTODOs.
 
-**The théorie de la cause's rules live in the MODEL** (lot 1a L3): `update_note` never takes `is_analyse` from its data (no demotion, no second analyse note), refuses to move the analyse note to another dossier or to « Général » (`ANALYSE_DOSSIER_LOCKED_ERROR` — the web route keeps its identical guard as belt and braces), and ignores `dateless` for the analyse note ONLY — an ordinary note keeps its jtx Note ↔ Journal round trip. A replaced content can be snapshotted into `notes/{noteId}/revisions/` (see the revisions subcollection below), and deleting the analyse note always leaves one.
+**The théorie de la cause's rules live in the MODEL** (lot 1a L3): `update_note` never takes `is_analyse` from its data (no demotion, no second analyse note), refuses to move the analyse note to another dossier or to « Général » (`ANALYSE_DOSSIER_LOCKED_ERROR` — the web route keeps its identical guard as belt and braces), and ignores `dateless` for the analyse note ONLY — an ordinary note keeps its jtx Note ↔ Journal round trip. Its twin at birth: `create_note` makes every `is_analyse` note dateless (review of L3 — a DAV create carrying `X-PALLAS-ANALYSE` AND a DTSTART otherwise stored a dated théorie no later PUT could correct). A replaced content can be snapshotted into `notes/{noteId}/revisions/` (see the revisions subcollection below), and deleting the analyse note always leaves one.
 
 ### `protocols/{protocolId}` — Case protocols
 
