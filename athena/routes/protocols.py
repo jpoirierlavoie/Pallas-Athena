@@ -33,7 +33,6 @@ from models.protocol import (
     get_protocol,
     get_protocol_for_dossier,
     list_protocols,
-    recompute_deadlines,
     regime_mismatch,
     set_step_status,
     update_protocol,
@@ -250,22 +249,21 @@ def protocol_update(protocol_id: str) -> str:
     data = {
         "title": f.get("title", "").strip(),
         "notes": f.get("notes", "").strip(),
-        "status": f.get("status", "actif"),
     }
-
-    # Handle start date change
+    # Only when posted: the old default « actif » reactivated a completed or
+    # suspended protocol on any save that did not carry the field.
+    if f.get("status"):
+        data["status"] = f.get("status", "")
+    # The model recomputes the step deadlines in the SAME write when the
+    # date changes (preserving completed steps and confirmed CS dates); an
+    # unchanged date is a no-op there.
     new_start_date = _parse_date(f.get("start_date", ""))
-    protocol = get_protocol(protocol_id)
+    if new_start_date:
+        data["start_date"] = new_start_date
 
+    protocol = get_protocol(protocol_id)
     if not protocol:
         return redirect(url_for("dossiers.dossier_list"))
-
-    # Check if start date changed and recompute if needed
-    recompute = False
-    if new_start_date and protocol.get("start_date"):
-        if new_start_date != protocol["start_date"]:
-            recompute = True
-            data["start_date"] = new_start_date
 
     updated, errors = update_protocol(protocol_id, data)
 
@@ -274,9 +272,6 @@ def protocol_update(protocol_id: str) -> str:
         ctx = _template_context()
         ctx.update(protocol=protocol, dossier=dossier, errors=errors, edit_mode=True)
         return render_template("protocols/form.html", **ctx)
-
-    if recompute:
-        recompute_deadlines(protocol_id, new_start_date)
 
     target = url_for("protocols.protocol_detail", protocol_id=protocol_id)
     if _is_htmx():
@@ -340,8 +335,6 @@ def step_add(protocol_id: str) -> str:
         # Phase O — optional on a custom step; the model imputes the -00
         # sub-code when a phase is chosen (D-4/D-15).
         "phase": f.get("phase", ""),
-        "mandatory": False,
-        "deadline_locked": False,
     }
 
     step, errors = add_step(protocol_id, step_data)
@@ -368,8 +361,10 @@ def step_update(protocol_id: str, step_id: str) -> str:
         data["deadline_date"] = _parse_date(f.get("deadline_date", ""))
     if f.get("notes") is not None:
         data["notes"] = f.get("notes", "").strip()
-    if f.get("status"):
-        data["status"] = f.get("status", "")
+    # A posted `status` is never forwarded: a step changes status through
+    # the « Compléter / Rouvrir » button (set_step_status) only — a status
+    # written here skipped the task cascade and the completion check, and
+    # the model now refuses it.
 
     step, errors = update_step(protocol_id, step_id, data)
 

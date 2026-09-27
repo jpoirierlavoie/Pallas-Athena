@@ -684,6 +684,10 @@ ProtocolEvent = Literal[
     "protocol_refused",
     "linked_tasks_created",
     "task_move_refused",
+    "protocol_updated",
+    "step_added",
+    "step_updated",
+    "step_refused",
 ]
 ProtocolOutcome = Literal["success", "refused"]
 # Portail client (spec L1). One vocabulary for BOTH processes: the portal

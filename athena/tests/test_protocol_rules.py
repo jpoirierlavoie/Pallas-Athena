@@ -470,3 +470,365 @@ def test_create_protocol_with_tasks_returns_the_links(fake):
     tasks = fake.peek_collection("tasks")
     assert len(tasks) == 7
     assert {s["linked_task_id"] for s in proto["steps"]} == set(tasks)
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. update_protocol : ses champs, la règle « un seul actif », qui ferme,
+#    et le recalcul dans la MÊME écriture
+# ══════════════════════════════════════════════════════════════════════
+
+START2 = datetime(2026, 10, 5, tzinfo=UTC)
+
+
+def _cq(fake) -> dict:
+    proto, errors = protocol_model.create_protocol(
+        "d1", "cq_simplifié", WHEN, {"title": "Protocole"})
+    assert errors == []
+    return proto
+
+
+def _steps_by_order(fake, pid: str) -> list[dict]:
+    return sorted(fake.peek_collection(f"protocols/{pid}/steps").values(),
+                  key=lambda s: s["order"])
+
+
+@pytest.mark.parametrize("key", ["protocol_type", "dossier_id", "end_date",
+                                 "closed_by", "steps", "id"])
+def test_update_protocol_refuses_a_field_it_does_not_own(fake, key):
+    _protocol(fake)
+    before = _snapshot(fake)
+    doc, errors = protocol_model.update_protocol(P, {key: "x"})
+    assert doc is None
+    assert errors == [f"Le champ « {key} » d'un protocole ne se modifie pas "
+                      "ainsi."]
+    assert _snapshot(fake) == before
+
+
+def test_reactivating_beside_another_active_protocol_is_refused(fake):
+    """update_protocol had NO one-actif guard: the edit form's status
+    select reactivated a second protocol freely."""
+    _protocol(fake, status="suspendu", closed_by="web")
+    _protocol(fake, "p2")
+    before = _snapshot(fake)
+    doc, errors = protocol_model.update_protocol(P, {"status": "actif"})
+    assert doc is None
+    assert errors == [protocol_model.OTHER_ACTIVE_ON_REACTIVATION]
+    assert _snapshot(fake) == before
+
+
+def test_an_unreadable_reactivation_check_refuses(fake, monkeypatch):
+    _protocol(fake, status="suspendu")
+    _break_queries(monkeypatch, fake)
+    before = _snapshot(fake)
+    doc, errors = protocol_model.update_protocol(P, {"status": "actif"})
+    assert doc is None and errors == [protocol_model.ACTIVE_CHECK_FAILED]
+    assert _snapshot(fake) == before
+
+
+@pytest.mark.parametrize("status", ["complété", "suspendu"])
+def test_a_deliberate_closure_names_its_writer_and_reactivation_clears_it(
+    fake, status
+):
+    _protocol(fake)
+    with provenance.writing_via("mcp", tool="t"):
+        _doc, errors = protocol_model.update_protocol(P, {"status": status})
+    assert errors == []
+    stored = fake.peek(f"protocols/{P}")
+    assert stored["status"] == status
+    assert stored["closed_by"] == "mcp"          # never « auto »
+    assert stored["closed_at"] is not None
+    _doc, errors = protocol_model.update_protocol(P, {"status": "actif"})
+    assert errors == []
+    stored = fake.peek(f"protocols/{P}")
+    assert stored["closed_by"] == "" and stored["closed_at"] is None
+
+
+def test_a_start_date_change_recomputes_in_the_same_write(fake):
+    """It used to be two writes — the protocol, then the steps — and the
+    recompute's errors were ignored. Completed steps no longer move."""
+    proto = _cq(fake)
+    pid = proto["id"]
+    first = _steps_by_order(fake, pid)[0]
+    protocol_model.set_step_status(pid, first["id"], "complété")
+    before = _steps_by_order(fake, pid)
+    fake.reset_logs()
+    doc, errors = protocol_model.update_protocol(pid, {"start_date": START2})
+    assert errors == []
+    assert len(fake.commits) == 1                 # ONE transaction
+    after = _steps_by_order(fake, pid)
+    assert after[0]["deadline_date"] == before[0]["deadline_date"]
+    assert after[0]["etag"] == before[0]["etag"]  # untouched
+    for b, a in zip(before[1:], after[1:]):
+        assert a["deadline_date"] == protocol_model._compute_deadline(
+            START2, b["deadline_offset_days"])
+        assert a["etag"] != b["etag"]
+    report = doc["_recompute"]
+    assert {m["step_id"] for m in report["moved"]} == {s["id"] for s in after[1:]}
+    assert report["preserved"] == [{"step_id": after[0]["id"],
+                                    "reason": "completed"}]
+    stored = fake.peek(f"protocols/{pid}")
+    assert stored["start_date"] == START2
+    assert stored["end_date"] == protocol_model._compute_end_date(START2, after)
+    assert "_recompute" not in stored               # never stored
+
+
+def _cs_step(fake, sid, order, offset, **over):
+    doc = {
+        "id": sid, "order": order, "title": f"Étape {sid}", "description": "",
+        "cpc_reference": "", "deadline_offset_days": offset,
+        "deadline_date": protocol_model._compute_deadline(WHEN, offset),
+        "mandatory": True, "deadline_locked": False, "status": "à_venir",
+        "completed_date": None, "linked_task_id": None,
+        "linked_hearing_id": None, "notes": "", "date_confirmed": False,
+        "phase": "", "sous_phase": "", "created_at": WHEN, "updated_at": WHEN,
+        "etag": f"se-{sid}",
+    }
+    doc.update(over)
+    fake.seed(f"protocols/{P}/steps/{sid}", doc)
+
+
+def test_only_truly_confirmed_cs_dates_resist_a_start_date_change(fake):
+    _protocol(fake, ptype="cs_ordinaire")
+    hand = datetime(2026, 11, 20, tzinfo=UTC)
+    _cs_step(fake, "plain", 1, 15)                              # suggestion
+    _cs_step(fake, "spurious", 2, 45, date_confirmed=True)      # notes-only save
+    _cs_step(fake, "legacy", 3, 120, date_confirmed=True,
+             deadline_date=hand)                                # moved by hand
+    _cs_step(fake, "stamped", 4, 150, date_confirmed=True,
+             date_confirmed_at=WHEN)                            # explicit
+    doc, errors = protocol_model.update_protocol(P, {"start_date": START2})
+    assert errors == []
+    report = doc["_recompute"]
+    assert {m["step_id"] for m in report["moved"]} == {"plain", "spurious"}
+    assert sorted(report["preserved"], key=lambda e: e["step_id"]) == [
+        {"step_id": "legacy", "reason": "confirmed"},
+        {"step_id": "stamped", "reason": "confirmed"},
+    ]
+    assert _step_doc(fake, "legacy")["deadline_date"] == hand
+
+
+def test_recompute_deadlines_is_update_protocol_and_preserves_too(fake):
+    proto = _cq(fake)
+    pid = proto["id"]
+    first = _steps_by_order(fake, pid)[0]
+    protocol_model.set_step_status(pid, first["id"], "complété")
+    before = _steps_by_order(fake, pid)[0]["deadline_date"]
+    doc, errors = protocol_model.recompute_deadlines(pid, START2)
+    assert errors == []
+    assert _steps_by_order(fake, pid)[0]["deadline_date"] == before
+    assert doc["_recompute"]["preserved"][0]["reason"] == "completed"
+
+
+def test_a_step_completed_during_the_recompute_is_decided_again(fake):
+    """The steps are read INSIDE the transaction: a step completed between
+    the read and the commit aborts it, and the retry preserves it."""
+    proto = _cq(fake)
+    pid = proto["id"]
+    target = _steps_by_order(fake, pid)[2]
+    fired = []
+
+    def _rival(info):
+        if not fired and ("set", f"protocols/{pid}") in info.ops:
+            fired.append(True)
+            doc = fake.peek(f"protocols/{pid}/steps/{target['id']}")
+            doc.update(status="complété", completed_date=WHEN, etag="rival")
+            fake.external_write(f"protocols/{pid}/steps/{target['id']}", doc)
+
+    fake.add_commit_hook(_rival)
+    doc, errors = protocol_model.update_protocol(pid, {"start_date": START2})
+    assert fired and errors == []
+    stored = fake.peek(f"protocols/{pid}/steps/{target['id']}")
+    assert stored["deadline_date"] == target["deadline_date"]
+    assert stored["etag"] == "rival"
+    assert {"step_id": target["id"], "reason": "completed"} in (
+        doc["_recompute"]["preserved"])
+
+
+def test_an_unchanged_save_writes_nothing(fake):
+    _protocol(fake)
+    fake.reset_logs()
+    doc, errors = protocol_model.update_protocol(P, {
+        "title": "Protocole de l'instance", "notes": "", "status": "actif",
+        "start_date": WHEN})
+    assert errors == [] and doc["etag"] == f"pe-{P}"
+    # The transaction commits EMPTY (the real client always commits it).
+    assert [c.ops for c in fake.commits] in ([], [()])
+
+
+def test_update_protocol_refuses_a_stale_etag(fake):
+    _protocol(fake)
+    before = _snapshot(fake)
+    doc, errors = protocol_model.update_protocol(
+        P, {"notes": "Nouveau"}, expected_etag="perimee")
+    assert doc is None and errors == [concurrency.STALE_ETAG_ERROR]
+    assert _snapshot(fake) == before
+    doc, errors = protocol_model.update_protocol(
+        P, {"notes": "Nouveau"}, expected_etag=f"pe-{P}")
+    assert errors == [] and fake.peek(f"protocols/{P}")["notes"] == "Nouveau"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. add_step : ses champs, ses épingles, et la date de fin
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("key", ["mandatory", "deadline_locked", "status",
+                                 "linked_task_id", "deadline_offset_days",
+                                 "order", "id"])
+def test_add_step_refuses_what_it_pins(fake, key):
+    _protocol(fake)
+    before = _snapshot(fake)
+    step, errors = protocol_model.add_step(P, {"title": "Étape", key: True})
+    assert step is None
+    assert errors == [f"Le champ « {key} » d'une étape ne se modifie pas "
+                      "ainsi."]
+    assert _snapshot(fake) == before
+
+
+def test_an_added_step_is_pinned_stamped_and_moves_the_end_date(fake):
+    _protocol(fake)
+    _step(fake, "s1", order=3)
+    far = datetime(2100, 6, 1, tzinfo=UTC)
+    step, errors = protocol_model.add_step(P, {
+        "title": "Plaidoirie", "deadline_date": far, "phase": "INS"})
+    assert errors == []
+    stored = _step_doc(fake, step["id"])
+    assert stored["order"] == 4
+    assert (stored["mandatory"], stored["deadline_locked"],
+            stored["deadline_offset_days"], stored["status"],
+            stored["linked_task_id"], stored["date_confirmed"]) == (
+        False, False, None, "à_venir", None, True)
+    assert stored["sous_phase"] == "INS-00"
+    assert stored["etag"] and stored["created_via"] == "script"
+    proto = fake.peek(f"protocols/{P}")
+    assert proto["end_date"] == far and proto["etag"] != f"pe-{P}"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 9. update_step : ses champs, le texte du C.p.c., et « confirmée » vrai
+# ══════════════════════════════════════════════════════════════════════
+
+
+def test_a_posted_status_is_refused_with_its_own_message(fake):
+    _protocol(fake)
+    _step(fake, "s1")
+    before = _snapshot(fake)
+    step, errors = protocol_model.update_step(P, "s1", {"status": "complété"})
+    assert step is None
+    assert errors == [protocol_model.STEP_STATUS_NOT_EDITABLE]
+    assert _snapshot(fake) == before
+
+
+@pytest.mark.parametrize("key", ["mandatory", "deadline_locked",
+                                 "linked_task_id", "order", "date_confirmed"])
+def test_update_step_refuses_a_field_it_does_not_own(fake, key):
+    _protocol(fake)
+    _step(fake, "s1")
+    step, errors = protocol_model.update_step(P, "s1", {key: False})
+    assert step is None
+    assert errors == [f"Le champ « {key} » d'une étape ne se modifie pas "
+                      "ainsi."]
+
+
+@pytest.mark.parametrize("field", ["title", "description", "cpc_reference"])
+def test_the_cpc_text_of_a_template_step_is_locked(fake, field):
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 15, title="Réponse", cpc_reference="art. 145")
+    before = _snapshot(fake)
+    step, errors = protocol_model.update_step(P, "s1", {field: "Réécrit"})
+    assert step is None and errors == [protocol_model.LEGAL_TEXT_LOCKED]
+    assert _snapshot(fake) == before
+    # Posting the SAME text is not a change, and a note still saves.
+    same = _step_doc(fake, "s1")[field]
+    step, errors = protocol_model.update_step(
+        P, "s1", {field: same, "notes": "Suivi"})
+    assert errors == [] and _step_doc(fake, "s1")["notes"] == "Suivi"
+
+
+def test_a_locked_deadline_keeps_its_date_and_its_notes_still_save(fake):
+    proto = _cq(fake)
+    step = _steps_by_order(fake, proto["id"])[1]
+    other = datetime(2026, 12, 24, tzinfo=UTC)
+    _s, errors = protocol_model.update_step(
+        proto["id"], step["id"], {"deadline_date": other})
+    assert errors == [protocol_model.DEADLINE_LOCKED]
+    _s, errors = protocol_model.update_step(
+        proto["id"], step["id"],
+        {"deadline_date": step["deadline_date"], "notes": "Vu"})
+    assert errors == []
+
+
+def test_a_template_step_deadline_cannot_be_cleared(fake):
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 15)
+    step, errors = protocol_model.update_step(P, "s1", {"deadline_date": None})
+    assert errors == [protocol_model.MANDATORY_DEADLINE_REQUIRED]
+
+
+def test_a_notes_only_save_no_longer_confirms_a_cs_date(fake):
+    """THE silent defect the recompute rule depends on: the inline form
+    always posts the deadline beside the notes, and ANY key named
+    deadline_date set date_confirmed — so a note « confirmed » a date and
+    the next start-date change silently stopped moving it."""
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 15)
+    unchanged = _step_doc(fake, "s1")["deadline_date"]
+    _s, errors = protocol_model.update_step(
+        P, "s1", {"deadline_date": unchanged, "notes": "Appeler le greffe"})
+    assert errors == []
+    stored = _step_doc(fake, "s1")
+    assert stored["notes"] == "Appeler le greffe"
+    assert stored["date_confirmed"] is False
+    assert stored.get("date_confirmed_at") is None
+    doc, _ = protocol_model.update_protocol(P, {"start_date": START2})
+    assert [m["step_id"] for m in doc["_recompute"]["moved"]] == ["s1"]
+
+
+def test_a_changed_deadline_confirms_it_and_refreshes_the_end_date(fake):
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 15)
+    far = datetime(2101, 1, 10, tzinfo=UTC)
+    step, errors = protocol_model.update_step(P, "s1", {"deadline_date": far})
+    assert errors == []
+    stored = _step_doc(fake, "s1")
+    assert stored["date_confirmed"] is True
+    assert stored["date_confirmed_at"] is not None
+    assert step["_deadline_changed"]["new"] == far
+    assert "_deadline_changed" not in stored
+    assert fake.peek(f"protocols/{P}")["end_date"] == far
+    doc, _ = protocol_model.update_protocol(P, {"start_date": START2})
+    assert doc["_recompute"]["preserved"] == [
+        {"step_id": "s1", "reason": "confirmed"}]
+
+
+def test_an_explicit_confirmation_keeps_the_date_and_marks_it(fake):
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 15)
+    date_before = _step_doc(fake, "s1")["deadline_date"]
+    step, errors = protocol_model.update_step(P, "s1", {"confirm_date": True})
+    assert errors == [] and "_deadline_changed" not in step
+    stored = _step_doc(fake, "s1")
+    assert stored["deadline_date"] == date_before
+    assert stored["date_confirmed"] is True and stored["date_confirmed_at"]
+
+
+def test_an_unchanged_step_save_writes_nothing(fake):
+    _protocol(fake)
+    _step(fake, "s1", etag="se0")
+    fake.reset_logs()
+    step, errors = protocol_model.update_step(
+        P, "s1", {"deadline_date": LATER, "notes": ""})
+    assert errors == [] and step["etag"] == "se0"
+    # The transaction commits EMPTY (the real client always commits it).
+    assert [c.ops for c in fake.commits] in ([], [()])
+
+
+def test_update_step_refuses_a_stale_etag(fake):
+    _protocol(fake)
+    _step(fake, "s1", etag="se0")
+    before = _snapshot(fake)
+    step, errors = protocol_model.update_step(
+        P, "s1", {"notes": "x"}, expected_etag="perimee")
+    assert step is None and errors == [concurrency.STALE_ETAG_ERROR]
+    assert _snapshot(fake) == before

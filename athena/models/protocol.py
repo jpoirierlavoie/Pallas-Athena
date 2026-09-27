@@ -350,6 +350,10 @@ def _default_step() -> dict:
         "linked_hearing_id": None,
         "notes": "",
         "date_confirmed": False,
+        # When the lawyer confirmed the date (a date change, or an explicit
+        # confirmation) — since lot 1a; None before, or never confirmed.
+        # What makes a CS date « truly confirmed » for the recompute rule.
+        "date_confirmed_at": None,
         # Phase O — litigation-phase annotation ("" = unannotated, e.g. a
         # custom step the user did not classify, or a conventionnel protocol)
         "phase": "",
@@ -903,32 +907,237 @@ def list_protocols(
         return []
 
 
+# What a caller may change on an existing protocol. Refused, never
+# dropped: protocol_type and dossier_id would re-found the protocol (its
+# template, its regime gate, its one-actif scope) and have no edit path;
+# end_date, closed_by/closed_at and the stamps are server-owned; the steps
+# have their own writers.
+_PROTOCOL_EDITABLE = frozenset({
+    "title", "notes", "court", "start_date", "status",
+})
+
+OTHER_ACTIVE_ON_REACTIVATION = (
+    "Un autre protocole est actif dans ce dossier : un seul peut l'être à la "
+    "fois. Complétez ou suspendez-le d'abord. Rien n'a été enregistré."
+)
+
+
+def _date_key(value) -> Optional[date]:
+    """The calendar date a date-only field stands for (midnight UTC)."""
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc)
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _date_truly_confirmed(
+    protocol_type: str, start_date, step: dict
+) -> bool:
+    """True when a CS step's date was CONFIRMED by the lawyer.
+
+    ``date_confirmed`` alone is not evidence: until lot 1a every save of a
+    CS step's inline form — which always posts the deadline beside the
+    notes — set it, so a notes-only edit « confirmed » a date nobody had
+    looked at. Since lot 1a it is set only by an actual date change or an
+    explicit confirmation, stamped ``date_confirmed_at``. For a step
+    confirmed before that stamp existed, the evidence is the date itself:
+    one that still equals what the template computes from the stored start
+    date was never moved by hand, and follows the start date like any
+    suggestion.
+    """
+    if protocol_type != "cs_ordinaire" or not step.get("date_confirmed"):
+        return False
+    if step.get("date_confirmed_at"):
+        return True
+    offset = step.get("deadline_offset_days")
+    deadline = step.get("deadline_date")
+    if offset is None or deadline is None or not isinstance(start_date, datetime):
+        return bool(deadline)
+    return _date_key(deadline) != _date_key(
+        _compute_deadline(start_date, offset))
+
+
+def _recompute_plan(
+    protocol: dict, steps: list[dict], new_start: datetime
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """``(moved, preserved, steps_after)`` for a new start date — pure.
+
+    Only an offset-based step (a template step) whose computed deadline
+    CHANGES is considered. It moves unless it is completed (a past
+    deadline is history) or its CS date was truly confirmed
+    (:func:`_date_truly_confirmed`). CQ steps are C.p.c. deadlines: they
+    always follow the law, completed ones excepted. ``moved`` carries
+    ``{step_id, old, new, linked_task_id}``; ``preserved`` carries
+    ``{step_id, reason}`` with reason ``completed`` or ``confirmed``.
+    """
+    ptype = protocol.get("protocol_type", "")
+    old_start = protocol.get("start_date")
+    moved: list[dict] = []
+    preserved: list[dict] = []
+    after: list[dict] = []
+    for original in steps:
+        step = dict(original)
+        offset = step.get("deadline_offset_days")
+        if offset is not None:
+            new_deadline = _compute_deadline(new_start, offset)
+            if _date_key(new_deadline) != _date_key(step.get("deadline_date")):
+                if step.get("status") == "complété":
+                    preserved.append({"step_id": step.get("id", ""),
+                                      "reason": "completed"})
+                elif _date_truly_confirmed(ptype, old_start, step):
+                    preserved.append({"step_id": step.get("id", ""),
+                                      "reason": "confirmed"})
+                else:
+                    moved.append({
+                        "step_id": step.get("id", ""),
+                        "old": step.get("deadline_date"),
+                        "new": new_deadline,
+                        "linked_task_id": step.get("linked_task_id"),
+                    })
+                    step["deadline_date"] = new_deadline
+        after.append(step)
+    return moved, preserved, after
+
+
+def _read_steps(proto_ref, txn) -> list[dict]:
+    out = []
+    for snap in proto_ref.collection(STEPS_SUBCOLLECTION).stream(transaction=txn):
+        step = dict(snap.to_dict() or {})
+        step.setdefault("id", snap.id)
+        out.append(step)
+    out.sort(key=lambda s: s.get("order", 0))
+    return out
+
+
 def update_protocol(
-    protocol_id: str, data: dict
+    protocol_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update protocol metadata. Returns (updated_doc, errors)."""
-    existing = get_protocol(protocol_id)
-    if not existing:
-        return None, ["Protocole introuvable."]
+    """Update a protocol's title / notes / court / start date / status.
 
-    steps = existing.pop("steps", [])
-    merged = {**existing, **_sanitize_data(data)}
+    Returns ``(protocol, errors)``; the protocol carries its ``steps`` and,
+    transiently (never stored), ``_recompute`` =
+    ``{"moved": [...], "preserved": [...]}`` — what a start-date change
+    moved and kept (:func:`_recompute_plan`), for the caller that aligns
+    the linked tasks (``services.protocoles``).
 
-    errors = _validate_protocol(merged)
-    if errors:
-        return None, errors
+    Everything is decided and written in ONE transaction on the protocol
+    and its steps as they stand at commit:
 
+    * any key outside :data:`_PROTOCOL_EDITABLE` is REFUSED (rule 9);
+    * ``expected_etag`` (optional) must still be the protocol's etag;
+    * status → « actif » from another status obeys the one-actif rule,
+      read fail-closed inside the transaction (it had NO guard at all:
+      the edit form reactivated a second protocol freely), and clears
+      ``closed_by``/``closed_at``; status → « complété » or « suspendu »
+      stamps ``closed_by`` with the writing path (``provenance``) and
+      ``closed_at`` — never ``auto``, which only the last step's
+      completion writes;
+    * a start date that CHANGES recomputes the step deadlines in the SAME
+      write (it used to be a second write whose errors were ignored), and
+      refreshes ``end_date``;
+    * nothing changed → nothing written (no etag churn).
+    """
+    unknown = sorted(set(data) - _PROTOCOL_EDITABLE)
+    if unknown:
+        log_protocol_event("protocol_refused", protocol_id, outcome="refused",
+                           reason="champ_refuse", operation="update")
+        return None, [_unknown_field_error(unknown[0], "d'un protocole")]
+    sanitized = _sanitize_data(data)
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
     now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
+    via = provenance.current_via()
+
+    @firestore.transactional
+    def _apply(txn) -> tuple[dict, list[dict], Optional[dict], str, bool]:
+        snap = proto_ref.get(transaction=txn)
+        if not snap.exists:
+            raise _Refusal("Protocole introuvable.", "protocole_introuvable")
+        existing = snap.to_dict() or {}
+        steps = _read_steps(proto_ref, txn)
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refusal(concurrency.STALE_ETAG_ERROR, "stale_etag")
+        merged = {**existing, **sanitized}
+        errors = _validate_protocol(merged)
+        if errors:
+            raise _Refusal(errors, "validation")
+        old_status = existing.get("status", "")
+        new_status = merged.get("status", "")
+        start_changed = (
+            "start_date" in sanitized
+            and _date_key(sanitized["start_date"])
+            != _date_key(existing.get("start_date"))
+        )
+        if not start_changed:
+            merged["start_date"] = existing.get("start_date")
+        changed = start_changed or any(
+            merged.get(k) != existing.get(k) for k in sanitized
+            if k != "start_date"
+        )
+        if not changed:
+            return existing, steps, None, old_status, False
+        if new_status != old_status:
+            if new_status == "actif":
+                try:
+                    others = _get_active_protocols_strict(
+                        merged.get("dossier_id") or "",
+                        exclude_id=protocol_id, transaction=txn,
+                    )
+                except Exception:
+                    log_unexpected("protocol one-actif check failed",
+                                   protocol_id=protocol_id)
+                    raise _Refusal(ACTIVE_CHECK_FAILED, "lecture_impossible")
+                if others:
+                    raise _Refusal(OTHER_ACTIVE_ON_REACTIVATION,
+                                   "autre_protocole_actif")
+                merged["closed_by"] = ""
+                merged["closed_at"] = None
+            else:
+                merged["closed_by"] = via
+                merged["closed_at"] = now
+        report = None
+        if start_changed:
+            moved, preserved, steps = _recompute_plan(
+                existing, steps, merged["start_date"])
+            for entry in moved:
+                txn.update(
+                    proto_ref.collection(STEPS_SUBCOLLECTION).document(
+                        entry["step_id"]),
+                    {"deadline_date": entry["new"],
+                     **provenance.update_fields(now)},
+                )
+            merged["end_date"] = _compute_end_date(merged["start_date"], steps)
+            report = {"moved": moved, "preserved": preserved}
+        merged.pop("steps", None)
+        provenance.stamp_update(merged, now)
+        txn.set(proto_ref, merged)
+        return merged, steps, report, old_status, True
 
     try:
-        db.collection(COLLECTION).document(protocol_id).set(merged)
+        merged, steps, report, old_status, wrote = _apply(db.transaction())
+    except _Refusal as refusal:
+        log_protocol_event("protocol_refused", protocol_id, outcome="refused",
+                           reason=refusal.reason, operation="update")
+        return None, refusal.messages
     except Exception:
         log_unexpected("protocol write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
 
-    merged["steps"] = steps
-    return merged, []
+    result = {**merged, "steps": steps}
+    if not wrote:
+        return result, []
+    provenance.note_commit(COLLECTION, protocol_id)
+    result["_recompute"] = report or {"moved": [], "preserved": []}
+    log_protocol_event(
+        "protocol_updated", protocol_id,
+        from_status=old_status, to_status=merged.get("status", ""),
+        recomputed=report is not None,
+        moved=len((report or {}).get("moved", [])),
+        preserved=len((report or {}).get("preserved", [])),
+    )
+    return result, []
 
 
 def delete_protocol(protocol_id: str) -> tuple[bool, str]:
@@ -959,100 +1168,244 @@ def delete_protocol(protocol_id: str) -> tuple[bool, str]:
 # ── Step operations ─────────────────────────────────────────────────────
 
 
+# What a caller may name on a NEW step. Everything else is pinned here: a
+# custom step is never mandatory nor locked, has no template offset, starts
+# « à venir », and is linked to a task only through _link_task_to_step.
+_STEP_CREATE_FIELDS = frozenset({
+    "title", "description", "cpc_reference", "deadline_date", "notes",
+    "phase", "sous_phase",
+})
+# What a caller may change on an existing step. `status` is NOT here: it
+# changes through set_step_status only (the task cascade and the completion
+# check live there — a status written here skipped both). `confirm_date`
+# is a flag, not a field: it confirms the current date without changing it.
+_STEP_EDITABLE = frozenset({
+    "deadline_date", "notes", "phase", "sous_phase", "title", "description",
+    "cpc_reference", "confirm_date",
+})
+# The C.p.c. text of a template (mandatory) step — the law's, not the
+# lawyer's to reword.
+_STEP_LEGAL_FIELDS = ("title", "description", "cpc_reference")
+
+STEP_STATUS_NOT_EDITABLE = (
+    "Le statut d'une étape se change par « Compléter » ou « Rouvrir », "
+    "jamais par une modification. Rien n'a été enregistré."
+)
+LEGAL_TEXT_LOCKED = (
+    "Le titre, la description et la référence d'une étape obligatoire du "
+    "gabarit C.p.c. ne peuvent pas être modifiés. Rien n'a été enregistré."
+)
+DEADLINE_LOCKED = (
+    "Cette échéance est prescrite par la loi et ne peut pas être modifiée."
+)
+MANDATORY_DEADLINE_REQUIRED = (
+    "L'échéance d'une étape obligatoire ne peut pas être effacée. Rien n'a "
+    "été enregistré."
+)
+
+
 def add_step(
     protocol_id: str, step_data: dict
 ) -> tuple[Optional[dict], list[str]]:
-    """Add a custom step to a protocol. Returns (step_doc, errors)."""
-    protocol = get_protocol(protocol_id)
-    if not protocol:
-        return None, ["Protocole introuvable."]
+    """Add a custom step at the end of a protocol. Returns (step, errors).
+
+    Only :data:`_STEP_CREATE_FIELDS` may be named — any other key is
+    REFUSED (every step field used to be caller-settable, and the route's
+    own pinning was the only guard); the rest is pinned. The step (with its
+    stamps and etag) and the protocol's refreshed ``end_date`` and stamp
+    commit in ONE transaction — the step's order is taken from the steps as
+    they stand at commit.
+    """
+    unknown = sorted(set(step_data) - _STEP_CREATE_FIELDS)
+    if unknown:
+        log_protocol_event("step_refused", protocol_id, outcome="refused",
+                           reason="champ_refuse", operation="add")
+        return None, [_unknown_field_error(unknown[0], "d'une étape")]
 
     merged = {**_default_step(), **_sanitize_data(step_data)}
+    merged.update({
+        "mandatory": False,
+        "deadline_locked": False,
+        "deadline_offset_days": None,
+        "status": "à_venir",
+        "completed_date": None,
+        "linked_task_id": None,
+        "linked_hearing_id": None,
+        "date_confirmed": True,
+    })
     phases.apply_sous_phase_default(merged)
-
     errors = _validate_step(merged)
     if errors:
+        log_protocol_event("step_refused", protocol_id, outcome="refused",
+                           reason="validation", operation="add")
         return None, errors
 
     now = datetime.now(timezone.utc)
     step_id = str(uuid.uuid4())
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
 
-    # Auto-assign order (append to end)
-    existing_steps = protocol.get("steps", [])
-    max_order = max((s.get("order", 0) for s in existing_steps), default=0)
-    merged["order"] = max_order + 1
-
-    merged.update({
-        "id": step_id,
-        "date_confirmed": True,
-        **provenance.create_fields(now),
-    })
+    @firestore.transactional
+    def _apply(txn) -> dict:
+        snap = proto_ref.get(transaction=txn)
+        if not snap.exists:
+            raise _Refusal("Protocole introuvable.", "protocole_introuvable")
+        protocol = snap.to_dict() or {}
+        steps = _read_steps(proto_ref, txn)
+        doc = {
+            **merged,
+            "id": step_id,
+            "order": max((s.get("order", 0) for s in steps), default=0) + 1,
+            **provenance.create_fields(now),
+        }
+        proto_fields = provenance.update_fields(now)
+        start = protocol.get("start_date")
+        if isinstance(start, datetime):
+            proto_fields["end_date"] = _compute_end_date(start, steps + [doc])
+        txn.set(proto_ref.collection(STEPS_SUBCOLLECTION).document(step_id), doc)
+        txn.update(proto_ref, proto_fields)
+        return doc
 
     try:
-        db.collection(COLLECTION).document(protocol_id).collection(
-            STEPS_SUBCOLLECTION
-        ).document(step_id).set(merged)
-
-        # Update protocol etag and updated_at
-        db.collection(COLLECTION).document(protocol_id).update(
-            provenance.update_fields(now)
-        )
+        doc = _apply(db.transaction())
+    except _Refusal as refusal:
+        log_protocol_event("step_refused", protocol_id, outcome="refused",
+                           reason=refusal.reason, operation="add")
+        return None, refusal.messages
     except Exception:
         log_unexpected("protocol write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-
-    return merged, []
+    provenance.note_commit(COLLECTION, protocol_id)
+    log_protocol_event("step_added", protocol_id, step_id=step_id)
+    return doc, []
 
 
 def update_step(
-    protocol_id: str, step_id: str, data: dict
+    protocol_id: str,
+    step_id: str,
+    data: dict,
+    *,
+    expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
-    """Update a step. Validates locked deadlines. Returns (step_doc, errors)."""
-    protocol = get_protocol(protocol_id)
-    if not protocol:
-        return None, ["Protocole introuvable."]
+    """Update a step's deadline, notes, phase or (custom steps) text.
 
-    existing_step = None
-    for s in protocol.get("steps", []):
-        if s["id"] == step_id:
-            existing_step = s
-            break
-    if not existing_step:
-        return None, ["Étape introuvable."]
+    Returns ``(step, errors)``; when the deadline changed, the step carries
+    ``_deadline_changed = {"old", "new"}`` transiently (never stored), for
+    the caller that aligns the linked task.
 
-    # Prevent changing deadline on locked steps
-    if existing_step.get("deadline_locked"):
-        if "deadline_date" in data and data["deadline_date"] != existing_step.get("deadline_date"):
-            return None, [
-                "Cette échéance est prescrite par la loi et ne peut pas être modifiée."
-            ]
+    Decided and written in ONE transaction on the step, its siblings and
+    its protocol as they stand at commit:
 
-    merged = {**existing_step, **_sanitize_data(data)}
-
-    errors = _validate_step(merged)
-    if errors:
-        return None, errors
-
+    * only :data:`_STEP_EDITABLE` — ``status`` is refused with its own
+      message (a status written here skipped the task cascade and the
+      completion check: :func:`set_step_status` is the one path);
+    * ``expected_etag`` (optional) must still be the step's etag;
+    * on a template (mandatory) step the C.p.c. text — title, description,
+      reference — is locked, and the deadline cannot be cleared; a
+      ``deadline_locked`` (CQ) step keeps its deadline;
+    * ``date_confirmed`` is set ONLY when the deadline actually CHANGES,
+      or on an explicit ``confirm_date`` — never because the inline form
+      posted the unchanged date beside a note (it did, on every save, and
+      the recompute rule relies on the flag), stamped
+      ``date_confirmed_at``;
+    * a changed deadline refreshes the protocol's ``end_date``;
+    * nothing changed → nothing written.
+    """
+    data = dict(data)
+    unknown = sorted(set(data) - _STEP_EDITABLE)
+    if unknown:
+        log_protocol_event("step_refused", protocol_id, outcome="refused",
+                           reason="champ_refuse", operation="update",
+                           step_id=step_id)
+        if "status" in unknown:
+            return None, [STEP_STATUS_NOT_EDITABLE]
+        return None, [_unknown_field_error(unknown[0], "d'une étape")]
+    confirm = bool(data.pop("confirm_date", False))
+    sanitized = _sanitize_data(data)
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
+    step_ref = proto_ref.collection(STEPS_SUBCOLLECTION).document(step_id)
     now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
 
-    # If user explicitly sets a date on CS protocol, mark as confirmed
-    if "deadline_date" in data:
-        merged["date_confirmed"] = True
+    @firestore.transactional
+    def _apply(txn) -> tuple[dict, bool, Optional[dict], bool]:
+        proto_snap = proto_ref.get(transaction=txn)
+        step_snap = step_ref.get(transaction=txn)
+        if not proto_snap.exists:
+            raise _Refusal("Protocole introuvable.", "protocole_introuvable")
+        if not step_snap.exists:
+            raise _Refusal("Étape introuvable.", "etape_introuvable")
+        steps = _read_steps(proto_ref, txn)
+        protocol = proto_snap.to_dict() or {}
+        existing = dict(step_snap.to_dict() or {})
+        existing.setdefault("id", step_id)
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refusal(concurrency.STALE_ETAG_ERROR, "stale_etag")
+        changes = dict(sanitized)
+        if existing.get("mandatory"):
+            for field in _STEP_LEGAL_FIELDS:
+                if field in changes and (changes[field] or "") != (
+                        existing.get(field) or ""):
+                    raise _Refusal(LEGAL_TEXT_LOCKED, "libelle_verrouille")
+        deadline_changed = False
+        if "deadline_date" in changes:
+            deadline_changed = _date_key(changes["deadline_date"]) != _date_key(
+                existing.get("deadline_date"))
+            if not deadline_changed:
+                changes.pop("deadline_date")   # keep the stored value as is
+            elif existing.get("deadline_locked"):
+                raise _Refusal(DEADLINE_LOCKED, "echeance_verrouillee")
+            elif changes["deadline_date"] is None and existing.get("mandatory"):
+                raise _Refusal(MANDATORY_DEADLINE_REQUIRED,
+                               "echeance_obligatoire")
+        merged = {**existing, **changes}
+        if "phase" in changes and "sous_phase" not in changes:
+            ph, sp = merged.get("phase", ""), merged.get("sous_phase", "")
+            if ph and sp and phases.phase_of(sp) != ph:
+                merged["sous_phase"] = phases.default_sous_phase(ph)
+        phases.apply_sous_phase_default(merged)
+        errors = _validate_step(merged)
+        if errors:
+            raise _Refusal(errors, "validation")
+        confirmed = deadline_changed or (
+            confirm and not existing.get("date_confirmed"))
+        if confirmed:
+            merged["date_confirmed"] = True
+            merged["date_confirmed_at"] = now
+        if all(merged.get(k) == existing.get(k)
+               for k in set(merged) | set(existing)):
+            return existing, False, None, False
+        provenance.stamp_update(merged, now)
+        txn.set(step_ref, merged)
+        proto_fields = provenance.update_fields(now)
+        start = protocol.get("start_date")
+        if deadline_changed and isinstance(start, datetime):
+            proto_fields["end_date"] = _compute_end_date(
+                start, [merged if s.get("id") == step_id else s for s in steps])
+        txn.update(proto_ref, proto_fields)
+        moved = ({"old": existing.get("deadline_date"),
+                  "new": merged.get("deadline_date")}
+                 if deadline_changed else None)
+        return merged, True, moved, confirmed
 
     try:
-        db.collection(COLLECTION).document(protocol_id).collection(
-            STEPS_SUBCOLLECTION
-        ).document(step_id).set(merged)
-
-        db.collection(COLLECTION).document(protocol_id).update(
-            provenance.update_fields(now)
-        )
+        step, wrote, moved, confirmed = _apply(db.transaction())
+    except _Refusal as refusal:
+        log_protocol_event("step_refused", protocol_id, outcome="refused",
+                           reason=refusal.reason, operation="update",
+                           step_id=step_id)
+        return None, refusal.messages
     except Exception:
         log_unexpected("protocol write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-
-    return merged, []
+    if not wrote:
+        return step, []
+    provenance.note_commit(COLLECTION, protocol_id)
+    log_protocol_event("step_updated", protocol_id, step_id=step_id,
+                       deadline_changed=moved is not None,
+                       date_confirmed_set=confirmed)
+    result = dict(step)
+    if moved is not None:
+        result["_deadline_changed"] = moved
+    return result, []
 
 
 def delete_step(
@@ -1304,46 +1657,14 @@ def complete_step(
 def recompute_deadlines(
     protocol_id: str, new_start_date: datetime
 ) -> tuple[Optional[dict], list[str]]:
-    """Recalculate all offset-based deadlines from a new start date."""
-    protocol = get_protocol(protocol_id)
-    if not protocol:
-        return None, ["Protocole introuvable."]
+    """Move the protocol's start date and recompute its step deadlines.
 
-    now = datetime.now(timezone.utc)
-
-    try:
-        batch = db.batch()
-        proto_ref = db.collection(COLLECTION).document(protocol_id)
-
-        for step in protocol.get("steps", []):
-            if step.get("deadline_offset_days") is not None:
-                new_deadline = _compute_deadline(
-                    new_start_date, step["deadline_offset_days"]
-                )
-                step["deadline_date"] = new_deadline
-                provenance.stamp_update(step, now)
-
-                step_ref = proto_ref.collection(
-                    STEPS_SUBCOLLECTION
-                ).document(step["id"])
-                batch.set(step_ref, step)
-
-        # Update protocol start/end date
-        steps = protocol.get("steps", [])
-        end_date = _compute_end_date(new_start_date, steps)
-
-        batch.update(proto_ref, {
-            "start_date": new_start_date,
-            "end_date": end_date,
-            **provenance.update_fields(now),
-        })
-
-        batch.commit()
-    except Exception:
-        log_unexpected("protocol deadline recompute failed")
-        return None, ["Erreur lors du recalcul. Veuillez réessayer."]
-
-    return get_protocol(protocol_id), []
+    Kept for compatibility: it IS :func:`update_protocol` with only a start
+    date — so it inherits the preservation rules (completed steps and truly
+    confirmed CS dates never move, :func:`_recompute_plan`) and the single
+    transaction. The report travels in ``protocol["_recompute"]``.
+    """
+    return update_protocol(protocol_id, {"start_date": new_start_date})
 
 
 def check_overdue_steps(protocol_id: str) -> int:
