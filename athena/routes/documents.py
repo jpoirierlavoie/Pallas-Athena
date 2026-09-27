@@ -617,7 +617,10 @@ def document_update(document_id: str) -> str:
         _analyse_from_form(f) if f.get("analyse_presente") == "1" else None
     )
 
-    saved, errors = update_metadata(
+    # The third member (« changed ») says whether the metadata write wrote
+    # anything (lot 2A, T1 — update_metadata became a partial transactional
+    # update that writes nothing when nothing changed).
+    saved, errors, _metadata_written = update_metadata(
         document_id, data, expected_etag=expected
     )
     # The etag the form stands for from here on: the one the metadata
@@ -697,7 +700,9 @@ def document_move(document_id: str) -> str:
     dossier_id = doc["dossier_id"]
     target_folder_id = request.form.get("target_folder_id", "").strip() or None
 
-    updated_doc, errors = move_document(dossier_id, document_id, target_folder_id)
+    updated_doc, errors, _moved = move_document(
+        dossier_id, document_id, target_folder_id
+    )
 
     if _is_htmx():
         if errors:

@@ -163,9 +163,14 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     # squattait `description`, le SEUL champ de texte libre que le
     # formulaire d'édition offre au juriste, si bien qu'il ne pouvait pas
     # décrire un document reçu sans effacer sa traçabilité.
-    assert metadata["portail_invitation_id"] == "inv1"
-    assert metadata["portail_sha512"] == _SHA_PDF
-    assert metadata["portail_lot"]
+    # Changé délibérément (lot 2A, T1) : elle voyage par le mot-clé
+    # `portail=`, plus par les métadonnées — le modèle n'y lit plus que ce
+    # qu'un appelant peut choisir.
+    portail = ingest.call_args.kwargs["portail"]
+    assert portail["portail_invitation_id"] == "inv1"
+    assert portail["portail_sha512"] == _SHA_PDF
+    assert portail["portail_lot"]
+    assert not any(k.startswith("portail_") for k in metadata)
     assert "description" not in metadata, "la description reste au juriste"
     assert metadata["folder_id"] == "f-portail"
     blob.download_as_bytes.assert_not_called()

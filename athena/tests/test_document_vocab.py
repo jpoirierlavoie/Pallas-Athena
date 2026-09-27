@@ -144,36 +144,35 @@ def test_coerce_document_date_refuses_junk():
 
 def test_update_metadata_presence_gates_document_date(monkeypatch):
     """A caller that does not carry the key never touches the stored date;
-    a carried empty string CLEARS it (the edit form always submits it)."""
+    a carried empty string CLEARS it (the edit form always submits it).
+
+    Changed deliberately (lot 2A, T1): run on the shared fake Firestore and
+    read back from the STORE — the write is a partial transactional
+    update() now, which the old mock (a bare `set()`) could not serve."""
     from datetime import datetime, timezone
-    stored = {**doc._default_doc(), "id": "doc1", "dossier_id": "d1",
-              "display_name": "PV",
-              "document_date": datetime(2026, 7, 15, tzinfo=timezone.utc)}
-    monkeypatch.setattr(doc, "get_document", lambda i: dict(stored))
-    written = {}
 
-    class _Doc:
-        def set(self, payload):
-            written.update(payload)
+    from tests._fake_firestore import install
 
-    monkeypatch.setattr(
-        doc, "db",
-        mock.Mock(collection=lambda n: mock.Mock(document=lambda i: _Doc())),
-    )
-    # Key absent → date survives.
-    _, errs = doc.update_metadata("doc1", {"description": "maj"})
-    assert errs == []
-    assert written["document_date"] == stored["document_date"]
+    fake = install(monkeypatch, doc)
+    fake.seed("documents/doc1", {
+        **doc._default_doc(), "id": "doc1", "dossier_id": "d1",
+        "display_name": "PV", "etag": "e0",
+        "document_date": datetime(2026, 7, 15, tzinfo=timezone.utc)})
+
+    # Key absent → date survives (an unknown key is ignored, never stored).
+    _, errs, changed = doc.update_metadata("doc1", {"description": "maj"})
+    assert errs == [] and changed is False
+    stored = fake.peek("documents/doc1")
+    assert stored["document_date"] == datetime(2026, 7, 15, tzinfo=timezone.utc)
+    assert "description" not in stored
     # Key carried empty → cleared.
-    written.clear()
-    _, errs = doc.update_metadata("doc1", {"document_date": ""})
-    assert errs == []
-    assert written["document_date"] is None
+    _, errs, changed = doc.update_metadata("doc1", {"document_date": ""})
+    assert errs == [] and changed is True
+    assert fake.peek("documents/doc1")["document_date"] is None
     # Key carried with a date → stored at midnight UTC.
-    written.clear()
-    _, errs = doc.update_metadata("doc1", {"document_date": "2026-07-21"})
+    _, errs, _ = doc.update_metadata("doc1", {"document_date": "2026-07-21"})
     assert errs == []
-    assert written["document_date"] == datetime(
+    assert fake.peek("documents/doc1")["document_date"] == datetime(
         2026, 7, 21, tzinfo=timezone.utc
     )
 

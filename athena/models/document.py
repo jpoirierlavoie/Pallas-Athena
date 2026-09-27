@@ -10,7 +10,9 @@ from typing import BinaryIO, NamedTuple, Optional
 from urllib.parse import quote
 
 import google.auth
+from google.api_core.exceptions import AlreadyExists, PreconditionFailed
 from google.auth.transport import requests as auth_requests
+from google.cloud import firestore
 from google.cloud.exceptions import NotFound
 from google.cloud.firestore_v1.base_query import FieldFilter
 from firebase_admin import storage
@@ -279,7 +281,12 @@ def _default_doc() -> dict:
 
 
 def _sanitize_data(data: dict) -> dict:
-    """Sanitize all string values in *data*."""
+    """Sanitize all string values in *data*.
+
+    Since lot 2A (T1) its only caller is the analysis derivation (the
+    extract a model returns). The metadata a caller WRITES is refused
+    rather than passed through here — see ``_metadata_value_errors``.
+    """
     out: dict = {}
     for key, val in data.items():
         if isinstance(val, str):
@@ -310,6 +317,244 @@ def _coerce_document_date(raw) -> Optional[datetime]:
         except ValueError:
             return None
     return None
+
+
+# ── Metadata written by a caller: whitelisted, refused rather than mangled ──
+#
+# Lot 2A, T1 (2026-09-27). Two defects lived here:
+#
+# * ``_prepare_document_record`` merged ``{**_default_doc(), **metadata}``:
+#   any key a caller handed in was persisted — ``analyse``, ``confirme``,
+#   ``category_source``, ``storage_path``, ``version``… A document could be
+#   born « analysed and confirmed » without any analysis, or pointing at
+#   another document's bytes. The metadata a caller may give is now a
+#   WHITELIST; the machine provenance of a portal document travels through
+#   its own keyword (``portail=``), never through the metadata.
+# * ``_sanitize_data`` TRUNCATED at 2000 characters and DELETED every
+#   ``<…>`` run (``security.sanitize``), in silence: « Lettre <brouillon> »
+#   was stored « Lettre », a long note lost its end, and the save reported
+#   success. A value that ``sanitize`` would alter is now REFUSED, with a
+#   French message naming the field and never quoting it.
+#
+# A malformed ``document_date`` used to become ``None`` — the stored date
+# ERASED by a typo. It is refused too; only an empty value clears the date.
+
+DISPLAY_NAME_MAX = 300
+NOTES_INTERNES_MAX = 2000
+GENERE_DEPUIS_MAX = 2000
+TAG_MAX = 200
+TAGS_MAX_ITEMS = 30
+
+# What a creator's caller may choose. `genere_depuis` stays here — it is set
+# by the application's own generators, never by a form — while the portal's
+# three provenance fields travel through `portail=` (see above).
+_RECORD_METADATA_KEYS = (
+    "display_name", "category", "tags", "document_date", "folder_id",
+    "notes_internes", "genere_depuis",
+)
+# What an EDIT may change. The folder moves through `move_document` only.
+_METADATA_EDIT_KEYS = (
+    "display_name", "category", "tags", "document_date", "notes_internes",
+)
+_PORTAIL_KEYS = ("portail_invitation_id", "portail_lot", "portail_sha512")
+_PORTAIL_MAX = 200
+
+_TEXT_LIMITS = {
+    "display_name": DISPLAY_NAME_MAX,
+    "notes_internes": NOTES_INTERNES_MAX,
+    "genere_depuis": GENERE_DEPUIS_MAX,
+}
+_FIELD_LABELS = {
+    "display_name": "Nom d'affichage",
+    "notes_internes": "Notes internes",
+    "genere_depuis": "Provenance",
+    "category": "Catégorie",
+    "tags": "Étiquettes",
+    "document_date": "Date du document",
+    "folder_id": "Dossier de classement",
+}
+
+DOCUMENT_DATE_ERROR = "Date du document invalide : attendu AAAA-MM-JJ."
+CATEGORY_ERROR = "Catégorie invalide."
+INVALID_DOCUMENT_ID = "Identifiant de document invalide."
+
+# `category_source` a CALLER may pose. « analyse » is minted by
+# `record_analyse` alone — a creator or an edit that claimed it would make a
+# category read as derived from an analysis that never ran.
+_POSABLE_CATEGORY_SOURCES = ("juriste", "mcp")
+
+# D15 (2026-09-25): Claude may set a category directly, as PRESUMED — but
+# never on an analysed document, whose category DERIVES from the analysis's
+# closed sub-nature. `record_document_analysis` stays the path there.
+MCP_CATEGORY_ON_ANALYSED = (
+    "Ce document a été analysé : sa catégorie dérive de l'analyse et ne se "
+    "pose pas directement. Enregistrez une nouvelle analyse, ou laissez le "
+    "juriste la corriger dans l'application."
+)
+
+
+class _Refused(Exception):
+    """Raised inside a transactional body: nothing is written, the French
+    errors travel back to the caller (the real ``transactional`` decorator
+    rolls back on any exception)."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__("refused")
+        self.errors = list(errors)
+
+
+def is_canonical_uuid4(value: object) -> bool:
+    """True for a lowercase, hyphenated UUIDv4 — the shape this app mints.
+
+    ``uuid.UUID`` also accepts braces, ``urn:uuid:``, uppercase and other
+    versions; a document id a caller RESERVES must be exactly what
+    ``uuid.uuid4()`` would have produced, or it could name something that is
+    not a document at all (a ``staging/{uid}/exports/…`` segment).
+    """
+    if not isinstance(value, str) or len(value) != 36:
+        return False
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return False
+    return (
+        str(parsed) == value and parsed.version == 4
+        and parsed.variant == uuid.RFC_4122
+    )
+
+
+def has_analysis(doc: Optional[dict]) -> bool:
+    """True when *doc* carries an analysis (its category then DERIVES)."""
+    doc = doc or {}
+    return bool((doc.get("analyse") or {}).get("sous_nature")) or (
+        doc.get("category_source") == "analyse"
+    )
+
+
+def _parse_document_date(raw) -> tuple[Optional[datetime], Optional[str]]:
+    """Strict twin of :func:`_coerce_document_date` for WRITES.
+
+    ``None``/blank → ``(None, None)`` — an explicit clearing. A datetime or a
+    date → its calendar date at midnight UTC. A ``YYYY-MM-DD`` string → the
+    same. Anything else → ``(None, DOCUMENT_DATE_ERROR)``: a typo must never
+    read as « clear the date ».
+    """
+    if raw is None:
+        return None, None
+    if isinstance(raw, (datetime, date)):
+        return _coerce_document_date(raw), None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None, None
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError:
+            return None, DOCUMENT_DATE_ERROR
+        return parsed.replace(tzinfo=timezone.utc), None
+    return None, DOCUMENT_DATE_ERROR
+
+
+def _metadata_input(data: dict, keys: tuple[str, ...]) -> tuple[dict, list[str]]:
+    """The whitelisted keys of *data*, typed; unknown keys are ignored.
+
+    Only SHAPE is checked here (a text is a text, a date parses, the tags
+    are a list of texts): the content rules live in
+    :func:`_metadata_value_errors`, so that an edit can hold them to the
+    values it actually CHANGES.
+    """
+    out: dict = {}
+    errors: list[str] = []
+    for key in keys:
+        if key not in data:
+            continue
+        value = data[key]
+        label = _FIELD_LABELS[key]
+        if key == "document_date":
+            parsed, error = _parse_document_date(value)
+            if error:
+                errors.append(error)
+            else:
+                out[key] = parsed
+        elif key == "tags":
+            if value is None:
+                out[key] = []
+            elif isinstance(value, (list, tuple)) and all(
+                isinstance(t, str) for t in value
+            ):
+                out[key] = list(value)
+            else:
+                errors.append(f"{label} : une liste de textes est attendue.")
+        elif key == "folder_id":
+            if value in (None, ""):
+                out[key] = None
+            elif isinstance(value, str):
+                out[key] = value
+            else:
+                errors.append(f"{label} invalide.")
+        elif value is None:
+            out[key] = ""
+        elif isinstance(value, str):
+            out[key] = value
+        else:
+            errors.append(f"{label} : un texte est attendu.")
+    return out, errors
+
+
+def _text_errors(label: str, value: str, limit: int) -> list[str]:
+    """Refuse what ``security.sanitize`` would alter — never alter it."""
+    if len(value) > limit:
+        return [f"{label} : {limit} caractères au plus."]
+    if sanitize(value, max_length=limit) != value:
+        return [
+            f"{label} : un passage entre chevrons (« < … > ») serait retiré "
+            "à l'enregistrement — retirez les chevrons."
+        ]
+    return []
+
+
+def _metadata_value_errors(fields: dict) -> list[str]:
+    """Content rules on already-typed metadata (see :func:`_metadata_input`)."""
+    errors: list[str] = []
+    for key, value in fields.items():
+        if key in _TEXT_LIMITS:
+            errors += _text_errors(_FIELD_LABELS[key], value, _TEXT_LIMITS[key])
+        elif key == "category":
+            if value not in VALID_CATEGORIES:
+                errors.append(CATEGORY_ERROR)
+        elif key == "tags":
+            label = _FIELD_LABELS["tags"]
+            if len(value) > TAGS_MAX_ITEMS:
+                errors.append(f"{label} : {TAGS_MAX_ITEMS} au plus.")
+            tag_errors: list[str] = []
+            for tag in value:
+                if not tag:
+                    tag_errors.append(
+                        f"{label} : une étiquette vide n'est pas acceptée."
+                    )
+                else:
+                    tag_errors += _text_errors(
+                        f"{label} (chacune)", tag, TAG_MAX
+                    )
+            errors += list(dict.fromkeys(tag_errors))
+    return errors
+
+
+def _portail_fields(portail: Optional[dict]) -> tuple[dict, list[str]]:
+    """The portal provenance keyword, checked: the three keys, short texts."""
+    if not portail:
+        return {}, []
+    if not isinstance(portail, dict) or set(portail) - set(_PORTAIL_KEYS):
+        return {}, ["Provenance du portail invalide."]
+    out: dict = {}
+    for key in _PORTAIL_KEYS:
+        value = portail.get(key, "")
+        if value is None:
+            value = ""
+        if not isinstance(value, str) or len(value) > _PORTAIL_MAX:
+            return {}, ["Provenance du portail invalide."]
+        out[key] = value
+    return out, []
 
 
 def _validate_metadata(data: dict) -> list[str]:
@@ -482,6 +727,10 @@ def _prepare_document_record(
     file_size: int,
     metadata: dict,
     user_id: str,
+    *,
+    document_id: Optional[str] = None,
+    category_source: str = "juriste",
+    portail: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Build the Firestore record + storage path shared by the two
     ingestion paths (through-app stream and GCS-side copy).
@@ -491,14 +740,38 @@ def _prepare_document_record(
     original_filename/display_name (display purposes). The uid segment is
     validated here too, where the path is built, whoever computed it: the
     two public callers check it first as well, to refuse before any I/O.
+
+    *metadata* is read through a WHITELIST (``_RECORD_METADATA_KEYS``) and
+    refused rather than mangled; everything else a record carries is set
+    here or by an explicit keyword:
+
+    * ``document_id`` — a RESERVED id (a canonical UUIDv4, refused
+      otherwise), so a retried ingestion lands on the same record instead
+      of minting a second one. ``None`` mints a fresh one.
+    * ``category_source`` — who posed the category: « juriste » (a form,
+      a template's own category) or « mcp » (Claude — shown « présumée »).
+    * ``portail`` — the three ``portail_*`` provenance fields of a document
+      versed from Réception.
     """
     uid, uid_errors = _storage_uid(user_id)
     if uid_errors:
         return None, uid_errors
-    merged = {**_default_doc(), **_sanitize_data(metadata)}
+    if document_id is not None and not is_canonical_uuid4(document_id):
+        return None, [INVALID_DOCUMENT_ID]
+    if category_source not in _POSABLE_CATEGORY_SOURCES:
+        return None, ["Provenance de catégorie invalide."]
+    fields, errors = _metadata_input(metadata or {}, _RECORD_METADATA_KEYS)
+    if not errors:
+        errors = _metadata_value_errors(fields)
+    portail_fields, portail_errors = _portail_fields(portail)
+    errors += portail_errors
+    if errors:
+        return None, errors
+
+    merged = {**_default_doc(), **fields, **portail_fields}
     merged["dossier_id"] = dossier_id
     merged["dossier_file_number"] = dossier_file_number
-    merged["document_date"] = _coerce_document_date(merged.get("document_date"))
+    merged["category_source"] = category_source
 
     folder_id = merged.get("folder_id")
     if folder_id:
@@ -512,7 +785,7 @@ def _prepare_document_record(
         return None, meta_errors
 
     now = datetime.now(timezone.utc)
-    document_id = str(uuid.uuid4())
+    document_id = document_id or str(uuid.uuid4())
 
     printable = "".join(ch for ch in filename if ch.isprintable())
     safe_filename = secure_filename(printable)
@@ -542,6 +815,10 @@ def ingest_blob_as_document(
     filename: str,
     metadata: dict,
     user_id: str,
+    *,
+    document_id: Optional[str] = None,
+    category_source: str = "juriste",
+    portail: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Ingest an EXISTING GCS object as a document via a server-side copy.
 
@@ -553,10 +830,31 @@ def ingest_blob_as_document(
     direct-to-GCS upload form (source under staging/ in the canonical
     bucket). The CALLER must have reload()ed *source_blob* (its .size is
     what the size policy is enforced on) and owns the source's cleanup.
+
+    ``document_id`` (keyword) RESERVES the record's id — a canonical
+    UUIDv4, refused otherwise. The upload form passes the id segment of its
+    staging path, so two finalizations of one upload (a double click, a
+    retried request whose answer was lost) land on ONE document. What makes
+    that safe is structural, never a pre-read someone can race:
+
+    * the copy is written with ``if_generation_match=0`` — it can only
+      CREATE the destination object. A 412 means another call already wrote
+      it: this call then adopts it (same size, same checksum as the source)
+      or refuses — it never overwrites it and never deletes it;
+    * the record is written with ``create()`` — ``AlreadyExists`` means
+      another call committed it: the existing record is returned when it is
+      the same document (same dossier, same size), refused otherwise;
+    * a failure deletes the destination ONLY when this call created it
+      (the generation it wrote), and never when a committed record
+      references it. The old rollback deleted the canonical path blindly —
+      with a reserved id that path can belong to a call that already
+      committed, whose document would have lost its bytes in silence.
     """
     _, uid_errors = _storage_uid(user_id)
     if uid_errors:
         return None, uid_errors
+    if document_id is not None and not is_canonical_uuid4(document_id):
+        return None, [INVALID_DOCUMENT_ID]
     file_errors = _validate_file(filename, int(source_blob.size or 0))
     if file_errors:
         return None, file_errors
@@ -581,58 +879,174 @@ def ingest_blob_as_document(
     if EXTENSION_MIME_TYPES.get(ext) != content_type:
         return None, ["Le contenu du fichier ne correspond pas à son extension."]
 
+    size = int(source_blob.size or 0)
+    reserved = document_id is not None
     merged, errors = _prepare_document_record(
         dossier_id, dossier_file_number, filename, ext,
-        content_type, int(source_blob.size or 0), metadata, user_id,
+        content_type, size, metadata, user_id,
+        document_id=document_id, category_source=category_source,
+        portail=portail,
     )
     if errors:
         return None, errors
     storage_path = merged["storage_path"]
     document_id = merged["id"]
+    ref = db.collection(COLLECTION).document(document_id)
 
+    if reserved:
+        # A replay whose first attempt FINISHED: answer it, copy nothing.
+        # Fails closed — an unreadable record is not « no record ».
+        try:
+            snap = ref.get()
+        except Exception:
+            log_unexpected("document ingest: reserved record unreadable",
+                           document_id=document_id)
+            return None, [_INGEST_FAILED]
+        if snap.exists:
+            return _same_ingested(snap.to_dict() or {}, dossier_id, size)
+
+    created_generation = None
     try:
         bucket = storage.bucket()
         dest = bucket.blob(storage_path)
-        # GCS-side rewrite (loops for large objects). The destination then
-        # gets the SNIFFED type — never the source's client-declared one —
-        # and the attachment discipline of the non-previewable types.
-        token, _, _ = dest.rewrite(source_blob)
-        while token is not None:
-            token, _, _ = dest.rewrite(source_blob, token=token)
+        # GCS-side rewrite (loops for large objects), CREATE-ONLY: the same
+        # precondition on every call of the loop (GCS requires the
+        # continuation calls to repeat the first one's parameters).
+        try:
+            token, _, _ = dest.rewrite(source_blob, if_generation_match=0)
+            while token is not None:
+                token, _, _ = dest.rewrite(
+                    source_blob, token=token, if_generation_match=0
+                )
+        except PreconditionFailed:
+            # Someone else wrote this path: never overwrite it, never
+            # delete it. Already ingested (a concurrent finalization of the
+            # same upload committed) → its document is the answer. No record
+            # yet (that call is still between its copy and its record, or
+            # died there) → adopt the object only when it IS this source's
+            # bytes; the record's create() below settles who wins.
+            if reserved:
+                done = _read_ingested(ref, dossier_id, size)
+                if done is not None:
+                    return done
+            if not _same_object(dest, source_blob):
+                return None, [_INGEST_OCCUPIED]
+        else:
+            created_generation = dest.generation
+        # The destination gets the SNIFFED type — never the source's
+        # client-declared one — and the attachment discipline of the
+        # non-previewable types; the precondition keeps the patch on the
+        # generation this call wrote or adopted.
         dest.content_type = content_type
         if content_type in _ATTACHMENT_ONLY_TYPES:
             dest.content_disposition = "attachment"
-        dest.patch()
+        dest.patch(if_generation_match=dest.generation)
     except Exception as exc:
         logger.warning(
             "ingest_blob failed for document %s: %s",
             document_id, type(exc).__name__,
         )
-        try:
-            bucket = storage.bucket()
-            bucket.blob(storage_path).delete()
-        except Exception:
-            pass
-        return None, ["Erreur lors du versement. Veuillez réessayer."]
+        _delete_own_object(storage_path, created_generation)
+        if reserved:
+            # The concurrent call that consumed the staging object may have
+            # committed meanwhile — then this call's answer is its document.
+            done = _read_ingested(ref, dossier_id, size)
+            if done is not None:
+                return done
+        return None, [_INGEST_FAILED]
 
     try:
-        db.collection(COLLECTION).document(document_id).set(merged)
+        ref.create(merged)
+    except AlreadyExists:
+        # Another call committed this id. Its record is the answer when it
+        # is the same document; this call's own copy is removed only when
+        # no committed record points at it.
+        try:
+            existing = ref.get().to_dict() or {}
+        except Exception:
+            log_unexpected("document ingest: committed record unreadable",
+                           document_id=document_id)
+            return None, [_INGEST_FAILED]
+        if existing.get("storage_path") != storage_path:
+            _delete_own_object(storage_path, created_generation)
+        return _same_ingested(existing, dossier_id, size)
     except Exception as exc:
         logger.warning(
             "ingest_blob failed for document %s: %s",
             document_id, type(exc).__name__,
         )
-        try:
-            bucket = storage.bucket()
-            bucket.blob(storage_path).delete()
-        except Exception as cleanup_exc:
-            logger.warning(
-                "ingest_blob: storage rollback failed for document %s: %s",
-                document_id, type(cleanup_exc).__name__,
-            )
-        return None, ["Erreur lors du versement. Veuillez réessayer."]
+        _delete_own_object(storage_path, created_generation)
+        return None, [_INGEST_FAILED]
 
     return merged, []
+
+
+_INGEST_FAILED = "Erreur lors du versement. Veuillez réessayer."
+_INGEST_OCCUPIED = (
+    "Un autre fichier occupe déjà l'emplacement de ce document : rien n'a "
+    "été versé, et rien n'a été supprimé. Téléversez le fichier de nouveau."
+)
+_INGEST_CONFLICT = (
+    "Un autre document porte déjà cet identifiant : rien n'a été versé."
+)
+
+
+def _same_ingested(
+    existing: dict, dossier_id: str, size: int
+) -> tuple[Optional[dict], list[str]]:
+    """The committed record, when it is this ingestion's document."""
+    if (existing.get("dossier_id") == dossier_id
+            and int(existing.get("file_size") or 0) == size):
+        return _migrate_category(existing), []
+    return None, [_INGEST_CONFLICT]
+
+
+def _read_ingested(ref, dossier_id: str, size: int):
+    """``(record, [])`` when a matching record exists now, else ``None``."""
+    try:
+        snap = ref.get()
+    except Exception:
+        return None
+    if not snap.exists:
+        return None
+    doc, errors = _same_ingested(snap.to_dict() or {}, dossier_id, size)
+    return (doc, errors) if doc is not None else None
+
+
+def _same_object(dest, source) -> bool:
+    """True when *dest* (an existing object) holds exactly *source*'s bytes.
+
+    Size, then a stored checksum both sides carry (MD5, else CRC32C —
+    a rewrite preserves both); no common checksum is « not proven ».
+    """
+    import hmac
+
+    try:
+        dest.reload()
+    except Exception:
+        return False
+    if dest.size is None or int(dest.size) != int(source.size or 0):
+        return False
+    for attr in ("md5_hash", "crc32c"):
+        mine, theirs = getattr(dest, attr, None), getattr(source, attr, None)
+        if isinstance(mine, str) and isinstance(theirs, str) and mine and theirs:
+            return hmac.compare_digest(mine, theirs)
+    return False
+
+
+def _delete_own_object(storage_path: str, generation) -> None:
+    """Delete the object at *storage_path* ONLY at the generation this call
+    wrote. ``None`` — this call wrote nothing there — deletes nothing."""
+    if generation is None:
+        return
+    try:
+        storage.bucket().blob(storage_path).delete(
+            if_generation_match=generation
+        )
+    except (NotFound, PreconditionFailed):
+        pass
+    except Exception:
+        log_unexpected("document ingest: own copy rollback failed")
 
 
 def upload_document(
@@ -643,10 +1057,15 @@ def upload_document(
     file_size: int,
     metadata: dict,
     user_id: str,
+    *,
+    category_source: str = "juriste",
 ) -> tuple[Optional[dict], list[str]]:
     """Upload a file to Firebase Storage and create a Firestore record.
 
-    Returns (doc, errors).
+    Returns (doc, errors). *metadata* is whitelisted and refused rather
+    than mangled (see ``_prepare_document_record``); ``category_source``
+    says who chose the category — « juriste » for the application's own
+    generators (the template's category), « mcp » when Claude chose it.
     """
     _, uid_errors = _storage_uid(user_id)
     if uid_errors:
@@ -676,6 +1095,7 @@ def upload_document(
     merged, errors = _prepare_document_record(
         dossier_id, dossier_file_number, filename, ext,
         content_type, file_size, metadata, user_id,
+        category_source=category_source,
     )
     if errors:
         return None, errors
@@ -697,9 +1117,9 @@ def upload_document(
         logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
         return None, ["Erreur lors du téléversement. Veuillez réessayer."]
 
-    # Save metadata to Firestore
+    # Save metadata to Firestore — create(): a fresh id can only be CREATED.
     try:
-        db.collection(COLLECTION).document(document_id).set(merged)
+        db.collection(COLLECTION).document(document_id).create(merged)
     except Exception as exc:
         logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
         # Attempt to clean up the uploaded file
@@ -802,71 +1222,179 @@ def list_documents(
         return []
 
 
-def update_metadata(
-    document_id: str, data: dict, *, expected_etag: Optional[str] = None
-) -> tuple[Optional[dict], list[str]]:
-    """Update document metadata (display_name, category, tags, notes).
+def _resolve_category_source(source: Optional[str]) -> tuple[str, list[str]]:
+    """Who poses a category on an EDIT — never « analyse » (see above).
 
-    ``expected_etag`` (keyword-only): when given, the write commits only if
-    the stored etag is still that one (``models.concurrency``); a stale one
-    returns ``[STALE_ETAG_ERROR]`` and writes nothing — the guard that keeps
-    a stale edit tab from reverting a category an analysis derived since it
-    opened. ``None`` is the unchanged single ``set()``. The returned
-    document carries the NEW etag: a caller chaining ``update_analyse`` on
-    the same save passes that one, never the etag its form was read with.
+    ``None`` derives it from the writer: the connector is « mcp », every
+    other path « juriste ». And under the connector the answer is « mcp »
+    WHATEVER the caller passed: a category Claude chose must never read as
+    the lawyer's determination, and a handler that forgot the keyword (or
+    passed the wrong one) must not be able to make it so.
     """
-    existing = get_document(document_id)
-    if not existing:
-        return None, ["Document introuvable."]
-    if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
+    if source is not None and source not in _POSABLE_CATEGORY_SOURCES:
+        return "", ["Provenance de catégorie invalide."]
+    if provenance.current_via() == "mcp":
+        return "mcp", []
+    return source or "juriste", []
 
-    # Only allow updating specific metadata fields
-    allowed_fields = {
-        # `description` a quitté cette liste le 2026-08-31 : le juriste
-        # écrit dans `notes_internes`, le modèle dans `analyse.resume`.
-        "display_name", "category", "tags", "document_date",
-        "notes_internes",
+
+def _changed_metadata(existing: dict, proposed: dict) -> dict:
+    """The proposed values that differ from what is stored (read-migrated,
+    absent keys at their default) — the ONLY keys an edit writes."""
+    defaults = _default_doc()
+    return {
+        key: value for key, value in proposed.items()
+        if existing.get(key, defaults.get(key)) != value
     }
-    sanitized = _sanitize_data({k: v for k, v in data.items() if k in allowed_fields})
-    merged = {**existing, **sanitized}
-    if "category" in sanitized:
-        # Le juriste reprend la main. Sans cette ligne, une catégorie
-        # corrigée À LA MAIN restait marquée « analyse », donc « présumée »
-        # à l'écran et au connecteur — sur une valeur que le juriste venait
-        # de poser lui-même. Le formulaire est une détermination, pas une
-        # suggestion.
-        merged["category_source"] = "juriste"
-    if "document_date" in sanitized:
-        # Presence-gated: a caller that does not carry the key never touches
-        # the stored date; a carried empty string clears it deliberately.
-        merged["document_date"] = _coerce_document_date(
-            sanitized["document_date"]
-        )
 
-    # Validate
-    if merged.get("category") and merged["category"] not in VALID_CATEGORIES:
-        return None, ["Catégorie invalide."]
 
-    now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
+def update_metadata(
+    document_id: str,
+    data: dict,
+    *,
+    expected_etag: Optional[str] = None,
+    source: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """Update document metadata — a partial, transactional write.
+
+    Returns ``(doc, errors, changed)``: the third member says whether
+    anything was written (the ``set_time_entry_phase`` deviation from the
+    CRUD pair) — a save that changes nothing writes nothing at all, no
+    ``updated_at`` churn and no new etag.
+
+    Rewritten in lot 2A (T1, 2026-09-27). It used to read the document,
+    merge ``{**existing, **data}`` and ``set()`` the WHOLE document. Four
+    defects followed:
+
+    * a concurrent write landing between the read and the ``set()`` — an
+      analysis the connector recorded, a folder move — was reverted by it;
+      now the read, the checks and the write share ONE transaction, and
+      only the CHANGED keys are written (``update()``), so a write to any
+      other field survives by construction;
+    * every save stamped ``category_source = « juriste »`` because the
+      edit form always posts ``category``: an innocuous tag edit silently
+      turned a PRESUMED category into the lawyer's determination. The
+      provenance now moves only when the category VALUE changes;
+    * a malformed ``document_date`` ERASED the stored date; it is refused;
+    * over-long values and ``<…>`` runs were truncated or deleted by
+      ``sanitize``; they are refused with a French message.
+
+    ``expected_etag`` (keyword-only): the write commits only if the stored
+    etag is still that one (``models.concurrency`` — checked on the
+    transactional read, before any validation); a stale one returns
+    ``[STALE_ETAG_ERROR]`` and writes nothing. ``None`` asserts nothing
+    about the version — but the write stays transactional and partial.
+
+    ``source`` (keyword-only) — who poses a changed category: « juriste »
+    or « mcp » (D15: Claude's category is PRESUMED, shown « présumée » with
+    a « Confirmer » button). ``None`` derives it from the writer, and the
+    connector is always « mcp » (:func:`_resolve_category_source`). A
+    category change posed by « mcp » is REFUSED on an analysed document,
+    whose category derives from its analysis.
+
+    Values are validated only where they CHANGE: a legacy value the form
+    posts back untouched is not a new write, and must not block the save of
+    another field. The returned document carries the NEW etag: a caller
+    chaining ``update_analyse`` on the same save passes that one.
+    """
+    source, errors = _resolve_category_source(source)
+    if errors:
+        return None, errors, False
+    proposed, errors = _metadata_input(data or {}, _METADATA_EDIT_KEYS)
+    if errors:
+        return None, errors, False
+    ref = db.collection(COLLECTION).document(document_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        # The read comes FIRST (the real client refuses a transactional read
+        # after a staged write), and every check below reads THIS snapshot.
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        changes = _changed_metadata(existing, proposed)
+        value_errors = _metadata_value_errors(changes)
+        if value_errors:
+            raise _Refused(value_errors)
+        if "category" in changes:
+            if source == "mcp" and has_analysis(existing):
+                raise _Refused([MCP_CATEGORY_ON_ANALYSED])
+            changes["category_source"] = source
+        if not changes:
+            return existing, False
+        fields = {
+            **changes,
+            **provenance.update_fields(datetime.now(timezone.utc)),
+        }
+        transaction.update(ref, fields)
+        return {**existing, **fields}, True
 
     try:
-        concurrency.commit_document(
-            db.collection(COLLECTION).document(document_id), merged,
-            expected_etag=expected_etag,
-            read_etag=concurrency.etag_of(existing),
-        )
-    except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
-    except concurrency.Vanished:
-        return None, ["Document introuvable."]
+        doc, changed = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors, False
     except Exception:
         log_unexpected("document write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], False
+    if changed:
+        provenance.note_commit(COLLECTION, document_id)
+    return doc, [], changed
+
+
+def confirmer_categorie(
+    document_id: str, par: str, *, expected_etag: Optional[str] = None
+) -> tuple[Optional[dict], list[str]]:
+    """The lawyer confirms a category Claude posed (D15) — the ONLY path
+    turning « mcp » (présumée) into « juriste ». Web-only, like
+    :func:`confirmer_analyse`; a source sweep pins its single caller.
+
+    Confirming says « I read THIS version »: ``expected_etag`` is the etag
+    of the page the button was on (``None`` for a page rendered before the
+    button carried it — no check). A partial update of the provenance and
+    its stamp, read and written in one transaction; nothing else moves.
+    A category presumed by an ANALYSIS is confirmed with the analysis
+    (:func:`confirmer_analyse`), never here.
+    """
+    ref = db.collection(COLLECTION).document(document_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        origin = existing.get("category_source") or "juriste"
+        if origin == "analyse":
+            raise _Refused([
+                "Cette catégorie vient de l'analyse du document : confirmez "
+                "l'analyse elle-même."
+            ])
+        if origin != "mcp":
+            raise _Refused(["Aucune catégorie présumée à confirmer."])
+        now = datetime.now(timezone.utc)
+        fields = {
+            "category_source": "juriste",
+            "category_confirmed_by": sanitize(str(par or ""), max_length=200),
+            "category_confirmed_at": now,
+            **provenance.update_fields(now),
+        }
+        transaction.update(ref, fields)
+        return {**existing, **fields}
+
+    try:
+        doc = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
+    except Exception:
+        log_unexpected("document category confirm failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, document_id)
-
-    return merged, []
+    return doc, []
 
 
 def delete_document(document_id: str) -> tuple[bool, str]:
@@ -1334,32 +1862,66 @@ def move_document(
     dossier_id: str,
     document_id: str,
     target_folder_id: Optional[str],
-) -> tuple[Optional[dict], list[str]]:
-    """Move a document to a different folder. Returns (updated_doc, errors)."""
-    doc = get_document(document_id)
-    if not doc:
-        return None, ["Document introuvable."]
-    if doc.get("dossier_id") != dossier_id:
-        return None, ["Le document n'appartient pas à ce dossier."]
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """Move a document to a different folder. Returns ``(doc, errors, changed)``.
 
-    # Validate target folder
-    if target_folder_id:
-        from models.folder import get_folder
-        folder = get_folder(dossier_id, target_folder_id)
-        if not folder:
-            return None, ["Le dossier de destination est introuvable."]
+    Lot 2A (T1, 2026-09-27): a partial ``update()`` of ``folder_id`` and its
+    stamp, read and written in ONE transaction — the document AND the
+    target folder are read through it. It used to ``set()`` the whole
+    document from a copy read beforehand, so an analysis recorded or a
+    metadata edit saved in between was silently reverted by the move. A move
+    to the folder the document is already in writes NOTHING (it used to
+    mint a fresh etag, turning every open edit tab stale for no change).
 
-    now = datetime.now(timezone.utc)
-    doc["folder_id"] = target_folder_id
-    provenance.stamp_update(doc, now)
+    ``expected_etag`` (keyword-only): see ``models.concurrency``; ``None``
+    asserts nothing about the version (a move cannot lose another field's
+    edit any more — it writes one key).
+    """
+    from models import folder as folder_model
+
+    target = target_folder_id or None
+    ref = db.collection(COLLECTION).document(document_id)
+    folder_ref = (
+        db.collection(folder_model.COLLECTION).document(target)
+        if target else None
+    )
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        doc = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(doc, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        if doc.get("dossier_id") != dossier_id:
+            raise _Refused(["Le document n'appartient pas à ce dossier."])
+        if folder_ref is not None:
+            folder_snap = folder_ref.get(transaction=transaction)
+            if (not folder_snap.exists or
+                    (folder_snap.to_dict() or {}).get("dossier_id") != dossier_id):
+                raise _Refused(["Le dossier de destination est introuvable."])
+        if (doc.get("folder_id") or None) == target:
+            return doc, False
+        fields = {
+            "folder_id": target,
+            **provenance.update_fields(datetime.now(timezone.utc)),
+        }
+        transaction.update(ref, fields)
+        return {**doc, **fields}, True
 
     try:
-        db.collection(COLLECTION).document(document_id).set(doc)
+        doc, changed = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors, False
     except Exception:
         log_unexpected("document move failed")
-        return None, ["Erreur lors du déplacement. Veuillez réessayer."]
-
-    return doc, []
+        return None, ["Erreur lors du déplacement. Veuillez réessayer."], False
+    if changed:
+        provenance.note_commit(COLLECTION, document_id)
+    return doc, [], changed
 
 
 def move_documents_bulk(
@@ -1450,7 +2012,9 @@ def get_document_summary(dossier_id: str) -> dict:
 
 ANALYSES_SUBCOLLECTION = "analyses"
 
-VALID_CATEGORY_SOURCES = ("juriste", "analyse")
+# « mcp » (D15, lot 2A) : une catégorie posée par Claude HORS analyse —
+# présumée, comme celle d'une analyse, jusqu'à `confirmer_categorie`.
+VALID_CATEGORY_SOURCES = ("juriste", "analyse", "mcp")
 VALID_ANALYSE_STATUTS = (
     "en_attente", "en_cours", "prete", "echec", "non_applicable",
 )
@@ -1604,63 +2168,94 @@ def record_analyse(
 
     Rend le document mis à jour. N'ÉCRIT JAMAIS `confirme: true` — voir §7.
     Aucun `bump_ctag` : `documents` n'est pas exposée en DAV.
+
+    Lot 2A (T1, 2026-09-27) : la lecture, la dérivation et l'écriture sont
+    UNE transaction. Avant, le modèle lisait le document hors transaction
+    puis faisait un `set()` du document ENTIER. Deux défauts en sortaient :
+
+    * une écriture glissée entre les deux — une édition des métadonnées, un
+      déplacement — était annulée par le `set()` ;
+    * deux analyses PARALLÈLES du même document dérivaient chacune de la
+      MÊME lecture périmée : niveau stocké nul, A écrit 3, B écrit 1 en
+      dernier, et le niveau tombait de 3 à 1 SANS divergence — le plancher
+      de non-déclassement contourné par les appels parallèles du
+      connecteur lui-même. Désormais le commit du perdant avorte, et sa
+      reprise dérive de nouveau AU-DESSUS du niveau que le gagnant a posé.
+
+    Le journal (`set()` de l'entrée) et le cache (`update()` des seules
+    clés que l'analyse possède) partent ensemble ou pas du tout.
     """
-    existing = get_document(document_id)
-    if not existing:
-        return None, ["Document introuvable."]
+    ref = db.collection(COLLECTION).document(document_id)
 
-    champ, erreurs = _analyse_derivee(sortie, document=existing, dossier=dossier)
-    if erreurs:
-        return None, erreurs
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
 
-    ancienne = str(existing.get("category") or "")
-    ancienne_source = str(existing.get("category_source") or "juriste")
-    nouvelle = champ["nature_detectee"]
+        # La dérivation lit CETTE lecture — c'est elle que le plancher de
+        # non-déclassement doit voir.
+        champ, erreurs = _analyse_derivee(
+            sortie, document=existing, dossier=dossier
+        )
+        if erreurs:
+            raise _Refused(erreurs)
 
-    now = datetime.now(timezone.utc)
-    analyse_id = str(uuid.uuid4())
-    champ.update({
-        "declenche_par": str(declenche_par or "")[:40],
-        "modele": sanitize(str(modele or ""), max_length=120),
-        "genere_le": now,
-        "analyse_id": analyse_id,
-        "message_erreur": None,
-        # Ce que l'écrasement remplace. Sans cela la divergence de classement
-        # — « l'un des deux signalements qui valent le plus » — deviendrait
-        # inobservable, puisqu'il n'y a plus deux valeurs à comparer.
-        "date_document_precedente": existing.get("document_date"),
-        "categorie_precedente": ancienne,
-        "categorie_precedente_source": ancienne_source,
-        "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
-        # L'avertissement n'est levé que si l'on écrase un choix HUMAIN. Un
-        # « autre » posé par défaut au versement n'en mérite pas.
-        "remplace_un_choix_du_juriste": bool(
-            ancienne and ancienne != nouvelle and ancienne_source == "juriste"
-        ),
-    })
+        ancienne = str(existing.get("category") or "")
+        ancienne_source = str(existing.get("category_source") or "juriste")
+        nouvelle = champ["nature_detectee"]
 
-    # L'analyse alimente encore UN champ natif : la date lue devient la
-    # date du document. Elle l'ÉCRASE (décision du praticien,
-    # 2026-08-27), et l'ancienne valeur part au journal — rien ne
-    # disparaît sans trace. Le résumé, lui, ne se recopie plus nulle
-    # part : il EST le texte du modèle, et il vit dans `analyse.resume`.
-    natifs: dict = {}
-    if champ.get("date_document_str"):
-        lue = _coerce_document_date(champ["date_document_str"])
-        if lue is not None:
-            natifs["document_date"] = lue
+        now = datetime.now(timezone.utc)
+        analyse_id = str(uuid.uuid4())
+        champ.update({
+            "declenche_par": str(declenche_par or "")[:40],
+            "modele": sanitize(str(modele or ""), max_length=120),
+            "genere_le": now,
+            "analyse_id": analyse_id,
+            "message_erreur": None,
+            # Ce que l'écrasement remplace. Sans cela la divergence de
+            # classement — « l'un des deux signalements qui valent le plus »
+            # — deviendrait inobservable, puisqu'il n'y a plus deux valeurs
+            # à comparer.
+            "date_document_precedente": existing.get("document_date"),
+            "categorie_precedente": ancienne,
+            "categorie_precedente_source": ancienne_source,
+            "categorie_remplacee": bool(ancienne and ancienne != nouvelle),
+            # L'avertissement n'est levé que si l'on écrase un choix HUMAIN.
+            # Un « autre » posé par défaut au versement n'en mérite pas.
+            "remplace_un_choix_du_juriste": bool(
+                ancienne and ancienne != nouvelle
+                and ancienne_source == "juriste"
+            ),
+        })
 
-    merged = provenance.stamp_update(
-        {**existing, "analyse": champ, "category": nouvelle,
-         "category_source": "analyse", **natifs},
-        now,
-    )
+        # L'analyse alimente encore UN champ natif : la date lue devient la
+        # date du document. Elle l'ÉCRASE (décision du praticien,
+        # 2026-08-27), et l'ancienne valeur part au journal — rien ne
+        # disparaît sans trace. Le résumé, lui, ne se recopie plus nulle
+        # part : il EST le texte du modèle, et il vit dans `analyse.resume`.
+        natifs: dict = {}
+        if champ.get("date_document_str"):
+            lue = _coerce_document_date(champ["date_document_str"])
+            if lue is not None:
+                natifs["document_date"] = lue
+
+        fields = {
+            "analyse": champ, "category": nouvelle,
+            "category_source": "analyse", **natifs,
+            **provenance.update_fields(now),
+        }
+        transaction.set(
+            ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id), champ
+        )
+        transaction.update(ref, fields)
+        return {**existing, **fields}
+
     try:
-        ref = db.collection(COLLECTION).document(document_id)
-        # Le journal AVANT le cache : une entrée orpheline est inerte, un
-        # cache sans entrée est une analyse dont on ne saura jamais l'origine.
-        ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id).set(champ)
-        ref.set(merged)
+        merged = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
     except Exception:
         log_unexpected("document analyse write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -1720,25 +2315,77 @@ def update_analyse(
     l'historique distingue ce que le modèle a proposé de ce que l'avocat a
     arrêté. Rien ne s'efface, ici comme ailleurs.
 
-    ``expected_etag`` (keyword-only): when given, the journal entry AND the
-    cache commit together, and only if the stored etag is still that one
+    ``expected_etag`` (keyword-only): the journal entry AND the cache
+    commit together, and only if the stored etag is still that one
     (``models.concurrency``); a stale one writes neither and returns
     ``[STALE_ETAG_ERROR]``. It is the guard that keeps a stale tab from
     rewriting, under the lawyer's name, an analysis recorded since it
     opened — and from LOWERING a protection level through the one path
-    that can. ``None`` is the original path, journal then cache, unchanged.
+    that can.
+
+    Lot 2A (T1, 2026-09-27): read, validated and written in ONE transaction
+    whatever the caller passes — the journal ``set()`` and a partial
+    ``update()`` of the keys the analysis owns (``analyse``, ``category``,
+    ``category_source`` and the stamp). The old full-document ``set()``
+    from a copy read beforehand reverted any metadata edit or move landing
+    in between; with ``None`` it now asserts nothing about the version, but
+    it can no longer undo another field's write.
+    """
+    ref = db.collection(COLLECTION).document(document_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        champ, erreurs = _analyse_editee(existing, champs, par=par)
+        if erreurs:
+            raise _Refused(erreurs)
+        now = datetime.now(timezone.utc)
+        champ.update({"genere_le": now, "confirme_le": now})
+        fields = {
+            "analyse": champ, "category": champ["nature_detectee"],
+            "category_source": "juriste",
+            **provenance.update_fields(now),
+        }
+        transaction.set(
+            ref.collection(ANALYSES_SUBCOLLECTION).document(champ["analyse_id"]),
+            champ,
+        )
+        transaction.update(ref, fields)
+        return {**existing, **fields}
+
+    try:
+        merged = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
+    except Exception:
+        log_unexpected("document analyse edit failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, document_id)
+    return merged, []
+
+
+def _analyse_editee(
+    existing: dict, champs: dict, *, par: str
+) -> tuple[dict, list[str]]:
+    """The analysis field after the lawyer's correction — PURE.
+
+    Validates *champs* against the closed vocabularies and against the
+    analysis already stored (Annexe C: the two proof axes are checked on
+    the value that will be STORED), derives the nature and the family from
+    the code, and stamps the journal fields — everything except the
+    instant, which the writer adds.
     """
     from utils import analyse_protection as prot
     from utils import analyse_taxonomies as tax
 
-    existing = get_document(document_id)
-    if not existing:
-        return None, ["Document introuvable."]
-    if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
     champ = dict(existing.get("analyse") or {})
     if not champ.get("sous_nature") and "sous_nature" not in champs:
-        return None, ["Aucune analyse à corriger."]
+        return {}, ["Aucune analyse à corriger."]
 
     erreurs: list[str] = []
     propose = {k: v for k, v in champs.items() if k in ANALYSE_EDITABLE}
@@ -1810,7 +2457,7 @@ def update_analyse(
             erreurs.append(f"Valeur invalide pour {cle} : {v}.")
 
     if erreurs:
-        return None, erreurs
+        return {}, erreurs
 
     champ.update(propose)
 
@@ -1822,15 +2469,12 @@ def update_analyse(
     champ["nature_detectee"] = nature
     champ["famille"] = tax.famille_of(sous_nature)
 
-    now = datetime.now(timezone.utc)
-    analyse_id = str(uuid.uuid4())
     ancienne = str(existing.get("category") or "")
     champ.update({
         "declenche_par": "juriste",
         "modifie_par": sanitize(str(par or ""), max_length=200),
         "modele": "",
-        "genere_le": now,
-        "analyse_id": analyse_id,
+        "analyse_id": str(uuid.uuid4()),
         "message_erreur": None,
         # Le juriste a tranché : la divergence n'est plus en attente, et le
         # niveau qu'il pose devient le plancher des analyses suivantes.
@@ -1849,33 +2493,8 @@ def update_analyse(
         # Éditer, c'est confirmer.
         "confirme": True,
         "confirme_par": sanitize(str(par or ""), max_length=200),
-        "confirme_le": now,
     })
-
-    merged = provenance.stamp_update({
-        **existing, "analyse": champ, "category": nature,
-        "category_source": "juriste",
-    }, now)
-    try:
-        ref = db.collection(COLLECTION).document(document_id)
-        concurrency.commit_document(
-            ref, merged,
-            expected_etag=expected_etag,
-            read_etag=concurrency.etag_of(existing),
-            extra_sets=(
-                (ref.collection(ANALYSES_SUBCOLLECTION).document(analyse_id),
-                 champ),
-            ),
-        )
-    except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
-    except concurrency.Vanished:
-        return None, ["Document introuvable."]
-    except Exception:
-        log_unexpected("document analyse edit failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
-    provenance.note_commit(COLLECTION, document_id)
-    return merged, []
+    return champ, []
 
 
 def confirmer_analyse(
@@ -1891,40 +2510,48 @@ def confirmer_analyse(
     s'engage que contre cette version (``models.concurrency``, dans une
     transaction) ; périmé, rien n'est écrit et la liste d'erreurs porte
     ``STALE_ETAG_ERROR``. ``None`` (une page rendue avant que le bouton ne
-    porte l'etag) est l'ancien ``set()``, inchangé.
+    porte l'etag) n'affirme rien sur la version.
+
+    Lot 2A (T1, 2026-09-27) : lecture et écriture dans UNE transaction, et
+    l'écriture est un `update()` partiel de l'analyse, de la provenance et
+    du tampon — l'ancien `set()` du document entier, fait d'une copie lue
+    avant, annulait toute écriture glissée entre les deux.
     """
-    existing = get_document(document_id)
-    if not existing:
-        return None, ["Document introuvable."]
-    if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
-    champ = dict(existing.get("analyse") or {})
-    if not champ.get("sous_nature"):
-        return None, ["Aucune analyse à confirmer."]
-    now = datetime.now(timezone.utc)
-    champ.update({"confirme": True,
-                  "confirme_par": sanitize(str(par or ""), max_length=200),
-                  "confirme_le": now})
-    merged = provenance.stamp_update(
-        {**existing, "analyse": champ,
-         # La confirmation fait de la catégorie une détermination de
-         # l'avocat : la mention « présumé » doit tomber avec elle.
-         "category_source": "juriste"},
-        now,
-    )
+    ref = db.collection(COLLECTION).document(document_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Document introuvable."])
+        existing = _migrate_category(snap.to_dict() or {})
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        champ = dict(existing.get("analyse") or {})
+        if not champ.get("sous_nature"):
+            raise _Refused(["Aucune analyse à confirmer."])
+        now = datetime.now(timezone.utc)
+        champ.update({"confirme": True,
+                      "confirme_par": sanitize(str(par or ""), max_length=200),
+                      "confirme_le": now})
+        fields = {
+            "analyse": champ,
+            # La confirmation fait de la catégorie une détermination de
+            # l'avocat : la mention « présumé » doit tomber avec elle.
+            "category_source": "juriste",
+            **provenance.update_fields(now),
+        }
+        transaction.update(ref, fields)
+        return {**existing, **fields}
+
     try:
-        concurrency.commit_document(
-            db.collection(COLLECTION).document(document_id), merged,
-            expected_etag=expected_etag,
-            read_etag=concurrency.etag_of(existing),
-        )
-    except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
-    except concurrency.Vanished:
-        return None, ["Document introuvable."]
+        merged = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
     except Exception:
         log_unexpected("document analyse confirm failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, document_id)
     return merged, []
 
 

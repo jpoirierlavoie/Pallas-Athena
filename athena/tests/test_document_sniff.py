@@ -250,7 +250,10 @@ def test_ingest_blob_zip(monkeypatch):
     assert document["file_size"] == source.size
     # Sonde bornée — jamais le corps entier.
     source.download_as_bytes.assert_called_once_with(start=0, end=511)
-    dest.rewrite.assert_called_once_with(source)
+    # Création SEULEMENT (lot 2A, T1) : une destination qui existe déjà
+    # n'est jamais écrasée — changé délibérément, le rewrite n'avait pas
+    # de précondition.
+    dest.rewrite.assert_called_once_with(source, if_generation_match=0)
     # La destination porte le type SNIFFÉ (jamais le déclaré de la source)
     # + la discipline attachment des types non prévisualisables.
     assert dest.content_type == "application/zip"
@@ -270,6 +273,9 @@ def test_ingest_blob_boucle_de_rewrite(monkeypatch):
     assert document["file_size"] == 150 * 1024 * 1024
     assert dest.rewrite.call_count == 2
     assert dest.rewrite.call_args_list[1].kwargs.get("token") == "jeton"
+    # La continuation répète la précondition de la première passe.
+    assert all(c.kwargs.get("if_generation_match") == 0
+               for c in dest.rewrite.call_args_list)
 
 
 def test_ingest_blob_refuse_plus_de_200_mo(monkeypatch):

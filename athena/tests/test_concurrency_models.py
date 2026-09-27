@@ -8,6 +8,9 @@ modifie — et ``note.update_note``, ``task.update_task``,
 ``document.update_metadata`` / ``update_analyse`` — ceux des enregistrements
 que le connecteur écrit déjà et dont les formulaires web recevront l'etag —,
 plus ``document.confirmer_analyse`` (le bouton « Confirmer » d'une analyse).
+Le lot 2A (étape T1, 2026-09-27) en ajoute deux : ``document.move_document``
+et ``document.confirmer_categorie`` (le « Confirmer » d'une catégorie posée
+par Claude, D15).
 
 Chacun tourne ici au-dessus du faux Firestore partagé (le client est le
 vrai), et l'on relit ce qui est STOCKÉ. Pour chacun :
@@ -145,6 +148,19 @@ def _analysed_document(db):
                      category="autre", category_source="analyse")
 
 
+def _document_and_folder(db):
+    """A document at its dossier's root, and a folder of that dossier to
+    move it into (folders are a top-level collection keyed by id)."""
+    db.seed("folders/f1", {"id": "f1", "dossier_id": "d1", "name": "Pièces",
+                           "parent_folder_id": None, "order": 0})
+    return _document(db)
+
+
+def _presumed_document(db):
+    """A category Claude posed outside any analysis (D15)."""
+    return _document(db, category="correspondance", category_source="mcp")
+
+
 # (collection, factory, edit(id, **kw) -> (doc, errors), field, value)
 _CASES = {
     "update_partie": ("parties", _partie,
@@ -179,10 +195,20 @@ _CASES = {
                     lambda i, **kw: task_model.update_task(
                         i, {"priority": "haute"}, **kw),
                     "priority", "haute"),
+    # Lot 2A (T1): the triple return — its third member (« changed ») is
+    # not this harness's concern.
     "update_metadata": ("documents", _document,
                         lambda i, **kw: document_model.update_metadata(
-                            i, {"display_name": "Mise en demeure"}, **kw),
+                            i, {"display_name": "Mise en demeure"}, **kw)[:2],
                         "display_name", "Mise en demeure"),
+    "move_document": ("documents", _document_and_folder,
+                      lambda i, **kw: document_model.move_document(
+                          "d1", i, "f1", **kw)[:2],
+                      "folder_id", "f1"),
+    "confirmer_categorie": ("documents", _presumed_document,
+                            lambda i, **kw: document_model.confirmer_categorie(
+                                i, "juriste@example.com", **kw),
+                            "category_source", "juriste"),
     "update_analyse": ("documents", _analysed_document,
                        lambda i, **kw: document_model.update_analyse(
                            i, {"resume": "Lettre au confrère."},
@@ -211,6 +237,8 @@ _GETTERS = {
     "update_metadata": (document_model, "get_document"),
     "update_analyse": (document_model, "get_document"),
     "confirmer_analyse": (document_model, "get_document"),
+    "move_document": (document_model, "get_document"),
+    "confirmer_categorie": (document_model, "get_document"),
 }
 
 # The mutators that read their record ONLY inside their transaction (lot 0b,
@@ -218,6 +246,15 @@ _GETTERS = {
 # armed at their COMMIT instead — the rival lands after the transactional
 # read, and the real ``transactional`` retry must re-read and refuse.
 _READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
+# Lot 2A (T1, 2026-09-27): the document writers read ONLY inside their
+# transaction too — and write a PARTIAL update(), never the whole document,
+# so a rival write to another field survives by construction. Changed
+# deliberately: update_metadata / update_analyse / confirmer_analyse used
+# to take the plain legacy set() without an etag; move_document and
+# confirmer_categorie join with this lot.
+_DOCUMENT_PARTIAL = {"update_metadata", "update_analyse", "confirmer_analyse",
+                     "move_document", "confirmer_categorie"}
+_RACE_AT_COMMIT = _READS_ONLY_IN_TRANSACTION | _DOCUMENT_PARTIAL
 # D17 (2026-09-27): a note whose CONTENT changes keeps a revision on every
 # path, so even without an etag its write is the guarded transaction that
 # carries the snapshot (the model guards on the version it read). Its case
@@ -225,13 +262,20 @@ _READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
 # the two tests after it.
 _CONTENT_REVISED_WITHOUT_ETAG = {"update_note"}
 _LEGACY_WITHOUT_ETAG = sorted(
-    set(_CASES) - _READS_ONLY_IN_TRANSACTION - _CONTENT_REVISED_WITHOUT_ETAG)
+    set(_CASES) - _RACE_AT_COMMIT - _CONTENT_REVISED_WITHOUT_ETAG)
+
+
+def _write_kind(case):
+    """The op a case's guarded write stages on its own document."""
+    if case.startswith("set_") or case in _DOCUMENT_PARTIAL:
+        return "update"
+    return "set"
 
 
 def _arm_race(db, monkeypatch, case, path, rival) -> None:
     """Run *rival* (another process's write) between the model's read and
     its commit, through the seam that case actually has."""
-    if case in _READS_ONLY_IN_TRANSACTION:
+    if case in _RACE_AT_COMMIT:
         def _hook(info) -> None:
             if any(p == path for _op, p in info.ops):
                 remove()
@@ -311,8 +355,7 @@ def test_a_current_etag_commits_in_one_transaction(db, case):
     assert doc["etag"] == stored["etag"]
     guarded = [c for c in db.commits if c.transaction is not None]
     assert len(guarded) == 1
-    kind = "update" if case.startswith("set_") else "set"
-    assert (kind, path) in guarded[0].ops
+    assert (_write_kind(case), path) in guarded[0].ops
     assert any(r.transactional and path in r.paths for r in db.reads)
 
 
@@ -385,8 +428,7 @@ def test_without_an_etag_the_write_is_the_plain_legacy_one(db, case):
     assert errors == [], errors
     assert _stored_field(db, case, path) == _expected_value(case)
     assert all(c.transaction is None for c in db.commits)
-    assert db.commits[-1].ops == ((
-        "update" if case.startswith("set_") else "set", path),)
+    assert db.commits[-1].ops == ((_write_kind(case), path),)
     # No read through a transaction, and no read beyond the model's own.
     assert not any(r.transactional for r in db.reads)
 
@@ -413,6 +455,35 @@ def test_without_an_etag_a_billing_edit_is_last_write_wins_in_a_transaction(
     assert all(c.transaction is not None for c in db.commits)
     assert db.reads and all(r.transactional for r in db.reads)
     assert doc["etag"] == db.peek(path)["etag"] != "e-rival"
+
+
+@pytest.mark.parametrize("case", sorted(_DOCUMENT_PARTIAL),
+                         ids=sorted(_DOCUMENT_PARTIAL))
+def test_without_an_etag_a_document_write_is_partial_and_transactional(
+    db, case,
+):
+    """Changed deliberately (lot 2A, T1): the three document writers that
+    took the plain legacy ``set()`` above read inside a transaction now,
+    whatever the caller passes, and write only their own keys. The version
+    is still not consulted — the rival etag does not refuse the write — but
+    the rival's OTHER field survives, which the full-document ``set()``
+    reverted."""
+    row_id, path, edit = _setup(db, case)
+    db.external_write(path, {**db.peek(path), "etag": "e-rival",
+                             "notes_internes": "Écrit ailleurs"})
+    db.reset_logs()
+
+    doc, errors = edit(row_id)
+
+    assert errors == [], errors
+    stored = db.peek(path)
+    assert _stored_field(db, case, path) == _expected_value(case)
+    assert stored["notes_internes"] == "Écrit ailleurs"
+    assert db.commits and all(c.transaction is not None for c in db.commits)
+    assert ("update", path) in db.commits[-1].ops
+    assert ("set", path) not in db.commits[-1].ops
+    assert db.reads and all(r.transactional for r in db.reads)
+    assert doc["etag"] == stored["etag"] != "e-rival"
 
 
 def test_without_an_etag_a_note_content_change_carries_its_revision(db):
@@ -583,7 +654,8 @@ def test_a_guarded_analyse_edit_writes_journal_and_cache_together(db):
     assert len(db.commits) == 1
     ops = db.commits[0].ops
     journal = [p for k, p in ops if p.startswith(f"{path}/analyses/")]
-    assert len(journal) == 1 and ("set", path) in ops
+    # Changed deliberately (lot 2A, T1): the cache is a partial update().
+    assert len(journal) == 1 and ("update", path) in ops
     assert db.peek(journal[0])["declenche_par"] == "juriste"
 
 
@@ -603,9 +675,9 @@ def test_a_document_save_chains_its_second_write_on_the_new_etag(db):
     row_id = _analysed_document(db)
     form_etag = db.peek("documents/doc1")["etag"]
 
-    doc, errors = document_model.update_metadata(
+    doc, errors, changed = document_model.update_metadata(
         row_id, {"display_name": "Mise en demeure"}, expected_etag=form_etag)
-    assert errors == []
+    assert errors == [] and changed is True
 
     _stale, errors = document_model.update_analyse(
         row_id, {"resume": "x"}, par="juriste", expected_etag=form_etag)

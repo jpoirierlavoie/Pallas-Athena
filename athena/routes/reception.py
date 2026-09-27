@@ -827,18 +827,26 @@ def verser(inv_id: str, batch: str, seq: int):
     folder = get_or_create_folder(dossier_reel, PORTAL_FOLDER_NAME)
     metadata = {
         "category": request.form.get("category", "autre"),
+        # The client's own file name is a DERIVED default, not something the
+        # lawyer typed: it is bounded here, because the model refuses (never
+        # mangles) a name over its ceiling or carrying « < … > » (lot 2A).
         "display_name": sanitize(request.form.get("display_name", ""),
-                                 max_length=200) or entree.get("name", ""),
-        # Provenance dans des champs DÉDIÉS (2026-08-27, renversant la
-        # décision de 2026-07-25 « aucun champ nouveau »). Elle squattait
-        # `description` — le SEUL champ de texte libre que le formulaire
-        # d'édition offre au juriste —, si bien qu'il ne pouvait décrire un
-        # document reçu sans effacer sa traçabilité, ou l'inverse.
+                                 max_length=200)
+        or sanitize(entree.get("name", ""), max_length=200),
+        "tags": ["portail"],
+        "folder_id": folder["id"] if folder else None,
+    }
+    # Provenance dans des champs DÉDIÉS (2026-08-27, renversant la
+    # décision de 2026-07-25 « aucun champ nouveau »). Elle squattait
+    # `description` — le SEUL champ de texte libre que le formulaire
+    # d'édition offre au juriste —, si bien qu'il ne pouvait décrire un
+    # document reçu sans effacer sa traçabilité, ou l'inverse. Depuis le
+    # lot 2A elle voyage par son PROPRE mot-clé : le modèle ne lit plus
+    # dans les métadonnées que ce qu'un appelant peut choisir.
+    portail = {
         "portail_invitation_id": inv_id,
         "portail_lot": batch,
         "portail_sha512": entree.get("sha512") or "",
-        "tags": ["portail"],
-        "folder_id": folder["id"] if folder else None,
     }
     # Copie côté serveur (GCS→GCS, 2026-08-12) : les octets ne transitent
     # JAMAIS par l'application — App Engine plafonne requêtes ET réponses
@@ -850,6 +858,7 @@ def verser(inv_id: str, batch: str, seq: int):
         entree.get("name") or "document",
         metadata,
         user_id,
+        portail=portail,
     )
     if errors or document is None:
         return _rediriger(erreur=" ".join(errors) or "Versement impossible.")

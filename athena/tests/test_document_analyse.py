@@ -26,51 +26,75 @@ from utils import analyse_taxonomies as tax  # noqa: E402
 
 
 # ── Harnais ────────────────────────────────────────────────────────────────
+#
+# Changé délibérément (lot 2A, étape T1, 2026-09-27). Le faux maison ne
+# connaissait que `set()` et une lecture patchée hors transaction : il ne
+# pouvait pas faire tourner un écrivain qui lit DANS sa transaction et
+# n'écrit qu'un `update()` partiel — et il acceptait tout ce que le vrai
+# magasin refuse. Le magasin est désormais le faux Firestore partagé (le
+# client est le vrai) ; les deux vues ci-dessous gardent aux tests la forme
+# qu'ils lisaient (`monde["store"]`, `monde["journaux"]`), en LECTURE : une
+# modification de l'état initial passe par `_reseed`.
 
-class _FauxDoc:
-    def __init__(self, store, key, sub=None):
-        self.store, self.key = store, key
-        self.sub = sub if sub is not None else {}
+from tests._fake_firestore import install  # noqa: E402
 
-    def set(self, data):
-        self.store[self.key] = dict(data)
-
-    def collection(self, nom):
-        return _FauxCollection(self.sub.setdefault(nom, {}))
+_DOC1 = {
+    "id": "doc-1", "dossier_id": "d1", "category": "correspondance",
+    "category_source": "juriste", "filename": "x.pdf",
+    "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
+}
 
 
-class _FauxCollection:
-    def __init__(self, store):
-        self.store = store
+class _Store:
+    """`documents/{id}` as the old harness exposed it — a fresh copy per read."""
 
-    def document(self, key):
-        return _FauxDoc(self.store, key)
+    def __init__(self, fake):
+        self._fake = fake
+
+    def __getitem__(self, key):
+        stored = self._fake.peek(f"{doc.COLLECTION}/{key}")
+        if stored is None:
+            raise KeyError(key)
+        return stored
+
+    def get(self, key, default=None):
+        stored = self._fake.peek(f"{doc.COLLECTION}/{key}")
+        return stored if stored is not None else default
+
+
+class _Journaux:
+    """`documents/{id}/analyses/*`, keyed like the old harness."""
+
+    def __init__(self, fake):
+        self._fake = fake
+
+    def _entries(self, key):
+        return self._fake.peek_collection(
+            f"{doc.COLLECTION}/{key}/{doc.ANALYSES_SUBCOLLECTION}"
+        )
+
+    def __getitem__(self, key):
+        return {doc.ANALYSES_SUBCOLLECTION: self._entries(key)}
+
+    def get(self, key, default=None):
+        entries = self._entries(key)
+        return {doc.ANALYSES_SUBCOLLECTION: entries} if entries else default
 
 
 @pytest.fixture()
 def monde(monkeypatch):
     """Un document en place, et le journal observable."""
-    store, journaux = {}, {}
+    fake = install(monkeypatch, doc)
+    fake.seed(f"{doc.COLLECTION}/doc-1", dict(_DOC1))
+    return {"store": _Store(fake), "journaux": _Journaux(fake), "fake": fake}
 
-    class _Racine:
-        def document(self, key):
-            return _FauxDoc(store, key, journaux.setdefault(key, {}))
 
-    class _DB:
-        def collection(self, nom):
-            assert nom == doc.COLLECTION, nom
-            return _Racine()
-
-    monkeypatch.setattr(doc, "db", _DB())
-    monkeypatch.setattr(
-        doc, "get_document", lambda i: dict(store.get(i) or {}) or None
-    )
-    store["doc-1"] = {
-        "id": "doc-1", "dossier_id": "d1", "category": "correspondance",
-        "category_source": "juriste", "filename": "x.pdf",
-        "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
-    }
-    return {"store": store, "journaux": journaux}
+def _reseed(monde, **over):
+    """Change the stored doc-1 BEFORE the call under test."""
+    fake = monde["fake"]
+    current = fake.peek(f"{doc.COLLECTION}/doc-1")
+    current.update(over)
+    fake.seed(f"{doc.COLLECTION}/doc-1", current)
 
 
 _SORTIE = {
@@ -154,8 +178,7 @@ def test_replacing_a_versement_default_raises_no_warning(monde):
     """Un « autre » posé par défaut au versement du portail n'est pas un
     choix du juriste : l'écraser ne mérite aucun avertissement, sans quoi la
     reprise d'un fonds en produirait un par document."""
-    monde["store"]["doc-1"]["category"] = "autre"
-    monde["store"]["doc-1"]["category_source"] = "analyse"
+    _reseed(monde, category="autre", category_source="analyse")
     maj, err = doc.record_analyse("doc-1", _SORTIE)
     assert err == []
     assert maj["analyse"]["categorie_remplacee"] is True
@@ -539,8 +562,8 @@ def test_a_manual_edit_reclaims_the_category(monde, monkeypatch):
     doc.record_analyse("doc-1", _SORTIE)
     assert monde["store"]["doc-1"]["category_source"] == "analyse"
 
-    maj, err = doc.update_metadata("doc-1", {"category": "preuve"})
-    assert err == []
+    maj, err, changed = doc.update_metadata("doc-1", {"category": "preuve"})
+    assert err == [] and changed is True
     assert maj["category"] == "preuve"
     assert maj["category_source"] == "juriste"
 
@@ -548,7 +571,8 @@ def test_a_manual_edit_reclaims_the_category(monde, monkeypatch):
 def test_editing_another_field_leaves_the_source_alone(monde):
     """Renommer un document ne dit rien de sa catégorie."""
     doc.record_analyse("doc-1", _SORTIE)
-    maj, err = doc.update_metadata("doc-1", {"display_name": "Autre nom"})
+    maj, err, _changed = doc.update_metadata(
+        "doc-1", {"display_name": "Autre nom"})
     assert err == []
     assert maj["category_source"] == "analyse", "un renommage a réclamé la catégorie"
 
@@ -637,7 +661,7 @@ def test_the_analysis_never_writes_a_third_text_field(monde):
     Une valeur héritée en base ne se recopie pas non plus : elle sera
     migrée hors ligne, et jusque-là elle n'a aucun effet.
     """
-    monde["store"]["doc-1"]["description"] = "héritée"
+    _reseed(monde, description="héritée")
     maj, _ = doc.record_analyse("doc-1", _SORTIE)
     assert maj["analyse"]["resume"] == _SORTIE["resume"]
     assert maj.get("description", "") == "héritée"   # intacte, jamais lue
@@ -727,9 +751,7 @@ def test_a_non_pdf_gets_no_pdf_link():
 
 def test_the_analysis_owns_the_document_date(monde):
     """Elle l'ÉCRASE, et le journal garde ce qu'elle a remplacé."""
-    monde["store"]["doc-1"]["document_date"] = datetime(
-        2020, 1, 1, tzinfo=timezone.utc
-    )
+    _reseed(monde, document_date=datetime(2020, 1, 1, tzinfo=timezone.utc))
     maj, err = doc.record_analyse("doc-1", _SORTIE)
     assert err == []
     assert maj["document_date"].strftime("%Y-%m-%d") == "2026-03-14"
@@ -740,7 +762,7 @@ def test_the_analysis_never_touches_the_internal_notes(monde):
     """`notes_internes` est le champ du JURISTE. Que l'analyse ne puisse pas
     l'atteindre est ce qui rend l'écrasement de `description` supportable —
     et un test le vérifie sur le CODE, pas seulement sur un cas."""
-    monde["store"]["doc-1"]["notes_internes"] = "Mon travail à moi."
+    _reseed(monde, notes_internes="Mon travail à moi.")
     for _ in range(3):
         maj, err = doc.record_analyse("doc-1", _SORTIE)
         assert err == []
@@ -755,7 +777,8 @@ def test_the_analysis_never_touches_the_internal_notes(monde):
 
 
 def test_the_internal_notes_are_editable(monde):
-    maj, err = doc.update_metadata("doc-1", {"notes_internes": "À relire."})
+    maj, err, _changed = doc.update_metadata(
+        "doc-1", {"notes_internes": "À relire."})
     assert err == []
     assert maj["notes_internes"] == "À relire."
 

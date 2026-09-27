@@ -42,49 +42,59 @@ from utils import analyse_protection as prot  # noqa: E402
 from utils import analyse_taxonomies as tax  # noqa: E402
 
 
-class _FauxDoc:
-    def __init__(self, store, key, sub=None):
-        self._store, self._key, self._sub = store, key, sub
+# Harnais changé délibérément (lot 2A, étape T1, 2026-09-27) : le faux
+# maison ne connaissait que `set()` et une lecture patchée hors transaction,
+# alors que `update_analyse` lit désormais DANS sa transaction et n'écrit
+# qu'un `update()` partiel. Le magasin est le faux Firestore partagé (le
+# client est le vrai). Les deux vues gardent aux tests leur forme :
+# `store["doc-1"]["analyse"] = …` réécrit le document stocké, et
+# `journaux["doc-1"]` rend les entrées du journal.
 
-    def set(self, data):
-        self._store[self._key] = dict(data)
-
-    def collection(self, nom):
-        assert nom == doc.ANALYSES_SUBCOLLECTION, nom
-        return _FauxCollection(self._sub)
+from tests._fake_firestore import install  # noqa: E402
 
 
-class _FauxCollection:
-    def __init__(self, store):
-        self._store = store
+class _StoredDoc:
+    """`documents/{key}` : lecture fraîche, écriture qui re-sème le stocké."""
 
-    def document(self, key):
-        return _FauxDoc(self._store, key)
+    def __init__(self, fake, key):
+        self._fake, self._path = fake, f"{doc.COLLECTION}/{key}"
+
+    def __getitem__(self, field):
+        return self._fake.peek(self._path)[field]
+
+    def __setitem__(self, field, value):
+        current = self._fake.peek(self._path)
+        current[field] = value
+        self._fake.seed(self._path, current)
+
+
+class _Store:
+    def __init__(self, fake):
+        self._fake = fake
+
+    def __getitem__(self, key):
+        return _StoredDoc(self._fake, key)
+
+
+class _Journaux:
+    def __init__(self, fake):
+        self._fake = fake
+
+    def __getitem__(self, key):
+        return self._fake.peek_collection(
+            f"{doc.COLLECTION}/{key}/{doc.ANALYSES_SUBCOLLECTION}"
+        )
 
 
 @pytest.fixture()
 def monde(monkeypatch):
-    store, journaux = {}, {}
-
-    class _Racine:
-        def document(self, key):
-            return _FauxDoc(store, key, journaux.setdefault(key, {}))
-
-    class _DB:
-        def collection(self, nom):
-            assert nom == doc.COLLECTION, nom
-            return _Racine()
-
-    monkeypatch.setattr(doc, "db", _DB())
-    monkeypatch.setattr(
-        doc, "get_document", lambda i: dict(store.get(i) or {}) or None
-    )
-    store["doc-1"] = {
+    fake = install(monkeypatch, doc)
+    fake.seed(f"{doc.COLLECTION}/doc-1", {
         "id": "doc-1", "dossier_id": "d1", "category": "correspondance",
         "category_source": "juriste", "filename": "x.pdf",
         "created_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
-    }
-    return store, journaux
+    })
+    return _Store(fake), _Journaux(fake)
 
 
 # ── La règle de non-déclassement (chemins AUTOMATIQUES) ─────────────────
@@ -440,7 +450,7 @@ def test_le_formulaire_n_ecrit_jamais_une_description(monde):
     doit pouvoir ressusciter le champ.
     """
     store, _ = monde
-    maj, erreurs = doc.update_metadata(
+    maj, erreurs, _changed = doc.update_metadata(
         "doc-1", {"description": "revenue par la bande",
                   "notes_internes": "ma note"}
     )
