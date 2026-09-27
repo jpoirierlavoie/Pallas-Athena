@@ -827,26 +827,33 @@ def _mandataire_fitness_errors(
     alike (422, which DavX5 swallows) — with nothing pointing at the cause.
 
     The collection scan runs ONLY on an actual role or type change. It
-    refuses only when the NEW state breaks the rule for at least one
-    referrer (not an individual, or not that referrer's role): a change
-    that REPAIRS a legacy mismatch is never locked out. A failed scan
-    refuses (fail closed) with :data:`MANDATAIRE_CHECK_UNAVAILABLE`.
+    refuses only the representations the change BREAKS — a referrer this
+    contact fits TODAY (an individual of that referrer's role) and would no
+    longer fit. A pair that is ALREADY a legacy mismatch never refuses:
+    the change cannot make it worse, and refusing would lock out a repair —
+    including a partial one, where one referrer is repaired and another,
+    already broken, stays as it was. A failed scan refuses (fail closed)
+    with :data:`MANDATAIRE_CHECK_UNAVAILABLE`.
     """
+    old_type = existing.get("type")
+    old_role = existing.get("contact_role")
     new_type = merged.get("type")
     new_role = merged.get("contact_role")
-    if (
-        new_type == existing.get("type")
-        and new_role == existing.get("contact_role")
-    ):
+    if new_type == old_type and new_role == old_role:
         return []
     try:
         referrers = list_mandataire_referrers(partie_id)
     except Exception:
         log_unexpected("partie mandataire reference check failed")
         return [MANDATAIRE_CHECK_UNAVAILABLE]
+
+    def _fits(kind: object, role: object, other: dict) -> bool:
+        return kind == "individual" and other.get("contact_role") == role
+
     broken = [
         other for other in referrers
-        if new_type != "individual" or other.get("contact_role") != new_role
+        if _fits(old_type, old_role, other)
+        and not _fits(new_type, new_role, other)
     ]
     if not broken:
         return []

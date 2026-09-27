@@ -138,6 +138,51 @@ def test_a_change_that_repairs_a_legacy_mismatch_is_allowed(db):
     assert errors == []
 
 
+def test_a_partial_repair_is_allowed_when_it_breaks_no_one(db):
+    """Only a representation the change BREAKS is refused — never one that
+    was already broken. Marie (expert) represents Sophie (client) AND Luc
+    (témoin): both pairs are pre-guard mismatches, no single role fits both.
+    Moving Marie to « client » repairs Sophie and leaves Luc exactly as
+    broken as before — it must commit (reviewer finding, lot 0b B7: the
+    first cut refused it, because Luc stayed broken)."""
+    db.seed("parties/marie", _personne("marie", "Marie", "Gagnon",
+                                       role="expert"))
+    db.seed("parties/sophie", _personne(
+        "sophie", "Sophie", "Gagnon",
+        mandataires=[{"id": "marie", "kind": "tuteur", "notes": ""}],
+    ))
+    db.seed("parties/luc", _personne(
+        "luc", "Luc", "Roy", role="témoin",
+        mandataires=[{"id": "marie", "kind": "mandataire", "notes": ""}],
+    ))
+    _, errors = pm.update_partie("marie", {"contact_role": "client"})
+    assert errors == []
+    assert db.peek("parties/marie")["contact_role"] == "client"
+    _, errors = pm.update_partie("sophie", {"notes": "réparée"})
+    assert errors == []
+
+
+def test_a_change_that_breaks_a_fitting_pair_is_refused_beside_a_broken_one(db):
+    """The converse: Marie (client) fits Sophie (client) and is a legacy
+    mismatch for Luc (témoin). Moving her to « témoin » repairs Luc but
+    BREAKS Sophie — refused, naming Sophie only."""
+    db.seed("parties/marie", _personne("marie", "Marie", "Gagnon"))
+    db.seed("parties/sophie", _personne(
+        "sophie", "Sophie", "Gagnon",
+        mandataires=[{"id": "marie", "kind": "tuteur", "notes": ""}],
+    ))
+    db.seed("parties/luc", _personne(
+        "luc", "Luc", "Roy", role="témoin",
+        mandataires=[{"id": "marie", "kind": "mandataire", "notes": ""}],
+    ))
+    before = db.peek("parties/marie")
+    doc, errors = pm.update_partie("marie", {"contact_role": "témoin"})
+    assert doc is None and len(errors) == 1
+    assert "mandataire de Sophie Gagnon" in errors[0]
+    assert "Luc" not in errors[0]
+    assert db.peek("parties/marie") == before
+
+
 def test_a_contact_nobody_lists_changes_role_freely(famille):
     _, errors = pm.update_partie("sophie", {"contact_role": "témoin",
                                             "mandataires": []})
