@@ -220,6 +220,23 @@ def test_the_tab_lists_pending_imports_and_links_the_matched_contact(app, db):
     assert b["_partie_id"] == ""
 
 
+def test_the_divergences_stay_chronological(app, db):
+    """Review of lot 1a (L4): the old tab read list_hearings, which sorts
+    by start; the strict reader is unordered, and the first cut of the
+    service left the divergence cards in document-id order."""
+    div = {"motif": "modifié_côté_client", "vu": False}
+    _booking(db, "a-late", confirmation="", bookings_divergence=div,
+             start_datetime=START + timedelta(days=9))
+    _booking(db, "z-early", confirmation="", bookings_divergence=div,
+             start_datetime=START + timedelta(days=1))
+    _booking(db, "m-mid", confirmation="", bookings_divergence=div,
+             start_datetime=START + timedelta(days=4))
+    with app.test_request_context():
+        ctx = reception._contexte_rdv()
+    assert [h["id"] for h in ctx["divergences"]] == [
+        "z-early", "m-mid", "a-late"]
+
+
 def _render_tab(app) -> str:
     with app.test_request_context():
         return render_template("reception/_rdv.html", feature_intake=True,

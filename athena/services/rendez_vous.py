@@ -169,13 +169,19 @@ def _bookings(*, include_confirmed: bool) -> list[dict]:
         raise LectureImpossible() from exc
 
 
+def _chronologique(rows: list[dict]) -> list[dict]:
+    """Oldest start first — the order the tab always showed (the reader is
+    unordered; ``list_hearings`` used to sort for it)."""
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    rows.sort(key=lambda h: h.get("start_datetime") or floor)
+    return rows
+
+
 def lister_en_attente() -> list[dict]:
     """The imports awaiting a decision — ``à_confirmer`` and
     ``annulée_client`` — chronological, each carrying the contact
     :func:`confirmer` would link. Raises :class:`LectureImpossible`."""
-    rows = _bookings(include_confirmed=False)
-    floor = datetime.min.replace(tzinfo=timezone.utc)
-    rows.sort(key=lambda h: h.get("start_datetime") or floor)
+    rows = _chronologique(_bookings(include_confirmed=False))
     if rows:
         lier_parties(rows, index_parties_par_courriel())
     return rows
@@ -184,12 +190,13 @@ def lister_en_attente() -> list[dict]:
 def lister_divergences() -> list[dict]:
     """Imports carrying an unseen ``bookings_divergence`` — a CONFIRMED
     event the client moved or cancelled on the Bookings side (the sync
-    never overwrites a confirmed one). Raises :class:`LectureImpossible`."""
-    return [
+    never overwrites a confirmed one) — chronological, like the pending
+    list. Raises :class:`LectureImpossible`."""
+    return _chronologique([
         h for h in _bookings(include_confirmed=True)
         if (h.get("bookings_divergence") or {}).get("motif")
         and not (h.get("bookings_divergence") or {}).get("vu")
-    ]
+    ])
 
 
 # ── Décisions ───────────────────────────────────────────────────────────
