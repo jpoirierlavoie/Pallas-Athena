@@ -161,7 +161,9 @@ FAMILIES: tuple[Family, ...] = (
             "reopens a closed one — that is `reopen_task` (AGENDA). One "
             "indirect effect to know: completing a task that a protocol step "
             "is linked to also completes that step, and if it was the last "
-            "open one the whole protocol closes."
+            "open one the whole protocol closes. The reverse, rare: putting "
+            "an open task en_cours while its linked step is still complété "
+            "reopens that step, and a protocol its last step had closed."
         ),
     ),
     Family(
@@ -240,9 +242,10 @@ FAMILIES: tuple[Family, ...] = (
             "`confirmer` puts it in the calendar (linking the contact "
             "matched on the requester's exact email unless lier_partie is "
             "false); `refuser` CANCELS THE OUTLOOK MEETING AND SO NOTIFIES "
-            "THE CLIENT, with a fixed text — the connector's ONLY outbound "
-            "effect. `expected_etag` and `idempotency_key` are required; a "
-            "repeated decision writes nothing and contacts nobody. Confirm "
+            "THE CLIENT, with a fixed text — the connector's ONLY effect "
+            "that reaches anyone outside the practice. `expected_etag` and "
+            "`idempotency_key` are required; a repeated decision writes "
+            "nothing and contacts nobody. Confirm "
             "with the user every time."
         ),
     ),

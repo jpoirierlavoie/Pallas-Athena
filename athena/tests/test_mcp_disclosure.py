@@ -109,6 +109,10 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # mirror) — an effect outside Athéna. « Le seul effet extérieur » beside
     # it was false; what the promise confines is what reaches a THIRD party.
     "le seul effet extérieur possible",
+    # Lot 1 completeness review: the same claim in English, in the BOOKINGS
+    # paragraph of INSTRUCTIONS — beside AGENDA's « status annulée removes
+    # the event's Outlook copy ».
+    "the connector's only outbound effect",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

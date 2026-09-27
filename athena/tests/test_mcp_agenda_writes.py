@@ -900,3 +900,25 @@ def test_revision_model_accepts_every_field_the_handlers_name():
         assert f"bloc:{letter}" in revision_model.VALID_FIELDS
     assert {"content", "content:rewrite"} <= set(revision_model.VALID_FIELDS)
     assert concurrency.STALE_ETAG_ERROR  # the refusal the handlers translate
+
+
+def test_complete_task_en_cours_on_an_open_task_reopens_a_step_left_complete(
+        fake):
+    """Backs the one sentence complete_task's description and CORRECT's
+    INSTRUCTIONS paragraph carry since the lot 1 completeness review: the
+    lot-1a reopen cascade is also reachable from the EXISTING tool. An OPEN
+    task whose linked step was left « complété » (the residue of a refused
+    or failed reopen cascade) put en_cours reopens that step — and the
+    protocol its last step had closed — while protocol_step_effect, which
+    reads the ACTIVE protocol only, reports no linked step. Both halves are
+    what the texts say; either changing must change them."""
+    _protocol(fake, status="complété", closed_by="auto")
+    _step(fake, "s1", status="complété", task="t1")
+    _task(fake, "t1", status="à_faire")
+    payload = handlers.complete_task({"task_id": "t1", "status": "en_cours"})
+    assert fake.peek("tasks/t1")["status"] == "en_cours"
+    assert fake.peek(f"protocols/{P}/steps/s1")["status"] == "à_venir"
+    assert fake.peek(f"protocols/{P}")["status"] == "actif"
+    assert payload["protocol_step_effect"]["linked_step_found"] is False
+    description = tools.TOOLS["complete_task"]["description"]
+    assert "does not show" in description and "OPEN task" in description

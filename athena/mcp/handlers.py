@@ -22,7 +22,9 @@ entry — never the file, its name or its folder) and ``dossiers``. ONE path
 reaches outside Firestore: ``decide_rendez_vous``'s refusal, through
 ``services/rendez_vous``, cancels the Outlook meeting of a pending Bookings
 request (Graph ``/cancel``, with the service's fixed text) — the connector's
-only outbound effect, and a « never » of the registry forbids any other.
+only call outside Firestore, and a « never » of the registry forbids any
+other. (An edited event's copy in the lawyer's own Outlook calendar follows
+through the 10-minute mirror cron, never through this code.)
 
 The versioned-drafts family (``save_draft``/``revise_draft``/``get_draft``/
 ``list_drafts``) LEFT this connector on 2026-09-02 with the internal chat
