@@ -49,6 +49,27 @@ VALID_SOUS_PHASES = phases.VALID_SOUS_PHASES
 PHASE_LABELS = phases.PHASE_LABELS
 SOUS_PHASE_LABELS = phases.SOUS_PHASE_LABELS
 
+# Keys :func:`update_expense` never takes from its caller — the twin of
+# ``time_entry._PROTECTED_ON_UPDATE`` (read its comment): the billing link
+# (``models.invoice`` alone writes it), the identity, and the write's own
+# provenance stamp.
+_PROTECTED_ON_UPDATE = frozenset({
+    "id", "invoiced", "invoice_id",
+    "created_at", "created_via",
+    "updated_at", "updated_via", "mcp_updated_at", "etag",
+})
+
+
+class _Refused(Exception):
+    """A refusal raised inside a write transaction — nothing is written.
+
+    ``errors`` is the French list the ``(doc, errors)`` convention returns.
+    """
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__(errors[0] if errors else "")
+        self.errors = errors
+
 
 def _default_doc() -> dict:
     """Return a dict with every expense field set to its default value."""
@@ -354,40 +375,49 @@ def update_expense(
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing expense. Returns (updated_doc, errors).
 
-    ``expected_etag`` (keyword-only): the twin of
-    ``time_entry.update_time_entry`` — a stale one returns
-    ``[STALE_ETAG_ERROR]`` and writes nothing; ``None`` is the unchanged
-    single ``set()``.
+    The twin of ``time_entry.update_time_entry`` — read that docstring: ONE
+    transaction whatever the caller passes (lot 0b, 2026-09-26), the etag
+    comparison and the invoiced refusal on the transaction's own read, and
+    the document written merged from it, so an invoice committing between
+    the read and the write can no longer have ``invoiced``/``invoice_id``
+    written back to ``False``/``None``. ``expected_etag`` (keyword-only): a
+    stale one returns ``[STALE_ETAG_ERROR]`` and writes nothing; ``None``
+    asserts nothing about the version. The amount stays caller-set, never
+    recomputed. A key of :data:`_PROTECTED_ON_UPDATE` in *data* is ignored.
     """
-    existing = get_expense(expense_id)
-    if not existing:
-        return None, ["Dépense introuvable."]
-    if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
+    changes = {
+        key: value for key, value in _sanitize_data(data).items()
+        if key not in _PROTECTED_ON_UPDATE
+    }
+    ref = db.collection(COLLECTION).document(expense_id)
 
-    if existing.get("invoiced"):
-        return None, ["Impossible de modifier une dépense déjà facturée."]
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        # Read FIRST; every check below reads this snapshot (the twin's
+        # comment says why).
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Dépense introuvable."])
+        existing = snap.to_dict() or {}
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        if existing.get("invoiced"):
+            raise _Refused(["Impossible de modifier une dépense déjà facturée."])
 
-    merged = {**existing, **_sanitize_data(data)}
-    phases.apply_sous_phase_default(merged)
+        merged = {**existing, **changes}
+        phases.apply_sous_phase_default(merged)
+        errors = _validate(merged)
+        if errors:
+            raise _Refused(errors)
 
-    errors = _validate(merged)
-    if errors:
-        return None, errors
-
-    now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
+        provenance.stamp_update(merged, datetime.now(timezone.utc))
+        transaction.set(ref, merged)
+        return merged
 
     try:
-        concurrency.commit_document(
-            db.collection(COLLECTION).document(expense_id), merged,
-            expected_etag=expected_etag,
-            read_etag=concurrency.etag_of(existing),
-        )
-    except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
-    except concurrency.Vanished:
-        return None, ["Dépense introuvable."]
+        merged = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
     except Exception:
         log_unexpected("expense write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -479,20 +509,32 @@ def set_expense_phase(
 
 
 def delete_expense(expense_id: str) -> tuple[bool, str]:
-    """Delete an expense. Returns (success, error_message)."""
-    existing = get_expense(expense_id)
-    if not existing:
-        return False, "Dépense introuvable."
+    """Delete an expense. Returns (success, error_message).
 
-    if existing.get("invoiced"):
-        return False, "Impossible de supprimer une dépense déjà facturée."
+    The twin of ``time_entry.delete_time_entry``: the read, the invoiced
+    refusal and the delete in ONE transaction (lot 0b, 2026-09-26), so an
+    invoice committing between the check and the delete can no longer leave
+    a line item citing a deleted disbursement.
+    """
+    ref = db.collection(COLLECTION).document(expense_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> None:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Dépense introuvable."])
+        if (snap.to_dict() or {}).get("invoiced"):
+            raise _Refused(["Impossible de supprimer une dépense déjà facturée."])
+        transaction.delete(ref)
 
     try:
-        db.collection(COLLECTION).document(expense_id).delete()
-        return True, ""
+        _apply(db.transaction())
+    except _Refused as refusal:
+        return False, refusal.errors[0]
     except Exception:
         log_unexpected("expense delete failed")
         return False, "Erreur lors de la suppression. Veuillez réessayer."
+    return True, ""
 
 
 # ── Summary & batch operations ────────────────────────────────────────────

@@ -6,10 +6,15 @@ list totals, exports and on-screen display consistent, and — with the
 ``billable == True`` filter on ``get_unbilled_totals`` — keeps unbillable
 time out of the dashboard's unbilled tracker.
 
-Same import-stub approach as test_invoice_numbering / test_trust: stub
-whatever google/firebase lib is missing on a bare interpreter, then drive
-``create_time_entry`` / ``update_time_entry`` over a tiny in-memory fake
-Firestore.
+Same import-stub approach as test_trust: stub whatever google/firebase lib
+is missing on a bare interpreter, then drive ``create_time_entry`` /
+``update_time_entry`` over the shared fake Firestore
+(``tests/_fake_firestore.py`` — the real client over an in-memory server).
+Changed deliberately on 2026-09-26 (lot 0b, step B2): the integration half
+ran on a hand-written ``_DB`` with no ``transaction()`` and a ``get()`` that
+took no transaction, and ``update_time_entry`` now reads and writes inside
+one. The shared fake refuses what the real store refuses; the old stand-in
+would have had to grow its own transaction semantics to keep up.
 """
 
 import importlib
@@ -96,54 +101,11 @@ def test_billable_amount_guards_non_finite():
 # ── Integration over a fake Firestore ──────────────────────────────────────
 
 
-class _Snap:
-    def __init__(self, doc_id, data):
-        self.id = doc_id
-        self._data = data
-
-    @property
-    def exists(self):
-        return self._data is not None
-
-    def to_dict(self):
-        return dict(self._data) if self._data is not None else None
-
-
-class _DocRef:
-    def __init__(self, store, coll, doc_id):
-        self._store = store
-        self._coll = coll
-        self.id = doc_id
-
-    def get(self):
-        return _Snap(self.id, self._store.get(self._coll, {}).get(self.id))
-
-    def set(self, data):
-        self._store.setdefault(self._coll, {})[self.id] = dict(data)
-
-
-class _Coll:
-    def __init__(self, store, coll):
-        self._store = store
-        self._coll = coll
-
-    def document(self, doc_id):
-        return _DocRef(self._store, self._coll, doc_id)
-
-
-class _DB:
-    def __init__(self, store):
-        self._store = store
-
-    def collection(self, name):
-        return _Coll(self._store, name)
-
-
 @pytest.fixture
 def store(monkeypatch):
-    s = {"timeentries": {}}
-    monkeypatch.setattr(time_entry, "db", _DB(s))
-    return s
+    from tests._fake_firestore import install
+
+    return install(monkeypatch, time_entry)
 
 
 def _valid_data(**overrides):
@@ -164,7 +126,7 @@ def test_create_billable_stores_computed_amount(store):
     assert errors == []
     assert entry["amount"] == 50000
     # …and it's what got persisted
-    stored = next(iter(store["timeentries"].values()))
+    stored = store.peek(f"timeentries/{entry['id']}")
     assert stored["amount"] == 50000
 
 
@@ -173,7 +135,7 @@ def test_create_unbillable_stores_zero_amount(store):
     assert errors == []
     assert entry["billable"] is False
     assert entry["amount"] == 0
-    stored = next(iter(store["timeentries"].values()))
+    stored = store.peek(f"timeentries/{entry['id']}")
     assert stored["amount"] == 0
 
 
@@ -184,6 +146,7 @@ def test_update_flip_to_unbillable_zeros_amount(store):
     updated, errors = time_entry.update_time_entry(entry["id"], _valid_data(billable=False))
     assert errors == []
     assert updated["amount"] == 0
+    assert store.peek(f"timeentries/{entry['id']}")["amount"] == 0
 
 
 def test_update_flip_back_to_billable_recomputes_amount(store):
@@ -193,3 +156,4 @@ def test_update_flip_back_to_billable_recomputes_amount(store):
     updated, errors = time_entry.update_time_entry(entry["id"], _valid_data(billable=True))
     assert errors == []
     assert updated["amount"] == 50000
+    assert store.peek(f"timeentries/{entry['id']}")["amount"] == 50000

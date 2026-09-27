@@ -19,7 +19,12 @@ vrai), et l'on relit ce qui est STOCKÉ. Pour chacun :
   refus, et l'écriture concurrente survit ;
 * un document supprimé entre-temps n'est jamais ressuscité ;
 * ``None`` → l'unique ``set()`` d'avant, hors transaction : DAV et les
-  formulaires sans etag ne voient aucune différence.
+  formulaires sans etag ne voient aucune différence — SAUF pour
+  ``update_time_entry`` / ``update_expense``, qui depuis le lot 0b (étape
+  B2) lisent et écrivent TOUJOURS dans une transaction : la course contre
+  une facture ne dépend pas de la version que l'appelant a lue
+  (``tests/test_time_expense_races.py``). Sans etag, ils restent « la
+  dernière écriture gagne » sur les champs édités.
 
 La section 5 fait la même preuve à travers les VRAIS gestionnaires du
 connecteur (``run_write`` compris), sur les six outils qui acceptent
@@ -203,6 +208,36 @@ _GETTERS = {
     "confirmer_analyse": (document_model, "get_document"),
 }
 
+# The mutators that read their record ONLY inside their transaction (lot 0b,
+# step B2): no pre-read exists for a rival to slip in after, so the race is
+# armed at their COMMIT instead — the rival lands after the transactional
+# read, and the real ``transactional`` retry must re-read and refuse.
+_READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
+_LEGACY_WITHOUT_ETAG = sorted(set(_CASES) - _READS_ONLY_IN_TRANSACTION)
+
+
+def _arm_race(db, monkeypatch, case, path, rival) -> None:
+    """Run *rival* (another process's write) between the model's read and
+    its commit, through the seam that case actually has."""
+    if case in _READS_ONLY_IN_TRANSACTION:
+        def _hook(info) -> None:
+            if any(p == path for _op, p in info.ops):
+                remove()
+                rival()
+
+        remove = db.add_commit_hook(_hook)
+        return
+
+    module, getter_name = _GETTERS[case]
+    real_getter = getattr(module, getter_name)
+
+    def racing_getter(doc_id):
+        doc = real_getter(doc_id)
+        rival()
+        return doc
+
+    monkeypatch.setattr(module, getter_name, racing_getter)
+
 
 def _stored_field(db, case, path):
     field = _CASES[case][3]
@@ -290,21 +325,14 @@ def test_a_stale_etag_is_refused_and_nothing_is_written(db, case):
 def test_a_write_between_the_models_read_and_its_commit_is_refused(
     db, monkeypatch, case,
 ):
-    """The model's own pre-check passes (it read the version the caller
-    named); a rival write lands right after that read. The transactional
-    re-read catches it, and the rival's write survives intact."""
+    """The model's own check passes (it read the version the caller named);
+    a rival write lands right after that read. The transactional re-read
+    catches it, and the rival's write survives intact."""
     row_id, path, edit = _setup(db, case)
     etag0 = db.peek(path)["etag"]
-    module, getter_name = _GETTERS[case]
-    real_getter = getattr(module, getter_name)
+    _arm_race(db, monkeypatch, case, path, lambda: db.external_write(
+        path, {**db.peek(path), "etag": "e-rival", "rival": True}))
 
-    def racing_getter(doc_id):
-        doc = real_getter(doc_id)
-        db.external_write(path, {**db.peek(path), "etag": "e-rival",
-                                 "rival": True})
-        return doc
-
-    monkeypatch.setattr(module, getter_name, racing_getter)
     doc, errors = edit(row_id, expected_etag=etag0)
 
     assert doc is None and errors == STALE
@@ -319,15 +347,8 @@ def test_a_document_deleted_since_the_read_is_never_resurrected(
 ):
     row_id, path, edit = _setup(db, case)
     etag0 = db.peek(path)["etag"]
-    module, getter_name = _GETTERS[case]
-    real_getter = getattr(module, getter_name)
+    _arm_race(db, monkeypatch, case, path, lambda: db.external_delete(path))
 
-    def vanishing_getter(doc_id):
-        doc = real_getter(doc_id)
-        db.external_delete(path)
-        return doc
-
-    monkeypatch.setattr(module, getter_name, vanishing_getter)
     doc, errors = edit(row_id, expected_etag=etag0)
 
     assert doc is None and len(errors) == 1 and "introuvable" in errors[0]
@@ -340,7 +361,7 @@ def test_a_document_deleted_since_the_read_is_never_resurrected(
 # ══════════════════════════════════════════════════════════════════════
 
 
-@_ALL
+@pytest.mark.parametrize("case", _LEGACY_WITHOUT_ETAG, ids=_LEGACY_WITHOUT_ETAG)
 def test_without_an_etag_the_write_is_the_plain_legacy_one(db, case):
     row_id, path, edit = _setup(db, case)
     db.external_write(path, {**db.peek(path), "etag": "e-rival"})
@@ -356,6 +377,30 @@ def test_without_an_etag_the_write_is_the_plain_legacy_one(db, case):
         "update" if case.startswith("set_") else "set", path),)
     # No read through a transaction, and no read beyond the model's own.
     assert not any(r.transactional for r in db.reads)
+
+
+@pytest.mark.parametrize("case", sorted(_READS_ONLY_IN_TRANSACTION),
+                         ids=sorted(_READS_ONLY_IN_TRANSACTION))
+def test_without_an_etag_a_billing_edit_is_last_write_wins_in_a_transaction(
+    db, case,
+):
+    """Changed deliberately (lot 0b, step B2): these two used to take the
+    plain legacy ``set()`` above. The version is still not consulted — the
+    rival etag does not refuse the edit — but the read, the invoiced check
+    and the write now share ONE transaction, because the invoice that can
+    commit in between does not care which version the caller read."""
+    row_id, path, edit = _setup(db, case)
+    db.external_write(path, {**db.peek(path), "etag": "e-rival"})
+    db.reset_logs()
+
+    doc, errors = edit(row_id)
+
+    assert errors == [], errors
+    assert _stored_field(db, case, path) == _expected_value(case)
+    assert [c.ops for c in db.commits] == [(("set", path),)]
+    assert all(c.transaction is not None for c in db.commits)
+    assert db.reads and all(r.transactional for r in db.reads)
+    assert doc["etag"] == db.peek(path)["etag"] != "e-rival"
 
 
 # ══════════════════════════════════════════════════════════════════════

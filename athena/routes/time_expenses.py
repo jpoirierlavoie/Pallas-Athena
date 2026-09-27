@@ -446,6 +446,18 @@ def time_entry_delete(entry_id: str) -> str:
             return resp
         return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
 
+    if not success:
+        current = get_time_entry(entry_id)
+        if current:
+            # The refusal is SAID, at 200, on the form of the entry as it
+            # now stands (its invoiced banner included). It used to vanish
+            # into the redirect below — the entry still on the list, not a
+            # word — and since lot 0b it can also come from an invoice that
+            # committed during this very request.
+            ctx = _template_context()
+            ctx.update(entry=current, errors=[error], return_to=return_to)
+            return render_template("time_expenses/time_form.html", **ctx)
+
     return redirect(target)
 
 
@@ -599,6 +611,14 @@ def expense_delete(expense_id: str) -> str:
             resp.headers["HX-Redirect"] = target
             return resp
         return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
+
+    if not success:
+        current = get_expense(expense_id)
+        if current:
+            # Said, at 200, on the form — see time_entry_delete.
+            ctx = _template_context()
+            ctx.update(expense=current, errors=[error], return_to=return_to)
+            return render_template("time_expenses/expense_form.html", **ctx)
 
     return redirect(target)
 

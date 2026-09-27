@@ -41,6 +41,32 @@ VALID_SOUS_PHASES = phases.VALID_SOUS_PHASES
 PHASE_LABELS = phases.PHASE_LABELS
 SOUS_PHASE_LABELS = phases.SOUS_PHASE_LABELS
 
+# Keys :func:`update_time_entry` never takes from its caller. ``invoiced`` /
+# ``invoice_id`` are the billing link, written by ``models.invoice`` alone
+# (``create_invoice`` sets it, ``void_invoice`` releases it): a caller's
+# ``False`` would un-bill work that stays on an invoice, a ``True`` would
+# mark it billed with no line item behind it. A forwarded ``id`` would
+# corrupt the FIELD without moving the document. The rest is the write's
+# own stamp, which ``models.provenance`` owns. No caller passes any of them
+# today (the web form and the connector build their payloads key by key);
+# this is what keeps it true for the next one.
+_PROTECTED_ON_UPDATE = frozenset({
+    "id", "invoiced", "invoice_id",
+    "created_at", "created_via",
+    "updated_at", "updated_via", "mcp_updated_at", "etag",
+})
+
+
+class _Refused(Exception):
+    """A refusal raised inside a write transaction — nothing is written.
+
+    ``errors`` is the French list the ``(doc, errors)`` convention returns.
+    """
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__(errors[0] if errors else "")
+        self.errors = errors
+
 
 def _default_doc() -> dict:
     """Return a dict with every time entry field set to its default value."""
@@ -384,43 +410,66 @@ def update_time_entry(
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing time entry. Returns (updated_doc, errors).
 
+    ONE transaction, whatever the caller passes (lot 0b, 2026-09-26): the
+    entry is read INSIDE it, the etag comparison and the invoiced refusal
+    run on that read, and the document written is merged from it. It used
+    to be a read, a check, then an unconditional full-document ``set()``:
+    an invoice committing in between — its source flip sets ``invoiced``
+    and ``invoice_id`` — had both keys written back to ``False``/``None``
+    by the edit while the invoice's line item stayed, so the work was on
+    an invoice yet unbilled in the ledger, free to be billed twice. Now
+    that invoice's commit aborts this transaction and the retry re-reads
+    the entry as invoiced and refuses; if the edit commits first, the
+    invoice's own source re-check (etag compared) aborts the invoice.
+
     ``expected_etag`` (keyword-only): see ``models.concurrency`` — a stale
-    one returns ``[STALE_ETAG_ERROR]`` and writes nothing; ``None`` is the
-    unchanged single ``set()``. Being invoiced since the caller's read is
-    one way to be stale: the invoice's source flip regenerates the etag.
+    one returns ``[STALE_ETAG_ERROR]`` and writes nothing. ``None`` asserts
+    nothing about the version (last write wins on the edited fields, as
+    before), but it no longer skips the transaction: the invoicing race is
+    not a matter of which version the caller read. Being invoiced since the
+    caller's read is one way to be stale: the invoice's source flip
+    regenerates the etag.
+
+    A key of :data:`_PROTECTED_ON_UPDATE` in *data* is ignored.
     """
-    existing = get_time_entry(entry_id)
-    if not existing:
-        return None, ["Entrée de temps introuvable."]
-    if not concurrency.matches(existing, expected_etag):
-        return None, [concurrency.STALE_ETAG_ERROR]
+    changes = {
+        key: value for key, value in _sanitize_data(data).items()
+        if key not in _PROTECTED_ON_UPDATE
+    }
+    ref = db.collection(COLLECTION).document(entry_id)
 
-    if existing.get("invoiced"):
-        return None, ["Impossible de modifier une entrée déjà facturée."]
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        # The read comes FIRST (the real client refuses a transactional read
+        # after a staged write), and every check below reads THIS snapshot —
+        # never a copy taken before the transaction began.
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Entrée de temps introuvable."])
+        existing = snap.to_dict() or {}
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        if existing.get("invoiced"):
+            raise _Refused(["Impossible de modifier une entrée déjà facturée."])
 
-    merged = {**existing, **_sanitize_data(data)}
-    merged["amount"] = _compute_entry_amount(
-        merged.get("hours", 0), merged.get("rate", 0), bool(merged.get("billable"))
-    )
-    phases.apply_sous_phase_default(merged)
+        merged = {**existing, **changes}
+        merged["amount"] = _compute_entry_amount(
+            merged.get("hours", 0), merged.get("rate", 0),
+            bool(merged.get("billable")),
+        )
+        phases.apply_sous_phase_default(merged)
+        errors = _validate(merged)
+        if errors:
+            raise _Refused(errors)
 
-    errors = _validate(merged)
-    if errors:
-        return None, errors
-
-    now = datetime.now(timezone.utc)
-    provenance.stamp_update(merged, now)
+        provenance.stamp_update(merged, datetime.now(timezone.utc))
+        transaction.set(ref, merged)
+        return merged
 
     try:
-        concurrency.commit_document(
-            db.collection(COLLECTION).document(entry_id), merged,
-            expected_etag=expected_etag,
-            read_etag=concurrency.etag_of(existing),
-        )
-    except concurrency.StaleWrite:
-        return None, [concurrency.STALE_ETAG_ERROR]
-    except concurrency.Vanished:
-        return None, ["Entrée de temps introuvable."]
+        merged = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
     except Exception:
         log_unexpected("time entry write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -545,20 +594,33 @@ def set_time_entry_phase(
 
 
 def delete_time_entry(entry_id: str) -> tuple[bool, str]:
-    """Delete a time entry. Returns (success, error_message)."""
-    existing = get_time_entry(entry_id)
-    if not existing:
-        return False, "Entrée de temps introuvable."
+    """Delete a time entry. Returns (success, error_message).
 
-    if existing.get("invoiced"):
-        return False, "Impossible de supprimer une entrée déjà facturée."
+    The read, the invoiced refusal and the delete run in ONE transaction
+    (lot 0b, 2026-09-26). They used to be a read, a check, then a bare
+    ``delete()``: an invoice committing in between left a line item citing
+    a source that no longer existed. That invoice's commit now aborts this
+    transaction, and the retry re-reads the entry as invoiced and refuses.
+    """
+    ref = db.collection(COLLECTION).document(entry_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> None:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Entrée de temps introuvable."])
+        if (snap.to_dict() or {}).get("invoiced"):
+            raise _Refused(["Impossible de supprimer une entrée déjà facturée."])
+        transaction.delete(ref)
 
     try:
-        db.collection(COLLECTION).document(entry_id).delete()
-        return True, ""
+        _apply(db.transaction())
+    except _Refused as refusal:
+        return False, refusal.errors[0]
     except Exception:
         log_unexpected("time entry delete failed")
         return False, "Erreur lors de la suppression. Veuillez réessayer."
+    return True, ""
 
 
 # ── Summary & batch operations ────────────────────────────────────────────

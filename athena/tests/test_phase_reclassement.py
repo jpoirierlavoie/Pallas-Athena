@@ -259,21 +259,29 @@ def test_une_ligne_facturee_se_reclasse_sans_qu_aucun_chiffre_ne_bouge(db, kind)
 # ══════════════════════════════════════════════════════════════════════
 
 
-def test_update_time_entry_refuse_toujours_une_entree_facturee(db):
+# Sur le faux Firestore PARTAGÉ depuis le 2026-09-26 (lot 0b, étape B2) :
+# les deux éditeurs larges lisent et écrivent désormais dans une transaction,
+# que le faux écrit à la main de ce fichier ne modélise pas. Les refus exacts
+# sont gardés, et l'on relit le magasin plutôt que des mouchards.
+
+
+def test_update_time_entry_refuse_toujours_une_entree_facturee(real):
     """Son refus est ce qui rend vrai le « invoiced : toujours faux » de son
     propre schéma de sortie. Le reclassement passe à côté du mur, jamais au
     travers."""
+    before = real.peek("timeentries/e1")
     doc, errors = time_entry_model.update_time_entry("e1", {"hours": 2.0})
     assert doc is None
     assert errors == ["Impossible de modifier une entrée déjà facturée."]
-    assert db.store["_updates"] == [] and db.store["_sets"] == []
+    assert real.peek("timeentries/e1") == before and real.commits == []
 
 
-def test_update_expense_refuse_toujours_un_debourse_facture(db):
+def test_update_expense_refuse_toujours_un_debourse_facture(real):
+    before = real.peek("expenses/x1")
     doc, errors = expense_model.update_expense("x1", {"amount": 9999})
     assert doc is None
     assert errors == ["Impossible de modifier une dépense déjà facturée."]
-    assert db.store["_updates"] == [] and db.store["_sets"] == []
+    assert real.peek("expenses/x1") == before and real.commits == []
 
 
 @_BOTH

@@ -30,6 +30,14 @@ The contract, for a caller that passes ``expected_etag``:
 no read, no transaction. DAV PUTs and a web page rendered before its form
 carried an etag take it, so their behaviour is unchanged.
 
+Two models step outside these helpers on purpose:
+``time_entry.update_time_entry`` and ``expense.update_expense`` (lot 0b,
+2026-09-26) read, check and write in ONE transaction of their own even when
+``expected_etag`` is ``None``. The race they close — an invoice committing
+between their read and their full-document write, whose ``invoiced`` flip
+the write would undo — is not a matter of which version the caller read,
+so no caller can opt out of it. They still compare with :func:`matches`.
+
 ``''`` is a legitimate expected etag: it matches a legacy document written
 before Rule 7, whose stored etag is absent (a caller that read such a row
 was handed ``''`` by the connector, and must be able to write it back).
