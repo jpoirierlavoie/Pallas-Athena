@@ -1655,7 +1655,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "destinataire_id": _nstr(),
                 }, description="The party ids RETAINED (an omitted client or "
                    "adverse slot takes the dossier's only one); null = "
-                   "empty slot."),
+                   "empty slot. note / note_honoraires: only the slots their "
+                   "own flow fills (client and adverse: never)."),
                 "auto_fields": _arr(_obj({
                     "name": _str("As the template spells it."),
                     "resolved": _bool(

@@ -1816,15 +1816,18 @@ TOOLS: dict[str, dict] = {
                 "client_id": _id(
                     "With template_id: the dossier's client filling the "
                     "« client » slot. Needed when the dossier has several "
-                    "and the template uses the slot."
+                    "and the template uses the slot. Refused for kinds "
+                    "note / note_honoraires (their flow never fills it)."
                 ),
                 "adverse_id": _id(
                     "With template_id: the dossier's opposing party filling "
-                    "the « adverse » slot. Needed when it has several."
+                    "the « adverse » slot. Needed when it has several. "
+                    "Refused for kinds note / note_honoraires."
                 ),
                 "destinataire_id": _id(
                     "With template_id: the addressee contact of the "
-                    "« destinataire » slot. No default."
+                    "« destinataire » slot. No default. note_honoraires: "
+                    "the invoice's client. Refused for kind note."
                 ),
                 "offset": _offset(),
                 "limit": _limit(20),

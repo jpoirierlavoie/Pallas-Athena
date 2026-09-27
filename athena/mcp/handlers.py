@@ -73,6 +73,7 @@ Serialization rules (§10.1):
   :func:`mcp.tools.iso_mtl`.
 """
 
+import dataclasses
 import functools
 import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
@@ -1793,6 +1794,21 @@ _FLOW_SOURCES_FR = {
         "viennent de la facture, le destinataire de son client"
     ),
 }
+# The party slots each SPECIAL kind's own flow fills — and no other:
+# utils/invoice_docx.build_invoice_context passes the invoice's dossier and
+# its client as the DESTINATAIRE, with client=None and adverse=None;
+# utils/note_docx.build_note_context passes the note's dossier alone. A
+# preview on the gabarit resolution (first client by default) would report
+# client.* « resolved » where the flow prints « [CHAMP MANQUANT : …] », and
+# destinataire.* missing where the invoice fills it. Pinned against both
+# builders by tests/test_mcp_template_reads.py.
+_FLOW_SLOTS = {
+    "note": ("dossier",),
+    "note_honoraires": ("dossier", "destinataire"),
+}
+_FLOW_ORIGIN_FR = {"note": "la note imprimée", "note_honoraires": "la facture"}
+_SLOT_ARGS = (("client_id", "client"), ("adverse_id", "adverse"),
+              ("destinataire_id", "destinataire"))
 
 
 def _is_flow_field(name: str, kind: str) -> bool:
@@ -1954,6 +1970,12 @@ def _template_detail(args: dict) -> dict:
             "`template_id` est vide : prenez-le sur une ligne de la liste "
             "(list_templates sans template_id)."
         )
+    if "/" in template_id:
+        # No template id holds a slash (UUIDv4). Handed to the client, one
+        # would address a DEEPER document — `{id}/versions/{n}` reads a
+        # version entry as if it were a template — or fail as a malformed
+        # path, which the strict read would report « réessayez ». Absence.
+        return {"mode": "detail", "found": False, "template_id": template_id}
     try:
         template = doc_template_model.get_template(template_id, strict=True)
     except doc_template_model.TemplateReadError:
@@ -1961,6 +1983,19 @@ def _template_detail(args: dict) -> dict:
     if template is None:
         return {"mode": "detail", "found": False, "template_id": template_id}
     template = {**template, "placeholders": _template_placeholders(template)}
+    kind = template.get("kind") or "gabarit"
+    flow_slots = _FLOW_SLOTS.get(kind)
+    if flow_slots is not None:
+        # A special kind is filled by ITS flow, which never reads some
+        # slots: an id for one of them would preview a resolution the
+        # application never makes — refused, never ignored.
+        for key, slot in _SLOT_ARGS:
+            if key in args and slot not in flow_slots:
+                raise ToolArgumentError(
+                    f"`{key}` ne s'applique pas à ce type de gabarit : "
+                    f"l'application le remplit depuis {_FLOW_ORIGIN_FR[kind]}, "
+                    f"sans jamais ce créneau. Retirez `{key}`."
+                )
 
     # The SAME resolution a fill makes — strict: a slot that is not on the
     # dossier is refused, never swapped for the first party, and a slot the
@@ -1974,11 +2009,21 @@ def _template_detail(args: dict) -> dict:
             str(args.get("client_id") or ""),
             str(args.get("adverse_id") or ""),
             str(args.get("destinataire_id") or ""),
-            required_slots=classification.slots_required,
-            refuse_ambiguous=True,
+            required_slots=(
+                classification.slots_required if flow_slots is None else ()),
+            refuse_ambiguous=flow_slots is None,
         )
     except gabarit_service.GenerationRefused as exc:
         raise _gabarit_refusal(exc, dossier_id=dossier_id)
+    if flow_slots is not None:
+        # resolve_slots defaults an omitted client/adverse slot to the
+        # dossier's first entry; the special flows fill NEITHER, and pass no
+        # party documents to the role blocks — mirror them exactly, so each
+        # flag says what the application would print.
+        slots = dataclasses.replace(
+            slots, client=None, client_id="", adverse=None, adverse_id="",
+            parties={},
+        )
     resolved = gabarit_service.resolve_auto_values(template, slots)
     # Flags only — the resolved VALUES stay here (SPEC H.4 D5): an address
     # or an email has no business in the model's context for this question.
@@ -2004,7 +2049,6 @@ def _template_detail(args: dict) -> dict:
             "— le reste de la réponse est complet."
         )
 
-    kind = template.get("kind") or "gabarit"
     if kind in doc_template_model.SPECIAL_KINDS:
         warnings.append(
             f"Ce gabarit se remplit depuis {_FLOW_SOURCES_FR[kind]} (voir "
@@ -2023,14 +2067,26 @@ def _template_detail(args: dict) -> dict:
                 "l'application ne s'en sert pas tant que le juriste ne l'a "
                 "pas désigné."
             )
-    dossier_slots = {"dossier", "client", "adverse"} & set(classification.slots_required)
-    if dossier_slots and slots.dossier is None:
+    read_slots = set(classification.slots_required)
+    usable = read_slots if flow_slots is None else read_slots & set(flow_slots)
+    never = sorted(read_slots - usable)
+    if never:
+        warnings.append(
+            "Ce type de gabarit ne remplit jamais le(s) créneau(x) "
+            f"{', '.join(never)} : leurs champs s'imprimeront « [CHAMP "
+            "MANQUANT : …] » dans l'application — à retirer du gabarit."
+        )
+    if usable & {"dossier", "client", "adverse"} and slots.dossier is None:
         warnings.append(
             "Aucun dossier fourni : les champs du dossier et des parties sont "
             "rapportés non résolus. Passez dossier_id pour les résoudre."
         )
-    if "destinataire" in classification.slots_required and not slots.destinataire_id:
+    if "destinataire" in usable and not slots.destinataire_id:
         warnings.append(
+            "Les champs destinataire.* viennent du client de la facture (à "
+            "défaut, de son adresse de facturation) : passez destinataire_id "
+            "= ce client pour les voir résolus."
+            if kind == "note_honoraires" else
             "Ce gabarit lit le créneau « destinataire » et aucun n'est "
             "retenu : ses champs s'imprimeraient « [CHAMP MANQUANT : …] »."
         )

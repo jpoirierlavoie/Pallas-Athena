@@ -344,6 +344,17 @@ def test_an_unknown_template_is_absence_not_an_error(store):
     _conforms("list_templates", payload)
 
 
+def test_an_id_with_a_slash_never_reaches_a_deeper_document(store):
+    """Regression (T6 review): `{template_id}/versions/1` is a valid
+    document path, and the detail read the version entry AS a template —
+    `found: true` with an empty name. No template id holds a slash."""
+    _, _, letter, _ = store
+    for bogus in (f"{letter['id']}/versions/1", "a/b"):
+        payload = handlers.list_templates({"template_id": bogus})
+        assert payload == {"mode": "detail", "found": False, "template_id": bogus}
+        _conforms("list_templates", payload)
+
+
 def test_versions_list_every_recorded_file_and_mark_the_current(store):
     db, _, letter, _ = store
     replacement = _docx(PLACEHOLDERS + ["référence_externe"])
@@ -440,6 +451,98 @@ def test_the_flow_prefixes_are_the_builders_own_namespaces():
     from utils.template_fields import CATALOG
     for prefixes in handlers._FLOW_PREFIXES.values():
         assert not [c for c in CATALOG if c.lower().startswith(prefixes)]
+
+
+def _special(kind, names):
+    data = _docx(names)
+    created, errors = tpl_model.create_template(
+        io.BytesIO(data), f"{kind}.docx", len(data),
+        {"name": f"Gabarit {kind}", "category": "autre", "kind": kind}, UID)
+    assert errors == [], errors
+    return created
+
+
+def test_a_note_honoraires_preview_mirrors_the_invoice_flow(store):
+    """Regression (T6 review): the preview ran the GABARIT resolution on a
+    special kind. On a two-client dossier it refused `client_id doit être
+    précisé` — a slot the invoice flow never fills — and with a client named
+    it reported client.* « resolved » where the note d'honoraires prints
+    « [CHAMP MANQUANT : …] » (invoice_docx passes client=None), while it
+    warned that destinataire.* would print that marker although the invoice
+    fills them from its client."""
+    tpl = _special("note_honoraires", ["dossier.titre", "client.nom_complet",
+                                       "destinataire.nom_complet", "facture.total"])
+    payload = handlers.list_templates({"template_id": tpl["id"], "dossier_id": "d1"})
+    assert payload["slots"] == {"client_id": None, "adverse_id": None,
+                                "destinataire_id": None}
+    autos = {f["name"]: f["resolved"] for f in payload["auto_fields"]}
+    assert autos == {"dossier.titre": True, "client.nom_complet": False,
+                     "destinataire.nom_complet": False}
+    assert payload["flow_fields"] == ["facture.total"]
+    text = " ".join(payload["warnings"])
+    assert "ne remplit jamais le(s) créneau(x) client" in text
+    assert "viennent du client de la facture" in text
+    assert "s'imprimeraient" not in text          # the gabarit wording is not its
+    _conforms("list_templates", payload)
+    # The invoice's client, named: the destinataire resolves — never a value.
+    named = handlers.list_templates(
+        {"template_id": tpl["id"], "dossier_id": "d1", "destinataire_id": "c2"})
+    assert {f["name"]: f["resolved"] for f in named["auto_fields"]}[
+        "destinataire.nom_complet"] is True
+    assert named["slots"]["destinataire_id"] == "c2"
+    assert "Lavoie" not in json.dumps(named, ensure_ascii=False)
+
+
+def test_a_note_preview_fills_the_dossier_alone(store):
+    tpl = _special("note", ["dossier.titre", "adverse.nom_complet", "note.titre"])
+    payload = handlers.list_templates({"template_id": tpl["id"], "dossier_id": "d1"})
+    autos = {f["name"]: f["resolved"] for f in payload["auto_fields"]}
+    assert autos == {"dossier.titre": True, "adverse.nom_complet": False}
+    assert payload["slots"] == {"client_id": None, "adverse_id": None,
+                                "destinataire_id": None}
+    assert any("créneau(x) adverse" in w for w in payload["warnings"])
+    _conforms("list_templates", payload)
+
+
+@pytest.mark.parametrize("kind, key", [
+    ("note_honoraires", "client_id"),
+    ("note_honoraires", "adverse_id"),
+    ("note", "client_id"),
+    ("note", "destinataire_id"),
+])
+def test_a_special_kind_refuses_the_slots_its_flow_never_fills(store, kind, key):
+    tpl = _special(kind, ["dossier.titre", "client.nom_complet"])
+    with pytest.raises(tools.ToolArgumentError,
+                       match=f"`{key}` ne s'applique pas à ce type de gabarit"):
+        handlers.list_templates({"template_id": tpl["id"], "dossier_id": "d1",
+                                 key: "c1"})
+
+
+def test_the_flow_slots_are_the_builders_own(monkeypatch):
+    """Pinned against the two builders: the slots each passes a party to
+    resolve_values are exactly handlers._FLOW_SLOTS."""
+    import utils.invoice_docx as invoice_docx
+    import utils.note_docx as note_docx
+
+    seen = {}
+
+    def _capture(module):
+        def _resolve(names, **kw):
+            seen[module] = {slot for slot in ("dossier", "client", "adverse",
+                                              "destinataire")
+                            if kw.get(slot) is not None}
+            return {}
+        return _resolve
+
+    monkeypatch.setattr(invoice_docx, "resolve_values", _capture("note_honoraires"))
+    monkeypatch.setattr(note_docx, "resolve_values", _capture("note"))
+    dossier = {"id": "d1", "file_number": "2026-001", "title": "T"}
+    invoice_docx.build_invoice_context(
+        {"billing_address": {"name": "X"}}, [], firm={}, destinataire=None,
+        dossier=dossier, today=datetime(2026, 9, 27).date())
+    note_docx.build_note_context({"title": "T"}, dossier=dossier, firm={},
+                                 today=datetime(2026, 9, 27).date())
+    assert {k: set(v) for k, v in handlers._FLOW_SLOTS.items()} == seen
 
 
 def test_the_enum_literals_track_the_model():
