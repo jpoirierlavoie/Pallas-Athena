@@ -861,6 +861,16 @@ _DOCUMENT_CATEGORIES = [
     "procès_verbal_signification", "procès_verbal_audience",
     "transcription", "mandat", "autre",
 ]
+# Copied exactly from models.doc_template.VALID_KINDS / VALID_CATEGORIES
+# (French). A gabarit's category is its OWN narrow taxonomy — never the
+# documents one above. tests/test_mcp_template_reads.py pins both pairs; a
+# literal, not an import, because importing models.* runs firestore.Client()
+# at load.
+_TEMPLATE_KINDS = ["gabarit", "note_honoraires", "note"]
+_TEMPLATE_CATEGORIES = ["procédure", "correspondance", "autre"]
+# How many folders list_documents(include_folders) returns — a dossier holds
+# tens; the cap only bounds a pathological tree (folders_truncated says so).
+FOLDER_TREE_MAX = 200
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
     "expert", "huissier", "notaire", "autre",
@@ -1676,7 +1686,9 @@ TOOLS: dict[str, dict] = {
             "(resolved; \"\" = dossier root) and document_date — the "
             "document's OWN date when the lawyer entered one (null "
             "otherwise; created_at is only the upload instant, often days "
-            "after the event on scanned papers)."
+            "after the event on scanned papers) — plus its etag, "
+            "category_source and folder_system_role. include_folders adds "
+            "the dossier's whole folder tree."
         ),
         "input_schema": {
             "type": "object",
@@ -1725,6 +1737,16 @@ TOOLS: dict[str, dict] = {
                     "Latest effective date, YYYY-MM-DD inclusive."
                 ),
                 "updated_since": _updated_since(),
+                "include_folders": {
+                    "type": "boolean",
+                    "description": (
+                        "Dossier scope only: also return the dossier's "
+                        "COMPLETE folder tree in `folders` — empty folders "
+                        "included, whatever folder_id, query or page. An "
+                        "unreadable folder store is REFUSED, never "
+                        "reported as « no folder ». Default false."
+                    ),
+                },
                 "offset": _offset(),
                 "cursor": _cursor(
                     "Cabinet scope ONLY (dossier scope pages with offset)."
@@ -1740,6 +1762,76 @@ TOOLS: dict[str, dict] = {
             "additionalProperties": False,
         },
         "handler": "list_documents",
+    },
+    "list_templates": {
+        "title": "Gabarits (modèles Word)",
+        "description": (
+            "The practice's Word templates (« gabarits ») — metadata only: "
+            "never the file, its filename or a link. Without template_id: "
+            "the list. With template_id: that template's placeholders, "
+            "split three ways — AUTO fields the application fills itself "
+            "(dossier, parties, firm, today's date), never yours to supply; "
+            "MANUAL fields, short letter metadata with their options; BLOCS, "
+            "the free content the template leaves to be written (names "
+            "exact). Pass dossier_id (and the slot ids) to see which auto "
+            "fields resolve on that file: an unresolved one prints "
+            "« [CHAMP MANQUANT : name] », a data gap to report, not to "
+            "write around. Values are NEVER returned — read get_dossier or "
+            "get_partie for the data. Kinds note_honoraires and note are "
+            "filled by their own flow (their fields: flow_fields); ONE of "
+            "each is active, designated by the lawyer in the application — "
+            "nothing here changes it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "template_id": _id(
+                    "Inspect ONE template (UUIDv4), from a row of the list. "
+                    "Omit to list."
+                ),
+                "kind": {
+                    "type": "string",
+                    "enum": _TEMPLATE_KINDS,
+                    "description": (
+                        "List only: « gabarit » (letters, procedures), "
+                        "« note_honoraires » (the invoice note), « note » "
+                        "(the note print)."
+                    ),
+                },
+                "category": {
+                    "type": "string",
+                    "enum": _TEMPLATE_CATEGORIES,
+                    "description": "List only: the template's own category.",
+                },
+                "query": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": "List only: matches name and description.",
+                },
+                "dossier_id": _id(
+                    "With template_id: resolve the auto fields on this "
+                    "dossier. Omitted, every dossier and party field reads "
+                    "unresolved."
+                ),
+                "client_id": _id(
+                    "With template_id: the dossier's client filling the "
+                    "« client » slot. Needed when the dossier has several "
+                    "and the template uses the slot."
+                ),
+                "adverse_id": _id(
+                    "With template_id: the dossier's opposing party filling "
+                    "the « adverse » slot. Needed when it has several."
+                ),
+                "destinataire_id": _id(
+                    "With template_id: the addressee contact of the "
+                    "« destinataire » slot. No default."
+                ),
+                "offset": _offset(),
+                "limit": _limit(20),
+            },
+            "additionalProperties": False,
+        },
+        "handler": "list_templates",
     },
     "list_parties": {
         "title": "Liste des contacts",

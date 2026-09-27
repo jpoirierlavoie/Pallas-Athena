@@ -897,10 +897,52 @@ def test_list_documents_conforms_on_both_scopes(monkeypatch):
     }]
     monkeypatch.setattr(handlers.document_model, "list_documents",
                         lambda **kw: list(docs))
-    monkeypatch.setattr(handlers.folder_model, "get_folder_tree", lambda d: [])
+    monkeypatch.setattr(handlers.folder_model, "list_dossier_folders", lambda d: [
+        {"id": "f1", "name": "Projets", "parent_folder_id": None,
+         "dossier_id": "d1", "system_role": "projets", "etag": "e1"},
+    ])
     monkeypatch.setattr(handlers.dossier_model, "get_dossiers_bulk", lambda ids: {})
     _conforms("list_documents", handlers.list_documents({"dossier_id": "d1"}))
     _conforms("list_documents", handlers.list_documents({"scope": "cabinet"}))
+    # Lot 2A T6: the folder-tree branch, and a filed row in both scopes (its
+    # role resolved in dossier scope, null across the firm).
+    docs[0]["folder_id"] = "f1"
+    _conforms("list_documents", handlers.list_documents(
+        {"dossier_id": "d1", "include_folders": True}))
+    _conforms("list_documents", handlers.list_documents({"scope": "cabinet"}))
+
+
+def test_list_templates_conforms_on_every_branch(monkeypatch):
+    template = {
+        "id": "t1", "name": "Lettre", "description": "", "category": "autre",
+        "kind": "note", "version": 2, "etag": "e1",
+        "placeholders": ["client.nom_complet", "date.aujourdhui",
+                         "privilège", "FAITS"],
+        "validation_warnings": ["Le champ «x» semble fragmenté."],
+        "active_for": "note", "active_designated_at": DT,
+        "created_at": DT, "updated_at": DT,
+    }
+    monkeypatch.setattr(handlers.doc_template_model, "list_templates",
+                        lambda **kw: [template, {"id": "t0", "name": "Legacy"}])
+    _conforms("list_templates", handlers.list_templates({}))
+    _conforms("list_templates", handlers.list_templates({"limit": 1}))
+
+    monkeypatch.setattr(handlers.doc_template_model, "get_template",
+                        lambda tid, strict=False: template if tid == "t1" else None)
+    monkeypatch.setattr(handlers.doc_template_model, "list_versions",
+                        lambda tid, limit=50, strict=False: [
+                            {"version": 2, "created_at": DT, "created_via": "web",
+                             "restored_from": 1, "file_size": 10},
+                            {"version": 1, "created_at": None, "file_size": 9}])
+    monkeypatch.setattr(handlers.gabarit_service, "cabinet_dict", lambda: {})
+    _conforms("list_templates", handlers.list_templates({"template_id": "t1"}))
+    _conforms("list_templates", handlers.list_templates({"template_id": "t0"}))
+
+    def _unreadable(tid, limit=50, strict=False):
+        raise handlers.doc_template_model.TemplateReadError(tid)
+
+    monkeypatch.setattr(handlers.doc_template_model, "list_versions", _unreadable)
+    _conforms("list_templates", handlers.list_templates({"template_id": "t1"}))
 
 
 # ── Lot Q: the two reference/lookup reads ──────────────────────────────

@@ -1131,6 +1131,44 @@ def _protocol_sync_keys() -> dict[str, Any]:
     }
 
 
+def _template_summary() -> dict:
+    """A gabarit, as list_templates shows it — metadata and counts only.
+
+    NEVER ``filename``/``original_filename`` (the original may embed a
+    client's name: a template registered from a finished letter) nor
+    ``storage_path``/``sha256``. The counts are RE-CLASSIFIED from the
+    stored placeholders on every read, never the stored ``*_fields`` lists
+    (stale on templates uploaded before the taxonomy changed)."""
+    return _obj({
+        "id": _str(),
+        "name": _str(),
+        "description": _str(),
+        "category": _str("procédure | correspondance | autre — the "
+                         "template's OWN taxonomy, never a document's."),
+        "kind": _str("gabarit | note_honoraires | note."),
+        "version": _int("Version of the file in force (1 = never replaced)."),
+        "active": _bool(
+            "true = THE template of its kind (note_honoraires or note), "
+            "designated by the lawyer in the application — the one the "
+            "application fills. Always false for kind « gabarit »."),
+        "placeholder_count": _int(),
+        "auto_count": _int(),
+        "manual_count": _int(),
+        "bloc_count": _int(),
+        "flow_count": _int(
+            "note / note_honoraires only: placeholders the kind's OWN flow "
+            "fills (note.*, facture.* and the invoice rows); 0 for a "
+            "gabarit."),
+        "slots_required": _arr(_str(
+            "dossier | client | adverse | destinataire — what the auto "
+            "fields read.")),
+        "validation_warnings": _arr(_str(
+            "French, from the last upload: a field Word fragmented, which "
+            "will not fill until retyped.")),
+        **_stamps(),
+    }, optional=_PROVENANCE_KEYS)
+
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -1457,6 +1495,16 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "dossier_title": _str("Live label, freshened."),
             "display_name": _str(),
             "category": _str(),
+            "category_source": {
+                "type": "string",
+                "enum": ["juriste", "analyse", "mcp"],
+                "description": (
+                    "Who posed `category`: « juriste » (the lawyer — or a "
+                    "legacy document, which is read as his), « analyse » "
+                    "(derived by a recorded analysis, still PRESUMED), "
+                    "« mcp » (set by this connector, PRESUMED until the "
+                    "lawyer confirms it in the application)."),
+            },
             "file_type": _str("MIME type."),
             "file_size": _int("Bytes."),
             "file_size_display": _str(),
@@ -1467,6 +1515,14 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "root — OR cabinet scope, where breadcrumbs are not resolved "
                 "at all (it would cost one query per dossier). Check "
                 "`folder_id` to tell the two apart."),
+            "folder_system_role": _nstr(
+                "The role of the folder the document is filed in: "
+                "« projets » (every generated document) or « portail » "
+                "(portal intake) — the two SYSTEM folders, which cannot be "
+                "renamed or moved; \"\" = an ordinary folder or the dossier "
+                "root. null = NOT resolved (a document in a folder, in "
+                "cabinet scope or when the dossier's folders could not be "
+                "read) — never read null as « ordinary »."),
             "document_date": _nstr(
                 "YYYY-MM-DD — the document's OWN date (PV, jugement…), "
                 "manually entered; null on documents not yet dated. "
@@ -1508,8 +1564,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "celui déjà retenu; le plus élevé a été tenu et l'avocat doit "
             "trancher."),
         "category_presumee": _bool(
-            "true = `category` vient d'une analyse et non d'une "
-            "détermination de l'avocat."),
+            "true = `category` est PRÉSUMÉE — posée par une analyse ou par "
+            "ce connecteur (`category_source` « analyse » ou « mcp ») — et "
+            "non une détermination de l'avocat."),
             **_stamps(),
         }, optional=_PROVENANCE_KEYS),
         # Present ONLY when the request carried folder_id — typed, never
@@ -1518,6 +1575,31 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         extra={
             "folder_path": _str("Breadcrumb of the REQUESTED folder. "
                                 "Only present when folder_id was given."),
+            # Present ONLY with include_folders (dossier scope) — typed,
+            # never required.
+            "folders": _arr(_obj({
+                "id": _str(),
+                "name": _str(),
+                "parent_folder_id": _nstr(
+                    "null = at the dossier root. A parent that no longer "
+                    "exists is kept as stored; the folder then shows at the "
+                    "root of `path`."),
+                "path": _str("« Parent / Enfant »; \"\" only for a folder in "
+                             "a parent cycle (never created by the "
+                             "application)."),
+                "system_role": _str(
+                    "« projets » | « portail » — a SYSTEM folder, never "
+                    "renamed nor moved; \"\" = an ordinary folder."),
+                "etag": _str(
+                    "Concurrency token of the folder, regenerated by every "
+                    "write to it. '' on a folder written before folders "
+                    "carried one."),
+            }, optional=("etag",)), "The dossier's WHOLE folder tree, "
+                "depth-first by name. Only "
+                "present when include_folders was true."),
+            "folders_truncated": _bool(
+                "true = the tree holds more folders than were returned. Only "
+                "present with `folders`."),
             "scope": {
                 "type": "string",
                 "enum": ["dossier", "cabinet"],
@@ -1536,6 +1618,117 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         },
         extra_required=["scope", "next_cursor", "dossier_status_matched"],
     ),
+
+    "list_templates": {
+        # Root `type: object` BESIDE the anyOf — the wire schema demands it
+        # (see _found_or_not).
+        "type": "object",
+        "anyOf": [
+            _obj({
+                "mode": {"type": "string", "enum": ["list"]},
+                "items": _arr(_template_summary()),
+                "count": _int("Number of items returned (post-truncation)."),
+                "truncated": _bool(
+                    "true when more matches exist than were returned."),
+                **_next_offset(),
+            }, required=["mode", "items", "count", "truncated"],
+                description="No template_id: the list."),
+            _obj({
+                "mode": {"type": "string", "enum": ["detail"]},
+                "found": _found(True),
+                "template": _obj({
+                    **_template_summary()["properties"],
+                    "active_designated_at": _nstr(
+                        "ISO-8601 Montréal: when the lawyer designated it "
+                        "active; null when it is not the active one."),
+                }, optional=_PROVENANCE_KEYS),
+                "dossier": {
+                    **_obj({"id": _str(), "file_number": _str(),
+                            "title": _str()},
+                           description="The dossier resolved against; null "
+                                       "when none was given."),
+                    "type": ["object", "null"],
+                },
+                "slots": _obj({
+                    "client_id": _nstr(),
+                    "adverse_id": _nstr(),
+                    "destinataire_id": _nstr(),
+                }, description="The party ids RETAINED (an omitted client or "
+                   "adverse slot takes the dossier's only one); null = "
+                   "empty slot."),
+                "auto_fields": _arr(_obj({
+                    "name": _str("As the template spells it."),
+                    "resolved": _bool(
+                        "true = the application has a value for it on these "
+                        "slots. The VALUE is never returned."),
+                    "slot": _nstr(
+                        "dossier | client | adverse | destinataire — where "
+                        "the value comes from; null for the firm and "
+                        "today's date."),
+                })),
+                "unresolved_auto_fields": _arr(_str(
+                    "Would print « [CHAMP MANQUANT : name] » — report the "
+                    "missing data to the lawyer.")),
+                "manual_fields": _arr(_obj({
+                    "name": _str(),
+                    "default": _str("Printed when left blank; '' = none, "
+                                    "the field then prints « [À COMPLÉTER : "
+                                    "name] »."),
+                    "uppercase": _bool("The value is printed in capitals."),
+                    "options": {
+                        "type": ["array", "null"],
+                        "items": _obj({
+                            "label": _str(),
+                            "value": _str("What a choice submits."),
+                            "prints_nothing": _bool(
+                                "true = the deliberate « no mention » "
+                                "choice: prints NOTHING — unlike leaving the "
+                                "field blank."),
+                        }),
+                        "description": "The closed list of choices; null = "
+                                       "free text.",
+                    },
+                })),
+                "blocs": _arr(_obj({
+                    "name": _str("EXACT spelling, case included."),
+                    "uppercase": _bool(),
+                }), "Placeholders the application leaves verbatim, to be "
+                    "written: free content, civilité, salutations, unknown "
+                    "names."),
+                "flow_fields": _arr(_str(), (
+                    "note / note_honoraires only: filled by the kind's own "
+                    "flow in the application (the note print, the invoice "
+                    "note) — never by hand. [] for a gabarit.")),
+                "versions": {
+                    "type": ["array", "null"],
+                    "items": _obj({
+                        "version": _int(),
+                        "current": _bool("The version in force."),
+                        "installed_at": _nstr(
+                            "ISO-8601 Montréal: when this file became the "
+                            "template's; null when not recorded."),
+                        "installed_via": _str(
+                            "web | dav | mcp | cron | script; '' = not "
+                            "recorded."),
+                        "restored_from": _nint(
+                            "The older version it restored; null otherwise."),
+                        "file_size": _int("Bytes."),
+                    }),
+                    "description": "Recorded file versions, newest first; "
+                                   "[] for a template whose file was never "
+                                   "replaced since versions were recorded; "
+                                   "null = the history could not be read.",
+                },
+                "versions_truncated": _bool(),
+                "warnings": _arr(_str()),
+            }, description="With template_id: the inventory."),
+            _obj({
+                "mode": {"type": "string", "enum": ["detail"]},
+                "found": _found(False),
+                "template_id": _str(),
+            }, description="No template has this id — absence is data."),
+        ],
+    },
 
     "list_parties": _list_envelope(_obj({
         "id": _str(),

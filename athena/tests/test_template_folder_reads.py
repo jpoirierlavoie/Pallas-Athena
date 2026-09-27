@@ -24,7 +24,7 @@ import os
 import pathlib
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import timezone
 from unittest import mock
 
 import pytest

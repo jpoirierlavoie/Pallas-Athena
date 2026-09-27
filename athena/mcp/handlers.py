@@ -90,6 +90,7 @@ from mcp.write_support import run_write
 from pagination import decode_cursor, encode_cursor
 from models import audit_event as audit_event_model
 from models import concurrency
+from models import doc_template as doc_template_model
 from models import dossier as dossier_model
 from models import document as document_model
 from models import expense as expense_model
@@ -104,6 +105,7 @@ from models import task as task_model
 from models import time_entry as time_entry_model
 from models import trust as trust_model
 from security import sanitize
+from services import gabarit_champs as gabarit_service
 from services import protocoles as protocol_service
 from services import rendez_vous as rendez_vous_service
 from tz import MTL, mtl_to_utc
@@ -115,7 +117,12 @@ from utils.format_fr import format_date_fr, format_rate_fr
 from utils.logging_setup import log_hearing_series_event
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
-from utils.template_fields import selected_address
+from utils.template_fields import (
+    EMPTY_OPTION_VALUE,
+    classify_placeholders,
+    is_uppercase_name,
+    selected_address,
+)
 from utils.validators import format_phone_display
 
 from mcp.tools import (
@@ -124,6 +131,7 @@ from mcp.tools import (
     CONTENT_MAX_CHARS,
     CONCURRENCY_REQUIRED,
     DOCUMENT_TEXT_MAX_CHARS,
+    FOLDER_TREE_MAX,
     PHASE_BULK_MAX,
     TOOLS,
     ToolArgumentError,
@@ -1490,23 +1498,69 @@ def _analyse_note_ref(dossier_id: str) -> tuple[Optional[str], str]:
 
 # ── 8. list_documents ───────────────────────────────────────────────────
 
-def _folder_paths(dossier_id: str) -> dict[str, str]:
-    """folder_id → « Parent / Enfant » map from ONE folder query.
+FOLDER_READ_ERROR = (
+    "Lecture des dossiers de classement impossible — réessayez dans un "
+    "moment."
+)
+
+
+def _folder_walk(folders: list[dict]) -> list[tuple[dict, str]]:
+    """``(folder, « Parent / Enfant »)`` depth-first by name, over ONE read.
 
     Never per-row breadcrumb walks: get_folder_breadcrumb costs one doc
     read per ancestor (≤5), which per row would turn a 25-row listing into
-    ~100 reads. get_folder_tree is a single dossier_id== query."""
-    paths: dict[str, str] = {}
+    ~100 reads. The tree is built from the dossier's flat folder list (a
+    single dossier_id== query). A folder in a parent cycle (never created
+    by the application — move_folder refuses one) is reachable from no root:
+    it follows the walk with an empty path rather than vanishing."""
+    out: list[tuple[dict, str]] = []
+    seen: set[str] = set()
 
     def _walk(nodes: list[dict], prefix: str) -> None:
         for n in nodes:
-            path = f"{prefix} / {n['name']}" if prefix else n.get("name", "")
-            if n.get("id"):
-                paths[n["id"]] = path
+            name = n.get("name", "") or ""
+            path = f"{prefix} / {name}" if prefix else name
+            seen.add(n.get("id"))
+            out.append((n, path))
             _walk(n.get("children", []), path)
 
-    _walk(folder_model.get_folder_tree(dossier_id), "")
-    return paths
+    _walk(folder_model.build_folder_tree(folders), "")
+    out.extend((f, "") for f in folders if f.get("id") and f.get("id") not in seen)
+    return out
+
+
+def _folder_paths(folders: list[dict]) -> dict[str, str]:
+    """folder_id → « Parent / Enfant » (see :func:`_folder_walk`)."""
+    return {f["id"]: path for f, path in _folder_walk(folders) if path}
+
+
+def _folder_tree_rows(folders: list[dict], roles: dict[str, str]) -> list[dict]:
+    """The dossier's folders as ``include_folders`` returns them — ids,
+    names, the stored parent, the resolved path, the SYSTEM role and the
+    etag the folder edits will expect. Nothing else: no counts (they would
+    cost the documents read the row listing already filtered)."""
+    return [
+        {
+            "id": f.get("id", ""),
+            "name": f.get("name", "") or "",
+            "parent_folder_id": f.get("parent_folder_id") or None,
+            "path": path,
+            "system_role": roles.get(f.get("id", ""), ""),
+            "etag": str(f.get("etag") or ""),
+        }
+        for f, path in _folder_walk(folders)
+    ]
+
+
+def _document_folder_role(doc: dict, roles: Optional[dict[str, str]]) -> Optional[str]:
+    """The system role of the folder *doc* is filed in: ``""`` at the root
+    (known without any read), ``None`` when the folders were not read."""
+    folder_id = doc.get("folder_id")
+    if not folder_id:
+        return ""
+    if roles is None:
+        return None
+    return roles.get(folder_id, "")
 
 
 def _analyse_apercu(doc: dict) -> dict:
@@ -1534,10 +1588,19 @@ def _analyse_apercu(doc: dict) -> dict:
         "privileges": list(a.get("privileges") or []),
         "analyse_confirmee": bool(a.get("confirme")),
         "divergence_protection": bool(a.get("divergence_protection")),
-        # « analyse » = présumée, absente ou « juriste » = déterminée.
-        "category_presumee": str(doc.get("category_source") or "juriste")
-        == "analyse",
+        # « analyse » ou « mcp » = présumée (D15 : une catégorie que Claude
+        # a posée reste présumée jusqu'au « Confirmer » du juriste, comme
+        # celle d'une analyse) ; absente ou « juriste » = déterminée.
+        "category_presumee": _category_source(doc) in ("analyse", "mcp"),
     }
+
+
+def _category_source(doc: dict) -> str:
+    """Who posed the document's category — « juriste » for a legacy
+    document (and for any value the model never writes), so the enum of
+    the output schema is always honoured."""
+    source = str(doc.get("category_source") or "juriste")
+    return source if source in ("analyse", "mcp") else "juriste"
 
 
 def list_documents(args: dict) -> dict:
@@ -1551,6 +1614,13 @@ def list_documents(args: dict) -> dict:
     # instead of silently becoming a firm-wide scan. Re-checking it here
     # would be dead code: the scope resolver has already raised.
     dossier_id = (args.get("dossier_id") or "").strip()
+    include_folders = bool(args.get("include_folders"))
+    if include_folders and scope == "cabinet":
+        raise ToolArgumentError(
+            "`include_folders` rend l'arborescence d'UN dossier : il n'a pas "
+            "de sens à l'échelle du cabinet. Retirez-le, ou passez un "
+            "dossier_id."
+        )
 
     kwargs: dict[str, Any] = {
         "dossier_id": dossier_id or None,
@@ -1605,10 +1675,24 @@ def list_documents(args: dict) -> dict:
             matched_dossiers = len(keep)
             docs = [d for d in docs if d.get("dossier_id") in keep]
 
-    # _folder_paths is ONE query per dossier — resolving it firm-wide would
-    # be a query per row. In cabinet scope folder_path is "" (the key stays
-    # required; the description says so).
-    paths = _folder_paths(dossier_id) if scope != "cabinet" else {}
+    # The dossier's folders: ONE query — resolving them firm-wide would be a
+    # query per row, so in cabinet scope folder_path is "" (the key stays
+    # required; the description says so) and a filed document's
+    # folder_system_role is null (not resolved). The read FAILS CLOSED
+    # (list_dossier_folders propagates): with include_folders an outage is
+    # refused — never an empty tree — and without it the rows degrade to
+    # the old "" paths and a null role, never to « ordinary folder ».
+    # (get_folder_tree, the reader this used, fails open to [] and made an
+    # unreadable store indistinguishable from a dossier without folders.)
+    folders: Optional[list[dict]] = None
+    if scope != "cabinet":
+        try:
+            folders = folder_model.list_dossier_folders(dossier_id)
+        except Exception:
+            if include_folders:
+                raise ToolArgumentError(FOLDER_READ_ERROR)
+    paths = _folder_paths(folders) if folders is not None else {}
+    roles = folder_model.system_roles(folders) if folders is not None else None
     next_cursor = None
     next_offset = None
     if scope == "cabinet":
@@ -1629,6 +1713,9 @@ def list_documents(args: dict) -> dict:
                 "dossier_title": doc.get("dossier_title", ""),
                 "display_name": doc.get("display_name", ""),
                 "category": doc.get("category", ""),
+                # Who posed the category — the edit tools' D15 « présumée »
+                # rule, readable before any edit is attempted.
+                "category_source": _category_source(doc),
                 "file_type": doc.get("file_type", ""),
                 "file_size": size,
                 "file_size_display": document_model.format_file_size(size),
@@ -1637,6 +1724,10 @@ def list_documents(args: dict) -> dict:
                 # Resolved per row from the one-query map — "" = dossier
                 # root (folder_id null) or a dangling folder reference.
                 "folder_path": paths.get(doc.get("folder_id") or "", ""),
+                # « projets » / « portail » = a SYSTEM folder (renaming or
+                # moving it is refused); "" = ordinary or root; None = not
+                # resolved (cabinet scope, or the folders were unreadable).
+                "folder_system_role": _document_folder_role(doc, roles),
                 "document_date": date_str(_as_utc(doc.get("document_date"))),
                 # Les DEUX textes du document. `description` était un
                 # troisième champ qui recopiait le résumé; il a été retiré
@@ -1666,7 +1757,330 @@ def list_documents(args: dict) -> dict:
     if folder_id:
         crumbs = folder_model.get_folder_breadcrumb(dossier_id, folder_id)
         payload["folder_path"] = " / ".join(c["name"] for c in crumbs)
+    if include_folders:
+        # `folders` is not None here: an unreadable store was refused above.
+        tree = _folder_tree_rows(folders or [], roles or {})
+        payload["folders"] = tree[:FOLDER_TREE_MAX]
+        payload["folders_truncated"] = len(tree) > FOLDER_TREE_MAX
     return payload
+
+
+# ── 8b. list_templates ──────────────────────────────────────────────────
+
+# The arguments of each mode — the other mode's are REFUSED, never ignored:
+# a kind filter silently dropped on a detail call (or a dossier_id on a
+# list) would answer a question the caller did not ask.
+_TEMPLATE_LIST_ARGS = ("kind", "category", "query", "offset", "limit")
+_TEMPLATE_DETAIL_ARGS = ("dossier_id", "client_id", "adverse_id", "destinataire_id")
+# Versions shown in detail mode, newest first (versions_truncated says more).
+_TEMPLATE_VERSIONS_SHOWN = 20
+TEMPLATE_READ_ERROR = "Lecture des gabarits impossible — réessayez dans un moment."
+_SLOT_ENTRIES_FR = {"client_id": "clients", "adverse_id": "parties adverses"}
+# The namespaces a SPECIAL kind's own flow fills: utils/note_docx for
+# « note » (note.*), utils/invoice_docx for « note_honoraires » (facture.*,
+# and the h./d. fields of its repeated rows). The gabarit classifier knows
+# none of them and files them under passthrough — reported as « blocs to
+# write » they would send a caller composing the invoice total by hand.
+# tests/test_mcp_template_reads.py pins these prefixes against the builders.
+_FLOW_PREFIXES = {
+    "note": ("note.",),
+    "note_honoraires": ("facture.", "h.", "d."),
+}
+_FLOW_SOURCES_FR = {
+    "note": "Imprimer (Word) d'une note : les champs note.* viennent de la note",
+    "note_honoraires": (
+        "la facture, dans l'application : les champs facture.* et les lignes "
+        "viennent de la facture, le destinataire de son client"
+    ),
+}
+
+
+def _is_flow_field(name: str, kind: str) -> bool:
+    """True when the special kind's own flow fills *name* (case-insensitive,
+    as that flow matches — note_docx lowers its lookups)."""
+    return name.lower().startswith(_FLOW_PREFIXES.get(kind, ()))
+
+
+def _template_placeholders(template: dict) -> list[str]:
+    """The stored placeholder names, strings only (a hand-edited record
+    must not crash the classifier)."""
+    return [p for p in (template.get("placeholders") or []) if isinstance(p, str)]
+
+
+def _template_row(template: dict) -> dict:
+    """One gabarit, as both modes show it — see output_schemas
+    ``_template_summary``: metadata and counts, NEVER the filename, the
+    original filename (a client's name may be in it) or the storage path."""
+    names = _template_placeholders(template)
+    classification = classify_placeholders(names)
+    kind = template.get("kind") or "gabarit"
+    flow = [n for n in classification.passthrough if _is_flow_field(n, kind)]
+    return {
+        "id": template.get("id", ""),
+        "name": template.get("name", "") or "",
+        "description": template.get("description", "") or "",
+        "category": template.get("category") or "autre",
+        "kind": kind,
+        "version": int(template.get("version") or 1),
+        "active": doc_template_model.is_active(template),
+        "placeholder_count": len(names),
+        "auto_count": len(classification.auto),
+        "manual_count": len(classification.manual),
+        "bloc_count": len(classification.passthrough) - len(flow),
+        "flow_count": len(flow),
+        "slots_required": sorted(classification.slots_required),
+        "validation_warnings": [
+            str(w) for w in (template.get("validation_warnings") or [])
+        ],
+        **_stamps(template),
+    }
+
+
+def _gabarit_refusal(
+    exc: "gabarit_service.GenerationRefused", *, dossier_id: str,
+) -> ToolArgumentError:
+    """A slot resolution refused by the service, in the CONNECTOR's words.
+
+    The service's messages are the popup's (« rouvrez la fenêtre ») — the
+    connector has no window, so it phrases its own from the stable
+    ``reason`` and ``field``, naming the tool that gives the right id. Never
+    a value: the ids themselves are not echoed either."""
+    field, reason = exc.field, exc.reason
+    if reason == "dossier_not_found":
+        return ToolArgumentError(
+            "`dossier_id` : aucun dossier lisible ne porte cet identifiant — "
+            "prenez-le dans list_dossiers (ou réessayez : une lecture a pu "
+            "échouer)."
+        )
+    if reason == "slot_foreign" and field == "adverse_id" and not dossier_id:
+        return ToolArgumentError(
+            "`adverse_id` exige un `dossier_id` : une partie adverse est "
+            "celle d'un dossier."
+        )
+    if reason == "slot_foreign":
+        return ToolArgumentError(
+            f"`{field}` ne figure pas parmi les "
+            f"{_SLOT_ENTRIES_FR.get(field, 'parties')} du dossier — prenez "
+            "l'identifiant dans get_dossier."
+        )
+    if reason == "slot_unknown":
+        return ToolArgumentError(
+            f"`{field}` : aucun contact lisible ne porte cet identifiant — "
+            "prenez-le dans list_parties ou get_dossier."
+        )
+    if reason == "slot_ambiguous":
+        return ToolArgumentError(
+            f"`{field}` doit être précisé : le dossier compte plusieurs "
+            f"{_SLOT_ENTRIES_FR.get(field, 'parties')} et ce gabarit en lit "
+            "un. Prenez l'identifiant dans get_dossier."
+        )
+    return ToolArgumentError(exc.message)
+
+
+def _version_row(entry: dict, current: int) -> dict:
+    version = entry.get("version")
+    version = version if isinstance(version, int) and not isinstance(version, bool) else 0
+    restored = entry.get("restored_from")
+    return {
+        "version": version,
+        "current": version == current,
+        # A version entry's created_at/_via are its INSTALLATION: write-once
+        # records, never edited — named for what they are, so no reader
+        # mistakes them for an editable record's stamps.
+        "installed_at": iso_mtl(_as_utc(entry.get("created_at"))),
+        "installed_via": str(entry.get("created_via") or ""),
+        "restored_from": (
+            restored if isinstance(restored, int) and not isinstance(restored, bool)
+            else None
+        ),
+        "file_size": int(entry.get("file_size") or 0),
+    }
+
+
+def _manual_field_row(field: "gabarit_service.InventoryField") -> dict:
+    options = None
+    if field.options:
+        options = [
+            {"label": label, "value": value,
+             "prints_nothing": value == EMPTY_OPTION_VALUE}
+            for label, value in field.options
+        ]
+    return {
+        "name": field.name,
+        "default": field.default,
+        "uppercase": is_uppercase_name(field.name),
+        "options": options,
+    }
+
+
+def list_templates(args: dict) -> dict:
+    if "template_id" in args:
+        return _template_detail(args)
+    for key in _TEMPLATE_DETAIL_ARGS:
+        if key in args:
+            raise ToolArgumentError(
+                f"`{key}` ne s'applique qu'avec `template_id` : il résout les "
+                "champs d'UN gabarit. Passez template_id, ou retirez-le."
+            )
+    try:
+        rows = doc_template_model.list_templates(
+            category=args.get("category"), search=args.get("query"),
+            strict=True,
+        )
+    except doc_template_model.TemplateReadError:
+        raise ToolArgumentError(TEMPLATE_READ_ERROR)
+    kind = args.get("kind")
+    if kind:
+        # Legacy records carry no kind and read as ordinary gabarits.
+        rows = [t for t in rows if (t.get("kind") or "gabarit") == kind]
+    page, truncated, next_offset = _offset_page(rows, args, _limit_arg(args, 20))
+    payload = {"mode": "list",
+               **_list_payload([_template_row(t) for t in page], truncated)}
+    if next_offset is not None:
+        payload["next_offset"] = next_offset
+    return payload
+
+
+def _template_detail(args: dict) -> dict:
+    for key in _TEMPLATE_LIST_ARGS:
+        if key in args:
+            raise ToolArgumentError(
+                f"`{key}` ne s'applique qu'à la liste : omettez template_id, "
+                f"ou retirez `{key}`."
+            )
+    template_id = str(args.get("template_id") or "").strip()
+    if not template_id:
+        raise ToolArgumentError(
+            "`template_id` est vide : prenez-le sur une ligne de la liste "
+            "(list_templates sans template_id)."
+        )
+    try:
+        template = doc_template_model.get_template(template_id, strict=True)
+    except doc_template_model.TemplateReadError:
+        raise ToolArgumentError(TEMPLATE_READ_ERROR)
+    if template is None:
+        return {"mode": "detail", "found": False, "template_id": template_id}
+    template = {**template, "placeholders": _template_placeholders(template)}
+
+    # The SAME resolution a fill makes — strict: a slot that is not on the
+    # dossier is refused, never swapped for the first party, and a slot the
+    # template reads must be NAMED when the dossier offers several (the
+    # preview must promise nothing a fill would then refuse).
+    classification = classify_placeholders(template["placeholders"])
+    dossier_id = str(args.get("dossier_id") or "").strip()
+    try:
+        slots = gabarit_service.resolve_slots(
+            dossier_id,
+            str(args.get("client_id") or ""),
+            str(args.get("adverse_id") or ""),
+            str(args.get("destinataire_id") or ""),
+            required_slots=classification.slots_required,
+            refuse_ambiguous=True,
+        )
+    except gabarit_service.GenerationRefused as exc:
+        raise _gabarit_refusal(exc, dossier_id=dossier_id)
+    resolved = gabarit_service.resolve_auto_values(template, slots)
+    # Flags only — the resolved VALUES stay here (SPEC H.4 D5): an address
+    # or an email has no business in the model's context for this question.
+    inventory = gabarit_service.field_inventory(template, slots, resolved=resolved)
+
+    auto_fields = [
+        {"name": f.name, "resolved": f.resolved, "slot": f.slot or None}
+        for f in inventory.fields if f.kind == "auto"
+    ]
+    warnings: list[str] = []
+    current = int(template.get("version") or 1)
+    try:
+        entries = doc_template_model.list_versions(
+            template_id, limit=_TEMPLATE_VERSIONS_SHOWN + 1, strict=True)
+        versions: Optional[list[dict]] = [
+            _version_row(e, current) for e in entries[:_TEMPLATE_VERSIONS_SHOWN]
+        ]
+        versions_truncated = len(entries) > _TEMPLATE_VERSIONS_SHOWN
+    except doc_template_model.TemplateReadError:
+        versions, versions_truncated = None, False
+        warnings.append(
+            "L'historique des versions n'a pas pu être lu (versions : null) "
+            "— le reste de la réponse est complet."
+        )
+
+    kind = template.get("kind") or "gabarit"
+    if kind in doc_template_model.SPECIAL_KINDS:
+        warnings.append(
+            f"Ce gabarit se remplit depuis {_FLOW_SOURCES_FR[kind]} (voir "
+            "flow_fields) — jamais à la main."
+        )
+        name = doc_template_model.ACTIVE_KIND_NAMES.get(kind, kind)
+        if doc_template_model.is_active(template):
+            warnings.append(
+                f"Gabarit ACTIF des « {name} » : c'est celui que "
+                "l'application remplit. Seul le juriste change cette "
+                "désignation, dans l'application."
+            )
+        else:
+            warnings.append(
+                f"Ce gabarit n'est PAS le gabarit actif des « {name} » : "
+                "l'application ne s'en sert pas tant que le juriste ne l'a "
+                "pas désigné."
+            )
+    dossier_slots = {"dossier", "client", "adverse"} & set(classification.slots_required)
+    if dossier_slots and slots.dossier is None:
+        warnings.append(
+            "Aucun dossier fourni : les champs du dossier et des parties sont "
+            "rapportés non résolus. Passez dossier_id pour les résoudre."
+        )
+    if "destinataire" in classification.slots_required and not slots.destinataire_id:
+        warnings.append(
+            "Ce gabarit lit le créneau « destinataire » et aucun n'est "
+            "retenu : ses champs s'imprimeraient « [CHAMP MANQUANT : …] »."
+        )
+    if template.get("validation_warnings"):
+        warnings.append(
+            "Des champs sont fragmentés par Word (voir validation_warnings) : "
+            "ils ne se rempliront pas tant qu'ils n'auront pas été retapés "
+            "dans Word."
+        )
+
+    dossier = slots.dossier
+    return {
+        "mode": "detail",
+        "found": True,
+        "template": {
+            **_template_row(template),
+            "active_designated_at": (
+                iso_mtl(_as_utc(template.get("active_designated_at")))
+                if doc_template_model.is_active(template) else None
+            ),
+        },
+        "dossier": (
+            {"id": dossier.get("id", "") or slots.dossier_id,
+             "file_number": dossier.get("file_number", "") or "",
+             "title": dossier.get("title", "") or ""}
+            if dossier else None
+        ),
+        "slots": {
+            "client_id": slots.client_id or None,
+            "adverse_id": slots.adverse_id or None,
+            "destinataire_id": slots.destinataire_id or None,
+        },
+        "auto_fields": auto_fields,
+        "unresolved_auto_fields": [f["name"] for f in auto_fields if not f["resolved"]],
+        "manual_fields": [
+            _manual_field_row(f) for f in inventory.fields if f.kind == "manual"
+        ],
+        "blocs": [
+            {"name": f.name, "uppercase": is_uppercase_name(f.name)}
+            for f in inventory.fields
+            if f.kind == "passthrough" and not _is_flow_field(f.name, kind)
+        ],
+        "flow_fields": [
+            f.name for f in inventory.fields
+            if f.kind == "passthrough" and _is_flow_field(f.name, kind)
+        ],
+        "versions": versions,
+        "versions_truncated": versions_truncated,
+        "warnings": warnings,
+    }
 
 
 # ── 9. list_parties ─────────────────────────────────────────────────────

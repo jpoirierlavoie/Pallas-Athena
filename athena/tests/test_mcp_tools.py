@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 60  # 27 lectures + 33 ecritures
+    assert len(tools.TOOLS) == 61  # 28 lectures + 33 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -1330,11 +1330,15 @@ def test_list_documents_metadata_only_and_folder_sentinel(monkeypatch):
 
 def test_list_documents_resolves_folder_path_per_row(monkeypatch):
     """PA-G11: folder_id used to be a bare UUID with no resolver unless the
-    CALLER already knew the folder. One folder-tree query per request, an
-    id→path map, never per-row breadcrumb walks."""
-    tree = [{"id": "f1", "name": "Procédures", "children": [
-        {"id": "f2", "name": "Significations", "children": []},
-    ]}]
+    CALLER already knew the folder. One folder query per request, an
+    id→path map, never per-row breadcrumb walks.
+
+    Rewritten in lot 2A T6: the handler reads the dossier's FLAT folder list
+    through the strict ``list_dossier_folders`` (and builds the tree
+    itself) instead of the fail-open ``get_folder_tree`` — an unreadable
+    store must no longer look like a dossier without folders."""
+    tree = [{"id": "f1", "name": "Procédures", "parent_folder_id": None},
+            {"id": "f2", "name": "Significations", "parent_folder_id": "f1"}]
     docs = [
         {"id": "doc1", "display_name": "PV Solo.pdf", "folder_id": "f2",
          "document_date": datetime(2026, 7, 15, tzinfo=UTC),
@@ -1343,7 +1347,7 @@ def test_list_documents_resolves_folder_path_per_row(monkeypatch):
     ]
     monkeypatch.setattr(handlers.document_model, "list_documents",
                         lambda **kw: list(docs))
-    monkeypatch.setattr(handlers.folder_model, "get_folder_tree",
+    monkeypatch.setattr(handlers.folder_model, "list_dossier_folders",
                         lambda d: tree)
     payload = handlers.list_documents({"dossier_id": "d1"})
     by_id = {i["id"]: i for i in payload["items"]}
@@ -1367,7 +1371,7 @@ def test_list_documents_date_window_uses_the_effective_date(monkeypatch):
     ]
     monkeypatch.setattr(handlers.document_model, "list_documents",
                         lambda **kw: list(docs))
-    monkeypatch.setattr(handlers.folder_model, "get_folder_tree", lambda d: [])
+    monkeypatch.setattr(handlers.folder_model, "list_dossier_folders", lambda d: [])
     on_the_15th = handlers.list_documents(
         {"dossier_id": "d1", "date_from": "2026-07-15",
          "date_to": "2026-07-15"}
