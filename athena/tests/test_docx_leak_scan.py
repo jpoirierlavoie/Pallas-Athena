@@ -191,6 +191,131 @@ def test_cdata_and_utf16_parts_are_read():
     assert [r.parts for r in result.residues] == [("docProps/custom.xml",)]
 
 
+# ── Revue de T5 : ce que le contrôle ne lisait pas ─────────────────────
+
+
+def _raw_docx(entries: list[tuple[str, str | bytes]]) -> bytes:
+    """An archive written entry by entry, duplicates allowed — the shape a
+    hand-built or third-party package can take and Word never writes."""
+    import warnings
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)   # « Duplicate name »
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in entries:
+                zf.writestr(name, data)
+    return buf.getvalue()
+
+
+CT_EMPTY = ('<?xml version="1.0"?><Types xmlns="http://schemas.'
+            'openxmlformats.org/package/2006/content-types"/>')
+
+
+def test_a_duplicated_entry_is_refused_never_half_read():
+    """``ZipFile.open(name)`` reads the LAST entry of a name: with two
+    ``word/document.xml`` the scan used to read the clean second copy twice
+    and pass the package — the first copy, naming the client, unread."""
+    data = _raw_docx([
+        ("[Content_Types].xml", CT_EMPTY),
+        ("word/document.xml", _document(_para("Jean Tremblay"))),
+        ("word/document.xml", _document(_para("Madame, Monsieur,"))),
+    ])
+    with pytest.raises(scan.LeakScanError) as excinfo:
+        scan.scan_identifiers(data, ["Jean Tremblay"])
+    assert "Tremblay" not in str(excinfo.value)
+    with pytest.raises(scan.LeakScanError):
+        scan.scrub_core_properties(data)
+
+
+def test_a_part_declared_xml_by_its_content_type_is_read_whatever_its_name():
+    """System.IO.Packaging writes the core properties as a ``….psmdcp``;
+    any part may carry an extension its content type is declared for. The
+    scan read only names ending in ``.xml``, so a creator named there — or
+    a whole part under an Override — was never seen."""
+    types = (
+        '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.'
+        'org/package/2006/content-types">'
+        '<Default Extension="psmdcp" ContentType="application/vnd.openxml'
+        'formats-package.core-properties+xml"/>'
+        '<Default Extension="png" ContentType="image/png"/>'
+        '<Override PartName="/word/notes%20client.bin" ContentType='
+        '"application/vnd.openxmlformats-officedocument.wordprocessingml.'
+        'footnotes+xml"/></Types>')
+    data = _raw_docx([
+        ("[Content_Types].xml", types),
+        ("word/document.xml", _document(_para("Madame, Monsieur,"))),
+        ("package/services/metadata/core-properties/abc.psmdcp", CORE),
+        ("word/notes client.bin", f"<w:footnotes {W}><w:footnote w:id=\"1\">"
+                                  f"{_para('Béton Nord inc.')}</w:footnote>"
+                                  "</w:footnotes>"),
+        ("word/media/image1.png", b"\x89PNG Jean Tremblay"),
+    ])
+    result = scan.scan_identifiers(data, ["Jean Tremblay", "Béton Nord inc."])
+    found = {r.identifier: r.parts for r in result.residues}
+    assert found["Jean Tremblay"] == (
+        "package/services/metadata/core-properties/abc.psmdcp",)
+    assert found["Béton Nord inc."] == ("word/notes client.bin",)
+    # an image is not an XML part: never read as text
+    assert "word/media/image1.png" not in result.parts_scanned
+    # the scrub scrubs only docProps/core.xml — and claims nothing here
+    assert scan.scrub_core_properties(data) == (data, ())
+
+
+def test_values_word_keeps_in_attributes_are_read():
+    """A picture's alternative text, a watermark's text, a simple field's
+    ``mailto:``, a drop-down's entries, a table's caption: content Word
+    keeps in ATTRIBUTES, which the scan used to skip."""
+    body = _document(
+        '<w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="Image 1" '
+        'descr="Signature de Marie Lavoie" title="Béton Nord"/>'
+        "</wp:inline></w:drawing></w:r></w:p>",
+        '<w:p><w:fldSimple w:instr=" HYPERLINK &quot;mailto:jean.tremblay'
+        '@example.com&quot; "><w:r><w:t>courriel</w:t></w:r></w:fldSimple></w:p>',
+        '<w:sdt><w:sdtPr><w:dropDownList><w:listItem w:displayText='
+        '"Luce Roy" w:value="1"/></w:dropDownList></w:sdtPr><w:sdtContent>'
+        + _para("x") + "</w:sdtContent></w:sdt>",
+        '<w:p><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:ddList>'
+        '<w:listEntry w:val="Paul Gagnon"/></w:ddList><w:textInput>'
+        '<w:default w:val="Rue Sainte-Catherine"/></w:textInput></w:ffData>'
+        "</w:fldChar></w:r></w:p>",
+        '<w:tbl><w:tblPr><w:tblCaption w:val="Parties 2026-001"/>'
+        "</w:tblPr></w:tbl>",
+    )
+    header = (f'<w:hdr {W}><w:p><w:r><w:pict><v:shape><v:textpath '
+              'string="Projet Côté"/><v:imagedata o:title="Tremblay"/>'
+              "</v:shape></w:pict></w:r></w:p></w:hdr>")
+    result = scan.scan_identifiers(
+        _docx({"word/document.xml": body, "word/header1.xml": header}),
+        ["Marie Lavoie", "Béton Nord", "jean.tremblay@example.com",
+         "Luce Roy", "Paul Gagnon", "Rue Sainte-Catherine", "2026-001",
+         "Projet Côté", "Tremblay"])
+    found = {r.identifier: r.parts for r in result.residues}
+    for identifier in ("Marie Lavoie", "Béton Nord", "jean.tremblay@example.com",
+                       "Luce Roy", "Paul Gagnon", "Rue Sainte-Catherine",
+                       "2026-001"):
+        assert found.get(identifier) == ("word/document.xml",), identifier
+    assert found["Projet Côté"] == ("word/header1.xml",)
+    assert "word/header1.xml" in found["Tremblay"]
+
+
+def test_drawingml_paragraphs_and_chart_points_separate_words():
+    """A chart's category labels and a shape's paragraphs are separate
+    values: glued, « Tremblay » + « Lavoie » read as one word and neither
+    was ever matched."""
+    chart = ('<c:chartSpace><c:cat><c:strRef><c:strCache>'
+             '<c:pt idx="0"><c:v>Tremblay</c:v></c:pt>'
+             '<c:pt idx="1"><c:v>Lavoie</c:v></c:pt>'
+             "</c:strCache></c:strRef></c:cat>"
+             "<c:title><c:tx><c:rich><a:p><a:r><a:t>Gagnon</a:t></a:r></a:p>"
+             "<a:p><a:r><a:t>Côté</a:t></a:r></a:p></c:rich></c:tx></c:title>"
+             "</c:chartSpace>")
+    parts = {**_clean_body(), "word/charts/chart1.xml": chart}
+    result = scan.scan_identifiers(_docx(parts),
+                                   ["Tremblay", "Lavoie", "Gagnon", "Côté"])
+    assert sorted(r.identifier for r in result.residues) == [
+        "Côté", "Gagnon", "Lavoie", "Tremblay"]
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Comment on compare
 # ══════════════════════════════════════════════════════════════════════

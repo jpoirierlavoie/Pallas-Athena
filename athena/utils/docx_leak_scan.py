@@ -17,18 +17,28 @@ engine rewrites, because a residue can hide anywhere the file keeps text:
   (``w:p``, ``w:br``, ``w:tab``, table cells…) turned into a separator and
   every other tag removed — so a word Word split across two runs (``Trem`` +
   ``blay``, the spell-check split) reads back whole, while the last word of
-  one paragraph never glues to the first word of the next. Plus the
-  attributes that carry a person or a value rather than formatting: the
-  author and initials of a comment or a tracked change, the account id of
-  ``word/people.xml``, a hyperlink tooltip, and the values of document
-  variables and content-control labels (``w:docVar``, ``w:alias``,
-  ``w:tag``);
+  one paragraph never glues to the first word of the next (the DrawingML
+  paragraph and a chart's data points separate too). Plus the attributes
+  that carry a person or a value rather than formatting: the author and
+  initials of a comment or a tracked change, the account id of
+  ``word/people.xml``, a hyperlink tooltip, a picture's alternative text
+  and title, a WordArt watermark's text, a simple field's instruction, and
+  the values of document variables, content-control labels and entries,
+  legacy form-field entries and a table's alternative text (``w:docVar``,
+  ``w:alias``, ``w:tag``, ``w:listEntry``, ``w:default``, ``w:tblCaption``,
+  ``w:tblDescription``);
 * ``*.rels`` — the relationship ``Target`` values, percent-decoded: a
   ``mailto:`` link lives only there;
 * every other XML part — ``docProps/core.xml`` (title, author, last editor),
   ``app.xml`` (company, manager), ``custom.xml``, ``customXml/item*.xml``
   (the data a bound content control shows) — with EVERY tag a separator,
-  since there each element is its own value.
+  since there each element is its own value. « XML part » is decided by the
+  NAME (``.xml``) or by ``[Content_Types].xml``: a part declared with an XML
+  content type is read whatever its extension (System.IO.Packaging keeps the
+  core properties in a ``….psmdcp``).
+
+An archive holding two entries under one name is refused: ``ZipFile`` reads
+the last one by name, so the first would go unread.
 
 How it matches — by WORDS, never by characters. The text and each identifier
 are folded the same way (Unicode compatibility decomposition, accents
@@ -130,23 +140,47 @@ MAX_IDENTIFIERS = 2_000
 
 # ── Patterns (linear: see the tripwire test) ─────────────────────────────
 
-# A paragraph-level WordprocessingML tag, opening, closing or empty: it
-# separates words. The lookahead keeps « w:p » from matching « w:pPr ».
+# A paragraph-level tag, opening, closing or empty: it separates words. The
+# lookahead keeps « w:p » from matching « w:pPr ». WordprocessingML, plus the
+# DrawingML paragraph and line break (a text box drawn as a shape, SmartArt)
+# and a chart's data point and value (``c:pt``/``c:v`` — without them two
+# category labels glue into one word and neither is ever matched).
 _BREAK_TAG_RE = re.compile(
-    r"</?w:(?:p|br|cr|tab|ptab|sym|noBreakHyphen|tc|tr|tbl|txbxContent"
-    r"|footnote|endnote|comment|hdr|ftr|body)(?=[\s/>])[^<>]*>"
+    r"</?(?:w:(?:p|br|cr|tab|ptab|sym|noBreakHyphen|tc|tr|tbl|txbxContent"
+    r"|footnote|endnote|comment|hdr|ftr|body)|a:(?:p|br)|c:(?:pt|v))"
+    r"(?=[\s/>])[^<>]*>"
 )
-# Attributes that name a person or carry a value, in word/ parts.
+# Attributes that name a person or carry a value, in word/ parts: the author
+# of a comment or a tracked change, an account id, a hyperlink tooltip — and
+# the values Word keeps in attributes although they are content: a picture's
+# alternative text and title (``descr``/``title`` on ``wp:docPr`` and
+# ``pic:cNvPr``, ``o:title`` on a VML image), a WordArt watermark's text
+# (``string`` on ``v:textpath``), a simple field's instruction (``w:instr`` —
+# a ``HYPERLINK "mailto:…"``), a drop-down content control's entry
+# (``w:displayText``).
 _WORD_TEXT_ATTRIBUTE_RE = re.compile(
-    r"\s(?:w:author|w15:author|w15:userId|w:initials|w:tooltip)"
+    r"\s(?:w:author|w15:author|w15:userId|w:initials|w:tooltip"
+    r"|descr|title|o:title|string|w:instr|w:displayText)"
     r"=(?:\"([^\"<>]*)\"|'([^'<>]*)')"
 )
-# Elements whose attribute VALUES are the content: document variables and
-# content-control labels.
-_WORD_VALUE_ELEMENT_RE = re.compile(r"<w:(?:docVar|alias|tag)(?=[\s/>])[^<>]*>")
+# Elements whose attribute VALUES are the content: document variables,
+# content-control labels, a legacy form field's drop-down entries and default
+# text, a table's alternative text.
+_WORD_VALUE_ELEMENT_RE = re.compile(
+    r"<w:(?:docVar|alias|tag|listEntry|default|tblCaption|tblDescription)"
+    r"(?=[\s/>])[^<>]*>"
+)
 _QUOTED_VALUE_RE = re.compile(r"=(?:\"([^\"<>]*)\"|'([^'<>]*)')")
 # A relationship target, in a .rels part.
 _REL_TARGET_RE = re.compile(r"\sTarget=(?:\"([^\"<>]*)\"|'([^'<>]*)')")
+# [Content_Types].xml: a Default (by extension) or Override (by part name)
+# entry, and the attributes it carries. An XML part need not END in « .xml »:
+# System.IO.Packaging writes the core properties as ``….psmdcp``, and any
+# part can carry any extension its content type is declared for.
+_CT_ENTRY_RE = re.compile(
+    r"<(?:[A-Za-z_][\w.-]*:)?(Default|Override)(?=[\s/>])([^<>]*)>")
+_CT_ATTRIBUTE_RE = re.compile(
+    r"\s(Extension|PartName|ContentType)=(?:\"([^\"<>]*)\"|'([^'<>]*)')")
 # Combining marks left by the compatibility decomposition (accents).
 _COMBINING_RE = re.compile(
     "[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f]+"
@@ -297,9 +331,69 @@ def _encode_like(original: bytes, text: str) -> bytes:
     return text.encode("utf-8")
 
 
-def _scanned(name: str) -> bool:
+_CONTENT_TYPES = "[Content_Types].xml"
+_DUPLICATE_MESSAGE = (
+    "Le document contient deux fois la même partie : Word ne l'ouvrirait "
+    "pas sans réparation, et le contrôle des identifiants ne peut pas "
+    "conclure. Enregistrez-le de nouveau depuis Word, puis réessayez."
+)
+
+
+def _refuse_duplicates(zf: zipfile.ZipFile) -> None:
+    """Refuse an archive holding two entries under one name.
+
+    ``ZipFile.open(name)`` reads the LAST entry of that name, so a scan by
+    name would read the second copy twice and never the first — a copy Word
+    may be the one to show. Word never writes such a package; the scan
+    refuses rather than concluding on a part it did not read.
+    """
+    names = zf.namelist()
+    if len(set(names)) != len(names):
+        raise LeakScanError(_DUPLICATE_MESSAGE)
+
+
+def _declared_xml_parts(zf: zipfile.ZipFile) -> tuple[frozenset, frozenset]:
+    """``(extensions, part names)`` that ``[Content_Types].xml`` declares
+    with an XML content type (one ending in ``xml``), lower-cased — part
+    names without their leading ``/`` and percent-decoded, as zip entries
+    are named. A package without the file declares nothing."""
+    if _CONTENT_TYPES not in zf.namelist():
+        return frozenset(), frozenset()
+    try:
+        data = _read_entry_bounded(zf, _CONTENT_TYPES, MAX_SINGLE_XML_BYTES)
+    except DocxFillError as exc:
+        raise LeakScanError(str(exc)) from None
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError,
+            EOFError, OSError, ValueError):
+        raise LeakScanError(_UNREADABLE_MESSAGE) from None
+    extensions: set[str] = set()
+    names: set[str] = set()
+    for kind, attributes in _CT_ENTRY_RE.findall(_decode(data)):
+        values = {key: a or b for key, a, b in _CT_ATTRIBUTE_RE.findall(attributes)}
+        if not values.get("ContentType", "").strip().lower().endswith("xml"):
+            continue
+        if kind == "Default" and values.get("Extension"):
+            extensions.add(values["Extension"].strip().lower().lstrip("."))
+        elif kind == "Override" and values.get("PartName"):
+            names.add(urllib.parse.unquote(
+                values["PartName"].strip()).lstrip("/").lower())
+    return frozenset(extensions), frozenset(names)
+
+
+def _scanned(name: str, declared: tuple[frozenset, frozenset] = (
+        frozenset(), frozenset())) -> bool:
+    """An entry the scan reads: named ``.xml``/``.rels``, or declared with
+    an XML content type by extension or by part name."""
+    if name.endswith("/"):
+        return False
     lower = name.lower()
-    return not name.endswith("/") and lower.endswith((".xml", ".rels"))
+    if lower.endswith((".xml", ".rels")):
+        return True
+    extensions, names = declared
+    if lower in names:
+        return True
+    base = lower.rsplit("/", 1)[-1]
+    return "." in base and base.rsplit(".", 1)[1] in extensions
 
 
 def _quoted(matches: list[tuple[str, str]]) -> list[str]:
@@ -337,9 +431,11 @@ def _haystacks(docx_bytes: bytes) -> tuple[list[tuple[str, str]], int]:
     remaining = MAX_TOTAL_DECOMPRESSED_BYTES
     chars = 0
     with zf:
+        _refuse_duplicates(zf)
+        declared = _declared_xml_parts(zf)
         for info in zf.infolist():
             name = info.filename
-            if not _scanned(name):
+            if not _scanned(name, declared):
                 continue
             try:
                 data = _read_entry_bounded(
@@ -490,13 +586,22 @@ def scrub_core_properties(docx_bytes: bytes) -> ScrubbedDocx:
     clean document is never rewritten). The rewritten archive reuses each
     entry's own ``ZipInfo`` — order, compression, timestamps — exactly as
     the fill engine does, so Word opens it without repair. Raises
-    :class:`LeakScanError` on an unreadable package or a property that
-    cannot be emptied.
+    :class:`LeakScanError` on an unreadable package, a duplicated entry, or
+    a property that cannot be emptied.
+
+    Only ``docProps/core.xml`` is scrubbed. A package that keeps its core
+    properties elsewhere (System.IO.Packaging's ``….psmdcp``) comes back
+    untouched with ``emptied == ()`` — never a claimed scrub — and the scan,
+    which reads every part declared with an XML content type, still reports
+    what that part names.
     """
     errors, zf = _structural_errors(docx_bytes)
     if errors or zf is None:
         raise LeakScanError(errors[0] if errors else _UNREADABLE_MESSAGE)
     with zf:
+        # Copying by name would write the LAST copy of a duplicated entry
+        # twice — the same refusal as the scan's.
+        _refuse_duplicates(zf)
         if _CORE_PART not in zf.namelist():
             return ScrubbedDocx(docx_bytes, ())
         try:
