@@ -593,8 +593,9 @@ def build_instructions(
             "from its last write result. If the record changed since — "
             "in the application, on the phone or through another call — the "
             "write is REFUSED and nothing is written: re-read, then retry. "
-            "Omitted, the tool still refuses a change landing between its "
-            "own read and its commit."
+            "Omitted — where the tool allows it (replacing a note's text or "
+            "editing the théorie de la cause does not) — the tool still "
+            "refuses a change landing between its own read and its commit."
         )
     # The writes that take no etag but rewrite what they READ (a note plus
     # the appended block, a task's status and description, a dossier's
