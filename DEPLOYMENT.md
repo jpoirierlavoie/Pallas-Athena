@@ -1453,6 +1453,22 @@ Notes:
   a `<D:propstat>` carrying its `getetag` (live). A task still live under `D1`,
   or absent from `D2`, means the phone will keep the stale copy — stop and
   investigate before relying on DavX5.
+- **Administration direction (lot 0b):** the model now DERIVES an
+  administration entry's direction from its kind, and a web edit — which
+  always names the kind — re-derives it. An « Autre recette » stored as a
+  déboursé by an older direct model call would therefore have its sign
+  flipped, and the operations balance moved by twice its amount, the first
+  time anyone edits it. Before deploying lot 0b, run the **read-only**
+  integrity script and read its check n° 9:
+
+  ```bash
+  python -m scripts.verify_admin_integrity
+  ```
+
+  A line « type recette_autre inscrit en déboursé » (or any kind/direction
+  mismatch) names an entry to decide on by hand before the deploy; the script
+  repairs nothing. No such line is the expected answer — every writer so far
+  derived or passed the right direction.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

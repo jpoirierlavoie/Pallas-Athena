@@ -27,6 +27,15 @@ module deliberately does not have (balances are computed at read). Checks:
      copy that lived here omitted ``reversed_by_id`` and would report a false
      gap after any contre-passation of a compensée encaissement — the one
      correction flow the two-step lifecycle exists for.
+  9. the direction of every SIMPLE kind is the one its kind implies
+     (``models/admin_ledger._KIND_DIRECTION`` — dépense ⇒ déboursé, autre
+     recette and encaissement ⇒ recette). Since lot 0b the model derives the
+     direction and refuses a contradicting one, and a web edit — which
+     always names the kind — RE-DERIVES it: an « Autre recette » stored as a
+     déboursé by an older direct model call would have its sign flipped, and
+     the ledger balance moved by twice its amount, the first time anyone
+     edits it. Run this BEFORE deploying lot 0b; each row it names is a
+     decision for the lawyer, never an automatic repair.
 
 Run:  python -m scripts.verify_admin_integrity
 """
@@ -135,6 +144,17 @@ def main() -> int:
                     f"écriture {tid}: ventilation {n}+{g}+{q} ≠ montant "
                     f"{t.get('amount')}"
                 )
+        # 9. A simple kind carries the direction its kind implies. The
+        # structural kinds (paiement_carte, correction) take theirs from
+        # their own write path and are covered by checks 3 and 4.
+        implied = al._KIND_DIRECTION.get(t.get("kind", ""))
+        if implied and t.get("direction") != implied:
+            problems.append(
+                f"écriture {tid}: type {t.get('kind')} inscrit en "
+                f"{t.get('direction') or '(sans sens)'} — le type implique "
+                f"« {implied} » (encore modifiable, sa prochaine modification "
+                f"web re-dériverait le sens et déplacerait le solde)"
+            )
         # 7. compensée ⇒ cleared_date.
         if t.get("status") == "compensée" and not t.get("cleared_date"):
             problems.append(f"écriture {tid}: compensée sans cleared_date")

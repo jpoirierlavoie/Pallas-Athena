@@ -259,6 +259,17 @@ def test_le_sens_seul_ne_change_jamais(fake):
     assert fake.peek(f"admin_transactions/{entry['id']}")["direction"] == "déboursé"
 
 
+def test_un_compte_absent_est_un_refus_journalise(fake, refusals):
+    """Régression (revue B6) — le registre promet « toute » abandon de
+    création journalisé, garde sans lecture comprise ; le compte absent
+    rendait son refus sans laisser de ligne."""
+    entry, errs = al.create_transaction(_data(account_id=""))
+    assert entry is None
+    assert errs == [al._ABORT_MESSAGES["compte_introuvable"]]
+    assert refusals == ["compte_introuvable"]
+    assert fake.peek_collection("admin_transactions") == {}
+
+
 def test_une_modification_sans_type_garde_le_sens(fake):
     """Témoin : une modification qui ne nomme pas le type ne touche pas au
     sens (et une modification sans changement n'écrit rien)."""
@@ -361,6 +372,25 @@ def test_le_formulaire_d_administration_ne_pose_jamais_le_lien(fake, client):
     resp = client.post("/administration/", data=_form(trust_transaction_id="ttx1"))
     assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
     assert _only_entry(fake)["trust_transaction_id"] is None
+
+
+def test_la_modification_ne_pose_ni_ne_retire_jamais_le_lien(fake, client):
+    """Témoin (revue B6) : le lien n'est pas un champ modifiable — ni par le
+    modèle (hors de _EDITABLE_FIELDS), ni par le formulaire de modification.
+    Le poser après coup verrouillerait une écriture que personne n'a
+    rattachée ; le retirer déverrouillerait une recette du fidéicommis."""
+    assert "trust_transaction_id" not in al._EDITABLE_FIELDS
+    entry, _ = al.create_transaction(_recette())
+    updated, errs = al.update_transaction(
+        entry["id"], {"trust_transaction_id": "ttx1", "description": "Intérêts"})
+    assert errs == [], errs
+    stored = fake.peek(f"admin_transactions/{entry['id']}")
+    assert stored["trust_transaction_id"] is None
+    assert stored["description"] == "Intérêts"
+    resp = client.post(f"/administration/{entry['id']}/modifier",
+                       data=_form(trust_transaction_id="ttx1", description="Frais"))
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:500]
+    assert fake.peek(f"admin_transactions/{entry['id']}")["trust_transaction_id"] is None
 
 
 # ── Le paiement d'honoraires web crée toujours sa recette, de bout en bout ──
@@ -484,35 +514,126 @@ def test_la_reprise_pose_le_lien_en_mot_cle(fake):
     assert fake.peek("invoices/fac1")["amount_paid"] == 50000
 
 
+def _link_calls(tree) -> tuple[list[int], list[int]]:
+    """``(offending, keyworded)`` line numbers of the ``create_transaction``
+    calls in ``tree``: offending = a literal data dict carrying the
+    ``trust_transaction_id`` key, whether the dict is passed positionally or
+    as ``data=`` (the model's first parameter is NOT positional-only, so
+    both reach it — the first version of this sweep only saw the positional
+    form); keyworded = the link passed as the keyword, the one legal way."""
+    import ast
+
+    offending, keyworded = [], []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if name != "create_transaction":
+            continue
+        if any(kw.arg == "trust_transaction_id" for kw in node.keywords):
+            keyworded.append(node.lineno)
+        data = node.args[0] if node.args else next(
+            (kw.value for kw in node.keywords if kw.arg == "data"), None)
+        if isinstance(data, ast.Dict) and any(
+            isinstance(k, ast.Constant) and k.value == "trust_transaction_id"
+            for k in data.keys
+        ):
+            offending.append(node.lineno)
+    return offending, keyworded
+
+
 def test_aucun_appelant_ne_glisse_le_lien_dans_les_donnees():
     """Balayage DÉRIVÉ de l'arbre (tests exclus) : aucun appel à
     ``create_transaction`` ne porte la clé ``trust_transaction_id`` dans son
     dictionnaire de données. Le refus du modèle est bruyant, mais côté
     fidéicommis il ne s'affiche qu'en bannière APRÈS le retrait des fonds —
-    un nouvel appelant fautif doit tomber ici, avant le déploiement."""
+    un nouvel appelant fautif doit tomber ici, avant le déploiement.
+
+    Et les appelants du MOT-CLÉ sont exactement les deux que CLAUDE.md
+    nomme : un troisième doit mettre la documentation à jour en même temps
+    (preuve, aussi, que le balayage voit de vrais appels)."""
     import ast
 
-    offenders = []
+    offenders, keyworded = [], set()
     for path in sorted(_ATHENA.rglob("*.py")):
         rel = path.relative_to(_ATHENA).as_posix()
         if rel.startswith(("tests/", "venv/", ".venv/")) or "/site-packages/" in rel:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-            if name != "create_transaction" or not node.args:
-                continue
-            first = node.args[0]
-            if isinstance(first, ast.Dict) and any(
-                isinstance(k, ast.Constant) and k.value == "trust_transaction_id"
-                for k in first.keys
-            ):
-                offenders.append(f"{rel}:{node.lineno}")
+        bad, good = _link_calls(tree)
+        offenders += [f"{rel}:{n}" for n in bad]
+        if good:
+            keyworded.add(rel)
     assert offenders == []
-    # The sweep sees the two legitimate callers — it is not vacuous.
-    trust_src = (_ATHENA / "routes" / "trust.py").read_text(encoding="utf-8")
-    reprise_src = (_ATHENA / "scripts" / "reprise_encaissements.py").read_text(encoding="utf-8")
-    assert "trust_transaction_id=entry.get(\"id\")" in trust_src
-    assert "trust_transaction_id=v.get(\"id\")" in reprise_src
+    assert keyworded == {"routes/trust.py", "scripts/reprise_encaissements.py"}
+
+
+@pytest.mark.parametrize("source, offending", [
+    ('al.create_transaction({"trust_transaction_id": t})', True),
+    ('al.create_transaction(data={"trust_transaction_id": t})', True),
+    ('create_transaction({"account_id": a, "trust_transaction_id": None})', True),
+    ('al.create_transaction({"account_id": a}, trust_transaction_id=t)', False),
+    ('al.create_transaction(data={"account_id": a}, trust_transaction_id=t)', False),
+])
+def test_le_balayage_voit_les_deux_formes_du_dictionnaire(source, offending):
+    """Régression du balayage lui-même (revue B6) : un dictionnaire passé en
+    ``data=`` lui échappait, alors que le modèle l'accepte."""
+    import ast
+
+    bad, good = _link_calls(ast.parse(source))
+    assert bool(bad) is offending
+    assert bool(good) is ("trust_transaction_id=" in source)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3. Le contrôle d'intégrité voit un sens qui contredit le type
+# ══════════════════════════════════════════════════════════════════════
+#
+# Une modification web nomme toujours le type, donc elle RE-DÉRIVE le sens :
+# une « Autre recette » inscrite en déboursé par un appel direct antérieur au
+# lot 0b verrait son signe basculer — et le solde bouger du double de son
+# montant — à sa première modification. Le contrôle n° 9 de
+# scripts/verify_admin_integrity les nomme AVANT le déploiement (lecture
+# seule ; chaque ligne est une décision du juriste).
+
+
+def _run_integrity(fake, monkeypatch, capsys) -> tuple[int, str]:
+    from scripts import verify_admin_integrity as vai
+
+    install(monkeypatch, vai, fake=fake)
+    code = vai.main()
+    return code, capsys.readouterr().out
+
+
+def test_le_controle_d_integrite_nomme_un_sens_incoherent(fake, monkeypatch, capsys):
+    """Régression (revue B6) — le script ne vérifiait pas le sens contre le
+    type : un tel rang passait « ✅ Aucun écart »."""
+    fake.seed("admin_transactions/tx1", {
+        "id": "tx1", "account_id": "ops1", "sequence": 1,
+        "kind": "recette_autre", "direction": "déboursé", "amount": 1000,
+        "status": "en_circulation", "date": _d(2026, 9, 1),
+        "net_amount": 1000, "gst_amount": 0, "qst_amount": 0,
+    })
+    fake.seed("counters/admin-ops1", {"seq": 1})
+    fake.seed("admin_accounts/ops1", {
+        **fake.peek("admin_accounts/ops1"), "ledger_balance": -1000,
+    })
+    code, out = _run_integrity(fake, monkeypatch, capsys)
+    assert code == 1
+    assert "écriture tx1: type recette_autre inscrit en déboursé" in out
+    assert "« recette »" in out
+
+
+def test_le_controle_d_integrite_accepte_un_registre_coherent(fake, monkeypatch, capsys):
+    """Témoin : les écritures du modèle — et une contre-passation, dont le
+    type « correction » prend son sens de son propre chemin — ne sont pas
+    signalées."""
+    depense, errs = al.create_transaction(_data())
+    assert errs == [], errs
+    recette, errs = al.create_transaction(_recette(amount=25000))
+    assert errs == [], errs
+    _, errs = al.reverse_transaction(depense["id"], "saisie en double")
+    assert errs == [], errs
+    code, out = _run_integrity(fake, monkeypatch, capsys)
+    assert code == 0, out
+    assert "Aucun écart" in out

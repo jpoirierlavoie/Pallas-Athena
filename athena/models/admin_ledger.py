@@ -845,6 +845,11 @@ def create_transaction(
         )
         return None, [_ABORT_MESSAGES["lien_fideicommis_réservé"]]
     if not clean.get("account_id"):
+        # Logged like every other abort: the registry promises « any
+        # create/update abort », the no-read guards included (lot 0b).
+        log_admin_ledger_event(
+            "admin_transaction_refused", "refused", reason="compte_introuvable",
+        )
         return None, [_ABORT_MESSAGES["compte_introuvable"]]
     ventilation, reason = _validate_business(clean)
     if reason:

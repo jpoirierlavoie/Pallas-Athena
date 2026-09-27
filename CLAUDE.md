@@ -441,7 +441,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── diagnose_gabarit.py     # Local: list a gabarit's placeholders/classification + fragmentation cause
 │   │   ├── verify_trust_integrity.py  # Phase K: recompute + cross-check the trust register (read-only)
 │   │   ├── verify_admin_integrity.py  # Août 2026: recompute + cross-check du registre d'administration
-│   │   │                           # (Σ deltas, ventilation, paires, re-preuve des conciliations)
+│   │   │                           # (Σ deltas, ventilation, paires, re-preuve des conciliations,
+│   │   │                           # et — lot 0b — le sens de chaque type simple contre _KIND_DIRECTION)
 │   │   ├── reparer_soldes_administration.py  # Août 2026: recalcule
 │   │   │                           # `ledger_balance` ← Σ admin_delta, et rétablit
 │   │   │                           # `net_amount` ← `amount` sur une ventilation SANS
