@@ -1101,3 +1101,24 @@ def test_le_formulaire_n_ecrit_jamais_une_valeur_postee_crue_dans_le_x_data(
         assert f"{key}: &quot;" in html, key
     assert "purpose: &quot;x');alert(1);('&quot;" in html
     assert fake.peek_collection("trust_transactions") == {}
+
+
+def test_un_numero_de_recette_exotique_est_un_refus_jamais_une_erreur(fake, client, monkeypatch):
+    """« ² » passe str.isdigit() mais pas int() : un ValueError non rattrapé,
+    donc un 500 sur une faute de frappe. Et un numéro au-delà de l'int64
+    atteignait l'encodeur de Firestore, qui lève en production — une ligne
+    ERROR et un « Veuillez réessayer » qui ne mène nulle part (revue, lot 0b)."""
+    _evening(monkeypatch)
+    _cash_receipt(amount=800000)
+    page = client.post("/fideicommis/", data=_cash_form(cash_receipt_sequence="²"))
+    assert page.status_code == 400
+    assert "doit être un nombre entier" in page.get_data(as_text=True)
+
+    def _encoder_refuses(account_id, sequence):  # Firestore's int64 encoder, in prod
+        raise ValueError("Value out of range")
+
+    monkeypatch.setattr(trust, "find_transaction_by_sequence", _encoder_refuses)
+    page = client.post("/fideicommis/", data=_cash_form(cash_receipt_sequence="9" * 30))
+    assert page.status_code == 400
+    assert "Aucune écriture ne porte ce numéro dans ce compte." in page.get_data(as_text=True)
+    assert len(fake.peek_collection("trust_transactions")) == 1

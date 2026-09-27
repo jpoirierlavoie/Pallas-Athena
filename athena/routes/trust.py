@@ -331,6 +331,9 @@ def _resolve_invoice_number(data: dict) -> list[str]:
     return []
 
 
+_MAX_SEQUENCE = 2**63 - 1  # Firestore integers are int64
+
+
 def _resolve_cash_receipt(data: dict) -> list[str]:
     """Resolve the art. 72 cash-receipt NUMBER to its id
     (``data['cash_receipt_id']``). Only on a cash withdrawal — the one entry
@@ -345,8 +348,14 @@ def _resolve_cash_receipt(data: dict) -> list[str]:
         or data.get("method") != trust.CASH_METHOD
     ):
         return []
-    if not raw.isdigit() or int(raw) <= 0:
+    # ASCII digits only: str.isdigit() also accepts « ² » or « ³ », which
+    # int() then rejects with an uncaught ValueError — a 500 on a typo.
+    if not (raw.isascii() and raw.isdigit()) or int(raw) <= 0:
         return ["Le numéro de l'écriture de recette en espèces doit être un nombre entier."]
+    # Beyond int64 no entry can carry the number, and Firestore's encoder
+    # raises on it — which would log an ERROR and invite a pointless retry.
+    if int(raw) > _MAX_SEQUENCE:
+        return ["Aucune écriture ne porte ce numéro dans ce compte."]
     try:
         found = trust.find_transaction_by_sequence(data.get("account_id", ""), int(raw))
     except Exception:
