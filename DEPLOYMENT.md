@@ -1913,10 +1913,13 @@ Notes:
   is no outage window at all. Deploying first opens one: every note
   d'honoraires and every note print refuses until the script runs.
 
-  From the repo, with Application Default Credentials (the script does NOT
-  read `.env`, and `config.py` resolves its required variables at import —
-  pass them inline; `GOOGLE_CLOUD_PROJECT` stops the client from inferring
-  another project from ADC):
+  Run it from a checkout of THIS release's branch — the script ships with
+  the change it prepares, so `main` does not have it until the push that
+  deploys, which is exactly one step too late. With Application Default
+  Credentials (the script does NOT read `.env`, and `config.py` resolves its
+  required variables at import — pass them inline, and never `ENV=production`,
+  which would make it resolve the service's secrets; `GOOGLE_CLOUD_PROJECT`
+  stops the client from inferring another project from ADC):
 
   ```bash
   cd athena
