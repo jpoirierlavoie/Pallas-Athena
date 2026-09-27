@@ -20,7 +20,7 @@ import os
 import re
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -751,10 +751,17 @@ def test_reverse_requires_reason(store):
     assert trust.reverse_transaction(r["id"], "   ")[1]
 
 
-def test_reversal_uses_today_not_original_date(store):
+def test_reversal_uses_today_not_original_date(store, monkeypatch):
+    """Rewritten deliberately (lot 0b, B5, 2026-09-26). The old pin compared
+    the reversal date with ``datetime.now(timezone.utc).date()`` — the UTC
+    calendar, which is TOMORROW's from 20:00 EDT: it pinned the defect. The
+    reversal is dated today on MONTRÉAL's calendar; the clock is frozen so
+    the assertion cannot depend on the hour the suite runs (it failed at
+    23:11 EDT the evening this was written)."""
+    monkeypatch.setattr(trust, "today_mtl", lambda: date(2026, 7, 15))
     r, _ = trust.create_transaction(_new(date=datetime(2026, 7, 1, tzinfo=timezone.utc)))
     rev, _ = trust.reverse_transaction(r["id"], "x")
-    assert trust._as_utc(rev["date"]).date() == datetime.now(timezone.utc).date()
+    assert trust._as_utc(rev["date"]) == datetime(2026, 7, 15, tzinfo=timezone.utc)
 
 
 # ── clearing (§13) ─────────────────────────────────────────────────────────
@@ -1016,12 +1023,19 @@ def test_tick_entry_dated_after_period_refused(store):
     assert errs and "conciliable" in errs[0]
 
 
-def test_create_reconciliation_future_period_refused(store):
+def test_create_reconciliation_future_period_refused(store, monkeypatch):
+    """Rewritten deliberately (lot 0b, B5): « today » was the UTC date, so
+    the accepted half of this test itself failed every evening after 20:00
+    EDT once the model read Montréal's calendar — the clock is frozen now,
+    and the boundary is the MONTRÉAL day."""
+    monkeypatch.setattr(trust, "today_mtl", lambda: date(2026, 7, 15))
     _, errs = trust.create_reconciliation(
-        "acc1", datetime.now(timezone.utc) + timedelta(days=2), 0
+        "acc1", datetime(2026, 7, 16, tzinfo=timezone.utc), 0
     )
     assert errs == ["La date de fin de période ne peut être dans le futur."]
-    rec, errs = trust.create_reconciliation("acc1", datetime.now(timezone.utc), 0)
+    rec, errs = trust.create_reconciliation(
+        "acc1", datetime(2026, 7, 15, tzinfo=timezone.utc), 0
+    )
     assert errs == [] and rec is not None
 
 

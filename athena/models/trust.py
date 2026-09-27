@@ -37,6 +37,7 @@ from models import aggregation_values, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from tz import to_mtl
+from utils.deadlines import today_mtl
 from utils.logging_setup import log_trust_event, log_unexpected, sanitize_log_value
 from utils.tracing_setup import span
 
@@ -295,12 +296,15 @@ _ISSUED_INVOICE_STATUSES = ("envoyée", "en_retard")
 class _TxnAbort(Exception):
     """Raised inside a trust transaction to abort with a machine-stable reason
     (mirrors invoice._SourceConflictError). ``value`` carries an optional int
-    (e.g. a variance) for the caller's log, never for the user message."""
+    (e.g. a variance) for the caller's log, never for the user message.
+    ``detail`` is spliced into a message carrying ``{detail}`` — a DATE the
+    lawyer needs to act on (the lock floor), never a name or an amount."""
 
-    def __init__(self, reason: str, value: Optional[int] = None):
+    def __init__(self, reason: str, value: Optional[int] = None, detail: Optional[str] = None):
         super().__init__(reason)
         self.reason = reason
         self.value = value
+        self.detail = detail
 
 
 # Machine-stable abort reason → French user message.
@@ -359,7 +363,41 @@ _ABORT_MESSAGES = {
     ),
     "relevé_requis": "Le solde du relevé est requis.",
     "transfert_identique": "La source et la destination doivent être différentes.",
+    "date_future": (
+        "La date ne peut être dans le futur — le registre consigne ce qui est arrivé."
+    ),
+    "compensation_future": "La date de compensation ne peut être dans le futur.",
+    "compensation_erreur": "Erreur lors de la compensation. Veuillez réessayer.",
 }
+
+
+def _abort_message(reason: str, detail: Optional[str] = None,
+                   default: str = "Opération refusée.") -> str:
+    """French message for an abort reason, with ``{detail}`` spliced in.
+
+    ``str.replace`` rather than ``str.format``: a message is free to carry a
+    brace one day, and format() would raise on it."""
+    template = _ABORT_MESSAGES.get(reason)
+    if template is None:
+        return default
+    if "{detail}" in template:
+        return template.replace("{detail}", detail or "—")
+    return template
+
+
+def _today_midnight_utc() -> datetime:
+    """Today on the MONTRÉAL calendar, stored at midnight UTC — the register's
+    date-only convention.
+
+    Never ``datetime.now(timezone.utc)``: from 20:00 EDT (19:00 EST) the UTC
+    date is already tomorrow's. A reversal or a transfer leg dated that way
+    landed on TOMORROW, and the backdating guard then refused every entry the
+    lawyer typed that same evening with today's date — while the
+    date/sequence invariant behind ``opening_book_balance`` broke for good
+    (the 2026-08-02 evening-band class; admin_ledger was fixed on
+    2026-08-14, trust on 2026-09-26)."""
+    t = today_mtl()
+    return datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
 
 
 def _sanitize_data(data: dict) -> dict:
@@ -607,8 +645,12 @@ def _build_transaction_doc(
     }
 
 
-def _precheck_transaction(clean: dict) -> list[str]:
-    """Guards that need no Firestore read (spec §5 step 2, the cheap subset)."""
+def _precheck_reason(clean: dict) -> Optional[str]:
+    """Guards that need no Firestore read (spec §5 step 2, the cheap subset).
+
+    Returns the machine-stable abort reason, or ``None`` — a REASON, not a
+    message, so the caller can log what was refused (reason codes only,
+    never text)."""
     amount = clean.get("amount")
     direction = clean.get("direction", "")
     purpose = clean.get("purpose", "")
@@ -617,29 +659,35 @@ def _precheck_transaction(clean: dict) -> list[str]:
     dossier_id = clean.get("dossier_id") or None
     client_id = clean.get("client_id") or None
 
-    def _msg(reason: str) -> list[str]:
-        return [_ABORT_MESSAGES[reason]]
-
     if not clean.get("account_id"):
-        return _msg("compte_introuvable")
+        return "compte_introuvable"
     if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
-        return _msg("montant_invalide")
+        return "montant_invalide"
     if direction not in VALID_DIRECTIONS:
-        return _msg("direction_invalide")
+        return "direction_invalide"
     # correction is reserved for reverse_transaction — reject it on the create path.
     if purpose not in VALID_PURPOSES or purpose == REVERSAL_PURPOSE:
-        return _msg("objet_invalide")
+        return "objet_invalide"
     if method not in VALID_METHODS:
-        return _msg("mode_invalide")
+        return "mode_invalide"
     if not counterparty:
-        return _msg("contrepartie_requise")
+        return "contrepartie_requise"
     if (dossier_id is None) != (client_id is None):
-        return _msg("bénéficiaire_incohérent")
+        return "bénéficiaire_incohérent"
     if dossier_id is None and purpose not in NO_DOSSIER_PURPOSES:
-        return _msg("objet_sans_dossier_invalide")
-    if clean.get("date") is None:
-        return _msg("date_requise")
-    return []
+        return "objet_sans_dossier_invalide"
+    tx_date = _midnight_utc(clean.get("date"))
+    if tx_date is None:
+        return "date_requise"
+    # The register records what HAPPENED (art. 37: at the time of the
+    # receipt or withdrawal). A future date is not merely wrong: through the
+    # backdating guard it refuses every ordinary entry until that date
+    # passes, and a later reversal (dated today) breaks the date/sequence
+    # invariant opening_book_balance relies on — for good. Montréal's
+    # calendar, never UTC's (see _today_midnight_utc).
+    if tx_date.date() > today_mtl():
+        return "date_future"
+    return None
 
 
 # ── create_transaction — the core transaction (spec §5) ────────────────────
@@ -653,9 +701,14 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     (fails CLOSED). Returns ``(entry, [])`` or ``(None, [french_errors])``.
     """
     clean = _sanitize_data(data)
-    errors = _precheck_transaction(clean)
-    if errors:
-        return None, errors
+    reason = _precheck_reason(clean)
+    if reason:
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            account_id=clean.get("account_id") or None,
+            dossier_id=clean.get("dossier_id") or None, reason=reason,
+        )
+        return None, [_abort_message(reason)]
 
     account_id = clean["account_id"]
     direction = clean["direction"]
@@ -810,7 +863,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
                 "trust_transaction_refused", "refused",
                 account_id=account_id, dossier_id=dossier_id, reason=abort.reason,
             )
-        return None, [_ABORT_MESSAGES.get(abort.reason, "Opération refusée.")]
+        return None, [_abort_message(abort.reason, abort.detail)]
     except Exception as exc:
         logger.error(
             "create_transaction failed for account %s: %s",
@@ -831,18 +884,29 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
 
 
 def _clear_entries(
-    tx_ids: list, cleared_date, reconciliation_id: Optional[str]
+    tx_ids: list, cleared_date, reconciliation_id: Optional[str],
+    *, _reason_out: Optional[dict] = None,
 ) -> tuple[list[dict], list[str]]:
     """Clear en_circulation entries to compensée, all-or-nothing, in one
     transaction. Returns ``(cleared_docs, failed_ids)``; any failure aborts the
     whole batch (spec §5.1). Clearing a recette adds to the client's cleared
-    balance; both directions move the account's bank balance."""
+    balance; both directions move the account's bank balance.
+
+    ``_reason_out``, when given, receives ``{"reason", "detail"}`` of a
+    refusal whose message is more specific than the generic
+    ``compensation_invalide`` — so the web can SAY why instead of redirecting
+    in silence."""
     if not tx_ids:
         return [], []
     cd = _midnight_utc(cleared_date)
-    today = datetime.now(timezone.utc)
-    now = today
-    if cd is None or cd.date() > today.date():
+    now = datetime.now(timezone.utc)
+    if cd is None:
+        return [], list(tx_ids)
+    # Montréal's calendar: a statement cleared « today » after 20:00 EDT is
+    # not in the future, and one dated tomorrow-in-UTC is.
+    if cd.date() > today_mtl():
+        if _reason_out is not None:
+            _reason_out.update(reason="compensation_future", detail=None)
         return [], list(tx_ids)
 
     tx_refs = [db.collection(TRANSACTIONS_COLLECTION).document(t) for t in tx_ids]
@@ -935,19 +999,33 @@ def _clear_entries(
 
     try:
         _txn(transaction)
-    except _TxnAbort:
+    except _TxnAbort as abort:
+        if _reason_out is not None:
+            _reason_out.update(reason=abort.reason, detail=abort.detail)
         return [], outcome["failed"] or list(tx_ids)
     except Exception as exc:
         logger.error("clear entries failed: %s", type(exc).__name__)
+        if _reason_out is not None:
+            _reason_out.update(reason="compensation_erreur", detail=None)
         return [], list(tx_ids)
     return outcome["cleared"], []
 
 
+def _clear_refusal_message(reason_out: dict) -> str:
+    """The specific French refusal of a clear, or the historical generic one."""
+    return _abort_message(
+        reason_out.get("reason") or "compensation_invalide",
+        reason_out.get("detail"),
+        _ABORT_MESSAGES["compensation_invalide"],
+    )
+
+
 def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[str]]:
     """Step 2 of the lifecycle: mark one en_circulation entry compensée (§5.1)."""
-    cleared, failed = _clear_entries([tx_id], cleared_date, None)
+    reason_out: dict = {}
+    cleared, failed = _clear_entries([tx_id], cleared_date, None, _reason_out=reason_out)
     if failed or not cleared:
-        return None, [_ABORT_MESSAGES["compensation_invalide"]]
+        return None, [_clear_refusal_message(reason_out)]
     entry = cleared[0]
     log_trust_event(
         "trust_transaction_cleared", transaction_id=tx_id,
@@ -956,11 +1034,19 @@ def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[st
     return entry, []
 
 
-def clear_transactions_bulk(tx_ids: list, cleared_date) -> tuple[int, list[str]]:
+def clear_transactions_bulk(
+    tx_ids: list, cleared_date, *, _reason_out: Optional[dict] = None
+) -> tuple[int, list[str]]:
     """Clear many entries at once, all-or-nothing (§5.1). Returns
-    ``(cleared_count, failed_ids)`` — on any failure ``(0, failed_ids)``."""
-    cleared, failed = _clear_entries(list(tx_ids), cleared_date, None)
+    ``(cleared_count, failed_ids)`` — on any failure ``(0, failed_ids)``.
+    ``_reason_out`` receives the refusal's ``message`` (French) as well as
+    its reason, for a route that must say why."""
+    reason_out: dict = {}
+    cleared, failed = _clear_entries(list(tx_ids), cleared_date, None, _reason_out=reason_out)
     if failed:
+        if _reason_out is not None:
+            _reason_out.update(reason_out)
+            _reason_out["message"] = _clear_refusal_message(reason_out)
         return 0, failed
     for entry in cleared:
         log_trust_event(
@@ -1051,7 +1137,7 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         )
 
         reversal = _build_transaction_doc(
-            tx_id=rev_id, account_id=account_id, sequence=seq, date=now,
+            tx_id=rev_id, account_id=account_id, sequence=seq, date=_today_midnight_utc(),
             direction=rev_dir, amount=amount, purpose=REVERSAL_PURPOSE,
             method=original.get("method", ""), counterparty=original.get("counterparty", ""),
             dossier=None, dossier_id=dossier_id, client_id=client_id,
@@ -1092,7 +1178,7 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         with span("trust.transaction", direction="reversal", purpose=REVERSAL_PURPOSE, dossier_id=None):
             _reverse(transaction)
     except _TxnAbort as abort:
-        return None, [_ABORT_MESSAGES.get(abort.reason, "Contre-passation refusée.")]
+        return None, [_abort_message(abort.reason, abort.detail, "Contre-passation refusée.")]
     except Exception as exc:
         logger.error(
             "reverse_transaction failed for %s: %s",
@@ -1137,6 +1223,9 @@ def create_inter_dossier_transfer(
     description = sanitize(description or "", max_length=2000)
     reference = sanitize(reference or "", max_length=2000)
     now = datetime.now(timezone.utc)
+    # Both legs are dated TODAY on Montréal's calendar (never the UTC date,
+    # tomorrow's after 20:00 EDT — see _today_midnight_utc).
+    today = _today_midnight_utc()
     leg_a_id = str(uuid.uuid4())
     leg_b_id = str(uuid.uuid4())
 
@@ -1197,24 +1286,24 @@ def create_inter_dossier_transfer(
         to_cleared_after = int(to_cleared.get(to_client_id, 0)) + amount
 
         leg_a = _build_transaction_doc(
-            tx_id=leg_a_id, account_id=account_id, sequence=seq_a, date=now,
+            tx_id=leg_a_id, account_id=account_id, sequence=seq_a, date=today,
             direction="déboursé", amount=amount, purpose="virement_inter_dossiers",
             method=method, counterparty=_client_name(to_dossier, to_client_id),
             dossier=from_dossier, dossier_id=from_dossier_id, client_id=from_client_id,
             reference=reference, description=description, invoice_id=None,
             balance_after_account=int(account.get("book_balance", 0)),  # net 0
             balance_after_client=from_book_after, now=now,
-            status="compensée", cleared_date=now, related_transaction_id=leg_b_id,
+            status="compensée", cleared_date=today, related_transaction_id=leg_b_id,
         )
         leg_b = _build_transaction_doc(
-            tx_id=leg_b_id, account_id=account_id, sequence=seq_b, date=now,
+            tx_id=leg_b_id, account_id=account_id, sequence=seq_b, date=today,
             direction="recette", amount=amount, purpose="virement_inter_dossiers",
             method=method, counterparty=_client_name(from_dossier, from_client_id),
             dossier=to_dossier, dossier_id=to_dossier_id, client_id=to_client_id,
             reference=reference, description=description, invoice_id=None,
             balance_after_account=int(account.get("book_balance", 0)),  # net 0
             balance_after_client=to_book_after, now=now,
-            status="compensée", cleared_date=now, related_transaction_id=leg_a_id,
+            status="compensée", cleared_date=today, related_transaction_id=leg_a_id,
         )
 
         txn.set(db.collection(TRANSACTIONS_COLLECTION).document(leg_a_id), leg_a)
@@ -1245,7 +1334,7 @@ def create_inter_dossier_transfer(
         with span("trust.transaction", direction="transfer", purpose="virement_inter_dossiers", dossier_id=from_dossier_id):
             _transfer(transaction)
     except _TxnAbort as abort:
-        return None, [_ABORT_MESSAGES.get(abort.reason, "Virement refusé.")]
+        return None, [_abort_message(abort.reason, abort.detail, "Virement refusé.")]
     except Exception as exc:
         logger.error("inter-dossier transfer failed: %s", type(exc).__name__)
         return None, ["Erreur lors du virement. Veuillez réessayer."]
@@ -1305,8 +1394,9 @@ def book_balance_as_of(account_id: str, as_of) -> int:
     0 when no entry qualifies.
 
     Exact because per-account dates are NON-DECREASING in sequence order —
-    the backdating guard refuses an earlier date and reversals/transfer legs
-    are dated now — so the first row of a ``sequence DESC`` stream (index #1,
+    the backdating guard refuses an earlier date, the create path refuses a
+    future one, and reversals/transfer legs are dated today on Montréal's
+    calendar (never tomorrow's UTC date) — so the first row of a ``sequence DESC`` stream (index #1,
     the ``list_transactions_page`` index) whose date <= as_of IS the last
     entry of the day. No SUM, no recomputation, no new index. Read errors
     propagate (fail CLOSED — callers catch).
@@ -1336,7 +1426,7 @@ def opening_book_balance(account_id: str, as_of_exclusive) -> tuple[int, bool]:
 
     Exact for the reason :func:`book_balance_as_of` is: per-account dates are
     NON-DECREASING in sequence order — the backdating guard refuses an
-    earlier date and reversals are dated now — so the last entry dated before
+    earlier date and reversals are dated today (Montréal) — so the last entry dated before
     D carries the balance the period opens on, already FROZEN in
     ``balance_after_account``. No SUM, no recomputation.
 
@@ -1503,7 +1593,7 @@ def create_reconciliation(
     pe = _midnight_utc(period_end)
     if pe is None:
         return None, ["La date de fin de période est requise."]
-    if pe.date() > datetime.now(timezone.utc).date():
+    if pe.date() > today_mtl():
         # A bank statement cannot postdate today — and completion stamps
         # cleared_date = period_end, which the clear-guard convention
         # (no future cleared_date) must keep honouring.

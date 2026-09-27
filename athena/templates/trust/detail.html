@@ -10,6 +10,15 @@
     {% else %}<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Annulée</span>{% endif %}
   </div>
 
+  {# A refusal of « Compenser » (or of any action posting back here) rides
+     ?erreur= on the redirect — it used to be dropped, the page coming back
+     unchanged with nothing to say the entry had not moved. #}
+  {% if request.args.get('erreur') %}
+  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+    {{ request.args.get('erreur')[:500] }}
+  </div>
+  {% endif %}
+
   {% if request.args.get('avertissement') == 'administration' %}
   <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
     Le virement est inscrit au fidéicommis, mais la recette au compte

@@ -9,6 +9,7 @@ exemption is needed (ordinary form POSTs).
 
 import json
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import (
     Blueprint,
@@ -45,6 +46,7 @@ from pagination import (
     total_pages_of,
 )
 from security import safe_internal_redirect
+from utils.deadlines import today_mtl
 from utils.format_fr import format_cents_fr, parse_cents_or_none
 from utils.logging_setup import log_trust_event, log_unexpected
 from routes._helpers import dossier_search_fragment, is_htmx, parse_date_input, standard_dossier_row
@@ -80,8 +82,34 @@ def _labels() -> dict:
         "valid_directions": VALID_DIRECTIONS,
         "valid_tx_statuses": VALID_TX_STATUSES,
         "valid_account_types": VALID_ACCOUNT_TYPES,
-        "today": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        # MONTRÉAL, not UTC: the model refuses a future date on today_mtl(),
+        # so a UTC « today » would make the form's own default bounce every
+        # evening after 20:00 EDT (admin_ledger's _labels has the same line).
+        "today": today_mtl().strftime("%Y-%m-%d"),
     }
+
+
+def _today_default() -> datetime:
+    """Default date of a clearing form left blank: today on Montréal's
+    calendar, at midnight UTC (the register's date-only convention)."""
+    t = today_mtl()
+    return datetime(t.year, t.month, t.day, tzinfo=timezone.utc)
+
+
+def _redirect_with(target: str, **params: str):
+    """Redirect to ``target`` with ``params`` MERGED into its query string.
+
+    Never appended blindly: ``return_to`` may already carry a query (a
+    filtered journal), and a second ``?`` would corrupt both. An empty value
+    drops the key. ``target`` must already have passed
+    ``safe_internal_redirect``."""
+    parts = urlsplit(target)
+    query = [
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k not in params
+    ]
+    query += [(k, v) for k, v in params.items() if v]
+    return redirect(urlunsplit(parts._replace(query=urlencode(query))))
 
 
 def _account_header(account: dict) -> dict:
@@ -497,24 +525,28 @@ def entry_detail(tx_id: str):
 @trust_bp.route("/<tx_id>/compenser", methods=["POST"])
 @login_required
 def entry_clear(tx_id: str):
-    cleared_date = _parse_date(request.form.get("cleared_date", "")) or datetime.now(timezone.utc)
+    cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
     _, errors = trust.clear_transaction(tx_id, cleared_date)
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), url_for("trust.entry_detail", tx_id=tx_id)
     )
-    return redirect(return_to)
+    # A refusal used to be DISCARDED here: the page came back unchanged and
+    # nothing said the entry had not been cleared. It now travels on the
+    # redirect (a plain POST → 302 → GET; the detail page reads ?erreur=).
+    return _redirect_with(return_to, erreur=errors[0] if errors else "")
 
 
 @trust_bp.route("/compenser-lot", methods=["POST"])
 @login_required
 def entry_clear_bulk():
     tx_ids = request.form.getlist("tx_ids")
-    cleared_date = _parse_date(request.form.get("cleared_date", "")) or datetime.now(timezone.utc)
-    trust.clear_transactions_bulk(tx_ids, cleared_date)
+    cleared_date = _parse_date(request.form.get("cleared_date", "")) or _today_default()
+    refusal: dict = {}
+    trust.clear_transactions_bulk(tx_ids, cleared_date, _reason_out=refusal)
     return_to = safe_internal_redirect(
         request.form.get("return_to", ""), url_for("trust.journal")
     )
-    return redirect(return_to)
+    return _redirect_with(return_to, erreur=refusal.get("message", ""))
 
 
 # ── Reversal (contre-passation) ────────────────────────────────────────────
@@ -941,7 +973,7 @@ def journal_export(fmt: str):
         date_from=date_from, date_to=date_to, limit=5000,
     )
     rows = _export_rows(txs, "journal")
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day = today_mtl().strftime("%Y-%m-%d")
     subtitle = (
         f"Compte : {account.get('name', '')} — {account.get('institution', '')}"
         "  ·  * = en circulation (non compensé)"
@@ -1035,7 +1067,7 @@ def _journal_pdf(account: dict, account_id: str, date_from, date_to):
             "couvre pas toute la période demandée."
         )
 
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day = today_mtl().strftime("%Y-%m-%d")
     log_trust_event("trust_export", format="pdf", view="journal",
                     row_count=len(rows))
     return build_trust_journal_pdf(
@@ -1060,7 +1092,7 @@ def card_export(dossier_id: str, client_id: str, fmt: str):
     client_name = next(
         (c.get("name", "") for c in dossier.get("clients", []) if c.get("id") == client_id), ""
     )
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day = today_mtl().strftime("%Y-%m-%d")
     subtitle = f"Client : {client_name} — Dossier : {dossier.get('file_number', '')}"
     log_trust_event("trust_export", format=fmt, view="carte", row_count=len(rows))
     return _render_export(fmt, rows, "Carte-client", subtitle,

@@ -23,6 +23,12 @@
     </div>
   </div>
 
+  {% if request.args.get('erreur') %}
+  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+    {{ request.args.get('erreur')[:500] }}
+  </div>
+  {% endif %}
+
   {% if not accounts %}
   <div class="bg-white rounded-xl border border-gray-200 p-8 text-center">
     <p class="text-gray-600 mb-4">Aucun compte en fidéicommis n'est encore configuré.</p>
