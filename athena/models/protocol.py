@@ -769,24 +769,40 @@ def create_protocol(
     return merged, []
 
 
-def get_protocol(protocol_id: str) -> Optional[dict]:
-    """Fetch a single protocol by ID, with all its steps."""
-    try:
-        doc = db.collection(COLLECTION).document(protocol_id).get()
-        if not doc.exists:
-            return None
-        protocol = doc.to_dict()
+def get_protocol_strict(protocol_id: str) -> Optional[dict]:
+    """A protocol with its steps; ``None`` ONLY when it does not exist.
 
-        # Load steps subcollection
-        steps_ref = (
-            db.collection(COLLECTION)
-            .document(protocol_id)
-            .collection(STEPS_SUBCOLLECTION)
-        )
-        steps = [s.to_dict() for s in steps_ref.stream()]
-        steps.sort(key=lambda s: s.get("order", 0))
-        protocol["steps"] = steps
-        return protocol
+    A read failure PROPAGATES. :func:`get_protocol` answers ``None`` on any
+    exception, which is right for a page that degrades — and wrong for a
+    writer: « Protocole introuvable » about a protocol that exists sends
+    the caller hunting for an id that was right all along (the connector's
+    edit tools, lot 1b, read through this). Each step carries its ``id``
+    even if a legacy document lacks the field.
+    """
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
+    doc = proto_ref.get()
+    if not doc.exists:
+        return None
+    protocol = dict(doc.to_dict() or {})
+    protocol.setdefault("id", doc.id)
+    steps = []
+    for snap in proto_ref.collection(STEPS_SUBCOLLECTION).stream():
+        step = dict(snap.to_dict() or {})
+        step.setdefault("id", snap.id)
+        steps.append(step)
+    steps.sort(key=lambda s: s.get("order", 0))
+    protocol["steps"] = steps
+    return protocol
+
+
+def get_protocol(protocol_id: str) -> Optional[dict]:
+    """Fetch a single protocol by ID, with all its steps.
+
+    Fails OPEN — ``None`` on a read error as on an absence; a writer that
+    must tell the two apart reads through :func:`get_protocol_strict`.
+    """
+    try:
+        return get_protocol_strict(protocol_id)
     except Exception:
         return None
 
@@ -1133,13 +1149,20 @@ def update_protocol(
             reset = (_MOVED_CS_RESET
                      if existing.get("protocol_type") == "cs_ordinaire"
                      else {})
+            by_id = {s.get("id"): s for s in steps}
             for entry in moved:
+                fields = {"deadline_date": entry["new"], **reset,
+                          **provenance.update_fields(now)}
                 txn.update(
                     proto_ref.collection(STEPS_SUBCOLLECTION).document(
                         entry["step_id"]),
-                    {"deadline_date": entry["new"], **reset,
-                     **provenance.update_fields(now)},
+                    fields,
                 )
+                # The steps handed back carry what was STORED — the new
+                # etag included: a caller chaining an edit on a moved step
+                # would otherwise present a version nobody else wrote, and
+                # be refused for it (the L2 review rule).
+                by_id.get(entry["step_id"], {}).update(fields)
             merged["end_date"] = _compute_end_date(merged["start_date"], steps)
             report = {"moved": moved, "preserved": preserved}
         merged.pop("steps", None)
@@ -1236,8 +1259,18 @@ MANDATORY_DEADLINE_REQUIRED = (
 )
 
 
+def inactive_protocol_edit_error(status: str) -> str:
+    """The refusal of a step write on a protocol that is not « actif »,
+    when the caller asked for one (``require_active``)."""
+    label = STATUS_LABELS.get(status, status).lower()
+    return (
+        f"Ce protocole est « {label} » : ses étapes ne se modifient pas tant "
+        "qu'il n'est pas réactivé. Rien n'a été enregistré."
+    )
+
+
 def add_step(
-    protocol_id: str, step_data: dict
+    protocol_id: str, step_data: dict, *, require_active: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
     """Add a custom step at the end of a protocol. Returns (step, errors).
 
@@ -1247,6 +1280,12 @@ def add_step(
     stamps and etag) and the protocol's refreshed ``end_date`` and stamp
     commit in ONE transaction — the step's order is taken from the steps as
     they stand at commit.
+
+    ``require_active`` — the caller's choice (the connector's, since lot
+    1b; the web form keeps adding to any protocol): a protocol that is not
+    « actif » AS READ IN THE TRANSACTION refuses the step, nothing written.
+    A step added to a completed protocol is an open step inside a closed
+    timeline, which no completion check will ever revisit.
     """
     unknown = sorted(set(step_data) - _STEP_CREATE_FIELDS)
     if unknown:
@@ -1283,6 +1322,10 @@ def add_step(
             raise _Refusal("Protocole introuvable.", "protocole_introuvable")
         protocol = snap.to_dict() or {}
         steps = _read_steps(proto_ref, txn)
+        status = protocol.get("status", "")
+        if require_active and status != "actif":
+            raise _Refusal(inactive_protocol_edit_error(status),
+                           "protocole_non_actif")
         doc = {
             **merged,
             "id": step_id,
@@ -1317,6 +1360,7 @@ def update_step(
     data: dict,
     *,
     expected_etag: Optional[str] = None,
+    require_active: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
     """Update a step's deadline, notes, phase or (custom steps) text.
 
@@ -1341,7 +1385,11 @@ def update_step(
       unchanged date beside a note (it did, on every save, and the
       recompute rule relies on the flag), stamped ``date_confirmed_at``;
     * a changed deadline refreshes the protocol's ``end_date``;
-    * nothing changed → nothing written.
+    * ``require_active`` (the caller's choice — the connector's since lot
+      1b; the web keeps editing the steps of any protocol) refuses a
+      protocol that is not « actif » as read in the transaction;
+    * nothing changed → nothing written (before the ``require_active``
+      gate: a request that changes nothing needs no open protocol).
     """
     data = dict(data)
     unknown = sorted(set(data) - _STEP_EDITABLE)
@@ -1406,6 +1454,10 @@ def update_step(
         if all(merged.get(k) == existing.get(k)
                for k in set(merged) | set(existing)):
             return existing, False, None, False
+        status = protocol.get("status", "")
+        if require_active and status != "actif":
+            raise _Refusal(inactive_protocol_edit_error(status),
+                           "protocole_non_actif")
         provenance.stamp_update(merged, now)
         txn.set(step_ref, merged)
         proto_fields = provenance.update_fields(now)
