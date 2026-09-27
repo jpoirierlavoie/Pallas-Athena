@@ -480,6 +480,8 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_mcp_jsonrpc.py
 │   │   ├── test_mcp_oauth.py
 │   │   ├── test_dav_hearings.py    # DAV: per-dossier + « Général », comp-filter, stamps
+│   │   ├── test_dav_tasks.py       # DAV VTODO: the phone's create id/UID kept (create(),
+│   │   │                           #   412 never overwrite), DESCRIPTION suffix stripped
 │   │   ├── test_notes_general.py   # Notes without a dossier: CTag bump + unknown-id guard
 │   │   ├── test_analyse_note.py    # Théorie de la cause: dateless VJOURNAL, include_analyse
 │   │   │                           #   contract, idempotent seed, edit-merge safety
@@ -2850,6 +2852,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **CSV BOM**: prepend `﻿` to CSV output or Excel mangles French accents.
 - **`reportlab` only for PDFs** (pure Python). `weasyprint` requires cairo/pango system libs unavailable on App Engine Standard.
 - **Task `dav_href` field is stale post-D1** — tasks with a dossier are served from per-dossier collections, computed dynamically. Ignore the stored `dav_href` on those.
+- **A phone-created VTODO keeps the id its URL named — and only the DAV create path can choose an id** (lot 0b, 2026-09-26). `create_task` minted a fresh id and UID on EVERY call, so a task created on the phone was stored under an id the client never learned: every later GET/PUT of its href 404'd and a duplicate with another UID synced down (the hearing defect below, surviving for tasks). The URL id now travels through the explicit keywords `create_task(data, *, dav_id=, dav_uid=)` — used by `dav/dossier_collections._put_task` ALONE — and is written with `document(id).create()`, never `set()`: the DAV read that sent the PUT to the create branch FAILS OPEN, so a task it did not see is refused (412), never overwritten. An `id`/`vtodo_uid` inside `data` is DISCARDED on every path, so no forwarded dict can pick a document. The name is validated (`valid_resource_id`: no `/`, not `.`/`..`, not `__x__`, ≤ 128, no control character → 400), and an id already held by a note or an event of the shared href space is refused (412) — a minted id could never collide, a client-chosen one can. Same PUT: `task_to_vtodo` appends a « Dossier: … » line to DESCRIPTION, and the UPDATE branch now takes exactly that line back off (`strip_dav_description_suffix`, built from the same `dav_description_suffix` as the serializer) — stored whole, every phone edit grew the description by one block until the 2000-character cap ate the lawyer's text. Tasks created on the phone BEFORE this fix still carry a server id; their phone-side copy is the orphan. `tests/test_dav_tasks.py` pins all of it through the real route on the fake store.
 - **Closed dossiers' DAV collections disappear** — DavX5 may throw a harmless SQLite FK error. Safe to ignore (client-side race).
 - **`markdown` filter applied twice** renders nothing — only apply it on the full detail view, never on preview snippets.
 - **QST is NOT compounded on GST** (since 2013). Apply both to taxable subtotal independently.

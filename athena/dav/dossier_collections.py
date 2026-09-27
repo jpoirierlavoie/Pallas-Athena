@@ -74,15 +74,18 @@ from models.note import (
     vjournal_to_note,
 )
 from models.task import (
+    DAV_ID_TAKEN,
     create_task,
     delete_task,
     get_task,
     list_tasks,
+    strip_dav_description_suffix,
     task_to_vtodo,
     update_task,
+    valid_resource_id,
     vtodo_to_task,
 )
-from utils.logging_setup import sanitize_log_value
+from utils.logging_setup import log_dav_operation, sanitize_log_value
 from utils.tracing_setup import add_attributes, firestore_span, span
 
 logger = logging.getLogger(__name__)
@@ -895,6 +898,10 @@ def _put_task(
             record_tombstone(old_scope, resource_id)
             bump_ctag(old_scope)
 
+        # The phone sends back the DESCRIPTION it was served, dossier line
+        # included; stored as-is, every phone edit grew the description by
+        # one « Dossier: … » block. `existing` is what the phone was served.
+        strip_dav_description_suffix(data, existing)
         updated, errors = update_task(resource_id, data)
         if errors:
             logger.warning(
@@ -909,8 +916,30 @@ def _put_task(
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
     else:
-        data["id"] = resource_id
-        created, errors = create_task(data)
+        # The URL names the new resource and the body carries its UID: the
+        # task is stored under BOTH, or the client's href 404s on every later
+        # GET/PUT and a duplicate with another UID syncs down.
+        if not valid_resource_id(resource_id):
+            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                              status_code=400, reason="nom_invalide")
+            return Response("Bad Request — identifiant de ressource invalide.",
+                            status=400)
+        # Tasks, notes and hearings share one href space here, and
+        # _resolve_resource tries the task first: a task created under the
+        # id of a note or an event would hide it from every later GET. A
+        # minted id could never collide; a client-chosen one can.
+        if get_note(resource_id) or get_hearing(resource_id):
+            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                              status_code=412, reason="id_autre_composant")
+            return Response("Precondition Failed", status=412)
+        uid = data.pop("vtodo_uid", None)
+        created, errors = create_task(data, dav_id=resource_id, dav_uid=uid)
+        if errors == [DAV_ID_TAKEN]:
+            # create() found a task our fail-open read did not see (a read
+            # error, or a racing PUT): refused, never overwritten.
+            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                              status_code=412, reason="id_pris")
+            return Response("Precondition Failed", status=412)
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VTODO) validation failed for %s: %s",
@@ -1112,9 +1141,11 @@ def _resolve_resource(dossier_id: str, resource_id: str):
     """Resolve a resource id to (doc, serializer) within this collection.
 
     Tasks, notes and hearings share one flat id space under
-    /dav/dossier-{id}/{resourceId}.ics. Ids are server-minted UUIDv4s, so a
-    collision across collections is not a practical concern; the cost is up
-    to three point reads on a miss, ordered cheapest-first by how often each
+    /dav/dossier-{id}/{resourceId}.ics. A resource created on the phone
+    keeps the id its URL named (the client's choice, usually a UUID), so
+    the VTODO create branch refuses an id already held by a note or an
+    event — the task, tried first here, would hide it. The cost is up to
+    three point reads on a miss, ordered cheapest-first by how often each
     type is fetched. Returns None when nothing in THIS dossier matches.
     """
     task = get_task(resource_id)

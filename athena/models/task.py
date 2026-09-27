@@ -10,6 +10,7 @@ _SYNCING: set[str] = set()
 
 import icalendar
 
+from google.api_core.exceptions import AlreadyExists
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, db, provenance
 from tz import MTL
@@ -148,8 +149,92 @@ def _validate(data: dict) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+# The DAV create path's two refusals. Constants, so dav/dossier_collections
+# can map them to their HTTP answers (400 / 412) without parsing French.
+DAV_ID_INVALID = "Identifiant de ressource invalide."
+DAV_ID_TAKEN = "Cet identifiant de ressource est déjà utilisé."
+
+# A client-chosen resource name becomes a Firestore document id. DavX5 and
+# jtx name new resources with a UUID (36 characters); 128 leaves room for
+# the longer UID-shaped names other clients use while staying far from
+# Firestore's own 1500-byte ceiling.
+RESOURCE_ID_MAX_LENGTH = 128
+# A UID is echoed back verbatim in every VTODO this task is ever served as.
+_VTODO_UID_MAX_LENGTH = 255
+
+
+def _has_control_char(value: str) -> bool:
+    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
+
+
+def valid_resource_id(resource_id: object) -> bool:
+    """True when a client-chosen DAV resource name may become a document id.
+
+    Firestore refuses ``/``, ``.``, ``..`` and ids of the reserved
+    ``__x__`` shape at write time; refusing them HERE lets the DAV layer
+    answer a clean 400 instead of a store error. Control characters and an
+    empty or over-long name are refused too.
+    """
+    if not isinstance(resource_id, str) or not resource_id:
+        return False
+    if len(resource_id) > RESOURCE_ID_MAX_LENGTH:
+        return False
+    if "/" in resource_id or resource_id in (".", ".."):
+        return False
+    if resource_id.startswith("__") and resource_id.endswith("__"):
+        return False
+    return not _has_control_char(resource_id)
+
+
+def _client_uid(uid: object) -> Optional[str]:
+    """The phone's UID when it can be stored verbatim, else ``None``.
+
+    Verbatim or not at all: a UID the store altered (tags stripped,
+    truncated) would read to the client as a DIFFERENT object — the very
+    duplicate this path exists to prevent — so a UID ``sanitize`` would
+    change is not kept and a fresh one is minted, as before.
+    """
+    if not isinstance(uid, str):
+        return None
+    uid = uid.strip()
+    if not uid or len(uid) > _VTODO_UID_MAX_LENGTH or _has_control_char(uid):
+        return None
+    if sanitize(uid, max_length=_VTODO_UID_MAX_LENGTH) != uid:
+        return None
+    return uid
+
+
+def create_task(
+    data: dict,
+    *,
+    dav_id: Optional[str] = None,
+    dav_uid: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Validate, generate IDs, write to Firestore. Returns (doc, errors).
+
+    The id and the VTODO UID are minted here — an ``id`` or ``vtodo_uid``
+    inside *data* is DISCARDED, whoever sends it: honouring a forwarded
+    ``id`` would let a caller pick (and, through ``set()``, overwrite) an
+    existing task.
+
+    ``dav_id`` / ``dav_uid`` (keyword-only) serve ONE caller, the DAV PUT
+    create branch. A CalDAV client names the new resource in its URL and
+    carries its own UID; minting fresh ones stored the task under an id the
+    client never learns — every later GET/PUT of its href 404'd and a
+    duplicate with another UID synced down. With ``dav_id`` the document is
+    written with ``create()``, never ``set()``: the DAV layer reaches this
+    branch because its read found nothing, and that read FAILS OPEN (a read
+    error reads as « absent »), so a task already stored under that id is
+    refused (``[DAV_ID_TAKEN]``) instead of silently overwritten. An
+    unusable name returns ``[DAV_ID_INVALID]``. ``dav_uid`` is ignored
+    without ``dav_id``.
+    """
+    data = dict(data)
+    data.pop("id", None)
+    data.pop("vtodo_uid", None)
+    if dav_id is not None and not valid_resource_id(dav_id):
+        return None, [DAV_ID_INVALID]
+
     merged = {**_default_doc(), **_sanitize_data(data)}
     phases.apply_sous_phase_default(merged)
 
@@ -158,8 +243,11 @@ def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    task_id = str(uuid.uuid4())
-    vtodo_uid = str(uuid.uuid4())
+    task_id = dav_id if dav_id is not None else str(uuid.uuid4())
+    vtodo_uid = (
+        (_client_uid(dav_uid) if dav_id is not None else None)
+        or str(uuid.uuid4())
+    )
 
     merged.update({
         "id": task_id,
@@ -173,7 +261,13 @@ def create_task(data: dict) -> tuple[Optional[dict], list[str]]:
         merged["completed_date"] = now
 
     try:
-        db.collection(COLLECTION).document(task_id).set(merged)
+        ref = db.collection(COLLECTION).document(task_id)
+        if dav_id is not None:
+            ref.create(merged)
+        else:
+            ref.set(merged)
+    except AlreadyExists:
+        return None, [DAV_ID_TAKEN]
     except Exception:
         log_unexpected("task write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -556,6 +650,61 @@ def get_task_summary(dossier_id: str, today: Optional[date] = None) -> dict:
 
 # ── RFC-5545 VTODO serialization ─────────────────────────────────────────
 
+# What task_to_vtodo puts between the description and the dossier line.
+_DESCRIPTION_SEPARATOR = "\n\n"
+
+
+def dav_description_suffix(task: dict) -> str:
+    """The dossier line ``task_to_vtodo`` appends to DESCRIPTION, or ``""``.
+
+    Display metadata for the phone, never part of the task's description —
+    see :func:`strip_dav_description_suffix` for why that distinction had
+    to become code.
+    """
+    if not task.get("dossier_file_number"):
+        return ""
+    return (
+        f"Dossier: {task.get('dossier_file_number', '')} - "
+        f"{task.get('dossier_title', '')}"
+    )
+
+
+def strip_dav_description_suffix(data: dict, existing: dict) -> dict:
+    """Take the serializer's dossier line back off an incoming DESCRIPTION.
+
+    ``vtodo_to_task`` reads DESCRIPTION whole, and the phone sends back the
+    text it was served — dossier line included. Stored as the description,
+    that line came back once more on the next GET, so every edit made on
+    the phone (of ANY field) grew the stored description by one « Dossier:
+    … » block, until the 2000-character ceiling truncated the lawyer's own
+    text.
+
+    Exactly the serializer's output is removed, and nothing else: the line
+    built from *existing* (what the phone was last served) when the text
+    ends with ``"\\n\\n" + line`` or IS the line. It is peeled repeatedly,
+    which also heals the blocks legacy edits already accumulated — each one
+    is the serializer's own output. Any other text, a lawyer's edit of the
+    line included, is left untouched. A *data* without a description is
+    returned unchanged (non-effacement: an absent key must stay absent).
+
+    Called by the DAV PUT UPDATE branch only. Mutates *data*; returns it.
+    """
+    suffix = dav_description_suffix(existing)
+    text = data.get("description")
+    if not suffix or not isinstance(text, str):
+        return data
+    tails = tuple(sep + suffix for sep in (_DESCRIPTION_SEPARATOR, "\r\n\r\n"))
+    while True:
+        if text == suffix:
+            text = ""
+            break
+        tail = next((t for t in tails if text.endswith(t)), None)
+        if tail is None:
+            break
+        text = text[: -len(tail)]
+    data["description"] = text
+    return data
+
 
 def task_to_vtodo(task: dict) -> str:
     """Serialize a task dict to an RFC-5545 VTODO string wrapped in VCALENDAR."""
@@ -578,16 +727,18 @@ def task_to_vtodo(task: dict) -> str:
     if stamp and hasattr(stamp, "hour"):
         todo.add("dtstamp", _to_utc(stamp))
 
-    # DESCRIPTION — combine description with dossier info
+    # DESCRIPTION — the description, then the dossier line. The line is
+    # built by dav_description_suffix, which the PUT path uses to take it
+    # back OFF (strip_dav_description_suffix): one builder, so the two can
+    # never drift apart.
     desc_parts = []
     if task.get("description"):
         desc_parts.append(task["description"])
-    if task.get("dossier_file_number"):
-        desc_parts.append(
-            f"Dossier: {task.get('dossier_file_number', '')} - {task.get('dossier_title', '')}"
-        )
+    suffix = dav_description_suffix(task)
+    if suffix:
+        desc_parts.append(suffix)
     if desc_parts:
-        todo.add("description", "\n\n".join(desc_parts))
+        todo.add("description", _DESCRIPTION_SEPARATOR.join(desc_parts))
 
     # PRIORITY mapping: haute=1, normale=5, basse=9
     priority_map = {"haute": 1, "normale": 5, "basse": 9}
@@ -714,7 +865,10 @@ def vtodo_to_task(ical_str: str) -> dict:
         if summary:
             data["title"] = str(summary)
 
-        # DESCRIPTION → description (first part before dossier info)
+        # DESCRIPTION → description, WHOLE. The dossier line task_to_vtodo
+        # appended is still on it: only the caller knows which line the
+        # phone was served, so the DAV UPDATE branch takes it off
+        # (strip_dav_description_suffix).
         desc = component.get("description")
         if desc:
             data["description"] = str(desc)

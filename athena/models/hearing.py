@@ -392,8 +392,9 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    # Honour a caller-supplied id / UID, as create_task and create_note do.
-    # A CalDAV PUT names the resource in its URL, so minting a fresh uuid
+    # Honour a caller-supplied id / UID, as create_note does (create_task
+    # honours the URL's id only through its explicit dav_id keyword, with a
+    # create() that never overwrites). A CalDAV PUT names the resource in its URL, so minting a fresh uuid
     # here stored the event under an id the client never learns: it PUTs
     # /dav/.../abc.ics, gets 201, and every later GET of abc.ics 404s while
     # a duplicate under another id syncs down. Same for vevent_uid — a
