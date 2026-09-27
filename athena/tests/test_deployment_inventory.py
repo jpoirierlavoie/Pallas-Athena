@@ -1582,6 +1582,42 @@ def test_the_quarantine_lifecycle_is_DATA_not_a_pointer_to_a_missing_spec():
     assert par_prefixe["archive/"] > par_prefixe["submissions/"]
 
 
+def test_the_canonical_bucket_name_and_staging_rule_are_data():
+    """Le seau canonique se DÉRIVE du projet (suffixe par défaut de la
+    console Firebase), épinglé contre le déploiement d'origine et contre
+    `.env.example` ; sa règle `staging/` à 7 jours vit en données — le
+    ticket de téléversement du connecteur (lot 2A, T5) en dépend — et la
+    ressource qui la constate vient APRÈS la création du seau."""
+    from utils.deployment_inventory import (
+        CANONICAL_BUCKET_SUFFIX,
+        CANONICAL_STAGING_LIFECYCLE,
+        PHASE_DONNEES,
+        resource_by_key,
+    )
+
+    assert (OWNER_LITERALS["GCP project id"] + CANONICAL_BUCKET_SUFFIX
+            == OWNER_LITERALS["Storage bucket"])
+    exemple = io.open(os.path.join(_ROOT, ".env.example"),
+                      encoding="utf-8").read()
+    assert "your-project-id" + CANONICAL_BUCKET_SUFFIX in exemple
+    assert CANONICAL_STAGING_LIFECYCLE == (
+        {"prefix": "staging/", "age_days": 7},
+    )
+    r = resource_by_key("cycle-de-vie-staging")
+    assert r is not None and not r.manual and r.phase == PHASE_DONNEES
+    cles = [x.key for x in provisioning_plan()]
+    assert cles.index("seau-firebase-storage") < cles.index("cycle-de-vie-staging")
+    # DEPLOYMENT.md §6.6 donne la commande EN LECTURE qui la vérifie, sur le
+    # seau CANONIQUE (celui de FIREBASE_STORAGE_BUCKET), et le nom de la
+    # ligne que le script de provisionnement imprime.
+    doc = _deployment_md()
+    section = doc[doc.index("### 6.6"):doc.index("### 6.7")]
+    assert ('gcloud storage buckets describe "gs://${FIREBASE_STORAGE_BUCKET:?}"'
+            in section)
+    assert '--format="json(lifecycle_config)"' in section
+    assert "cycle-de-vie-staging" in section and '"matchesPrefix": ["staging/"]' in section
+
+
 def test_the_plan_is_ordered_by_phase_and_the_order_is_the_deliverable():
     """Cinq des huit défaillances connues d'un clone neuf sont des
     défaillances d'ORDRE, pas de commande."""

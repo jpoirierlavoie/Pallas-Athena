@@ -1055,6 +1055,33 @@ The rules are deny-all; files are served only via 15-minute signed URLs, which
 bypass rules because they are produced by the Admin SDK. Nothing in the
 application reads Storage through a client SDK.
 
+**Then give the bucket its ONE lifecycle rule: delete objects under
+`staging/` after 7 days.** Every direct-to-GCS upload lands under
+`staging/{uid}/…` first — the web upload form, a zip export, and (lot 2A) the
+connector's upload tickets under `staging/{uid}/mcp/…` — and anything never
+finalized stays there until this rule sweeps it. The connector's ticket
+depends on it outright: a file PUT after its ticket's hour is never filed, and
+this rule is what erases it. Check it (read-only — it changes nothing):
+
+```bash
+# The value of FIREBASE_STORAGE_BUCKET in athena/app.yaml.
+FIREBASE_STORAGE_BUCKET=your-bucket-name
+gcloud storage buckets describe "gs://${FIREBASE_STORAGE_BUCKET:?}" \
+  --project=$PROJECT --format="json(lifecycle_config)"
+```
+
+The answer must hold a `Delete` rule with `"age": 7` and
+`"matchesPrefix": ["staging/"]` — and **no other `Delete` rule that can reach
+a live object**: this bucket holds the clients' documents under `users/`, so a
+rule without a prefix, or on any other prefix, deletes them. (A rule limited to
+NONCURRENT versions — `daysSinceNoncurrentTime`, `numNewerVersions`,
+`isLive: false` — touches no live object and is fine.) If the staging rule is
+missing, add it in the console (Cloud Storage → the bucket → *Lifecycle* →
+*Add a rule*: delete, age 7 days, object name prefix `staging/`) rather than by
+`gcloud storage buckets update --lifecycle-file`, which REPLACES the whole
+configuration. `python -m scripts.provision --project=$PROJECT` reports it as
+`cycle-de-vie-staging`, with the same two checks.
+
 ### 6.7 App Check + reCAPTCHA Enterprise (recommended)
 
 ```bash
@@ -1965,6 +1992,38 @@ Notes:
   entries stay in place, inert, and a version whose object that code
   deleted is then no longer restorable once T3 is redeployed (« Rétablir »
   refuses it: « Le fichier de cette version est introuvable »).
+- **Upload tickets and the leak scan (lot 2A, step T5, 2026-09-27) — deploy
+  the index file FIRST.** This release adds the `mcp_upload_tickets`
+  collection (the record of the connector's future `begin_upload` /
+  `finalize_upload` exchange) and its TTL policy, declared as a
+  `fieldOverrides` entry in `firestore.indexes.json` beside the
+  `mcp_idempotency` one — no composite index. Nothing calls the collection
+  yet (the tools arrive with the lot's MCP release), so the order is about
+  never having to remember it later:
+
+  ```bash
+  # From the repo root. Declares the TTL on mcp_upload_tickets.expire_at.
+  firebase deploy --only firestore:indexes --project $PROJECT
+  # Read-only check: the state must read ACTIVE (it takes a few minutes).
+  gcloud firestore fields ttls list --collection-group=mcp_upload_tickets \
+    --project=$PROJECT --format="value(ttlConfig.state)"
+  ```
+
+  The TTL is garbage collection only — a ticket's one-hour window is
+  enforced in code, on every claim — so a missing policy costs storage,
+  never security. Then verify the canonical bucket's `staging/` 7-day
+  lifecycle rule with the read-only command of §6.6 (or
+  `python -m scripts.provision --project=$PROJECT`, row
+  `cycle-de-vie-staging`): the upload ticket relies on it to erase a file
+  sent after its ticket closed. That row reads « inconnu » in the test
+  corpus until its real output is recorded (`tests/fixtures/gcloud/
+  production.json`, then remove it from `_CORPUS_EN_ATTENTE` in
+  `tests/test_deployment_probe.py`). The same release ships the pure leak
+  scan (`utils/docx_leak_scan.py`) and the identifier builder
+  (`services/docx_identifiers.py`) the template writers will call, and the
+  `run_write` persistence hooks that keep the ticket's upload URL out of
+  `mcp_idempotency` — all dormant until the MCP release: no route, form or
+  tool changes, no Tailwind class, no new secret.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

@@ -33,6 +33,12 @@ Chaque outil d'écriture MCP passe par run_write. Invariants épinglés :
    l'exception) — jamais le texte de l'exception.
 9. Une entrée héritée, posée avant la réservation (sans `status`), se rejoue
    inchangée ; un instantané qui n'est pas un dict est illisible.
+10. Ce qui est STOCKÉ (lot 2A, T5) : un outil peut déclarer des crochets
+    ``persist``/``rehydrate`` — une URL de capacité (le ticket de
+    téléversement) n'atteint JAMAIS ``mcp_idempotency``, et un rejeu la
+    reconstruit. Indépendamment des crochets, un résultat qui porte une clé
+    nommée comme une capacité, ou une chaîne d'URL signée / de session, n'est
+    jamais stocké : la réservation reste en attente, jamais un doublon.
 
 Tous les tests qui éprouvent la réservation, une précondition ou une
 transaction tournent sur le faux Firestore PARTAGÉ (tests/_fake_firestore.py) :
@@ -69,6 +75,7 @@ os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
 from google.api_core import exceptions as gexc  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
+    import mcp.handlers  # noqa: F401 — registers the tools' persistence hooks
     from mcp import tools
     from mcp import write_support as ws
     from mcp.tools import (
@@ -1040,3 +1047,233 @@ def test_the_commit_record_is_read_inside_the_writing_block():
         for i in w.items)]
     inside = {id(n) for w in blocks for n in ast.walk(w)}
     assert all(id(r) in inside for r in reads)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 10. Ce qui est stocké — les crochets de persistance (lot 2A, T5)
+# ══════════════════════════════════════════════════════════════════════
+
+SESSION_URL = ("https://storage.googleapis.com/upload/storage/v1/b/bkt/o"
+               "?uploadType=resumable&name=staging%2Fu%2Fmcp%2Ft%2Fupload.pdf"
+               "&upload_id=ADPycdt-secret-session")
+TICKET_ID = "5e8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e6f"
+
+
+def _ticket_payload(url: str = SESSION_URL) -> dict:
+    return {"ticket_id": TICKET_ID, "upload_url": url, "method": "PUT",
+            "headers": {"Content-Type": "application/pdf",
+                        "Content-Length": "123"},
+            "entity": {"id": TICKET_ID, "dossier_id": DOSSIER_ID}}
+
+
+def _strip(payload: dict) -> dict:
+    """begin_upload's persist, as the design writes it: the ticket id stays,
+    the URL and its headers go."""
+    return {k: v for k, v in payload.items() if k not in ("upload_url", "headers")}
+
+
+def _same(stored: dict) -> dict:
+    return stored
+
+
+def _raise_key_error(_payload: dict) -> dict:
+    raise KeyError("upload_url")
+
+
+@pytest.fixture()
+def hooks(monkeypatch):
+    """A private registry for the test, restored afterwards."""
+    monkeypatch.setattr(ws, "_PERSISTENCE_HOOKS", dict(ws._PERSISTENCE_HOOKS))
+    return ws._PERSISTENCE_HOOKS
+
+
+def _stored_texts(fake) -> list[str]:
+    return [repr(entry) for entry in _entries(fake).values()]
+
+
+def test_capability_detection_by_name_and_by_marker():
+    for payload in ({"upload_url": "x"}, {"a": {"signed_url": "x"}},
+                    {"a": [{"storage_path": "users/u/x"}]}, {"url": "x"},
+                    {"preview_url": "x"}, {"a": ("x", SESSION_URL)},
+                    {"note": "…?X-Goog-Signature=abc"},
+                    {"note": "…&x-goog-credential=abc"}):
+        assert ws.capability_in(payload), payload
+    for payload in ({"conference_uri": "https://meet.example/x"},
+                    {"folder_path": "Projets"}, {"urls_count": 2},
+                    {"note": "https://canlii.ca/t/abc"}, {}, [], "texte", 3):
+        assert not ws.capability_in(payload), payload
+
+
+def test_persist_stores_its_copy_and_the_caller_keeps_the_url(fake, hooks):
+    seen = []
+
+    def persist(payload):
+        seen.append(dict(payload))
+        payload["mutated_by_persist"] = True     # on its COPY only
+        payload["entity"]["mutated"] = True      # a DEEP copy, too
+        return _strip(payload)
+
+    ws.register_persistence_hooks("create_note", persist=persist,
+                                  rehydrate=_same)
+    result = ws.run_write("create_note", _args(), _ticket_payload)
+    assert result["upload_url"] == SESSION_URL           # the caller has it
+    assert "mutated_by_persist" not in result
+    assert "mutated" not in result["entity"]
+    entry = fake.peek(_path("create_note"))
+    assert entry["status"] == "committed"
+    assert entry["result"]["ticket_id"] == TICKET_ID
+    assert "upload_url" not in entry["result"]
+    assert "headers" not in entry["result"]
+    assert not any("upload_id" in t for t in _stored_texts(fake))
+    assert seen and seen[0]["upload_url"] == SESSION_URL
+
+
+def test_a_replay_is_rehydrated_before_the_replay_flag(fake, hooks):
+    reopened = []
+
+    def rehydrate(stored):
+        reopened.append(dict(stored))
+        return {**stored, "upload_url": SESSION_URL.replace("secret", "fresh"),
+                "headers": {"Content-Type": "application/pdf"}}
+
+    ws.register_persistence_hooks("create_note", persist=_strip,
+                                  rehydrate=rehydrate)
+    ws.run_write("create_note", _args(), _ticket_payload)
+    replay = ws.run_write("create_note", _args(),
+                          lambda: pytest.fail("a replay must not execute"))
+    assert replay["idempotent_replay"] is True
+    assert replay["upload_url"].endswith("fresh-session")  # a NEW session
+    assert replay["ticket_id"] == TICKET_ID                # for the SAME ticket
+    # the hook saw what was stored — never the URL, never a replay flag of
+    # its own making
+    assert "upload_url" not in reopened[0]
+    assert reopened[0]["idempotent_replay"] is False
+    # and the replay stored nothing new
+    assert not any("upload_id" in t for t in _stored_texts(fake))
+
+
+def test_a_rehydrate_refusal_refuses_the_replay_and_writes_nothing(fake, hooks):
+    def closed(_stored):
+        raise ToolArgumentError("Ce ticket de téléversement est fermé : "
+                                "ouvrez-en un nouveau.")
+
+    ws.register_persistence_hooks("create_note", persist=_strip,
+                                  rehydrate=closed)
+    ws.run_write("create_note", _args(), _ticket_payload)
+    before = _entries(fake)
+    with pytest.raises(ToolArgumentError) as excinfo:
+        ws.run_write("create_note", _args(),
+                     lambda: pytest.fail("a replay must not execute"))
+    assert "fermé" in str(excinfo.value)
+    assert _entries(fake) == before
+
+
+def test_a_rehydrate_that_returns_a_non_dict_fails_loudly(fake, hooks):
+    ws.register_persistence_hooks("create_note", persist=_strip,
+                                  rehydrate=lambda stored: None)
+    ws.run_write("create_note", _args(), _ticket_payload)
+    with pytest.raises(TypeError):
+        ws.run_write("create_note", _args(), lambda: pytest.fail("no"))
+
+
+def test_a_forgotten_hook_never_persists_a_capability(fake, hooks, caplog):
+    """No hook declared, and the result carries a URL: the caller still gets
+    it, NOTHING is stored, and the claim stays pending — a same-key retry is
+    refused in flight, never run twice."""
+    calls = []
+
+    def execute():
+        calls.append("écrit")
+        return _ticket_payload()
+
+    with caplog.at_level(logging.WARNING, logger="pallas.mcp"):
+        result = ws.run_write("create_note", _args(), execute)
+    assert result["upload_url"] == SESSION_URL
+    entry = fake.peek(_path("create_note"))
+    assert entry["status"] == "pending" and "result" not in entry
+    failures = _store_failures(caplog)
+    assert [(f["op"], f["error_type"]) for f in failures] == [
+        ("finalize", "CapabilityInResult")]
+    assert "upload_id" not in _all_log_text(caplog)
+    with pytest.raises(ToolArgumentError) as excinfo:
+        ws.run_write("create_note", _args(), execute)
+    assert excinfo.value.reason == "idempotency_in_flight"
+    assert calls == ["écrit"]
+
+
+def test_a_signed_url_in_a_string_value_is_never_persisted(fake, hooks):
+    payload = {"created": True, "note": {
+        "id": "n-1", "lien": "https://storage.googleapis.com/b/o"
+                            "?X-Goog-Algorithm=GOOG4&X-Goog-Signature=deadbeef"}}
+    ws.run_write("create_note", _args(), lambda: dict(payload))
+    assert "result" not in fake.peek(_path("create_note"))
+
+
+def test_an_unclaimed_call_never_records_a_capability_either(fake, hooks, caplog):
+    _fail_ops(fake, {"create"}, times=1)              # the claim fails open
+    with caplog.at_level(logging.WARNING, logger="pallas.mcp"):
+        result = ws.run_write("create_note", _args(), _ticket_payload)
+    assert result["upload_url"] == SESSION_URL
+    assert _entries(fake) == {}
+    assert [(f["op"], f["error_type"]) for f in _store_failures(caplog)] == [
+        ("claim", "ServiceUnavailable"), ("record", "CapabilityInResult")]
+
+
+@pytest.mark.parametrize("persist, error_type", [
+    (_raise_key_error, "KeyError"),
+    (lambda p: None, "TypeError"),
+    (lambda p: p, "CapabilityInResult"),          # a persist that strips nothing
+])
+def test_a_failing_persist_stores_nothing_and_says_so(fake, hooks, caplog,
+                                                      persist, error_type):
+    ws.register_persistence_hooks("create_note", persist=persist,
+                                  rehydrate=_same)
+    with caplog.at_level(logging.WARNING, logger="pallas.mcp"):
+        result = ws.run_write("create_note", _args(), _ticket_payload)
+    assert result["upload_url"] == SESSION_URL           # the write stands
+    entry = fake.peek(_path("create_note"))
+    assert entry["status"] == "pending" and "result" not in entry
+    assert [(f["op"], f["error_type"]) for f in _store_failures(caplog)] == [
+        ("finalize", error_type)]
+
+
+def test_registration_is_guarded(hooks):
+    with pytest.raises(KeyError):
+        ws.register_persistence_hooks("no_such_tool", persist=_strip,
+                                      rehydrate=_same)
+    read_tool = next(t for t in tools.TOOLS if t not in tools.WRITE_TOOLS)
+    with pytest.raises(ValueError):
+        ws.register_persistence_hooks(read_tool, persist=_strip,
+                                      rehydrate=_same)
+    with pytest.raises(TypeError):
+        ws.register_persistence_hooks("create_note", persist=_strip,
+                                      rehydrate=None)
+    ws.register_persistence_hooks("create_note", persist=_strip,
+                                  rehydrate=_same)
+    # the same pair again is a no-op; another pair is refused
+    ws.register_persistence_hooks("create_note", persist=_strip,
+                                  rehydrate=_same)
+    with pytest.raises(ValueError):
+        ws.register_persistence_hooks("create_note", persist=_same,
+                                      rehydrate=_same)
+    assert ws.persistence_hooks("create_note").persist is _strip
+    assert "create_note" in ws.persistence_tools()
+    assert ws.persistence_hooks("create_task") is None
+
+
+def test_every_tool_declaring_persist_never_stores_an_upload_url(fake, hooks):
+    """DERIVED over every tool that declared persistence hooks (the
+    handlers are imported above, so their registrations have run) — plus a
+    scratch registration, so the sweep is never vacuous before the upload
+    ticket's tools exist. Each runs through run_write with a result carrying
+    an upload URL; the store must hold none of it."""
+    declared = set(ws.persistence_tools())
+    scratch = "create_task" if "create_task" not in declared else "create_note"
+    ws.register_persistence_hooks(scratch, persist=_strip, rehydrate=_same)
+    for n, tool in enumerate(sorted(declared | {scratch})):
+        key = f"cle-derivee-{n:04d}"
+        ws.run_write(tool, {"idempotency_key": key}, _ticket_payload)
+        entry = fake.peek(_path(tool, key)) or {}
+        assert "upload_url" not in repr(entry), tool
+        assert not ws.capability_in(entry), tool
+    assert not any("upload_id" in t for t in _stored_texts(fake))

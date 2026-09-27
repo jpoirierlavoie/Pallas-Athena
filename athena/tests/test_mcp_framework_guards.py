@@ -1424,6 +1424,22 @@ def test_output_exemptions_are_not_stale():
             assert prop in declared and reason.strip(), (tool, prop)
 
 
+def test_an_exempted_capability_output_declares_its_persistence_hooks():
+    """Lot 2A, T5: the one tool allowed to RETURN a capability must keep it
+    out of mcp_idempotency — its persist/rehydrate pair is registered in
+    ``mcp.write_support`` (the handlers are imported above, so their
+    registrations have run). ``run_write`` refuses to store a capability
+    either way; without the hooks the tool would simply never replay."""
+    for tool, props in _OUTPUT_NAME_EXEMPTIONS.items():
+        if any(_is_capability_name(prop) for prop in props):
+            assert tool in write_support.persistence_tools(), tool
+    # run_write's storage guard and this module name capabilities alike.
+    for key in _NO_URL_NAMES | {"url", "preview_url", "file_url"}:
+        assert write_support.is_capability_key(key), key
+    for key in ("conference_uri", "folder_path", "urls_count"):
+        assert not write_support.is_capability_key(key), key
+
+
 # ══════════════════════════════════════════════════════════════════════
 # (j) Every tool has a conformance run against its REAL handler
 # ══════════════════════════════════════════════════════════════════════

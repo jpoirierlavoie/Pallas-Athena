@@ -132,8 +132,41 @@ every read, per the OAuth precedent.
 Rollback and mixed versions: code from before the claim reads a ``pending``
 or ``partial`` entry as « no stored result » and executes — a duplicate.
 Run no MCP write during a deploy window (DEPLOYMENT.md §11).
+
+4. What is stored — the persistence hooks (plan rule 7, lot 2A T5)
+------------------------------------------------------------------
+A committed result is stored VERBATIM for 24 h and replayed. One kind of
+value must never land there: a CAPABILITY — a URL or a storage path whose
+mere possession grants access. The lot 2 upload ticket returns exactly one
+(``begin_upload``'s resumable-upload session URI, the one documented
+exception to « no signed URL in tool output »), so a tool may declare two
+hooks, registered by tool name like the policy is read by tool name —
+:func:`register_persistence_hooks`, never passed by the handler:
+
+* ``persist(payload) -> stored`` runs on a COPY of the committed result and
+  returns what may be stored (the ticket's id, never its URL). The caller
+  still receives the full payload;
+* ``rehydrate(stored) -> payload`` runs on a REPLAY, before
+  ``idempotent_replay`` is set, and rebuilds what the caller needs from what
+  was stored (a fresh session for the SAME still-open ticket). It may raise
+  ``ToolArgumentError`` (« ticket fermé ») — a refusal of the replay, with
+  nothing written; it must not write records itself.
+
+Both, or neither: a ``persist`` that strips what nothing puts back would
+replay a crippled result. Independently of any hook, what is about to be
+stored is SCANNED (:func:`capability_in`): a key named like a capability
+(``upload_url``, ``signed_url``, ``download_url``, ``storage_path``,
+``url``, ``*_url``) or a string carrying a signed-URL or session marker
+(``X-Goog-Signature``, ``X-Goog-Credential``, ``upload_id=``) is never
+persisted — the result is then NOT stored at all, logged as a store failure
+(``error_type: CapabilityInResult``), and the claim stays ``pending``, so a
+same-key retry is refused as in flight rather than duplicated. A tool that
+forgets its hooks therefore degrades to « no replay », never to a
+capability kept 24 h in Firestore. A ``persist`` that raises is the same
+failure (its exception's class is what is logged).
 """
 
+import copy
 import hashlib
 import json
 import uuid
@@ -146,6 +179,8 @@ from google.api_core import exceptions as gexc
 from models import db, provenance
 from mcp.tools import (
     IDEMPOTENCY_REQUIRED,
+    TOOLS,
+    WRITE_TOOLS,
     CommittedWriteError,
     ToolArgumentError,
     idempotency_policy,
@@ -159,7 +194,13 @@ __all__ = [
     "IDEMPOTENCY_TTL",
     "IN_FLIGHT_WINDOW",
     "PLATFORM_REQUEST_DEADLINE",
+    "PersistenceHooks",
     "args_fingerprint",
+    "capability_in",
+    "is_capability_key",
+    "persistence_hooks",
+    "persistence_tools",
+    "register_persistence_hooks",
     "run_write",
 ]
 
@@ -231,6 +272,134 @@ class _Claim:
 
 class _Replay(NamedTuple):
     result: dict
+
+
+class CapabilityInResult(Exception):
+    """What was about to be stored carries a capability (a URL or a storage
+    path). Only its class name is ever logged — never the value."""
+
+
+# ── 4. Persistence hooks ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PersistenceHooks:
+    """A tool's ``persist``/``rehydrate`` pair (module docstring, § 4)."""
+
+    persist: Callable[[dict], dict]
+    rehydrate: Callable[[dict], dict]
+
+
+_PERSISTENCE_HOOKS: dict[str, PersistenceHooks] = {}
+
+# The capability NAMES — the rule tests/test_mcp_framework_guards applies to
+# every declared output schema, applied here to every stored value.
+_CAPABILITY_KEYS = frozenset({"signed_url", "upload_url", "download_url",
+                              "storage_path"})
+# What a GCS V4 signed URL (the signature and credential query parameters)
+# and a resumable-upload session URI (its upload_id) carry, lower-cased.
+_CAPABILITY_MARKERS = ("x-goog-signature", "x-goog-credential", "upload_id=")
+
+
+def register_persistence_hooks(
+    tool: str,
+    *,
+    persist: Callable[[dict], dict],
+    rehydrate: Callable[[dict], dict],
+) -> None:
+    """Declare *tool*'s persistence hooks — both, never one.
+
+    *tool* must be a registered WRITE tool (``KeyError`` for an unknown
+    name, ``ValueError`` for a read tool, which never reaches
+    :func:`run_write`). Registering the SAME pair again is a no-op (a module
+    reload); a different pair for a tool that already has one raises — a
+    silent replacement would change what a stored result means.
+    """
+    if tool not in TOOLS:
+        raise KeyError(tool)
+    if tool not in WRITE_TOOLS:
+        raise ValueError(f"{tool} is not a write tool")
+    if not callable(persist) or not callable(rehydrate):
+        raise TypeError("persist and rehydrate must both be callables")
+    hooks = PersistenceHooks(persist=persist, rehydrate=rehydrate)
+    existing = _PERSISTENCE_HOOKS.get(tool)
+    if existing is not None and existing != hooks:
+        raise ValueError(f"{tool} already has persistence hooks")
+    _PERSISTENCE_HOOKS[tool] = hooks
+
+
+def persistence_hooks(tool: str) -> Optional[PersistenceHooks]:
+    """The hooks *tool* declared, or ``None`` (store and replay verbatim)."""
+    return _PERSISTENCE_HOOKS.get(tool)
+
+
+def persistence_tools() -> frozenset[str]:
+    """Every tool that declared persistence hooks."""
+    return frozenset(_PERSISTENCE_HOOKS)
+
+
+def is_capability_key(key: object) -> bool:
+    """A key named like a capability: the four the connector's guards list,
+    ``url``, or anything ending in ``_url``."""
+    return isinstance(key, str) and (
+        key in _CAPABILITY_KEYS or key == "url" or key.endswith("_url")
+    )
+
+
+def capability_in(value: object) -> bool:
+    """True when *value* — walked through dicts, lists and tuples — holds a
+    capability-named key or a string carrying a signed-URL/session marker."""
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, sub in node.items():
+                if is_capability_key(key):
+                    return True
+                stack.append(sub)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+        elif isinstance(node, str):
+            lowered = node.lower()
+            if any(marker in lowered for marker in _CAPABILITY_MARKERS):
+                return True
+    return False
+
+
+def _storable(tool: str, payload: dict, claimed: bool) -> Optional[dict]:
+    """What may be stored of *payload*, or ``None`` when nothing may.
+
+    ``persist`` (when declared) runs on a deep COPY, so it can never alter
+    what the caller receives. A persist that raises or returns a non-dict,
+    and a result that still carries a capability, are store failures under
+    the op the store would have run (``finalize`` on a claim, ``record``
+    without one): nothing is stored, and the claim stays pending.
+    """
+    op = "finalize" if claimed else "record"
+    hooks = _PERSISTENCE_HOOKS.get(tool)
+    try:
+        stored = hooks.persist(copy.deepcopy(payload)) if hooks else payload
+        if not isinstance(stored, dict):
+            raise TypeError("persist must return a dict")
+    except Exception as exc:
+        _store_failure(tool, op, exc)
+        return None
+    if capability_in(stored):
+        _store_failure(tool, op, CapabilityInResult())
+        return None
+    return stored
+
+
+def _rehydrated(tool: str, stored: dict) -> dict:
+    """The replayed payload: *stored*, through ``rehydrate`` when declared.
+    A ``ToolArgumentError`` from the hook is the replay's refusal."""
+    hooks = _PERSISTENCE_HOOKS.get(tool)
+    if hooks is None:
+        return stored
+    result = hooks.rehydrate(dict(stored))
+    if not isinstance(result, dict):
+        raise TypeError("rehydrate must return a dict")
+    return result
 
 
 def _doc_id(tool: str, key: str) -> str:
@@ -644,7 +813,10 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
     if key:
         outcome = _claim(tool, key, fingerprint, policy)
         if isinstance(outcome, _Replay):
-            replayed = outcome.result
+            # Rebuilt through the tool's rehydrate hook, if it declared one
+            # (§ 4) — BEFORE the replay flag, so the hook sees what was
+            # stored and never a flag of its own making.
+            replayed = _rehydrated(tool, outcome.result)
             replayed["idempotent_replay"] = True
             return replayed
         claim = outcome
@@ -679,5 +851,9 @@ def run_write(tool: str, args: dict, execute: Callable[[], dict]) -> dict:
 
     payload["idempotent_replay"] = False
     if key:
-        _finalize(tool, key, fingerprint, claim, payload)
+        # What may be STORED (§ 4): the persist hook's copy, and never a
+        # capability. None → nothing is stored and the claim stays pending.
+        stored = _storable(tool, payload, claim is not None)
+        if stored is not None:
+            _finalize(tool, key, fingerprint, claim, stored)
     return payload

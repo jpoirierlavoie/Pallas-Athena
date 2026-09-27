@@ -38,6 +38,7 @@ from typing import Callable, Optional
 
 from utils.deployment_inventory import (
     APPENGINE_INTERNAL_CIDR,
+    CANONICAL_STAGING_LIFECYCLE,
     PHASE_ORDER,
     QUARANTINE_LIFECYCLE,
     RESOURCES,
@@ -318,6 +319,63 @@ def _v_cycle_de_vie(run: Run, ctx: dict) -> tuple:
     return PRESENT, ", ".join("%s %s j" % (p, a) for p, a in sorted(vus.items()))
 
 
+# Conditions qui limitent une règle Delete aux versions NON COURANTES d'un
+# objet (versionnement) : une telle règle ne touche jamais un objet vivant.
+_CONDITIONS_NON_COURANTES = ("daysSinceNoncurrentTime", "numNewerVersions",
+                             "noncurrentTimeBefore")
+
+
+def _v_cycle_de_vie_staging(run: Run, ctx: dict) -> tuple:
+    """Le seau CANONIQUE porte les documents des clients : on y veut
+    `staging/` balayé à 7 jours, et RIEN d'autre qui supprime un objet
+    vivant — une règle sans préfixe, ou sur un autre préfixe, effacerait des
+    documents. Une règle limitée aux versions non courantes (versionnement)
+    ne touche aucun objet vivant et reste permise."""
+    try:
+        charge = json.loads(run.stdout or "{}")
+    except ValueError:
+        return INCONNU, "sortie JSON illisible"
+    regles = ((charge.get("lifecycle_config") or charge.get("lifecycle") or {})
+              .get("rule") or [])
+    ages = {}
+    dangereuses = []
+    for r in regles:
+        if (r.get("action") or {}).get("type") != "Delete":
+            continue
+        cond = r.get("condition") or {}
+        if cond.get("isLive") is False or any(
+                k in cond for k in _CONDITIONS_NON_COURANTES):
+            continue
+        prefixes = cond.get("matchesPrefix") or []
+        if not prefixes:
+            dangereuses.append("(sans préfixe)")
+        for prefixe in prefixes:
+            if prefixe.startswith("staging/"):
+                ages[prefixe] = cond.get("age")
+            else:
+                dangereuses.append("« %s »" % prefixe)
+    if dangereuses:
+        return DRIFT, (
+            "une règle de suppression vise des objets VIVANTS hors staging/ "
+            "%s — sur ce seau, ce sont les documents des clients"
+            % ", ".join(dangereuses)
+        )
+    griefs = []
+    for regle in CANONICAL_STAGING_LIFECYCLE:
+        p, attendu = regle["prefix"], regle["age_days"]
+        if p not in ages:
+            return ABSENT, (
+                "aucune règle sur « %s » — un envoi jamais finalisé y reste "
+                "POUR TOUJOURS" % p
+            )
+        if ages[p] != attendu:
+            griefs.append("« %s » à %s jours au lieu de %d"
+                          % (p, ages[p], attendu))
+    if griefs:
+        return DRIFT, " ; ".join(griefs)
+    return PRESENT, ", ".join("%s %s j" % (p, a) for p, a in sorted(ages.items()))
+
+
 def _v_file(run: Run, ctx: dict) -> tuple:
     champs = colonnes(run.stdout)
     etat = colonne(champs, 0)
@@ -389,6 +447,7 @@ _VERDICTS: dict = {
     "sa-portail": _v_existe,
     "seau-quarantaine": _v_seau,
     "cycle-de-vie-quarantaine": _v_cycle_de_vie,
+    "cycle-de-vie-staging": _v_cycle_de_vie_staging,
     "file-portail": _v_file,
     "pare-feu-interne": _v_pare_feu,
 }

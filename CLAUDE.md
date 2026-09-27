@@ -83,7 +83,7 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 ## Architecture Rules
 
 1. **SINGLE USER.** Exactly one authorized email (`AUTHORIZED_USER_EMAIL` env var). No multi-tenancy, no registration, no roles. Every endpoint that mutates state verifies the session via `@login_required` (Firebase Auth + server-side session). DAV endpoints use a separate HTTP Basic auth.
-2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `folders` (document folders — top-level with a `dossier_id` field, never a `dossiers` subcollection), `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, `ref_palais`, the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`, the Phase-K trust collections `trust_accounts`, `trust_transactions`, `trust_reconciliations`, plus the July 2026 additions `audit_events` (append-only deletion journal) and `mcp_idempotency` (MCP write-replay cache), and `budgets` (August 2026 — per-dossier phase budgets, append-only versioned), and `settings` (September 2026 — ONE document, `settings/cabinet`: the live firm profile, editable in « Paramètres ») — plus, from 2026-08-26 to 2026-09-02, six `chat_*` collections of the internal chat, emptied and removed with it). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim — obtained ONLY through `utils/storage_identity.py`: `request_uid()` in a route, `owner_uid()` without a session, `require_uid()` in every path builder; never `session.get("user_id", "unknown")`, which `tests/test_storage_identity.py` sweeps for).
+2. **Firestore is flat.** Despite the single-user nature, Firestore **collections are top-level** (`parties`, `dossiers`, `tasks`, `hearings`, `notes`, `protocols`, `invoices`, `timeentries`, `expenses`, `documents`, `folders` (document folders — top-level with a `dossier_id` field, never a `dossiers` subcollection), `doc_templates`, `dav_sync`, `counters`, `ref_greffes`, `ref_juridictions`, `ref_palais`, the Phase-I OAuth collections `oauth_clients`, `oauth_codes`, `oauth_tokens`, the Phase-K trust collections `trust_accounts`, `trust_transactions`, `trust_reconciliations`, plus the July 2026 additions `audit_events` (append-only deletion journal) and `mcp_idempotency` (MCP write-replay cache), `mcp_upload_tickets` (lot 2A, T5 — the record of the connector's upload-ticket exchange; never the upload URL), and `budgets` (August 2026 — per-dossier phase budgets, append-only versioned), and `settings` (September 2026 — ONE document, `settings/cabinet`: the live firm profile, editable in « Paramètres ») — plus, from 2026-08-26 to 2026-09-02, six `chat_*` collections of the internal chat, emptied and removed with it). They are **not** nested under `users/{userId}/...`. Firebase Storage paths, however, **do** use `users/{userId}/dossiers/{dossierId}/documents/{documentId}/{filename}` (with `userId` from the Firebase Auth `uid` claim — obtained ONLY through `utils/storage_identity.py`: `request_uid()` in a route, `owner_uid()` without a session, `require_uid()` in every path builder; never `session.get("user_id", "unknown")`, which `tests/test_storage_identity.py` sweeps for).
 3. **Bilingual code/UI split.** All user-facing text (labels, buttons, placeholders, errors, toasts, empty states) is in **French**. All code (variable names, function names, comments, docstrings) is in **English**.
 4. **Currency in integer cents.** `15000` means $150.00. Never use floats for money. Use `Decimal` only for tax computation intermediates, convert to int cents (with `ROUND_HALF_UP`) before storage.
 5. **Timestamps UTC.** Stored as UTC `datetime` with timezone info. Displayed in `America/Montreal` via the `to_mtl` Jinja filter (registered from `tz.py`).
@@ -203,6 +203,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # (projeter/reduire_paiement — hissées de
 │   │   │                           # routes/admin_ledger le 2026-08-26 ; appelées par
 │   │   │                           # admin_ledger, trust et la reprise)
+│   │   ├── docx_identifiers.py     # Lot 2A (T5) : dossier_identifiers(dossier) — les chaînes
+│   │   │                           # qui ne doivent pas survivre dans un gabarit (titre, n°,
+│   │   │                           # n° de cour, noms avec/sans civilité, courriels, téléphones
+│   │   │                           # sous leurs formes imprimées, adresses, codes postaux, NEQ,
+│   │   │                           # n° du Barreau ; mandataires compris) ; le cabinet EXCLU ;
+│   │   │                           # FERMÉ sur une partie liée illisible
 │   │   ├── gabarits.py             # Lot 2A (T4) : la génération depuis un gabarit, hissée
 │   │   │                           # de routes/doc_templates — resolve_slots (STRICT : un
 │   │   │                           # slot hors du dossier est REFUSÉ, plus remplacé par la
@@ -259,6 +265,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # pair for the caller's transaction and writes nothing
 │   │   ├── audit_event.py          # Append-only deletion journal (July 2026): record_deletion
 │   │   │                           # (best-effort, AFTER the committed delete) + list_recent
+│   │   ├── upload_ticket.py        # Lot 2A (T5) : mcp_upload_tickets — begin/finalize_upload
+│   │   │                           # (outils à la version MCP) : tout est LIÉ à l'ouverture
+│   │   │                           # (taille, MD5, métadonnées, ids RÉSERVÉS, staging neutre
+│   │   │                           # staging/{uid}/mcp/{id}/upload{ext}) ; en_attente → en_cours
+│   │   │                           # (réservation transactionnelle, reprise après 5 min) →
+│   │   │                           # versé | refusé | expiré (1 h, en CODE) ; jamais l'URL
 │   │   ├── portail_invitation.py   # Invitations (NAMED database « portail », lazy client, single
 │   │   │                           # writer = main service; poser_accuse transactional test-and-set)
 │   │   ├── budget.py               # Budgets par phase (août 2026): append-only VERSIONNÉ (jamais
@@ -346,7 +358,9 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           #   enforced by tests/test_mcp_output_schemas.py
 │   │   ├── write_support.py        # Write protocol (July 2026): run_write — 24 h idempotency
 │   │   │                           #   replay (keyed mcp_idempotency collection). The dry_run
-│   │   │                           #   preview left the protocol 2026-08-27
+│   │   │                           #   preview left the protocol 2026-08-27. Lot 2A (T5):
+│   │   │                           #   persist/rehydrate hooks per tool, and a CAPABILITY is
+│   │   │                           #   never stored (capability_in — the claim stays pending)
 │   │   ├── coverage.py             # Coverage-check registry + PURE predicates (imports no
 │   │   │                           #   model, so the suite tests without Firestore)
 │   │   ├── import_audit.py         # Lot Q: les 7 contrôles IMP-01..07 de get_import_audit,
@@ -390,6 +404,12 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # texte d'un PDF (par page, honnête sur les pages
 │   │   │                           # numérisées — jamais d'OCR prétendu) et d'un .docx
 │   │   │                           # (zip+regex, segments calculés); invariant CWE-1333
+│   │   ├── docx_leak_scan.py       # Lot 2A (T5, pur) : scan_identifiers — les identifiants d'un
+│   │   │                           # dossier dans TOUTES les parties XML d'un .docx (corps, en-têtes,
+│   │   │                           # pieds, notes, commentaires, docProps, customXml, cibles .rels,
+│   │   │                           # auteurs) ; MOTS pliés et entiers ; refus au-delà de 1 000 000
+│   │   │                           # caractères ; scrub_core_properties (5 propriétés, le reste
+│   │   │                           # identique à l'octet) ; invariant CWE-1333
 │   │   ├── docx_fill.py            # Phase H/H.2: stdlib-only .docx fill engine (zip XML substitution;
 │   │   │                           # scalars, blocks, + H.2 repeating rows & conditional regions)
 │   │   ├── template_fields.py      # Phase H: field catalog, flat aliases, classification, resolution
@@ -614,6 +634,13 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   ├── test_prescription_events.py   # derive_prescription: depot/reconnaissance/suspension,
 │   │   │                                 # legacy prise_action_date fold, three-surface parity
 │   │   ├── test_mcp_write_support.py     # run_write: idempotency replay/conflict, fail-open
+│   │   │                                 # + (T5) persist/rehydrate, no capability stored
+│   │   ├── test_docx_leak_scan.py        # Lot 2A (T5): every part, folding, whole words,
+│   │   │                                 # accept, refusals, DERIVED linearity, timing at the
+│   │   │                                 # cap, the core scrub, dossier_identifiers fail-closed
+│   │   ├── test_upload_ticket.py         # Lot 2A (T5): the ticket state machine on the shared
+│   │   │                                 # fake (race, reclaim, expiry, TTL), commit points,
+│   │   │                                 # no URL stored, web finalizer refuses its object
 │   │   ├── _fake_firestore.py            # Lot 0a: the SHARED fake Firestore — a fake server
 │   │   │                                 # under the REAL client (transactions, preconditions,
 │   │   │                                 # create() → AlreadyExists, nested-array refusal);
@@ -1797,6 +1824,44 @@ The WP15 write protocol's storage (`mcp/write_support.run_write`). Retrying the 
     "entity_id": str, "dossier_id": str, "collection": str, "rows": int,
     "commits": [{"collection": str, "id": str}, ...],   # ≤ 100
     "partial_at": datetime,
+}
+```
+
+### `mcp_upload_tickets/{ticketId}` — Connector upload tickets (lot 2A, T5 — September 2026)
+
+The record of the connector's `begin_upload` → sandbox PUT → `finalize_upload` exchange (the two tools arrive with lot 2's MCP release; the model, `models/upload_ticket.py`, ships first). Everything `finalize` uses is BOUND at creation — purpose, declared size and MD5 (compared at finalize with `hmac.compare_digest`: the leaked-URL defence — any other bytes are refused and deleted), the metadata, and the RESERVED ids (document, or template in create mode) that make a stale claim safely reclaimable. **The upload URL is NEVER stored** — not here, not in `mcp_idempotency` (`run_write`'s persist/rehydrate hooks; `capability_in` refuses to store one anyway). Rule 6 and Rule 7 hold (UUIDv4 ids, provenance-stamped `etag`), though no caller compares the etag: every transition is a Firestore transaction. `expire_at` carries the TTL fieldOverride — garbage collection only; the one-hour window (`open_until`) is enforced in code at every claim. No composite index (keyed `get()`s only). Not DAV-exposed.
+
+```python
+{
+    "id": UUIDv4,
+    "purpose": "document" | "gabarit",
+    "dossier_id": str,                # required for a document; "" allowed for a gabarit
+    "original_filename": str,         # refused, never mangled (no /, no chevrons, ≤ 200)
+    "ext": str,                       # ".pdf"…; ".docx" only for a gabarit
+    "declared_size": int,             # ≤ 200 MB (document) / 10 MB (gabarit)
+    "declared_md5_b64": str,          # canonical base64 of the 16-byte digest
+    "staging_object": "staging/{uid}/mcp/{ticketId}/upload{ext}",
+                                      # under require_uid(owner); no client name in
+                                      # any path; 5 segments, so the web finalizer
+                                      # (staging/{uid}/{uuid4}/{name}) refuses it
+    "reserved_document_id": UUIDv4 | "",   # purpose document
+    "reserved_template_id": UUIDv4 | "",   # purpose gabarit, mode create
+    "bound_metadata": {"folder_id", "category", "display_name",
+                       "document_date", "tags"},          # document only
+    "template_params": {"mode": "create" | "replace", "name", "category",
+                        "kind", "description" (create) | "template_id",
+                        "expected_version" (replace),
+                        "accept_residual": [str], "scrub_properties": bool},
+    "status": "en_attente" | "en_cours" | "versé" | "refusé" | "expiré",
+    "open_until": datetime,           # created + 1 h — enforced in code
+    "expire_at": datetime,            # open: open_until + 24 h; settled: + 7 days
+    "claim_id": str, "claimed_at": datetime | None, "claim_count": int,
+    "staged_sha256": str,             # a replacement's bytes, recorded BEFORE its write
+    "finalized_at": datetime | None,
+    "result": {"document_id" | "template_id", "version"?},   # versé only
+    "refusal_reason": "" | "expire" | "taille_differente" | "empreinte_differente"
+                    | "contenu_refuse" | "identifiants_residuels",
+    # created_at/updated_at/etag/created_via/updated_via (provenance helpers)
 }
 ```
 
@@ -3188,6 +3253,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **What the connector PROMISES is code in `mcp/disclosure.py`, not prose — and a new lot edits it there or ships a lie** (lot 0a, 2026-09-25). Before the registry the families and the « never » statements were retyped in four places, and three copies had already turned false on the screen the lawyer consents under: « chaque écriture est horodatée et signée Claude » (only the notes, tasks and events the connector CREATES carry a dated « … par Claude le … » line; every direct write is journaled and stamped `updated_via`), « annulez la facture — le numéro se libère » (voiding leaves the number on the voided invoice — `void_invoice` never touches the document; only deleting that invoice in the app frees an imported number), and « can never edit or delete the entry » beside the `update_*` tools that edit it — and the step's review found the same billing-freeze claim in four more phrasings the first pass missed (the `update_*` refusal « ne modifie jamais une entrée facturée », two `update_*` descriptions, the IMP-06 remediation: `set_*_phase` reaches an invoiced row, from the connector AND from the application's phase form), so the detector's list holds phrasings, not one sentence each. Now `FAMILIES` partitions `WRITE_TOOLS` (derived from it), and INSTRUCTIONS and the consent write block (one partial per family under `templates/mcp/families/`, then a bullet per `NEVERS` entry, then the derived checkbox summary) are assembled from it, counts included. Each NEVER names the identifiers it forbids, and `tests/test_mcp_disclosure.py` walks the SYNTAX TREE of every `mcp/*.py` but the registry — calls, attributes, names, imports and `getattr` constants, never strings, which is why the registry can NAME `record_payment` in order to forbid it; a raw-text sweep would have matched the registry itself, and `test_invoice_detail` still counts the literal `record_payment(` text anywhere under `mcp/`. A promise that is a PAYLOAD (a dossier's status) is backed by the input properties no write tool may declare and by a behavioural test whose existence is checked. The same test holds a list of the false claims above and fails if one reappears in any emitted string (docstrings excluded), INSTRUCTIONS or a tool description. **Three rules for the next lot**: a new write tool goes in a family (or its own) with a consent partial and an INSTRUCTIONS paragraph naming it; a tool that makes a « never » false deletes that entry IN THE SAME COMMIT (the sweep fails otherwise — which is the point); and every behaviour change a token holder did not consent to (lot 0a: `complete_task` now REFUSES to put a closed task back `en_cours`, and joined `EDIT_TOOLS`) rides the revoke + re-consent train, since the scope is frozen at issuance.
 - **An `idempotency_key` is CLAIMED before the write, and its refusals mean three different things** (lot 0a). `idempotency_in_flight` — the claim is younger than `IN_FLIGHT_WINDOW` (the platform's 10-minute request deadline plus 30 s of skew): the first call may still be running, so wait and retry with the SAME key; a NEW key there is exactly the duplicate the claim exists to prevent. `idempotency_interrupted` — older and never finalized: re-read, and use a new key only if nothing was written. `idempotency_conflict` — same key, different arguments. A pending claim is NEVER cleared automatically (a lease would reopen the duplicate window); it lapses with the 24 h `expire_at`. A write that COMMITTED and then failed (a CTag bump, a cascade re-read, the payload builder) comes back as `CommittedWriteError` — « ENREGISTRÉE — NE PAS RÉESSAYER », an `isError` tool RESULT, never a -32602 (which promises nothing was written) nor a retryable « internal error » — and is stored `partial`, so a same-key retry re-raises it without executing. That distinction rests entirely on the reached model mutators calling `provenance.note_commit()` right after their write: one that forgets makes its commit invisible, and the retry writes twice. Old code reads a `pending`/`partial` entry as « no result »: run no MCP write during a deploy window, and none after a rollback past the claim (the `mcp_idempotency` data model; DEPLOYMENT.md §11).
 - **`updated_via` is stamped by the MODEL that regenerates the etag — a caller never sets it, and `''` never means « the application »** (lot 0a). The models merge `{**existing, **data}` then write the whole document, so a caller-set `updated_via` would survive, stale, into the NEXT write by anyone; `models/provenance.update_fields`/`stamp_update`/`stamp_create` set it beside the new etag, and `tests/test_provenance.py` requires every `models/*.py` statement that writes an `etag` to write `updated_via` too. The path is DERIVED: `run_write` declares `writing_via("mcp")`; otherwise the request's blueprint MODULE decides (`dav` package → `dav`, `routes/taches_*.py` → `cron`, `mcp` → `mcp`, anything else → `web`), and no request at all is `script`. `mcp_updated_at` is STICKY (a later web or DAV write never clears it). Protocol steps stamp too since lot 1a (they gained their etag there, and `provenance.update_fields` rides every step write — the cascade included, since the writer is read from the request's context: a step `complete_task` or `reopen_task` moves is stamped `mcp`). Two writes still carry no stamp of the connector's: `check_overdue_steps` (it keeps the step's etag and stamps nothing — a display fossil, not a write anyone made) and the scripts. The consent still says « chaque élément que le connecteur écrit **directement** » because the dated « … par Claude le … » line is put only in what a tool itself writes. The concurrency refusal and the web banner name WHEN, never by which path: scripts regenerate etags without stamping.
+- **A capability never reaches `mcp_idempotency`, and a leak scan is a guard, not a proof** (lot 2A, T5). `run_write` stores a committed result verbatim for 24 h; the upload ticket's session URL must not be in it. A tool that returns one declares `write_support.register_persistence_hooks(tool, persist=, rehydrate=)` — BOTH, by tool name like the idempotency policy — and, independently, `capability_in` refuses to store ANY result carrying a key named like a capability (`upload_url`, `signed_url`, `download_url`, `storage_path`, `url`, `*_url`) or a string with `X-Goog-Signature`/`X-Goog-Credential`/`upload_id=`: the claim then stays `pending` (a same-key retry is refused in flight — never duplicated) and a `mcp_idempotency_store_failure` with `error_type: CapabilityInResult` says so. A forgotten hook degrades to « no replay », never to a URL kept a day. The ticket's own claim/release/refusal writes deliberately do NOT `note_commit` — a finalization that refuses after them (« pas encore téléversé », « autres octets ») must stay a refusal, not become « ENREGISTRÉE — NE PAS RÉESSAYER ». And `utils/docx_leak_scan` matches folded WORDS: it over-matches on purpose (separators are not compared — every spelling of a phone number is the same three words, and an email that contains the name is a residue of the name), it cannot see text in an image or a variant the builder does not generate, and it REFUSES (never answers partially) past 1 000 000 characters of text — a cap the fill engine never needed, since its passes are bounded by bytes while the scan costs one pass per identifier.
 - **No Storage path may be built under an unverified uid — `users/unknown/` is unreachable, and that is a refusal, not a default** (lot 0a). See Security Rules → Storage identity: `request_uid`/`owner_uid` fail CLOSED with a French message saying nothing was written, the model path builders re-check with `require_uid`, and `tests/test_storage_identity.py` derives its inventory of path builders and uid-passing callers from the source. A new route that writes a file must obtain its uid from a guard — the sweep checks the CALL — and `session.get("user_id", "unknown")` is refused in every non-test module.
 - **The `athena:comptabilite` scope is DORMANT, and the box that grants it cannot appear before a tool carries it** (lot 0a). Offered only while `MCP_WRITE_ENABLED` AND `MCP_COMPTABILITE_ENABLED` are on AND `mcp.tools.ACCOUNTING_TOOLS` (derived from the declared scopes) is non-empty — recomputed server-side on the GET and on the POST, so a forged `grant_comptabilite` is refused in lots 0-4 whatever the switch says. `MCP_COMPTABILITE_ENABLED` defaults to `"false"` (money fails closed) and carries the `MCP_WRITE_ENABLED` double-duty trap: consenting while it is false yields a grant WITHOUT accounting, silently. An `athena:write` token can never reach an accounting tool (the tool's OWN scope is demanded at `required_scope`, in the `tools/list` filter and at `revalidate_for_write`), so the lot 5 train needs no write outage. The gates are tested on `tests/_dummy_accounting.py`, a fake tool registered by monkeypatch — tested on the empty real registry, each would pass vacuously.
 - **An MCP note write MUST bump the dossier CTag — nothing else will.** `models/note.py` never bumps (it does not even import `dav/`); bumping lives in the caller (`routes/notes.py`, `dav/dossier_collections.py`). A tool path that calls `create_note`/`update_note` and stops leaves the note in Firestore and visible in the web UI while **DavX5 silently never re-syncs it** — `_handle_sync_collection` short-circuits when the client's token equals the current one. The bump is wrapped in its own `try/except` in `mcp/handlers._bump_note_ctag` and surfaced as `dav_synced` + a French warning: letting it raise would report an already-committed write as a failure. Before lot 0a it hit `endpoint._tools_call`'s blanket `except Exception` as a retryable « internal error », and the model retried into a **duplicate note** (`create_note` mints a fresh UUID each call); since lot 0a the model's `note_commit` turns it into `CommittedWriteError` (« ENREGISTRÉE — NE PAS RÉESSAYER »), a same-key retry re-raises it from the `partial` entry, but a KEYLESS retry still writes a second note — so the bump keeps its own `try/except`.

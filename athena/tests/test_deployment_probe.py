@@ -292,6 +292,21 @@ def test_the_plan_marks_the_irreversible_steps():
             assert "DÉFINITIF" in texte[i:i + 160], r.key
 
 
+# Les ressources constatables dont la sortie n'a PAS ENCORE été relevée sur
+# le déploiement vivant. Le corpus ne contient que des sorties RÉELLES : y
+# écrire la sortie qu'on ATTEND serait fabriquer la preuve même que ce corpus
+# existe pour apporter. Une ressource en attente est donc rejouée comme une
+# sonde qui échoue — et doit se lire INCONNU, jamais ABSENT, ce qui éprouve au
+# passage la règle qui compte. Relever sa sortie (DEPLOYMENT.md §15, la
+# commande en lecture seule), la verser au corpus, puis la retirer d'ici :
+# le test suivant refuse une entrée périmée.
+_CORPUS_EN_ATTENTE = {
+    # Lot 2A, étape T5 (2026-09-27) : le cycle de vie `staging/` du seau
+    # canonique, dont dépend le ticket de téléversement du connecteur.
+    "cycle-de-vie-staging",
+}
+
+
 def test_the_recorded_production_corpus_replays_to_PRESENT():
     """Le seul test qui éprouve les GABARITS et pas seulement la logique.
 
@@ -310,6 +325,8 @@ def test_the_recorded_production_corpus_replays_to_PRESENT():
             if r.manual:
                 continue
             if r.argv("projet-temoin", "northamerica-northeast1") == tuple(argv):
+                if r.key in _CORPUS_EN_ATTENTE:
+                    return Run(False, stderr="sortie non encore relevée")
                 e = corpus[r.key]
                 return Run(e["ok"], e["stdout"])
         raise AssertionError("argv hors corpus : " + repr(argv))
@@ -318,10 +335,69 @@ def test_the_recorded_production_corpus_replays_to_PRESENT():
                           runner=rejoueur)
     par_cle = {r.key: r for r in resultats}
     for r in RESOURCES:
-        attendu = MANUEL if r.manual else PRESENT
+        if r.manual:
+            attendu = MANUEL
+        elif r.key in _CORPUS_EN_ATTENTE:
+            attendu = INCONNU
+        else:
+            attendu = PRESENT
         assert par_cle[r.key].state == attendu, (
             r.key, par_cle[r.key].state, par_cle[r.key].detail
         )
+
+
+def test_the_corpus_waiting_list_is_neither_stale_nor_a_hiding_place():
+    """Chaque entrée en attente est une ressource CONSTATABLE qui existe et
+    qui n'est pas au corpus. Une fois sa sortie versée, l'entrée doit partir —
+    sinon le test précédent cesserait de la rejouer pour de bon."""
+    corpus = _corpus()
+    constatables = {r.key for r in RESOURCES if not r.manual}
+    for cle in _CORPUS_EN_ATTENTE:
+        assert cle in constatables, (cle, "pas une ressource constatable")
+        assert cle not in corpus, (cle, "au corpus : retirez-la de l'attente")
+    # Et toute autre ressource constatable EST au corpus.
+    assert constatables - _CORPUS_EN_ATTENTE <= set(corpus)
+
+
+def test_the_canonical_staging_lifecycle_verdict():
+    """Le seau canonique porte les documents des clients : `staging/` à
+    7 jours, et aucune autre suppression d'objets VIVANTS."""
+    r = _res("cycle-de-vie-staging")
+
+    def regles(*liste):
+        return json.dumps({"lifecycle_config": {"rule": list(liste)}})
+
+    staging = {"action": {"type": "Delete"},
+               "condition": {"age": 7, "matchesPrefix": ["staging/"]}}
+    assert probe(r, "p", "", runner=_runner(regles(staging))).state == PRESENT
+
+    # Le versionnement (versions NON COURANTES) ne touche aucun objet vivant.
+    versions = {"action": {"type": "Delete"},
+                "condition": {"daysSinceNoncurrentTime": 30}}
+    assert probe(r, "p", "",
+                 runner=_runner(regles(staging, versions))).state == PRESENT
+
+    res = probe(r, "p", "", runner=_runner(regles()))
+    assert res.state == ABSENT and "POUR TOUJOURS" in res.detail
+
+    trop_long = dict(staging, condition={"age": 30,
+                                         "matchesPrefix": ["staging/"]})
+    res = probe(r, "p", "", runner=_runner(regles(trop_long)))
+    assert res.state == DRIFT and "30" in res.detail
+
+    # Une suppression SANS préfixe, ou sur `users/`, effacerait des documents.
+    partout = {"action": {"type": "Delete"}, "condition": {"age": 7}}
+    res = probe(r, "p", "", runner=_runner(regles(staging, partout)))
+    assert res.state == DRIFT and "documents des clients" in res.detail
+    documents = {"action": {"type": "Delete"},
+                 "condition": {"age": 400, "matchesPrefix": ["users/"]}}
+    res = probe(r, "p", "", runner=_runner(regles(staging, documents)))
+    assert res.state == DRIFT and "users/" in res.detail
+
+    # Le gabarit vise le seau CANONIQUE, pas celui de la quarantaine.
+    argv = r.argv("mon-projet", "ma-region")
+    assert "gs://mon-projet.firebasestorage.app" in argv
+    assert not any("quarantaine" in a for a in argv)
 
 
 def test_the_corpus_carries_no_owner_literal_and_no_payload():

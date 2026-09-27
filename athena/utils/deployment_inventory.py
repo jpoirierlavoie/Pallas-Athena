@@ -906,6 +906,26 @@ QUARANTINE_LIFECYCLE: tuple[dict, ...] = (
     {"prefix": "archive/", "age_days": 365},
 )
 
+# Le seau CANONIQUE (celui de FIREBASE_STORAGE_BUCKET, qui porte les
+# documents des clients) : le nom par défaut que la console Firebase donne à
+# un projet créé depuis octobre 2024. Un projet plus ancien a
+# `{projet}.appspot.com` — l'inspection le rapporterait alors « absent »
+# (jamais « en place »), ce qui est le bon côté. Un test épingle ce suffixe
+# contre le seau du déploiement d'origine.
+CANONICAL_BUCKET_SUFFIX = ".firebasestorage.app"
+
+# Son cycle de vie, EN DONNÉES : `staging/` balayé à 7 jours. C'est la SEULE
+# suppression automatique que le code attend sur ce seau — un téléversement
+# direct jamais finalisé (formulaire web, ticket du connecteur), une archive
+# zip dont la signature a échoué. Le ticket de téléversement du connecteur
+# (lot 2A) en DÉPEND : un envoi arrivé après son heure n'est jamais versé, et
+# c'est cette règle qui l'efface. Écrite ici le 2026-09-27 à partir de ce que
+# DEPLOYMENT.md et le code affirment — pas encore relevée sur le déploiement
+# vivant (la sonde s'en charge).
+CANONICAL_STAGING_LIFECYCLE: tuple[dict, ...] = (
+    {"prefix": "staging/", "age_days": 7},
+)
+
 PHASE_SOCLE = "socle"
 PHASE_DONNEES = "données"
 PHASE_SECRETS = "secrets"
@@ -941,10 +961,12 @@ class Resource:
         """Le gabarit, rempli. Aucun secret n'entre jamais ici — un test le
         balaie, parce qu'un argument atterrit dans `ps` et dans l'historique."""
         bucket = project + PORTAIL_BUCKET_SUFFIX
+        canonical = project + CANONICAL_BUCKET_SUFFIX
         return tuple(
             a.replace("{project}", project)
              .replace("{region}", region)
              .replace("{bucket}", bucket)
+             .replace("{canonical_bucket}", canonical)
             for a in self.detect
         )
 
@@ -1002,7 +1024,8 @@ RESOURCES: tuple[Resource, ...] = (
     ),
     Resource(
         key="ttl-firestore",
-        label="Politiques TTL (oauth_codes, oauth_tokens, mcp_idempotency)",
+        label=("Politiques TTL (oauth_codes, oauth_tokens, mcp_idempotency, "
+               "mcp_upload_tickets)"),
         phase=PHASE_DONNEES,
         detect=("gcloud", "firestore", "fields", "ttls", "list",
                 "--collection-group=oauth_codes", "--project={project}",
@@ -1011,7 +1034,7 @@ RESOURCES: tuple[Resource, ...] = (
         symptom=(
             "aucune conséquence de SÉCURITÉ — l'expiration est appliquée dans "
             "le code à chaque lecture ; le TTL n'est que du ramassage. Les "
-            "trois sont d'ailleurs déclarés en `fieldOverrides` dans "
+            "quatre sont d'ailleurs déclarés en `fieldOverrides` dans "
             "firestore.indexes.json, donc le déploiement des index les pose "
             "déjà : les commandes `ttls update` que CLAUDE.md énumère sont "
             "redondantes (constaté 2026-09-13)"
@@ -1125,6 +1148,27 @@ RESOURCES: tuple[Resource, ...] = (
         symptom=(
             "aucun document ne se téléverse ; et ses règles ne se déploient "
             "qu'APRÈS sa création"
+        ),
+    ),
+    # Constatable, mais déclarée ICI, juste après le seau qu'elle vise : le
+    # plan trie par phase en gardant l'ordre de la table, et la règle ne peut
+    # se poser qu'une fois le seau créé à la console.
+    Resource(
+        key="cycle-de-vie-staging",
+        label="Cycle de vie du seau canonique (staging/)",
+        phase=PHASE_DONNEES,
+        detect=("gcloud", "storage", "buckets", "describe",
+                "gs://{canonical_bucket}", "--project={project}",
+                "--format=json(lifecycle_config)"),
+        expect=(
+            "staging/ à 7 jours (CANONICAL_STAGING_LIFECYCLE), et AUCUNE "
+            "autre règle de suppression d'objets vivants"
+        ),
+        symptom=(
+            "les envois directs jamais finalisés — et les fichiers qu'un "
+            "ticket de téléversement du connecteur a reçus trop tard — "
+            "restent en staging/ POUR TOUJOURS ; à l'inverse, une règle de "
+            "suppression sans préfixe effacerait les documents des clients"
         ),
     ),
     Resource(
@@ -1301,6 +1345,8 @@ SCAN_FILES: tuple[str, ...] = (
 __all__ = [
     "APPENGINE_INTERNAL_CIDR",
     "API_SERVICES",
+    "CANONICAL_BUCKET_SUFFIX",
+    "CANONICAL_STAGING_LIFECYCLE",
     "Api",
     "PHASE_ORDER",
     "PORTAIL_BUCKET_SUFFIX",
