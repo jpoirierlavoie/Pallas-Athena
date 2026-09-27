@@ -172,7 +172,10 @@ def _standing_trust_fee_payment(row: dict) -> bool:
 
 
 def available_transitions(
-    invoice: dict, *, receipts: Optional[list[dict]] = None,
+    invoice: dict,
+    *,
+    receipts: Optional[list[dict]] = None,
+    trust_payments: Optional[list[dict]] = None,
 ) -> tuple[str, ...]:
     """Les transitions que CETTE facture peut réellement prendre.
 
@@ -194,10 +197,15 @@ def available_transitions(
     ``void_invoice`` la refuserait. *receipts* — les écritures
     d'administration imputées sur la facture, que la fiche lit déjà
     (``list_invoice_receipts``) — ferme aussi le cas de dérive où une
-    écriture tient encore alors que ``amount_paid`` vaut 0. Une fonction
-    pure ne voit que ce qu'on lui donne : le cas restant (un paiement
-    d'honoraires du fidéicommis sans recette d'administration) est refusé
-    par ``void_invoice``, dont la route affiche alors le motif en bandeau.
+    écriture tient encore alors que ``amount_paid`` vaut 0.
+    *trust_payments* — les écritures du fidéicommis qui la visent
+    (``models.trust.list_invoice_fee_payments``) — ferme le dernier : un
+    paiement d'honoraires debout dont la recette d'administration
+    automatique a échoué (elle est fail-open), donc sans montant inscrit ni
+    écriture d'administration. Une fonction pure ne voit que ce qu'on lui
+    donne ; si une lecture d'affichage a échoué, ``void_invoice_report``
+    relit tout dans sa transaction et refuse, et la route affiche le motif
+    en bandeau.
 
     UNE seule autorité, consommée par ``update_status`` ET par la fiche : un
     bouton qui s'affiche pour être refusé est un défaut de conception.
@@ -207,7 +215,11 @@ def available_transitions(
     paid = int(invoice.get("amount_paid", 0) or 0) > 0
     if current == "payée" and paid:
         allowed = tuple(s for s in allowed if s != "envoyée")
-    if paid or any(_standing_admin_encaissement(r) for r in (receipts or ())):
+    if (
+        paid
+        or any(_standing_admin_encaissement(r) for r in (receipts or ()))
+        or any(_standing_trust_fee_payment(r) for r in (trust_payments or ()))
+    ):
         allowed = tuple(s for s in allowed if s != "annulée")
     return allowed
 
@@ -1490,7 +1502,8 @@ def void_invoice_report(
     receipt itself), « Administration » otherwise.
 
     It NEVER refuses because of a source. A source whose ``invoice_id`` is
-    empty is released (a harmless write); one that names ANOTHER invoice
+    empty is released — rewritten only if it is still flagged invoiced, so
+    an already-released row keeps its etag; one that names ANOTHER invoice
     has been billed again since — it is left untouched and reported in
     ``foreign_source_ids``; a source document that no longer exists has
     nothing to release and is reported in ``missing_source_ids``. Refusing
@@ -1628,7 +1641,13 @@ def void_invoice_report(
             if points_at and points_at != invoice_id:
                 report["foreign_source_ids"].append(source_id)
                 continue
-            releases.append((col, source_id))
+            # Already released (the race victim: invoiced False, no
+            # invoice_id): reported as released, but NOT rewritten. A
+            # « harmless » write would still regenerate its etag and stamp
+            # updated_via on a row nothing changed — and an edit form open on
+            # that entry would then refuse its next save as stale.
+            if data.get("invoiced") or points_at:
+                releases.append((col, source_id))
             key = (
                 "released_time_entry_ids" if col == TE_COLLECTION
                 else "released_expense_ids"

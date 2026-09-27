@@ -292,6 +292,55 @@ def test_la_fiche_n_affiche_pas_annuler_sur_une_facture_payee_en_partie(
     assert f"/factures/{INV}/status" in page       # « Marquer en retard »
 
 
+def test_un_paiement_d_honoraires_debout_retire_annuler():
+    """Le cas que ni amount_paid ni les écritures d'administration ne voient :
+    la recette automatique d'un paiement d'honoraires a échoué (fail-open)."""
+    inv = {"status": "envoyée", "amount_paid": 0}
+    debout = {"purpose": "virement_honoraires", "status": "compensée"}
+    assert invoice_model.available_transitions(inv, trust_payments=[debout]) == (
+        "en_retard",)
+    for inerte in (dict(debout, reversed_by_id="r1"),
+                   dict(debout, status="annulée"),
+                   {"purpose": "correction", "status": "en_circulation"}):
+        assert invoice_model.available_transitions(
+            inv, trust_payments=[inerte]) == ("en_retard", "annulée")
+
+
+def test_la_fiche_n_affiche_pas_annuler_sous_un_paiement_d_honoraires_seul(
+    fake, client,
+):
+    """Revue B1 : l'étape livrée laissait « Annuler » s'afficher pour être
+    refusé dans ce cas — la fiche ne lisait que les écritures
+    d'administration. (Vérifié en retirant la lecture du fidéicommis de la
+    route : le formulaire /void revenait et le test tombait.)"""
+    _billed_invoice(fake)
+    fake.seed("trust_transactions/t1", {
+        "invoice_id": INV, "purpose": "virement_honoraires",
+        "status": "compensée", "amount": 10000,
+    })
+    page = client.get(f"/factures/{INV}").get_data(as_text=True)
+    assert f"/factures/{INV}/void" not in page
+    assert f"/factures/{INV}/status" in page       # « Marquer en retard »
+
+
+def test_la_fiche_ne_lit_le_fidéicommis_que_si_annuler_serait_offert(
+    fake, client,
+):
+    """Une requête de plus seulement quand elle peut changer la réponse.
+    (Une requête n'inscrit que les documents qu'elle RENVOIE : la ligne semée
+    est ce qui rend son absence probante.)"""
+    _billed_invoice(fake, amount_paid=10000)
+    fake.seed("trust_transactions/t1", {
+        "invoice_id": INV, "purpose": "virement_honoraires",
+        "status": "compensée", "amount": 10000,
+    })
+    fake.reset_logs()
+    client.get(f"/factures/{INV}")
+    assert not any("trust_transactions" in p
+                   for r in fake.reads for p in r.paths), [
+        r.paths for r in fake.reads]
+
+
 def test_les_formulaires_de_la_fiche_portent_l_etag(fake, client):
     _billed_invoice(fake)
     page = client.get(f"/factures/{INV}").get_data(as_text=True)
@@ -337,6 +386,26 @@ def test_un_paiement_d_honoraires_du_fideicommis_renvoie_au_fideicommis(fake):
     assert report is None
     assert "« Fidéicommis »" in errors[0]
     assert "Administration" not in errors[0].split("(")[0]
+    _unchanged(fake, before)
+
+
+def test_un_paiement_d_honoraires_sans_recette_bloque_et_renvoie_au_fideicommis(
+    fake,
+):
+    """Le fidéicommis SEUL : amount_paid à 0, aucune écriture d'administration
+    (la recette automatique a échoué). Le test voisin sème les trois signaux à
+    la fois, si bien qu'aucun ne s'y prouvait isolément : retirer la lecture
+    du fidéicommis le laissait vert. (Vérifié : sans elle, celui-ci annule et
+    libère te1/ex1.)"""
+    _billed_invoice(fake)
+    fake.seed("trust_transactions/t1", {
+        "invoice_id": INV, "purpose": "virement_honoraires",
+        "status": "en_circulation", "amount": 10000,
+    })
+    before = fake.peek(f"invoices/{INV}")
+    report, errors = invoice_model.void_invoice_report(INV)
+    assert report is None
+    assert "« Fidéicommis »" in errors[0]
     _unchanged(fake, before)
 
 
@@ -398,6 +467,26 @@ def test_une_source_portee_a_une_autre_facture_est_laissee_et_signalee(fake):
         assert stored["invoiced"] is False and stored["invoice_id"] is None
     assert fake.peek(f"invoices/{INV}")["status"] == "annulée"
     assert fake.peek("expenses/gone") is None      # rien de créé
+
+
+def test_une_source_deja_liberee_n_est_pas_reecrite(fake):
+    """Revue B1 : la victime de la course (invoiced False, sans invoice_id)
+    était « libérée » par une écriture — etag régénéré, updated_via tamponné
+    sur une ligne que rien ne changeait, et un formulaire d'édition ouvert
+    sur elle refusait ensuite sa sauvegarde comme périmée."""
+    _invoice(fake)
+    _source(fake, "timeentries", "te1")
+    _source(fake, "timeentries", "te3", invoice_id=None, invoiced=False)
+    _line(fake, "l1", "te1")
+    _line(fake, "l3", "te3")
+    untouched = fake.peek("timeentries/te3")
+    report, errors = invoice_model.void_invoice_report(INV)
+    assert errors == [], errors
+    assert report["released_time_entry_ids"] == ["te1", "te3"]
+    assert fake.peek("timeentries/te3") == untouched
+    assert fake.peek("timeentries/te1")["etag"] != "etag-te1"
+    written = {path for c in fake.commits for _kind, path in c.ops}
+    assert "timeentries/te3" not in written
 
 
 def test_apres_l_annulation_la_suppression_ne_trouve_aucune_source_accrochee(
@@ -484,6 +573,25 @@ def test_la_route_annuler_signale_ce_qu_elle_a_laisse_de_cote(fake, client):
     page = client.get(resp.location).get_data(as_text=True)
     assert "AUTRE facture" in page
     assert fake.peek(f"invoices/{INV}")["status"] == "annulée"
+
+
+def test_la_route_supprimer_dit_son_refus(fake, client):
+    """Revue B1 : /delete avait le même défaut que /status et /void — la
+    branche non-htmx redirigeait sans rien, la branche htmx rendait un 422
+    que htmx n'échange jamais. (Vérifié sur l'ancienne route : aucun
+    `erreur=` dans la redirection.)"""
+    _invoice(fake, status="annulée")
+    _source(fake, "timeentries", "stranded")      # la nomme encore
+    resp = client.post(f"/factures/{INV}/delete")
+    assert resp.status_code == 302
+    erreur = parse_qs(urlparse(resp.location).query)["erreur"][0]
+    assert "référencent encore" in erreur
+    page = client.get(resp.location).get_data(as_text=True)
+    assert "référencent encore cette" in page
+    assert fake.peek(f"invoices/{INV}") is not None
+    htmx = client.post(f"/factures/{INV}/delete",
+                       headers={"HX-Request": "true"})
+    assert htmx.status_code == 302 and "erreur=" in htmx.headers["HX-Redirect"]
 
 
 def test_une_annulation_sans_reste_ne_porte_aucun_bandeau(fake, client):

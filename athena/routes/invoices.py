@@ -50,6 +50,7 @@ from models.admin_ledger import (
     list_invoice_receipts,
 )
 from models.audit_event import record_deletion
+from models.trust import list_invoice_fee_payments
 from models.dossier import get_dossier, list_dossiers
 from models.partie import get_partie
 from models.time_entry import get_unbilled_time_entries
@@ -418,6 +419,17 @@ def invoice_detail(invoice_id: str) -> str:
     # conception. Les écritures déjà lues lui sont remises : une écriture
     # debout sous un amount_paid à 0 (la dérive) ferme aussi « Annuler ».
     transitions = available_transitions(invoice, receipts=paiements)
+    if "annulée" in transitions:
+        # Le dernier cas : un paiement d'honoraires du fidéicommis debout
+        # dont la recette d'administration automatique a échoué (fail-open)
+        # — ni montant inscrit ni écriture d'administration, mais
+        # void_invoice_report refuserait. Lu seulement quand « Annuler »
+        # serait autrement offert : une requête de plus, jamais sur une
+        # facture déjà fermée à l'annulation.
+        transitions = available_transitions(
+            invoice, receipts=paiements,
+            trust_payments=list_invoice_fee_payments(invoice_id),
+        )
 
     ctx = _template_context()
     ctx.update(
@@ -684,10 +696,11 @@ def invoice_delete(invoice_id: str) -> str:
         )
 
     if not success:
-        target = url_for("invoices.invoice_detail", invoice_id=invoice_id)
-        if _is_htmx():
-            return f'<div class="text-red-600 text-sm p-2">{escape(error)}</div>', 422
-        return redirect(target)
+        # Same bounce as /status and /void: this button is a full-page form,
+        # the old non-htmx branch redirected with nothing, and the htmx
+        # branch answered a 422 htmx never swaps — the refusal (sources
+        # still attached, say) vanished without a word.
+        return _back_to_detail(invoice_id, erreur=error)
 
     target = safe_internal_redirect(return_to, url_for("invoices.invoice_list"))
     if _is_htmx():

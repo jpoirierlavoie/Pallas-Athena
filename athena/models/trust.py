@@ -1978,6 +1978,34 @@ def list_dossier_transactions(dossier_id: str, limit: int = 10) -> list[dict]:
     return merged[:limit]
 
 
+def list_invoice_fee_payments(invoice_id: str) -> list[dict]:
+    """The trust entries imputed on an Athéna invoice (``invoice_id ==``).
+
+    A DISPLAY aid for the invoice sheet, which must not offer « Annuler » on
+    an invoice a standing « paiement d'honoraires » still settles —
+    ``models.invoice.void_invoice_report`` refuses that void, and a button
+    shown only to be refused is a design defect. The case it closes is the
+    one the administration receipts cannot: the automatic admin recette of a
+    fee payment failed (that orchestration is fail-open), so ``amount_paid``
+    is still 0 and no admin row names the invoice.
+
+    Fails OPEN (``[]``), like ``admin_ledger.list_invoice_receipts``: the
+    void re-reads these rows INSIDE its own transaction and refuses there,
+    so a failed read here costs a refusal banner, never a wrong write.
+    Single-field equality — the automatic index, no composite.
+    """
+    if not invoice_id:
+        return []
+    try:
+        q = db.collection(TRANSACTIONS_COLLECTION).where(
+            filter=FieldFilter("invoice_id", "==", invoice_id)
+        )
+        return [snap.to_dict() or {} for snap in q.stream()]
+    except Exception:
+        log_unexpected("trust list_invoice_fee_payments failed")
+        return []
+
+
 def get_trust_summary(dossier_id: str) -> dict:
     """Per-dossier trust picture for the dossier tab + MCP. ``in_transit`` is
     ``book - cleared`` per client (deposits in transit; annulée pairs net out),

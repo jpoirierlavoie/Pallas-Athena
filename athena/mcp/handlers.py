@@ -3947,8 +3947,12 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
     invoice and the way out instead of surfacing a bare model error. (It
     was written for the `dry_run` contract, removed 2026-08-27, and is
     kept for the message.) Note the remedy named is real — voiding
-    the invoice in the application releases every source (``void_invoice``
-    sets invoiced back to False), which is the ONE way back.
+    the invoice in the application releases every source still attached to
+    it (``void_invoice`` sets invoiced back to False), which is the ONE way
+    back. Since 2026-09-26 that void is REFUSED while a payment stands on
+    the invoice (reverse it first, in « Administration » or « Fidéicommis »);
+    the message below does not say so yet — a connector-visible text, it
+    moves with the Lot 3 text commit and its consent train.
     """
     if not row.get("invoiced"):
         return
