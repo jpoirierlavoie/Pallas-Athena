@@ -1754,6 +1754,61 @@ Notes:
   Then update BOTH copies of the claude.ai skill `pallas-athena`: the
   protocol is no longer read-only — creation, fields, a step's status as a
   target (never a toggle), with the step's OWN etag for step edits.
+- **The calendar through the connector (lot 1b, L7 — `update_hearing`,
+  `create_hearing_series`, `decide_rendez_vous`; `create_hearing` and
+  `list_hearings` gain arguments):** three more `athena:write` tools in the
+  SAME consent train as L5/L6 (or a train of its own if they have shipped:
+  revoke, remove, push, re-add, tick). `decide_rendez_vous` is the
+  connector's FIRST OUTBOUND effect — refusing a Bookings request cancels the
+  client's Outlook meeting, which notifies him — so read the new consent
+  screen before ticking: a « Décider des demandes de rendez-vous Bookings »
+  block (it quotes the fixed text « Rendez-vous refusé par le juriste. »),
+  calendar bullets in the AGENDA block, a new « jamais » bullet (« rédiger un
+  message destiné à un client ou à un tiers »), and, in the READ paragraph,
+  the pending Bookings requests with the requester's name and email — which
+  a READ-ONLY token can now see too. No index, no data migration, no cron
+  change, no Tailwind class, no web form change. `tools/list` then counts
+  **60** (27 read, 33 write); `decide_rendez_vous` alone carries
+  `openWorldHint: true`, and it and `create_hearing_series` refuse a call
+  without an `idempotency_key`. Then, on a scratch dossier:
+  1. *A reschedule keeps the Montréal hour and the duration.*
+     `create_hearing` timed on a late-October day (09:00–10:30), then
+     `update_hearing` with only a November `date` (after the daylight-saving
+     change): `list_hearings` reads 09:00–10:30 `-05:00`, a
+     `REPORT sync-collection` of `/dav/dossier-{id}/` lists the event, the
+     phone shows 09:00, and the Outlook copy follows within 10 minutes.
+     `status: annulée`: `outlook_mirror: "removed"`, the Outlook copy is gone
+     within 10 minutes, the phone shows it cancelled.
+  2. *A series is one write, and an occurrence moves only detached.*
+     `create_hearing_series` without a key: refused, nothing created. With
+     one (`hebdomadaire`, `count: 3`): the phone receives the three events in
+     ONE sync, and `list_hearings` with `serie_id` lists them. `update_hearing`
+     with another `dossier_id` on one occurrence: refused, naming
+     `detach_from_series`; with `detach_from_series: true` in the same call:
+     `detached: true`, and a `REPORT sync-collection` of the OLD collection
+     lists it as deleted. The same series call with the SAME key again:
+     `idempotent_replay: true`, still three events.
+  3. *The decision reaches the client once, with the fixed text.* Book a
+     « Bookings with me » slot from an ALIAS mailbox (never a real client —
+     a refusal emails the booker). `list_hearings` with
+     `bookings: "pending"` lists it with its etag and the alias. `decide_rendez_vous` `refuser` with a
+     wrong `expected_etag`: refused, and NO cancellation reaches the alias.
+     With the listed etag: the alias receives Outlook's cancellation carrying
+     « Rendez-vous refusé par le juriste. », and the result reads
+     `graph_cancelled: true`, `client_notified: true`. The same call with the
+     SAME key: `idempotent_replay: true` and no second mail.
+  4. *A confirmed Bookings rendez-vous is edited locally only.* Book a
+     second slot, `decide_rendez_vous` `confirmer` with `lier_partie: false`
+     (or true when a contact carries the alias): it appears in the calendar
+     and on the phone. `update_hearing` with another `start_time` on it: the
+     result carries the warning that Outlook, the client and free/busy are
+     NOT updated, `outlook_mirror: "not_mirrored"` — and the Outlook meeting
+     is indeed unchanged.
+  Then update BOTH copies of the claude.ai skill `pallas-athena`: events are
+  editable (reschedule, status, move, detach), series can be created (key
+  required), and Bookings requests can be decided — with the warning that a
+  refusal notifies the client, and that editing a confirmed Bookings
+  rendez-vous leaves Outlook and the client untouched.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
