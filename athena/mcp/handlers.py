@@ -3385,8 +3385,11 @@ def _entity_write_result(
     dossier-array additions are not DAV-exposed and deliberately do NOT
     fake those keys.
 
-    ``wrote=False`` means the call reached a NO-OP — today only
-    ``complete_task`` on a task already in the requested state. Nothing
+    ``wrote=False`` means the call reached a NO-OP — ``complete_task`` on
+    a task already in the requested state, and since lot 1b every agenda
+    edit whose values are all already stored (``update_task``,
+    ``update_note``, ``reopen_task``, ``update_hearing``, the protocol
+    tools, an ``edit_analyse`` that changes nothing). Nothing
     was stored, so nothing must sync: bumping a CTag there would tell
     DavX5 to re-fetch a collection that did not change, and the two DAV
     warnings would describe a write that never happened. This carried on
@@ -3402,8 +3405,9 @@ def _entity_write_result(
     what it did catch the day ``wrote`` replaced ``dry_run`` here.
 
     *previous_dossier_id* — where the record was BEFORE this write — is for
-    a write that can MOVE a DAV-exposed record to another dossier (Lot 1's
-    movers; no tool passes it yet). Passed, the resync is the full
+    a write that can MOVE a DAV-exposed record to another dossier (lot
+    1b's movers: ``update_task``, ``update_note``, ``update_hearing``).
+    Passed, the resync is the full
     relocation (:func:`_dav_resync`) and the payload gains
     ``previous_collection_cleared``: ``false`` only when the record moved
     and the OLD collection could not be told it left — a stale copy may

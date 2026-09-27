@@ -1678,21 +1678,50 @@ Notes:
      « Ce rendez-vous a changé… Outlook n'a pas été touché », no email.
      Reload and confirm it: it enters the calendar and the phone (a
      `REPORT sync-collection` of `/dav/general/` returns a new token).
-- **The agenda edits through the connector (lot 1b, L5 — `update_task`,
-  `reopen_task`, `update_note`, `edit_analyse`):** new `athena:write` tools,
-  and the scope is frozen at issuance — so this is a CONSENT TRAIN release,
-  never an ordinary deploy: `python -m scripts.revoke_mcp_tokens` and remove
-  the connector in claude.ai BEFORE pushing; deploy the lot 1b MCP commits in
-  one push (`MCP_WRITE_ENABLED` stays `"true"`); re-add the connector and tick
-  « Autoriser les écritures » under the new screen (a new « Tenir l'agenda et
-  les notes » paragraph; the « jamais » list no longer says « rouvrir une
-  tâche » and now says « défaire une annulation en silence »). No index, no
-  data migration, no cron change, no Tailwind class. `tools/list` then counts
-  **53** (27 read, 26 write) — more once the rest of lot 1b lands. Then, on
-  a scratch dossier:
+- **Lot 1b — the agenda through the connector (ONE consent train, steps
+  L5–L8):** eleven new `athena:write` tools — `update_task`, `reopen_task`,
+  `update_note`, `edit_analyse` (L5); `create_protocol`, `update_protocol`,
+  `add_protocol_step`, `update_protocol_step` (L6); `update_hearing`,
+  `create_hearing_series`, `decide_rendez_vous` (L7) — plus new arguments on
+  `create_hearing` (modality, link, reminder, status) and two new READ modes
+  of `list_hearings` (`serie_id`; `bookings: "pending"`, which shows the
+  requester's name and email to ANY token, a read-only one included).
+  `decide_rendez_vous` is the connector's FIRST OUTBOUND effect: refusing a
+  Bookings request cancels the client's Outlook meeting, which notifies him.
+  The scope is frozen at issuance and a new read mode reaches the token in
+  force the moment it deploys, so this is a CONSENT TRAIN, never an ordinary
+  deploy — and the four steps ship in ONE push:
+  1. `python -m scripts.revoke_mcp_tokens` and remove the connector in
+     claude.ai BEFORE pushing.
+  2. Push the lot 1b commits as one deploy. `MCP_WRITE_ENABLED` stays
+     `"true"` — re-consenting while it is `"false"` yields a read-only grant
+     without a word.
+  3. Re-add the connector and READ the new screen before ticking
+     « Autoriser les écritures »: a « Tenir l'agenda, le calendrier, les
+     notes et le protocole » block (it says that reopening a task reopens
+     its protocol step and a protocol the last step had closed); a
+     « Décider des demandes de rendez-vous Bookings » block (it quotes the
+     fixed text « Rendez-vous refusé par le juriste. » the client receives);
+     the READ paragraph naming the pending Bookings requests; and, in the
+     « jamais » list, « défaire une annulation en silence » and « rédiger un
+     message destiné à un client ou à un tiers » where « rouvrir une tâche »
+     used to be, « supprimer quoi que ce soit » now reading « … dans Athéna
+     — annuler une tâche ou un événement les conserve ».
+  4. `tools/list` counts **60** (27 read, 33 write); `decide_rendez_vous`
+     alone carries `openWorldHint: true`, and it and `create_hearing_series`
+     list `idempotency_key` as required.
+
+  No index, no data migration, no cron change, no Tailwind class, no web
+  form change (the models' `require_active` flag is passed by the connector
+  only). Then, on scratch dossiers — DavX5 fails silently, so the
+  `REPORT sync-collection` is the proof and the phone the confirmation:
+
+  **A. Tasks, notes, the théorie (L5).**
   1. *A move reaches the phone.* `update_task` with another `dossier_id`: a
      `REPORT sync-collection` of the OLD `/dav/dossier-{id}/` (with its last
-     token) lists the task as deleted, the new collection lists it.
+     token) lists the task as deleted, the new collection lists it; sync jtx
+     on the phone — the task has left the old dossier's list and sits in the
+     new one, once. The same with `update_note` on an ordinary note.
   2. *A reopen follows its step, or does nothing.* On a task whose protocol
      step the cascade closed, `reopen_task`: the step reopens and the
      protocol is « actif » again. With a second protocol made actif first,
@@ -1704,19 +1733,8 @@ Notes:
      operations creates it (`mode: created`), then one `append` on bloc F
      lands at the end of F only. Delete the « ## Bloc F » heading in the app
      and try again: refused, naming F, nothing written.
-  Then update BOTH copies of the claude.ai skill `pallas-athena`: the théorie
-  is no longer read-only, notes and tasks are editable, a task can be
-  reopened — each with the `expected_etag` workflow.
-- **The protocol through the connector (lot 1b, L6 — `create_protocol`,
-  `update_protocol`, `add_protocol_step`, `update_protocol_step`):** four more
-  `athena:write` tools in the SAME consent train as L5 (if L5 has not shipped
-  yet, they travel in its push; if it has, this is a train of its own:
-  revoke, remove, push, re-add, tick). The consent screen's AGENDA paragraph
-  now reads « Tenir l'agenda, les notes et le protocole » with two protocol
-  bullets. No index, no data migration, no cron change, no Tailwind class;
-  the web forms are unchanged (the model's new `require_active` flag is
-  passed by the connector only). `tools/list` then counts **57** (27 read, 30
-  write). Then, on a scratch dossier with no protocol:
+
+  **B. The protocol (L6)**, on a dossier with no protocol:
   1. *Creation makes no task unless asked.* `create_protocol`
      (`cq_simplifié`, a start date): every step comes back with its etag,
      `tasks_created: 0`, and a `REPORT sync-collection` of
@@ -1751,35 +1769,26 @@ Notes:
      written and a warning says the date stays a suggestion (the connector
      has no confirmation flag; « Confirmer cette date » in the application
      does it). A DIFFERENT date is confirmed (`date_confirmed_now: true`).
-  Then update BOTH copies of the claude.ai skill `pallas-athena`: the
-  protocol is no longer read-only — creation, fields, a step's status as a
-  target (never a toggle), with the step's OWN etag for step edits.
-- **The calendar through the connector (lot 1b, L7 — `update_hearing`,
-  `create_hearing_series`, `decide_rendez_vous`; `create_hearing` and
-  `list_hearings` gain arguments):** three more `athena:write` tools in the
-  SAME consent train as L5/L6 (or a train of its own if they have shipped:
-  revoke, remove, push, re-add, tick). `decide_rendez_vous` is the
-  connector's FIRST OUTBOUND effect — refusing a Bookings request cancels the
-  client's Outlook meeting, which notifies him — so read the new consent
-  screen before ticking: a « Décider des demandes de rendez-vous Bookings »
-  block (it quotes the fixed text « Rendez-vous refusé par le juriste. »),
-  calendar bullets in the AGENDA block, a new « jamais » bullet (« rédiger un
-  message destiné à un client ou à un tiers »), and, in the READ paragraph,
-  the pending Bookings requests with the requester's name and email — which
-  a READ-ONLY token can now see too. No index, no data migration, no cron
-  change, no Tailwind class, no web form change. `tools/list` then counts
-  **60** (27 read, 33 write); `decide_rendez_vous` alone carries
-  `openWorldHint: true`, and it and `create_hearing_series` refuse a call
-  without an `idempotency_key`. Then, on a scratch dossier:
-  1. *A reschedule keeps the Montréal hour and the duration.*
-     `create_hearing` timed on a late-October day (09:00–10:30), then
-     `update_hearing` with only a November `date` (after the daylight-saving
-     change): `list_hearings` reads 09:00–10:30 `-05:00`, a
+
+  **C. The calendar and Bookings (L7).**
+  1. *A reschedule keeps the Montréal hour and the duration — and Outlook
+     follows.* `create_hearing` timed on a late-October day (09:00–10:30),
+     then `update_hearing` with only a November `date` (after the
+     daylight-saving change): `list_hearings` reads 09:00–10:30 `-05:00`, a
      `REPORT sync-collection` of `/dav/dossier-{id}/` lists the event, the
-     phone shows 09:00, and the Outlook copy follows within 10 minutes.
-     `status: annulée`: `outlook_mirror: "removed"`, the Outlook copy is gone
-     within 10 minutes, the phone shows it cancelled.
-  2. *A series is one write, and an occurrence moves only detached.*
+     phone shows 09:00, and the Outlook copy moves to the new day within 10
+     minutes (`outlook_mirror: "follows"`). `status: annulée`:
+     `outlook_mirror: "removed"`, the Outlook copy is gone within 10 minutes,
+     the phone shows it cancelled.
+  2. *A status set here reaches the phone exactly.* `update_hearing`
+     `status: reportée` on another scratch event (`D` its dossier, `HID` its
+     id, `DAV_USER` as in the lot 0b checks), then
+     `curl -s -u "${DAV_USER:?}" "https://yourdomain.example/dav/dossier-$D/$HID.ics" | grep STATUS`:
+     `STATUS:TENTATIVE` and `X-PALLAS-STATUS:reportée`. Move it by an hour
+     in the Android calendar, sync, and `list_hearings` still reads
+     `reportée` — if it reads `à_confirmer`, DavX5 dropped the X-property
+     (the lot 0b device check): degraded, never corrupted; report it.
+  3. *A series is one write, and an occurrence moves only detached.*
      `create_hearing_series` without a key: refused, nothing created. With
      one (`hebdomadaire`, `count: 3`): the phone receives the three events in
      ONE sync, and `list_hearings` with `serie_id` lists them. `update_hearing`
@@ -1788,27 +1797,41 @@ Notes:
      `detached: true`, and a `REPORT sync-collection` of the OLD collection
      lists it as deleted. The same series call with the SAME key again:
      `idempotent_replay: true`, still three events.
-  3. *The decision reaches the client once, with the fixed text.* Book a
+  4. *A refusal reaches the client once, with the fixed text.* Book a
      « Bookings with me » slot from an ALIAS mailbox (never a real client —
      a refusal emails the booker). `list_hearings` with
-     `bookings: "pending"` lists it with its etag and the alias. `decide_rendez_vous` `refuser` with a
-     wrong `expected_etag`: refused, and NO cancellation reaches the alias.
-     With the listed etag: the alias receives Outlook's cancellation carrying
-     « Rendez-vous refusé par le juriste. », and the result reads
-     `graph_cancelled: true`, `client_notified: true`. The same call with the
-     SAME key: `idempotent_replay: true` and no second mail.
-  4. *A confirmed Bookings rendez-vous is edited locally only.* Book a
+     `bookings: "pending"` lists it with its etag and the alias.
+     `decide_rendez_vous` `refuser` with a wrong `expected_etag`: refused,
+     and NO cancellation reaches the alias. With the listed etag: the alias
+     receives Outlook's cancellation carrying « Rendez-vous refusé par le
+     juriste. », and the result reads `graph_cancelled: true`,
+     `client_notified: true`. The same call with the SAME key:
+     `idempotent_replay: true` and no second mail.
+  5. *A confirmed Bookings rendez-vous is edited locally only.* Book a
      second slot, `decide_rendez_vous` `confirmer` with `lier_partie: false`
      (or true when a contact carries the alias): it appears in the calendar
      and on the phone. `update_hearing` with another `start_time` on it: the
      result carries the warning that Outlook, the client and free/busy are
      NOT updated, `outlook_mirror: "not_mirrored"` — and the Outlook meeting
      is indeed unchanged.
-  Then update BOTH copies of the claude.ai skill `pallas-athena`: events are
-  editable (reschedule, status, move, detach), series can be created (key
-  required), and Bookings requests can be decided — with the warning that a
-  refusal notifies the client, and that editing a confirmed Bookings
-  rendez-vous leaves Outlook and the client untouched.
+
+  Then update BOTH copies of the claude.ai skill `pallas-athena` the same
+  day. What lot 1 made false there: « 49 outils : 27 en lecture, 22 en
+  écriture » (now 60: 27 + 33); the théorie de la cause « lecture seule, ne
+  s'édite que dans l'application » (it is `edit_analyse`'s, by bloc, with
+  the etag); « une note créée ne peut être ni éditée » and « tâches,
+  audiences … créés définitivement » (`update_note`, `update_task`,
+  `update_hearing`); « rouvrir une tâche … impossible ici » and « créer un
+  protocole … impossible, par conception » (`reopen_task`,
+  `create_protocol`); « `complete_task` — seul changement de statut »;
+  « `create_hearing` … jamais modifiable ni supprimable ici » (modifiable
+  now, never deletable) — and, false since lot 0a already, « `en_cours` sur
+  une tâche déjà terminée rouvre l'étape liée » (refused; that is
+  `reopen_task`); and add
+  the `expected_etag` workflow, the two cascades (a completion can close a
+  protocol, a reopen reactivates it) and the Bookings warnings (a refusal
+  notifies the client with a fixed text; editing a confirmed rendez-vous
+  leaves Outlook and the client untouched).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

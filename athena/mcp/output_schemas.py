@@ -717,7 +717,8 @@ def _entity_write_result(
 
     *relocates* — for a tool whose write can MOVE the record to another
     dossier, and whose handler therefore passes ``previous_dossier_id`` to
-    ``handlers._entity_write_result`` (Lot 1's movers; none yet). It adds
+    ``handlers._entity_write_result`` (lot 1b's movers: update_task,
+    update_note, update_hearing). It adds
     ``previous_collection_cleared``, REQUIRED because such a handler emits
     it on every call. A tool that does not relocate never declares it —
     ``_obj`` requires every listed key, so declaring it on a tool that
