@@ -1065,8 +1065,9 @@ def list_series(serie_id: str) -> list[dict]:
 def delete_series(
     serie_id: str, *, from_date: "date | None" = None
 ) -> tuple[list[dict], list[str]]:
-    """Supprimer une série — les occurrences, leurs pierres tombales et le
-    bump de CTag dans UN SEUL lot.
+    """Supprimer une série — les occurrences, leurs pierres tombales et les
+    bumps de CTag dans UN SEUL lot, chaque occurrence dans la collection DAV
+    de SON dossier.
 
     ``from_date`` borne la portée « cette occurrence et les suivantes » : une
     occurrence dont le jour civil précède cette date n'est jamais touchée.
@@ -1098,22 +1099,31 @@ def delete_series(
     if not rows:
         return [], []
 
-    # 2N + 1 opérations (N suppressions + N pierres tombales + 1 bump).
-    if 2 * len(rows) + 1 > _BATCH_CHUNK:
+    # Chaque occurrence est retirée de SA collection DAV. Une occurrence
+    # rattachée à un autre dossier (le formulaire web et le PUT DAV le
+    # permettent) vit dans une autre collection : ne tombstoner que celle de
+    # la première ligne la supprimait de Firestore en la laissant pour
+    # toujours sur le téléphone. Ordre d'apparition préservé, déterministe.
+    by_collection: dict[str, list[str]] = {}
+    for row in rows:
+        by_collection.setdefault(
+            collection_for(row.get("dossier_id", "")), []
+        ).append(row["id"])
+
+    # 2N + K opérations (N suppressions + N pierres tombales + un bump par
+    # collection touchée).
+    if 2 * len(rows) + len(by_collection) > _BATCH_CHUNK:
         return [], [
             "Cette série est trop longue pour être supprimée d'un seul bloc."
         ]
 
-    dossier_id = rows[0].get("dossier_id", "")
-    sync_name = collection_for(dossier_id)
-    ids = [h["id"] for h in rows]
-
     try:
         batch = db.batch()
-        for hid in ids:
-            batch.delete(db.collection(COLLECTION).document(hid))
-        token = bump_ctag_in_batch(batch, sync_name)
-        record_tombstones_in_batch(batch, sync_name, ids, token)
+        for row in rows:
+            batch.delete(db.collection(COLLECTION).document(row["id"]))
+        for sync_name, ids in by_collection.items():
+            token = bump_ctag_in_batch(batch, sync_name)
+            record_tombstones_in_batch(batch, sync_name, ids, token)
         batch.commit()
     except Exception:
         log_unexpected("hearing series delete failed")
