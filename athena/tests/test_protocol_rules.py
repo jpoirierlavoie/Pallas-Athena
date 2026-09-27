@@ -820,6 +820,63 @@ def test_an_explicit_confirmation_keeps_the_date_and_marks_it(fake):
     assert stored["date_confirmed"] is True and stored["date_confirmed_at"]
 
 
+def test_a_legacy_spurious_confirmation_can_be_confirmed_for_real(fake):
+    """Revue L2. Une étape CS dont le drapeau vient d'une simple note
+    d'AVANT le lot 1a (``date_confirmed`` vrai, aucun ``date_confirmed_at``,
+    date toujours égale au gabarit) est une SUGGESTION pour le recalcul —
+    qui la déplace. La page la disait pourtant confirmée (ni badge, ni
+    case), et la case, postée quand même, était ignorée : aucun moyen de la
+    confirmer sans changer sa date. Le prédicat est désormais celui du
+    recalcul, et la confirmation explicite l'estampille."""
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 45, date_confirmed=True)
+    proto = fake.peek(f"protocols/{P}")
+    assert protocol_model.date_needs_confirmation(proto, _step_doc(fake, "s1"))
+    _s, errors = protocol_model.update_step(P, "s1", {"confirm_date": True})
+    assert errors == []
+    stored = _step_doc(fake, "s1")
+    assert stored["date_confirmed_at"] is not None
+    assert not protocol_model.date_needs_confirmation(proto, stored)
+    doc, _ = protocol_model.update_protocol(P, {"start_date": START2})
+    assert doc["_recompute"]["preserved"] == [
+        {"step_id": "s1", "reason": "confirmed"}]
+
+
+def test_a_moved_cs_date_is_a_suggestion_again(fake):
+    """Revue L2 : une étape CS que la nouvelle date de début DÉPLACE n'était
+    pas vraiment confirmée (sinon elle serait conservée) ; sa nouvelle date
+    est celle du gabarit. Le drapeau hérité d'une simple note ne doit plus
+    la dire confirmée — ni à la page, ni au connecteur qui lit
+    ``date_confirmed``."""
+    _protocol(fake, ptype="cs_ordinaire")
+    _cs_step(fake, "s1", 1, 45, date_confirmed=True)
+    doc, errors = protocol_model.update_protocol(P, {"start_date": START2})
+    assert errors == [] and [m["step_id"] for m in
+                             doc["_recompute"]["moved"]] == ["s1"]
+    stored = _step_doc(fake, "s1")
+    assert stored["date_confirmed"] is False
+    assert stored.get("date_confirmed_at") is None
+    (returned,) = doc["steps"]
+    assert returned["date_confirmed"] is False
+
+
+def test_confirmation_is_only_for_a_cs_suggestion(fake):
+    """A CQ step (the law's date) and a custom step are never « to
+    confirm »; neither is a CS date the lawyer truly confirmed."""
+    _protocol(fake, ptype="cq_simplifié")
+    cq = {**protocol_model._default_step(), "deadline_offset_days": 10,
+          "date_confirmed": True}
+    assert not protocol_model.date_needs_confirmation(
+        fake.peek(f"protocols/{P}"), cq)
+    cs_proto = {"protocol_type": "cs_ordinaire", "start_date": WHEN}
+    custom = {**protocol_model._default_step(), "date_confirmed": True}
+    assert not protocol_model.date_needs_confirmation(cs_proto, custom)
+    stamped = {**protocol_model._default_step(), "deadline_offset_days": 15,
+               "deadline_date": protocol_model._compute_deadline(WHEN, 15),
+               "date_confirmed": True, "date_confirmed_at": WHEN}
+    assert not protocol_model.date_needs_confirmation(cs_proto, stamped)
+
+
 def test_an_unchanged_step_save_writes_nothing(fake):
     _protocol(fake)
     _step(fake, "s1", etag="se0")

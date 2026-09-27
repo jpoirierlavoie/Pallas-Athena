@@ -960,6 +960,27 @@ def _date_truly_confirmed(
         _compute_deadline(start_date, offset))
 
 
+def date_needs_confirmation(protocol: dict, step: dict) -> bool:
+    """True while a CS template step's date is still a SUGGESTION.
+
+    What the page shows as « À modifier » and offers to confirm (« Confirmer
+    cette date »), and what :func:`update_step` accepts a ``confirm_date``
+    for. It is the recompute's own test (:func:`_date_truly_confirmed`),
+    not the raw ``date_confirmed`` flag: until lot 1a a notes-only save set
+    that flag, so a step can read ``date_confirmed = True`` and still be a
+    suggestion the next start-date change moves — the page must not call it
+    confirmed, and the lawyer must be able to confirm it for real.
+    """
+    ptype = protocol.get("protocol_type", "")
+    if ptype != "cs_ordinaire" or step.get("deadline_offset_days") is None:
+        return False
+    return not _date_truly_confirmed(ptype, protocol.get("start_date"), step)
+
+
+# What a start-date change writes on a CS step it MOVES (_recompute_plan).
+_MOVED_CS_RESET = {"date_confirmed": False, "date_confirmed_at": None}
+
+
 def _recompute_plan(
     protocol: dict, steps: list[dict], new_start: datetime
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -972,6 +993,12 @@ def _recompute_plan(
     always follow the law, completed ones excepted. ``moved`` carries
     ``{step_id, old, new, linked_task_id}``; ``preserved`` carries
     ``{step_id, reason}`` with reason ``completed`` or ``confirmed``.
+
+    A moved CS step is, by construction, NOT truly confirmed (a confirmed
+    one is preserved): its new date is the template's suggestion, so its
+    stored ``date_confirmed``/``date_confirmed_at`` are cleared with the
+    move (:data:`_MOVED_CS_RESET`) — a legacy flag set by a notes-only save
+    must not keep calling « confirmed » a date the system just computed.
     """
     ptype = protocol.get("protocol_type", "")
     old_start = protocol.get("start_date")
@@ -998,6 +1025,8 @@ def _recompute_plan(
                         "linked_task_id": step.get("linked_task_id"),
                     })
                     step["deadline_date"] = new_deadline
+                    if ptype == "cs_ordinaire":
+                        step.update(_MOVED_CS_RESET)
         after.append(step)
     return moved, preserved, after
 
@@ -1101,11 +1130,14 @@ def update_protocol(
         if start_changed:
             moved, preserved, steps = _recompute_plan(
                 existing, steps, merged["start_date"])
+            reset = (_MOVED_CS_RESET
+                     if existing.get("protocol_type") == "cs_ordinaire"
+                     else {})
             for entry in moved:
                 txn.update(
                     proto_ref.collection(STEPS_SUBCOLLECTION).document(
                         entry["step_id"]),
-                    {"deadline_date": entry["new"],
+                    {"deadline_date": entry["new"], **reset,
                      **provenance.update_fields(now)},
                 )
             merged["end_date"] = _compute_end_date(merged["start_date"], steps)
@@ -1303,10 +1335,11 @@ def update_step(
       reference — is locked, and the deadline cannot be cleared; a
       ``deadline_locked`` (CQ) step keeps its deadline;
     * ``date_confirmed`` is set ONLY when the deadline actually CHANGES,
-      or on an explicit ``confirm_date`` — never because the inline form
-      posted the unchanged date beside a note (it did, on every save, and
-      the recompute rule relies on the flag), stamped
-      ``date_confirmed_at``;
+      or on an explicit ``confirm_date`` of a date that is still a
+      suggestion (:func:`date_needs_confirmation` — a legacy flag set by a
+      notes-only save included) — never because the inline form posted the
+      unchanged date beside a note (it did, on every save, and the
+      recompute rule relies on the flag), stamped ``date_confirmed_at``;
     * a changed deadline refreshes the protocol's ``end_date``;
     * nothing changed → nothing written.
     """
@@ -1366,7 +1399,7 @@ def update_step(
         if errors:
             raise _Refusal(errors, "validation")
         confirmed = deadline_changed or (
-            confirm and not existing.get("date_confirmed"))
+            confirm and date_needs_confirmation(protocol, existing))
         if confirmed:
             merged["date_confirmed"] = True
             merged["date_confirmed_at"] = now

@@ -1583,7 +1583,11 @@ Notes:
   (« réactivez-le… »); a new start date no longer moves completed steps nor
   confirmed CS dates, and moves the linked tasks still on the old date; a
   note saved on a CS step no longer confirms its date (new « Confirmer cette
-  date » box); a task linked from a step can no longer change dossier. Check
+  date » box) — and a CS date « confirmed » before this deploy only by such
+  a note (still equal to the template's suggestion) now shows « À modifier »
+  again, with the box: tick it to keep the date through a start-date
+  change; a task linked from a step can no longer change dossier (except
+  back into its protocol's dossier). Check
   the phone once after the deploy:
   1. *A reopened task reactivates its protocol.* On a test dossier, create a
      protocol with one custom step and a linked task (or use the wizard's

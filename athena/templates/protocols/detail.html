@@ -242,8 +242,9 @@
                   <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full {{ step_status_colors.get(step.status, 'bg-gray-100 text-gray-600') }}">
                     {{ step_status_labels.get(step.status, step.status) }}
                   </span>
-                  {# "À modifier" badge for CS unconfirmed dates #}
-                  {% if not step.get('date_confirmed', true) and not is_completed %}
+                  {# "À modifier" badge for a CS date that is still a suggestion
+                     (date_needs_confirmation — the recompute's own test) #}
+                  {% if step._needs_confirmation and not is_completed %}
                   <span class="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-amber-100 text-amber-700">
                     À modifier
                   </span>
@@ -361,7 +362,7 @@
                 {# Confirmer la date suggérée SANS la changer : enregistrer la
                    même date ne confirme plus rien (une simple note la
                    « confirmait », et le recalcul l'aurait figée). #}
-                {% if not step.get('date_confirmed', true) %}
+                {% if step._needs_confirmation %}
                 <label class="flex items-center gap-2 text-xs text-gray-500">
                   <input type="checkbox" name="confirm_date" value="1" {{ 'checked' if sf and sf.confirm_date }}
                          class="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">

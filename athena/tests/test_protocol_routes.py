@@ -440,6 +440,24 @@ def test_a_notes_save_leaves_the_suggested_date_unconfirmed(client, fake):
     assert stored["notes"] == "Appel" and stored["date_confirmed"] is False
 
 
+def test_a_legacy_spurious_confirmation_shows_as_a_suggestion(client, fake):
+    """Revue L2 : le drapeau posé par une simple note avant le lot 1a ne
+    fait plus dire « confirmée » à la page pour une date que le recalcul
+    déplacerait — le badge et la case reviennent, et la case confirme."""
+    _protocol(fake, ptype="cs_ordinaire")
+    suggested = protocol_model._compute_deadline(WHEN, 15)
+    _step(fake, "s1", mandatory=True, deadline_offset_days=15,
+          deadline=suggested, date_confirmed=True)
+    page = client.get(f"/protocoles/{P}").get_data(as_text=True)
+    assert 'name="confirm_date"' in page and "À modifier" in page
+    _params(client.post(f"/protocoles/{P}/steps/s1", data={
+        "deadline_date": suggested.strftime("%Y-%m-%d"), "notes": "",
+        "confirm_date": "1", "expected_etag": "se-s1"}))
+    assert fake.peek(f"protocols/{P}/steps/s1")["date_confirmed_at"]
+    page = client.get(f"/protocoles/{P}").get_data(as_text=True)
+    assert 'name="confirm_date"' not in page and "À modifier" not in page
+
+
 def test_a_refused_step_addition_comes_back_as_a_banner(client, fake):
     params = _params(client.post("/protocoles/gone/steps", data={
         "title": "Plaidoirie"}))

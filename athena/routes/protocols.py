@@ -26,6 +26,7 @@ from models.protocol import (
     VALID_PROTOCOL_TYPES,
     VALID_STATUSES,
     check_overdue_steps,
+    date_needs_confirmation,
     delete_protocol,
     delete_step,
     get_protocol,
@@ -248,6 +249,9 @@ def _render_detail(
             step["_days_remaining"] = deadlines.days_until(deadline, today=today)
         else:
             step["_days_remaining"] = None
+        # « À modifier » + the confirmation box: the recompute's own test,
+        # never the raw flag (a notes-only save set it before lot 1a).
+        step["_needs_confirmation"] = date_needs_confirmation(protocol, step)
 
     return render_template("protocols/detail.html", **ctx)
 
