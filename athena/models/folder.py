@@ -1146,7 +1146,12 @@ def get_folder_breadcrumb(
 
 
 def get_folder_tree(dossier_id: str) -> list[dict]:
-    """Fetch ALL folders and build a nested tree. Returns root-level nodes."""
+    """Fetch ALL folders and build a nested tree. Returns root-level nodes.
+
+    Fails OPEN to ``[]`` — a browser listing. A caller that must tell « no
+    folder » from « unreadable » reads :func:`list_dossier_folders` and
+    builds with :func:`build_folder_tree`.
+    """
     try:
         query = db.collection(COLLECTION).where(
             filter=FieldFilter("dossier_id", "==", dossier_id)
@@ -1154,29 +1159,71 @@ def get_folder_tree(dossier_id: str) -> list[dict]:
         all_folders = [doc.to_dict() for doc in query.stream()]
     except Exception:
         return []
+    return build_folder_tree(all_folders)
 
-    # Build lookup
-    by_id: dict[str, dict] = {}
-    for f in all_folders:
-        f["children"] = []
-        by_id[f["id"]] = f
+
+def list_dossier_folders(dossier_id: str) -> list[dict]:
+    """Every folder of *dossier_id*, flat, in store order — errors PROPAGATE.
+
+    The public face of :func:`_all_folders` for a READ that must not pass
+    an outage off as « this dossier has no folder » (the connector's
+    ``list_documents`` with ``include_folders``, and the system role of a
+    document's folder, which a failed read must report as UNKNOWN rather
+    than as « ordinary folder »). The failure is logged here once.
+    """
+    try:
+        return _all_folders(dossier_id)
+    except Exception:
+        log_unexpected("folder tree read failed", dossier_id=dossier_id)
+        raise
+
+
+def build_folder_tree(folders: Iterable[dict]) -> list[dict]:
+    """The nested tree of *folders* (one dossier's) — pure, root-level nodes.
+
+    Each node is a COPY of its folder with a ``children`` list; the input
+    is left untouched. A folder whose parent is not among *folders* (a
+    dangling reference) is a root. Members of a parent cycle — which
+    :func:`move_folder` refuses to create — are reachable from no root and
+    are absent from the tree, as they always were. Siblings sort by name,
+    case-insensitively.
+    """
+    nodes = [{**f, "children": []} for f in folders if f.get("id")]
+    by_id: dict[str, dict] = {n["id"]: n for n in nodes}
 
     roots: list[dict] = []
-    for f in all_folders:
-        parent_id = f.get("parent_folder_id")
+    for node in nodes:
+        parent_id = node.get("parent_folder_id")
         if parent_id and parent_id in by_id:
-            by_id[parent_id]["children"].append(f)
+            by_id[parent_id]["children"].append(node)
         else:
-            roots.append(f)
+            roots.append(node)
 
-    # Sort children recursively
-    def sort_tree(nodes: list[dict]) -> None:
-        nodes.sort(key=lambda n: (n.get("name") or "").lower())
-        for n in nodes:
+    def sort_tree(level: list[dict]) -> None:
+        level.sort(key=lambda n: (n.get("name") or "").lower())
+        for n in level:
             sort_tree(n["children"])
 
     sort_tree(roots)
     return roots
+
+
+def system_roles(folders: Iterable[dict]) -> dict[str, str]:
+    """``{folder_id: role}`` for the SYSTEM folders among *folders*.
+
+    *folders* are ONE dossier's (all of them — the legacy rule needs the
+    root folders). A folder is the system folder of a role when it carries
+    that ``system_role`` (the one at the deterministic id first), or — no
+    folder carrying the role — when it is the oldest ROOT folder bearing
+    the role's name: the legacy « Projets » that :func:`ensure_system_folder`
+    would adopt. The same rule :func:`is_system_folder` applies, so what a
+    reader reports as protected is what the writers protect.
+    """
+    return {
+        holder["id"]: role
+        for role, holder in _role_holders(list(folders)).items()
+        if holder.get("id")
+    }
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────

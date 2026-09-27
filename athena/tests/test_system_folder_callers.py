@@ -40,6 +40,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.doc_templates as dt
     import routes.documents as rd
     import routes.invoices as ri
+    import services.gabarit_champs as champs
     import services.gabarits as sg
     from models import folder as folder_model
 
@@ -73,9 +74,12 @@ def gabarit(monkeypatch):
         "id": "t1", "name": "Lettre", "placeholders": [], "category": "autre",
         "version": 1,
     })
-    monkeypatch.setattr(sg, "get_dossier",
+    # The slot and value reads live in the READ half since lot 2A T6
+    # (services/gabarit_champs.py); services.gabarits re-exports them, so
+    # the patch goes where the functions look their names up.
+    monkeypatch.setattr(champs, "get_dossier",
                         lambda did: {"id": "d1", "file_number": "2026-001"})
-    monkeypatch.setattr(sg, "cabinet_dict", lambda: {})
+    monkeypatch.setattr(champs, "cabinet_dict", lambda: {})
     monkeypatch.setattr(dt, "get_template_bytes", lambda tid: b"docx")
     monkeypatch.setattr(sg, "fill_docx", lambda data, values, **kw: b"rempli")
     events: list = []

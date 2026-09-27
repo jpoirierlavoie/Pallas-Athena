@@ -690,11 +690,21 @@ def create_template(
     return merged, []
 
 
-def get_template(template_id: str) -> Optional[dict]:
+def get_template(template_id: str, *, strict: bool = False) -> Optional[dict]:
+    """The template, ``None`` when absent.
+
+    Fails OPEN to ``None`` by default (the web pages answer « introuvable »
+    either way). ``strict=True`` RAISES :class:`TemplateReadError` on a read
+    failure instead — for a caller that must never report « this template
+    does not exist » over an outage (the connector's ``list_templates``).
+    """
     try:
         doc = db.collection(COLLECTION).document(template_id).get()
         return doc.to_dict() if doc.exists else None
     except Exception as exc:
+        if strict:
+            log_unexpected("template read failed", template_id=template_id)
+            raise TemplateReadError(template_id) from exc
         logger.warning(
             "get_template failed for %s: %s",
             sanitize_log_value(template_id), type(exc).__name__,
@@ -716,13 +726,24 @@ def _read_template_strict(template_id: str) -> Optional[dict]:
 def list_templates(
     category: Optional[str] = None,
     search: Optional[str] = None,
+    *,
+    strict: bool = False,
 ) -> list[dict]:
     """All templates ordered by name; small bounded collection (tens of
-    docs) — category/search filtering happens client-side, no index."""
+    docs) — category/search filtering happens client-side, no index.
+
+    Fails OPEN to ``[]`` by default — right for the web list and the popup
+    select. ``strict=True`` RAISES :class:`TemplateReadError` instead: the
+    connector must never answer « the practice has no template » over an
+    unreadable store, a false statement a caller would act on.
+    """
     try:
         query = db.collection(COLLECTION).order_by("name")
         results = [doc.to_dict() for doc in query.stream()]
     except Exception as exc:
+        if strict:
+            log_unexpected("template list failed")
+            raise TemplateReadError("list") from exc
         logger.warning("list_templates failed: %s", type(exc).__name__)
         return []
 
@@ -1176,12 +1197,16 @@ def restore_template_version(
     )
 
 
-def list_versions(template_id: str, limit: int = 50) -> list[dict]:
+def list_versions(
+    template_id: str, limit: int = 50, *, strict: bool = False,
+) -> list[dict]:
     """The template's recorded versions, newest first — DISPLAY only.
 
     Fails open to ``[]`` (a history pane, never a guard). A template
     created before T3 lists nothing until its first replacement records
-    the file it had.
+    the file it had. ``strict=True`` RAISES :class:`TemplateReadError` on a
+    read failure instead, for a caller that must tell « no history
+    recorded » from « history unreadable » (the connector says which).
     """
     try:
         query = (
@@ -1190,8 +1215,10 @@ def list_versions(template_id: str, limit: int = 50) -> list[dict]:
             .limit(max(1, int(limit)))
         )
         return [snap.to_dict() or {} for snap in query.stream()]
-    except Exception:
+    except Exception as exc:
         log_unexpected("template versions list failed", template_id=template_id)
+        if strict:
+            raise TemplateReadError(template_id) from exc
         return []
 
 
