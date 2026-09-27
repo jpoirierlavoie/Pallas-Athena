@@ -109,7 +109,11 @@ def get_ctag(collection_name: str) -> str:
 
 
 def _tombstone_token(collection_name: str) -> str:
-    """The token a tombstone is stamped with — best effort, never a write.
+    """The token a tombstone is stamped with — best effort, never a reset.
+
+    (The one write it can cause is :func:`get_ctag`'s lazy FIRST token,
+    when the read succeeded and found no sync document — ``create()``,
+    which never overwrites a stored token.)
 
     A tombstone's ``sync_token`` is informational: nothing filters on it
     (``get_tombstones`` reports by TTL — sync tokens are non-monotonic
