@@ -1958,6 +1958,13 @@ Notes:
   first version, and open a document generated from the restored template
   — it must open without repair. No index to deploy (single-field queries
   only), no new secret, no new Tailwind class.
+
+  ⚠ Rolling back past T3 is safe for the data but brings the old rules
+  back: the older code selects by recency again (it ignores `active_for`),
+  and its file replacement deletes the previous object — the `versions/*`
+  entries stay in place, inert, and a version whose object that code
+  deleted is then no longer restorable once T3 is redeployed (« Rétablir »
+  refuses it: « Le fichier de cette version est introuvable »).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
