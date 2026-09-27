@@ -557,12 +557,14 @@ def consent_context(*, comptabilite_offered: bool) -> dict:
     ``nevers`` are the bullets of its « jamais » list — with the accounting
     variant of a bullet while the accounting box is on the same page;
     ``write_summary`` is the grant checkbox's summary; ``phase_bulk_max``
-    is the reclassifiers' batch ceiling, read from the registry.
+    is the reclassifiers' batch ceiling and ``series_max`` a series'
+    occurrence ceiling (utils/recurrence), both read from the registry.
     """
     from mcp import tools as _tools  # lazy: mcp.tools imports this module
 
     return {
         "phase_bulk_max": _tools.PHASE_BULK_MAX,
+        "series_max": _tools._SERIES_MAX,
         "write_families": families_for(SCOPE_WRITE),
         "comptabilite_families": families_for(SCOPE_COMPTABILITE),
         "nevers": [_never_fr(n, comptabilite_offered) for n in NEVERS],

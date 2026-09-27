@@ -1032,3 +1032,19 @@ def test_series_and_decision_never_quote_notes_in_their_results(fake, graph):
                                        "notes": "Privilégié aussi."})
     for payload in (decided, series, updated):
         assert "Privilégié" not in repr(payload)
+
+
+def test_the_agenda_partial_reads_the_series_ceiling_from_the_registry():
+    """The consent screen states the series ceiling from utils/recurrence,
+    never a typed « 60 » that a change of the ceiling would leave false."""
+    import jinja2
+
+    from mcp import disclosure
+
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(
+        str(_ATHENA / "templates")))
+    context = disclosure.consent_context(comptabilite_offered=False)
+    rendered = " ".join(env.get_template("mcp/families/_agenda.html").render(
+        disclosure=context).split())
+    assert (f"au plus {recurrence.MAX_SERIE_OCCURRENCES} occurrences"
+            in rendered)
