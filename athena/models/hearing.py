@@ -558,7 +558,10 @@ def list_bookings_all() -> list[dict]:
 
 
 # ── Bookings rendez-vous: the Réception reads and the decision write ────
-# (lot 1a, L4 — services/rendez_vous.py is the one caller of both.)
+# (lot 1a, L4 — services/rendez_vous.py is the one caller of the decision
+# write, and of the reader for every list a decision is taken from;
+# routes/reception._compter_rdv also counts through the reader, for the
+# fail-open nav badge, which decides nothing.)
 #
 # The imports still awaiting the lawyer's decision: « à_confirmer » (a live
 # reservation) and « annulée_client » (cancelled by the client, still shown

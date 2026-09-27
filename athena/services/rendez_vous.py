@@ -36,8 +36,13 @@ Provenance (``updated_via``) comes from the writer's context
 (``models.provenance``) — the request's blueprint or the connector's
 ``writing_via`` — never from an argument (Architecture Rule 5's lot-0a
 corollary). Every function returns ``(hearing, errors, report)``: errors
-non-empty means NOTHING happened (no Graph call, no write); the report says
-what did, in flags a banner (or a tool payload) can state.
+non-empty means NOTHING was WRITTEN, and — on every path but one — that
+Outlook was not called either. The exception is :func:`refuser` when the
+Graph cancellation itself FAILED and the local write then failed too:
+``report["graph_attempted"]`` is True there. A retry is still the right
+answer (the cancellation did not take, as far as anything here can know),
+which is why that path is an error and not a warned success. The report
+says what did happen, in flags a banner (or a tool payload) can state.
 """
 
 from __future__ import annotations
@@ -88,6 +93,18 @@ CONTACTS_ILLISIBLES = (
 ANNULATION_OUTLOOK_ECHOUEE = (
     "Rendez-vous refusé, mais la réunion n'a PAS pu être annulée côté "
     "Outlook — annulez-la manuellement pour prévenir le client."
+)
+# A LIVE import (« à_confirmer ») refused while Outlook cannot be reached at
+# all — the Graph link is not configured, or the import carries no event id.
+# Nothing was attempted, so nothing failed; but the client's meeting is still
+# booked and nobody told him. « Rendez-vous refusé. » alone would read as the
+# whole job done — the old route's silence, which lot 1b's connector would
+# have relayed as a clean refusal.
+ANNULATION_OUTLOOK_NON_TENTEE = (
+    "Rendez-vous refusé dans Athéna, mais la réunion Outlook n'a PAS été "
+    "annulée : la liaison avec Outlook n'est pas configurée, ou ce "
+    "rendez-vous ne porte aucune référence d'événement — annulez-la "
+    "manuellement pour prévenir le client."
 )
 ANNULATION_OUTLOOK_INCERTAINE = (
     "Rendez-vous refusé, mais l'annulation de la réunion côté Outlook a "
@@ -316,7 +333,10 @@ def refuser(
     2. for a still-active ``à_confirmer`` import with a Graph event, the
        Outlook meeting is cancelled with :data:`REFUS_MOTIF` (the client is
        notified). An ``annulée_client`` import is already cancelled on the
-       client's side: Graph is not called (it would 404);
+       client's side: Graph is not called (it would 404). A still-active
+       import Outlook CANNOT be asked about (Graph unconfigured, no event
+       id) is refused locally with :data:`ANNULATION_OUTLOOK_NON_TENTEE` —
+       its client is still booked, and a bare « refusé » would hide that;
     3. the refusal is written. After a Graph call it is UNCONDITIONAL (no
        etag): the external effect happened, and the refusal is the truth
        whatever landed meanwhile — if another tab confirmed the import in
@@ -348,7 +368,13 @@ def refuser(
         return None, [DEJA_CONFIRME_NE_SE_REFUSE_PLUS], report
 
     gid = hearing.get("graph_event_id")
-    if etat == "à_confirmer" and gid and Config.bookings_configured():
+    # Why Outlook was NOT asked about a live import that needed it — None
+    # when it was asked, or did not need to be (annulée_client).
+    non_tente: Optional[str] = None
+    if etat == "à_confirmer" and not (gid and Config.bookings_configured()):
+        non_tente = "not_configured" if gid else "sans_evenement"
+        report["warning"] = ANNULATION_OUTLOOK_NON_TENTEE
+    elif etat == "à_confirmer":
         report["graph_attempted"] = True
         try:
             graph_calendrier.annuler_reservation(gid, REFUS_MOTIF)
@@ -386,10 +412,11 @@ def refuser(
         # it had entered DAV, and must leave it.
         _leave_dav(written, hid)
     failed = report["graph_attempted"] and not report["graph_cancelled"]
+    reason = "graph_error" if failed else non_tente
     log_bookings_event(
-        "reception_rdv_refuse", "refused" if failed else "success",
+        "reception_rdv_refuse", "refused" if reason else "success",
         hearing_id=hid, graph_annule=report["graph_cancelled"],
-        reason="graph_error" if failed else None,
+        reason=reason,
         via=provenance.current_via(),
     )
     return written, [], report

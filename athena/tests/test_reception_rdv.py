@@ -673,6 +673,66 @@ def test_removing_a_client_cancelled_import_does_not_call_graph(
     assert _stored(db)["confirmation"] == "refusée"
 
 
+def _spy_refuse_log(monkeypatch) -> list:
+    seen = []
+    monkeypatch.setattr(
+        rendez_vous, "log_bookings_event",
+        lambda event, outcome="success", **kw: seen.append(
+            (event, outcome, kw.get("reason"))),
+    )
+    return seen
+
+
+def test_refusing_a_live_import_outlook_cannot_reach_says_so(
+    client, db, monkeypatch
+):
+    """Review of lot 1a (L4): Graph unconfigured — the old route (and the
+    service as first hoisted) answered a green « Rendez-vous refusé. »,
+    while the client's meeting was still booked and nobody had told him.
+    Lot 1b's connector would have relayed that as a clean refusal."""
+    monkeypatch.setattr(rendez_vous.Config, "bookings_configured",
+                        lambda: False)
+    calls = []
+    monkeypatch.setattr(rendez_vous.graph_calendrier, "annuler_reservation",
+                        lambda *a, **k: calls.append(a))
+    logs = _spy_refuse_log(monkeypatch)
+    _booking(db)
+    q = _query(client.post("/reception/rdv/h1/refuser",
+                           data={"expected_etag": "e-h1"}))
+    assert calls == []
+    # Red, never the green « Rendez-vous refusé. » the old code printed.
+    assert "message" not in q and "erreur" in q
+    assert "n'a PAS été annulée" in q["erreur"]
+    assert q["erreur"] == rendez_vous.ANNULATION_OUTLOOK_NON_TENTEE
+    assert _stored(db)["confirmation"] == "refusée"   # the decision stands
+    assert logs == [("reception_rdv_refuse", "refused", "not_configured")]
+
+
+def test_a_live_import_without_an_event_id_is_warned_too(db, graph,
+                                                         monkeypatch):
+    logs = _spy_refuse_log(monkeypatch)
+    _booking(db, graph_event_id="")
+    _h, errors, report = rendez_vous.refuser("h1", expected_etag="e-h1")
+    assert errors == [] and graph == []
+    assert report["graph_attempted"] is False
+    assert report["warning"], "a still-booked client must never read as done"
+    assert report["warning"] == rendez_vous.ANNULATION_OUTLOOK_NON_TENTEE
+    assert report["local_written"] is True
+    assert logs == [("reception_rdv_refuse", "refused", "sans_evenement")]
+
+
+def test_removing_a_client_cancelled_import_is_not_warned(db, monkeypatch):
+    """An annulée_client card needs no Outlook call — and no warning,
+    whether Graph is configured or not."""
+    monkeypatch.setattr(rendez_vous.Config, "bookings_configured",
+                        lambda: False)
+    logs = _spy_refuse_log(monkeypatch)
+    _booking(db, confirmation="annulée_client", graph_event_id="")
+    _h, errors, report = rendez_vous.refuser("h1", expected_etag="e-h1")
+    assert errors == [] and report["warning"] == ""
+    assert logs == [("reception_rdv_refuse", "success", None)]
+
+
 def test_a_confirmed_rendez_vous_is_not_refused_here(client, db, graph):
     _booking(db, confirmation="")
     before = _stored(db)
