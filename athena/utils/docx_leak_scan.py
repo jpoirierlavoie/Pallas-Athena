@@ -41,9 +41,11 @@ An archive holding two entries under one name is refused: ``ZipFile`` reads
 the last one by name, so the first would go unread.
 
 How it matches — by WORDS, never by characters. The text and each identifier
-are folded the same way (Unicode compatibility decomposition, accents
-stripped, case-folded — so « ÉMILE » is « émile » is « Emile »), then cut
-into alphanumeric words; every other character — spaces, the non-breaking
+are folded the same way (Unicode compatibility decomposition, the
+invisible format characters — soft hyphen, zero-width space, direction
+marks — DELETED since the page draws nothing for them, accents stripped,
+case-folded — so « ÉMILE » is « émile » is « Emile »), then cut into
+alphanumeric words; every other character — spaces, the non-breaking
 and narrow ones, apostrophes typed or curly, hyphens, dots, ``@`` — is a
 separator. An identifier matches where its words appear CONSECUTIVELY and
 WHOLE: « Roy » is found in « M. Roy, » and never in « Royaume » or
@@ -187,6 +189,17 @@ _COMBINING_RE = re.compile(
 )
 # A word: a maximal run of Unicode letters and digits.
 _WORD_RE = re.compile(r"[^\W_]+")
+# The INVISIBLE format characters (Unicode category Cf) — the soft hyphen,
+# the zero-width space and joiners, the direction marks, the BOM, the tag
+# characters. Word draws nothing for them mid-line, so « Trem\u00adblay »
+# reads « Tremblay » on the page; treated as separators they would split the
+# word and hide the name. They are DELETED before cutting into words. Built
+# once over the BMP plus the tag block (the astral remainder is script
+# formatting no name carries).
+_INVISIBLE = dict.fromkeys(
+    cp for cp in (*range(0x10000), *range(0xE0000, 0xE0080))
+    if unicodedata.category(chr(cp)) == "Cf"
+)
 
 # core.xml: the namespace declarations that tell which prefix is which.
 _XMLNS_PREFIXED_RE = re.compile(r"\sxmlns:([^\s=:\"'<>/]+)=\"([^\"<>]*)\"")
@@ -283,7 +296,8 @@ def fold_tokens(text: str) -> list[str]:
     The ONE folding authority: the identifier builder uses it too, to
     deduplicate and to exclude the firm's own details.
     """
-    folded = unicodedata.normalize("NFKD", text or "").casefold()
+    folded = unicodedata.normalize("NFKD", text or "").translate(
+        _INVISIBLE).casefold()
     return _WORD_RE.findall(_COMBINING_RE.sub("", folded))
 
 

@@ -358,6 +358,21 @@ def test_folding_case_accents_nbsp_and_apostrophes():
     assert found == {"Émile Tremblay": 2, "O'Brien": 1, "L'Heureux Gagnon": 1}
 
 
+def test_invisible_characters_never_split_a_name():
+    """Revue de T5 — a soft hyphen, a zero-width space, a direction mark or
+    a BOM pasted INSIDE a name is drawn as nothing: the page reads
+    « Tremblay ». Treated as separators, they cut it into « Trem » +
+    « blay » and the name escaped the scan."""
+    body = _document(_para("Jean Trem­blay"), _para("Jean Trem​blay"),
+                     _para("Jean ‎Tremblay‏"), _para("﻿Jean Tremblay"),
+                     _para("Béton⁠Nord"))
+    result = scan.scan_identifiers(_docx({"word/document.xml": body}),
+                                   ["Jean Tremblay", "BétonNord"])
+    found = {r.identifier: r.count for r in result.residues}
+    assert found == {"Jean Tremblay": 4, "BétonNord": 1}
+    assert scan.fold_key("Trem­blay") == ("tremblay",)
+
+
 def test_matching_is_whole_word_only():
     body = _document(_para("Le Royaume de Leroy"), _para("M. Roy, avocat"),
                      _para("Tremblayville"))
