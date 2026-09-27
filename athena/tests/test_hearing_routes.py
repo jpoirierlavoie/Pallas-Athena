@@ -266,3 +266,100 @@ def test_a_timed_hearing_still_reads_in_montreal_time(client, monkeypatch):
     assert _value(html, "start_date") == "2026-10-15"
     assert _value(html, "start_time") == "21:00"
     assert _value(html, "end_time") == "22:00"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Par le VRAI modèle (revue du lot 0b, B4)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Every test above replaces update_hearing with a spy that accepts ANY key.
+# Since lot 0b the model refuses a key outside UPDATE_FIELDS and
+# renormalizes the slot, so nothing above proved that what the web form
+# actually posts is (a) accepted by the whitelist and (b) written back
+# unchanged by _renormalize_slot. A form field added outside UPDATE_FIELDS
+# would refuse EVERY web edit of a hearing; a renormalization rule that
+# disagreed with _form_data would move the event on every save — the exact
+# defect this lot removed. These run the real route on the real client
+# (tests/_fake_firestore.py: only the server is fake).
+
+
+@pytest.fixture()
+def real_store(monkeypatch):
+    from tests._fake_firestore import install
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.") or n == "dav.sync")
+               and getattr(m, "db", None) is not None]
+    store = install(monkeypatch, *modules)
+    # The blueprint's own references — the spies of the other tests are
+    # monkeypatched per test, so these are the model functions again here.
+    import models.hearing as hearing_model
+    monkeypatch.setattr(rh, "get_hearing", hearing_model.get_hearing)
+    monkeypatch.setattr(rh, "update_hearing", hearing_model.update_hearing)
+    return store
+
+
+def _stored_dt(value) -> datetime:
+    return datetime.fromtimestamp(value.timestamp(), tz=UTC)
+
+
+def _post_unchanged(client, hid: str, html: str, **fields) -> None:
+    form = {
+        "title": fields.pop("title"),
+        "start_date": _value(html, "start_date"),
+        "start_time": _value(html, "start_time"),
+        "end_time": _value(html, "end_time"),
+        "end_date": _value(html, "end_date"),
+        "reminder_minutes": "1440", "modalite": "présentiel",
+        **fields,
+    }
+    r = client.post(f"/audiences/{hid}", data=form)
+    assert r.status_code == 302, r.get_data(as_text=True)
+
+
+def test_the_web_form_payload_passes_the_model_whitelist(client):
+    """Every key _form_data + _enrich_dossier_info hand to update_hearing is
+    a key the model honours. Derived from the route's own payload, so a new
+    form field outside UPDATE_FIELDS fails here, not on every real edit."""
+    import models.hearing as hearing_model
+    app = client.application
+    with app.test_request_context("/audiences/h1", method="POST",
+                                  data=_form(all_day="on", end_date="")):
+        data, errors = rh._enrich_dossier_info(rh._form_data())
+    assert errors == []
+    assert hearing_model.update_key_errors(data) == []
+
+
+def test_saving_an_all_day_span_unchanged_through_the_real_model(
+    client, real_store
+):
+    start = datetime(2026, 10, 15, tzinfo=UTC)
+    real_store.seed("hearings/h1", {
+        **_all_day(days=3), "status": "reportée", "vevent_uid": "u-h1",
+        "etag": "e0", "modalite": "présentiel"})
+    html = client.get("/audiences/h1/edit").get_data(as_text=True)
+    _post_unchanged(client, "h1", html, title="Journée d'instruction",
+                    all_day="on", hearing_type="instruction",
+                    status="reportée", dossier_id="d1")
+    stored = real_store.peek("hearings/h1")
+    assert _stored_dt(stored["start_datetime"]) == start
+    assert _stored_dt(stored["end_datetime"]) == start + timedelta(days=3)
+    assert stored["all_day"] is True and stored["status"] == "reportée"
+
+
+def test_saving_a_timed_hearing_unchanged_through_the_real_model(
+    client, real_store
+):
+    start = mtl_to_utc(datetime(2026, 10, 15, 21, 0))   # 01 h UTC the 16th
+    real_store.seed("hearings/h1", {
+        "id": "h1", "title": "Rencontre", "all_day": False,
+        "hearing_type": "rencontre", "status": "confirmée", "dossier_id": "",
+        "dossier_file_number": "", "dossier_title": "",
+        "start_datetime": start, "end_datetime": start + timedelta(hours=1),
+        "vevent_uid": "u-h1", "etag": "e0", "modalite": "présentiel"})
+    html = client.get("/audiences/h1/edit").get_data(as_text=True)
+    _post_unchanged(client, "h1", html, title="Rencontre",
+                    hearing_type="rencontre", status="confirmée",
+                    dossier_id="")
+    stored = real_store.peek("hearings/h1")
+    assert _stored_dt(stored["start_datetime"]) == start
+    assert _stored_dt(stored["end_datetime"]) == start + timedelta(hours=1)
