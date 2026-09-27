@@ -1831,11 +1831,22 @@ Notes:
   « `create_hearing` … jamais modifiable ni supprimable ici » (modifiable
   now, never deletable) — and, false since lot 0a already, « `en_cours` sur
   une tâche déjà terminée rouvre l'étape liée » (refused; that is
-  `reopen_task`); and add
-  the `expected_etag` workflow, the two cascades (a completion can close a
-  protocol, a reopen reactivates it) and the Bookings warnings (a refusal
-  notifies the client with a fixed text; editing a confirmed rendez-vous
-  leaves Outlook and the client untouched).
+  `reopen_task` — the one rare exception: `en_cours` on an OPEN task whose
+  step was left « complété » reopens it, unreported by
+  `protocol_step_effect`); « Aucun des 49 outils » and « les 49 outils »
+  of the references list (60); the INSCRIPTION row and the « Remplace ce
+  qu'on nomme » / « Ajoute » rows (`update_task`, `update_note`,
+  `update_hearing` and its `notes_append`, `update_protocol`,
+  `update_protocol_step`, `edit_analyse` and its append mode); the
+  « confirmer avec l'utilisateur » list (`create_hearing_series`,
+  `decide_rendez_vous`); in `references/outils.md`, family C « aucune de
+  ces écritures n'est annulable », the tables without AGENDA/BOOKINGS, and
+  `create_hearing` « créé `à_confirmer` » (it now takes `status`); and add
+  the `expected_etag` workflow (never retry blindly after `stale_etag`),
+  the two cascades (a completion can close a protocol, a reopen
+  reactivates it), `list_hearings` `bookings: "pending"` and the Bookings
+  warnings (a refusal notifies the client with a fixed text; editing a
+  confirmed rendez-vous leaves Outlook and the client untouched).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
