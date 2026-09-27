@@ -5843,12 +5843,13 @@ _HEARING_CANCELLED = (
 # « annulée » undoes a cancellation, and the « jamais » list promises that
 # never happens in silence (mcp/disclosure NEVERS « uncancel »).
 _HEARING_UNCANCELLED = (
-    "L'événement n'est plus annulé : il revient dans get_agenda et sur le "
-    "téléphone, et sa copie Outlook est recréée au prochain cycle."
+    "L'événement n'est plus annulé : il revient dans get_agenda, le "
+    "téléphone ne le montre plus annulé, et sa copie Outlook est recréée "
+    "au prochain cycle."
 )
 _BOOKINGS_UNCANCELLED = (
     "Le rendez-vous n'est plus annulé dans Athéna : il revient dans "
-    "get_agenda et sur le téléphone."
+    "get_agenda, et le téléphone ne le montre plus annulé."
 )
 # A confirmed Bookings rendez-vous the CLIENT has since moved or cancelled
 # on the Bookings side (the sync records a divergence, never overwrites a
