@@ -526,6 +526,12 @@ def test_a_web_step_addition_on_an_inactive_protocol_is_refused(
         "erreur": protocol_model.inactive_protocol_edit_error(status)}
     assert "réactivez-le (Modifier le protocole" in params["erreur"]
     assert fake.peek_collection(f"protocols/{P}/steps") == {}
+    # ... and the page it lands on SHOWS it, in the red box (a refusal
+    # that only travels in a query string is a silent one).
+    page = client.get(f"/protocoles/{P}", query_string=params)
+    refusal = str(escape(params["erreur"]))
+    assert re.search(r'role="alert"[^>]*>\s*' + re.escape(refusal),
+                     page.get_data(as_text=True))
 
 
 @pytest.mark.parametrize("status, closed_by", _INACTIVE)
@@ -540,7 +546,12 @@ def test_a_web_step_edit_on_an_inactive_protocol_is_refused_at_200(
         "expected_etag": "se-s1"})
     html = resp.get_data(as_text=True)
     assert resp.status_code == 200
-    assert "avant de modifier ses étapes" in html
+    # The MODEL's refusal, in the red box — not merely the amber banner,
+    # which carries « avant de modifier ses étapes » on every render of an
+    # inactive protocol and so proved nothing about the refusal itself
+    # (review of D17).
+    refusal = str(escape(protocol_model.inactive_protocol_edit_error(status)))
+    assert re.search(r'role="alert"[^>]*>\s*' + re.escape(refusal), html)
     assert fake.peek(f"protocols/{P}/steps/s1") == before
 
 
