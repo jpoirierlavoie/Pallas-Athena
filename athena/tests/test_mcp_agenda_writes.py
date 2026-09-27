@@ -291,6 +291,35 @@ def test_update_task_refusals_name_the_field(fake, args, fragment):
     assert fake.peek("tasks/t1")["etag"] == "e-t1"
 
 
+@pytest.mark.parametrize("tool, args, collection", [
+    ("update_task", {"task_id": "t1", "title": "X"}, "tasks"),
+    ("reopen_task", {"task_id": "t1"}, "tasks"),
+    ("update_note", {"note_id": "n1", "title": "X"}, "notes"),
+])
+def test_an_unreadable_record_is_never_called_missing(
+    fake, monkeypatch, tool, args, collection,
+):
+    """The fail-open getters answer None on a read error; « introuvable »
+    about a record that exists would send the caller hunting for an id that
+    was right. The edit tools read strictly and say what happened."""
+    _task(fake, "t1", status="terminée")
+    _note(fake, "n1")
+    server = fake._fake_server
+    real = server.batch_get_documents
+
+    def _flaky(request, *a, **k):
+        docs = request.get("documents") if hasattr(request, "get") else []
+        if any(f"/{collection}/" in d for d in docs):
+            raise RuntimeError("store down")
+        return real(request, *a, **k)
+
+    monkeypatch.setattr(server, "batch_get_documents", _flaky)
+    with pytest.raises(tools.ToolArgumentError) as excinfo:
+        getattr(handlers, tool)(dict(args))
+    assert "impossible" in str(excinfo.value)
+    assert "introuvable" not in str(excinfo.value)
+
+
 def test_update_task_schema_refuses_a_status():
     errors = tools.validate_args(
         tools.TOOLS["update_task"]["input_schema"],

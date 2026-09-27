@@ -677,9 +677,9 @@ _HANDLER_GETTERS = {
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entries_bulk"),
     "set_expense_phase": (expense_model, "get_expenses_bulk"),
-    "update_task": (task_model, "get_task"),
-    "reopen_task": (task_model, "get_task"),
-    "update_note": (note_model, "get_note"),
+    "update_task": (task_model, "get_task_strict"),
+    "reopen_task": (task_model, "get_task_strict"),
+    "update_note": (note_model, "get_note_strict"),
     "edit_analyse": (note_model, "find_analyse_note_strict"),
 }
 

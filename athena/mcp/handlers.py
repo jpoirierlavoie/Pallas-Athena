@@ -6294,6 +6294,43 @@ def _refuse_outside_vocabulary(args: dict, key: str, allowed) -> None:
         )
 
 
+def _read_task(task_id: str) -> dict:
+    """The task an edit is about — « introuvable » only when the store SAID
+    so. ``get_task`` answers ``None`` on a read error too, and « Tâche
+    introuvable » about a task that exists would send the caller hunting
+    for an id that was right all along."""
+    try:
+        task = task_model.get_task_strict(task_id)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture de la tâche impossible — réessayez. Rien n'a été "
+            "modifié."
+        )
+    if not task:
+        raise ToolArgumentError(
+            f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
+            "list_tasks — rien n'a été modifié."
+        )
+    return task
+
+
+def _read_note(note_id: str) -> dict:
+    """The note an edit is about — the :func:`_read_task` rule."""
+    try:
+        note = note_model.get_note_strict(note_id)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture de la note impossible — réessayez. Rien n'a été "
+            "modifié."
+        )
+    if note is None:
+        raise ToolArgumentError(
+            f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
+            "un note_id valide. Rien n'a été modifié."
+        )
+    return note
+
+
 def _resolve_move(dossier_id: str) -> tuple[str, dict]:
     """The target of a MOVE: ``""`` = « Général », anything else must
     resolve (refused, never downgraded)."""
@@ -6340,12 +6377,7 @@ def _update_task_impl(args: dict) -> dict:
     task_id = (args.get("task_id") or "").strip()
     if not task_id:
         raise ToolArgumentError("`task_id` est requis.")
-    existing = task_model.get_task(task_id)
-    if not existing:
-        raise ToolArgumentError(
-            f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
-            "list_tasks — rien n'a été modifié."
-        )
+    existing = _read_task(task_id)
     if not any(key in args for key in _TASK_EDIT_KEYS):
         raise ToolArgumentError(
             "Aucun champ à modifier : nommez au moins title, description, "
@@ -6525,12 +6557,7 @@ def _reopen_task_impl(args: dict) -> dict:
             "`status` doit être « à_faire » ou « en_cours ». Pour clore une "
             "tâche, utilisez complete_task."
         )
-    task = task_model.get_task(task_id)
-    if not task:
-        raise ToolArgumentError(
-            f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
-            "list_tasks — rien n'a été modifié."
-        )
+    task = _read_task(task_id)
     current = task.get("status", "")
 
     # Already there: write NOTHING (no cascade, no CTag) — replayable.
@@ -6714,12 +6741,7 @@ def _update_note_impl(args: dict) -> dict:
     note_id = (args.get("note_id") or "").strip()
     if not note_id:
         raise ToolArgumentError("`note_id` est requis.")
-    existing = note_model.get_note(note_id)
-    if existing is None:
-        raise ToolArgumentError(
-            f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
-            "un note_id valide. Rien n'a été modifié."
-        )
+    existing = _read_note(note_id)
     # The théorie de la cause has its own tool, which keeps its eight
     # headings; replaced wholesale here it could lose them. It also never
     # moves (the MODEL refuses that on every path since lot 1a).
