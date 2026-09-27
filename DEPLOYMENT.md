@@ -1729,18 +1729,28 @@ Notes:
      then the second: `status_change.protocol_closed: true`, the protocol
      reads `closed_by: auto` in `list_protocol_steps`, the task is
      « terminée » on the phone. `status: à_venir` on the second step reopens
-     the protocol (`protocol_reopened: true`); with the suspended one made
-     actif first, the same call is refused and nothing moves.
-  3. *The law's text stays the law's.* Suspend the conventionnel protocol
-     and reactivate the CQ one (`update_protocol`, `status: actif` — refused
-     while the other is still actif). `update_protocol_step` with a `title`
-     on one of its template steps: refused, the message opens with
-     « `title` refusé » ; with a `deadline_date` on it: « `deadline_date`
-     refusé ». A `notes` edit on the same step lands.
+     the protocol (`protocol_reopened: true`); while it is actif,
+     `update_protocol` `status: actif` on the suspended CQ protocol is
+     refused, naming it. Complete that second step again: the conventionnel
+     protocol closes by itself once more.
+  3. *The law's text stays the law's.* Now reactivate the CQ protocol
+     (`update_protocol`, `status: actif` — accepted, the other is closed);
+     `status: à_venir` on the conventionnel's second step is then REFUSED
+     (reopening it would make two protocols actif) and nothing moves.
+     `update_protocol_step` with a `title` on one of the CQ template steps:
+     refused, the message opens with « `title` refusé » ; with a
+     `deadline_date` on it: « `deadline_date` refusé ». A `notes` edit on
+     the same step lands.
   4. *A new start date keeps what is done.* Complete a CQ step, then
      `update_protocol` with another `start_date`: `recompute.preserved`
      names that step (`completed`), every other one is in `recompute.moved`
      with its new etag.
+  5. *A CS suggestion is not confirmed by sending it back.* On a Cour
+     supérieure dossier, `create_protocol` `cs_ordinaire`, then
+     `update_protocol_step` with a step's OWN `deadline_date`: nothing is
+     written and a warning says the date stays a suggestion (the connector
+     has no confirmation flag; « Confirmer cette date » in the application
+     does it). A DIFFERENT date is confirmed (`date_confirmed_now: true`).
   Then update BOTH copies of the claude.ai skill `pallas-athena`: the
   protocol is no longer read-only — creation, fields, a step's status as a
   target (never a toggle), with the step's OWN etag for step edits.
