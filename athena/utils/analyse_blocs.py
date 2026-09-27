@@ -33,10 +33,13 @@ Headings are recognised the way the renderer recognises them — Python-
 Markdown with ``fenced_code``, the pipeline of the Analyse tab and of the
 Word print: a heading line starts at column 0 (``#foo`` is a level-one
 heading there, so it is a boundary here too); a line inside a fenced code
-block is never a heading. A fence opens on a column-0 run of three or more
-backticks or tildes, and is a code block ONLY if a later line carries the
-very same run followed by nothing but spaces — an unclosed fence renders as
-text, and its « headings » render as headings, so they count. Setext
+block is never a heading. A fence is a column-0 run of three or more
+backticks or tildes; it OPENS only when the rest of its line is what the
+renderer accepts there — nothing, a language word, ``{attrs}`` or
+``hl_lines="…"`` (« ``` du texte » is text, and so are the headings under
+it) — and it is a code block ONLY if a later line carries the very same
+run followed by nothing but blanks. An unclosed fence renders as text, and
+its « headings » render as headings, so they count. Setext
 headings (a line underlined with ``===``/``---``) are not zone boundaries;
 the insertion rules below keep an operation from ever creating one.
 
@@ -121,6 +124,9 @@ _MESSAGES = {
     "mention_invalide": "La mention de provenance doit tenir sur une seule ligne.",
     "mode_inconnu": "Mode inconnu : « replace » ou « append ».",
     "contenu_invalide": "Le contenu d'une opération doit être du texte.",
+    "operation_invalide": (
+        "Chaque opération doit nommer un bloc, un mode et un contenu."
+    ),
     "operations_en_double": (
         "Une même opération ne peut viser deux fois {letters}."
     ),
@@ -255,23 +261,67 @@ def _fence_run(text: str) -> Optional[str]:
     return text[:n] if n >= 3 else None
 
 
+# The characters Python-Markdown's ``lang`` class adds to ``\w``.
+_LANG_EXTRA = "#.+-"
+_HL_LINES = "hl_lines="
+
+
+def _fence_opens(rest: str) -> bool:
+    """Whether a fence line whose run is followed by *rest* can OPEN a code
+    block — Python-Markdown's opening-line grammar (``fenced_code``'s
+    ``FENCED_BLOCK_RE``), read without a regex.
+
+    After optional blanks: either ``{attrs}`` closing the line, or an
+    optional language word (``\\w`` — letters, digits, ``_`` — and
+    ``#.+-``), optional blanks, an optional ``hl_lines="…"`` (or ``'…'``),
+    optional blanks, then the end of the line. Anything else — « ``` du
+    texte », « ~~~ ~~~ » — is NOT an opener: the renderer shows the line as
+    text and the headings under it as headings. Tabs count as blanks (the
+    renderer expands them before this step). An ``hl_lines`` value whose
+    quote closes on a LATER line is not followed (the renderer would; no
+    théorie de la cause writes one).
+    """
+    s = rest.replace("\t", " ").lstrip(" ")
+    if not s:
+        return True
+    if s[0] == "{":
+        return len(s) >= 2 and s[-1] == "}"
+    k = 0
+    while k < len(s) and (s[k].isalnum() or s[k] == "_" or s[k] in _LANG_EXTRA):
+        k += 1
+    e = k
+    while e < len(s) and s[e] == " ":
+        e += 1
+    if e == len(s):
+        return True
+    # Only the FIRST « hl_lines= » can qualify: what precedes it must be
+    # language characters or blanks, and the « = » of an earlier one is
+    # neither.
+    p = s.find(_HL_LINES)
+    if p == -1 or p > e:
+        return False
+    value = s[p + len(_HL_LINES):].rstrip(" ")
+    return len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]
+
+
 def _fence_marks(lines: list[_Line]) -> tuple[list[bool], list[bool]]:
     """``(fenced, unpaired)`` per line.
 
     ``fenced[i]`` — line *i* is a fence line or inside a code block, so it
     can be neither a heading nor a separator. ``unpaired[i]`` — line *i*
-    looks like a fence but no code block uses it (the renderer shows it as
-    text).
+    could OPEN a code block (:func:`_fence_opens`) but no later line closes
+    it (the renderer shows it as text — and an inserted one could pair with
+    a fence further down).
 
     Python-Markdown's pairing, reproduced in one pass: scanning top-down,
-    the first fence-like line that has a LATER line with the same run and
-    nothing but spaces after it opens a block ending on the first such
-    line; the scan resumes after it.
+    the first line that can open (:func:`_fence_opens`) and has a LATER
+    line with the same run and nothing but blanks after it opens a block
+    ending on the first such line; the scan resumes after it.
     """
     runs = [_fence_run(line.text) for line in lines]
     closers: dict[str, list[int]] = {}
     for i, (line, run) in enumerate(zip(lines, runs)):
-        if run is not None and line.text[len(run):].strip(" ") == "":
+        if run is not None and line.text[len(run):].strip(" \t") == "":
             closers.setdefault(run, []).append(i)
     pointer: dict[str, int] = {}
     fenced = [False] * len(lines)
@@ -288,14 +338,16 @@ def _fence_marks(lines: list[_Line]) -> tuple[list[bool], list[bool]]:
         while p < len(candidates) and candidates[p] <= i:
             p += 1
         pointer[run] = p
-        opens = not (run[0] == "`" and "`" in rest)
+        opens = _fence_opens(rest)
         if opens and p < len(candidates):
             j = candidates[p]
             for k in range(i, j + 1):
                 fenced[k] = True
             i = j + 1
             continue
-        unpaired[i] = True
+        # A line that cannot open is plain text — neither fenced nor a
+        # dangling opener.
+        unpaired[i] = opens
         i += 1
     return fenced, unpaired
 
@@ -475,8 +527,9 @@ def check_insertable(text: str) -> None:
 
     No level-one or level-two heading outside a code block — ATX
     (« # », « ## », « #foo ») or setext (a non-blank line followed by a line
-    of ``=`` or ``-`` only) — and no fence-like line left unpaired: an
-    unclosed fence could pair with one further down the note.
+    of ``=`` and ``-`` only, mixed or not) — and no line that could open a
+    code block left unpaired: an unclosed fence could pair with one further
+    down the note.
     """
     lines = _split_lines(text)
     fenced, unpaired = _fence_marks(lines)
@@ -489,9 +542,11 @@ def check_insertable(text: str) -> None:
             continue
         if _atx_level(line.text) in (1, 2):
             raise BlocStructureError("titre_structurant")
-        stripped = line.text.rstrip(" ")
-        if (previous_text and stripped and stripped[0] in "=-"
-                and stripped == stripped[0] * len(stripped)):
+        # Python-Markdown's setext underline is ``[=-]+[ ]*`` at column 0 —
+        # the two characters MIXED (« -=- » underlines an H2), trailing
+        # blanks allowed (tabs are expanded to blanks before it looks).
+        stripped = line.text.rstrip(" \t")
+        if previous_text and stripped and not stripped.strip("=-"):
             raise BlocStructureError("titre_structurant")
         previous_text = not _blank(line.text)
 
@@ -632,9 +687,14 @@ def apply_operations(
     nothing (a refusal raises before anything is returned).
 
     A key may appear once per call: two operations on one bloc have no
-    single order a reader could predict.
+    single order a reader could predict. Every operation names its
+    ``content`` — an empty string empties a bloc on purpose, but a MISSING
+    one is refused rather than read as « replace with nothing ».
     """
     ops = list(operations)
+    for op in ops:
+        if not isinstance(op, dict) or "content" not in op:
+            raise BlocStructureError("operation_invalide")
     keys = [op.get("bloc") for op in ops]
     for key in keys:
         if key not in ZONE_KEYS:
@@ -645,7 +705,7 @@ def apply_operations(
     result = content
     for op in ops:
         mode = op.get("mode")
-        text = op.get("content", "")
+        text = op["content"]
         if not isinstance(text, str):
             raise BlocStructureError("contenu_invalide")
         if mode == "replace":

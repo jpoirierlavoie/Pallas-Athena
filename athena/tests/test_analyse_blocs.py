@@ -527,3 +527,136 @@ def test_an_operation_on_a_note_at_the_size_cap_is_fast():
     ])
     assert ab.parse(out).ok
     assert time.perf_counter() - start < 2.0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. Le moteur de rendu fait foi (revue du lot 1a, L3)
+# ══════════════════════════════════════════════════════════════════════
+#
+# The module claims to see the headings the reader sees. Until the review
+# no test compared it with the renderer, and the claim was false on one
+# point: every fence-like line was taken for an OPENER, while Python-
+# Markdown's grammar refuses « ``` du texte » or « ~~~ ~~~ » — it renders
+# them as text, and the headings under them as headings. The module then
+# hid a level-two heading the lawyer sees, so a bloc's zone ran over text
+# the screen shows under ANOTHER heading, and a replace deleted it.
+
+
+def _rendered_top_headings(content: str) -> list[tuple[str, str]]:
+    """The level-1/2 headings the Analyse tab renders, in order."""
+    import re as _re  # the TEST reads HTML; the module stays regex-free
+
+    from utils.markdown_docx import markdown_to_safe_html
+
+    html = markdown_to_safe_html(content)
+    return [
+        (level, _re.sub(r"<[^>]+>", "", text).strip())
+        for level, text in _re.findall(r"<h([12])[^>]*>(.*?)</h\1>", html, _re.S)
+    ]
+
+
+def _module_top_headings(content: str) -> list[tuple[str, str]]:
+    lines = ab._split_lines(content)
+    fenced, _unpaired = ab._fence_marks(lines)
+    out = []
+    for i, line in enumerate(lines):
+        level = ab._atx_level(line.text)
+        if not fenced[i] and level in (1, 2):
+            out.append((str(level), line.text.lstrip("#").strip().rstrip("#").strip()))
+    return out
+
+
+_FENCE_CASES = {
+    "info-string-words": "```Voici du code\n## Sous-titre\ntexte\n```\n",
+    "tilde-tilde": "~~~ ~~~\n## Sous-titre\n~~~\n",
+    "language": "```python\n## pas un titre\n```\n",
+    "language-plus": "```c++\n## pas un titre\n```\n",
+    "dotted-language": "```.py\n## pas un titre\n```\n",
+    "attrs": "``` {.python}\n## pas un titre\n```\n",
+    "attrs-unclosed": "``` {python\n## Sous-titre\n```\n",
+    "hl-lines": '```python hl_lines="1 2"\n## pas un titre\n```\n',
+    "hl-lines-alone": "```hl_lines='1'\n## pas un titre\n```\n",
+    "closer-with-tab": "```\n## pas un titre\n```\t\n",
+    "opener-with-tab": "```\t\n## pas un titre\n```\n",
+    "backtick-in-info": "```a`b\n## Sous-titre\n```\n",
+    "words-after-language": "``` .py x\n## Sous-titre\n```\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_FENCE_CASES))
+def test_fence_openers_follow_the_renderer(name):
+    content = "## Bloc C\n\nCorps.\n\n" + _FENCE_CASES[name] + "\n## Bloc D\n\nx\n"
+    assert _module_top_headings(content) == _rendered_top_headings(content)
+
+
+def test_headings_match_the_renderer_on_generated_notes():
+    """A seeded corpus of fence, heading and text lines. Setext underlines
+    are left out on purpose: the module does not take them for boundaries
+    (documented), and the insertion checks refuse to create one."""
+    import random
+
+    pieces = [
+        "", "texte", "autre ligne", "## Bloc A", "## Bloc B x", "# Titre",
+        "## Sous", "### petit", "```", "```python", "``` du texte", "```c++",
+        "``` {.py}", "```{x}", "~~~", "~~~ ~~~", "~~~js", "````", "```\t",
+        "``` ", '```hl_lines="1 2"', '```python hl_lines="1"', "```a`b",
+        "`` pas une clôture", "    ## en retrait", "#motclic", "``` {bad",
+        "```.py", "``` .py x",
+    ]
+    rng = random.Random(20260927)
+    for _ in range(1500):
+        content = "\n".join(
+            rng.choice(pieces) for _ in range(rng.randint(1, 12))
+        ) + "\n"
+        assert _module_top_headings(content) == _rendered_top_headings(content), (
+            content
+        )
+
+
+def test_a_replace_never_deletes_text_under_a_heading_the_reader_sees():
+    """The regression: « ```Voici du code » opens nothing on screen, so
+    « ## Notes du juriste » is a heading there and the text under it is
+    interstitial — outside every bloc. The module used to fence it into
+    bloc C, and a replace of bloc C deleted it."""
+    content = FULL.replace(
+        "Corps C.",
+        "Corps C.\n```Voici du code\nligne\n\n## Notes du juriste\n\n"
+        "PRÉCIEUX\n```",
+    )
+    assert ab.parse(content).gaps, "the text under the heading is interstitial"
+    out = ab.replace_bloc(content, "C", "Nouveau C.")
+    assert "PRÉCIEUX" in out and "## Notes du juriste" in out
+    assert "Corps C." not in out
+
+
+def test_an_inserted_line_that_cannot_open_is_text_not_an_open_fence():
+    """« ``` du texte » opens nothing on screen and cannot close anything:
+    refusing it as « un bloc de code ouvert » would be false."""
+    out = ab.append_to_bloc(FULL, "C", "``` du texte")
+    assert ab.parse(out).ok
+
+
+@pytest.mark.parametrize("underline", ["-=-", "=-", "---\t", "=== "])
+def test_a_setext_underline_is_refused_mixed_or_with_trailing_blanks(underline):
+    """Python-Markdown's underline is ``[=-]+[ ]*``: « -=- » makes an H2
+    of the line above it on screen."""
+    with pytest.raises(ab.BlocStructureError) as exc:
+        ab.append_to_bloc(FULL, "C", "Paragraphe\n" + underline)
+    assert exc.value.code == "titre_structurant"
+
+
+@pytest.mark.parametrize("op", [
+    {"bloc": "C", "mode": "replace"},
+    {"bloc": "C", "mode": "append"},
+    "C",
+])
+def test_an_operation_without_content_is_refused_not_read_as_empty(op):
+    """A forgotten ``content`` used to default to « » — a replace then
+    EMPTIED the bloc. An empty string still empties it, on purpose."""
+    with pytest.raises(ab.BlocStructureError) as exc:
+        ab.apply_operations(FULL, [op])
+    assert exc.value.code == "operation_invalide"
+    emptied = ab.apply_operations(
+        FULL, [{"bloc": "C", "mode": "replace", "content": ""}]
+    )
+    assert ab.parse(emptied).zone("C").body(emptied) == ""
