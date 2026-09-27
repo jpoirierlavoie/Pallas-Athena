@@ -290,17 +290,45 @@ _HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 _LIST_INDENT_STEP = 720   # twips per level
 _LIST_HANGING = 360
 
-# Seed elements NO produced block may inherit from the host paragraph. The
-# host's Word numbering is the one (SPEC H.4 §13 L1, lot 2A T4): this path
-# numbers its own lists with literal glyphs, so a host seeded with ``numPr``
-# numbered every heading, item, quotation, rule and table-cell paragraph a
-# SECOND time — Word's number in front of the computed one. Unreachable
-# while ``{{note.contenu}}`` sat in an ordinary paragraph; a block placed in
-# a numbered list paragraph made it the whole document. Stripped at EVERY
-# seed site, not only in ``_para_ppr``: a table cell, a rule and the empty-
-# input paragraph merge the seed on their own. A host with no ``numPr`` is
-# untouched byte for byte (``tests/test_fill_engine_golden.py``).
-_HOST_ONLY_PPR = ("numPr",)
+# The host's Word numbering is the one thing of its pPr NO produced block may
+# inherit (SPEC H.4 §13 L1, lot 2A T4): this path numbers its own lists with
+# literal glyphs, so a host seeded with ``numPr`` numbered every heading,
+# item, quotation, rule and table-cell paragraph a SECOND time — Word's
+# number in front of the computed one. Unreachable while ``{{note.contenu}}``
+# sat in an ordinary paragraph; a block placed in a numbered list paragraph
+# made it the whole document.
+#
+# The host's ``numPr`` is REPLACED by the explicit « numbering removed » —
+# ``numId`` 0, which ECMA-376 §17.9.18 reserves for exactly that and which
+# Word writes itself when numbering is switched off — never merely DROPPED.
+# A ``numPr`` is also how Word switches OFF the numbering a paragraph STYLE
+# carries (« List Number » + ``numId`` 0), and over a numbered style it is how
+# a restarted list is written: dropped, either one hands the produced
+# paragraphs back to the STYLE's numbering — the double numbering again, and
+# in the first case on a host that was not numbered at all (review of T4,
+# which had stripped it). The replacement happens ONCE, on the seed
+# (:func:`_seed_without_numbering`), so every site that merges it — body
+# paragraph, heading, list item, quote, code block, rule, table cell, the
+# empty-input paragraph — inherits it. A host with no ``numPr`` is untouched
+# byte for byte (``tests/test_fill_engine_golden.py``).
+#
+# Out of reach, knowingly: numbering carried by the host's STYLE alone
+# (``pStyle`` « List Number », no direct ``numPr``) lives in styles.xml, which
+# this converter never reads — such a host still numbers every block.
+_NUMBERING_REMOVED = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="0"/></w:numPr>'
+
+
+def _seed_without_numbering(base_inner: str) -> str:
+    """*base_inner* with its ``numPr`` replaced by :data:`_NUMBERING_REMOVED`.
+
+    Untouched, byte for byte, when the seed carries no ``numPr`` — or does
+    not parse, in which case :func:`_merge_ppr` drops the whole seed anyway.
+    """
+    elements = _parse_elements(base_inner)
+    if not elements or "numPr" not in elements:
+        return base_inner
+    elements["numPr"] = _NUMBERING_REMOVED
+    return _emit_ordered(elements, _PPR_ORDER)
 
 
 class _Cell:
@@ -319,7 +347,8 @@ class _HtmlToOoxml(HTMLParser):
 
     def __init__(self, base_ppr: str, base_rpr: str, usable_width: int) -> None:
         super().__init__(convert_charrefs=True)
-        self.base_ppr = base_ppr
+        # Never the host's Word numbering (see _NUMBERING_REMOVED).
+        self.base_ppr = _seed_without_numbering(base_ppr)
         self.base_rpr = base_rpr
         self.usable_width = usable_width
         self.seed_sz = _seed_size(base_rpr)
@@ -381,7 +410,7 @@ class _HtmlToOoxml(HTMLParser):
             self.runs.append(_br())
 
     def _para_ppr(self) -> str:
-        strip: list[str] = list(_HOST_ONLY_PPR)
+        strip: list[str] = []
         extra: dict[str, str] = {}
         base = self.base_ppr
 
@@ -479,7 +508,7 @@ class _HtmlToOoxml(HTMLParser):
                 if c.align:
                     ppr_extra["jc"] = f'<w:jc w:val="{c.align}"/>'
                 ppr = _merge_ppr(self.base_ppr, extra=ppr_extra,
-                                 strip=(*_HOST_ONLY_PPR, "ind", "spacing"))
+                                 strip=("ind", "spacing"))
                 cells.append(_tc(tcpr, [_p(ppr, c.runs)]))
             out_rows.append(_tr("<w:tblHeader/>" if is_header else "", cells))
         self._append_block(_tbl(col_w * ncols, [col_w] * ncols, out_rows))
@@ -511,7 +540,7 @@ class _HtmlToOoxml(HTMLParser):
                                 ' w:space="1" w:color="auto"/></w:pBdr>',
                         "spacing": '<w:spacing w:after="120"/>',
                     },
-                    strip=(*_HOST_ONLY_PPR, "spacing"),
+                    strip=("spacing",),
                 ),
                 [],
             ))
@@ -660,8 +689,7 @@ class _HtmlToOoxml(HTMLParser):
         if self.table_rows is not None:
             self._flush_table()
         if not self.blocks:
-            self.blocks.append(
-                _p(_merge_ppr(self.base_ppr, strip=_HOST_ONLY_PPR), []))
+            self.blocks.append(_p(_merge_ppr(self.base_ppr), []))
         if self.blocks[-1].endswith("</w:tbl>"):
             # Word always writes a paragraph after a final table; a table as
             # the last child of a cell is outright invalid. One trailing

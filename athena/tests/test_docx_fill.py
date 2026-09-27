@@ -2,6 +2,7 @@
 
 import io
 import os
+import re
 import sys
 import zipfile
 
@@ -1156,6 +1157,19 @@ def test_rich_analyse_seed_end_to_end():
 # that pPr kept its numPr, so a Markdown block in a numbered list paragraph
 # came out numbered TWICE — Word's number on every heading, item, quotation,
 # rule and table-cell paragraph, in front of the glyph the converter wrote.
+#
+# The two tests below were rewritten deliberately at the review of T4: the
+# host's numPr is now REPLACED by Word's explicit « numbering removed »
+# (numId 0) rather than dropped — a dropped numPr hands the block back to
+# its paragraph STYLE's numbering (pinned in test_markdown_docx.py). What
+# they pin is unchanged: no produced paragraph points at a numbering
+# definition.
+
+_NUMBERING_REMOVED = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="0"/></w:numPr>'
+
+
+def _numbering_references(xml: str) -> set:
+    return set(re.findall(r'<w:numId w:val="([^"]*)"/>', xml))
 
 _NUMBERED_HOST = (
     '<w:p><w:pPr><w:pStyle w:val="ListParagraph"/>' + _NUM_PPR
@@ -1177,8 +1191,12 @@ def test_rich_path_in_a_numbered_host_no_longer_double_numbers():
     xml = _document_xml(out)
     DET.fromstring(xml)
     assert "{{FAITS}}" not in xml
-    # The host was the ONLY numbered paragraph: nothing is numbered now…
-    assert "<w:numPr>" not in xml
+    # The host was the ONLY numbered paragraph: nothing is numbered now —
+    # every paragraph it seeded says « numbering removed »…
+    assert _NUM_PPR not in xml
+    assert _numbering_references(xml) == {"0"}
+    assert xml.count(_NUMBERING_REMOVED) == xml.count(
+        '<w:pStyle w:val="ListParagraph"/>')
     # …while the rest of its formatting still seeds the content…
     assert xml.count('<w:pStyle w:val="ListParagraph"/>') >= 8
     assert '<w:jc w:val="both"/>' in xml
@@ -1191,7 +1209,8 @@ def test_an_empty_rich_value_in_a_numbered_host_leaves_no_lone_number():
     docx = _make_docx(_doc(_NUMBERED_HOST))
     xml = _document_xml(fill_docx(docx, {}, rich_values={"FAITS": ""}))
     assert "{{FAITS}}" not in xml
-    assert "<w:numPr>" not in xml
+    assert _numbering_references(xml) == {"0"}
+    assert xml.count(_NUMBERING_REMOVED) == 1
     assert xml.count("<w:p>") == 1
 
 

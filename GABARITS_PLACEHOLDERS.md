@@ -446,7 +446,10 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
   a numbered list paragraph no longer numbers every heading, item and table
   cell a second time in front of the converter's own numbers. Want Word's
   numbering on each paragraph instead? That is the plain fill of an ordinary
-  field in a numbered paragraph, separated by blank lines (§1).
+  field in a numbered paragraph, separated by blank lines (§1). One limit:
+  numbering that comes from the paragraph's Word STYLE alone (« Liste
+  numérotée » / « List Number », with no number applied on the paragraph
+  itself) is still inherited — give that paragraph an ordinary style.
 - Never put `{{note.contenu}}` in a header/footer — it is left verbatim there.
 - The other `note.*` fields are ordinary scalars and work anywhere.
 

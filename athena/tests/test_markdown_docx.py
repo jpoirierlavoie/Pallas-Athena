@@ -260,14 +260,18 @@ def test_empty_input_yields_one_empty_paragraph():
 # element no produced block may inherit — each seed site merges the pPr on
 # its own (body paragraph, heading, list item, quote, code block, rule,
 # table cell, empty input), so each is pinned.
+#
+# Rewritten deliberately at the review of T4: the host's numPr is REPLACED
+# by Word's explicit « numbering removed » (numId 0), no longer DROPPED — a
+# dropped numPr hands the paragraph back to its STYLE's numbering (the two
+# host shapes below). The property pinned is unchanged and stated directly:
+# no produced paragraph points at a numbering definition.
 _NUMBERED_SEED = (
     '<w:pStyle w:val="ListParagraph"/>'
     '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="3"/></w:numPr>'
     '<w:jc w:val="both"/>'
 )
-
-
-@pytest.mark.parametrize("md", [
+_CONSTRUCTS = [
     "texte simple",
     "# Titre",
     "- puce\n- puce",
@@ -277,12 +281,41 @@ _NUMBERED_SEED = (
     "---",
     "| A |\n|---|\n| 1 |",
     "",
-])
+]
+
+
+def _assert_never_numbered(out: str, style: str) -> None:
+    # No paragraph points at a numbering definition (numId 0 = « removed »)…
+    num_ids = re.findall(r'<w:numId w:val="([^"]*)"/>', out)
+    assert num_ids and set(num_ids) == {"0"}, num_ids
+    # …and EVERY paragraph the host seeded says so explicitly — so neither
+    # the host's own numbering nor the one its style carries can apply.
+    seeded = [p for p in re.findall(r"<w:pPr>(.*?)</w:pPr>", out)
+              if f'<w:pStyle w:val="{style}"/>' in p]
+    assert seeded
+    assert all(p.count(mdx._NUMBERING_REMOVED) == 1 for p in seeded), seeded
+
+
+@pytest.mark.parametrize("md", _CONSTRUCTS)
 def test_the_host_numbering_is_never_seeded(md):
     out = _convert(md, base_ppr=_NUMBERED_SEED)
-    assert "numPr" not in out
+    _assert_never_numbered(out, "ListParagraph")
     # Everything else about the host still seeds the block.
     assert '<w:pStyle w:val="ListParagraph"/>' in out
+
+
+@pytest.mark.parametrize("num_id", ["0", "5"])
+@pytest.mark.parametrize("md", _CONSTRUCTS)
+def test_a_numbered_style_host_is_not_handed_back_to_its_style(md, num_id):
+    """Review of T4. A host styled « List Number » (a style that NUMBERS)
+    carries a direct numPr in two ordinary Word shapes: ``numId`` 0 — the
+    numbering switched OFF on that paragraph — and a restarted list. T4
+    STRIPPED the numPr, which hands every produced paragraph back to the
+    style's numbering: in the first shape it numbered a block whose host was
+    not numbered at all. The explicit removal must survive at every site."""
+    seed = ('<w:pStyle w:val="ListNumber"/>'
+            f'<w:numPr><w:ilvl w:val="0"/><w:numId w:val="{num_id}"/></w:numPr>')
+    _assert_never_numbered(_convert(md, base_ppr=seed), "ListNumber")
 
 
 def test_a_host_without_numbering_seeds_exactly_as_before():
