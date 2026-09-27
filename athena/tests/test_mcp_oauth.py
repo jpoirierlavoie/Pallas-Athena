@@ -581,7 +581,13 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "tâches et événements qu'il <strong>crée</strong>" in flat
     assert "journalisé et marqué comme provenant de Claude" in flat
     assert "<strong>sauf leur phase du litige</strong>" in flat
-    assert "<strong>rouvrir une tâche</strong>" in flat
+    # Lot 1b: « rouvrir une tâche » moved from the NEVER list to a
+    # capability (the AGENDA family) — rewritten deliberately, so the phrase
+    # is now pinned where it is TRUE; the narrower promise that replaced
+    # the never (no silent un-cancel) must be on the page too.
+    assert "<strong>rouvrir une tâche</strong> terminée" in flat
+    assert "<strong>défaire une annulation</strong> en silence" in flat
+    assert "le texte remplacé est conservé" in flat
     # Default state is unchecked — least privilege.
     checkbox = re.search(r'<input type="checkbox" name="grant_write"[^>]*>', body)
     assert checkbox and "checked" not in checkbox.group(0)

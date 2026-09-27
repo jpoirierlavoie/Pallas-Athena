@@ -57,6 +57,8 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import expense as expense_model
     from models import note as note_model
     from models import partie as partie_model
+    from models import protocol as protocol_model
+    from models import revision as revision_model
     from models import task as task_model
     from models import time_entry as time_entry_model
 
@@ -587,7 +589,37 @@ def test_a_document_save_chains_its_second_write_on_the_new_etag(db):
 
 
 def _e2e_db(monkeypatch):
-    return install(monkeypatch, *_MODULES, dav_sync, write_support)
+    # protocol_model too (lot 1b): update_task / reopen_task consult the
+    # step a task is linked from, and a MagicMock there would answer
+    # « not linked » for every query — a fake that accepts what the store
+    # refuses proves nothing.
+    # models.revision too: a content replacement stages its write-once
+    # snapshot through that module's OWN client reference.
+    return install(monkeypatch, *_MODULES, protocol_model, revision_model,
+                   dav_sync, write_support)
+
+
+def _closed_task(db):
+    tid = _task(db)
+    _doc, errors = task_model.update_task(tid, {"status": "terminée"})
+    assert errors == [], errors
+    return tid
+
+
+def _analyse(db):
+    """The dossier's théorie de la cause, created by the REAL init. Its
+    row is the note, but edit_analyse is addressed by the DOSSIER: the
+    factory returns both (row id, argument id)."""
+    did = _dossier(db)
+    note, errors, created = note_model.ensure_analyse_note(did)
+    assert errors == [] and created, errors
+    return note["id"], did
+
+
+def _contains(fragment: str):
+    """An expectation on a stored value that is not the argument verbatim
+    (edit_analyse writes a bloc INTO the note)."""
+    return lambda stored: fragment in stored
 
 
 # tool → (collection, factory, id key, arguments, (field, stored value))
@@ -607,9 +639,34 @@ _HANDLER_CASES = {
                              ("sous_phase", "INT-01")),
     "set_expense_phase": ("expenses", _expense, "expense_id",
                           {"sous_phase": "INT-01"}, ("sous_phase", "INT-01")),
+    # Lot 1b — the agenda edits.
+    "update_task": ("tasks", _task, "task_id",
+                    {"title": "Titre révisé"}, ("title", "Titre révisé")),
+    "reopen_task": ("tasks", _closed_task, "task_id",
+                    {"status": "en_cours"}, ("status", "en_cours")),
+    "update_note": ("notes", _note, "note_id",
+                    {"title": "Titre révisé"}, ("title", "Titre révisé")),
+    "edit_analyse": ("notes", _analyse, "dossier_id",
+                     {"operations": [{"bloc": "C", "mode": "append",
+                                      "content": "Ajout de Claude."}]},
+                     ("content", _contains("Ajout de Claude."))),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
+
+# A second, DIFFERENT change for the chained-edit test, where « the same
+# field, another value » does not make a valid call: a reopened task can
+# only go back to à_faire; a théorie edit is an operation list.
+_SECOND_ARGS = {
+    "reopen_task": {"status": "à_faire"},
+    "edit_analyse": {"operations": [{"bloc": "D", "mode": "append",
+                                     "content": "Deuxième version"}]},
+}
+
+# Tools that DEMAND expected_etag for the change the case makes (plan rule
+# 3, D8: replacing prose). They cannot « guard their own read » without
+# one — they refuse the call instead, which the own-read test asserts.
+_ETAG_DEMANDED = {"edit_analyse"}
 
 # The getter the HANDLER reads its record through (the bulk reader for the
 # reclassifiers) — the seam a rival write is slipped in after.
@@ -620,15 +677,24 @@ _HANDLER_GETTERS = {
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entries_bulk"),
     "set_expense_phase": (expense_model, "get_expenses_bulk"),
+    "update_task": (task_model, "get_task"),
+    "reopen_task": (task_model, "get_task"),
+    "update_note": (note_model, "get_note"),
+    "edit_analyse": (note_model, "find_analyse_note_strict"),
 }
 
 
 def _e2e_setup(db, tool):
     coll, factory, id_key, extra, _expect = _HANDLER_CASES[tool]
-    row_id = factory(db)
+    made = factory(db)
+    row_id, arg_id = made if isinstance(made, tuple) else (made, made)
     path = f"{coll}/{row_id}"
     db.reset_logs()
-    return path, {id_key: row_id, **extra}
+    return path, {id_key: arg_id, **extra}
+
+
+def _stored_as_expected(stored, expected) -> bool:
+    return expected(stored) if callable(expected) else stored == expected
 
 
 def _row_commits(db, path):
@@ -681,7 +747,7 @@ def test_the_current_etag_writes_as_the_connector_and_hands_back_the_new_one(
     payload = getattr(handlers, tool)({**args, "expected_etag": etag0})
 
     stored = db.peek(path)
-    assert stored[field] == value
+    assert _stored_as_expected(stored[field], value), stored[field]
     assert stored["updated_via"] == "mcp"
     assert stored["etag"] != etag0
     assert payload["entity"]["etag"] == stored["etag"]
@@ -696,6 +762,16 @@ def test_without_an_etag_the_handler_guards_its_own_read(monkeypatch, tool):
     and the call is refused — never a silent overwrite."""
     db = _e2e_db(monkeypatch)
     path, args = _e2e_setup(db, tool)
+    if tool in _ETAG_DEMANDED:
+        # No own-read fallback exists here BY DESIGN: the change replaces
+        # prose, so the version must come from the caller. Omitting it is
+        # refused, and nothing at all is written.
+        before = db.peek(path)
+        with pytest.raises(tools.ToolArgumentError, match="expected_etag"):
+            getattr(handlers, tool)(dict(args))
+        assert db.peek(path) == before
+        assert _row_commits(db, path) == []
+        return
     module, name = _HANDLER_GETTERS[tool]
     real = getattr(module, name)
     fired = []
@@ -724,11 +800,16 @@ def test_a_chained_edit_presents_the_etag_the_first_one_returned(
 ):
     db = _e2e_db(monkeypatch)
     path, args = _e2e_setup(db, tool)
-    first = getattr(handlers, tool)(dict(args))
+    first_args = dict(args)
+    if tool in _ETAG_DEMANDED:
+        first_args["expected_etag"] = db.peek(path)["etag"]
+    first = getattr(handlers, tool)(first_args)
     etag1 = first["entity"]["etag"]
     assert etag1 == db.peek(path)["etag"]
 
-    if tool.startswith("set_"):
+    if tool in _SECOND_ARGS:
+        second_args = {**args, **_SECOND_ARGS[tool]}
+    elif tool.startswith("set_"):
         second_args = {**args, "sous_phase": "AUD-01"}
     else:
         field = _HANDLER_CASES[tool][4][0]

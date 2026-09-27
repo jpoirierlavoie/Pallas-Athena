@@ -1778,3 +1778,160 @@ def test_steps_are_stamped_and_their_rows_emit_it(monkeypatch):
     assert protocol_model.check_overdue_steps("p1") == 1  # DATE_ONLY is past
     stored = fake.peek("protocols/p1/steps/s1")
     assert stored["status"] == "en_retard" and stored["etag"] == etag
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 1b — the agenda edits: one real-handler run per shape they emit
+# ══════════════════════════════════════════════════════════════════════
+#
+# Run on the shared fake Firestore with the REAL models underneath, so the
+# payload validated is the one a real write produces — the relocation
+# branch (previous_collection_cleared), the no-op branch (changed_fields
+# empty, ctag_bumped false), the reopen cascade, the revision id, and the
+# théorie's five modes.
+
+
+def _agenda_world(monkeypatch):
+    import sys
+
+    from tests._fake_firestore import install
+
+    modules = [m for n, m in sorted(sys.modules.items())
+               if (n.startswith("models.") or n in ("dav.sync",
+                                                    "mcp.write_support"))
+               and getattr(m, "db", None) is not None]
+    fake = install(monkeypatch, *modules)
+    for did in ("d1", "d2"):
+        fake.seed(f"dossiers/{did}", {"id": did, "file_number": f"2026-{did}",
+                                      "title": "T", "status": "actif"})
+        fake.seed(f"dav_sync/dossier:{did}", {"ctag": "c0", "sync_token": "c0"})
+    fake.seed("dav_sync/general", {"ctag": "g0", "sync_token": "g0"})
+    return fake
+
+
+def _agenda_task(fake, status="à_faire", **over):
+    doc = {
+        "id": "t1", "dossier_id": "d1", "dossier_file_number": "2026-d1",
+        "dossier_title": "T", "title": "Produire", "description": "",
+        "priority": "normale", "status": status, "due_date": DATE_ONLY,
+        "completed_date": DT if status == "terminée" else None,
+        "category": "rédaction", "phase": "", "sous_phase": "",
+        "related_note_id": None, "vtodo_uid": "u", "etag": "e-t1",
+        "created_at": DT, "updated_at": DT,
+    }
+    doc.update(over)
+    fake.seed("tasks/t1", doc)
+
+
+def test_update_task_conforms_on_write_noop_and_move(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    _agenda_task(fake)
+    written = handlers.update_task({"task_id": "t1", "title": "Réviser",
+                                    "expected_etag": "e-t1"})
+    _conforms("update_task", written)
+    assert written["changed_fields"] == ["title"]
+
+    noop = handlers.update_task({"task_id": "t1", "title": "Réviser"})
+    _conforms("update_task", noop)
+    assert noop["changed_fields"] == [] and noop["ctag_bumped"] is False
+
+    moved = handlers.update_task({"task_id": "t1", "dossier_id": "d2"})
+    _conforms("update_task", moved)
+    assert moved["moved"] is True and moved["previous_collection_cleared"] is True
+
+
+def test_reopen_task_conforms_on_cascade_and_already_open(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    _agenda_task(fake, status="terminée")
+    fake.seed("protocols/p1", {
+        "id": "p1", "dossier_id": "d1", "title": "P",
+        "protocol_type": "conventionnel", "status": "complété",
+        "closed_by": "auto", "closed_at": DT, "etag": "pe",
+        "created_at": DT, "updated_at": DT,
+    })
+    fake.seed("protocols/p1/steps/s1", {
+        **handlers.protocol_model._default_step(), "id": "s1", "order": 1,
+        "title": "Réponse", "status": "complété", "linked_task_id": "t1",
+        "deadline_date": DATE_ONLY, "etag": "se", "created_at": DT,
+        "updated_at": DT,
+    })
+    reopened = handlers.reopen_task({"task_id": "t1"})
+    _conforms("reopen_task", reopened)
+    assert reopened["protocol_step_effect"]["protocol_reopened"] is True
+
+    already = handlers.reopen_task({"task_id": "t1"})
+    _conforms("reopen_task", already)
+    assert already["already_open"] is True
+
+
+def test_update_note_conforms_on_revision_noop_and_move(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    fake.seed("notes/n1", {
+        "id": "n1", "dossier_id": "d1", "dossier_file_number": "2026-d1",
+        "dossier_title": "T", "title": "Note", "content": "Corps",
+        "category": "recherche", "pinned": False, "dateless": False,
+        "is_analyse": False, "vjournal_uid": "v", "etag": "e-n1",
+        "created_at": DT, "updated_at": DT,
+    })
+    fake.seed("tasks/t9", {"id": "t9", "dossier_id": "d1", "title": "Lié",
+                           "related_note_id": "n1", "status": "à_faire",
+                           "etag": "e", "created_at": DT, "updated_at": DT})
+    revised = handlers.update_note({"note_id": "n1", "content": "Autre",
+                                    "expected_etag": "e-n1"})
+    _conforms("update_note", revised)
+    assert revised["revision_id"]
+
+    noop = handlers.update_note({"note_id": "n1", "category": "recherche"})
+    _conforms("update_note", noop)
+    assert noop["changed_fields"] == [] and noop["revision_id"] is None
+
+    moved = handlers.update_note({"note_id": "n1", "dossier_id": ""})
+    _conforms("update_note", moved)
+    assert moved["linked_tasks_left_behind"] == 1
+
+
+def test_edit_analyse_conforms_in_every_mode(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    created = handlers.edit_analyse({"dossier_id": "d1"})
+    _conforms("edit_analyse", created)
+    found = handlers.edit_analyse({"dossier_id": "d1"})
+    _conforms("edit_analyse", found)
+    op = [{"bloc": "B", "mode": "replace", "content": "Les faits."}]
+    blocs = handlers.edit_analyse({"dossier_id": "d1", "operations": op,
+                                   "expected_etag": found["entity"]["etag"]})
+    _conforms("edit_analyse", blocs)
+    unchanged = handlers.edit_analyse({
+        "dossier_id": "d1", "operations": op,
+        "expected_etag": blocs["entity"]["etag"]})
+    _conforms("edit_analyse", unchanged)
+    full = handlers.edit_analyse({
+        "dossier_id": "d1", "expected_etag": blocs["entity"]["etag"],
+        "full": "\n\n".join(f"## Bloc {x}\n\nCorps." for x in "ABCDEFGH")})
+    _conforms("edit_analyse", full)
+    assert [p["mode"] for p in (created, found, blocs, unchanged, full)] == [
+        "created", "found", "blocs", "unchanged", "full"]
+    # A write result never echoes the note's text — not even a heading.
+    assert "heading" not in full["structure"]["entete"]
+    assert fake.peek(f"notes/{full['entity']['id']}")["is_analyse"] is True
+
+
+def test_get_note_and_get_dossier_conform_with_the_theorie(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    for model, name in ((handlers.time_entry_model, "get_time_summary"),
+                        (handlers.expense_model, "get_expense_summary"),
+                        (handlers.invoice_model, "get_invoice_summary"),
+                        (handlers.document_model, "get_document_summary")):
+        monkeypatch.setattr(model, name, lambda d: {})
+    absent = handlers.get_dossier({"dossier_id": "d1"})
+    _conforms("get_dossier", absent)
+    assert absent["dossier"]["analyse_note_state"] == "absent"
+
+    note = handlers.edit_analyse({"dossier_id": "d1"})["entity"]
+    present = handlers.get_dossier({"dossier_id": "d1"})
+    _conforms("get_dossier", present)
+    assert present["dossier"]["analyse_note_id"] == note["id"]
+
+    read = handlers.get_note({"note_id": note["id"]})
+    _conforms("get_note", read)
+    assert read["note"]["structure"]["ok"] is True
+    assert fake.peek(f"notes/{note['id']}") is not None

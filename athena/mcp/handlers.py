@@ -66,6 +66,7 @@ Serialization rules (§10.1):
   :func:`mcp.tools.iso_mtl`.
 """
 
+import functools
 import re
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Callable, Optional
@@ -97,7 +98,7 @@ from models import time_entry as time_entry_model
 from models import trust as trust_model
 from security import sanitize
 from tz import MTL
-from utils import deadlines, pdf_text, phases, taxonomie
+from utils import analyse_blocs, deadlines, pdf_text, phases, taxonomie
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr, format_rate_fr
 from utils.recours import PRESCRIPTION_LABELS, compute_class
@@ -106,7 +107,9 @@ from utils.template_fields import selected_address
 from utils.validators import format_phone_display
 
 from mcp.tools import (
+    ANALYSE_OPERATIONS_MAX,
     CONCURRENCY_OPTIONAL,
+    CONTENT_MAX_CHARS,
     CONCURRENCY_REQUIRED,
     DOCUMENT_TEXT_MAX_CHARS,
     PHASE_BULK_MAX,
@@ -818,6 +821,11 @@ def get_dossier(args: dict) -> dict:
             **_stamps(d),
         }
     )
+    # The théorie de la cause's id — the handle edit_analyse's etag is read
+    # through (get_note). Strict: « unreadable » is never reported absent.
+    record["analyse_note_id"], record["analyse_note_state"] = (
+        _analyse_note_ref(did)
+    )
     _money(record, "hourly_rate", d.get("hourly_rate", 0))
     flat_fee = d.get("flat_fee")
     if flat_fee is None:
@@ -1269,9 +1277,84 @@ def get_note(args: dict) -> dict:
             "category": note.get("category", ""),
             "pinned": bool(note.get("pinned")),
             "is_analyse": bool(note.get("is_analyse")),
+            # The théorie's zones, so an edit_analyse operation can be aimed
+            # without re-parsing the Markdown by eye; null for an ordinary
+            # note (always emitted — the key is required).
+            "structure": (
+                _analyse_structure(note.get("content", "") or "", headings=True)
+                if note.get("is_analyse") else None
+            ),
             **_stamps(note),
         },
     }
+
+
+@functools.lru_cache(maxsize=1)
+def _seed_bodies() -> dict:
+    """zone key → the stripped body the seeded théorie carries there.
+
+    Parsed ONCE from ``models/note.ANALYSE_SEED`` — the text the note is
+    created with — so « is_seed » compares against the real template,
+    never a copy of it."""
+    seed = note_model.ANALYSE_SEED
+    parsed = analyse_blocs.parse(seed)
+    bodies = {analyse_blocs.ENTETE: parsed.entete.body(seed).strip()}
+    for zone in parsed.blocs:
+        bodies.setdefault(zone.key, zone.body(seed).strip())
+    return bodies
+
+
+def _analyse_structure(content: str, *, headings: bool) -> dict:
+    """Where the théorie's zones stand (``utils/analyse_blocs.parse``).
+
+    *headings* only on the READ path (get_note): a write result carries
+    letters, sizes and flags, never the note's text — it is stored 24 h
+    in mcp_idempotency."""
+    parsed = analyse_blocs.parse(content)
+    seed = _seed_bodies()
+
+    def _zone(zone) -> dict:
+        out: dict[str, Any] = {}
+        if headings:
+            out["heading"] = zone.heading
+        body = zone.body(content)
+        out["chars"] = len(body)
+        out["is_seed"] = body.strip() == seed.get(zone.key)
+        return out
+
+    length = len(content)
+    return {
+        "ok": parsed.ok,
+        "editable": parsed.editable,
+        "in_order": parsed.in_order,
+        "missing": list(parsed.missing),
+        "duplicates": list(parsed.duplicates),
+        "entete": _zone(parsed.entete),
+        "blocs": [{"bloc": zone.key, **_zone(zone)} for zone in parsed.blocs],
+        "interstitial_chars": sum(b - a for a, b in parsed.gaps),
+        "content_length": length,
+        "max_length": note_model.CONTENT_MAX_LENGTH,
+        "remaining_chars": max(0, note_model.CONTENT_MAX_LENGTH - length),
+    }
+
+
+def _analyse_note_ref(dossier_id: str) -> tuple[Optional[str], str]:
+    """``(analyse_note_id, state)`` for get_dossier — STRICT lookup.
+
+    Through ``find_analyse_note_strict``, never the fail-open display
+    helper: a swallowed read error must read « unreadable », not
+    « absent » — a caller told « absent » would call edit_analyse to create
+    one, and the model refuses that too, but a report saying the analysis
+    does not exist would still be false."""
+    try:
+        note = note_model.find_analyse_note_strict(dossier_id)
+    except note_model.AnalyseDuplicateError:
+        return None, "duplicate"
+    except note_model.AnalyseLookupError:
+        return None, "unreadable"
+    if note is None:
+        return None, "absent"
+    return note.get("id") or None, "present"
 
 
 # ── 8. list_documents ───────────────────────────────────────────────────
@@ -2967,15 +3050,17 @@ def _append_to_note_impl(args: dict) -> dict:
             f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
             "un note_id valide."
         )
-    # The « Théorie de la cause » note is read-only through the connector:
-    # it is the lawyer's structured working analysis, edited only in the
-    # app's Analyse sheet. Message describes, never quotes (Cloud Trace).
+    # The « Théorie de la cause » is written through edit_analyse ONLY: an
+    # append at the END of the note would land after bloc H — outside every
+    # bloc, where the eight-heading structure the lawyer works in cannot
+    # place it. edit_analyse's append mode completes ONE bloc instead.
+    # Message describes, never quotes (Cloud Trace).
     if existing.get("is_analyse"):
         raise ToolArgumentError(
-            "Cette note est la théorie de la cause du dossier — en lecture "
-            "seule via le connecteur. Elle se modifie dans l'application "
-            "(feuille « Analyse » du dossier). Pour consigner des recherches, "
-            "créez ou complétez une autre note du dossier."
+            "Cette note est la théorie de la cause du dossier : elle ne se "
+            "complète pas à la fin. Utilisez edit_analyse (mode « append » "
+            "pour compléter un bloc, « replace » pour le réécrire). Rien n'a "
+            "été modifié."
         )
 
     addition = _clean_note_text((args.get("content") or "").strip(), "content")
@@ -5855,7 +5940,7 @@ def _record_prescription_event_impl(args: dict) -> dict:
     return result
 
 
-# ── 33. complete_task (WRITE — the only status change in the connector) ──
+# ── 33. complete_task (WRITE — the CLOSING status change; reopen_task reopens) ──
 
 # Terminal states plus « en_cours ». `à_faire` is refused: it is a full
 # reopen, and update_task clears completed_date on it.
@@ -5929,7 +6014,7 @@ def _complete_task_impl(args: dict) -> dict:
         raise ToolArgumentError(
             "`status` must be one of: "
             + ", ".join(_COMPLETABLE_STATUSES)
-            + ". Reopening a task to « à_faire » is done in the application."
+            + ". Reopening a task to « à_faire » is reopen_task."
         )
 
     task = task_model.get_task(task_id)
@@ -5959,14 +6044,15 @@ def _complete_task_impl(args: dict) -> dict:
         )
 
     # Closed → « en_cours » is a REOPEN, and it cascades: the model reverts
-    # the linked protocol step (and completed_date). The disclosure registry
-    # promises the connector never reopens a closed task (mcp/disclosure,
-    # « reopen_task »); reopening becomes its own tool in plan lot 1.
+    # the linked protocol step (and completed_date). Reopening is its own
+    # tool since lot 1b — reopen_task, which refuses BEFORE writing when the
+    # step cannot follow and names the cancellation it would undo — so this
+    # one stays a closing tool and says where to go.
     if current in _TERMINAL_STATUSES and new_status == "en_cours":
         raise ToolArgumentError(
             f"Cette tâche est close (« {current} ») : la remettre "
-            "« en_cours » la rouvrirait, et rouvrir une tâche se fait dans "
-            "l'application. Rien n'a été modifié."
+            "« en_cours » la rouvrirait — c'est l'outil reopen_task. Rien "
+            "n'a été modifié."
         )
 
     data: dict[str, Any] = {"status": new_status}
@@ -6110,6 +6196,902 @@ def _complete_task_payload(
             "passé à « complété ». Ses étapes n'apparaîtront plus dans "
             "get_agenda. Rouvrez-le dans l'application si ce n'était pas "
             "voulu."
+        )
+    return payload
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Lot 1b — the agenda edits: update_task, reopen_task, update_note,
+# edit_analyse
+# ════════════════════════════════════════════════════════════════════════
+#
+# Each REPLACES a stored value on a DAV-exposed record (tasks, notes), so
+# each reports its CTag bump through _entity_write_result — which runs the
+# full relocation (dav.sync.relocation_plan: tombstone old → bump old →
+# un-tombstone new → bump new) when the record MOVED to another dossier.
+#
+# The shared discipline, in this order:
+# * ids resolve first — an unknown task, note or dossier is refused, never
+#   downgraded (a note filed under « Général » because its dossier id did
+#   not resolve is the silent loss create_note already refuses);
+# * the model payload is built key by key, never `**args`;
+# * a call whose every value is ALREADY stored writes NOTHING — no model
+#   call, no etag churn, no CTag bump — and says so (`changed_fields: []`).
+#   It is decided before the etag check: a request that changes nothing
+#   needs no current version (the set_step_status rule), and it is what
+#   makes a replay without an idempotency_key harmless;
+# * otherwise the etag the caller names must still be the stored one, and
+#   when it names none the handler compare-and-sets on its OWN read
+#   (_expected_etag) — every payload here was computed from that read;
+# * refusals name the field and never quote content (the span rule).
+
+_TASK_SUBJECT = "Cette tâche a été modifiée"
+_NOTE_SUBJECT = "Cette note a été modifiée"
+_ANALYSE_SUBJECT = "La théorie de la cause a été modifiée"
+
+_TASK_EDIT_KEYS = (
+    "title", "description", "priority", "category", "due_date",
+    "phase", "sous_phase", "dossier_id",
+)
+_NOTE_EDIT_KEYS = ("title", "category", "pinned", "content", "dossier_id")
+
+# The dated provenance lines a REPLACEMENT opens with (plan rule 5 keeps the
+# stored `updated_via`; these say it in the text the lawyer reads). Kept as
+# (prefix, suffix) pairs so a body read back and re-sent — stamp included —
+# is recognised and the stamp REPLACED rather than stacked.
+_NOTE_REVISION_STAMP = (
+    "*Révisée par Claude le ", " — version précédente conservée*",
+)
+_BLOC_REVISION_STAMP = (
+    "*Bloc révisé par Claude le ", " — version précédente conservée*",
+)
+_ANALYSE_REWRITE_STAMP = (
+    "*Théorie révisée par Claude le ", " — version précédente conservée*",
+)
+# A stamp line is short; a longer first line that happens to start and end
+# like one is the lawyer's text, and is never removed.
+_STAMP_LINE_MAX = 160
+
+
+def _stamp_line(kind: tuple[str, str], day: date) -> str:
+    return f"{kind[0]}{format_date_fr(day)}{kind[1]}"
+
+
+def _without_leading_stamp(text: str, kind: tuple[str, str]) -> str:
+    """*text* minus a first line that is an earlier stamp of *kind*.
+
+    So a body read back with get_note and sent again does not pile the
+    stamps up at its top. Linear — one partition, no regular expression
+    (the CWE-1333 doctrine of utils/analyse_blocs). Anything that is not
+    exactly a stamp line is left alone."""
+    body = text.lstrip("\r\n")
+    first, _sep, rest = body.partition("\n")
+    line = first.rstrip("\r").strip()
+    prefix, suffix = kind
+    if (len(line) <= _STAMP_LINE_MAX and line.startswith(prefix)
+            and line.endswith(suffix)):
+        return rest.lstrip("\r\n")
+    return text
+
+
+def _dossier_for(dossier_id: Optional[str]) -> Optional[dict]:
+    """The dossier a DAV-exposed record lives in, for the closed-dossier
+    warning: « Général » when none; ``None`` when the read failed —
+    _entity_write_result then claims nothing about visibility."""
+    if not dossier_id:
+        return _general_scope()
+    return dossier_model.get_dossier(dossier_id)
+
+
+def _refuse_outside_vocabulary(args: dict, key: str, allowed) -> None:
+    """The model's vocabulary guard, repeated so the refusal names the
+    field — and made stricter: the model lets ``""`` through (« no value »),
+    which on an EDIT would erase the stored one."""
+    if key in args and args.get(key) not in allowed:
+        raise ToolArgumentError(
+            f"« {key} » : valeur hors vocabulaire. Valeurs admises : "
+            + ", ".join(allowed) + ". Rien n'a été modifié."
+        )
+
+
+def _resolve_move(dossier_id: str) -> tuple[str, dict]:
+    """The target of a MOVE: ``""`` = « Général », anything else must
+    resolve (refused, never downgraded)."""
+    return _resolve_write_dossier({"dossier_id": dossier_id}, required=False)
+
+
+# ── update_task (WRITE) ─────────────────────────────────────────────────
+
+def _task_edit_entity(doc: dict) -> dict:
+    return {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id") or "",
+        "dossier_file_number": doc.get("dossier_file_number", ""),
+        "dossier_title": doc.get("dossier_title", ""),
+        "label": doc.get("title", ""),
+        "date": date_str(doc.get("due_date")),
+        "status": doc.get("status", ""),
+        "priority": doc.get("priority", ""),
+        "category": doc.get("category", ""),
+        "phase": doc.get("phase", "") or "",
+        "sous_phase": doc.get("sous_phase", "") or "",
+        # The record AS STORED after this call — the next edit's etag.
+        "etag": concurrency.etag_of(doc),
+    }
+
+
+def _task_changed_fields(existing: dict, data: dict) -> list[str]:
+    changed = []
+    for key, value in data.items():
+        before = existing.get(key)
+        if key == "due_date":
+            if date_str(before) != date_str(value):
+                changed.append(key)
+        elif (before or "") != (value or ""):
+            changed.append(key)
+    return changed
+
+
+def update_task(args: dict) -> dict:
+    return run_write("update_task", args, lambda: _update_task_impl(args))
+
+
+def _update_task_impl(args: dict) -> dict:
+    task_id = (args.get("task_id") or "").strip()
+    if not task_id:
+        raise ToolArgumentError("`task_id` est requis.")
+    existing = task_model.get_task(task_id)
+    if not existing:
+        raise ToolArgumentError(
+            f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
+            "list_tasks — rien n'a été modifié."
+        )
+    if not any(key in args for key in _TASK_EDIT_KEYS):
+        raise ToolArgumentError(
+            "Aucun champ à modifier : nommez au moins title, description, "
+            "priority, category, due_date, phase, sous_phase ou dossier_id. "
+            "Le statut se change avec complete_task ou reopen_task."
+        )
+    _refuse_outside_vocabulary(args, "priority", task_model.VALID_PRIORITIES)
+    _refuse_outside_vocabulary(args, "category", task_model.VALID_CATEGORIES)
+
+    # EXPLICIT whitelist, presence-based: an absent key is left alone, a
+    # present one replaces. Never `status` — the non-toggle status tools
+    # own it (complete_task / reopen_task), and the schema refuses it.
+    data: dict[str, Any] = {}
+    if "title" in args:
+        title = _clean_entity_text(args.get("title") or "", "title")
+        if not title:
+            raise ToolArgumentError("« title » ne peut pas être vide.")
+        data["title"] = title
+    if "description" in args:
+        data["description"] = _clean_entity_text(
+            args.get("description") or "", "description")
+    for key in ("priority", "category"):
+        if key in args:
+            data[key] = args[key]
+    if "due_date" in args:
+        data["due_date"] = _write_date(args, "due_date", required=False)
+    pair = _optional_phase_pair(args)
+    if pair is not None:
+        data["phase"], data["sous_phase"] = pair
+
+    old_dossier = existing.get("dossier_id") or ""
+    new_dossier = (
+        (args.get("dossier_id") or "").strip() if "dossier_id" in args
+        else old_dossier
+    )
+    moved = new_dossier != old_dossier
+    changed = _task_changed_fields(existing, data)
+    if moved:
+        changed.append("dossier_id")
+    if not changed:
+        return _task_edit_payload(
+            existing, dossier=_dossier_for(old_dossier), changed=[],
+            moved=False, old_dossier=old_dossier, wrote=False,
+        )
+
+    expected = _expected_etag(
+        args, existing, tool="update_task", subject=_TASK_SUBJECT)
+    target: Optional[dict] = None
+    if moved:
+        new_dossier, target = _resolve_move(new_dossier)
+        # Tasks store None for « Général » (notes store ""): the model's
+        # convention, which collection_for reads either way. The labels are
+        # re-snapshotted from the TARGET — what the phone and the Outlook
+        # mirror print.
+        data["dossier_id"] = new_dossier or None
+        data["dossier_file_number"] = target.get("file_number", "")
+        data["dossier_title"] = target.get("title", "")
+
+    # The model re-validates the WHOLE merged document: a legacy task with
+    # an out-of-vocabulary value fails for a reason invisible in the app.
+    # Said here, naming it, before any write.
+    errors = task_model._validate({**existing, **data})
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    updated, errors = task_model.update_task(
+        task_id, data, expected_etag=expected)
+    _raise_if_stale(
+        errors, tool="update_task", subject=_TASK_SUBJECT,
+        reread=lambda: task_model.get_task(task_id),
+    )
+    if errors:
+        # The step-link rule lives in the MODEL (lot 1a): a task a protocol
+        # step links never changes dossier. Its words, naming the field.
+        if moved and any(e in (task_model.STEP_LINKED_MOVE_REFUSED,
+                               task_model.STEP_LINK_CHECK_FAILED)
+                         for e in errors):
+            raise ToolArgumentError("`dossier_id` refusé : " + " ".join(errors))
+        raise ToolArgumentError("; ".join(errors))
+
+    payload = _task_edit_payload(
+        updated, dossier=target if moved else _dossier_for(old_dossier),
+        changed=changed, moved=moved, old_dossier=old_dossier, wrote=True,
+    )
+    related = existing.get("related_note_id")
+    if moved and related:
+        note = note_model.get_note(related)
+        if note is not None and (note.get("dossier_id") or "") != new_dossier:
+            payload["warnings"].append(
+                "Cette tâche reste liée à une note d'un autre dossier : sur "
+                "le téléphone, jtx Board ne montre ce lien parent qu'entre "
+                "deux éléments d'une même collection."
+            )
+    if "due_date" in changed:
+        try:
+            linked = protocol_model.find_step_for_task(
+                task_id, updated.get("dossier_id"))
+        except Exception:
+            linked = None
+        if linked is not None:
+            payload["warnings"].append(
+                "Cette tâche est liée à une étape de protocole : l'échéance "
+                "de l'étape, elle, ne change pas."
+            )
+    return payload
+
+
+def _task_edit_payload(
+    doc: dict, *, dossier: Optional[dict], changed: list[str], moved: bool,
+    old_dossier: str, wrote: bool,
+) -> dict:
+    payload = _entity_write_result(
+        "task", _task_edit_entity(doc), dossier=dossier, dav_exposed=True,
+        verb="updated", created=False, wrote=wrote,
+        previous_dossier_id=old_dossier,
+    )
+    payload["changed_fields"] = changed
+    payload["moved"] = moved
+    if not wrote:
+        payload["warnings"].append(
+            "Toutes les valeurs envoyées étaient déjà enregistrées : rien "
+            "n'a été modifié."
+        )
+    return payload
+
+
+# ── reopen_task (WRITE) ─────────────────────────────────────────────────
+
+_REOPEN_TARGETS = ("à_faire", "en_cours")
+
+
+def _reopen_no_effect() -> dict:
+    """The protocol_step_effect object, ALWAYS complete (the schema
+    requires every key); ``checked`` says whether a lookup even ran."""
+    return {
+        "checked": False,
+        "linked_step_found": False,
+        "protocol_id": "",
+        "step_id": "",
+        "step_title": "",
+        "step_status_before": "",
+        "step_status_after": "",
+        "protocol_status_before": "",
+        "protocol_status_after": "",
+        "protocol_reopened": False,
+        "note": "",
+    }
+
+
+def _reread_step_state(protocol_id: str, step_id: str) -> tuple[str, str]:
+    """``(step_status, protocol_status)`` re-read AFTER the write.
+
+    The cascade runs after the task commit and logs rather than raises, so
+    a predicted outcome could be false; one keyed read reports what IS."""
+    try:
+        protocol = protocol_model.get_protocol(protocol_id)
+    except Exception:
+        return "", ""
+    if not protocol:
+        return "", ""
+    step = next((s for s in protocol.get("steps", []) or []
+                 if s.get("id") == step_id), None)
+    return (step or {}).get("status", ""), protocol.get("status", "")
+
+
+def reopen_task(args: dict) -> dict:
+    return run_write("reopen_task", args, lambda: _reopen_task_impl(args))
+
+
+def _reopen_task_impl(args: dict) -> dict:
+    task_id = (args.get("task_id") or "").strip()
+    if not task_id:
+        raise ToolArgumentError("`task_id` est requis.")
+    target = args.get("status") or "à_faire"
+    if target not in _REOPEN_TARGETS:
+        raise ToolArgumentError(
+            "`status` doit être « à_faire » ou « en_cours ». Pour clore une "
+            "tâche, utilisez complete_task."
+        )
+    task = task_model.get_task(task_id)
+    if not task:
+        raise ToolArgumentError(
+            f"Tâche introuvable : {task_id}. Vérifiez l'identifiant avec "
+            "list_tasks — rien n'a été modifié."
+        )
+    current = task.get("status", "")
+
+    # Already there: write NOTHING (no cascade, no CTag) — replayable.
+    if current == target:
+        return _reopen_payload(task, task, previous=current, already=True,
+                               effect=_reopen_no_effect())
+    if current == "à_faire":
+        raise ToolArgumentError(
+            "Cette tâche est déjà ouverte (« à_faire ») : pour la mettre "
+            "« en_cours », utilisez complete_task avec status « en_cours ». "
+            "Rien n'a été modifié."
+        )
+    if current not in ("terminée", "annulée", "en_cours"):
+        raise ToolArgumentError(
+            "Le statut enregistré de cette tâche est hors vocabulaire : "
+            "corrigez-la dans l'application. Rien n'a été modifié."
+        )
+    # A cancellation is a DECISION: undoing it must be asked for in so many
+    # words — never inferred from a reopen of « a task ».
+    if current == "annulée" and args.get("reopen_cancelled") is not True:
+        raise ToolArgumentError(
+            "Cette tâche est « annulée » — une décision. La rouvrir exige "
+            "`reopen_cancelled: true` : confirmez-le d'abord avec "
+            "l'utilisateur. Rien n'a été modifié."
+        )
+
+    expected = _expected_etag(
+        args, task, tool="reopen_task", subject=_TASK_SUBJECT)
+    data = {"status": target}
+    errors = task_model._validate({**task, **data})
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    # The before-state, for the report. The MODEL decides feasibility
+    # (require_step_follow below) — this read only lets the payload say
+    # what the cascade found and what it did.
+    lookup_failed = False
+    try:
+        before = protocol_model.find_step_for_task(
+            task_id, task.get("dossier_id"))
+    except Exception:
+        before, lookup_failed = None, True
+
+    # require_step_follow: a linked « complété » step that cannot reopen
+    # (protocol suspended, closed by hand, another protocol actif) refuses
+    # the reopen BEFORE the task is written — never a task open beside a
+    # completed step (plan catalogue, lot 1).
+    updated, errors = task_model.update_task(
+        task_id, data, expected_etag=expected, require_step_follow=True)
+    _raise_if_stale(
+        errors, tool="reopen_task", subject=_TASK_SUBJECT,
+        reread=lambda: task_model.get_task(task_id),
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    effect = _reopen_no_effect()
+    if before is not None:
+        protocol, step = before
+        protocol_id = protocol.get("id", "")
+        step_id = step.get("id", "")
+        step_after, protocol_after = _reread_step_state(protocol_id, step_id)
+        effect.update({
+            "checked": True,
+            "linked_step_found": True,
+            "protocol_id": protocol_id,
+            "step_id": step_id,
+            "step_title": step.get("title", ""),
+            "step_status_before": step.get("status", ""),
+            "step_status_after": step_after,
+            "protocol_status_before": protocol.get("status", ""),
+            "protocol_status_after": protocol_after,
+            "protocol_reopened": (
+                protocol.get("status", "") != "actif"
+                and protocol_after == "actif"),
+        })
+        if step.get("status") == "complété" and step_after == "complété":
+            effect["note"] = (
+                "L'étape liée est restée « complété » : sa synchronisation "
+                "a échoué après l'écriture de la tâche. Vérifiez le "
+                "protocole dans l'application."
+            )
+    elif lookup_failed:
+        effect["note"] = (
+            "La recherche de l'étape liée n'a pas pu être relue pour ce "
+            "rapport : vérifiez le protocole dans l'application."
+        )
+    else:
+        effect["checked"] = True
+
+    return _reopen_payload(task, updated, previous=current, already=False,
+                           effect=effect)
+
+
+def _reopen_payload(
+    original: dict, result: dict, *, previous: str, already: bool,
+    effect: dict,
+) -> dict:
+    entity = {
+        "id": result.get("id", ""),
+        "dossier_id": result.get("dossier_id") or "",
+        "dossier_file_number": result.get("dossier_file_number", ""),
+        "dossier_title": result.get("dossier_title", ""),
+        "label": result.get("title", ""),
+        "date": date_str(result.get("due_date")),
+        "status": result.get("status", ""),
+        "previous_status": previous,
+        "completed_date": iso_mtl(_as_utc(result.get("completed_date"))),
+        "is_overdue": _task_row(result).get("is_overdue", False),
+        "etag": concurrency.etag_of(result),
+    }
+    payload = _entity_write_result(
+        "task", entity, dossier=_dossier_for(result.get("dossier_id")),
+        dav_exposed=True, verb="reopened", created=False,
+        wrote=not already,
+    )
+    payload["already_open"] = already
+    payload["protocol_step_effect"] = effect
+    if already:
+        payload["warnings"].append(
+            f"La tâche portait déjà le statut « {previous} » : rien n'a été "
+            "modifié."
+        )
+    if effect.get("protocol_reopened"):
+        payload["warnings"].append(
+            "Le protocole que la clôture automatique avait refermé est de "
+            "nouveau « actif » : ses échéances reparaissent dans get_agenda."
+        )
+    return payload
+
+
+# ── update_note (WRITE) ─────────────────────────────────────────────────
+
+def _note_edit_entity(doc: dict) -> dict:
+    return {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id") or "",
+        "dossier_file_number": doc.get("dossier_file_number", ""),
+        "dossier_title": doc.get("dossier_title", ""),
+        "label": doc.get("title", ""),
+        "date": iso_mtl(_as_utc(doc.get("created_at"))),
+        "category": doc.get("category", ""),
+        "pinned": bool(doc.get("pinned")),
+        "content_length": len(doc.get("content", "") or ""),
+        "etag": concurrency.etag_of(doc),
+    }
+
+
+def _note_changed_fields(existing: dict, data: dict) -> list[str]:
+    changed = []
+    for key, value in data.items():
+        before = existing.get(key)
+        if key == "pinned":
+            if bool(before) != bool(value):
+                changed.append(key)
+        elif (before or "") != (value or ""):
+            changed.append(key)
+    return changed
+
+
+def _tasks_left_behind(note_id: str, new_dossier: str) -> Optional[int]:
+    """How many tasks linked to this note (RELATED-TO) stay out of its new
+    collection; ``None`` when that could not be read — never a false 0."""
+    try:
+        linked = task_model.list_tasks_for_note(note_id)
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp update_note: linked task count failed",
+                       note_id=note_id)
+        return None
+    return sum(1 for t in linked
+               if (t.get("dossier_id") or "") != (new_dossier or ""))
+
+
+def update_note(args: dict) -> dict:
+    return run_write("update_note", args, lambda: _update_note_impl(args))
+
+
+def _update_note_impl(args: dict) -> dict:
+    note_id = (args.get("note_id") or "").strip()
+    if not note_id:
+        raise ToolArgumentError("`note_id` est requis.")
+    existing = note_model.get_note(note_id)
+    if existing is None:
+        raise ToolArgumentError(
+            f"Note introuvable : {note_id}. Utilisez list_notes pour obtenir "
+            "un note_id valide. Rien n'a été modifié."
+        )
+    # The théorie de la cause has its own tool, which keeps its eight
+    # headings; replaced wholesale here it could lose them. It also never
+    # moves (the MODEL refuses that on every path since lot 1a).
+    if existing.get("is_analyse"):
+        raise ToolArgumentError(
+            "Cette note est la théorie de la cause du dossier : elle se "
+            "modifie avec edit_analyse (bloc par bloc ou en entier) et ne "
+            "change jamais de dossier. Rien n'a été modifié."
+        )
+    if not any(key in args for key in _NOTE_EDIT_KEYS):
+        raise ToolArgumentError(
+            "Aucun champ à modifier : nommez au moins title, category, "
+            "pinned, content ou dossier_id."
+        )
+    # D8: replacing prose demands the version it replaces — the revision
+    # snapshot is taken against it, in the same transaction.
+    if "content" in args and "expected_etag" not in args:
+        raise ToolArgumentError(
+            "`expected_etag` est requis pour remplacer le contenu d'une "
+            "note : relisez-la avec get_note (ou list_notes) et renvoyez son "
+            "etag. Rien n'a été modifié."
+        )
+    _refuse_outside_vocabulary(args, "category", note_model.VALID_CATEGORIES)
+
+    data: dict[str, Any] = {}
+    if "title" in args:
+        title = _clean_note_text((args.get("title") or "").strip(), "title")
+        if not title:
+            raise ToolArgumentError("« title » ne peut pas être vide.")
+        data["title"] = title
+    if "category" in args:
+        data["category"] = args["category"]
+    if "pinned" in args:
+        data["pinned"] = bool(args.get("pinned"))
+    if "content" in args:
+        body = _clean_note_text((args.get("content") or "").strip(), "content")
+        body = _without_leading_stamp(body, _NOTE_REVISION_STAMP).strip()
+        if not body:
+            raise ToolArgumentError(
+                "« content » ne peut pas être vide (la mention de révision "
+                "seule ne fait pas une note)."
+            )
+        content = f"{_stamp_line(_NOTE_REVISION_STAMP, _today_mtl())}\n\n{body}"
+        # Length FIRST — sanitize also truncates, so an over-long body would
+        # otherwise trip the chevron check below and report the wrong reason.
+        if len(content) > note_model.CONTENT_MAX_LENGTH:
+            raise ToolArgumentError(
+                f"Le contenu assemblé ({len(content)} caractères, mention de "
+                f"révision comprise) dépasse le plafond de "
+                f"{note_model.CONTENT_MAX_LENGTH} : raccourcissez-le. Rien "
+                "n'a été modifié."
+            )
+        # Post-condition on the EXACT string stored (the join rule).
+        if not _survives_storage(content, note_model.CONTENT_MAX_LENGTH):
+            raise ToolArgumentError(
+                "Le contenu assemblé ne peut pas être enregistré intact. "
+                + _CHEVRON_ADVICE
+            )
+        data["content"] = content
+
+    old_dossier = existing.get("dossier_id") or ""
+    new_dossier = (
+        (args.get("dossier_id") or "").strip() if "dossier_id" in args
+        else old_dossier
+    )
+    moved = new_dossier != old_dossier
+    changed = _note_changed_fields(existing, data)
+    if moved:
+        changed.append("dossier_id")
+    if not changed:
+        payload = _note_edit_payload(
+            existing, dossier=_dossier_for(old_dossier), changed=[],
+            moved=False, old_dossier=old_dossier, wrote=False,
+            revision_id=None, left_behind=0,
+        )
+        return payload
+
+    expected = _expected_etag(
+        args, existing, tool="update_note", subject=_NOTE_SUBJECT)
+    target: Optional[dict] = None
+    if moved:
+        new_dossier, target = _resolve_move(new_dossier)
+        data["dossier_id"] = new_dossier
+        data["dossier_file_number"] = target.get("file_number", "")
+        data["dossier_title"] = target.get("title", "")
+
+    note, errors = note_model.update_note(
+        note_id, data, expected_etag=expected,
+        revision="content" if "content" in changed else None,
+    )
+    _raise_if_stale(
+        errors, tool="update_note", subject=_NOTE_SUBJECT,
+        reread=lambda: note_model.get_note(note_id),
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    left = _tasks_left_behind(note_id, new_dossier) if moved else 0
+    return _note_edit_payload(
+        note, dossier=target if moved else _dossier_for(old_dossier),
+        changed=changed, moved=moved, old_dossier=old_dossier, wrote=True,
+        revision_id=note.get("_revision_id") or None, left_behind=left,
+    )
+
+
+def _note_edit_payload(
+    doc: dict, *, dossier: Optional[dict], changed: list[str], moved: bool,
+    old_dossier: str, wrote: bool, revision_id: Optional[str],
+    left_behind: Optional[int],
+) -> dict:
+    payload = _entity_write_result(
+        "note", _note_edit_entity(doc), dossier=dossier, dav_exposed=True,
+        verb="updated", created=False, wrote=wrote,
+        previous_dossier_id=old_dossier,
+    )
+    payload["changed_fields"] = changed
+    payload["moved"] = moved
+    payload["revision_id"] = revision_id
+    payload["linked_tasks_left_behind"] = left_behind
+    if not wrote:
+        payload["warnings"].append(
+            "Toutes les valeurs envoyées étaient déjà enregistrées : rien "
+            "n'a été modifié."
+        )
+    if left_behind is None:
+        payload["warnings"].append(
+            "Les tâches liées à cette note n'ont pas pu être comptées : "
+            "vérifiez-les dans l'application."
+        )
+    elif left_behind:
+        payload["warnings"].append(
+            f"{left_behind} tâche(s) liée(s) à cette note reste(nt) dans "
+            "leur dossier : sur le téléphone, jtx Board n'affiche plus ce "
+            "lien parent."
+        )
+    return payload
+
+
+# ── edit_analyse (WRITE) ────────────────────────────────────────────────
+
+def _analyse_operations_text(
+    current: str, operations: Any, day: date,
+) -> tuple[str, list[dict], str]:
+    """``(new content, blocs_changed, revision field)`` of an operation list.
+
+    The locator is ``utils/analyse_blocs`` — it refuses rather than
+    guesses, and re-parses its own result (every zone but the target
+    byte-identical). A replaced bloc opens with a dated revision line; an
+    appended block gets the « Ajouté par Claude » line — never a ``---``,
+    which inside a bloc would read as a bloc boundary."""
+    if (not isinstance(operations, list)
+            or not 1 <= len(operations) <= ANALYSE_OPERATIONS_MAX):
+        raise ToolArgumentError(
+            f"`operations` : de 1 à {ANALYSE_OPERATIONS_MAX} opérations. "
+            "Rien n'a été modifié."
+        )
+    ops: list[dict] = []
+    changed: list[dict] = []
+    for index, op in enumerate(operations):
+        if not isinstance(op, dict):
+            raise ToolArgumentError(
+                f"`operations[{index}]` doit être un objet {{bloc, mode, "
+                "content}. Rien n'a été modifié.")
+        bloc, mode, text = op.get("bloc"), op.get("mode"), op.get("content")
+        if bloc not in analyse_blocs.ZONE_KEYS:
+            raise ToolArgumentError(
+                f"`operations[{index}].bloc` : « entete » ou une lettre de A "
+                "à H. Rien n'a été modifié.")
+        if mode not in analyse_blocs.MODES:
+            raise ToolArgumentError(
+                f"`operations[{index}].mode` : « replace » ou « append ». "
+                "Rien n'a été modifié.")
+        if not isinstance(text, str) or len(text) > CONTENT_MAX_CHARS:
+            raise ToolArgumentError(
+                f"`operations[{index}].content` : du texte, au plus "
+                f"{CONTENT_MAX_CHARS} caractères. Rien n'a été modifié.")
+        text = _normalize_markdown(text)
+        if not _survives_storage(text, note_model.CONTENT_MAX_LENGTH):
+            raise ToolArgumentError(
+                f"`operations[{index}].content` (bloc {bloc}) contient du "
+                "texte entre chevrons qui serait supprimé à "
+                f"l'enregistrement. {_CHEVRON_ADVICE}")
+        if mode == "replace":
+            body = _without_leading_stamp(text, _BLOC_REVISION_STAMP)
+            stamp = _stamp_line(_BLOC_REVISION_STAMP, day)
+            text = f"{stamp}\n\n{body}" if body.strip() else stamp
+        ops.append({"bloc": bloc, "mode": mode, "content": text})
+        changed.append({"bloc": bloc, "mode": mode,
+                        "chars": len(op.get("content") or "")})
+    try:
+        new = analyse_blocs.apply_operations(
+            current, ops,
+            stamp=f"*Ajouté par Claude le {format_date_fr(day)}*",
+        )
+    except analyse_blocs.BlocStructureError as exc:
+        raise ToolArgumentError(f"{exc} Rien n'a été modifié.")
+    field = f"bloc:{ops[0]['bloc']}" if len(ops) == 1 else "content"
+    return new, changed, field
+
+
+def _analyse_rewrite_text(full: Any, day: date) -> str:
+    """The whole new théorie, validated, with its dated revision line placed
+    right after the level-one title (the start of the entête's body)."""
+    if not isinstance(full, str) or not full.strip():
+        raise ToolArgumentError("« full » ne peut pas être vide.")
+    text = _normalize_markdown(full)
+    if len(text) > note_model.CONTENT_MAX_LENGTH:
+        raise ToolArgumentError(
+            f"« full » dépasse le plafond de {note_model.CONTENT_MAX_LENGTH} "
+            "caractères. Rien n'a été modifié.")
+    if not _survives_storage(text, note_model.CONTENT_MAX_LENGTH):
+        raise ToolArgumentError(
+            "« full » contient du texte entre chevrons qui serait supprimé à "
+            f"l'enregistrement. {_CHEVRON_ADVICE}")
+    try:
+        parsed = analyse_blocs.validate_full_rewrite(text)
+    except analyse_blocs.BlocStructureError as exc:
+        raise ToolArgumentError(f"{exc} Rien n'a été modifié.")
+    at = parsed.entete.body_start
+    head = text[:at]
+    rest = _without_leading_stamp(text[at:], _ANALYSE_REWRITE_STAMP)
+    rest = rest.lstrip("\r\n")
+    if head and not head.endswith(("\n", "\r")):
+        head += "\n"
+    stamp = _stamp_line(_ANALYSE_REWRITE_STAMP, day)
+    new = f"{head}\n{stamp}\n\n{rest}" if head else f"{stamp}\n\n{rest}"
+    try:
+        analyse_blocs.validate_full_rewrite(new)
+    except analyse_blocs.BlocStructureError as exc:
+        raise ToolArgumentError(f"{exc} Rien n'a été modifié.")
+    return new
+
+
+def edit_analyse(args: dict) -> dict:
+    return run_write("edit_analyse", args, lambda: _edit_analyse_impl(args))
+
+
+def _edit_analyse_impl(args: dict) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    operations = args.get("operations")
+    full = args.get("full")
+    if operations is not None and full is not None:
+        raise ToolArgumentError(
+            "Donnez `operations` ou `full`, jamais les deux. Rien n'a été "
+            "modifié."
+        )
+
+    # No operation: the idempotent init. ensure_analyse_note fails CLOSED
+    # (a read error or a duplicate writes nothing) and says whether THIS
+    # call created the note — the only case that bumps a CTag.
+    if operations is None and full is None:
+        note, errors, created = note_model.ensure_analyse_note(dossier_id)
+        if errors:
+            raise ToolArgumentError("; ".join(errors))
+        return _analyse_payload(
+            note, dossier, mode="created" if created else "found",
+            wrote=created, created=created, blocs_changed=[],
+            revision_id=None,
+        )
+
+    if "expected_etag" not in args:
+        raise ToolArgumentError(
+            "`expected_etag` est requis pour modifier la théorie de la "
+            "cause : relisez-la avec get_note (son id est analyse_note_id "
+            "de get_dossier), ou appelez edit_analyse sans operations ni "
+            "full pour obtenir son etag. Rien n'a été modifié."
+        )
+    try:
+        note = note_model.find_analyse_note_strict(dossier_id)
+    except note_model.AnalyseDuplicateError:
+        raise ToolArgumentError(note_model.ANALYSE_DUPLICATE_ERROR)
+    except note_model.AnalyseLookupError:
+        raise ToolArgumentError(
+            "Impossible de lire la théorie de la cause de ce dossier — "
+            "réessayez. Rien n'a été modifié."
+        )
+    if note is None:
+        raise ToolArgumentError(
+            "Ce dossier n'a pas encore de théorie de la cause : appelez "
+            "edit_analyse sans operations ni full pour la créer, puis "
+            "modifiez-la avec l'etag rendu. Rien n'a été modifié."
+        )
+    # The version first: every locator below works on the text this etag
+    # names, and an operation aimed from an older read must be re-aimed.
+    expected = _expected_etag(
+        args, note, tool="edit_analyse", subject=_ANALYSE_SUBJECT)
+
+    current = note.get("content", "") or ""
+    day = _today_mtl()
+    if operations is not None:
+        new, changed, field = _analyse_operations_text(current, operations, day)
+        mode = "blocs"
+    else:
+        new, changed, field = _analyse_rewrite_text(full, day), [], "content:rewrite"
+        mode = "full"
+
+    if new == current:
+        return _analyse_payload(
+            note, dossier, mode="unchanged", wrote=False, created=False,
+            blocs_changed=[], revision_id=None,
+        )
+    # Length FIRST (sanitize truncates), then the post-condition on the
+    # exact string stored — the join of an insertion with its neighbours.
+    if len(new) > note_model.CONTENT_MAX_LENGTH:
+        raise ToolArgumentError(
+            f"La théorie de la cause atteindrait {len(new)} caractères, au-"
+            f"delà du plafond de {note_model.CONTENT_MAX_LENGTH}. Rien n'a "
+            "été modifié."
+        )
+    if not _survives_storage(new, note_model.CONTENT_MAX_LENGTH):
+        raise ToolArgumentError(
+            "Combinés, le texte existant et le vôtre contiennent une paire de "
+            "chevrons qui ferait disparaître du contenu à l'enregistrement. "
+            + _CHEVRON_ADVICE
+        )
+
+    # Payload whitelist of ONE key: title, category, is_analyse, dateless
+    # and dossier_id are never touched here. The revision snapshot of the
+    # WHOLE replaced text commits in the same transaction (plan rule 4).
+    updated, errors = note_model.update_note(
+        note.get("id", ""), {"content": new}, expected_etag=expected,
+        revision=field,
+    )
+    _raise_if_stale(
+        errors, tool="edit_analyse", subject=_ANALYSE_SUBJECT,
+        reread=lambda: note_model.get_note(note.get("id", "")),
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    return _analyse_payload(
+        updated, dossier, mode=mode, wrote=True, created=False,
+        blocs_changed=changed,
+        revision_id=updated.get("_revision_id") or None,
+    )
+
+
+def _analyse_payload(
+    note: dict, dossier: Optional[dict], *, mode: str, wrote: bool,
+    created: bool, blocs_changed: list[dict], revision_id: Optional[str],
+) -> dict:
+    content = note.get("content", "") or ""
+    entity = {
+        "id": note.get("id", ""),
+        "dossier_id": note.get("dossier_id") or "",
+        "dossier_file_number": note.get("dossier_file_number", ""),
+        "dossier_title": note.get("dossier_title", ""),
+        "label": note.get("title", ""),
+        # A dateless jtx *Note*: it has no operative date.
+        "date": None,
+        "content_length": len(content),
+        "etag": concurrency.etag_of(note),
+    }
+    payload = _entity_write_result(
+        "note", entity, dossier=dossier, dav_exposed=True, verb="edited",
+        created=created, wrote=wrote,
+    )
+    structure = _analyse_structure(content, headings=False)
+    payload["mode"] = mode
+    payload["structure"] = structure
+    payload["blocs_changed"] = blocs_changed
+    payload["revision_id"] = revision_id
+    if mode == "unchanged":
+        payload["warnings"].append(
+            "Les opérations ne changeaient rien au texte : rien n'a été "
+            "modifié."
+        )
+    if not structure["editable"]:
+        payload["warnings"].append(
+            "La théorie de la cause n'a pas ses huit titres « ## Bloc A » à "
+            "« ## Bloc H » une fois chacun : toute opération par bloc sera "
+            "refusée. Rétablissez-les, ou réécrivez-la en entier avec "
+            "`full`."
         )
     return payload
 

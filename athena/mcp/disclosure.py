@@ -157,11 +157,42 @@ FAMILIES: tuple[Family, ...] = (
             "left alone: `update_partie`, `update_dossier`, "
             "`update_time_entry` and `update_expense` (the last two only "
             "while the entry is not yet invoiced). `complete_task` closes a "
-            "task (terminée, annulée) or puts an open one en_cours — it "
-            "never reopens a closed task — and it is the only STATUS change "
-            "here. One indirect effect to know: completing a task that a "
-            "protocol step is linked to also completes that step, and if it "
-            "was the last open one the whole protocol closes."
+            "task (terminée, annulée) or puts an open one en_cours; it never "
+            "reopens a closed one — that is `reopen_task` (AGENDA). One "
+            "indirect effect to know: completing a task that a protocol step "
+            "is linked to also completes that step, and if it was the last "
+            "open one the whole protocol closes."
+        ),
+    ),
+    Family(
+        key="agenda",
+        label="AGENDA",
+        scope=SCOPE_WRITE,
+        tools=("update_task", "reopen_task", "update_note", "edit_analyse"),
+        consent_template="mcp/families/_agenda.html",
+        checkbox_summary_fr=(
+            "modifier ou déplacer une tâche ou une note, rouvrir une tâche, "
+            "rédiger la théorie de la cause (le texte remplacé d'une note "
+            "est conservé)"
+        ),
+        instructions_en=(
+            "`update_task` and `update_note` REPLACE the fields you name (a "
+            "field you omit is left alone; values already stored write "
+            "nothing); a `dossier_id` MOVES the item, and its phone copy "
+            "follows. A task's replaced description is NOT kept; a note's "
+            "replaced content IS kept in its revision history, and "
+            "`update_note` demands `expected_etag` to replace content. "
+            "`reopen_task` reopens a closed task (an annulée one only with "
+            "reopen_cancelled true) together with the protocol step linked "
+            "to it and a protocol the cascade had closed — and refuses, "
+            "writing nothing, when that step cannot follow. `edit_analyse` "
+            "writes the dossier's « Théorie de la cause »: without "
+            "operations it creates the note if needed and returns its "
+            "structure and etag; with operations it replaces or completes "
+            "whole blocs (entete, A to H), or rewrites the note keeping its "
+            "eight headings — `expected_etag` required, each replaced "
+            "version kept. Never retry an edit blindly after a stale_etag "
+            "refusal: re-read, then redo it on the current text."
         ),
     ),
     Family(
@@ -370,21 +401,23 @@ NEVERS: tuple[Never, ...] = (
         ),
     ),
     Never(
-        key="reopen_task",
+        key="uncancel",
         fr=(
-            "<strong>rouvrir une tâche</strong> terminée ou annulée — cela "
-            "se fait dans l'application"
+            "<strong>défaire une annulation</strong> en silence — rouvrir "
+            "une tâche annulée exige une demande expresse"
         ),
         en=(
-            "It never reopens a closed task (terminée or annulée): "
-            "reopening a task is done in the application."
+            "It never silently undoes a cancellation: reopening an annulée "
+            "task requires reopen_cancelled true."
         ),
         # A four-state toggle: it sends annulée AND terminée back to
-        # à_faire, silently un-cancelling a cancelled task.
+        # à_faire, silently un-cancelling a cancelled task. Lot 1b's
+        # reopen_task replaced the promise « never reopens a closed task »
+        # (now false) with this narrower one, which stays true.
         forbidden=("toggle_task_complete",),
         behavioural_test=(
-            "tests/test_mcp_tools.py::"
-            "test_a_closed_task_is_never_put_back_en_cours"
+            "tests/test_mcp_agenda_writes.py::"
+            "test_reopen_task_never_uncancels_without_the_explicit_flag"
         ),
     ),
     Never(
@@ -594,8 +627,8 @@ def build_instructions(
         "it), with the time of its last connector write in "
         "`mcp_updated_at` — returned by the read rows whose output schema "
         "declares those keys, which not every read does; the notes, tasks "
-        "and events it CREATES also carry a dated « … par Claude le … » "
-        "line."
+        "and events it CREATES, and the note text it REPLACES, also carry a "
+        "dated « … par Claude le … » line."
     )
     parts.append(_FORMATS_EN)
     return " ".join(parts)

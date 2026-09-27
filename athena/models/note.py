@@ -804,6 +804,10 @@ Norme applicable : prépondérance des probabilités (art. 2804 C.c.Q.), sauf ex
 (preuve, expertise, mandat, provision) …
 """
 
+# The seed, public: the connector compares each bloc against it to report
+# which ones are still the template (``mcp/handlers._analyse_structure``).
+ANALYSE_SEED = _ANALYSE_SEED
+
 
 def get_analyse_note(dossier_id: str) -> Optional[dict]:
     """Return the dossier's single ``is_analyse`` note, or ``None``.

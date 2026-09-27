@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 49  # 27 lectures + 22 ecritures
+    assert len(tools.TOOLS) == 53  # 27 lectures + 26 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -307,6 +307,11 @@ _IDEMPOTENT_WRITES = frozenset({
     "complete_task",
     "set_time_entry_phase", "set_expense_phase",
     "set_time_entry_phase_bulk", "set_expense_phase_bulk",
+    # Lot 1b. Values already stored write nothing (update_task,
+    # update_note, reopen_task on its own target); a content replacement
+    # and every théorie edit demand the CURRENT etag, so an identical
+    # second call is refused rather than applied twice.
+    "update_task", "reopen_task", "update_note", "edit_analyse",
 })
 
 
@@ -334,6 +339,9 @@ def test_write_tools_set_is_pinned():
         # elle est DERIVEE d'une sous-nature d'une table fermee. Membre
         # d'EDIT_TOOLS, donc destructiveHint.
         "record_document_analysis",
+        # Lot 1b — l'agenda : modifier et deplacer une tache ou une note,
+        # rouvrir une tache, rediger la theorie de la cause.
+        "update_task", "reopen_task", "update_note", "edit_analyse",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -3966,13 +3974,15 @@ def test_the_other_terminal_state_is_refused_not_rewritten(ct):
 @pytest.mark.parametrize("closed", ["terminée", "annulée"])
 def test_a_closed_task_is_never_put_back_en_cours(ct, bumps, closed):
     """Closed → « en_cours » is a REOPEN: the model clears completed_date
-    and de-completes the linked step. The disclosure registry promises the
-    connector never reopens a closed task (mcp/disclosure, « reopen_task »),
-    and this refusal is what backs it — before lot 0a it went through and
-    the description called it a feature. Reopening gets its own tool in
-    plan lot 1; until then it is done in the application."""
+    and de-completes the linked step. complete_task stays a CLOSING tool —
+    before lot 0a this went through and the description called it a
+    feature. Since lot 1b reopening is reopen_task (which refuses before
+    writing when the step cannot follow, and demands reopen_cancelled for
+    an annulée task), and the refusal points there (rewritten deliberately
+    in lot 1b: it used to say « rouvrir une tâche se fait dans
+    l'application »)."""
     ct["task"] = _ct_task(closed)
-    with pytest.raises(tools.ToolArgumentError, match="rouvrir une tâche se fait"):
+    with pytest.raises(tools.ToolArgumentError, match="reopen_task"):
         handlers.complete_task({"task_id": "t1", "status": "en_cours"})
     assert ct["updated"] is None            # update_task never reached
     assert bumps["bump"] == []

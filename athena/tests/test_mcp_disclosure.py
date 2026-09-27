@@ -68,6 +68,19 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # ._sync_protocol_step acts on « terminée » only): only TERMINATING it
     # completes the step.
     "clore une tâche rattachée à une étape de protocole complète",
+    # Lot 1b: notes, tasks and the théorie de la cause became editable, and
+    # reopening a task became a tool. Each of these once stood on a surface
+    # and is false now.
+    "cannot edit or delete it afterwards",           # create_note
+    "is edited only in the app",                     # append_to_note
+    "readable but read-only",                        # list_notes/get_note
+    "the only status change this connector can make",  # complete_task
+    "can close it with complete_task but can never edit",  # create_task
+    "reopening a task is done in the application",
+    "rouvrir une tâche se fait dans l'application",
+    "jamais rouvrir une tâche close",                # consent, CORRECT
+    "ajout à la fin — jamais de modification",       # consent, CREATE
+    "en lecture seule via le connecteur",            # append_to_note refusal
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

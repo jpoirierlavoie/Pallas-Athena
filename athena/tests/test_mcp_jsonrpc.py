@@ -230,9 +230,14 @@ def test_initialize_shape(client):
     # Lot 0a (disclosure step): the text is ASSEMBLED from mcp/disclosure,
     # and three things it used to say were false. Voiding does NOT free the
     # number; complete_task does not reopen; the family count is derived.
+    # Lot 1b: reopening became its own tool, so « never reopens a closed
+    # task » became false as a CONNECTOR promise — what stays true is that
+    # complete_task never does it, and that no tool undoes a cancellation
+    # without being told to in so many words.
     assert "frees the number" not in instructions
     assert "the number stays on the voided invoice" in instructions
-    assert "never reopens a closed task" in instructions
+    assert "never reopens a closed one — that is `reopen_task`" in instructions
+    assert "never silently undoes a cancellation" in instructions
     assert "five families" not in instructions
     families = [f for f in disclosure.FAMILIES if f.tools]
     assert f"in {len(families)} families (" in instructions

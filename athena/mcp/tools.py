@@ -591,6 +591,24 @@ _PARTIE_ETAG_READERS = ("get_partie", "list_parties")
 _DOSSIER_ETAG_READERS = ("get_dossier", "list_dossiers")
 _TIME_ENTRY_ETAG_READERS = ("list_time_entries",)
 _EXPENSE_ETAG_READERS = ("list_expenses",)
+_TASK_ETAG_READERS = ("list_tasks",)
+_NOTE_ETAG_READERS = ("get_note", "list_notes")
+
+
+def _expected_etag_required_when(readers: tuple[str, ...], when: str) -> dict:
+    """``expected_etag`` for a tool that DEMANDS it on some calls only.
+
+    Declared ``optional`` in the registry — the other calls of the tool
+    (a title change, the théorie's idempotent init) have no version to
+    present, or cannot have one yet — and demanded by the HANDLER when
+    *when* holds: a content replacement (plan rule 3, D8). The text says
+    so first, so a model reads the condition before the generic remedy.
+    """
+    prop = _expected_etag_prop(readers)
+    prop["expected_etag"]["description"] = (
+        f"REQUIRED {when}. " + prop["expected_etag"]["description"]
+    )
+    return prop
 
 
 def _offset() -> dict:
@@ -699,6 +717,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # which under-warned: a client uses the hint to decide whether to
     # confirm with the user first (plan lot 0a, disclosure step).
     "complete_task",
+    # Lot 1b — the agenda edits. Each REPLACES a stored value: a task's
+    # fields, a task's status (and, by the cascade, its step's and
+    # protocol's), a note's fields or whole body, blocs of the théorie de la
+    # cause. The replaced prose of a note is kept (revisions); the rest is
+    # not — which is why the hint matters.
+    "update_task", "reopen_task", "update_note", "edit_analyse",
 })
 
 # Names that PROMISE an edit. A tool whose name starts with one of these must
@@ -710,7 +734,7 @@ EDIT_TOOLS: frozenset[str] = frozenset({
 EDIT_NAME_PREFIXES: tuple[str, ...] = (
     "update_", "set_", "replace_", "rewrite_", "move_", "void_", "reopen_",
     "remove_", "reverse_", "clear_", "cancel_", "refuse_", "confirm_",
-    "reschedule_", "unlink_", "detach_",
+    "reschedule_", "unlink_", "detach_", "edit_",
 )
 
 # The idempotency POLICY of a write tool — declared per tool as the
@@ -755,6 +779,17 @@ def idempotency_policy(name: str) -> str:
 # note is full. ~20 000 chars ≈ a 3 500-word memo.
 CONTENT_MAX_CHARS = 20_000
 NOTE_TITLE_MAX_CHARS = 200
+
+# A full REPLACEMENT of a note body (update_note) or of the théorie de la
+# cause (edit_analyse `full`) must carry the whole note, so it gets the
+# note's own scale — but strictly BELOW models.note.CONTENT_MAX_LENGTH
+# (100 000): the handler prepends a one-line dated provenance stamp, and the
+# assembled string is what must fit, never a truncated one (pinned by
+# tests/test_mcp_agenda_writes.py). 99 000 characters at the worst JSON
+# escaping (6 bytes) is ~594 KB — under the 1 MB /mcp request cap.
+NOTE_REPLACE_MAX_CHARS = 99_000
+# At most one operation per zone of the théorie (the entête + blocs A to H).
+ANALYSE_OPERATIONS_MAX = 9
 
 # Phase N — get_document_text: per-call character ceiling. The model PAGES
 # through a long document (page_range + next_page) instead of receiving
@@ -1346,8 +1381,8 @@ TOOLS: dict[str, dict] = {
             "content, so a match may sit past the preview — fetch the note "
             "before concluding it is irrelevant. Use get_note for the full "
             "Markdown. A note flagged is_analyse is the dossier's « Théorie "
-            "de la cause » (the lawyer's structured case analysis) — "
-            "readable but READ-ONLY: never target it with append_to_note."
+            "de la cause » (the lawyer's structured case analysis) — write "
+            "it only with edit_analyse, never append_to_note/update_note."
         ),
         "input_schema": {
             "type": "object",
@@ -1420,9 +1455,10 @@ TOOLS: dict[str, dict] = {
     "get_note": {
         "title": "Détail d'une note",
         "description": (
-            "Fetch one note with its full raw Markdown content. A note "
-            "flagged is_analyse (the dossier's « Théorie de la cause ») is "
-            "read-only: append_to_note refuses it."
+            "Fetch one note with its full raw Markdown content and etag. For "
+            "a note flagged is_analyse (the dossier's « Théorie de la "
+            "cause »), `structure` maps its entête and blocs A–H; write it "
+            "with edit_analyse only."
         ),
         "input_schema": {
             "type": "object",
@@ -2219,8 +2255,8 @@ TOOLS: dict[str, dict] = {
             "find the right dossier — an id you supply that does not exist is "
             "refused outright, and that refusal is the signal to go look. "
             "Content is Markdown "
-            "in French. The note is permanent: this connector cannot edit or "
-            "delete it afterwards, and it syncs to the lawyer's phone. "
+            "in French. The note syncs to the lawyer's phone; this "
+            "connector can later edit it (update_note), never delete it. "
             "Confirm with the user before calling, and never call it on a "
             "dossier you have not read with get_dossier first. If the call "
             "appears to fail, check list_notes before retrying — there is no "
@@ -2276,8 +2312,8 @@ TOOLS: dict[str, dict] = {
             "with get_note before retrying — a retry appends a second copy. "
             "Fails explicitly (rather than truncating) when the note would "
             "exceed its storage ceiling. Refuses the « Théorie de la cause » "
-            "note (is_analyse true in list_notes/get_note) — that analysis "
-            "is edited only in the app."
+            "note (is_analyse true in list_notes/get_note) — write it with "
+            "edit_analyse (mode append completes one bloc)."
         ),
         "input_schema": {
             "type": "object",
@@ -2303,6 +2339,156 @@ TOOLS: dict[str, dict] = {
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
     },
+    "update_note": {
+        "title": "Modifier une note",
+        "annotations": {
+            # Values already stored write nothing; a content replacement
+            # demands the current etag, so a repeat is refused, not doubled.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — REPLACES the fields you name (a field you omit is "
+            "untouched): title, category, pinned, content, dossier_id "
+            "(MOVES the note, \"\" = « Général »; its phone copy follows). "
+            "`content` replaces the WHOLE body: read it with get_note, edit, "
+            "send it back complete, with `expected_etag`. The replaced text "
+            "is kept in the note's revision history and a dated « Révisée "
+            "par Claude » line opens the new body. Raw HTML or unpaired "
+            "angle brackets are refused, never stripped; an over-long body "
+            "is refused, never truncated. Refuses the « Théorie de la "
+            "cause » (is_analyse): use edit_analyse. To add at the end, "
+            "prefer append_to_note."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note_id": _id("The note to modify (UUIDv4), from list_notes."),
+                "title": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": NOTE_TITLE_MAX_CHARS,
+                    "description": "New title, in French.",
+                },
+                "category": {
+                    "type": "string", "enum": _NOTE_CATEGORIES,
+                    "description": "New category.",
+                },
+                "pinned": {
+                    "type": "boolean",
+                    "description": "Pin (true) or unpin (false) the note.",
+                },
+                "content": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": NOTE_REPLACE_MAX_CHARS,
+                    "description": (
+                        "The complete new Markdown body, in French (max "
+                        f"{NOTE_REPLACE_MAX_CHARS} characters)."
+                    ),
+                },
+                "dossier_id": _id(
+                    "MOVE the note to this dossier (UUIDv4), or \"\" for "
+                    "« Général ». An id that does not resolve is refused, "
+                    "never downgraded."
+                ),
+                **_expected_etag_required_when(
+                    _NOTE_ETAG_READERS, "when `content` is sent"),
+                **_write_protocol_props(),
+            },
+            "required": ["note_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_note",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _NOTE_ETAG_READERS,
+    },
+    "edit_analyse": {
+        "title": "Rédiger la théorie de la cause",
+        "annotations": {
+            # The init finds and writes nothing twice; an edit demands the
+            # current etag, so its repeat is refused, never applied twice.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — the dossier's « Théorie de la cause » (an entête, then "
+            "8 blocs « ## Bloc A » … « ## Bloc H »). With neither "
+            "`operations` nor `full`: creates it pre-seeded if absent "
+            "(idempotent) and returns its structure and etag. `operations`: "
+            "replace a bloc's body or append at its end, each bloc once; "
+            "headings are kept, and the text may hold no level-1/2 heading. "
+            "`full`: rewrites everything, keeping the eight headings once "
+            "each, in order. Writing REQUIRES `expected_etag`; each write "
+            "keeps the replaced text in the note's revision history and "
+            "adds a dated « par Claude » line. Refuses (never guesses) when "
+            "a heading is missing or doubled."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier whose théorie de la cause to write (UUIDv4)."
+                ),
+                "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": ANALYSE_OPERATIONS_MAX,
+                    "description": (
+                        f"1 to {ANALYSE_OPERATIONS_MAX} bloc edits, applied "
+                        "in order — whole list or nothing. Not with `full`."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bloc": {
+                                "type": "string",
+                                "enum": ["entete", "A", "B", "C", "D", "E",
+                                         "F", "G", "H"],
+                                "description": (
+                                    "« entete » (the text before bloc A) "
+                                    "or a bloc letter."
+                                ),
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["replace", "append"],
+                                "description": (
+                                    "replace = the bloc's whole body (\"\" "
+                                    "empties it); append = add at its end."
+                                ),
+                            },
+                            "content": {
+                                "type": "string",
+                                "maxLength": CONTENT_MAX_CHARS,
+                                "description": "Markdown, in French.",
+                            },
+                        },
+                        "required": ["bloc", "mode", "content"],
+                        "additionalProperties": False,
+                    },
+                },
+                "full": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": NOTE_REPLACE_MAX_CHARS,
+                    "description": (
+                        "The whole new note (Markdown). Not with "
+                        "`operations`."
+                    ),
+                },
+                **_expected_etag_required_when(
+                    _NOTE_ETAG_READERS,
+                    "with `operations` or `full` (the note's id is "
+                    "get_dossier's analyse_note_id)"),
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id"],
+            "additionalProperties": False,
+        },
+        "handler": "edit_analyse",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _NOTE_ETAG_READERS,
+    },
     "complete_task": {
         "title": "Clore une tâche",
         "annotations": {
@@ -2311,10 +2497,9 @@ TOOLS: dict[str, dict] = {
         },
         "description": (
             "Close a task: « terminée », « annulée », or move an OPEN task "
-            "to « en_cours ». The ONLY status change this connector can "
-            "make — it never reopens a closed task (neither to « à_faire » "
-            "nor to « en_cours »), edits its title or deletes it; those are "
-            "done in the application. "
+            "to « en_cours ». It never reopens a closed task (neither to "
+            "« à_faire » nor to « en_cours ») — that is reopen_task — and "
+            "never edits its fields (update_task) or deletes it. "
             "CASCADE, and read this before calling: completing a task that "
             "a protocol step is linked to ALSO completes that step, exactly "
             "as ticking the box in the application does — and if it was the "
@@ -2343,8 +2528,7 @@ TOOLS: dict[str, dict] = {
                     "description": (
                         "Default « terminée ». « à_faire » is deliberately "
                         "absent, and « en_cours » is refused on a task "
-                        "already closed: reopening is done in the "
-                        "application."
+                        "already closed: reopening is reopen_task."
                     ),
                 },
                 "completion_note": {
@@ -2366,12 +2550,125 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_EXEMPT,
         "concurrency_reason": (
-            "Accepts no expected_etag (plan lot 1's update_task will); the "
+            "Accepts no expected_etag (update_task and reopen_task do); the "
             "handler compare-and-sets against the task it has just read, so "
             "a change landing during the call is refused, never overwritten "
             "(a same-state call writes nothing)."
         ),
         "handler": "complete_task",
+    },
+    "update_task": {
+        "title": "Modifier une tâche",
+        "annotations": {
+            # Values already stored write nothing: a replay is a no-op.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — REPLACES the fields you name; a field you omit is "
+            "untouched, and values already stored write nothing. Never the "
+            "status: close with complete_task, reopen with reopen_task. "
+            "`description` replaces the WHOLE text and the old one is NOT "
+            "kept — read it with list_tasks and send it back complete. "
+            "`dossier_id` MOVES the task (\"\" = « Général ») and its phone "
+            "copy follows; a task a protocol step links never moves "
+            "(refused). Omitting both phase keys leaves the classification "
+            "alone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": _id("The task to modify (UUIDv4), from list_tasks."),
+                "title": {
+                    "type": "string", "minLength": 1, "maxLength": 300,
+                    "description": "New title, in French.",
+                },
+                "description": {
+                    "type": "string", "maxLength": 2000,
+                    "description": (
+                        "New description — replaces the whole text; \"\" "
+                        "empties it. Refused, never truncated, past 2000 "
+                        "characters."
+                    ),
+                },
+                "priority": {
+                    "type": "string", "enum": _TASK_PRIORITIES,
+                    "description": "New priority.",
+                },
+                "category": {
+                    "type": "string", "enum": _TASK_CATEGORIES,
+                    "description": "New category.",
+                },
+                "due_date": _date(
+                    "New deadline, YYYY-MM-DD; \"\" removes it (an undated "
+                    "task never reaches the urgent lists)."
+                ),
+                **_phase_props(),
+                "dossier_id": _id(
+                    "MOVE the task to this dossier (UUIDv4), or \"\" for "
+                    "« Général ». An id that does not resolve is refused, "
+                    "never downgraded."
+                ),
+                **_expected_etag_prop(_TASK_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_task",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _TASK_ETAG_READERS,
+    },
+    "reopen_task": {
+        "title": "Rouvrir une tâche",
+        "annotations": {
+            # The same target twice writes nothing at all.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — reopen a « terminée » task, or an « annulée » one with "
+            "reopen_cancelled true (a cancellation is a decision: confirm "
+            "with the user), to « à_faire » (default) or « en_cours »; it "
+            "also puts an « en_cours » task back to « à_faire ». CASCADE: a "
+            "linked protocol step that was « complété » reopens too, and "
+            "so does its protocol when the cascade had closed it by itself. "
+            "When the step cannot follow (protocol suspended or closed by "
+            "hand, another protocol active) the call is REFUSED and nothing "
+            "is written. `protocol_step_effect` reports what happened, "
+            "re-read after the write. A task already in the requested state "
+            "is a no-op."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": _id("The task to reopen (UUIDv4), from list_tasks."),
+                "status": {
+                    "type": "string",
+                    "enum": ["à_faire", "en_cours"],
+                    "description": (
+                        "Default « à_faire ». To put an OPEN task "
+                        "« en_cours », use complete_task."
+                    ),
+                },
+                "reopen_cancelled": {
+                    "type": "boolean",
+                    "description": (
+                        "Must be true to reopen an « annulée » task — "
+                        "refused otherwise, naming this flag."
+                    ),
+                },
+                **_expected_etag_prop(_TASK_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": "reopen_task",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _TASK_ETAG_READERS,
     },
     "create_task": {
         "title": "Créer une tâche",
@@ -2382,8 +2679,8 @@ TOOLS: dict[str, dict] = {
             "filed on that dossier (an unresolvable id is refused, never "
             "downgraded); omit it only for practice-wide to-dos "
             "(« Général »). The task is created à_faire — this connector "
-            "can close it with complete_task but can never edit or delete "
-            "it, and it syncs to the "
+            "can later edit (update_task), close (complete_task) or reopen "
+            "(reopen_task) it but never delete it, and it syncs to the "
             "lawyer's phone. Confirm with the user before calling; use "
             "an idempotency_key on every "
             "scheduled call."

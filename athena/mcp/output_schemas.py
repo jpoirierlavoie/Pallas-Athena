@@ -751,6 +751,78 @@ def _write_result(verb: str, extra: Optional[dict[str, Any]] = None) -> dict:
     return _obj(properties)
 
 
+def _analyse_structure(*, headings: bool, nullable: bool = False) -> dict:
+    """Where the zones of the « Théorie de la cause » stand
+    (``utils/analyse_blocs.parse``), for a reader to aim an edit_analyse
+    operation.
+
+    *headings* — the READ variant (get_note) carries each heading's text:
+    it is the note's own content, returned to a caller already reading
+    the whole body. A WRITE result never does (edit_analyse): write
+    payloads are stored 24 h in mcp_idempotency, and no write output
+    echoes note text. *nullable* — get_note emits ``null`` for an
+    ordinary note, so the key is always present."""
+    zone: dict[str, Any] = {}
+    if headings:
+        zone["heading"] = _str(
+            "The heading line's text, verbatim ('' for an entête without a "
+            "level-1 title).")
+    zone["chars"] = _int("Length of the zone's BODY (heading excluded).")
+    zone["is_seed"] = _bool(
+        "true = the body is still the template the note was seeded with.")
+    bloc = _obj({
+        "bloc": _str("The bloc letter, A to H — document order, a doubled "
+                     "letter listed twice."),
+        **zone,
+    })
+    schema = _obj({
+        "ok": _bool("Every letter A–H exactly once AND in order."),
+        "editable": _bool(
+            "Every letter exactly once: a bloc operation can run. false = "
+            "every operation is refused until the headings are restored "
+            "(or the note is rewritten with `full`)."),
+        "in_order": _bool("The letters appear in A…H order."),
+        "missing": _arr(_str(), "Letters with no heading."),
+        "duplicates": _arr(_str(), "Letters whose heading appears twice."),
+        "entete": _obj(dict(zone), description="The text before bloc A."),
+        "blocs": _arr(bloc),
+        "interstitial_chars": _int(
+            "Text under a level-1/2 heading that is NOT a bloc — kept by "
+            "every bloc operation, never touched."),
+        "content_length": _int("Stored length of the whole note."),
+        "max_length": _int("The note's storage ceiling."),
+        "remaining_chars": _int("max_length − content_length."),
+    }, description=(
+        "The théorie de la cause's zones. null for an ordinary note."
+        if nullable else "The théorie de la cause's zones after this call."))
+    if nullable:
+        schema["type"] = ["object", "null"]
+    return schema
+
+
+def _task_status_effect() -> dict:
+    """reopen_task's ``protocol_step_effect``: what the cascade DID, re-read
+    from the documents after the write — never predicted."""
+    return _obj({
+        "checked": _bool(
+            "false = no lookup ran (nothing was written, or the lookup "
+            "itself failed — see `note`). An absent cascade is never "
+            "confused with an unexamined one."),
+        "linked_step_found": _bool(),
+        "protocol_id": _str(),
+        "step_id": _str(),
+        "step_title": _str(),
+        "step_status_before": _str(),
+        "step_status_after": _str("RE-READ after the write."),
+        "protocol_status_before": _str(),
+        "protocol_status_after": _str("RE-READ after the write."),
+        "protocol_reopened": _bool(
+            "true = the protocol the cascade had closed is « actif » "
+            "again: its deadlines are back in get_agenda."),
+        "note": _str("French; empty when there is nothing to add."),
+    })
+
+
 # ── The registry ────────────────────────────────────────────────────────
 
 def _phase_bulk_result(entity_type: str) -> dict:
@@ -1007,6 +1079,19 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "valeur_cents": _nint("Amount in dispute; null when unset."),
                 "valeur_display": _nstr(),
                 "valeur_classe": _nstr("Roman numeral I–IV, or null."),
+                "analyse_note_id": _nstr(
+                    "Id of the dossier's « Théorie de la cause » note — read "
+                    "it with get_note, write it with edit_analyse. null "
+                    "unless analyse_note_state is « present »."),
+                "analyse_note_state": {
+                    "type": "string",
+                    "enum": ["present", "absent", "duplicate", "unreadable"],
+                    "description": (
+                        "absent = none yet (edit_analyse without operations "
+                        "creates it); duplicate = several exist and every "
+                        "write refuses until one remains; unreadable = the "
+                        "lookup failed — NOT « absent »."),
+                },
             }, optional=_PROVENANCE_KEYS),
             "summaries": _obj({
                 "tasks": _model_summary("Model-owned task summary."),
@@ -1055,8 +1140,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "pinned": _bool(),
         "is_analyse": _bool(
             "True = the dossier's single « Théorie de la cause » note "
-            "(the Analyse sheet) — readable here but READ-ONLY: "
-            "append_to_note refuses it."
+            "(the Analyse sheet) — written only through edit_analyse; "
+            "append_to_note and update_note refuse it."
         ),
         **_stamps(),
         "content_preview": _str("First 280 characters, plain text."),
@@ -1095,9 +1180,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "pinned": _bool(),
                 "is_analyse": _bool(
                     "True = the dossier's single « Théorie de la cause » "
-                    "note (the Analyse sheet) — readable but READ-ONLY: "
-                    "append_to_note refuses it."
+                    "note (the Analyse sheet) — written only through "
+                    "edit_analyse; append_to_note and update_note refuse it."
                 ),
+                "structure": _analyse_structure(headings=True, nullable=True),
                 **_stamps(),
             }, optional=_PROVENANCE_KEYS),
         }),
@@ -1877,6 +1963,65 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "stamp included.")},
     ),
 
+    "update_note": _entity_write_result(
+        {
+            "category": _str(),
+            "pinned": _bool(),
+            "content_length": _int(
+                "Stored length AFTER this call (the provenance line "
+                "included) — the body itself is never echoed."),
+            **_written_etag(),
+        },
+        dav=True, verb="updated", relocates=True, entity_optional=("etag",),
+        extra={
+            "changed_fields": _arr(_str(), (
+                "The fields this call actually changed. EMPTY = every value "
+                "sent was already stored: nothing was written, no CTag moved "
+                "(a safe replay).")),
+            "moved": _bool("true = the note changed dossier (or went to or "
+                           "from « Général »)."),
+            "revision_id": _nstr(
+                "Id of the revision keeping the REPLACED body (the note's "
+                "revision history); null when the content did not change."),
+            "linked_tasks_left_behind": _nint(
+                "On a move: tasks linked to this note (RELATED-TO) that stay "
+                "in their own dossier — jtx Board no longer shows the link. "
+                "0 when none or when the note did not move; null = could not "
+                "be counted."),
+        },
+    ),
+
+    "edit_analyse": _entity_write_result(
+        {
+            "content_length": _int(
+                "Stored length of the whole note after this call — the text "
+                "itself is never echoed."),
+            **_written_etag(),
+        },
+        dav=True, verb="edited", entity_optional=("etag",),
+        extra={
+            "mode": {
+                "type": "string",
+                "enum": ["created", "found", "blocs", "full", "unchanged"],
+                "description": (
+                    "created / found = no operation was asked: the note was "
+                    "created pre-seeded, or already existed (nothing "
+                    "written). blocs / full = the operations or the rewrite "
+                    "were written. unchanged = they changed nothing: nothing "
+                    "written, no CTag moved."),
+            },
+            "structure": _analyse_structure(headings=False),
+            "blocs_changed": _arr(_obj({
+                "bloc": _str("« entete » or a letter."),
+                "mode": _str("replace | append."),
+                "chars": _int("Characters sent for this bloc."),
+            }), "One entry per operation applied, in order; empty otherwise."),
+            "revision_id": _nstr(
+                "Id of the revision keeping the replaced text (the note's "
+                "revision history); null when nothing was written."),
+        },
+    ),
+
     "complete_task": _entity_write_result(
         {
             "status": _str("The status now stored."),
@@ -1915,6 +2060,43 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 ),
                 "note": _str("French; empty when there is nothing to add."),
             }),
+        },
+    ),
+
+    "update_task": _entity_write_result(
+        {
+            "status": _str("Unchanged by this tool — shown for context."),
+            "priority": _str(),
+            "category": _str(),
+            "phase": _str("Phase du litige (code, '' = non renseignée)."),
+            "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
+            **_written_etag(),
+        },
+        dav=True, verb="updated", relocates=True, entity_optional=("etag",),
+        extra={
+            "changed_fields": _arr(_str(), (
+                "The fields this call actually changed. EMPTY = every value "
+                "sent was already stored: nothing was written, no CTag moved "
+                "(a safe replay).")),
+            "moved": _bool("true = the task changed dossier (or went to or "
+                           "from « Général »)."),
+        },
+    ),
+
+    "reopen_task": _entity_write_result(
+        {
+            "status": _str("The status now stored."),
+            "previous_status": _str("What it was before this call."),
+            "completed_date": _nstr("ISO-8601 Montréal; null once reopened."),
+            "is_overdue": _bool(),
+            **_written_etag(),
+        },
+        dav=True, verb="reopened", entity_optional=("etag",),
+        extra={
+            "already_open": _bool(
+                "true = the task ALREADY carried the requested status and "
+                "NOTHING was written (no cascade, no CTag)."),
+            "protocol_step_effect": _task_status_effect(),
         },
     ),
 
