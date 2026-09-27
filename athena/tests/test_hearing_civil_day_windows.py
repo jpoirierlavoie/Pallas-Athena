@@ -364,6 +364,44 @@ def test_audiences_list_filtered_puts_each_row_on_exactly_one_side(
     assert len(past) == len(set(past))
 
 
+def test_the_month_grid_places_every_row_on_its_civil_day(
+    fake, hearings_client, monkeypatch
+):
+    """The month view read [1st 00:00 UTC, next 1st 00:00 UTC] and keyed
+    its cells on to_mtl(start).day: every all-day hearing sat one cell
+    early — the 1st's in cell 30 of the SAME month, the next month's 1st in
+    cell 31 —, the previous month's last evening (21:00 on 30 Sep = 01:00
+    UTC on 1 Oct) landed in cell 30, and this month's last evening after
+    20:00 was missing."""
+    fake.seed_collection("hearings", {h["id"]: h for h in [
+        _hearing("allday-oct1", datetime(2026, 10, 1, tzinfo=UTC),
+                 all_day=True),
+        _hearing("sep30-21h", _mtl(2026, 9, 30, 21)),
+        _hearing("oct31-21h", _mtl(2026, 10, 31, 21)),
+        _hearing("allday-nov1", datetime(2026, 11, 1, tzinfo=UTC),
+                 all_day=True),
+    ]})
+    seen = {}
+    real = rh.render_template
+
+    def _capture(name, **ctx):
+        seen.update(ctx)
+        return real(name, **ctx)
+
+    monkeypatch.setattr(rh, "render_template", _capture)
+    _listed(hearings_client, "?view=month&month=2026-10")
+    cell_of = {h["id"]: day for day, rows in seen["day_hearings"].items()
+               for h in rows}
+    assert cell_of == {
+        "allday-oct1": 1, "oct31-21h": 31,
+        # The WORLD fixture, around 15 October.
+        "allday-yesterday": 14, "timed-yesterday-21h": 14,
+        "allday-today": 15, "timed-today-9h": 15, "timed-today-21h": 15,
+        "allday-tomorrow": 16,
+    }
+    assert {h["id"] for h in seen["hearings"]} == set(cell_of)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 5. The dossier « Calendrier » tab
 # ══════════════════════════════════════════════════════════════════════

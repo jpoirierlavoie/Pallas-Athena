@@ -732,7 +732,8 @@ def get_resource(dossier_id: str, resource_id: str) -> Response:
 def put_resource(dossier_id: str, resource_id: str) -> Response:
     """Create or update a resource in a dossier collection.
 
-    Parses the iCalendar body to determine component type (VTODO or VJOURNAL).
+    Parses the iCalendar body to determine the component type (VEVENT,
+    VTODO or VJOURNAL) and hands it to that component's branch.
     """
     dossier, _active = _resolve_scope(dossier_id)
     if dossier is None:
@@ -1283,8 +1284,9 @@ def _resolve_resource(dossier_id: str, resource_id: str):
     Tasks, notes and hearings share one flat id space under
     /dav/dossier-{id}/{resourceId}.ics. A resource created on the phone
     keeps the id its URL named (the client's choice, usually a UUID), so
-    the VTODO create branch refuses an id already held by a note or an
-    event — the task, tried first here, would hide it. The cost is up to
+    each component's create branch refuses an id another component already
+    holds (lot 0b for VTODO, lot 1a for VEVENT and VJOURNAL) — whichever is
+    tried first here would hide the other. The cost is up to
     three point reads on a miss, ordered cheapest-first by how often each
     type is fetched. Returns None when nothing in THIS dossier matches.
     """

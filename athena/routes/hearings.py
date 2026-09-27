@@ -363,12 +363,25 @@ def hearing_list() -> str:
         else:
             year, month = now_mtl.year, now_mtl.month
 
-        # Compute month boundaries
-        month_start = datetime(year, month, 1, tzinfo=timezone.utc)
-        if month == 12:
-            month_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
-        else:
-            month_end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
+        # Build calendar grid data
+        import calendar
+        cal = calendar.Calendar(firstweekday=0)  # Monday first
+        month_days = cal.monthdayscalendar(year, month)
+
+        # The month's CIVIL days, first through last. The read opens at
+        # civil_day_floor(first) (midnight UTC — an all-day hearing's start,
+        # the earlier of a day's two starts) and ends at
+        # civil_day_ceiling(last) (midnight Montréal after the last day);
+        # every row is then placed by occurrence_day and KEPT only when that
+        # day is in this month — the over-fetch brings back the previous
+        # month's last evening and the next month's first all-day hearings.
+        # The window was [1st 00:00 UTC, next 1st 00:00 UTC] with cells keyed
+        # on to_mtl(start).day: every all-day hearing sat one cell early (the
+        # 1st's in cell 30/31 of the SAME month), the previous month's last
+        # evening landed in cell 30/31, and this month's last evening after
+        # 20:00/19:00 was missing.
+        first_day = date(year, month, 1)
+        last_day = date(year, month, calendar.monthrange(year, month)[1])
 
         # The month range is pushed server-side (bounded read) instead of
         # streaming the whole collection; type/status filters then apply
@@ -378,28 +391,23 @@ def hearing_list() -> str:
         # but NOT annulée_client (decision D-L2-2). include_unconfirmed=True
         # surfaces them; _keep_calendar drops annulée_client. DavX5/MCP stay on
         # the default (confirmed only), so a pending reservation never syncs.
-        hearings = [
-            h
-            for h in list_hearings_in_range(
-                month_start, month_end, include_unconfirmed=True
-            )
-            if _matches_filters(h, hearing_type_filter, status_filter)
-            and _keep_calendar(h)
-        ]
-
-        # Build calendar grid data
-        import calendar
-        cal = calendar.Calendar(firstweekday=0)  # Monday first
-        month_days = cal.monthdayscalendar(year, month)
-
-        # Map day → list of hearings (use Montreal time for grouping)
+        hearings = []
         day_hearings: dict[int, list[dict]] = {}
-        for h in hearings:
-            sd = h.get("start_datetime")
-            if sd:
-                local_sd = to_mtl(sd)
-                day = local_sd.day
-                day_hearings.setdefault(day, []).append(h)
+        for h in list_hearings_in_range(
+            civil_day_floor(first_day),
+            civil_day_ceiling(last_day),
+            include_unconfirmed=True,
+        ):
+            if not (
+                _matches_filters(h, hearing_type_filter, status_filter)
+                and _keep_calendar(h)
+            ):
+                continue
+            day = occurrence_day(h)
+            if day is None or (day.year, day.month) != (year, month):
+                continue
+            hearings.append(h)
+            day_hearings.setdefault(day.day, []).append(h)
 
         # Prev / next month
         if month == 1:
