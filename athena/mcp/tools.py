@@ -746,9 +746,11 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # Lot 1b (L7) — the calendar. update_hearing REPLACES an event's fields
     # (its slot, its status — annulée removes the Outlook copy —, its
     # notes, which are not kept) and can move it or take it out of its
-    # series. decide_rendez_vous REPLACES a Bookings request's decision
-    # gate, and its refusal cancels the client's Outlook meeting: the one
-    # write here whose effect leaves the building (OUTBOUND_TOOLS below).
+    # series — on a CONFIRMED Bookings rendez-vous only its dossier and its
+    # notes (D10, 2026-09-27). decide_rendez_vous REPLACES a Bookings
+    # request's decision gate, and its refusal cancels the client's Outlook
+    # meeting: the one write here whose effect leaves the building
+    # (OUTBOUND_TOOLS below).
     "update_hearing", "decide_rendez_vous",
 })
 
@@ -3247,10 +3249,14 @@ TOOLS: dict[str, dict] = {
             "cycle (the phone shows it cancelled). `dossier_id` MOVES it "
             "(\"\" = « Général ») — a series occurrence moves only with "
             "detach_from_series true. A pending or refused Bookings request "
-            "is refused here (decide_rendez_vous). A CONFIRMED Bookings "
-            "rendez-vous can be edited, but Outlook, the client and "
-            "free/busy are NOT updated — say so to the user. Replaced notes "
-            "are NOT kept."
+            "is refused here (decide_rendez_vous). On a CONFIRMED Bookings "
+            "rendez-vous ONLY dossier_id, notes and notes_append are "
+            "accepted: rescheduling, cancelling or any other change is "
+            "REFUSED, because the Outlook meeting the client holds is the "
+            "reference — tell the user to make it in Outlook (the Bookings "
+            "sync then flags it in Réception). The lawyer can still edit it "
+            "in the application; only this connector is restricted. "
+            "Replaced notes are NOT kept."
         ),
         "input_schema": {
             "type": "object",
@@ -3371,6 +3377,8 @@ TOOLS: dict[str, dict] = {
             "cancelled cannot be confirmed. `refuser` CANCELS THE OUTLOOK "
             "MEETING, WHICH NOTIFIES THE CLIENT, with a fixed text you "
             "cannot change; a request the client cancelled is only removed. "
+            "An already-CONFIRMED rendez-vous is not refused here: it is "
+            "cancelled in Outlook. "
             "`expected_etag` (from that listing) and `idempotency_key` are "
             "REQUIRED; the same decision twice writes nothing and never "
             "contacts the client again. Always confirm with the user first."

@@ -113,6 +113,12 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # paragraph of INSTRUCTIONS — beside AGENDA's « status annulée removes
     # the event's Outlook copy ».
     "the connector's only outbound effect",
+    # D10, resolved 2026-09-27: a CONFIRMED Bookings rendez-vous is no
+    # longer editable with a warning — the connector changes only its
+    # dossier and its notes, and refuses the rest, pointing to Outlook.
+    "rendez-vous can be edited",
+    "la modification reste dans athéna",
+    "pour l'annuler, update_hearing",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

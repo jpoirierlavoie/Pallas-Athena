@@ -2,7 +2,8 @@
    edits of tasks, notes and the théorie de la cause, reopening a task,
    (step L6) creating and keeping the protocol and its steps, and (step L7)
    editing, rescheduling, cancelling or moving a calendar event and
-   creating a recurring series.
+   creating a recurring series — on a confirmed Bookings rendez-vous only
+   its dossier and notes (plan D10, resolved 2026-09-27).
    Its consequences (the reopen cascade, what is and is not kept) are
    stated HERE, beside the capabilities that cause them. Class strings are
    the ones the other partials already use (no Tailwind rebuild). #}
@@ -41,9 +42,11 @@
     visioconférence, le rappel ou les notes — ou le déplacer vers un autre
     dossier&nbsp;; une occurrence de série ne change de dossier qu'une fois
     détachée de sa série&nbsp;;</li>
-  <li>modifier un rendez-vous Bookings <strong>déjà confirmé</strong>&nbsp;:
-    la modification reste dans Athéna — <strong>ni la réunion Outlook, ni le
-    client, ni votre disponibilité ne sont mis à jour</strong>&nbsp;;</li>
+  <li>sur un rendez-vous Bookings <strong>déjà confirmé</strong>,
+    seulement le rattacher à un dossier ou en modifier les notes&nbsp;: le
+    reporter, l'annuler ou en changer quoi que ce soit d'autre est
+    <strong>refusé</strong> — cela se fait dans Outlook, la réunion que le
+    client détient (vous gardez la main dans l'application)&nbsp;;</li>
   <li>créer une <strong>série d'événements</strong> (chaque semaine, mois,
     trimestre ou année, au plus {{ disclosure.series_max }} occurrences),
     écrite d'un seul bloc.</li>

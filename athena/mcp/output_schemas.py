@@ -443,8 +443,9 @@ def _hearing_row() -> dict:
             "it whole with list_hearings(serie_id)."),
         "source": _str(
             "'' for an ordinary event; « bookings » for a « Bookings with "
-            "me » reservation, whose Outlook meeting and client an edit "
-            "here does NOT update."),
+            "me » reservation — once confirmed, update_hearing changes only "
+            "its dossier and its notes (its Outlook meeting, the client's, "
+            "is changed in Outlook)."),
         "confirmation": _str(
             "Bookings \"pending\" mode only: « à_confirmer » (awaiting a "
             "decision) or « annulée_client » (the client cancelled — "
@@ -2562,8 +2563,10 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "with this write: follows = its copy is created or "
                     "updated at the next cycle; removed = status annulée, "
                     "the copy is deleted; not_mirrored = a Bookings "
-                    "rendez-vous, whose Outlook meeting is the client's and "
-                    "is NOT updated; unchanged = nothing was written."),
+                    "rendez-vous, of which only the dossier or the notes "
+                    "changed — neither is on its Outlook meeting (the "
+                    "client's), which is never touched; unchanged = nothing "
+                    "was written."),
             },
         },
     ),

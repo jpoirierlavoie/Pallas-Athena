@@ -5837,15 +5837,18 @@ _HEARING_EDIT_KEYS = (
 )
 _HEARING_TEXT_KEYS = ("location", "court", "judge")
 _HEARING_SLOT_KEYS = ("start_datetime", "end_datetime", "all_day")
-# D10 — said on EVERY response about a confirmed Bookings rendez-vous: the
-# Outlook meeting is the client's, created by Bookings, and nothing here
-# writes back to it.
-_BOOKINGS_NOT_UPDATED = (
-    "Ce rendez-vous vient de Bookings : la modification reste dans Athéna — "
-    "la réunion Outlook, le client et votre disponibilité (libre/occupé) ne "
-    "sont PAS mis à jour. Prévenez le client et corrigez Outlook vous-même "
-    "au besoin."
-)
+# D10 (resolved by the lawyer 2026-09-27, reversing lot 1b's « editable
+# with a warning ») — on a CONFIRMED Bookings rendez-vous the Outlook
+# meeting the CLIENT holds is the reference, and nothing here writes back
+# to it (the Outlook mirror never mirrors a Bookings source). So the
+# connector changes only what that meeting does not carry: the dossier the
+# consultation is filed under, and its notes. Anything else — its slot, its
+# status, its wording, its modality — would make Athéna disagree with the
+# client's invitation, and is refused, pointing to Outlook (the Bookings
+# sync then flags the change in Réception, where it is applied). The web
+# form is NOT restricted: the lawyer keeps his hand in the application.
+_BOOKINGS_OPEN_ARGS = frozenset({"dossier_id", "notes", "notes_append"})
+_HEARING_SLOT_ARGS = ("date", "start_time", "end_time", "all_day")
 _HEARING_CANCELLED = (
     "L'événement est annulé : il sort de get_agenda, sa copie dans votre "
     "calendrier Outlook est retirée au prochain cycle (10 minutes au plus), "
@@ -5859,14 +5862,11 @@ _HEARING_UNCANCELLED = (
     "téléphone ne le montre plus annulé, et sa copie Outlook est recréée "
     "au prochain cycle."
 )
-_BOOKINGS_UNCANCELLED = (
-    "Le rendez-vous n'est plus annulé dans Athéna : il revient dans "
-    "get_agenda, et le téléphone ne le montre plus annulé."
-)
 # A confirmed Bookings rendez-vous the CLIENT has since moved or cancelled
 # on the Bookings side (the sync records a divergence, never overwrites a
-# confirmed event): an edit here would build on a slot the client may no
-# longer hold. Said, never blocked — Réception is where it is resolved.
+# confirmed event): notes or a dossier filed here would build on a slot the
+# client may no longer hold. Said, never blocked — Réception is where it is
+# resolved.
 _BOOKINGS_DIVERGENCE_UNSEEN = (
     "Le client a déplacé ou annulé ce rendez-vous du côté de Bookings, et "
     "l'écart n'a pas encore été traité : voyez la Réception (onglet « "
@@ -5912,6 +5912,61 @@ def _refuse_undecided_booking(hearing: dict) -> None:
             "avec decide_rendez_vous (liste : list_hearings, bookings "
             "« pending »). Rien n'a été modifié."
         )
+
+
+def _is_confirmed_booking(hearing: dict) -> bool:
+    """A « Bookings with me » reservation the lawyer has confirmed — the
+    one kind of event whose Outlook meeting belongs to the CLIENT."""
+    return (hearing.get("source") == "bookings"
+            and not (hearing.get("confirmation") or ""))
+
+
+def _booking_locked_args(args: dict, changed: list[str]) -> list[str]:
+    """The arguments of this call that would CHANGE a confirmed Bookings
+    rendez-vous beyond its dossier and notes (D10), in schema order.
+
+    Judged on what the call would actually change (``changed``, computed on
+    the renormalized document), never on presence alone: a value already
+    stored is no disagreement with Outlook. A slot the model renormalizes on
+    its own (a legacy event missing its end) names no argument, so it is
+    never blamed on the caller."""
+    changed_set = set(changed)
+    slot_changed = bool(changed_set & set(_HEARING_SLOT_KEYS))
+    names = []
+    for key in _HEARING_EDIT_KEYS:
+        if key not in args or key in _BOOKINGS_OPEN_ARGS:
+            continue
+        if key in _HEARING_SLOT_ARGS:
+            hit = slot_changed
+        elif key == "detach_from_series":
+            hit = "serie_id" in changed_set
+        else:
+            hit = key in changed_set
+        if hit:
+            names.append(key)
+    return names
+
+
+def _refuse_locked_booking_change(args: dict, changed: list[str]) -> None:
+    """D10 — a confirmed Bookings rendez-vous changes here only by its
+    dossier and its notes. Refused BEFORE any write, naming the arguments,
+    and pointing to Outlook: the meeting the client holds is where it is
+    rescheduled or cancelled."""
+    names = _booking_locked_args(args, changed)
+    if not names:
+        return
+    plural = len(names) > 1
+    raise ToolArgumentError(
+        f"{', '.join(f'`{n}`' for n in names)} "
+        f"{'refusés' if plural else 'refusé'} : ce rendez-vous vient de "
+        "Bookings, et c'est la réunion Outlook que le client détient qui "
+        "fait foi — le connecteur n'en change que le dossier (dossier_id) "
+        "et les notes (notes, notes_append). Pour le reporter, l'annuler ou "
+        "en changer autre chose, faites-le dans Outlook : un report ou une "
+        "annulation y est repéré par la synchronisation Bookings (10 minutes "
+        "au plus) et signalé dans la Réception (onglet « Rendez-vous »), "
+        "d'où on l'applique à Athéna. Rien n'a été modifié."
+    )
 
 
 def _hearing_slot_data(args: dict, existing: dict) -> dict:
@@ -6125,6 +6180,8 @@ def _update_hearing_impl(args: dict) -> dict:
         changed.append("dossier_id")
     if detaching:
         changed.append("serie_id")
+    if _is_confirmed_booking(existing):
+        _refuse_locked_booking_change(args, changed)
     notes_pre: list[str] = []
     if args.get("detach_from_series") and not serie_id:
         notes_pre.append(
@@ -6230,17 +6287,18 @@ def _hearing_edit_payload(
     })
     warnings = payload["warnings"]
     if bookings:
-        warnings.append(_BOOKINGS_NOT_UPDATED)
+        # D10: only its dossier or its notes can have changed — neither is
+        # carried by the client's Outlook meeting, so there is no Outlook
+        # disagreement to warn about; only an unseen client-side change is.
         divergence = doc.get("bookings_divergence") or {}
         if (isinstance(divergence, dict) and divergence.get("motif")
                 and not divergence.get("vu")):
             warnings.append(_BOOKINGS_DIVERGENCE_UNSEEN)
     elif wrote and "status" in changed and doc.get("status") == "annulée":
         warnings.append(_HEARING_CANCELLED)
-    if (wrote and "status" in changed and previous_status == "annulée"
+    elif (wrote and "status" in changed and previous_status == "annulée"
             and doc.get("status") != "annulée"):
-        warnings.append(_BOOKINGS_UNCANCELLED if bookings
-                        else _HEARING_UNCANCELLED)
+        warnings.append(_HEARING_UNCANCELLED)
     if wrote:
         warnings.extend(_modality_warnings(doc, args))
     warnings.extend(notes)
@@ -6268,9 +6326,11 @@ _RDV_REFUSALS = {
         "Rien n'a été écrit."
     ),
     rendez_vous_service.DEJA_CONFIRME_NE_SE_REFUSE_PLUS: (
-        "Ce rendez-vous est déjà confirmé : il ne se refuse plus. Pour "
-        "l'annuler, update_hearing avec status « annulée » — Outlook et le "
-        "client ne sont alors PAS prévenus. Rien n'a été écrit."
+        "Ce rendez-vous est déjà confirmé : il ne se refuse plus, et le "
+        "connecteur ne l'annule pas non plus. Pour l'annuler, faites-le "
+        "dans Outlook — la réunion que le client détient : la "
+        "synchronisation Bookings le signale ensuite dans la Réception "
+        "(onglet « Rendez-vous »). Rien n'a été écrit."
     ),
     rendez_vous_service.SANS_COURRIEL: (
         "Ce rendez-vous ne porte aucun courriel : aucun contact ne peut y "

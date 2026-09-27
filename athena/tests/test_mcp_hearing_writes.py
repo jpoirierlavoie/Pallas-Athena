@@ -17,8 +17,10 @@ On épingle, outil par outil :
   y compris par-dessus un changement d'heure ;
 * la barrière de confirmation : une demande Bookings en attente ou refusée
   ne se modifie jamais par update_hearing ;
-* l'avertissement D10 sur un rendez-vous Bookings CONFIRMÉ : Outlook, le
-  client et la disponibilité ne sont pas mis à jour ;
+* le verrou D10 (tranché par l'avocat le 2026-09-27) sur un rendez-vous
+  Bookings CONFIRMÉ : le connecteur n'en change que le dossier et les
+  notes — le reporter, l'annuler ou en changer quoi que ce soit d'autre est
+  refusé et renvoie à Outlook, la réunion que le client détient ;
 * une série exige sa clé d'idempotence, s'écrit en UN lot atomique qui
   porte son propre bump, et garde « 9 h » à 9 h de part et d'autre du
   changement d'heure ;
@@ -363,35 +365,170 @@ def test_an_undecided_or_refused_booking_is_never_edited(fake, confirmation):
     assert _stored(fake, "b1") == before
 
 
-def test_a_confirmed_booking_is_edited_with_the_d10_warning_every_time(fake):
+# D10, resolved by the lawyer on 2026-09-27 (reversing lot 1b's « editable
+# with a warning »): on a CONFIRMED Bookings rendez-vous the connector changes
+# ONLY the dossier and the notes. Every other argument, given a value that
+# differs from what is stored, is refused before any write. The same table
+# drives the « internal events unaffected » half, so a field cannot be
+# locked on one side and forgotten on the other.
+_LOCKED_ON_A_BOOKING = [
+    ("title", "Autre titre"),
+    ("hearing_type", "audience"),
+    ("date", "2026-10-20"),
+    ("start_time", "15:00"),
+    ("end_time", "11:00"),
+    ("all_day", True),
+    ("location", "Bureau"),
+    ("court", "Cour supérieure"),
+    ("judge", "Juge Untel"),
+    ("modalite", "visioconférence"),
+    ("conference_uri", "https://ex.com/v"),
+    ("reminder_minutes", 60),
+    ("status", "annulée"),
+    ("status", "reportée"),
+]
+_LOCKED_IDS = [f"{k}={v}" for k, v in _LOCKED_ON_A_BOOKING]
+
+
+def test_the_locked_table_covers_every_edit_argument_but_dossier_and_notes():
+    """Derived, not typed: a new update_hearing argument lands in the lock
+    table or in the open set, never silently in neither."""
+    locked = {key for key, _value in _LOCKED_ON_A_BOOKING}
+    edit_args = set(handlers._HEARING_EDIT_KEYS) - {"detach_from_series"}
+    assert locked | handlers._BOOKINGS_OPEN_ARGS == edit_args
+    assert handlers._BOOKINGS_OPEN_ARGS == {"dossier_id", "notes",
+                                            "notes_append"}
+
+
+@pytest.mark.parametrize("key,value", _LOCKED_ON_A_BOOKING, ids=_LOCKED_IDS)
+def test_a_confirmed_booking_refuses_every_change_but_dossier_and_notes(
+    fake, key, value,
+):
     _booking(fake, confirmation="")
-    payload = handlers.update_hearing({"hearing_id": "b1",
-                                       "start_time": "15:00"})
-    assert _dt(_stored(fake, "b1")["start_datetime"]) == _mtl(2026, 10, 15, 15)
-    assert handlers._BOOKINGS_NOT_UPDATED in payload["warnings"]
+    before, ctag = _stored(fake, "b1"), _ctag(fake, "")
+    err = _refused(handlers.update_hearing, {"hearing_id": "b1", key: value})
+    message = str(err)
+    assert f"`{key}` refusé :" in message
+    assert "Outlook" in message and "Bookings" in message
+    assert "dossier_id" in message and "notes_append" in message
+    assert "Rien n'a été modifié" in message
+    assert err.reason == tools.DEFAULT_REFUSAL_REASON
+    assert _stored(fake, "b1") == before
+    assert _hearing_commits(fake, "b1") == []
+    assert _ctag(fake, "") == ctag
+
+
+def test_the_refusal_names_every_locked_argument_and_writes_nothing(fake):
+    """A call mixing a dossier move with a reschedule is refused WHOLE: the
+    move does not land on its own, and every locked argument is named."""
+    _booking(fake, confirmation="")
+    before = _stored(fake, "b1")
+    err = _refused(handlers.update_hearing, {
+        "hearing_id": "b1", "dossier_id": "d1", "date": "2026-10-20",
+        "start_time": "15:00", "location": "Bureau",
+        "notes_append": "Apporter le bail."})
+    message = str(err)
+    assert message.startswith("`date`, `start_time`, `location` refusés :")
+    assert _stored(fake, "b1") == before
+
+
+def test_a_confirmed_booking_moves_to_its_dossier(fake):
+    """The real need D10 keeps: filing the consultation under its dossier.
+    The Outlook mirror never mirrors a Bookings source, so nothing outside
+    Athéna changes — no Outlook warning, only the DAV relocation."""
+    _booking(fake, confirmation="")
+    old, new = _ctag(fake, ""), _ctag(fake, "d1")
+    payload = handlers.update_hearing({"hearing_id": "b1", "dossier_id": "d1"})
+    stored = _stored(fake, "b1")
+    assert stored["dossier_id"] == "d1"
+    assert stored["dossier_file_number"] == "2026-001"
+    assert stored["dossier_title"] == "Dossier 2026-001"
+    # The slot, the gate and the Bookings keys are untouched.
+    assert _dt(stored["start_datetime"]) == _mtl(2026, 10, 15, 9)
+    assert stored["source"] == "bookings" and stored["confirmation"] == ""
+    assert stored["graph_event_id"] == "EVT-b1"
+    assert payload["moved"] is True
+    assert payload["changed_fields"] == ["dossier_id"]
     assert payload["outlook_mirror"] == "not_mirrored"
-    # Even a call that writes nothing says it.
-    again = handlers.update_hearing({"hearing_id": "b1",
-                                     "start_time": "15:00"})
-    assert again["changed_fields"] == []
-    assert handlers._BOOKINGS_NOT_UPDATED in again["warnings"]
+    assert not [w for w in payload["warnings"] if "Outlook" in w]
+    assert fake.peek("dav_sync/general/tombstones/b1") is not None
+    assert _ctag(fake, "") != old and _ctag(fake, "d1") != new
+
+
+def test_a_confirmed_booking_takes_notes_replaced_or_appended(fake):
+    _booking(fake, confirmation="")
+    replaced = handlers.update_hearing({"hearing_id": "b1",
+                                        "notes": "Client anxieux."})
+    assert _stored(fake, "b1")["notes"] == "Client anxieux."
+    assert replaced["changed_fields"] == ["notes"]
+    assert replaced["outlook_mirror"] == "not_mirrored"
+    handlers.update_hearing({"hearing_id": "b1",
+                             "notes_append": "Apporter le bail."})
+    notes = _stored(fake, "b1")["notes"]
+    assert notes.startswith("Client anxieux.") and "Apporter le bail." in notes
+
+
+def test_a_value_already_stored_is_no_change_and_is_not_refused(fake):
+    """The lock is about DISAGREEING with Outlook: resending the stored
+    title, status or slot beside a note is no disagreement, and only the
+    note is written."""
+    _booking(fake, confirmation="")
+    payload = handlers.update_hearing({
+        "hearing_id": "b1", "title": "Consultation", "status": "confirmée",
+        "date": "2026-10-15", "start_time": "09:00",
+        "notes_append": "Rappeler vendredi."})
+    assert payload["changed_fields"] == ["notes"]
+    assert _stored(fake, "b1")["title"] == "Consultation"
+    # A call where every value is stored still writes nothing.
+    noop = handlers.update_hearing({"hearing_id": "b1",
+                                    "title": "Consultation"})
+    assert noop["changed_fields"] == [] and noop["ctag_bumped"] is False
+
+
+@pytest.mark.parametrize("key,value", _LOCKED_ON_A_BOOKING, ids=_LOCKED_IDS)
+def test_an_internal_event_is_unaffected_by_the_bookings_lock(
+    fake, key, value,
+):
+    _hearing(fake)
+    payload = handlers.update_hearing({"hearing_id": "h1", key: value})
+    assert payload["changed_fields"], key
+    assert _hearing_commits(fake, "h1")
+    assert payload["outlook_mirror"] in ("follows", "removed")
+
+
+def test_every_surface_states_the_d10_lock():
+    """The rule is told where a caller reads it: the tool description (with
+    the web form left free), INSTRUCTIONS (AGENDA and BOOKINGS) and the
+    decision tool — never the old « editable with a warning »."""
+    from mcp import disclosure
+
+    desc = tools.TOOLS["update_hearing"]["description"]
+    assert "ONLY dossier_id, notes and notes_append are accepted" in desc
+    assert "only this connector is restricted" in desc
+    assert "Outlook" in tools.TOOLS["decide_rendez_vous"]["description"]
+    text = disclosure.build_instructions()
+    assert "only its dossier and its notes change" in text
+    assert "neither refused nor rescheduled nor cancelled here" in text
+    assert not hasattr(handlers, "_BOOKINGS_NOT_UPDATED")
+    assert not hasattr(handlers, "_BOOKINGS_UNCANCELLED")
 
 
 def test_an_unseen_bookings_divergence_is_said_never_blocked(fake):
     """The client moved the confirmed rendez-vous on the Bookings side (the
-    sync records a divergence, never overwrites): the edit still lands, and
-    the result says to look at Réception first. A divergence already SEEN
-    is not repeated."""
+    sync records a divergence, never overwrites): a note filed here still
+    lands, and the result says to look at Réception first. A divergence
+    already SEEN is not repeated."""
     _booking(fake, confirmation="", bookings_divergence={
         "motif": "modifie", "detail": "", "vu": False})
     payload = handlers.update_hearing({"hearing_id": "b1",
-                                       "location": "Bureau"})
-    assert _stored(fake, "b1")["location"] == "Bureau"
+                                       "notes_append": "Rappeler."})
+    assert "Rappeler." in _stored(fake, "b1")["notes"]
     assert handlers._BOOKINGS_DIVERGENCE_UNSEEN in payload["warnings"]
 
     _booking(fake, "b2", confirmation="", bookings_divergence={
         "motif": "modifie", "detail": "", "vu": True})
-    seen = handlers.update_hearing({"hearing_id": "b2", "location": "Bureau"})
+    seen = handlers.update_hearing({"hearing_id": "b2",
+                                    "notes_append": "Rappeler."})
     assert handlers._BOOKINGS_DIVERGENCE_UNSEEN not in seen["warnings"]
 
 
@@ -427,20 +564,18 @@ def test_undoing_a_cancellation_is_said_never_silent(fake):
     assert payload["previous_status"] == "annulée"
     assert payload["outlook_mirror"] == "follows"
     assert handlers._HEARING_UNCANCELLED in payload["warnings"]
-    # A confirmed Bookings rendez-vous has no Outlook copy of ours: its
-    # own sentence, beside the D10 warning.
+    # A confirmed Bookings rendez-vous is never un-cancelled here (D10,
+    # 2026-09-27): its status is the client's Outlook meeting's.
     _booking(fake, "b1", confirmation="", status="annulée")
-    booking = handlers.update_hearing({"hearing_id": "b1",
-                                       "status": "confirmée"})
-    assert handlers._BOOKINGS_UNCANCELLED in booking["warnings"]
-    assert handlers._HEARING_UNCANCELLED not in booking["warnings"]
-    assert handlers._BOOKINGS_NOT_UPDATED in booking["warnings"]
+    _refused(handlers.update_hearing, {"hearing_id": "b1",
+                                       "status": "confirmée"},
+             match="`status` refusé")
+    assert _stored(fake, "b1")["status"] == "annulée"
     # Other edits of a cancelled event say nothing of the kind.
     _hearing(fake, "h2", status="annulée")
     notes_only = handlers.update_hearing({"hearing_id": "h2",
                                           "location": "Salle 1"})
-    assert not {handlers._HEARING_UNCANCELLED,
-                handlers._BOOKINGS_UNCANCELLED} & set(notes_only["warnings"])
+    assert handlers._HEARING_UNCANCELLED not in notes_only["warnings"]
 
 
 def test_terminee_is_refused_on_a_future_day_only(fake):
@@ -938,10 +1073,16 @@ def test_removing_a_client_cancelled_request_never_calls_outlook(fake, graph):
 
 
 def test_a_confirmed_rendez_vous_is_not_refused_here(fake, graph):
+    """Rewritten for D10 (2026-09-27): the refusal used to send the caller
+    to update_hearing status « annulée », which is now itself refused on a
+    confirmed Bookings rendez-vous. It points to Outlook, and never calls
+    it."""
     _booking(fake, confirmation="")
-    _refused(handlers.decide_rendez_vous, _decide(action="refuser"),
-             match="update_hearing")
+    err = _refused(handlers.decide_rendez_vous, _decide(action="refuser"),
+                   match="Outlook")
+    assert "update_hearing" not in str(err)
     assert graph == []
+    assert _stored(fake, "b1")["confirmation"] == ""
 
 
 def _confirm_during_cancel(monkeypatch):

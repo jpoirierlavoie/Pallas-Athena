@@ -2076,7 +2076,8 @@ def test_list_protocol_steps_conforms_with_its_etags_and_closure(monkeypatch):
 # On the shared fake Firestore with the REAL models and the REAL
 # services/rendez_vous underneath; only Graph is replaced. Each shape the
 # three new tools emit is validated — a write, a no-op, a move, a
-# confirmed Bookings rendez-vous, a series, a confirmation, a refusal, and
+# confirmed Bookings rendez-vous (its notes and its dossier, the only two
+# things D10 leaves editable), a series, a confirmation, a refusal, and
 # the warned success after a cancellation the local write could not
 # follow — plus create_hearing's added keys and list_hearings' two modes.
 
@@ -2149,11 +2150,16 @@ def test_update_hearing_conforms_on_write_noop_move_and_bookings(monkeypatch):
     detached = handlers.update_hearing({"hearing_id": "h2",
                                         "detach_from_series": True})
     _conforms("update_hearing", detached)
+    # D10 (2026-09-27): a confirmed Bookings rendez-vous takes only its
+    # notes and its dossier — both shapes validated, the move included.
     _l7_booking(fake, "b1", confirmation="")
     booking = handlers.update_hearing({"hearing_id": "b1",
                                        "notes_append": "Salle 2.08."})
     _conforms("update_hearing", booking)
     assert booking["outlook_mirror"] == "not_mirrored"
+    filed = handlers.update_hearing({"hearing_id": "b1", "dossier_id": "d1"})
+    _conforms("update_hearing", filed)
+    assert filed["moved"] is True and filed["outlook_mirror"] == "not_mirrored"
 
 
 def test_create_hearing_series_conforms_timed_and_all_day(monkeypatch):

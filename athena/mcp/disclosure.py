@@ -181,7 +181,9 @@ FAMILIES: tuple[Family, ...] = (
             "rédiger la théorie de la cause (le texte remplacé d'une note "
             "est conservé), créer et tenir le protocole de l'instance et "
             "ses étapes, modifier, reporter, annuler ou déplacer un "
-            "événement du calendrier et créer une série d'événements"
+            "événement du calendrier (d'un rendez-vous Bookings confirmé, "
+            "seulement le dossier et les notes) et créer une série "
+            "d'événements"
         ),
         instructions_en=(
             "`update_task` and `update_note` REPLACE the fields you name (a "
@@ -216,9 +218,11 @@ FAMILIES: tuple[Family, ...] = (
             "reschedule keeps the Montréal hour and the duration you do "
             "not name; status annulée removes the event's Outlook copy; a "
             "series occurrence changes dossier only with "
-            "detach_from_series; replaced event notes are NOT kept — and a "
-            "CONFIRMED Bookings rendez-vous can be edited, but neither "
-            "Outlook, the client nor free/busy is updated: tell the user. "
+            "detach_from_series; replaced event notes are NOT kept — and on "
+            "a CONFIRMED Bookings rendez-vous only its dossier and its notes "
+            "change: rescheduling, cancelling or any other edit is REFUSED, "
+            "since the Outlook meeting the client holds is the reference "
+            "(tell the user to make the change in Outlook). "
             "`create_hearing_series` writes a recurring series in one "
             "atomic batch (idempotency_key required). Never retry an edit "
             "blindly after a stale_etag refusal: re-read, then redo it on "
@@ -246,7 +250,9 @@ FAMILIES: tuple[Family, ...] = (
             "that reaches anyone outside the practice. `expected_etag` and "
             "`idempotency_key` are required; a repeated decision writes "
             "nothing and contacts nobody. Confirm "
-            "with the user every time."
+            "with the user every time. A rendez-vous once CONFIRMED is "
+            "neither refused nor rescheduled nor cancelled here: that is "
+            "done in Outlook."
         ),
     ),
     Family(
