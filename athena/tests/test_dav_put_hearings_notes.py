@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
+from defusedxml.ElementTree import fromstring as safe_fromstring
 from google.api_core import exceptions as gexc
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -354,6 +355,38 @@ def test_a_note_put_into_another_collection_tombstones_the_old_one(
     assert RID in _tombstones(fake, "dossier:d1")
     assert _ctag(fake, "dossier:d1") != old_ctag
     assert RID not in _tombstones(fake, "dossier:d2")
+
+
+def _sync_report(client, collection_href: str, token: str) -> dict[str, str]:
+    """href → status line of a sync-collection REPORT, the request DavX5
+    sends on every sync (what a curl check of the move would read)."""
+    body = (f'<D:sync-collection xmlns:D="DAV:"><D:sync-token>{token}'
+            f'</D:sync-token><D:prop><D:getetag/></D:prop></D:sync-collection>')
+    resp = client.open(collection_href, method="REPORT", headers=AUTH,
+                       data=body)
+    assert resp.status_code == 207
+    root = safe_fromstring(resp.data)
+    out = {}
+    for r in root.iter("{DAV:}response"):
+        href = r.find("{DAV:}href").text
+        status = r.find("{DAV:}status")
+        if status is None:
+            status = r.find("{DAV:}propstat/{DAV:}status")
+        out[href] = status.text if status is not None else ""
+    return out
+
+
+def test_the_old_collection_reports_the_moved_note_deleted(fake, client):
+    """What DavX5 reads after the move: the OLD collection's sync REPORT
+    carries the note as a 404 (so the phone deletes its copy there) and
+    the NEW one serves it live — the note is never on the phone twice."""
+    fake.seed(f"notes/{RID}", dict(_STORED_NOTE))
+    href = f"/dav/dossier-d2/{RID}.ics"
+    assert _put(client, href, _vjournal()).status_code == 204
+    old = _sync_report(client, "/dav/dossier-d1/", "c0-dossier:d1")
+    assert "404" in old[f"/dav/dossier-d1/{RID}.ics"]
+    new = _sync_report(client, "/dav/dossier-d2/", "c0-dossier:d2")
+    assert "200" in new[href]
 
 
 def test_a_hearing_put_into_another_collection_moves_it(fake, client):
