@@ -1589,17 +1589,22 @@ Notes:
   change; a task linked from a step can no longer change dossier (except
   back into its protocol's dossier). Check
   the phone once after the deploy:
-  1. *A reopened task reactivates its protocol.* On a test dossier, create a
-     protocol with one custom step and a linked task (or use the wizard's
-     « Créer les tâches automatiquement »), complete the task in jtx, sync:
-     the step is completed and the protocol reads « Complété ». Reopen the
-     task in jtx, sync: the step reads « À venir » and the protocol
-     « Actif » again.
+  1. *A reopened task reactivates its protocol.* On a test dossier whose
+     tribunal is left blank (so the regime gate accepts either C.p.c.
+     template), create a « CS — Procédure ordinaire » protocol
+     with « Créer les tâches automatiquement » ticked — the web « Ajouter
+     une étape » form creates no task, and a « Conventionnel » protocol has
+     no step to link. In the app, complete every step but ONE with its
+     « Compléter » button; then complete that last step's linked task in
+     jtx, sync: the step is completed and the protocol reads « Complété ».
+     Reopen the task in jtx, sync: the step reads « À venir » and the
+     protocol « Actif » again.
   2. *A linked task stays in its dossier.* Move that task to another
      dossier's list in jtx: the sync reports an error (422) and the task
      stays in its list — delete the test protocol and task afterwards.
   3. *A moved deadline reaches the phone.* Edit that step's deadline in the
-     app: the linked task's due date follows on the next sync (a `REPORT
+     app (a CS step's deadline is editable; a CQ one is locked by law): the
+     linked task's due date follows on the next sync (a `REPORT
      sync-collection` of `/dav/dossier-<id>/` returns a new token).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).

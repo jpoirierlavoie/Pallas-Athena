@@ -5866,12 +5866,15 @@ _TERMINAL_STATUSES = ("terminée", "annulée")
 def _linked_step(task: dict) -> Optional[dict]:
     """Best-effort lookup of the protocol step this task is linked from.
 
-    A linked task and its step ALWAYS share a dossier
-    (``_auto_create_tasks_for_steps`` copies dossier_id), so one indexed
-    query finds it — no unbounded scan, and zero cost for a « Général »
-    task. Best-effort by construction: a task moved between dossiers by
-    hand would evade it, which is why the result is DISCLOSED as an
-    observation and never presented as a guarantee.
+    A linked task and its step share a dossier (``create_linked_tasks``
+    copies dossier_id, and since lot 1a ``models/task.update_task``
+    refuses to move a step-linked task away), so one indexed query finds
+    it — no unbounded scan, and zero cost for a « Général » task.
+    Best-effort by construction: a task moved between dossiers before that
+    rule would evade it (``protocol.find_step_for_task``'s firm-wide
+    fallback still reaches it; lot 1b switches this lookup to it), which is
+    why the result is DISCLOSED as an observation and never presented as a
+    guarantee.
     """
     dossier_id = task.get("dossier_id") or ""
     if not dossier_id:
