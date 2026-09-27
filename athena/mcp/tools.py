@@ -3253,10 +3253,10 @@ TOOLS: dict[str, dict] = {
             "rendez-vous ONLY dossier_id, notes and notes_append are "
             "accepted: rescheduling, cancelling or any other change is "
             "REFUSED, because the Outlook meeting the client holds is the "
-            "reference — tell the user to make it in Outlook (the Bookings "
-            "sync then flags it in Réception). The lawyer can still edit it "
-            "in the application; only this connector is restricted. "
-            "Replaced notes are NOT kept."
+            "reference — a reschedule or a cancellation is made in Outlook "
+            "(the Bookings sync then flags it in Réception); anything else "
+            "the lawyer edits in the application, whose form is left free: "
+            "only this connector is restricted. Replaced notes are NOT kept."
         ),
         "input_schema": {
             "type": "object",

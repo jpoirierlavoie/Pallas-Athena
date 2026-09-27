@@ -418,6 +418,34 @@ def test_a_confirmed_booking_refuses_every_change_but_dossier_and_notes(
     assert _ctag(fake, "") == ctag
 
 
+# The fields the client's Outlook meeting does not carry at all — or that
+# the Bookings sync never carries back (it compares the SLOT only). « Do it
+# in Outlook » would send the user somewhere that cannot do it.
+_NOT_CARRIED_BACK_FROM_OUTLOOK = [
+    ("hearing_type", "audience"), ("reminder_minutes", 60),
+    ("court", "Cour supérieure"), ("judge", "Juge Untel"),
+    ("title", "Autre titre"), ("location", "Bureau"),
+]
+
+
+@pytest.mark.parametrize("key,value", _NOT_CARRIED_BACK_FROM_OUTLOOK,
+                         ids=[k for k, _v in _NOT_CARRIED_BACK_FROM_OUTLOOK])
+def test_the_refusal_sends_each_change_where_it_can_be_made(fake, key, value):
+    """Review of D10 (2026-09-27): the first refusal said « pour le
+    reporter, l'annuler ou en changer autre chose, faites-le dans Outlook »
+    — false for a type, a reminder, a court or a judge, which the Outlook
+    meeting does not carry, and for a title or a location, which an Outlook
+    edit never carries back into Athéna. Outlook is named for the reschedule
+    and the cancellation only; the rest goes to the application, whose form
+    D10 leaves free."""
+    _booking(fake, confirmation="")
+    message = str(_refused(handlers.update_hearing,
+                           {"hearing_id": "b1", key: value}))
+    assert "Pour le reporter ou l'annuler, faites-le dans Outlook" in message
+    assert "Tout autre changement se fait dans l'application" in message
+    assert "en changer autre chose, faites-le dans Outlook" not in message
+
+
 def test_the_refusal_names_every_locked_argument_and_writes_nothing(fake):
     """A call mixing a dossier move with a reschedule is refused WHOLE: the
     move does not land on its own, and every locked argument is named."""
@@ -485,6 +513,27 @@ def test_a_value_already_stored_is_no_change_and_is_not_refused(fake):
     assert noop["changed_fields"] == [] and noop["ctag_bumped"] is False
 
 
+def test_a_resent_modality_on_a_booking_carries_no_outlook_sentence(fake):
+    """Review of D10: a modality or a link reaches a Bookings rendez-vous
+    only as its STORED value, so the modality warning would describe
+    nothing the call did — and its « transmis … à Outlook » is false for an
+    event Athéna never mirrors. The same call on an internal event keeps it
+    (the warning is still true there)."""
+    _booking(fake, confirmation="", modalite="présentiel",
+             conference_uri="https://ex.com/teams")
+    payload = handlers.update_hearing({
+        "hearing_id": "b1", "modalite": "présentiel",
+        "notes_append": "Salle 2.08."})
+    assert payload["changed_fields"] == ["notes"]
+    assert not [w for w in payload["warnings"] if "Outlook" in w]
+
+    _hearing(fake, "h2", conference_uri="https://ex.com/v")
+    internal = handlers.update_hearing({
+        "hearing_id": "h2", "modalite": "présentiel",
+        "notes_append": "Salle 2.08."})
+    assert any("visioconférence" in w for w in internal["warnings"])
+
+
 @pytest.mark.parametrize("key,value", _LOCKED_ON_A_BOOKING, ids=_LOCKED_IDS)
 def test_an_internal_event_is_unaffected_by_the_bookings_lock(
     fake, key, value,
@@ -505,25 +554,37 @@ def test_every_surface_states_the_d10_lock():
     desc = tools.TOOLS["update_hearing"]["description"]
     assert "ONLY dossier_id, notes and notes_append are accepted" in desc
     assert "only this connector is restricted" in desc
+    # Outlook for the reschedule and the cancellation, the application for
+    # the rest — never « make it in Outlook » for everything (review).
+    assert "a reschedule or a cancellation is made in Outlook" in desc
+    assert "anything else the lawyer edits in the application" in desc
     assert "Outlook" in tools.TOOLS["decide_rendez_vous"]["description"]
     text = disclosure.build_instructions()
     assert "only its dossier and its notes change" in text
+    assert ("a reschedule or a cancellation is made in Outlook, anything "
+            "else by the lawyer in the application") in text
     assert "neither refused nor rescheduled nor cancelled here" in text
     assert not hasattr(handlers, "_BOOKINGS_NOT_UPDATED")
     assert not hasattr(handlers, "_BOOKINGS_UNCANCELLED")
 
 
 def test_an_unseen_bookings_divergence_is_said_never_blocked(fake):
-    """The client moved the confirmed rendez-vous on the Bookings side (the
-    sync records a divergence, never overwrites): a note filed here still
+    """The confirmed rendez-vous's Outlook meeting was moved (the sync
+    records a divergence, never overwrites): a note filed here still
     lands, and the result says to look at Réception first. A divergence
-    already SEEN is not repeated."""
+    already SEEN is not repeated.
+
+    Since D10 the refusal sends the LAWYER to Outlook to reschedule, and the
+    sync cannot tell his move from the client's: the sentence names the
+    meeting, never « le client » as the one who moved it."""
     _booking(fake, confirmation="", bookings_divergence={
         "motif": "modifie", "detail": "", "vu": False})
     payload = handlers.update_hearing({"hearing_id": "b1",
                                        "notes_append": "Rappeler."})
     assert "Rappeler." in _stored(fake, "b1")["notes"]
     assert handlers._BOOKINGS_DIVERGENCE_UNSEEN in payload["warnings"]
+    assert "Le client a déplacé" not in handlers._BOOKINGS_DIVERGENCE_UNSEEN
+    assert "Réception" in handlers._BOOKINGS_DIVERGENCE_UNSEEN
 
     _booking(fake, "b2", confirmation="", bookings_divergence={
         "motif": "modifie", "detail": "", "vu": True})

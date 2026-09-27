@@ -1816,8 +1816,10 @@ Notes:
      with `lier_partie: false` (or true when a contact carries the alias):
      it appears in the calendar and on the phone. `update_hearing` with
      another `start_time` on it: REFUSED, naming `start_time` and pointing
-     to Outlook — `list_hearings` still reads the old hour and the Outlook
-     meeting is unchanged. `update_hearing` with a `dossier_id` (and a
+     to Outlook for the reschedule — `list_hearings` still reads the old
+     hour and the Outlook meeting is unchanged; with another
+     `hearing_type`, REFUSED too, and the refusal sends that one to the
+     application, not to Outlook. `update_hearing` with a `dossier_id` (and a
      `notes_append`): written, `moved: true`, `outlook_mirror:
      "not_mirrored"`, the event leaves « Général » for the dossier's
      collection on the phone — and the Outlook meeting is still
@@ -1853,7 +1855,8 @@ Notes:
   reactivates it), `list_hearings` `bookings: "pending"` and the Bookings
   warnings (a refusal notifies the client with a fixed text; a
   confirmed rendez-vous changes here only by its dossier and notes —
-  rescheduling or cancelling it is refused and done in Outlook).
+  rescheduling or cancelling it is refused and done in Outlook, any
+  other change by the lawyer in the application).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

@@ -119,6 +119,17 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "rendez-vous can be edited",
     "la modification reste dans athéna",
     "pour l'annuler, update_hearing",
+    # Review of D10: « any other change — do it in Outlook » is false for a
+    # type, a reminder, a court or a judge (not on the Outlook meeting) and
+    # for a title or a location (an Outlook edit is never carried back —
+    # the sync compares the slot only). Outlook takes the reschedule and the
+    # cancellation; the rest is the application's.
+    "en changer autre chose, faites-le dans outlook",
+    "tell the user to make it in outlook",
+    "make the change in outlook",
+    # ... and the divergence warning named the client as the mover, while
+    # D10 now sends the LAWYER to Outlook to reschedule.
+    "le client a déplacé ou annulé ce rendez-vous",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

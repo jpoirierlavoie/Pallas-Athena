@@ -5862,15 +5862,20 @@ _HEARING_UNCANCELLED = (
     "téléphone ne le montre plus annulé, et sa copie Outlook est recréée "
     "au prochain cycle."
 )
-# A confirmed Bookings rendez-vous the CLIENT has since moved or cancelled
-# on the Bookings side (the sync records a divergence, never overwrites a
-# confirmed event): notes or a dossier filed here would build on a slot the
-# client may no longer hold. Said, never blocked — Réception is where it is
-# resolved.
+# A confirmed Bookings rendez-vous whose Outlook meeting has since been
+# moved or cancelled (the sync records a divergence, never overwrites a
+# confirmed event): notes or a dossier filed here would build on a slot that
+# may no longer hold. Said, never blocked — Réception is where it is
+# resolved. Since D10 the MOVER is not necessarily the client: the refusal
+# below sends the lawyer to Outlook to reschedule, and the sync cannot tell
+# his move from the client's — so the sentence names the meeting, never who
+# moved it (« Le client a déplacé » would attribute his own reschedule to
+# the client).
 _BOOKINGS_DIVERGENCE_UNSEEN = (
-    "Le client a déplacé ou annulé ce rendez-vous du côté de Bookings, et "
-    "l'écart n'a pas encore été traité : voyez la Réception (onglet « "
-    "Rendez-vous ») avant de vous fier à cette version."
+    "La réunion Outlook de ce rendez-vous a été déplacée ou annulée (par le "
+    "client, ou dans Outlook même), et l'écart n'a pas encore été traité : "
+    "voyez la Réception (onglet « Rendez-vous »), d'où on l'applique à "
+    "Athéna, avant de vous fier à cette version."
 )
 
 
@@ -5950,8 +5955,16 @@ def _booking_locked_args(args: dict, changed: list[str]) -> list[str]:
 def _refuse_locked_booking_change(args: dict, changed: list[str]) -> None:
     """D10 — a confirmed Bookings rendez-vous changes here only by its
     dossier and its notes. Refused BEFORE any write, naming the arguments,
-    and pointing to Outlook: the meeting the client holds is where it is
-    rescheduled or cancelled."""
+    and pointing to where each change CAN be made: a reschedule or a
+    cancellation in Outlook (the meeting the client holds — the Bookings
+    sync carries exactly those two back, through Réception), anything else
+    in the application, whose form is not restricted.
+
+    « Anything else » is NOT sent to Outlook: the type, the reminder, the
+    court and the judge are not on the Outlook meeting at all, and a title
+    or a location edited there is never carried back (the sync compares
+    the slot only). « Change it in Outlook » would send the user to a place
+    that cannot do it."""
     names = _booking_locked_args(args, changed)
     if not names:
         return
@@ -5961,11 +5974,13 @@ def _refuse_locked_booking_change(args: dict, changed: list[str]) -> None:
         f"{'refusés' if plural else 'refusé'} : ce rendez-vous vient de "
         "Bookings, et c'est la réunion Outlook que le client détient qui "
         "fait foi — le connecteur n'en change que le dossier (dossier_id) "
-        "et les notes (notes, notes_append). Pour le reporter, l'annuler ou "
-        "en changer autre chose, faites-le dans Outlook : un report ou une "
-        "annulation y est repéré par la synchronisation Bookings (10 minutes "
-        "au plus) et signalé dans la Réception (onglet « Rendez-vous »), "
-        "d'où on l'applique à Athéna. Rien n'a été modifié."
+        "et les notes (notes, notes_append). Pour le reporter ou l'annuler, "
+        "faites-le dans Outlook : le report ou l'annulation y est repéré par "
+        "la synchronisation Bookings (10 minutes au plus) et signalé dans la "
+        "Réception (onglet « Rendez-vous »), d'où on l'applique à Athéna. "
+        "Tout autre changement se fait dans l'application, dont le "
+        "formulaire n'est pas restreint — la réunion Outlook, elle, ne suit "
+        "pas. Rien n'a été modifié."
     )
 
 
@@ -6289,7 +6304,7 @@ def _hearing_edit_payload(
     if bookings:
         # D10: only its dossier or its notes can have changed — neither is
         # carried by the client's Outlook meeting, so there is no Outlook
-        # disagreement to warn about; only an unseen client-side change is.
+        # disagreement to warn about; only an unseen Outlook-side change is.
         divergence = doc.get("bookings_divergence") or {}
         if (isinstance(divergence, dict) and divergence.get("motif")
                 and not divergence.get("vu")):
@@ -6299,7 +6314,12 @@ def _hearing_edit_payload(
     elif (wrote and "status" in changed and previous_status == "annulée"
             and doc.get("status") != "annulée"):
         warnings.append(_HEARING_UNCANCELLED)
-    if wrote:
+    if wrote and not bookings:
+        # Never on a Bookings rendez-vous: D10 lets a modality or link
+        # argument through there only when it resends the STORED value, so
+        # the sentence would describe nothing this call did — and its
+        # « transmis … à Outlook » is false for an event Athéna never
+        # mirrors (the meeting is the client's).
         warnings.extend(_modality_warnings(doc, args))
     warnings.extend(notes)
     if not wrote:
