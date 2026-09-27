@@ -50,11 +50,10 @@ from models.doc_template import (
     update_template,
 )
 from models.document import (
-    GENERATED_FOLDER_NAME,
     projet_document_name,
     upload_document,
 )
-from models.folder import get_or_create_folder
+from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder
 from models.dossier import get_dossier
 from models.partie import ROLE_LABELS as PARTIE_ROLE_LABELS
 from models.partie import display_name, get_partie, get_parties_bulk, list_parties
@@ -723,7 +722,32 @@ def generate() -> Response | str:
         out_name = f"projet_{today.isoformat()}.docx"
 
     if dossier:
-        folder = get_or_create_folder(dossier_id, GENERATED_FOLDER_NAME)
+        # The uid first, then « Projets »: nothing is written — not even the
+        # folder — for a request that could not file the document anyway.
+        try:
+            user_id = storage_identity.request_uid()
+        except storage_identity.StorageIdentityUnavailable as exc:
+            user_id, uid_errors = None, [str(exc)]
+        else:
+            uid_errors = []
+        folder = None
+        if not uid_errors:
+            # Found by its ROLE, at its deterministic id (lot 2A, T2). A
+            # failure REFUSES: the old get_or_create_folder answered None
+            # and the document was saved at the dossier root instead.
+            folder, folder_errors = ensure_system_folder(
+                dossier_id, SYSTEM_ROLE_PROJETS
+            )
+            if folder is None:
+                log_template_event(
+                    "generation_failed", template_id=template_id,
+                    dossier_id=dossier_id, reason="projets_unavailable",
+                )
+                message = (folder_errors[0] if folder_errors else
+                           "Le dossier « Projets » est indisponible. Réessayez.")
+                if _is_htmx():
+                    return _champs_error(message)
+                return redirect(url_for("doc_templates.template_detail", template_id=template_id))
         metadata = {
             "category": template.get("category", "autre"),
             "folder_id": folder["id"] if folder else None,
@@ -734,10 +758,8 @@ def generate() -> Response | str:
             ),
             "tags": ["gabarit"],
         }
-        try:
-            user_id = storage_identity.request_uid()
-        except storage_identity.StorageIdentityUnavailable as exc:
-            doc, errors = None, [str(exc)]
+        if uid_errors:
+            doc, errors = None, uid_errors
         else:
             doc, errors = upload_document(
                 dossier_id=dossier_id,

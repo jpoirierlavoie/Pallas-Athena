@@ -139,8 +139,8 @@ def test_verser_ingere_avec_provenance(web, monkeypatch):
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
     monkeypatch.setattr(rc, "get_dossier",
                         lambda d: _dossier() if d == "d1" else None)
-    monkeypatch.setattr(rc, "get_or_create_folder",
-                        lambda d, nom: {"id": "f-portail", "name": nom})
+    monkeypatch.setattr(rc, "ensure_system_folder",
+                        lambda d, role: ({"id": "f-portail", "system_role": role}, []))
     ingest = mock.Mock(return_value=({"id": "doc9"}, []))
     monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
 
@@ -185,8 +185,8 @@ def test_verser_refuse_un_uid_de_session_inutilisable_avant_toute_ecriture(
     """Règle 8 du plan : l'uid du chemin Storage passe par
     utils.storage_identity. « unknown » franchit @login_required (il est
     vrai) ; le versement doit le refuser AVANT d'ouvrir le blob et AVANT
-    get_or_create_folder, qui ÉCRIT — le garde du modèle ne jouerait qu'une
-    fois le dossier « Reçus du portail » créé."""
+    ensure_system_folder, qui peut ÉCRIRE — le garde du modèle ne jouerait
+    qu'une fois le dossier « Reçus du portail » créé."""
     from utils import storage_identity as si
 
     with web.session_transaction() as s:
@@ -197,7 +197,7 @@ def test_verser_refuse_un_uid_de_session_inutilisable_avant_toute_ecriture(
                         lambda d: _dossier() if d == "d1" else None)
     monkeypatch.setattr(rc, "_bucket",
                         lambda: pytest.fail("ouvert la quarantaine"))
-    monkeypatch.setattr(rc, "get_or_create_folder",
+    monkeypatch.setattr(rc, "ensure_system_folder",
                         lambda *a: pytest.fail("créé le dossier Reçus"))
     ingest = mock.Mock()
     monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
@@ -466,7 +466,13 @@ def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
     bucket.blob.return_value = blob
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
     monkeypatch.setattr(rc, "get_dossier", lambda d: _dossier())
-    monkeypatch.setattr(rc, "get_or_create_folder", lambda d, n: None)
+    # Changé délibérément (lot 2A, T2) : ce faux rendait None, que l'ancien
+    # get_or_create_folder rendait sur une panne — et le document partait
+    # alors à la racine du dossier. Un dossier système introuvable REFUSE
+    # désormais le versement (test ci-dessous) ; ce test-ci ne porte que
+    # sur l'échec d'écriture du manifeste, donc il reçoit un dossier.
+    monkeypatch.setattr(rc, "ensure_system_folder",
+                        lambda d, role: ({"id": "f-portail", "system_role": role}, []))
     monkeypatch.setattr(rc, "ingest_blob_as_document",
                         mock.Mock(return_value=({"id": "doc9"}, [])))
 
@@ -475,6 +481,40 @@ def test_verser_avertit_si_le_manifeste_ne_peut_etre_ecrit(web, monkeypatch):
     assert "erreur=" in reponse.headers["Location"]
     assert "seconde+fois" in reponse.headers["Location"].replace("%20", "+") \
         or "seconde" in reponse.headers["Location"]
+
+
+def test_verser_refuse_quand_le_dossier_systeme_est_indisponible(web, monkeypatch):
+    """Lot 2A, T2 : ÉCHOUE sur l'ancien code. get_or_create_folder rendait
+    None sur une panne de lecture ou d'écriture, et la route versait alors
+    le document À LA RACINE du dossier (« folder_id: None ») — un fichier
+    reçu du portail hors de « Reçus du portail », sans que rien ne le dise.
+    Désormais le versement est REFUSÉ : rien n'est ingéré, le fichier reste
+    « reçu » en quarantaine, et la raison paraît dans la bannière."""
+    from models import folder as folder_model
+
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste",
+                        lambda i, b, m: pytest.fail("manifeste réécrit"))
+    bucket = mock.Mock()
+    bucket.blob.return_value = _blob_quarantaine()
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier",
+                        lambda d: _dossier() if d == "d1" else None)
+    monkeypatch.setattr(rc, "ensure_system_folder",
+                        lambda d, role: (None, [folder_model.READ_ERROR]))
+    ingest = mock.Mock()
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
+
+    reponse = web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+                       data={"dossier_id": "d1", "category": "pièce"})
+    assert reponse.status_code == 302
+    from urllib.parse import parse_qs, urlparse
+    erreur = parse_qs(urlparse(reponse.headers["Location"]).query)["erreur"][0]
+    assert folder_model.READ_ERROR in erreur
+    assert "quarantaine" in erreur
+    ingest.assert_not_called()
+    assert manifeste["files"][0]["etat"] == "reçu"
 
 
 # ── Pastille (cache + fail-open) ─────────────────────────────────────────
@@ -634,8 +674,8 @@ def _verser_capture(web, monkeypatch, *, nom_client="piece.pdf",
     monkeypatch.setattr(rc, "_bucket", lambda: bucket)
     monkeypatch.setattr(rc, "get_dossier",
                         lambda d: _dossier() if d == "d1" else None)
-    monkeypatch.setattr(rc, "get_or_create_folder",
-                        lambda d, nom: {"id": "f-portail", "name": nom})
+    monkeypatch.setattr(rc, "ensure_system_folder",
+                        lambda d, role: ({"id": "f-portail", "system_role": role}, []))
     ingest = mock.Mock(return_value=({"id": "doc9"}, []))
     monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
     web.post("/reception/lots/inv1/b1/fichiers/0/verser",

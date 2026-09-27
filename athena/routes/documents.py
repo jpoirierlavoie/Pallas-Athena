@@ -96,9 +96,11 @@ def _attach_folder_counts(folders: list[dict], dossier_id: str) -> None:
     lived here. The subtree figures are what the destructive confirmation
     announces, so they must count the whole tree, not the top level. Fails
     to zeros rather than breaking the listing; the dialog then offers no
-    « tout supprimer » (see the template's guard on ``_subtree_documents``).
+    « tout supprimer » (see the template's guard on ``_subtree_documents``),
+    and since lot 2A (T2) it POSTS those zeros back — so the model refuses
+    a folder that is not really empty instead of emptying it unseen.
     """
-    from models.folder import subtree_index
+    from models.folder import is_system_folder, subtree_index
 
     try:
         index = subtree_index(dossier_id)
@@ -110,6 +112,11 @@ def _attach_folder_counts(folders: list[dict], dossier_id: str) -> None:
         f["_item_count"] = counts.get("direct", 0)
         f["_subtree_documents"] = counts.get("documents", 0)
         f["_subtree_folders"] = counts.get("folders", 0)
+        # « Projets » / « Reçus du portail » do not rename (lot 2A, T2) —
+        # the menu hides the action; the model refuses it anyway. The
+        # siblings are the context: a system folder sits at the root, and
+        # the root listing holds every candidate (models.folder).
+        f["_system"] = is_system_folder(f, folders)
 
 
 # ── List / Browser ───────────────────────────────────────────────────────
@@ -965,7 +972,14 @@ def folder_rename(folder_id: str) -> str:
     # Parent lu AVANT la mutation : sur un refus, rename_folder rend
     # folder=None et le navigateur doit revenir au MÊME niveau.
     existing = get_folder(dossier_id, folder_id)
-    folder, errors = rename_folder(dossier_id, folder_id, new_name)
+    # La version affichée voyage avec le formulaire (lot 2A, T2 — le
+    # connecteur pourra renommer ou déplacer un dossier) : un renommage
+    # posé sur une page périmée est refusé, et le refus paraît dans la
+    # bannière comme les autres.
+    folder, errors, _changed = rename_folder(
+        dossier_id, folder_id, new_name,
+        expected_etag=edit_conflict.submitted_etag(),
+    )
 
     # Même discipline 2xx + ?erreur= que folder_create ci-dessus : renommer
     # vers un nom déjà pris — l'erreur la plus banale — mourait en 422
@@ -996,7 +1010,10 @@ def folder_move(folder_id: str) -> str:
             return '<div class="text-red-600 text-sm">Dossier juridique requis.</div>', 422
         return redirect(url_for("documents.document_list"))
 
-    folder, errors = move_folder(dossier_id, folder_id, new_parent_folder_id)
+    folder, errors, _changed = move_folder(
+        dossier_id, folder_id, new_parent_folder_id,
+        expected_etag=edit_conflict.submitted_etag(),
+    )
 
     if _is_htmx():
         if errors:
@@ -1031,9 +1048,22 @@ def folder_delete_route(folder_id: str) -> str:
     folder_data = get_folder(dossier_id, folder_id)
     parent_id = folder_data.get("parent_folder_id") if folder_data else None
 
-    success, error, rapport = delete_folder(
-        dossier_id, folder_id, contents=contents,
-    )
+    # Le décompte que le dialogue a ANNONCÉ (lot 2A, T2). Le modèle refuse
+    # si le sous-arbre ne le porte plus : le connecteur peut désormais
+    # déplacer des fichiers et des dossiers, et « Tout supprimer » ne doit
+    # jamais détruire ce qui a été glissé dedans depuis l'affichage. Absent
+    # = une page rendue avant ce lot : aucune vérification (la règle de
+    # routes/edit_conflict). Présent mais illisible = un POST fabriqué :
+    # refus, rien n'est touché — en 2xx, la bannière du navigateur.
+    expected, malformed = _submitted_subtree_counts()
+    if malformed:
+        success, error, rapport = False, _COUNTS_MALFORMED, {
+            "folders": [], "documents": [], "moved": 0,
+        }
+    else:
+        success, error, rapport = delete_folder(
+            dossier_id, folder_id, contents=contents, **expected,
+        )
 
     # ONE deletion event per entity — the house invariant (14 call sites).
     # Until now a single event was minted for the top folder and the
@@ -1084,6 +1114,29 @@ def folder_delete_route(folder_id: str) -> str:
     # La branche sans JS laissait tomber l'erreur en silence — elle rebondit
     # désormais sur le navigateur avec ?erreur=, comme l'archive zip.
     return redirect(target)
+
+
+_COUNTS_MALFORMED = (
+    "Requête invalide : le décompte transmis par le formulaire est "
+    "illisible. Rien n'a été supprimé — rechargez la page, puis confirmez "
+    "de nouveau."
+)
+
+
+def _submitted_subtree_counts() -> tuple[dict, bool]:
+    """``({expected_documents?, expected_folders?}, malformed)`` from the
+    delete dialog. An absent field is left out (no check on it); a present
+    one must be a non-negative integer."""
+    expected: dict = {}
+    for field in ("expected_documents", "expected_folders"):
+        raw = request.form.get(field)
+        if raw is None:
+            continue
+        raw = raw.strip()
+        if not (raw.isascii() and raw.isdigit()) or len(raw) > 9:
+            return {}, True
+        expected[field] = int(raw)
+    return expected, False
 
 
 def _folder_delete_message(rapport: dict) -> str:

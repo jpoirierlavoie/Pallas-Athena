@@ -53,7 +53,7 @@ from models.document import (
 )
 from routes.taches_portail import sha512_flux
 from models.dossier import get_dossier, list_dossiers
-from models.folder import get_or_create_folder
+from models.folder import SYSTEM_ROLE_PORTAIL, ensure_system_folder
 from models import concurrency
 from models.hearing import get_hearing, list_bookings_strict, update_hearing
 from models.partie import (
@@ -786,7 +786,7 @@ def verser(inv_id: str, batch: str, seq: int):
 
     # The uid the document is filed under (users/{uid}/dossiers/…), resolved
     # before the quarantine blob is opened and before any WRITE — in
-    # particular get_or_create_folder below. Plan rule 8: through
+    # particular ensure_system_folder below. Plan rule 8: through
     # utils.storage_identity, never a raw session read (the model re-checks
     # the uid, but only once the folder exists).
     try:
@@ -840,7 +840,16 @@ def verser(inv_id: str, batch: str, seq: int):
             ))
 
     dossier_reel = dossier["id"]
-    folder = get_or_create_folder(dossier_reel, PORTAL_FOLDER_NAME)
+    # Found by its ROLE, at its deterministic id (lot 2A, T2). A failure
+    # REFUSES, the file staying in quarantine: the old get_or_create_folder
+    # answered None and the document was filed at the dossier root instead.
+    folder, folder_errors = ensure_system_folder(dossier_reel, SYSTEM_ROLE_PORTAIL)
+    if folder is None:
+        return _rediriger(erreur=(
+            (folder_errors[0] if folder_errors else
+             f"Le dossier « {PORTAL_FOLDER_NAME} » est indisponible.")
+            + " Le fichier reste en quarantaine."
+        ))
     metadata = {
         "category": request.form.get("category", "autre"),
         # What the LAWYER typed goes to the model as typed: it refuses
@@ -852,7 +861,7 @@ def verser(inv_id: str, batch: str, seq: int):
         "display_name": (request.form.get("display_name") or "").strip()
         or _nom_par_defaut(entree.get("name") or ""),
         "tags": ["portail"],
-        "folder_id": folder["id"] if folder else None,
+        "folder_id": folder["id"],
     }
     # Provenance dans des champs DÉDIÉS (2026-08-27, renversant la
     # décision de 2026-07-25 « aucun champ nouveau »). Elle squattait

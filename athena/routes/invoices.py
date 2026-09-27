@@ -57,11 +57,10 @@ from models.time_entry import get_unbilled_time_entries
 from models.expense import get_unbilled_expenses
 from models.doc_template import get_note_honoraires_template, get_template_bytes
 from models.document import (
-    GENERATED_FOLDER_NAME,
     projet_document_name,
     upload_document,
 )
-from models.folder import get_or_create_folder
+from models.folder import SYSTEM_ROLE_PROJETS, ensure_system_folder
 from tz import MTL
 from utils.docx_fill import DocxFillError, fill_docx
 from utils.invoice_docx import build_invoice_context
@@ -557,7 +556,25 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
         log_template_event("generation_failed", template_id=template_id, reason="fill_error")
         return _note_error("Erreur lors de la génération. Veuillez réessayer.")
 
-    folder = get_or_create_folder(dossier_id, GENERATED_FOLDER_NAME) if dossier_id else None
+    # The uid first, then « Projets »: nothing is written — not even the
+    # folder — for a request that could not file the note anyway.
+    try:
+        user_id = storage_identity.request_uid()
+    except storage_identity.StorageIdentityUnavailable as exc:
+        log_template_event("generation_failed", template_id=template_id,
+                           dossier_id=dossier_id, invoice_id=invoice_id,
+                           reason="save_failed")
+        return _note_error(str(exc))
+    # Found by its ROLE, at its deterministic id (lot 2A, T2). A failure
+    # REFUSES: the old get_or_create_folder answered None and the note was
+    # saved at the dossier root instead.
+    folder, folder_errors = ensure_system_folder(dossier_id, SYSTEM_ROLE_PROJETS)
+    if folder is None:
+        log_template_event("generation_failed", template_id=template_id,
+                           dossier_id=dossier_id, invoice_id=invoice_id,
+                           reason="projets_unavailable")
+        return _note_error(folder_errors[0] if folder_errors else
+                           "Le dossier « Projets » est indisponible. Réessayez.")
     invoice_number = invoice.get("invoice_number", "")
     reference = (dossier or {}).get("file_number", "")
     tmpl_base = template.get("name") or "Note d'honoraires"
@@ -569,25 +586,20 @@ def invoice_note_docx(invoice_id: str) -> Response | str:
 
     metadata = {
         "category": "correspondance",
-        "folder_id": folder["id"] if folder else None,
+        "folder_id": folder["id"],
         "display_name": display,
         "genere_depuis": f"Générée depuis la facture {invoice_number}".strip(),
         "tags": ["note_honoraires"],
     }
-    try:
-        user_id = storage_identity.request_uid()
-    except storage_identity.StorageIdentityUnavailable as exc:
-        doc, errors = None, [str(exc)]
-    else:
-        doc, errors = upload_document(
-            dossier_id=dossier_id,
-            dossier_file_number=invoice.get("dossier_file_number", ""),
-            file_stream=io.BytesIO(filled),
-            filename=out_name,
-            file_size=len(filled),
-            metadata=metadata,
-            user_id=user_id,
-        )
+    doc, errors = upload_document(
+        dossier_id=dossier_id,
+        dossier_file_number=invoice.get("dossier_file_number", ""),
+        file_stream=io.BytesIO(filled),
+        filename=out_name,
+        file_size=len(filled),
+        metadata=metadata,
+        user_id=user_id,
+    )
     if errors or not doc:
         log_template_event("generation_failed", template_id=template_id,
                            dossier_id=dossier_id, invoice_id=invoice_id,

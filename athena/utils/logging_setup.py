@@ -517,6 +517,11 @@ DossierEvent = Literal[
     # dont une trace vaut d'être gardée, même si la phase ne porte aucun
     # chiffre. Codes et identifiants uniquement.
     "phase_reclassified",
+    # Dossiers système (lot 2A, T2, 2026-09-27). « Projets » et « Reçus du
+    # portail » sont désormais trouvés par leur rôle ; un dossier créé par
+    # NOM avant ce lot est adopté UNE fois, et cette ligne le dit.
+    # Identifiants et comptes seulement.
+    "system_folder_adopted",
 ]
 # Séries récurrentes d'audiences. Un seul clic y crée ou détruit jusqu'à 60
 # documents, frappe autant de pierres tombales et pousse autant de VEVENT vers

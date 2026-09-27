@@ -544,7 +544,7 @@ NEVERS: tuple[Never, ...] = (
             "update_metadata", "move_document", "move_documents_bulk",
             "upload_document", "ingest_blob_as_document", "update_analyse",
             "confirmer_analyse", "create_folder", "rename_folder",
-            "move_folder", "get_or_create_folder",
+            "move_folder", "ensure_system_folder",
         ),
     ),
 )

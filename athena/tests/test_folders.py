@@ -1,65 +1,561 @@
-"""Tests for models/folder.py — get_or_create_folder idempotency (Phase H.2 §8).
+"""Tests for models/folder.py — the folder model over the REAL client.
 
-The Firestore ``db`` calls are monkeypatched out (via the module's
-``list_folders`` / ``create_folder``) so this runs without an emulator.
-Importing ``models.folder`` still pulls in the google-cloud libraries, which
-are present in the Cloud Build deploy-gate install.
+Two families:
+
+* the lot 2A step T2 hardening (2026-09-27), over the shared fake Firestore
+  (``tests/_fake_firestore.py`` — the client is the real one, only the
+  server is in memory) and read back from what is STORED. Each test names
+  the defect of the code before it and FAILS on that code: duplicate checks
+  that failed OPEN, names silently sanitized into different names, depth
+  and cycle walks that stopped at an unreadable parent, full-document
+  ``set()`` on rename and move, and system folders found BY NAME — which
+  forked « Projets » under parallel generations and after a rename;
+* the folder deletion (2026-08-14), whose Firestore calls are faked below
+  (``_arbre``).
+
+``get_or_create_folder``'s two tests (idempotent reuse by name, scoping
+per dossier) were REMOVED deliberately with the function (lot 2A, T2):
+their successor is ``ensure_system_folder``, pinned here by role, by
+deterministic id, under a race and against legacy folders.
 """
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import models.folder as folder
+os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("FIREBASE_PROJECT_ID", "test-project")
+os.environ.setdefault("FIREBASE_STORAGE_BUCKET", "test-bucket")
+os.environ.setdefault("AUTHORIZED_USER_EMAIL", "test@example.com")
+
+with mock.patch("google.cloud.firestore.Client"):
+    import models.folder as folder
+    from models import concurrency
+
+from google.api_core import exceptions as gexc  # noqa: E402
+
+from tests._fake_firestore import install  # noqa: E402
+
+UTC = timezone.utc
+T0 = datetime(2026, 1, 5, 9, 0, tzinfo=UTC)
+STALE = [concurrency.STALE_ETAG_ERROR]
 
 
-def _fakes():
-    store: list[dict] = []
-
-    def fake_list_folders(dossier_id, parent_folder_id=None):
-        return [
-            f for f in store
-            if f["dossier_id"] == dossier_id
-            and f.get("parent_folder_id") == parent_folder_id
-        ]
-
-    def fake_create_folder(dossier_id, name, parent_folder_id=None):
-        created = {
-            "id": f"f{len(store)}",
-            "dossier_id": dossier_id,
-            "name": name,
-            "parent_folder_id": parent_folder_id,
-        }
-        store.append(created)
-        return created, []
-
-    return store, fake_list_folders, fake_create_folder
+# ═══════════════════════════════════════════════════════════════════════════
+# Lot 2A, étape T2 — le modèle durci, sur le vrai client
+# ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_get_or_create_folder_creates_then_reuses(monkeypatch):
-    store, fake_list, fake_create = _fakes()
-    monkeypatch.setattr(folder, "list_folders", fake_list)
-    monkeypatch.setattr(folder, "create_folder", fake_create)
-
-    first = folder.get_or_create_folder("d1", "Notes d'honoraires")
-    # Second call (different case) must reuse — no duplicate created.
-    second = folder.get_or_create_folder("d1", "notes d'honoraires")
-    assert first["id"] == second["id"]
-    assert len(store) == 1
+@pytest.fixture
+def store(monkeypatch):
+    fake = install(monkeypatch, folder)
+    fake.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001"})
+    fake.seed("dossiers/d2", {"id": "d2", "file_number": "2026-002"})
+    return fake
 
 
-def test_get_or_create_folder_scoped_per_dossier(monkeypatch):
-    store, fake_list, fake_create = _fakes()
-    monkeypatch.setattr(folder, "list_folders", fake_list)
-    monkeypatch.setattr(folder, "create_folder", fake_create)
+def _seed_folder(store, fid, name, parent=None, *, dossier="d1", **extra):
+    data = {
+        "id": fid, "dossier_id": dossier, "name": name,
+        "parent_folder_id": parent, "order": 0,
+        "created_at": T0, "updated_at": T0, **extra,
+    }
+    store.seed(f"folders/{fid}", data)
+    return data
 
-    a = folder.get_or_create_folder("d1", "Notes d'honoraires")
-    b = folder.get_or_create_folder("d2", "Notes d'honoraires")
-    assert a["id"] != b["id"]
-    assert len(store) == 2
+
+def _folders(store) -> dict:
+    return store.peek_collection("folders")
+
+
+def _writes(store) -> list:
+    """Every write op committed. A read-only transaction still COMMITS (an
+    empty commit, as the real client does), so « nothing written » is « no
+    op », not « no commit »."""
+    return [op for c in store.commits for op in c.ops]
+
+
+def _fail_queries(monkeypatch, store) -> None:
+    """Every query RPC fails at the server — an outage, not a code bug."""
+    def _boom(*_a, **_k):
+        raise gexc.ServiceUnavailable("firestore indisponible")
+
+    monkeypatch.setattr(store._fake_server, "run_query", _boom)
+
+
+# ── Créer ─────────────────────────────────────────────────────────────────
+
+
+def test_the_collection_is_top_level_and_the_folder_carries_its_stamps(store):
+    """Folders live in the TOP-LEVEL `folders` collection (CLAUDE.md said a
+    `dossiers/{id}/folders` subcollection) and, since T2, carry an etag and
+    the provenance stamps — the Rule 7 exception is lifted."""
+    created, errors = folder.create_folder("d1", "Pièces")
+    assert errors == []
+    stored = store.peek(f"folders/{created['id']}")
+    assert stored is not None and stored == created
+    assert stored["name"] == "Pièces" and stored["dossier_id"] == "d1"
+    assert stored["etag"] and stored["system_role"] == ""
+    assert stored["created_via"] == stored["updated_via"] == "script"
+    assert stored["created_at"] == stored["updated_at"]
+
+
+def test_a_duplicate_check_that_cannot_read_refuses_instead_of_duplicating(
+    store, monkeypatch,
+):
+    """FAILS on the old code: `_check_duplicate_name` read through
+    `list_folders`, which answers [] on an outage — so « Pièces » read as
+    absent and a second « Pièces » was written."""
+    _seed_folder(store, "f1", "Pièces")
+    _fail_queries(monkeypatch, store)
+
+    created, errors = folder.create_folder("d1", "Pièces")
+
+    assert created is None and errors == [folder.READ_ERROR]
+    assert list(_folders(store)) == ["f1"]
+    assert store.commits == []
+
+
+def test_two_racing_creations_of_one_name_leave_one_folder(store):
+    """FAILS on the old code (read, then an unconditional set() of a fresh
+    uuid4). The duplicate check now runs INSIDE the transaction that writes:
+    a folder created between that read and the commit aborts it, and the
+    re-run sees the folder and refuses."""
+    fired = []
+
+    def _concurrent(_info):
+        if not fired:
+            fired.append(True)
+            store.external_write("folders/fx", {
+                "id": "fx", "dossier_id": "d1", "name": "pièces",
+                "parent_folder_id": None, "created_at": T0,
+            })
+
+    store.add_commit_hook(_concurrent)
+    created, errors = folder.create_folder("d1", "Pièces")
+
+    assert created is None and errors == [folder.DUPLICATE_HERE]
+    assert list(_folders(store)) == ["fx"]
+
+
+@pytest.mark.parametrize("name, message", [
+    ("<x>", folder.NAME_CHEVRONS),         # the old code stored ""
+    ("a<b>c", folder.NAME_CHEVRONS),       # …and this as « ac »
+    ("x" * 101, folder.NAME_TOO_LONG),
+    ("a/b", folder.NAME_SLASH),
+    ("a\\b", folder.NAME_SLASH),
+    ("ligne\nsuite", folder.NAME_CONTROL),
+    ("   ", folder.NAME_REQUIRED),
+])
+def test_a_name_storage_would_change_is_refused_never_rewritten(store, name, message):
+    created, errors = folder.create_folder("d1", name)
+    assert created is None and message in errors
+    assert _folders(store) == {}
+
+
+def test_surrounding_spaces_are_trimmed_not_refused(store):
+    created, errors = folder.create_folder("d1", "  Pièces  ")
+    assert errors == []
+    assert store.peek(f"folders/{created['id']}")["name"] == "Pièces"
+
+
+def test_an_unknown_dossier_is_refused(store):
+    """FAILS on the old code: nothing checked the dossier, so a folder could
+    be written on an id no dossier bears (routes/documents never did)."""
+    created, errors = folder.create_folder("d9", "Pièces")
+    assert created is None and errors == [folder.DOSSIER_NOT_FOUND]
+    assert _folders(store) == {}
+
+
+def test_the_parent_must_belong_to_the_same_dossier(store):
+    _seed_folder(store, "autre", "Ailleurs", dossier="d2")
+    created, errors = folder.create_folder("d1", "Pièces", parent_folder_id="autre")
+    assert created is None and errors == ["Le dossier parent est introuvable."]
+    assert list(_folders(store)) == ["autre"]
+
+
+def test_the_depth_limit_comes_from_one_read(store):
+    parent = None
+    for level in range(1, folder.MAX_NESTING_DEPTH + 1):
+        _seed_folder(store, f"n{level}", f"Niveau {level}", parent)
+        parent = f"n{level}"
+    store.reset_logs()
+
+    created, errors = folder.create_folder("d1", "Trop bas", parent_folder_id=parent)
+
+    assert created is None and "profondeur maximale" in errors[0]
+    # ONE query for the whole walk (plus the keyed dossier check) — the old
+    # walk read one parent at a time and stopped at the first unreadable one.
+    queries = [r for r in store.reads if r.rpc == "run_query"]
+    assert len(queries) == 1 and queries[0].transactional
+    folder_gets = [r for r in store.reads if r.rpc == "batch_get_documents"
+                   and any(p.startswith("folders/") for p in r.paths)]
+    assert folder_gets == []
+
+
+# ── Renommer ──────────────────────────────────────────────────────────────
+
+
+def test_a_rename_is_a_partial_update_with_a_new_etag(store):
+    _seed_folder(store, "f1", "Pièces", etag="e1", order=7, marque="intacte")
+    store.reset_logs()
+
+    renamed, errors, changed = folder.rename_folder(
+        "d1", "f1", "Pièces déposées", expected_etag="e1",
+    )
+
+    assert errors == [] and changed is True
+    stored = store.peek("folders/f1")
+    assert stored["name"] == "Pièces déposées"
+    assert stored["etag"] not in ("", "e1") and stored["etag"] == renamed["etag"]
+    assert stored["order"] == 7 and stored["marque"] == "intacte"
+    assert stored["updated_via"] == "script"
+    assert store.commits[-1].ops == (("update", "folders/f1"),)
+
+
+def test_a_rename_on_a_stale_etag_writes_nothing(store):
+    _seed_folder(store, "f1", "Pièces", etag="e2")
+    renamed, errors, changed = folder.rename_folder(
+        "d1", "f1", "Autre", expected_etag="e1",
+    )
+    assert renamed is None and errors == STALE and changed is False
+    assert store.peek("folders/f1")["name"] == "Pièces"
+    assert _writes(store) == []
+
+
+def test_a_legacy_folder_without_etag_matches_the_empty_etag(store):
+    _seed_folder(store, "f1", "Pièces")            # written before Rule 7
+    _renamed, errors, changed = folder.rename_folder(
+        "d1", "f1", "Autre", expected_etag="",
+    )
+    assert errors == [] and changed is True
+
+
+def test_renaming_to_the_same_name_writes_nothing(store):
+    _seed_folder(store, "f1", "Pièces", etag="e1")
+    renamed, errors, changed = folder.rename_folder("d1", "f1", "Pièces")
+    assert errors == [] and changed is False and renamed["etag"] == "e1"
+    assert _writes(store) == []
+
+
+def test_a_rename_that_cannot_read_the_folders_refuses(store, monkeypatch):
+    _seed_folder(store, "f1", "Pièces")
+    _seed_folder(store, "f2", "Annexes")
+    _fail_queries(monkeypatch, store)
+    renamed, errors, changed = folder.rename_folder("d1", "f2", "Pièces")
+    assert renamed is None and errors == [folder.READ_ERROR] and not changed
+    assert store.peek("folders/f2")["name"] == "Annexes"
+
+
+def test_a_rename_to_a_taken_name_is_refused_case_insensitively(store):
+    _seed_folder(store, "f1", "Pièces")
+    _seed_folder(store, "f2", "Annexes")
+    _r, errors, _c = folder.rename_folder("d1", "f2", "PIÈCES")
+    assert errors == [folder.DUPLICATE_HERE]
+
+
+def test_a_rename_refuses_a_name_storage_would_change(store):
+    _seed_folder(store, "f1", "Pièces")
+    _r, errors, changed = folder.rename_folder("d1", "f1", "<b>Pièces")
+    assert errors == [folder.NAME_CHEVRONS] and not changed
+    assert store.peek("folders/f1")["name"] == "Pièces"
+
+
+# ── Déplacer ──────────────────────────────────────────────────────────────
+
+
+def test_a_move_into_its_own_descendant_is_refused_from_one_read(store):
+    _seed_folder(store, "f1", "Un")
+    _seed_folder(store, "f2", "Deux", "f1")
+    _seed_folder(store, "f3", "Trois", "f2")
+    store.reset_logs()
+
+    moved, errors, changed = folder.move_folder("d1", "f1", "f3")
+
+    assert moved is None and not changed
+    assert errors == ["Impossible de déplacer un dossier dans un de ses sous-dossiers."]
+    assert store.peek("folders/f1")["parent_folder_id"] is None
+    assert [r.rpc for r in store.reads] == ["run_query"]
+
+
+def test_a_move_over_the_depth_limit_is_refused(store):
+    parent = None
+    for level in range(1, 5):
+        _seed_folder(store, f"n{level}", f"Niveau {level}", parent)
+        parent = f"n{level}"                         # n4 sits at depth 4
+    _seed_folder(store, "a", "Arbre")
+    _seed_folder(store, "b", "Branche", "a")          # a's subtree is 1 deep
+    _m, errors, _c = folder.move_folder("d1", "a", "n4")  # 4 + 1 + 1 = 6
+    assert "profondeur maximale" in errors[0]
+    _m, errors, changed = folder.move_folder("d1", "a", "n3")  # 3 + 1 + 1 = 5
+    assert errors == [] and changed is True
+
+
+def test_a_move_to_another_dossiers_folder_is_refused(store):
+    _seed_folder(store, "f1", "Pièces")
+    _seed_folder(store, "autre", "Ailleurs", dossier="d2")
+    _m, errors, _c = folder.move_folder("d1", "f1", "autre")
+    assert errors == ["Le dossier de destination est introuvable."]
+    assert store.peek("folders/f1")["parent_folder_id"] is None
+
+
+def test_a_move_is_a_partial_update_and_a_same_parent_move_writes_nothing(store):
+    _seed_folder(store, "f1", "Pièces", etag="e1", marque="intacte")
+    _seed_folder(store, "p", "Parent", etag="ep")
+    _m, errors, changed = folder.move_folder("d1", "f1", None)
+    assert errors == [] and changed is False and _writes(store) == []
+
+    moved, errors, changed = folder.move_folder("d1", "f1", "p", expected_etag="e1")
+    assert errors == [] and changed is True
+    stored = store.peek("folders/f1")
+    assert stored["parent_folder_id"] == "p" and stored["marque"] == "intacte"
+    assert stored["etag"] == moved["etag"] != "e1"
+    # The move itself, then the new parent's TIMESTAMP touch — which never
+    # regenerates the parent's etag (its open rename form stays valid).
+    assert _writes(store) == [("update", "folders/f1"), ("update", "folders/p")]
+    assert store.peek("folders/p")["etag"] == "ep"
+
+
+def test_a_move_on_a_stale_etag_writes_nothing(store):
+    _seed_folder(store, "f1", "Pièces", etag="e2")
+    _seed_folder(store, "p", "Parent")
+    _m, errors, changed = folder.move_folder("d1", "f1", "p", expected_etag="e1")
+    assert errors == STALE and not changed
+    assert store.peek("folders/f1")["parent_folder_id"] is None
+
+
+# ── Dossiers système ──────────────────────────────────────────────────────
+
+
+def test_ensure_creates_the_system_folder_at_its_deterministic_id(store):
+    created, errors = folder.ensure_system_folder("d1", folder.SYSTEM_ROLE_PROJETS)
+    assert errors == []
+    expected_id = folder.system_folder_id("d1", "projets")
+    assert created["id"] == expected_id
+    stored = store.peek(f"folders/{expected_id}")
+    assert stored["name"] == "Projets" and stored["system_role"] == "projets"
+    assert stored["parent_folder_id"] is None and stored["etag"]
+    assert store.commits[-1].ops == (("create", f"folders/{expected_id}"),)
+
+    again, errors = folder.ensure_system_folder("d1", "projets")
+    assert errors == [] and again["id"] == expected_id
+    assert len(store.commits) == 1                   # found, nothing written
+
+
+def test_the_deterministic_id_is_per_dossier_and_per_role():
+    ids = {folder.system_folder_id(d, r) for d in ("d1", "d2")
+           for r in folder.VALID_SYSTEM_ROLES}
+    assert len(ids) == 4
+    assert folder.system_folder_id("d1", "projets") == folder.system_folder_id("d1", "projets")
+    with pytest.raises(ValueError):
+        folder.system_folder_id("d1", "autre")
+
+
+def test_parallel_ensures_never_fork_the_system_folder(store, monkeypatch):
+    """The defect the review found in the design itself: a read-then-create
+    of a fresh uuid4 lets two parallel generations on a new dossier each see
+    « no Projets » and each create one. Here the second call runs ENTIRELY
+    between the first's read and the first's create: the first's create()
+    meets the deterministic id already taken, reads it back, and both land
+    in the SAME folder."""
+    real_read = folder._all_folders
+    interleaved = []
+
+    def _read_then_let_the_other_call_run(dossier_id):
+        rows = real_read(dossier_id)                   # A reads: nothing yet
+        if not interleaved:
+            interleaved.append(None)                   # B reads for real
+            interleaved[0] = folder.ensure_system_folder(dossier_id, "projets")
+        return rows                                    # A's stale view
+
+    monkeypatch.setattr(folder, "_all_folders", _read_then_let_the_other_call_run)
+    first, errors = folder.ensure_system_folder("d1", "projets")
+
+    assert errors == []
+    second, second_errors = interleaved[0]
+    assert second_errors == []
+    assert first["id"] == second["id"] == folder.system_folder_id("d1", "projets")
+    assert [f["name"] for f in _folders(store).values()] == ["Projets"]
+
+
+def test_legacy_adoption_stamps_the_oldest_and_logs_the_fork(store, monkeypatch):
+    """Production holds « Projets » folders created BY NAME, one or — after
+    a past fork — several. The oldest root one is adopted (stamped, once);
+    the others stay ordinary folders the lawyer can rename or merge."""
+    events = []
+    monkeypatch.setattr(
+        folder, "log_dossier_event",
+        lambda event, dossier_id, **kw: events.append((event, dossier_id, kw)),
+    )
+    _seed_folder(store, "jeune", "Projets", created_at=T0 + timedelta(days=3))
+    _seed_folder(store, "vieux", "projets", created_at=T0)
+    _seed_folder(store, "p", "Pièces")
+    _seed_folder(store, "sous", "Projets", "p", created_at=T0 - timedelta(days=9))
+
+    adopted, errors = folder.ensure_system_folder("d1", "projets")
+
+    assert errors == [] and adopted["id"] == "vieux"
+    assert store.peek("folders/vieux")["system_role"] == "projets"
+    assert store.peek("folders/vieux")["etag"]
+    assert not store.peek("folders/jeune").get("system_role")
+    assert not store.peek("folders/sous").get("system_role")   # not at the root
+    assert store.peek(f"folders/{folder.system_folder_id('d1', 'projets')}") is None
+    assert events == [("system_folder_adopted", "d1", {
+        "folder_id": "vieux", "role": "projets", "legacy_candidates": 2,
+    })]
+
+    # Adopted for good: found by its role, nothing written, nothing logged.
+    store.reset_logs()
+    again, _ = folder.ensure_system_folder("d1", "projets")
+    assert again["id"] == "vieux" and store.commits == [] and len(events) == 1
+
+    # The fork's other copy is an ORDINARY folder now.
+    roots = [f for f in _folders(store).values() if not f.get("parent_folder_id")]
+    assert folder.is_system_folder(store.peek("folders/vieux"), roots)
+    assert not folder.is_system_folder(store.peek("folders/jeune"), roots)
+    _r, errors, changed = folder.rename_folder("d1", "jeune", "Projets — ancien")
+    assert errors == [] and changed
+
+
+def test_the_portal_folder_is_adopted_under_its_own_role(store):
+    _seed_folder(store, "recus", "Reçus du portail")
+    adopted, errors = folder.ensure_system_folder("d1", folder.SYSTEM_ROLE_PORTAIL)
+    assert errors == [] and adopted["id"] == "recus"
+    assert store.peek("folders/recus")["system_role"] == "portail"
+
+
+def test_a_system_folder_does_not_rename_or_move_and_the_next_ensure_finds_it(store):
+    """FAILS on the old code: « Projets » renamed, the next generation's
+    lookup BY NAME found nothing and created a second « Projets »."""
+    projets, _ = folder.ensure_system_folder("d1", "projets")
+    _seed_folder(store, "p", "Pièces")
+    store.reset_logs()
+
+    renamed, errors, changed = folder.rename_folder("d1", projets["id"], "Brouillons")
+    assert renamed is None and not changed
+    assert errors == [folder.SYSTEM_FOLDER_LOCKED.format(name="Projets")]
+    moved, errors, changed = folder.move_folder("d1", projets["id"], "p")
+    assert moved is None and not changed and "dossier système" in errors[0]
+    assert _writes(store) == []
+
+    again, _ = folder.ensure_system_folder("d1", "projets")
+    assert again["id"] == projets["id"]
+    assert sum(1 for f in _folders(store).values() if f.get("system_role")) == 1
+
+
+def test_an_unstamped_legacy_projets_is_already_protected(store):
+    """Before any generation adopts it, the legacy « Projets » is the one the
+    next generation would adopt: renaming it then would fork just the same."""
+    _seed_folder(store, "legacy", "Projets")
+    _r, errors, changed = folder.rename_folder("d1", "legacy", "Brouillons")
+    assert not changed and "dossier système" in errors[0]
+    assert store.peek("folders/legacy")["name"] == "Projets"
+
+
+@pytest.mark.parametrize("name", ["Projets", "projets", "REÇUS DU PORTAIL"])
+def test_a_root_folder_cannot_take_a_system_name(store, name):
+    """Created by hand, such a folder would read as the legacy system folder
+    and be locked; ensure_system_folder is the one door to these names at
+    the root. In a sub-folder the name is free."""
+    created, errors = folder.create_folder("d1", name)
+    assert created is None and "réservé" in errors[0]
+    _seed_folder(store, "b", "Brouillons")
+    _r, errors, _c = folder.rename_folder("d1", "b", name)
+    assert "réservé" in errors[0]
+    _seed_folder(store, "p", "Pièces")
+    inside, errors = folder.create_folder("d1", name, parent_folder_id="p")
+    assert errors == [] and inside["parent_folder_id"] == "p"
+    _m, errors, _c = folder.move_folder("d1", inside["id"], None)
+    assert "réservé" in errors[0]
+
+
+def test_ensure_refuses_when_the_folders_cannot_be_read(store, monkeypatch):
+    """FAILS on the old code: get_or_create_folder read through the
+    fail-open list_folders, so an outage read as « no Projets » and a
+    duplicate was created (and its own errors were swallowed into None)."""
+    _seed_folder(store, "legacy", "Projets")
+    _fail_queries(monkeypatch, store)
+    got, errors = folder.ensure_system_folder("d1", "projets")
+    assert got is None and errors == [folder.READ_ERROR]
+    assert list(_folders(store)) == ["legacy"]
+
+
+def test_ensure_refuses_an_unknown_dossier(store):
+    got, errors = folder.ensure_system_folder("d9", "projets")
+    assert got is None and errors == [folder.DOSSIER_NOT_FOUND]
+    assert _folders(store) == {}
+    got, errors = folder.ensure_system_folder("", "projets")
+    assert got is None and errors == [folder.DOSSIER_REQUIRED]
+
+
+def test_get_or_create_folder_is_gone():
+    assert not hasattr(folder, "get_or_create_folder")
+
+
+# ── Suppression périmée ───────────────────────────────────────────────────
+
+
+def _seed_document(store, doc_id, folder_id):
+    store.seed(f"documents/{doc_id}", {
+        "id": doc_id, "dossier_id": "d1", "folder_id": folder_id,
+        "display_name": doc_id, "category": "autre",
+    })
+
+
+def test_a_delete_on_a_stale_count_touches_nothing(store):
+    """Once the connector moves documents and folders, something may land in
+    a folder between the dialog's « 1 fichier » and the click: « Tout
+    supprimer » must not destroy what was never shown."""
+    _seed_folder(store, "f1", "Pièces")
+    _seed_document(store, "a", "f1")
+    _seed_document(store, "glisse", "f1")          # moved in after the render
+
+    ok, message, rapport = folder.delete_folder(
+        "d1", "f1", contents="delete", expected_documents=1, expected_folders=0,
+    )
+
+    assert not ok and "a changé" in message and "2 fichiers" in message
+    assert rapport == {"folders": [], "documents": [], "moved": 0}
+    assert store.peek("folders/f1") is not None
+    assert store.peek("documents/a") and store.peek("documents/glisse")
+    assert store.commits == []
+
+
+def test_a_new_sub_folder_also_makes_the_count_stale(store):
+    _seed_folder(store, "f1", "Pièces")
+    _seed_folder(store, "neuf", "Neuf", "f1")
+    ok, message, _r = folder.delete_folder(
+        "d1", "f1", contents="move", expected_documents=0, expected_folders=0,
+    )
+    assert not ok and "1 sous-dossier." in message
+    assert store.peek("folders/neuf") is not None
+
+
+def test_a_delete_whose_count_still_matches_proceeds(store):
+    _seed_folder(store, "f1", "Pièces")
+    _seed_document(store, "a", "f1")
+    ok, message, rapport = folder.delete_folder(
+        "d1", "f1", contents="move", expected_documents=1, expected_folders=0,
+    )
+    assert ok and message == "" and rapport["moved"] == 1
+    assert store.peek("folders/f1") is None
+    assert store.peek("documents/a")["folder_id"] is None
+
+
+def test_a_system_folder_can_still_be_deleted_and_comes_back_at_its_id(store):
+    """Deleting stays the lawyer's call (nothing forbids it), and the next
+    generation recreates the folder at the SAME deterministic id — the
+    documented exception to « ids are never reused »."""
+    projets, _ = folder.ensure_system_folder("d1", "projets")
+    ok, _m, _r = folder.delete_folder("d1", projets["id"], contents="move")
+    assert ok and store.peek(f"folders/{projets['id']}") is None
+    again, errors = folder.ensure_system_folder("d1", "projets")
+    assert errors == [] and again["id"] == projets["id"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

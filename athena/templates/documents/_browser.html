@@ -132,7 +132,7 @@
         </div>
         <div class="flex-1 min-w-0">
           <span class="text-sm font-medium text-gray-900 truncate block">{{ f.name }}</span>
-          <span class="text-xs text-gray-400">{{ f._item_count }} élément{{ 's' if f._item_count != 1 }}</span>
+          <span class="text-xs text-gray-400">{{ f._item_count }} élément{{ 's' if f._item_count != 1 }}{% if f._system %} · dossier de l'application{% endif %}</span>
         </div>
         {{ ms('chevron_right', 20, 'text-gray-400') }}
       </a>
@@ -149,6 +149,10 @@
             @keydown.escape="renaming = false">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="dossier_id" value="{{ dossier_id }}">
+        {# La version affichée (lot 2A, T2) : un renommage posé sur une page
+           périmée est refusé plutôt que d'écraser un changement fait
+           ailleurs — dans un autre onglet ou par le connecteur. #}
+        <input type="hidden" name="expected_etag" value="{{ f.etag or '' }}">
         <div class="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
           {{ ms('folder_open', 20, 'text-amber-500') }}
         </div>
@@ -180,10 +184,15 @@
              @click.outside="menuOpen = false"
              x-cloak
              class="absolute right-0 top-8 bg-white rounded-xl shadow-xl border border-gray-200 py-1 w-40 z-20">
+          {# « Projets » et « Reçus du portail » appartiennent à
+             l'application (lot 2A, T2) : ni renommage ni déplacement — le
+             modèle les refuse, le menu ne les propose pas. #}
+          {% if not f._system %}
           <button @click="menuOpen = false; renaming = true"
                   class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
             Renommer
           </button>
+          {% endif %}
           <a href="{{ url_for('documents.folder_zip', dossier_id=dossier_id, folder_id=f.id) }}"
              @click="menuOpen = false"
              class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
@@ -201,7 +210,10 @@
            partent de GCS ; le registre des suppressions ne garde que les
            titres). DEUX formulaires distincts plutôt que deux boutons
            « name= » dans un seul : le repli sans JS reste exact et rien ne
-           dépend de l'inclusion du bouton soumetteur par HTMX. #}
+           dépend de l'inclusion du bouton soumetteur par HTMX. Chacun
+           RENVOIE le décompte annoncé (lot 2A, T2) : si le sous-arbre a
+           changé depuis — un fichier glissé dedans par le connecteur —, la
+           suppression est refusée et rien n'est touché. #}
         {% set nb_fichiers = f._subtree_documents or 0 %}
         {% set nb_sous_dossiers = f._subtree_folders or 0 %}
         <div x-show="deleteOpen"
@@ -242,6 +254,8 @@
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="dossier_id" value="{{ dossier_id }}">
                   <input type="hidden" name="contents" value="move">
+                  <input type="hidden" name="expected_documents" value="{{ nb_fichiers }}">
+                  <input type="hidden" name="expected_folders" value="{{ nb_sous_dossiers }}">
                   <button type="submit"
                           class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
                     Déplacer les fichiers
@@ -256,6 +270,8 @@
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <input type="hidden" name="dossier_id" value="{{ dossier_id }}">
                   <input type="hidden" name="contents" value="{{ 'delete' if nb_fichiers else 'move' }}">
+                  <input type="hidden" name="expected_documents" value="{{ nb_fichiers }}">
+                  <input type="hidden" name="expected_folders" value="{{ nb_sous_dossiers }}">
                   <button type="submit"
                           class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
                     {% if nb_fichiers %}Tout supprimer{% else %}Supprimer{% endif %}

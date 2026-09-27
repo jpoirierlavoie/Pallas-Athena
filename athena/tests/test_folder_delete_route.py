@@ -189,14 +189,81 @@ def test_le_mode_du_formulaire_est_transmis_tel_quel(web, trail, monkeypatch, en
     retombe sur « move » pour toute valeur inconnue."""
     vus: list = []
 
-    def faux_delete(dossier_id, folder_id, *, contents="move"):
-        vus.append(contents)
+    # Élargi délibérément (lot 2A, T2) : le modèle reçoit aussi le décompte
+    # que le dialogue a annoncé — absent ici (page d'avant T2), donc rien.
+    def faux_delete(dossier_id, folder_id, *, contents="move",
+                    expected_documents=None, expected_folders=None):
+        vus.append((contents, expected_documents, expected_folders))
         return True, "", _rapport(folders=[{"id": folder_id, "name": "X"}])
 
     monkeypatch.setattr(rd, "delete_folder", faux_delete)
     web.post("/documents/folders/f1/delete",
              data={"dossier_id": "d1", "contents": envoye})
-    assert vus == [envoye]
+    assert vus == [(envoye, None, None)]
+
+
+# ── Le décompte annoncé (lot 2A, T2) ───────────────────────────────────────
+
+
+def test_le_decompte_annonce_est_transmis_au_modele(web, trail, monkeypatch):
+    """Le connecteur pourra déplacer fichiers et dossiers : le dialogue
+    RENVOIE ce qu'il a annoncé, et c'est le MODÈLE qui compare au sous-arbre
+    réel (tests/test_folders.py::test_a_delete_on_a_stale_count_touches_nothing)."""
+    vus: list = []
+
+    def faux_delete(dossier_id, folder_id, **kwargs):
+        vus.append(kwargs)
+        return True, "", _rapport(folders=[{"id": folder_id, "name": "X"}])
+
+    monkeypatch.setattr(rd, "delete_folder", faux_delete)
+    web.post("/documents/folders/f1/delete", data={
+        "dossier_id": "d1", "contents": "delete",
+        "expected_documents": "23", "expected_folders": "4",
+    })
+    assert vus == [{"contents": "delete", "expected_documents": 23,
+                    "expected_folders": 4}]
+
+
+@pytest.mark.parametrize("champ, valeur", [
+    ("expected_documents", "abc"), ("expected_documents", "-1"),
+    ("expected_folders", "²"), ("expected_folders", "1" * 12),
+])
+def test_un_decompte_illisible_refuse_sans_rien_toucher(
+    web, trail, monkeypatch, champ, valeur,
+):
+    """Un POST fabriqué : refus en 2xx (la bannière — htmx n'échange que les
+    2xx), et le modèle n'est même pas appelé."""
+    monkeypatch.setattr(rd, "delete_folder",
+                        lambda *a, **k: pytest.fail("suppression appelée"))
+    reponse = web.post("/documents/folders/f1/delete",
+                       data={"dossier_id": "d1", "contents": "delete",
+                             champ: valeur},
+                       headers={"HX-Request": "true"})
+    from urllib.parse import unquote_plus
+
+    assert reponse.status_code == 302
+    assert "Rien n'a été supprimé" in unquote_plus(reponse.headers["Location"])
+    assert trail == []
+
+
+def test_le_refus_du_modele_sur_un_decompte_perime_parait_dans_la_banniere(
+    web, trail, monkeypatch,
+):
+    from models import folder as folder_model
+
+    message = folder_model.SUBTREE_CHANGED.format(
+        documents=2, ds="s", folders=0, fs="")
+    monkeypatch.setattr(rd, "delete_folder",
+                        lambda *a, **k: (False, message, _rapport()))
+    reponse = web.post("/documents/folders/f1/delete", data={
+        "dossier_id": "d1", "contents": "delete",
+        "expected_documents": "1", "expected_folders": "0",
+    }, headers={"HX-Request": "true"})
+    from urllib.parse import unquote_plus
+
+    assert reponse.status_code == 302
+    assert "a changé depuis l'affichage" in unquote_plus(reponse.headers["Location"])
+    assert trail == []
 
 
 def test_le_message_annonce_ce_qui_a_disparu(web, trail, monkeypatch):
@@ -274,6 +341,40 @@ def test_le_dialogue_offre_les_deux_gestes_avec_le_decompte(rendu):
     assert html.count('action="/documents/folders/f1/delete"') == 2
 
 
+def test_les_deux_formulaires_renvoient_le_decompte_annonce(rendu):
+    html = _browser(rendu, [_dossier_ligne()])
+    assert html.count('name="expected_documents" value="23"') == 2
+    assert html.count('name="expected_folders" value="4"') == 2
+
+
+def test_un_dossier_vide_renvoie_un_decompte_nul(rendu):
+    """Un décompte en échec pose des zéros : le formulaire les renvoie, et
+    le modèle refuse si le dossier n'est pas vraiment vide — le dialogue ne
+    peut plus confirmer ce qu'il n'a pas montré."""
+    html = _browser(rendu, [{"id": "f1", "name": "Pièces", "_item_count": 0}])
+    assert 'name="expected_documents" value="0"' in html
+    assert 'name="expected_folders" value="0"' in html
+
+
+def test_le_formulaire_de_renommage_porte_la_version_affichee(rendu):
+    html = _browser(rendu, [_dossier_ligne(etag="e-42")])
+    assert 'name="expected_etag" value="e-42"' in html
+    # Un dossier d'avant T2 (sans etag) renvoie la chaîne vide, qui désigne
+    # exactement cette version-là (models/concurrency).
+    html = _browser(rendu, [_dossier_ligne()])
+    assert 'name="expected_etag" value=""' in html
+
+
+def test_un_dossier_systeme_ne_propose_pas_le_renommage(rendu):
+    html = _browser(rendu, [_dossier_ligne(_system=True, name="Projets")])
+    assert "Renommer" not in html
+    assert "dossier de l'application" in html
+    # Il reste téléchargeable et supprimable — la décision du juriste.
+    assert "Télécharger (zip)" in html and "Supprimer" in html
+    html = _browser(rendu, [_dossier_ligne()])
+    assert "Renommer" in html
+
+
 def test_un_dossier_vide_n_offre_qu_un_geste(rendu):
     html = _browser(rendu, [_dossier_ligne(_subtree_documents=0,
                                            _subtree_folders=0,
@@ -312,3 +413,78 @@ def test_la_banniere_de_message_se_rend(rendu):
             erreur="", message="2 dossiers et 23 fichiers supprimés",
         )
     assert "2 dossiers et 23 fichiers supprimés" in html
+
+
+# ── Renommer, sur le vrai modèle (lot 2A, T2) ──────────────────────────────
+
+
+@pytest.fixture()
+def web_reel(monkeypatch):
+    """La route ET le modèle réels, au-dessus du faux Firestore partagé."""
+    from models import folder as folder_model
+    from tests._fake_firestore import install
+
+    store = install(monkeypatch, folder_model)
+    store.seed("dossiers/d1", {"id": "d1"})
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = "test-secret"
+    app.config["TESTING"] = True
+    app.register_blueprint(rd.documents_bp)
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["user_id"] = "u1"
+        s["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=1)
+    return client, store
+
+
+def _erreur(reponse) -> str:
+    from urllib.parse import parse_qs, urlparse
+
+    return parse_qs(urlparse(reponse.headers["Location"]).query).get("erreur", [""])[0]
+
+
+def test_un_renommage_sur_une_page_perimee_est_refuse_dans_la_banniere(web_reel):
+    from models import concurrency
+
+    client, store = web_reel
+    store.seed("folders/f1", {"id": "f1", "dossier_id": "d1", "name": "Pièces",
+                              "parent_folder_id": None, "etag": "neuf"})
+    reponse = client.post("/documents/folders/f1/rename", data={
+        "dossier_id": "d1", "new_name": "Autre", "expected_etag": "ancien",
+    }, headers={"HX-Request": "true"})
+    assert reponse.status_code == 302
+    assert _erreur(reponse) == concurrency.STALE_ETAG_ERROR
+    assert store.peek("folders/f1")["name"] == "Pièces"
+
+    # La bonne version passe, et le renommage est une écriture partielle.
+    reponse = client.post("/documents/folders/f1/rename", data={
+        "dossier_id": "d1", "new_name": "Autre", "expected_etag": "neuf",
+    })
+    assert _erreur(reponse) == ""
+    assert store.peek("folders/f1")["name"] == "Autre"
+
+
+def test_renommer_un_dossier_systeme_est_refuse_meme_par_un_post_fabrique(web_reel):
+    """Le menu ne propose pas « Renommer » sur « Projets », mais une page
+    périmée ou un POST fabriqué le peut : c'est le MODÈLE qui refuse."""
+    client, store = web_reel
+    store.seed("folders/p", {"id": "p", "dossier_id": "d1", "name": "Projets",
+                             "parent_folder_id": None, "system_role": "projets"})
+    reponse = client.post("/documents/folders/p/rename",
+                          data={"dossier_id": "d1", "new_name": "Brouillons"})
+    assert "dossier système" in _erreur(reponse)
+    assert store.peek("folders/p")["name"] == "Projets"
+
+
+def test_le_navigateur_marque_le_dossier_systeme_herite(web_reel):
+    """Un « Projets » créé par nom avant T2 (sans rôle) est reconnu comme LE
+    dossier système — le plus ancien de la racine —, un sous-dossier
+    homonyme ne l'est pas."""
+    client, store = web_reel
+    base = {"dossier_id": "d1", "parent_folder_id": None}
+    store.seed("folders/leg", {"id": "leg", "name": "Projets", **base})
+    store.seed("folders/pc", {"id": "pc", "name": "Pièces", **base})
+    folders = rd.list_folders("d1", parent_folder_id=None)
+    rd._attach_folder_counts(folders, "d1")
+    flags = {f["id"]: f["_system"] for f in folders}
+    assert flags == {"leg": True, "pc": False}
