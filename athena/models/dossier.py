@@ -1549,8 +1549,10 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
       additive, with no migration). Every current alert would vanish, in
       silence.
 
-    Each status query degrades ON ITS OWN: a failed read is logged and
-    skipped, so an outage of one never hides the other's alerts. The
+    Each status query degrades ON ITS OWN: a failed read is logged (ERROR,
+    ``log_unexpected``) and skipped, so an outage of one never hides the
+    other's alerts; one row the party migration cannot read is alerted as
+    stored rather than dropping its whole query. The
     « result window full » warning is likewise judged PER QUERY, on its RAW
     count. Rows are de-duplicated by id: the two reads are not one
     snapshot, so a dossier whose status flips between them would otherwise
@@ -1569,13 +1571,29 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
                 .order_by("prescription_date")
                 .limit(limit)
             )
-            rows = [_migrate_parties(doc.to_dict()) for doc in query.stream()]
-        except Exception as exc:
-            logger.warning(
-                "list_prescription_alerts: query failed (status=%s): %s",
-                status, exc,
-            )
+            snaps = list(query.stream())
+        except Exception:
+            # A limitation-deadline list silently missing a status is not a
+            # routine warning: ERROR, typed helper, the status as a field
+            # (never the exception text in the message — the traceback goes
+            # through the RedactionFilter).
+            log_unexpected("list_prescription_alerts: status query failed",
+                           status=status)
             continue
+        rows: list[dict] = []
+        for snap in snaps:
+            doc = snap.to_dict() or {}
+            try:
+                rows.append(_migrate_parties(doc))
+            except Exception:
+                # One legacy row the party migration cannot read used to
+                # drop its WHOLE status query (the comprehension sat inside
+                # the try above). The row is alerted as stored — the
+                # migration only reshapes party fields, and the prescription
+                # fields the alert reads are untouched by it.
+                log_unexpected("list_prescription_alerts: row migration failed",
+                               dossier_id=str(doc.get("id") or ""))
+                rows.append(doc)
         if len(rows) >= limit:
             # Prescription deadlines must never be silently truncated. Checked
             # on the RAW count of THIS query, before the silencing filter: a

@@ -206,3 +206,56 @@ def test_a_row_the_derivation_cannot_read_alerts_unverified(fake, monkeypatch):
     assert set(by_id) == {"bad", "ok"}
     assert by_id["bad"]["prescription_status"] == "a_verifier"
     assert by_id["bad"]["prescription_date_effective"] is None
+
+
+def test_a_row_the_party_migration_cannot_read_never_drops_its_query(fake, caplog):
+    """The same rule one step earlier (revue de complétude, lot 0b). A
+    legacy client entry without an ``id`` makes ``_migrate_parties`` raise
+    (it indexes ``c["id"]``); the migration sat inside the query's ``try``,
+    so that ONE row dropped EVERY alert of its status — both dossiers here
+    are « actif », and on the old code the list came back empty, with only
+    a WARNING. Now the unreadable row alerts as stored, its sibling
+    survives, and the failure is an ERROR naming the dossier by id."""
+    _seed(
+        fake,
+        _dossier("bad", "actif", 10, clients=[{"name": "Sans identifiant"}]),
+        _dossier("ok", "actif", 20),
+    )
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        by_id = {a["id"]: a for a in dmod.list_prescription_alerts(CUTOFF)}
+    assert set(by_id) == {"bad", "ok"}
+    assert by_id["bad"]["prescription_status"] == "courante"
+    errors = [r for r in caplog.records
+              if r.name == "pallas.unexpected"
+              and "row migration failed" in r.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].json_fields["dossier_id"] == "bad"
+    # Never the stored client name in the log line.
+    assert "Sans identifiant" not in errors[0].getMessage()
+
+
+def test_a_failed_status_query_is_an_error_not_a_warning(fake, monkeypatch, caplog):
+    """A limitation-deadline list silently missing a status must reach
+    Error Reporting: the old ``logger.warning`` did not."""
+    _seed(fake, _dossier("act", "actif", 10))
+    real_collection = fake.collection
+
+    class _Exploding:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def where(self, *a, filter=None, **k):  # noqa: A002 — SDK keyword
+            if filter is not None and getattr(filter, "value", None) == "en_attente":
+                raise RuntimeError("lecture impossible")
+            return self._inner.where(*a, filter=filter, **k)
+
+    monkeypatch.setattr(
+        fake, "collection", lambda name: _Exploding(real_collection(name))
+    )
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        assert [a["id"] for a in dmod.list_prescription_alerts(CUTOFF)] == ["act"]
+    errors = [r for r in caplog.records
+              if r.name == "pallas.unexpected"
+              and "status query failed" in r.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].json_fields["status"] == "en_attente"
