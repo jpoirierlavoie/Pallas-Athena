@@ -430,6 +430,12 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
   paragraph's own formatting (font, size, justification) seeds the body text.
   If the placeholder shares its line with other text, the content degrades to
   plain text (markdown sigils visible) — the document still generates.
+- **Everything of that paragraph's formatting seeds the content EXCEPT its
+  Word numbering** (since lot 2A, 2026-09-27): a `{{note.contenu}}` placed in
+  a numbered list paragraph no longer numbers every heading, item and table
+  cell a second time in front of the converter's own numbers. Want Word's
+  numbering on each paragraph instead? That is the plain fill of an ordinary
+  field in a numbered paragraph, separated by blank lines (§1).
 - Never put `{{note.contenu}}` in a header/footer — it is left verbatim there.
 - The other `note.*` fields are ordinary scalars and work anywhere.
 

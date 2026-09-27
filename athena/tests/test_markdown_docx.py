@@ -256,6 +256,42 @@ def test_empty_input_yields_one_empty_paragraph():
     assert out.count("<w:p") == 1
 
 
+# Lot 2A T4 (SPEC H.4 §13 L1): the host's Word numbering is the one seed
+# element no produced block may inherit — each seed site merges the pPr on
+# its own (body paragraph, heading, list item, quote, code block, rule,
+# table cell, empty input), so each is pinned.
+_NUMBERED_SEED = (
+    '<w:pStyle w:val="ListParagraph"/>'
+    '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="3"/></w:numPr>'
+    '<w:jc w:val="both"/>'
+)
+
+
+@pytest.mark.parametrize("md", [
+    "texte simple",
+    "# Titre",
+    "- puce\n- puce",
+    "1. un\n2. deux",
+    "> citation",
+    "```\ncode\n```",
+    "---",
+    "| A |\n|---|\n| 1 |",
+    "",
+])
+def test_the_host_numbering_is_never_seeded(md):
+    out = _convert(md, base_ppr=_NUMBERED_SEED)
+    assert "numPr" not in out
+    # Everything else about the host still seeds the block.
+    assert '<w:pStyle w:val="ListParagraph"/>' in out
+
+
+def test_a_host_without_numbering_seeds_exactly_as_before():
+    # The strip is a no-op on an ordinary host: the seed round-trips intact.
+    seed = '<w:pStyle w:val="Corps"/><w:spacing w:after="120"/><w:jc w:val="both"/>'
+    out = _convert("texte", base_ppr=seed)
+    assert f"<w:pPr>{seed}</w:pPr>" in out
+
+
 # ── Bounds ─────────────────────────────────────────────────────────────────
 
 

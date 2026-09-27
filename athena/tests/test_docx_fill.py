@@ -1150,6 +1150,110 @@ def test_rich_analyse_seed_end_to_end():
     assert "2026-001" in header
 
 
+# ── Lot 2A T4: the rich path in a NUMBERED host (SPEC H.4 §13 L1) ─────────
+#
+# The rich path seeds every block it produces with the host's pPr. Until T4
+# that pPr kept its numPr, so a Markdown block in a numbered list paragraph
+# came out numbered TWICE — Word's number on every heading, item, quotation,
+# rule and table-cell paragraph, in front of the glyph the converter wrote.
+
+_NUMBERED_HOST = (
+    '<w:p><w:pPr><w:pStyle w:val="ListParagraph"/>' + _NUM_PPR
+    + '<w:jc w:val="both"/></w:pPr>'
+    '<w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>{{FAITS}}</w:t></w:r></w:p>'
+)
+_EVERY_CONSTRUCT = (
+    "# Titre\n\nUn paragraphe.\n\n- premier\n- second\n\nEnsuite :\n\n"
+    "1. un\n2. deux\n\n"
+    "> citation\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n---\n\n```\ncode\n```\n"
+)
+
+
+def test_rich_path_in_a_numbered_host_no_longer_double_numbers():
+    from defusedxml import ElementTree as DET
+
+    docx = _make_docx(_doc(_para("Avant."), _NUMBERED_HOST, _para("Après.")))
+    out = fill_docx(docx, {}, rich_values={"FAITS": _EVERY_CONSTRUCT})
+    xml = _document_xml(out)
+    DET.fromstring(xml)
+    assert "{{FAITS}}" not in xml
+    # The host was the ONLY numbered paragraph: nothing is numbered now…
+    assert "<w:numPr>" not in xml
+    # …while the rest of its formatting still seeds the content…
+    assert xml.count('<w:pStyle w:val="ListParagraph"/>') >= 8
+    assert '<w:jc w:val="both"/>' in xml
+    # …and the lists keep the numbering the converter computes itself.
+    assert ">1.</w:t>" in xml and ">2.</w:t>" in xml
+    assert "<w:tbl>" in xml
+
+
+def test_an_empty_rich_value_in_a_numbered_host_leaves_no_lone_number():
+    docx = _make_docx(_doc(_NUMBERED_HOST))
+    xml = _document_xml(fill_docx(docx, {}, rich_values={"FAITS": ""}))
+    assert "{{FAITS}}" not in xml
+    assert "<w:numPr>" not in xml
+    assert xml.count("<w:p>") == 1
+
+
+def test_the_plain_block_path_in_a_numbered_host_still_numbers_each_chunk():
+    """B4, the other half: the ``values`` path clones the host VERBATIM —
+    Word's numbering on each allegation is exactly what a gabarit wants
+    there, and the rich-path fix must not have reached it."""
+    docx = _make_docx(_doc(_NUMBERED_HOST))
+    xml = _document_xml(fill_docx(docx, {"FAITS": "Un.\n\nDeux.\n\nTrois."}))
+    assert xml.count(_NUM_PPR) == 3
+
+
+# ── Lot 2A T4: the report= channel (SPEC H.4 B9) ──────────────────────────
+
+
+def test_the_report_names_each_rich_value_that_fell_back_to_plain_text():
+    host_ok = "<w:p><w:r><w:t>{{solo}}</w:t></w:r></w:p>"
+    sect = (
+        '<w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>'
+        "</w:pPr><w:r><w:t>{{section}}</w:t></w:r></w:p>"
+    )
+    docx = _make_docx(_doc(host_ok, _para("Voir : {{partage}}"), sect))
+    report: dict = {}
+    out = fill_docx(docx, {}, rich_values={
+        "solo": "**a**", "partage": "**b**", "section": "**c**",
+        "absent": "**d**",
+    }, report=report)
+    # Sorted, and only the DEMOTED ones: « solo » became formatted content,
+    # « absent » is in no paragraph at all (nothing to demote).
+    assert report == {"demoted": ["partage", "section"]}
+    xml = _document_xml(out)
+    assert "**b**" in xml and "**c**" in xml     # the sigils the report explains
+    assert "**a**" not in xml
+
+
+def test_the_report_names_a_converter_failure(monkeypatch):
+    import utils.markdown_docx as mdx
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("converter bug")
+
+    monkeypatch.setattr(mdx, "markdown_to_ooxml", _boom)
+    docx = _make_docx(_doc(_para("{{note.contenu}}")))
+    report: dict = {}
+    fill_docx(docx, {}, rich_values={"note.contenu": "**gras**"}, report=report)
+    assert report["demoted"] == ["note.contenu"]
+
+
+def test_the_report_is_empty_without_rich_values_and_ignores_headers():
+    docx = _make_docx(
+        _doc(_para("{{x}}")), headers=[_hdr(_para("{{note.contenu}}"))],
+    )
+    report: dict = {"demoted": ["stale"]}
+    fill_docx(docx, {"x": "a"}, report=report)
+    assert report == {"demoted": []}            # reset, never appended to
+    report = {}
+    fill_docx(docx, {"x": "a"}, rich_values={"note.contenu": "c"}, report=report)
+    # A rich name found only in a HEADER stays verbatim there (by design) —
+    # it was never demoted to the plain path, so the report does not claim it.
+    assert report == {"demoted": []}
+
+
 def test_rich_seed_pattern_linearity_invariant():
     import re as _re
 

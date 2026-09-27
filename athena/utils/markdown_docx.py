@@ -290,6 +290,18 @@ _HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 _LIST_INDENT_STEP = 720   # twips per level
 _LIST_HANGING = 360
 
+# Seed elements NO produced block may inherit from the host paragraph. The
+# host's Word numbering is the one (SPEC H.4 §13 L1, lot 2A T4): this path
+# numbers its own lists with literal glyphs, so a host seeded with ``numPr``
+# numbered every heading, item, quotation, rule and table-cell paragraph a
+# SECOND time — Word's number in front of the computed one. Unreachable
+# while ``{{note.contenu}}`` sat in an ordinary paragraph; a block placed in
+# a numbered list paragraph made it the whole document. Stripped at EVERY
+# seed site, not only in ``_para_ppr``: a table cell, a rule and the empty-
+# input paragraph merge the seed on their own. A host with no ``numPr`` is
+# untouched byte for byte (``tests/test_fill_engine_golden.py``).
+_HOST_ONLY_PPR = ("numPr",)
+
 
 class _Cell:
     __slots__ = ("header", "align", "runs")
@@ -369,7 +381,7 @@ class _HtmlToOoxml(HTMLParser):
             self.runs.append(_br())
 
     def _para_ppr(self) -> str:
-        strip: list[str] = []
+        strip: list[str] = list(_HOST_ONLY_PPR)
         extra: dict[str, str] = {}
         base = self.base_ppr
 
@@ -467,7 +479,7 @@ class _HtmlToOoxml(HTMLParser):
                 if c.align:
                     ppr_extra["jc"] = f'<w:jc w:val="{c.align}"/>'
                 ppr = _merge_ppr(self.base_ppr, extra=ppr_extra,
-                                 strip=("ind", "spacing"))
+                                 strip=(*_HOST_ONLY_PPR, "ind", "spacing"))
                 cells.append(_tc(tcpr, [_p(ppr, c.runs)]))
             out_rows.append(_tr("<w:tblHeader/>" if is_header else "", cells))
         self._append_block(_tbl(col_w * ncols, [col_w] * ncols, out_rows))
@@ -499,7 +511,7 @@ class _HtmlToOoxml(HTMLParser):
                                 ' w:space="1" w:color="auto"/></w:pBdr>',
                         "spacing": '<w:spacing w:after="120"/>',
                     },
-                    strip=("spacing",),
+                    strip=(*_HOST_ONLY_PPR, "spacing"),
                 ),
                 [],
             ))
@@ -648,7 +660,8 @@ class _HtmlToOoxml(HTMLParser):
         if self.table_rows is not None:
             self._flush_table()
         if not self.blocks:
-            self.blocks.append(_p(_merge_ppr(self.base_ppr), []))
+            self.blocks.append(
+                _p(_merge_ppr(self.base_ppr, strip=_HOST_ONLY_PPR), []))
         if self.blocks[-1].endswith("</w:tbl>"):
             # Word always writes a paragraph after a final table; a table as
             # the last child of a cell is outright invalid. One trailing

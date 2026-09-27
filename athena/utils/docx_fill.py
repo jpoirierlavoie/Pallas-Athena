@@ -734,6 +734,7 @@ def _fill_target_xml(
     rows_by_region: dict[str, list[dict]] | None = None,
     conditions: dict[str, bool] | None = None,
     rich_values: dict[str, str] | None = None,
+    demoted_out: list[str] | None = None,
 ) -> str:
     """Fill one target XML.
 
@@ -748,6 +749,10 @@ def _fill_target_xml(
     passes only (a rich name in a header is left verbatim — filling a note
     body into a header would destroy the layout, and flattening it silently
     would hide a template-authoring error).
+
+    ``demoted_out``, when given, receives the rich names this call demoted
+    to the plain path (the ``report=`` channel of :func:`fill_docx`). It is
+    an output only: nothing about the XML depends on it.
     """
     # Heal Word's run-splitting first, so EVERY occurrence of a repeated
     # placeholder (and every structural marker) matches — not just the clean
@@ -769,6 +774,8 @@ def _fill_target_xml(
         xml = _ensure_table_separation(xml)
         if demoted:
             values = {**values, **demoted}
+            if demoted_out is not None:
+                demoted_out.extend(demoted)
     block_pairs: list[tuple[str, str]] = []
     scalar_pairs: list[tuple[str, str]] = []
     for name, raw_value in values.items():
@@ -825,6 +832,7 @@ def fill_docx(
     rows_by_region: dict[str, list[dict]] | None = None,
     conditions: dict[str, bool] | None = None,
     rich_values: dict[str, str] | None = None,
+    report: dict | None = None,
 ) -> bytes:
     """Fill placeholders in a .docx template; return the new archive.
 
@@ -842,6 +850,17 @@ def fill_docx(
     only. When all are ``None`` the behavior is identical to Phase H
     (existing callers are untouched). A name present in both ``values`` and
     ``rich_values`` raises — no silent precedence.
+
+    ``report`` (SPEC H.4 B9, lot 2A T4) is an optional dict, filled IN
+    PLACE: ``report["demoted"]`` is the sorted list of the ``rich_values``
+    names whose host could not take formatted content (a placeholder
+    sharing its paragraph, a host carrying the section break, a converter
+    failure…) and which were therefore filled through the plain path — the
+    Markdown sigils then show in the document. Without it a caller cannot
+    tell that the formatting it asked for was NOT applied. ``[]`` when
+    nothing was demoted, or when no ``rich_values`` were given. The channel
+    never changes the output: the archive is the same bytes with or
+    without it (``tests/test_fill_engine_golden.py``).
     """
     if rich_values:
         overlap = set(values) & set(rich_values)
@@ -855,6 +874,7 @@ def fill_docx(
     if errors or zf is None:
         raise DocxFillError(errors[0] if errors else "Archive invalide.")
 
+    demoted: list[str] = []
     output = io.BytesIO()
     remaining = MAX_TOTAL_DECOMPRESSED_BYTES
     with zf, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -872,8 +892,11 @@ def fill_docx(
                     rows_by_region=rows_by_region if is_document else None,
                     conditions=conditions if is_document else None,
                     rich_values=rich_values if is_document else None,
+                    demoted_out=demoted if is_document else None,
                 ).encode("utf-8")
             # Reuse the original ZipInfo: preserves entry order, per-entry
             # compress_type, timestamps and attributes.
             zout.writestr(info, data)
+    if report is not None:
+        report["demoted"] = sorted(set(demoted))
     return output.getvalue()
