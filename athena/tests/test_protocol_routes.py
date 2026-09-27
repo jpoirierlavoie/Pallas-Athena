@@ -239,6 +239,28 @@ def test_the_service_creates_no_task_unless_asked(fake):
         "2026-001", "T c. L")
 
 
+def test_linked_tasks_leave_the_returned_etags_equal_to_the_stored_ones(fake):
+    """Revue L2 : lier une tâche est une écriture de l'étape ET du
+    protocole (leurs etags changent). Le service rendait pourtant le
+    protocole et ses étapes avec les etags d'AVANT le lien — la prochaine
+    comparaison (update_protocol, update_step, au connecteur du lot 1b)
+    aurait été refusée pour une version que personne d'autre n'a écrite."""
+    dossier = fake.peek("dossiers/d1")
+    proto, errors, report = protocol_service.create_protocol(
+        dossier, "cq_simplifié", WHEN, create_linked_tasks=True)
+    assert errors == [] and report["tasks_linked"] == 7
+    stored = fake.peek(f"protocols/{proto['id']}")
+    assert proto["etag"] == stored["etag"]
+    for step in proto["steps"]:
+        on_disk = fake.peek(f"protocols/{proto['id']}/steps/{step['id']}")
+        assert step["linked_task_id"] == on_disk["linked_task_id"]
+        assert step["etag"] == on_disk["etag"]
+    # The etag handed back is usable as is.
+    _doc, errors, _r = protocol_service.update_protocol(
+        proto["id"], {"notes": "Suivi"}, expected_etag=proto["etag"])
+    assert errors == []
+
+
 @pytest.mark.parametrize("checked, tasks", [(False, 0), (True, 7)])
 def test_the_wizard_checkbox_decides_the_linked_tasks(client, fake, checked,
                                                       tasks):

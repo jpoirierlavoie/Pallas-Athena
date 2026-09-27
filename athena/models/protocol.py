@@ -1891,8 +1891,17 @@ def get_protocol_summary(
 # ── Task sync helpers ───────────────────────────────────────────────────
 
 
-def _link_task_to_step(protocol_id: str, step_id: str, task_id: str) -> bool:
-    """Point a step at its linked task. True when the link committed.
+def _link_task_to_step(
+    protocol_id: str, step_id: str, task_id: str
+) -> Optional[tuple[dict, dict]]:
+    """Point a step at its linked task.
+
+    Returns ``(step_fields, protocol_fields)`` — exactly what the committed
+    batch wrote on each — or ``None`` when the link did not commit. A
+    caller holding the step or the protocol applies them, so the etags it
+    hands on are the STORED ones: the link regenerates both, and a caller
+    returning the pre-link etags would have its next compare-and-set
+    refused for a version nobody else wrote.
 
     A write to the step like any other: its stamp and etag move, and so
     does the protocol's, in ONE batch. Never raises — the task it links has
@@ -1900,21 +1909,23 @@ def _link_task_to_step(protocol_id: str, step_id: str, task_id: str) -> bool:
     """
     now = datetime.now(timezone.utc)
     proto_ref = db.collection(COLLECTION).document(protocol_id)
+    step_fields = {"linked_task_id": task_id, **provenance.update_fields(now)}
+    proto_fields = provenance.update_fields(now)
     try:
         batch = db.batch()
         batch.update(
             proto_ref.collection(STEPS_SUBCOLLECTION).document(step_id),
-            {"linked_task_id": task_id, **provenance.update_fields(now)},
+            step_fields,
         )
-        batch.update(proto_ref, provenance.update_fields(now))
+        batch.update(proto_ref, proto_fields)
         batch.commit()
     except Exception:
         log_unexpected("protocol linked task: step link failed",
                        protocol_id=protocol_id, step_id=step_id,
                        task_id=task_id)
-        return False
+        return None
     provenance.note_commit(COLLECTION, protocol_id)
-    return True
+    return step_fields, proto_fields
 
 
 def create_linked_tasks(
@@ -1925,8 +1936,10 @@ def create_linked_tasks(
     ``{"created", "linked", "failed"}`` counts. Each step is its own
     attempt: one outer ``try`` used to abort every remaining step on the
     first exception, silently, leaving the rest of the protocol without its
-    tasks. A step that got its task has ``linked_task_id`` set in *steps*
-    (the caller's list), so a caller returning them shows the links.
+    tasks. A step that got its task has ``linked_task_id`` — and the stamp
+    and etag the link wrote — set in *steps* (the caller's list), and
+    *protocol* (the caller's dict) takes the protocol stamp of the last
+    link: a caller returning them shows the links AND the stored etags.
 
     The per-dossier CTag is bumped HERE, once per task created — a
     documented in-model bump (the tasks are DAV-exposed and created behind
@@ -1971,9 +1984,12 @@ def create_linked_tasks(
         except Exception:
             log_unexpected("protocol linked task CTag bump failed",
                            protocol_id=protocol_id, task_id=task["id"])
-        if _link_task_to_step(protocol_id, step["id"], task["id"]):
+        linked = _link_task_to_step(protocol_id, step["id"], task["id"])
+        if linked is not None:
+            step_fields, proto_fields = linked
             report["linked"] += 1
-            step["linked_task_id"] = task["id"]
+            step.update(step_fields)
+            protocol.update(proto_fields)
     log_protocol_event(
         "linked_tasks_created", protocol_id,
         outcome="success" if not report["failed"] and

@@ -443,15 +443,22 @@ def test_one_failing_task_no_longer_stops_the_others(fake, monkeypatch, caplog):
         return real(data, **kw)
 
     monkeypatch.setattr(task_model, "create_task", _flaky)
+    # Snapshotted: since the L2 review the caller's step dicts take the
+    # stamps the link wrote (so an etag handed on is the stored one).
+    etags_before = [s["etag"] for s in steps]
     with caplog.at_level(logging.INFO):
         report = protocol_model.create_linked_tasks(proto["id"], proto, steps)
     assert report == {"created": 6, "linked": 6, "failed": 1}
     stored = sorted(fake.peek_collection(f"protocols/{proto['id']}/steps")
                     .values(), key=lambda s: s["order"])
     assert stored[0]["linked_task_id"] is None
-    for before, after in zip(steps[1:], stored[1:]):
+    assert steps[0]["etag"] == stored[0]["etag"] == etags_before[0]
+    for before, held, after in zip(etags_before[1:], steps[1:], stored[1:]):
         assert after["linked_task_id"] in fake.peek_collection("tasks")
-        assert after["etag"] != before["etag"]   # linking is a step write
+        assert after["etag"] != before   # linking is a step write
+        assert held["etag"] == after["etag"]
+        assert held["linked_task_id"] == after["linked_task_id"]
+    assert proto["etag"] == fake.peek(f"protocols/{proto['id']}")["etag"]
     assert fake.peek(CTAG)["ctag"] != "c0"
     assert [r.getMessage() for r in caplog.records
             if r.name == "pallas.unexpected"] == [
