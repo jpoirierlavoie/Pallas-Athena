@@ -1707,6 +1707,43 @@ Notes:
   Then update BOTH copies of the claude.ai skill `pallas-athena`: the théorie
   is no longer read-only, notes and tasks are editable, a task can be
   reopened — each with the `expected_etag` workflow.
+- **The protocol through the connector (lot 1b, L6 — `create_protocol`,
+  `update_protocol`, `add_protocol_step`, `update_protocol_step`):** four more
+  `athena:write` tools in the SAME consent train as L5 (if L5 has not shipped
+  yet, they travel in its push; if it has, this is a train of its own:
+  revoke, remove, push, re-add, tick). The consent screen's AGENDA paragraph
+  now reads « Tenir l'agenda, les notes et le protocole » with two protocol
+  bullets. No index, no data migration, no cron change, no Tailwind class;
+  the web forms are unchanged (the model's new `require_active` flag is
+  passed by the connector only). `tools/list` then counts **57** (27 read, 30
+  write). Then, on a scratch dossier with no protocol:
+  1. *Creation makes no task unless asked.* `create_protocol`
+     (`cq_simplifié`, a start date): every step comes back with its etag,
+     `tasks_created: 0`, and a `REPORT sync-collection` of
+     `/dav/dossier-{id}/` returns the SAME token as before (nothing to sync).
+     A second `create_protocol` on the dossier is refused, naming the first.
+  2. *The cascade is reported, re-read.* Suspend that protocol, create a
+     `conventionnel` one, `add_protocol_step` twice (the second with
+     `create_linked_task: true` — the task appears on the phone after a
+     sync), then `update_protocol_step` `status: complété` on the first and
+     then the second: `status_change.protocol_closed: true`, the protocol
+     reads `closed_by: auto` in `list_protocol_steps`, the task is
+     « terminée » on the phone. `status: à_venir` on the second step reopens
+     the protocol (`protocol_reopened: true`); with the suspended one made
+     actif first, the same call is refused and nothing moves.
+  3. *The law's text stays the law's.* Suspend the conventionnel protocol
+     and reactivate the CQ one (`update_protocol`, `status: actif` — refused
+     while the other is still actif). `update_protocol_step` with a `title`
+     on one of its template steps: refused, the message opens with
+     « `title` refusé » ; with a `deadline_date` on it: « `deadline_date`
+     refusé ». A `notes` edit on the same step lands.
+  4. *A new start date keeps what is done.* Complete a CQ step, then
+     `update_protocol` with another `start_date`: `recompute.preserved`
+     names that step (`completed`), every other one is in `recompute.moved`
+     with its new etag.
+  Then update BOTH copies of the claude.ai skill `pallas-athena`: the
+  protocol is no longer read-only — creation, fields, a step's status as a
+  target (never a toggle), with the step's OWN etag for step edits.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
