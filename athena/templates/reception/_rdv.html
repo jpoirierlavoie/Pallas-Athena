@@ -1,6 +1,14 @@
 {# Onglet « Rendez-vous » — imports « Bookings with me » à confirmer (L2 §5).
    Toutes les valeurs client (client_nom, title, location) sont autoéchappées
-   par Jinja. Les formulaires portent le jeton CSRF (reception_bp, non exempt). #}
+   par Jinja. Les formulaires portent le jeton CSRF (reception_bp, non exempt).
+
+   Lot 1a (L4) : « Confirmer » et « Refuser » portent l'etag de la version
+   affichée (etag_field) — la synchronisation Bookings déplace en silence le
+   créneau d'un import à confirmer, et refuser annule la réunion Outlook ;
+   une page périmée est refusée AVANT tout appel à Outlook. La liaison du
+   contact se calcule côté serveur (services/rendez_vous.py) : le formulaire
+   n'envoie plus de partie_id. #}
+{% from "components/_edit_conflict.html" import etag_field %}
 
 {% if erreur_rdv %}
 <div class="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg px-4 py-3">
@@ -55,7 +63,9 @@
 
 {# ── Rendez-vous à confirmer ──────────────────────────────────────────── #}
 <h2 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Rendez-vous à confirmer</h2>
-{% if not rdvs %}
+{# Jamais sous le bandeau d'erreur : une lecture ratée n'est pas « rien en
+   attente ». #}
+{% if not rdvs and not erreur_rdv %}
 <div class="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
   Aucun rendez-vous à confirmer.
 </div>
@@ -111,8 +121,8 @@
       <form method="post" action="{{ url_for('reception.rdv_confirmer', hid=h.id) }}"
             class="flex flex-wrap items-center gap-3">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {{ etag_field(h) }}
         {% if h._partie_id %}
-        <input type="hidden" name="partie_id" value="{{ h._partie_id }}">
         <label class="flex items-center gap-1.5 text-xs text-gray-600">
           <input type="checkbox" name="lier" checked class="rounded border-gray-300">
           Lier à {{ h._partie_nom }}
@@ -131,6 +141,7 @@
       <form method="post" action="{{ url_for('reception.rdv_refuser', hid=h.id) }}"
             data-confirm="{{ 'Retirer ce rendez-vous de la réception ?' if annule else 'Refuser ce rendez-vous ? La réunion sera annulée côté Outlook et le client notifié.' }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {{ etag_field(h) }}
         <button type="submit" class="text-xs font-medium text-red-600 hover:text-red-500">
           {{ "Retirer" if annule else "Refuser" }}
         </button>

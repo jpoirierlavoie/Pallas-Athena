@@ -1230,7 +1230,8 @@ def test_the_component_uses_no_filter_and_no_global():
 # ══════════════════════════════════════════════════════════════════════
 
 _ROUTE_FILES = ("parties.py", "dossiers.py", "time_expenses.py",
-                "documents.py", "notes.py", "tasks.py", "hearings.py")
+                "documents.py", "notes.py", "tasks.py", "hearings.py",
+                "reception.py")
 
 
 def test_expected_etag_never_enters_a_model_payload():

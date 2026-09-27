@@ -553,6 +553,121 @@ def list_bookings_all() -> list[dict]:
         return []
 
 
+# ── Bookings rendez-vous: the Réception reads and the decision write ────
+# (lot 1a, L4 — services/rendez_vous.py is the one caller of both.)
+#
+# The imports still awaiting the lawyer's decision: « à_confirmer » (a live
+# reservation) and « annulée_client » (cancelled by the client, still shown
+# so the card can be removed). « refusée » is the deleted-equivalent, never
+# listed (the _filter_confirmation rule), and "" is a confirmed event.
+BOOKINGS_PENDING: tuple[str, ...] = ("à_confirmer", "annulée_client")
+# The two values a decision writes: "" (confirmed — the event enters the
+# calendar and DAV) and « refusée ».
+BOOKINGS_DECISIONS: tuple[str, ...] = ("", "refusée")
+
+CONFIRMATION_READ_ERROR = (
+    "Lecture du rendez-vous impossible — rien n'a été enregistré. "
+    "Réessayez dans un moment."
+)
+
+
+def list_bookings_strict(*, include_confirmed: bool = False) -> list[dict]:
+    """The Bookings imports awaiting a decision — a STRICT read.
+
+    ``source == "bookings"`` equality (single field → auto-indexed, no
+    composite index); a read failure PROPAGATES. Keeps the
+    :data:`BOOKINGS_PENDING` rows; ``include_confirmed`` also keeps the
+    confirmed ones (``confirmation == ""``), on which Réception's divergence
+    alerts live. ``refusée`` is dropped in both modes.
+
+    Why not ``list_hearings(include_unconfirmed=True)``: that reader
+    streams the WHOLE collection and swallows every error into ``[]``, so
+    « nothing pending » was indistinguishable from a Firestore outage —
+    and Réception printed « Aucun rendez-vous à confirmer » over a blip,
+    its own error banner being dead code (the try around it could never
+    fire). Unordered: the caller sorts.
+    """
+    keep = BOOKINGS_PENDING + (("",) if include_confirmed else ())
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("source", "==", "bookings")
+    )
+    rows = [_migrate_hearing(doc.to_dict()) for doc in query.stream()]
+    return [r for r in rows if (r.get("confirmation") or "") in keep]
+
+
+def set_bookings_confirmation(
+    hearing_id: str,
+    confirmation: str,
+    *,
+    partie_id: Optional[str] = None,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], str]:
+    """Write a lawyer's decision on a Bookings import — a PARTIAL update.
+
+    Only the confirmation gate (and, when given, the linked ``partie_id``)
+    plus the write's own stamp (``provenance.update_fields``) — never the
+    merged full-document ``set()`` of :func:`update_hearing`. That shape is
+    the guarantee: a decision can move nothing else (not the slot the
+    Bookings sync may just have updated, not a divergence), and it cannot
+    be refused by a field validation that has nothing to do with it —
+    which matters most AFTER an Outlook cancellation, when the refusal must
+    be recorded whatever the rest of the document holds.
+
+    *confirmation* must be one of :data:`BOOKINGS_DECISIONS`, and the
+    hearing a Bookings import (``source == "bookings"``); the transition
+    rules (confirming an ``annulée_client`` import is refused, a confirmed
+    one is not refused here…) belong to ``services/rendez_vous.py``, which
+    is the only caller. The read is STRICT: a read failure answers
+    :data:`CONFIRMATION_READ_ERROR`, never « introuvable ».
+
+    ``expected_etag`` (keyword-only): when given, the write commits only if
+    the stored etag is still that one (``models.concurrency.commit_fields``,
+    same partial key set) — a stale one returns ``[STALE_ETAG_ERROR]``,
+    nothing written. ``None`` is the unconditional single ``update()`` —
+    what the refusal performs after an Outlook cancellation, when the truth
+    has already left the building.
+
+    Returns ``(doc, errors, previous)``: ``previous`` is the confirmation
+    the write REPLACED, as read (``""`` on a refusal). The third member
+    deviates from the house pair on purpose (the ``set_time_entry_phase``
+    precedent): a refusal recorded unconditionally over an import another
+    tab had just confirmed must tombstone it out of DAV, and only the
+    writer knows what it replaced.
+    """
+    if confirmation not in BOOKINGS_DECISIONS:
+        return None, ["Décision inconnue pour un rendez-vous."], ""
+    try:
+        existing = get_hearing_strict(hearing_id)
+    except Exception:
+        log_unexpected("hearing read failed before a confirmation write")
+        return None, [CONFIRMATION_READ_ERROR], ""
+    if not existing or existing.get("source") != "bookings":
+        return None, ["Rendez-vous introuvable."], ""
+    previous = existing.get("confirmation") or ""
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR], previous
+
+    now = datetime.now(timezone.utc)
+    fields = {"confirmation": confirmation, **provenance.update_fields(now)}
+    if partie_id is not None:
+        fields["partie_id"] = sanitize(str(partie_id), max_length=100)
+    try:
+        concurrency.commit_fields(
+            db.collection(COLLECTION).document(hearing_id), fields,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR], previous
+    except concurrency.Vanished:
+        return None, ["Rendez-vous introuvable."], previous
+    except Exception:
+        log_unexpected("hearing confirmation write failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."], previous
+    provenance.note_commit(COLLECTION, hearing_id)
+    return {**existing, **fields}, [], previous
+
+
 class HearingWindow(NamedTuple):
     """A bounded hearing fetch together with what the caller cannot re-derive.
 

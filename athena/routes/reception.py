@@ -15,7 +15,7 @@ encore créée) rendent des états vides et un avertissement, jamais un 500.
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from firebase_admin import storage
@@ -38,7 +38,6 @@ from dav.sync import (
     bump_ctag,
     collection_for,
     record_tombstone,
-    remove_tombstone,
 )
 from models import portail_invitation as pi
 from models.document import (
@@ -54,7 +53,8 @@ from models.document import (
 from routes.taches_portail import sha512_flux
 from models.dossier import get_dossier, list_dossiers
 from models.folder import get_or_create_folder
-from models.hearing import get_hearing, list_hearings, update_hearing
+from models import concurrency
+from models.hearing import get_hearing, list_bookings_strict, update_hearing
 from models.partie import (
     ROLE_LABELS,
     create_partie,
@@ -63,10 +63,11 @@ from models.partie import (
     list_parties,
     update_partie,
 )
+from routes import edit_conflict
 from security import sanitize
 from services import portail_emission as emission
-from utils import graph_calendrier, rapprochement, storage_identity
-from utils.graph import GraphError, GraphNotConfigured
+from services import rendez_vous
+from utils import rapprochement, storage_identity
 from utils.logging_setup import log_bookings_event, log_portail_event
 
 logger = logging.getLogger(__name__)
@@ -86,12 +87,14 @@ _badge_cache: dict = {"at": 0.0, "n": None}
 def _compter_rdv() -> int:
     """Rendez-vous « à_confirmer » (Bookings L2) awaiting review.
 
-    A bounded stream over the hearings collection (single-practice scale),
-    behind the same 60 s badge cache. Fail-open: 0 on any error.
+    The Bookings imports only (``source == "bookings"`` equality — it used
+    to stream the WHOLE hearings collection), behind the same 60 s badge
+    cache. Fail-open here, and only here: a badge decides nothing, and the
+    tab itself says when it cannot read (``_contexte_rdv``).
     """
     try:
         return sum(
-            1 for h in list_hearings(include_unconfirmed=True)
+            1 for h in list_bookings_strict()
             if h.get("confirmation") == "à_confirmer"
         )
     except Exception:
@@ -214,53 +217,22 @@ def _rediriger(message: str = "", erreur: str = "", onglet: str = ""):
 # ── Onglet « Rendez-vous » (Bookings L2 §5) ──────────────────────────────
 
 
-def _index_parties_par_courriel() -> dict:
-    """Index parties by their (lowercased) email / email_work — one bounded
-    read (single-practice scale, no index), for the §5.1 partie linkage."""
-    idx: dict = {}
-    for p in list_parties():
-        for key in ("email", "email_work"):
-            v = (p.get(key) or "").strip().lower()
-            if v:
-                idx.setdefault(v, p)
-    return idx
-
-
-def _lier_parties(hearings: list[dict]) -> None:
-    """Attach the recognized partie (exact courriel match) to each rendez-vous
-    as ``_partie_id`` / ``_partie_nom`` — precomputed so the template stays
-    logic-free."""
-    if not hearings:
-        return
-    idx = _index_parties_par_courriel()
-    for h in hearings:
-        courriel = (h.get("client_email") or "").strip().lower()
-        p = idx.get(courriel) if courriel else None
-        h["_partie_id"] = p["id"] if p else ""
-        h["_partie_nom"] = display_name(p) if p else ""
-
-
 def _contexte_rdv() -> dict:
     """Build the « Rendez-vous » tab context: à_confirmer + annulée_client
-    cards, plus confirmed events carrying an unseen divergence."""
+    cards, plus confirmed events carrying an unseen divergence.
+
+    Both lists come from ``services.rendez_vous`` through a STRICT reader.
+    The old context read ``list_hearings(include_unconfirmed=True)``, which
+    swallows every error into ``[]``: its own try could never fire, and a
+    Firestore blip printed « Aucun rendez-vous à confirmer ». A failed read
+    now shows the warning banner and NO empty state (the template hides it
+    under ``erreur_rdv``).
+    """
     try:
-        tous = list_hearings(include_unconfirmed=True)
-    except Exception:
-        logger.exception("reception: hearings read failed")
+        rdvs = rendez_vous.lister_en_attente()
+        divergences = rendez_vous.lister_divergences()
+    except rendez_vous.LectureImpossible:
         return {"rdvs": [], "divergences": [], "erreur_rdv": True}
-    bookings = [h for h in tous if h.get("source") == "bookings"]
-    rdvs = [
-        h for h in bookings
-        if h.get("confirmation") in ("à_confirmer", "annulée_client")
-    ]
-    floor = datetime.min.replace(tzinfo=timezone.utc)
-    rdvs.sort(key=lambda h: h.get("start_datetime") or floor)
-    divergences = [
-        h for h in bookings
-        if (h.get("bookings_divergence") or {}).get("motif")
-        and not (h.get("bookings_divergence") or {}).get("vu")
-    ]
-    _lier_parties(rdvs + divergences)
     return {"rdvs": rdvs, "divergences": divergences, "erreur_rdv": False}
 
 
@@ -1023,47 +995,55 @@ def _rdv_ou_erreur(hid: str) -> Optional[dict]:
     return hearing
 
 
+# A decision posted from a page older than the stored rendez-vous — the
+# Bookings sync moves the slot of a pending import silently, another tab
+# may have decided already. Said in the rendez-vous' own terms: the model's
+# generic refusal speaks of « modifications » the lawyer never made here.
+_RDV_PERIME = (
+    "Ce rendez-vous a changé depuis l'affichage de la page — la "
+    "synchronisation Bookings l'a peut-être mis à jour. Rien n'a été fait "
+    "et Outlook n'a pas été touché : vérifiez-le ci-dessous, puis refaites "
+    "votre choix."
+)
+
+
+def _erreur_rdv(errors: list[str]):
+    """A refusal bounced on ``?erreur=`` (a 2xx-bound redirect — htmx never
+    swaps a 4xx). NOTHING happened when the service returns errors."""
+    if concurrency.is_stale(errors):
+        return _rediriger(erreur=_RDV_PERIME, onglet="rdv")
+    return _rediriger(erreur=" ".join(errors), onglet="rdv")
+
+
 @reception_bp.post("/rdv/<hid>/confirmer")
 @login_required
 def rdv_confirmer(hid: str):
-    hearing = _rdv_ou_erreur(hid)
-    if hearing is None:
-        return _rediriger(erreur="Rendez-vous introuvable.", onglet="rdv")
-
-    # Both keys are server-owned: they travel through server_fields, never
-    # through the content payload (models.hearing.SERVER_FIELDS).
-    data = {"confirmation": ""}
-    partie_liee = False
-    if request.form.get("lier") == "on":
-        pid = request.form.get("partie_id", "").strip()
-        if pid and get_partie(pid):
-            data["partie_id"] = pid
-            partie_liee = True
-
-    _updated, errors = update_hearing(hid, {}, server_fields=data)
+    expected = edit_conflict.submitted_etag()
+    # The linked contact is matched by the SERVICE on the requester's exact
+    # address; a posted partie_id (pages rendered before lot 1a) is ignored.
+    hearing, errors, rapport = rendez_vous.confirmer(
+        hid, lier_partie=request.form.get("lier") == "on",
+        expected_etag=expected,
+    )
     if errors:
-        return _rediriger(erreur=" ".join(errors), onglet="rdv")
-
-    # The event is now confirmed (confirmation="") → it enters DAV/Calendar.
-    # dossier_id is "" for a Bookings import → the « Général » collection. Drop
-    # any stale tombstone (mirrors the create paths) so one sync REPORT never
-    # reports the resource as both live and deleted.
-    sync_name = collection_for(hearing.get("dossier_id"))
-    remove_tombstone(sync_name, hid)
-    bump_ctag(sync_name)
-    log_bookings_event("reception_rdv_confirme", hearing_id=hid,
-                       partie_liee=partie_liee)
+        return _erreur_rdv(errors)
+    if not rapport["changed"]:
+        return _rediriger(message="Ce rendez-vous était déjà confirmé.",
+                          onglet="rdv")
 
     message = ("Rendez-vous confirmé — il apparaît au calendrier et se "
                "synchronise avec vos appareils.")
+    if rapport["warning"]:
+        message += " " + rapport["warning"]
     # Déclencheur (a) de la phase L3 : le courriel du rendez-vous ne
     # correspond à aucune partie → proposer le formulaire d'ouverture. Une
     # panne d'émission n'annule JAMAIS la confirmation, qui est déjà commise
-    # (CTag bumpé) : bandeau, jamais un échec.
+    # (CTag bumpé) : bandeau, jamais un échec. Cet envoi reste ICI — le
+    # service ne l'émet jamais (services/rendez_vous.py).
     if (
         Config.FEATURE_INTAKE
         and request.form.get("intake") == "on"
-        and not partie_liee
+        and not rapport["partie_liee"]
         and (hearing.get("client_email") or "").strip()
     ):
         try:
@@ -1092,50 +1072,25 @@ def rdv_confirmer(hid: str):
 @reception_bp.post("/rdv/<hid>/refuser")
 @login_required
 def rdv_refuser(hid: str):
-    hearing = _rdv_ou_erreur(hid)
-    if hearing is None:
-        return _rediriger(erreur="Rendez-vous introuvable.", onglet="rdv")
-
-    # Decision 2026-07-25 (Calendars.ReadWrite): a refusal CANCELS the Outlook
-    # meeting (notifying the client via Bookings) — but only for a still-active
-    # à_confirmer import. An annulée_client one is already cancelled by the
-    # client; do not re-cancel (Graph would 404). Best-effort: a Graph failure
-    # never blocks the refusal — the juriste is told to cancel manually.
-    graph_annule = False
-    avertissement = ""
-    gid = hearing.get("graph_event_id")
-    if (
-        hearing.get("confirmation") == "à_confirmer"
-        and gid and Config.bookings_configured()
-    ):
-        try:
-            graph_calendrier.annuler_reservation(
-                gid, "Rendez-vous refusé par le juriste."
-            )
-            graph_annule = True
-        except (GraphError, GraphNotConfigured):
-            logger.exception("reception: graph cancel failed")
-            avertissement = (
-                "Rendez-vous refusé, mais la réunion n'a PAS pu être annulée "
-                "côté Outlook — annulez-la manuellement pour prévenir le client."
-            )
-
-    _updated, errors = update_hearing(
-        hid, {}, server_fields={"confirmation": "refusée"}
-    )
+    # Decision 2026-07-25 (Calendars.ReadWrite): a refusal CANCELS the
+    # Outlook meeting (notifying the client via Bookings) — see
+    # services.rendez_vous.refuser for the order that makes it safe: the
+    # page's version is checked BEFORE Graph, the write after it is
+    # unconditional.
+    expected = edit_conflict.submitted_etag()
+    _hearing, errors, rapport = rendez_vous.refuser(hid, expected_etag=expected)
     if errors:
-        return _rediriger(erreur=" ".join(errors), onglet="rdv")
-    # No CTag bump — a refused/pending import was never in DAV.
-    log_bookings_event(
-        "reception_rdv_refuse", "refused" if avertissement else "success",
-        hearing_id=hid, graph_annule=graph_annule,
-        reason="graph_error" if avertissement else None,
-    )
-    if avertissement:
-        return _rediriger(erreur=avertissement, onglet="rdv")
+        return _erreur_rdv(errors)
+    if rapport["warning"]:
+        # Refused, but Outlook needs the lawyer's hand — or the refusal did
+        # not reach Athéna. Red, because something remains to be done.
+        return _rediriger(erreur=rapport["warning"], onglet="rdv")
+    if not rapport["changed"]:
+        return _rediriger(message="Ce rendez-vous était déjà refusé.",
+                          onglet="rdv")
     message = (
         "Rendez-vous refusé — la réunion Outlook a été annulée et le client "
-        "notifié." if graph_annule else "Rendez-vous refusé."
+        "notifié." if rapport["graph_cancelled"] else "Rendez-vous refusé."
     )
     return _rediriger(message=message, onglet="rdv")
 

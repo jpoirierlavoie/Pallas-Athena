@@ -584,6 +584,44 @@ def list_parties(
         return []
 
 
+def index_by_email_strict() -> dict[str, dict]:
+    """``{lower-cased address: partie}`` over ``email`` and ``email_work``.
+
+    A STRICT read: errors propagate (the ``list_mandataire_referrers``
+    precedent — one stream of the whole collection, single-user dataset).
+    Written for the Bookings rendez-vous (``services/rendez_vous.py``):
+    the card Réception renders names the contact whose address matches the
+    requester's EXACTLY, and confirming links that same contact — computed
+    here, server-side, never taken from a caller. A fail-open read
+    (``list_parties`` swallows errors into ``[]``) would have read an
+    outage as « aucune partie » and offered the onboarding form to an
+    existing client.
+
+    Precedence, when two contacts carry the same address: the MOST
+    RECENTLY UPDATED wins (ties keep the stream's id order — Python's sort
+    is stable under ``reverse``), and within one contact the personal
+    address before the professional one. It is exactly what Réception's
+    scan over ``list_parties()`` always did, so moving the scan here
+    changed no card. Addresses are matched lower-cased and stripped on
+    both sides: a legacy contact saved before normalization still matches.
+    """
+    parties = []
+    for doc in db.collection(COLLECTION).stream():
+        data = doc.to_dict()
+        if data:
+            data.setdefault("id", doc.id)
+            parties.append(data)
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    parties.sort(key=lambda p: p.get("updated_at") or floor, reverse=True)
+    index: dict[str, dict] = {}
+    for p in parties:
+        for key in ("email", "email_work"):
+            value = str(p.get(key) or "").strip().lower()
+            if value:
+                index.setdefault(value, p)
+    return index
+
+
 def _page_query(role_filter: Optional[str] = None) -> "firestore.Query":
     """The filtered, (updated_at DESC, id ASC)-ordered parties query.
 
