@@ -898,6 +898,81 @@ def test_a_confirmed_rendez_vous_is_not_refused_here(fake, graph):
     assert graph == []
 
 
+def _confirm_during_cancel(monkeypatch):
+    """Outlook accepts the cancellation — and meanwhile another tab
+    CONFIRMS the request (the window between the service's version check
+    and its unconditional post-cancellation write)."""
+    calls = []
+    monkeypatch.setattr(rendez_vous.Config, "bookings_configured", lambda: True)
+
+    def cancel(gid, motif=""):
+        calls.append((gid, motif))
+        hearing_model.set_bookings_confirmation(gid.replace("EVT-", ""), "")
+
+    monkeypatch.setattr(rendez_vous.graph_calendrier, "annuler_reservation",
+                        cancel)
+    return calls
+
+
+def test_a_refusal_over_a_concurrent_confirmation_reports_its_dav_effect(
+    fake, monkeypatch,
+):
+    """The refusal wins (the client was notified) and the service takes the
+    just-confirmed event back off the phone — tombstone + bump. The result
+    said « ctag_bumped: false, a refusal concerns no collection » about the
+    one refusal that did touch one (review, lot 1b L7)."""
+    _confirm_during_cancel(monkeypatch)
+    _booking(fake)
+    before = _ctag(fake, "")
+    payload = handlers.decide_rendez_vous(_decide(action="refuser"))
+    assert _stored(fake, "b1")["confirmation"] == "refusée"
+    assert fake.peek("dav_sync/general/tombstones/b1") is not None
+    assert _ctag(fake, "") != before
+    assert payload["ctag_bumped"] is True and payload["dav_synced"] is True
+    assert handlers._REFUSED_OVER_A_CONFIRMATION in payload["warnings"]
+    assert (handlers._REFUSED_OVER_A_CONFIRMATION_STALE_PHONE
+            not in payload["warnings"])
+
+
+def test_a_failed_retreat_from_the_phone_is_said(fake, monkeypatch):
+    _confirm_during_cancel(monkeypatch)
+    _booking(fake)
+
+    def broken(*_a, **_k):
+        raise RuntimeError("tombstone store down")
+
+    monkeypatch.setattr(rendez_vous, "record_tombstone", broken)
+    payload = handlers.decide_rendez_vous(_decide(action="refuser"))
+    assert _stored(fake, "b1")["confirmation"] == "refusée"
+    assert payload["ctag_bumped"] is False and payload["dav_synced"] is False
+    assert handlers._REFUSED_OVER_A_CONFIRMATION_STALE_PHONE in (
+        payload["warnings"])
+
+
+def test_outlook_and_local_both_failing_never_reads_as_a_refusal(
+    fake, monkeypatch,
+):
+    """Outlook did not confirm the cancellation AND the local write failed:
+    nothing happened, and a retry is the answer. The refusal used to relay
+    Réception's « Rendez-vous refusé, mais… annulez-la manuellement »
+    inside « Le refus n'a pas pu être inscrit » — two contradictory
+    statements (review, lot 1b L7)."""
+    monkeypatch.setattr(rendez_vous.Config, "bookings_configured", lambda: True)
+
+    def failing(gid, motif=""):
+        raise GraphError("down")
+
+    monkeypatch.setattr(rendez_vous.graph_calendrier, "annuler_reservation",
+                        failing)
+    _booking(fake)
+    _fail_hearing_commits(fake)
+    err = _refused(handlers.decide_rendez_vous, _decide(action="refuser"))
+    message = str(err)
+    assert "Rendez-vous refusé" not in message
+    assert "rien n'a été fait" in message and "idempotency_key" in message
+    assert _stored(fake, "b1")["confirmation"] == "à_confirmer"
+
+
 def test_lier_partie_belongs_to_confirmer_only(fake, graph):
     _booking(fake)
     _refused(handlers.decide_rendez_vous,

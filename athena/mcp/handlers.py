@@ -6276,6 +6276,36 @@ _NO_CONTACT_LINKED = (
     "Aucun contact n'a été lié. Le formulaire d'ouverture de dossier ne "
     "part pas du connecteur : envoyez-le depuis la Réception au besoin."
 )
+# The race the service resolves in the refusal's favour: confirmed
+# elsewhere while Outlook was being asked to cancel (lot 1b, L7 review).
+_REFUSED_OVER_A_CONFIRMATION = (
+    "Ce rendez-vous a été confirmé ailleurs (application ou autre appel) "
+    "pendant ce refus : le refus l'emporte, et le rendez-vous est retiré "
+    "du calendrier et du téléphone."
+)
+_REFUSED_OVER_A_CONFIRMATION_STALE_PHONE = (
+    "Le téléphone n'a pas pu être averti de ce retrait : une copie du "
+    "rendez-vous peut y rester. Ne réessayez pas — signalez-le au juriste."
+)
+# Outlook did NOT confirm the cancellation AND the local refusal failed:
+# nothing is recorded, and a retry is the right answer — said in the
+# connector's words. The service's warnings are Réception's, written for a
+# refusal that WAS recorded (« Rendez-vous refusé, mais… »): relayed here
+# they contradicted the refusal they sat in (lot 1b, L7 review).
+_RDV_GRAPH_THEN_LOCAL_FAILED = {
+    rendez_vous_service.ANNULATION_OUTLOOK_ECHOUEE: (
+        "Outlook n'a pas pu annuler la réunion — le client n'a donc pas été "
+        "prévenu — et le refus n'a pas pu être inscrit dans Athéna : rien "
+        "n'a été fait. Réessayez dans un moment ; la même idempotency_key "
+        "convient."
+    ),
+    rendez_vous_service.ANNULATION_OUTLOOK_INCERTAINE: (
+        "L'annulation Outlook a échoué de façon inattendue — elle a PEUT-ÊTRE "
+        "eu lieu, et le client été prévenu — et le refus n'a pas pu être "
+        "inscrit dans Athéna. Vérifiez la réunion dans Outlook avant de "
+        "réessayer."
+    ),
+}
 
 
 def _read_rendez_vous(hearing_id: str) -> dict:
@@ -6358,11 +6388,12 @@ def _decide_rendez_vous_impl(args: dict) -> dict:
         if report.get("graph_attempted"):
             # Outlook was asked and did NOT confirm the cancellation, and
             # the local write failed too: nothing is recorded, and a retry
-            # is the right answer (the service's contract).
-            message = (
-                "Le refus n'a pas pu être inscrit dans Athéna. "
-                + (str(report.get("warning") or "") + " " if report.get("warning") else "")
-                + message
+            # is the right answer (the service's contract). Never the
+            # service's own warning, which says « Rendez-vous refusé ».
+            message = _RDV_GRAPH_THEN_LOCAL_FAILED.get(
+                str(report.get("warning") or ""),
+                _RDV_GRAPH_THEN_LOCAL_FAILED[
+                    rendez_vous_service.ANNULATION_OUTLOOK_INCERTAINE],
             )
         raise ToolArgumentError(message)
     return _decide_payload(str(action), written or existing, report)
@@ -6374,7 +6405,17 @@ def _decide_payload(action: str, doc: dict, report: dict) -> dict:
     graph_attempted = bool(report.get("graph_attempted"))
     graph_cancelled = bool(report.get("graph_cancelled"))
     local_written = changed if confirming else bool(report.get("local_written"))
-    bumped = confirming and changed and bool(report.get("dav_synced"))
+    # A refusal concerns no collection — EXCEPT when another tab confirmed
+    # the request during the Outlook call: the refusal, written after the
+    # cancellation, wins, and the service takes the event back off the
+    # phone (tombstone + bump). ctag_bumped false there said « nothing
+    # synced » about the one refusal that did (lot 1b, L7 review).
+    confirmed_meanwhile = (not confirming) and bool(
+        report.get("confirmed_meanwhile"))
+    if confirming:
+        bumped = changed and bool(report.get("dav_synced"))
+    else:
+        bumped = confirmed_meanwhile and bool(report.get("dav_left"))
     visible = False
     if bumped:
         dossier = _dossier_for(doc.get("dossier_id"))
@@ -6391,6 +6432,10 @@ def _decide_payload(action: str, doc: dict, report: dict) -> dict:
         warnings.append(_DECISION_ALREADY_STORED)
     if confirming and changed and not report.get("partie_liee"):
         warnings.append(_NO_CONTACT_LINKED)
+    if confirmed_meanwhile:
+        warnings.append(_REFUSED_OVER_A_CONFIRMATION)
+        if not report.get("dav_left"):
+            warnings.append(_REFUSED_OVER_A_CONFIRMATION_STALE_PHONE)
 
     all_day = bool(doc.get("all_day"))
     start = _as_utc(doc.get("start_datetime"))

@@ -820,7 +820,10 @@ def _decide_rendez_vous_result() -> dict:
     client. The two DAV keys keep their meaning: a confirmation puts the
     event in its collection (and bumps it); a refusal concerns no
     collection — a pending request was never on the phone — so both read
-    false there, which is not a failure."""
+    false there, which is not a failure. The one exception: a request
+    confirmed elsewhere while Outlook was being asked to cancel it — the
+    refusal wins and the service tombstones the event out of its
+    collection, and ctag_bumped says so."""
     return _obj({
         "decided": {"type": "boolean", "enum": [True]},
         "entity_type": _str("« hearing »."),
@@ -856,8 +859,10 @@ def _decide_rendez_vous_result() -> dict:
         "ctag_bumped": _bool(
             "confirmer: whether the DavX5 sync trigger fired (false with a "
             "warning = the event is confirmed and will reach the phone at "
-            "the next change; do not retry). false on a refusal, which "
-            "concerns no collection."),
+            "the next change; do not retry). refuser: false (a pending "
+            "request was never on the phone) — unless it was confirmed "
+            "elsewhere during the refusal and so taken back off the phone "
+            "(see warnings)."),
         "dav_synced": _bool("ctag_bumped AND the collection is visible to "
                             "DavX5."),
         "warnings": _arr(_str(), "French, human-readable; empty when clean."),

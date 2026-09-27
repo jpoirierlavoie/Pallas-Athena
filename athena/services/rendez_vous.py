@@ -356,10 +356,16 @@ def refuser(
     caller would retry into a second Graph call.
 
     Report: ``changed``, ``graph_attempted``, ``graph_cancelled``,
-    ``local_written``, ``warning``.
+    ``local_written``, ``warning``, and the two keys of the race in step 3
+    — ``confirmed_meanwhile`` (the write replaced a confirmation another
+    tab made during the Graph call) and ``dav_left`` (its tombstone and
+    bump both succeeded, so the phone drops the event). A caller that
+    reports « no collection concerned » for a refusal would otherwise say
+    so about the one refusal that DID touch one (lot 1b, L7 review).
     """
     report = {"changed": False, "graph_attempted": False,
               "graph_cancelled": False, "local_written": False,
+              "confirmed_meanwhile": False, "dav_left": False,
               "warning": ""}
     hearing, errors = _read(hid)
     if errors:
@@ -417,7 +423,8 @@ def refuser(
     if previous == "":
         # Confirmed by another tab between our read and the cancellation:
         # it had entered DAV, and must leave it.
-        _leave_dav(written, hid)
+        report["confirmed_meanwhile"] = True
+        report["dav_left"] = _leave_dav(written, hid)
     failed = report["graph_attempted"] and not report["graph_cancelled"]
     reason = "graph_error" if failed else non_tente
     log_bookings_event(
