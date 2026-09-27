@@ -20,10 +20,15 @@ lancée par un crochet de commit au moment exact où l'édition (ou la
 suppression) envoie son écriture : après sa lecture, avant son application.
 On relit ce qui est STOCKÉ.
 
-Chaque test de la section 1 échouait sur le code d'avant (vérifié en
-revenant au modèle antérieur) ; la section 3 épingle ce que la page web
+Dans la section 1, les deux courses sans etag, les deux suppressions
+courues, la lecture hors transaction et les clés forgées échouaient sur le
+code d'avant (vérifié en revenant au modèle antérieur) ; la variante avec
+etag, le refus d'une entrée déjà facturée, l'entrée absente et la
+suppression qui survit à une écriture rivale NON facturante passaient déjà —
+elles épinglent ce que le lot garde. La section 3 épingle ce que la page web
 montre d'un refus de suppression, qui disparaissait jusque-là dans une
-redirection muette.
+redirection muette ; ses deux derniers tests (revue du lot) visent la piste
+de suppression et la double panne.
 """
 
 import os
@@ -120,6 +125,8 @@ _KINDS = {
         "update_refused": "Impossible de modifier une entrée déjà facturée.",
         "delete_refused": "Impossible de supprimer une entrée déjà facturée.",
         "delete_url": "/temps/e1/delete",
+        "route_getter": "get_time_entry",
+        "delete_error": "Erreur lors de la suppression. Veuillez réessayer.",
     },
     "expense": {
         "path": "expenses/x1", "row_id": "x1", "seed": _expense_seed,
@@ -130,6 +137,8 @@ _KINDS = {
         "update_refused": "Impossible de modifier une dépense déjà facturée.",
         "delete_refused": "Impossible de supprimer une dépense déjà facturée.",
         "delete_url": "/temps/depenses/x1/delete",
+        "route_getter": "get_expense",
+        "delete_error": "Erreur lors de la suppression. Veuillez réessayer.",
     },
 }
 _BOTH = pytest.mark.parametrize("kind", list(_KINDS), ids=list(_KINDS))
@@ -435,4 +444,75 @@ def test_deleting_an_entry_already_gone_redirects(db, client, kind):
     resp = client.post(cfg["delete_url"], data={"csrf_token": "tok"})
 
     assert resp.status_code == 302
+    assert db.peek_collection("audit_events") == {}
+
+
+@_BOTH
+def test_a_delete_after_a_void_journals_no_invoiced_status(
+    db, client, monkeypatch, kind,
+):
+    """La piste de suppression portait « facturée » lu de la PRÉ-LECTURE de
+    la route. La suppression, elle, ne passe que si la transaction relit
+    l'entrée NON facturée : une facture annulée entre les deux faisait
+    inscrire au journal une entrée « facturée »… supprimée précisément parce
+    qu'elle ne l'était plus."""
+    cfg = _seed(db, kind, invoiced=True, invoice_id="i1")
+    real_get = getattr(time_expenses_routes, cfg["route_getter"])
+    calls: list = []
+
+    def pre_read_then_void(row_id):
+        doc = real_get(row_id)
+        if not calls:
+            # The void lands right after the route's pre-read.
+            db.external_write(cfg["path"], {
+                **db.peek(cfg["path"]), "invoiced": False,
+                "invoice_id": None, "etag": "etag-void",
+            })
+        calls.append(row_id)
+        return doc
+
+    monkeypatch.setattr(time_expenses_routes, cfg["route_getter"],
+                        pre_read_then_void)
+
+    resp = client.post(cfg["delete_url"], data={"csrf_token": "tok"})
+
+    assert resp.status_code == 302
+    assert db.peek(cfg["path"]) is None
+    events = list(db.peek_collection("audit_events").values())
+    assert len(events) == 1
+    assert events[0]["snapshot_min"]["status"] == ""
+
+
+@_BOTH
+def test_a_failed_delete_whose_reread_also_fails_still_says_why(
+    db, client, monkeypatch, kind,
+):
+    """Le magasin refuse la suppression, puis la relecture de la route
+    échoue aussi (elle se replie sur None) : la route redirigeait alors vers
+    la liste sans un mot. L'entrée n'est PAS connue disparue — la raison se
+    dit, sur l'entrée telle qu'elle était avant la requête."""
+    cfg = _seed(db, kind)
+
+    def _outage(info) -> None:
+        if any(path == cfg["path"] for _op, path in info.ops):
+            remove()
+            raise RuntimeError("panne simulée du magasin")
+
+    remove = db.add_commit_hook(_outage)
+    real_get = getattr(time_expenses_routes, cfg["route_getter"])
+    calls: list = []
+
+    def reread_fails(row_id):
+        calls.append(row_id)
+        return real_get(row_id) if len(calls) == 1 else None
+
+    monkeypatch.setattr(time_expenses_routes, cfg["route_getter"],
+                        reread_fails)
+
+    resp = client.post(cfg["delete_url"], data={"csrf_token": "tok"})
+
+    assert len(calls) == 2  # the pre-read, then the failed re-read
+    assert resp.status_code == 200
+    assert cfg["delete_error"] in resp.get_data(as_text=True)
+    assert db.peek(cfg["path"]) is not None
     assert db.peek_collection("audit_events") == {}

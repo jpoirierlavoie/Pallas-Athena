@@ -430,12 +430,14 @@ def time_entry_delete(entry_id: str) -> str:
     success, error = delete_time_entry(entry_id)
 
     if success:
-        # Append-only deletion trail (PA-G06).
+        # Append-only deletion trail (PA-G06). No « facturée » status: the
+        # model deletes only inside the transaction that re-read the entry
+        # as NOT invoiced (lot 0b), so that label could only come from the
+        # pre-read above — and be false, an invoice voided in between.
         record_deletion(
             "time_entry", entry_id,
             dossier_id=(existing or {}).get("dossier_id", ""),
             title=(existing or {}).get("description", ""),
-            status="facturée" if (existing or {}).get("invoiced") else "",
         )
 
     target = safe_internal_redirect(return_to, url_for("time_expenses.time_list"))
@@ -448,6 +450,12 @@ def time_entry_delete(entry_id: str) -> str:
 
     if not success:
         current = get_time_entry(entry_id)
+        if current is None and "introuvable" not in error:
+            # The re-read failed too (get_time_entry fails open to None) —
+            # the entry is NOT known to be gone, so the reason is still
+            # said, on the entry as it stood before this request. Only an
+            # entry the model found missing goes back to the list.
+            current = existing
         if current:
             # The refusal is SAID, at 200, on the form of the entry as it
             # now stands (its invoiced banner included). It used to vanish
@@ -596,11 +604,11 @@ def expense_delete(expense_id: str) -> str:
     success, error = delete_expense(expense_id)
 
     if success:
+        # No « facturée » status — see time_entry_delete.
         record_deletion(
             "expense", expense_id,
             dossier_id=(existing or {}).get("dossier_id", ""),
             title=(existing or {}).get("description", ""),
-            status="facturée" if (existing or {}).get("invoiced") else "",
         )
 
     fallback = url_for("time_expenses.time_list", tab="depenses")
@@ -614,6 +622,8 @@ def expense_delete(expense_id: str) -> str:
 
     if not success:
         current = get_expense(expense_id)
+        if current is None and "introuvable" not in error:
+            current = existing  # the re-read failed too — see time_entry_delete
         if current:
             # Said, at 200, on the form — see time_entry_delete.
             ctx = _template_context()
