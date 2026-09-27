@@ -1469,6 +1469,40 @@ Notes:
   mismatch) names an entry to decide on by hand before the deploy; the script
   repairs nothing. No such line is the expected answer — every writer so far
   derived or passed the right direction.
+- **Contacts created on the phone (lot 0b, B7):** a vCard created in DavX5
+  is now stored under the id its URL names and the UID it carries (before,
+  it got a server id: its own href 404'd and a duplicate synced back). The
+  suite pins it through the real routes, but DavX5 fails silently, so check
+  the wire once after the deploy with a throw-away contact (curl prompts for
+  the DAV password):
+
+  ```bash
+  DAV_USER=you@yourdomain.example   # the AUTHORIZED_USER_EMAIL of app.yaml
+  RID=$(python -c "import uuid; print(uuid.uuid4())")
+  printf 'BEGIN:VCARD\r\nVERSION:4.0\r\nUID:curl-%s\r\nFN:Test Curl\r\nN:Curl;Test;;;\r\nEND:VCARD\r\n' "$RID" > /tmp/test.vcf
+  curl -s -o /dev/null -w '%{http_code}\n' -u "${DAV_USER:?}" -X PUT \
+    -H "Content-Type: text/vcard; charset=utf-8" -H "If-None-Match: *" \
+    --data-binary @/tmp/test.vcf "https://yourdomain.example/dav/addressbook/$RID.vcf"
+  curl -s -u "${DAV_USER:?}" "https://yourdomain.example/dav/addressbook/$RID.vcf" | grep UID
+  ```
+
+  Expected: `201`, then `UID:curl-<the same id>`. A 404 on the GET means the
+  fix is not live. Delete the test contact in the app afterwards. Contacts
+  created on the phone BEFORE this deploy keep their server id — their
+  phone-side copy is the orphan. Then, on the device, create one contact in
+  DavX5's address book, sync twice, and confirm it appears ONCE.
+- **Prescription alerts include « en attente » dossiers (lot 0b, B7):** the
+  dashboard and the MCP `get_agenda` briefing (the 07:00 scheduled run too)
+  now list every dossier `actif` OR `en_attente` whose prescription falls
+  within 60 days. Expect NEW rows the first morning if any dossier on hold
+  carries a prescription date — they were silenced before, not absent. No
+  index to deploy: the same `(status, prescription_date)` index serves both
+  statuses.
+- **DAV sync tokens (lot 0b, B7):** a failed read of a collection's CTag no
+  longer rewrites it with a fresh token (which forced every client into a
+  full resync, silently). During a Firestore blip a PROPFIND/REPORT now
+  answers 500 and DavX5 retries; tombstones are still written. Nothing to do
+  at deploy time.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
