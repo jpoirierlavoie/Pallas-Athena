@@ -79,6 +79,14 @@
         <option value="{{ cat_key }}" {{ 'selected' if document.category == cat_key }}>{{ cat_label }}</option>
         {% endfor %}
       </select>
+      {% if document.category_source == 'mcp' %}
+      <p class="text-xs text-gray-400 mt-1">
+        Catégorie présumée, posée par Claude (connecteur). La changer ici en
+        fait votre détermination ; pour la garder telle quelle, confirmez-la
+        depuis la fiche du document — l'enregistrer sans la changer ne la
+        confirme pas.
+      </p>
+      {% endif %}
     </div>
 
     <div>

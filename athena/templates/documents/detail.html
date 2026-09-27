@@ -85,6 +85,8 @@
           {%- if document.category_source == 'analyse'
                  and not (document.analyse or {}).confirme %}
           <span class="text-xs text-gray-400" title="Classification présumée — à confirmer">présumé</span>
+          {%- elif document.category_source == 'mcp' %}
+          <span class="text-xs text-gray-400" title="Catégorie posée par Claude (connecteur) — à confirmer">présumée</span>
           {%- endif %}
           <span class="text-xs text-gray-500">{{ document._file_size_fmt }}</span>
           <span class="text-xs text-gray-400">{{ document.filename }}</span>
@@ -108,6 +110,30 @@
 
     {% if erreur %}
     <div role="alert" class="text-red-600 text-sm mb-4">{{ erreur }}</div>
+    {% endif %}
+
+    {#- D15 (lot 2A) : une catégorie que Claude a posée HORS analyse reste
+        PRÉSUMÉE tant que le juriste ne l'a pas confirmée — ou changée au
+        formulaire, ce qui en fait aussi sa détermination. Le bouton porte
+        l'etag de la version affichée : confirmer, c'est dire « j'ai vu
+        CETTE version ». #}
+    {% if document.category_source == 'mcp' %}
+    {% from "components/_edit_conflict.html" import etag_field %}
+    <div class="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+      <p>
+        Catégorie présumée : posée par Claude (connecteur), elle n'a pas
+        encore été confirmée.
+      </p>
+      <form method="POST" class="mt-2"
+            action="{{ url_for('documents.categorie_confirmer', document_id=document.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {{ etag_field(document) }}
+        <button type="submit"
+                class="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-lg">
+          Confirmer la catégorie
+        </button>
+      </form>
+    </div>
     {% endif %}
     {% include "documents/_analyse.html" %}
 

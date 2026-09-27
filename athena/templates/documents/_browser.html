@@ -288,6 +288,8 @@
           {{ category_labels.get(d.category, d.category) }}
           {%- if d.category_source == 'analyse' and not (d.analyse or {}).confirme %}
           <span class="ml-1 opacity-60" title="Classification présumée — à confirmer">?</span>
+          {%- elif d.category_source == 'mcp' %}
+          <span class="ml-1 opacity-60" title="Catégorie posée par Claude (connecteur) — à confirmer">?</span>
           {%- endif %}
         </span>
         {%- set niv = (d.analyse or {}).niveau_protection %}

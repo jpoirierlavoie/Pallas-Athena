@@ -70,6 +70,11 @@ def web_rendu(monkeypatch):
     return client
 
 
+# The id segment api_televersement mints (uuid4): since lot 2A (T1) it is
+# the document's RESERVED id, so the finalization refuses anything else.
+_SEG = "3f2b8c1e-9a4d-4c6b-8e2f-1a2b3c4d5e6f"
+
+
 def _post(web, path, payload):
     return web.post(path, data=json.dumps(payload),
                     content_type="application/json")
@@ -215,7 +220,7 @@ def test_finaliser_ingere_et_consomme_le_staging(web, monkeypatch):
     monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
 
     reponse = _post(web, "/documents/api/finaliser", {
-        "objet": "staging/u1/aaaa/pieces.zip", "name": "pieces.zip",
+        "objet": f"staging/u1/{_SEG}/pieces.zip", "name": "pieces.zip",
         "dossier_id": "d1", "category": "pièce", "tags": "a, b",
         "folder_id": "", "description": "", "display_name": "",
         "document_date": "",
@@ -226,6 +231,8 @@ def test_finaliser_ingere_et_consomme_le_staging(web, monkeypatch):
     assert args[0] is blob and args[1] == "d1" and args[2] == "2026-001"
     assert args[3] == "pieces.zip"
     assert args[4]["tags"] == ["a", "b"]
+    # Deux finalisations du même téléversement → UN document (lot 2A, T1).
+    assert ingest.call_args.kwargs["document_id"] == _SEG
     blob.delete.assert_called_once()             # staging consommé
 
 
@@ -242,9 +249,39 @@ def test_finaliser_refus_consomme_le_staging_aussi(web, monkeypatch):
                                        "correspond pas à son extension."])),
     )
     reponse = _post(web, "/documents/api/finaliser", {
-        "objet": "staging/u1/aaaa/piece.pdf", "name": "piece.pdf",
+        "objet": f"staging/u1/{_SEG}/piece.pdf", "name": "piece.pdf",
         "dossier_id": "d1",
     })
     assert reponse.status_code == 422
     assert "extension" in reponse.get_json()["erreur"]
     blob.delete.assert_called_once()             # des octets refusés non plus
+
+
+@pytest.mark.parametrize("objet", [
+    # The zip exports live under the same staging prefix: not an upload.
+    "staging/u1/exports/3f2b8c1e-9a4d-4c6b-8e2f-1a2b3c4d5e6f/lot.zip",
+    "staging/u1/aaaa/piece.pdf",                                  # not a uuid4
+    "staging/u1/3F2B8C1E-9A4D-4C6B-8E2F-1A2B3C4D5E6F/piece.pdf",  # not canonical
+    "staging/u1/3f2b8c1e-9a4d-1c6b-8e2f-1a2b3c4d5e6f/piece.pdf",  # uuid1
+    f"staging/u1/{_SEG}/",                                         # no name
+])
+def test_finaliser_refuse_un_segment_qui_n_est_pas_un_identifiant(
+    web, monkeypatch, objet,
+):
+    """Lot 2A (T1) : le segment uuid4 du chemin staging devient l'id
+    RÉSERVÉ du document. Tout autre segment est refusé AVANT de toucher
+    l'objet — ni lecture, ni suppression, ni ingestion."""
+    monkeypatch.setattr(rd, "get_dossier",
+                        lambda d: {"id": "d1", "file_number": "2026-001"})
+    bucket = mock.Mock()
+    monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
+    ingest = mock.Mock()
+    monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
+
+    reponse = _post(web, "/documents/api/finaliser", {
+        "objet": objet, "name": "piece.pdf", "dossier_id": "d1"})
+
+    assert reponse.status_code == 400
+    assert reponse.get_json()["erreur"] == "Requête invalide."
+    bucket.blob.assert_not_called()
+    ingest.assert_not_called()

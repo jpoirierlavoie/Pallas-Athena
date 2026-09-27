@@ -126,7 +126,10 @@ def client(db):
     c = app.test_client()
     with c.session_transaction() as s:
         s["user_id"] = "u1"
-        s["user_email"] = "test@example.com"
+        # The key auth.py sets (lot 2A, T1). The harness set « user_email »,
+        # the key the document routes wrongly READ — so this suite proved
+        # a confirmation signed by a key production never writes.
+        s["email"] = "test@example.com"
         s["expires_at"] = datetime(2099, 1, 1, tzinfo=UTC)
     return c
 

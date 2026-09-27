@@ -402,6 +402,17 @@ def api_finaliser():
         # Le client ne nomme jamais que SES objets staging — tout autre
         # chemin est une charge forgée.
         return jsonify({"erreur": "Requête invalide."}), 400
+    # staging/{uid}/{uuid4}/{nom} — le segment uuid4, frappé par
+    # api_televersement, devient l'identifiant RÉSERVÉ du document : deux
+    # finalisations du même téléversement (double clic, requête rejouée
+    # dont la réponse s'est perdue) aboutissent à UN document, jamais deux
+    # (lot 2A, T1). Tout autre segment — `exports/` des archives zip, une
+    # charge forgée — est refusé ici, avant de toucher l'objet.
+    segments = objet.split("/")
+    if (len(segments) != 4 or not segments[3]
+            or not document_model.is_canonical_uuid4(segments[2])):
+        return jsonify({"erreur": "Requête invalide."}), 400
+    document_id = segments[2]
     dossier = get_dossier(dossier_id) if dossier_id else None
     if dossier is None:
         return jsonify({"erreur": "Veuillez sélectionner un dossier."}), 422
@@ -432,6 +443,7 @@ def api_finaliser():
         nom,
         metadata,
         user_id,
+        document_id=document_id,
     )
     try:
         blob.delete()
@@ -574,6 +586,67 @@ _ANALYSE_NOT_SAVED = (
     "Les renseignements de base ont été enregistrés, mais pas l'analyse : "
     "vos valeurs d'analyse sont conservées ci-dessous."
 )
+# The same fact when the analysis was refused for a FIELD (no banner then:
+# the error list says why, and this line says what did land).
+_METADATA_SAVED_ANALYSE_REFUSED = (
+    "Les renseignements de base ont été enregistrés ; l'analyse ne l'a pas "
+    "été, pour la raison ci-dessous — vos valeurs d'analyse sont conservées."
+)
+_ANALYSE_WITHOUT_SUB_NATURE = (
+    "Choisissez une sous-nature pour enregistrer une analyse : les autres "
+    "champs d'analyse en dépendent, et ils n'ont pas été enregistrés."
+)
+
+# The two analysis fields rendered as a <textarea>; every other text field
+# is an <input type="text">, whose value the browser posts WITHOUT line
+# breaks (the HTML value sanitization algorithm strips them).
+_ANALYSE_TEXTAREAS = ("resume", "dispositif")
+
+
+def _form_text(key: str, value: object) -> str:
+    """*value* as the edit form round-trips it: CRLF folded, a text input's
+    line breaks dropped, outer whitespace stripped."""
+    text = str(value if value is not None else "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if key not in _ANALYSE_TEXTAREAS:
+        text = text.replace("\n", "")
+    return text.strip()
+
+
+def _analyse_changes(stored: dict, champs: dict) -> dict:
+    """The submitted analysis fields that DIFFER from the stored analysis.
+
+    The form posts all 25 fields every time; a field the lawyer did not
+    touch comes back as the form rendered it. Each is compared in THAT
+    shape — a list against its ``", "``-joined rendering (a comma inside an
+    item, like the non-downgrade motif, must not read as an edit), the level
+    against the stored int, a checkbox against the stored flag — so that
+    only a real edit reaches ``update_analyse``, which confirms and journals
+    whatever it receives. Pure; the returned values are the SUBMITTED ones,
+    for ``update_analyse`` to parse.
+    """
+    from models.document import _ANALYSE_BOOLEENS, _ANALYSE_LISTES
+
+    changes: dict = {}
+    for key, value in champs.items():
+        if key == "privileges":
+            if set(value or []) != set(stored.get("privileges") or []):
+                changes[key] = value
+        elif key == "niveau_protection":
+            text = str(value or "").strip()
+            submitted = int(text) if text.isdigit() else (text or None)
+            if submitted != stored.get("niveau_protection"):
+                changes[key] = value
+        elif key in _ANALYSE_LISTES:
+            shown = ", ".join(str(x) for x in (stored.get(key) or []))
+            if _form_text(key, value) != _form_text(key, shown):
+                changes[key] = value
+        elif key in _ANALYSE_BOOLEENS:
+            if bool(value) != bool(stored.get(key)):
+                changes[key] = value
+        elif _form_text(key, value) != _form_text(key, stored.get(key)):
+            changes[key] = value
+    return changes
 
 
 @documents_bp.route("/<document_id>/edit", methods=["POST"])
@@ -591,7 +664,13 @@ def document_update(document_id: str) -> str:
     the lawyer's name, through the one path that can LOWER a protection
     level). A stale form is therefore refused before anything is written;
     the rare race between the two writes is refused at the second, and the
-    banner says the first was saved.
+    banner says the first was saved — only when it was: a metadata write
+    that changed nothing writes nothing (lot 2A, T1).
+
+    The second write happens only when an analysis value was actually
+    edited (``_analyse_changes``), and receives only those values: the
+    section posts every field on every save, and ``update_analyse``
+    confirms and journals what it gets.
     """
     f = request.form
     tags_raw = f.get("tags", "").strip()
@@ -617,10 +696,7 @@ def document_update(document_id: str) -> str:
         _analyse_from_form(f) if f.get("analyse_presente") == "1" else None
     )
 
-    # The third member (« changed ») says whether the metadata write wrote
-    # anything (lot 2A, T1 — update_metadata became a partial transactional
-    # update that writes nothing when nothing changed).
-    saved, errors, _metadata_written = update_metadata(
+    saved, errors, metadata_written = update_metadata(
         document_id, data, expected_etag=expected
     )
     # The etag the form stands for from here on: the one the metadata
@@ -631,18 +707,28 @@ def document_update(document_id: str) -> str:
         if saved is not None and expected is not None else expected
     )
 
-    # A document never analysed, whose section came back empty, has no
-    # analysis to correct: `update_analyse` would refuse the empty
-    # sub-nature (« Sous-nature inconnue : . ») AFTER the metadata was
-    # saved, on every ordinary edit of an unanalysed document.
-    if saved is not None and champs is not None and (
-        (saved.get("analyse") or {}).get("sous_nature") or any(champs.values())
-    ):
-        _, erreurs_analyse = update_analyse(
-            document_id, champs, par=session.get("user_email", ""),
-            expected_etag=form_etag,
-        )
-        errors = erreurs_analyse or []
+    # The analysis is written ONLY when the lawyer changed one of its
+    # values (lot 2A, T1). The section always posts every field, and
+    # `update_analyse` confirms what it writes (« éditer, c'est
+    # confirmer ») and re-derives the category: called on every save, it
+    # turned a tag edit into the confirmation of an analysis the lawyer
+    # never touched, and — on a document never analysed — refused the empty
+    # sub-nature AFTER the metadata was saved.
+    analyse_refused = False
+    if saved is not None and champs is not None:
+        stored = saved.get("analyse") or {}
+        changes = _analyse_changes(stored, champs)
+        if changes and (stored.get("sous_nature") or "sous_nature" in changes):
+            _, erreurs_analyse = update_analyse(
+                document_id, changes, par=_signer(),
+                expected_etag=form_etag,
+            )
+            errors = erreurs_analyse or []
+        elif changes:
+            # Values typed into the analysis of a document never analysed,
+            # without the sub-nature everything else derives from.
+            errors = [_ANALYSE_WITHOUT_SUB_NATURE]
+        analyse_refused = bool(errors)
 
     if errors:
         errors, conflict, etag = edit_conflict.resolve_refusal(
@@ -652,11 +738,16 @@ def document_update(document_id: str) -> str:
             compare_url=url_for(
                 "documents.document_detail", document_id=document_id
             ),
+            # Exactly what was saved: the metadata write committed only
+            # when it CHANGED something — a save that changed nothing
+            # wrote nothing, and « enregistrés » would be false.
             outcome=(
-                _ANALYSE_NOT_SAVED if saved is not None
+                _ANALYSE_NOT_SAVED if metadata_written
                 else edit_conflict.NOTHING_SAVED
             ),
         )
+        if analyse_refused and metadata_written and conflict is None:
+            errors = [_METADATA_SAVED_ANALYSE_REFUSED] + errors
         existing = get_document(document_id) or {}
         existing.update(_metadata_for_display(data))
         if champs is not None:
@@ -701,7 +792,8 @@ def document_move(document_id: str) -> str:
     target_folder_id = request.form.get("target_folder_id", "").strip() or None
 
     updated_doc, errors, _moved = move_document(
-        dossier_id, document_id, target_folder_id
+        dossier_id, document_id, target_folder_id,
+        expected_etag=edit_conflict.submitted_etag(),
     )
 
     if _is_htmx():
@@ -711,7 +803,14 @@ def document_move(document_id: str) -> str:
         resp.headers["HX-Redirect"] = url_for("documents.document_detail", document_id=document_id)
         return resp
 
-    return redirect(url_for("documents.document_detail", document_id=document_id))
+    # The move modal is a plain form: its refusal travels on the redirect
+    # (the detail page prints ?erreur=). It used to be dropped — a move to
+    # a folder deleted meanwhile answered with the page, unchanged, and no
+    # word of why.
+    return redirect(url_for(
+        "documents.document_detail", document_id=document_id,
+        **({"erreur": errors[0]} if errors else {}),
+    ))
 
 
 @documents_bp.route("/move-bulk", methods=["POST"])
@@ -1008,13 +1107,52 @@ def analyse_confirmer(document_id: str):
     # onglet — a remplacée depuis, ce serait signer ce qu'on n'a pas lu.
     # Absent (page d'avant) → aucun contrôle ; illisible → 400 français.
     expected = edit_conflict.submitted_etag()
+    # `session["email"]` — the key auth.py sets. The route read another
+    # key, one nothing ever writes, so every confirmation was recorded
+    # under an empty name (revue du lot 2, 2026-09-27).
     _, erreurs = document_model.confirmer_analyse(
-        document_id, session.get("user_email") or "", expected_etag=expected
+        document_id, _signer(), expected_etag=expected
     )
     if concurrency.is_stale(erreurs):
         erreurs = [_CONFIRM_STALE]
     # Un refus voyage sur une redirection 2xx : htmx n'échange que les 2xx,
     # et un fragment rendu en 4xx ne paraîtrait jamais.
+    return redirect(url_for(
+        "documents.document_detail", document_id=document_id,
+        **({"erreur": erreurs[0]} if erreurs else {}),
+    ))
+
+
+def _signer() -> str:
+    """Who is confirming: the signed-in lawyer's email (``auth.py`` sets
+    ``session["email"]``). One helper, so no route reads another key."""
+    return str(session.get("email") or "")
+
+
+_CATEGORY_CONFIRM_STALE = (
+    "Ce document a été modifié depuis l'affichage de la page. Rien n'a été "
+    "confirmé : relisez sa catégorie ci-dessous, puis confirmez de nouveau."
+)
+
+
+@documents_bp.route("/<document_id>/categorie/confirmer", methods=["POST"])
+@login_required
+def categorie_confirmer(document_id: str):
+    """Confirme une catégorie posée par Claude (D15, lot 2A).
+
+    Une catégorie que le connecteur a posée HORS analyse est PRÉSUMÉE
+    (``category_source == "mcp"``) : elle paraît « présumée » partout
+    jusqu'à ce que le juriste la confirme ici — ou la change au formulaire,
+    ce qui en fait aussi sa détermination. Le bouton porte l'etag de la
+    version affichée (confirmer, c'est dire « j'ai vu CETTE version ») ; un
+    refus voyage sur une redirection vers la fiche, qui l'affiche.
+    """
+    expected = edit_conflict.submitted_etag()
+    _, erreurs = document_model.confirmer_categorie(
+        document_id, _signer(), expected_etag=expected
+    )
+    if concurrency.is_stale(erreurs):
+        erreurs = [_CATEGORY_CONFIRM_STALE]
     return redirect(url_for(
         "documents.document_detail", document_id=document_id,
         **({"erreur": erreurs[0]} if erreurs else {}),
