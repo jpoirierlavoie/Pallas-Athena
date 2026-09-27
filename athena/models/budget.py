@@ -315,17 +315,34 @@ def build_budget_view(budget: Optional[dict], actuals: dict) -> dict:
 # ── Firestore layer (append-only — NO update_*, NO delete_*) ───────────────
 
 
+# The save's refusal when the version history cannot be read (lot 0b).
+VERSION_READ_ERROR = (
+    "Les versions existantes de ce budget n'ont pas pu être lues : aucune "
+    "version n'a été enregistrée, pour ne pas en créer une en double. "
+    "Réessayez dans un instant ; les montants saisis n'ont pas été conservés."
+)
+
+
 def create_budget(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Mint a NEW immutable version. Returns (doc, errors)."""
+    """Mint a NEW immutable version. Returns (doc, errors).
+
+    The version number is read through the STRICT reader: a failed read
+    REFUSES the save. It used to go through the fail-open
+    ``list_budget_versions``, which turned a read blip into « no history »
+    and minted a duplicate version 1 — one that sorts BELOW the real latest
+    (``(version, created_at)`` DESC), so the save reported success and the
+    new budget never showed. The ``except`` guarding that call was dead
+    code, since the reader never raised."""
     merged = {**_default_doc(), **_sanitize_data(data)}
     lines, line_errors = _normalize_lines(merged.get("lines") or [])
     merged["lines"] = lines
 
+    dossier_id = str(merged.get("dossier_id") or "")
     try:
-        existing = list_budget_versions(str(merged.get("dossier_id") or ""))
+        existing = _list_budget_versions_strict(dossier_id)
     except Exception:
-        log_unexpected("budget version read failed")
-        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        log_unexpected("budget version read failed", dossier_id=dossier_id)
+        return None, [VERSION_READ_ERROR]
     merged["version"] = _next_version(existing)
 
     errors = line_errors + _validate(merged)
@@ -356,8 +373,11 @@ def get_budget(budget_id: str) -> Optional[dict]:
     return None
 
 
-def list_budget_versions(dossier_id: str) -> list[dict]:
-    """All versions of a dossier's budget, newest first.
+def _list_budget_versions_strict(dossier_id: str) -> list[dict]:
+    """All versions of a dossier's budget, newest first — PROPAGATES a read
+    error. The reader for a SAVE (``create_budget``): a version number
+    minted from a failed read would be a duplicate. Display paths use the
+    fail-open :func:`list_budget_versions`.
 
     ``where dossier_id ==`` + PYTHON sort on (version, created_at) DESC —
     deliberately no Firestore order_by, so no composite index. The
@@ -366,20 +386,28 @@ def list_budget_versions(dossier_id: str) -> list[dict]:
     """
     if not dossier_id:
         return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    )
+    rows = [doc.to_dict() for doc in query.stream()]
+    rows.sort(
+        key=lambda b: (
+            int(b.get("version") or 0),
+            b.get("created_at")
+            or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def list_budget_versions(dossier_id: str) -> list[dict]:
+    """All versions of a dossier's budget, newest first — FAILS OPEN to
+    ``[]`` (the history page, the Budget tab, the form's seed: display
+    only). Never mint a version number from it; see
+    :func:`_list_budget_versions_strict`."""
     try:
-        query = db.collection(COLLECTION).where(
-            filter=FieldFilter("dossier_id", "==", dossier_id)
-        )
-        rows = [doc.to_dict() for doc in query.stream()]
-        rows.sort(
-            key=lambda b: (
-                int(b.get("version") or 0),
-                b.get("created_at")
-                or datetime.min.replace(tzinfo=timezone.utc),
-            ),
-            reverse=True,
-        )
-        return rows
+        return _list_budget_versions_strict(dossier_id)
     except Exception as exc:
         logger.warning("list_budget_versions failed: %s", exc)
         return []
