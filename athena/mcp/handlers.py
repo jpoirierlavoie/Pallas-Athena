@@ -97,6 +97,7 @@ from models import task as task_model
 from models import time_entry as time_entry_model
 from models import trust as trust_model
 from security import sanitize
+from services import protocoles as protocol_service
 from tz import MTL
 from utils import analyse_blocs, deadlines, pdf_text, phases, taxonomie
 from utils.cabinet import cabinet_dict
@@ -403,12 +404,20 @@ def _step_row(s: dict, today: date) -> dict:
         "status_differs": status != stored,
         "mandatory": bool(s.get("mandatory")),
         "deadline_locked": bool(s.get("deadline_locked")),
+        # The template offset the deadline was computed from (days after
+        # the protocol's start date) — a step that has one follows a new
+        # start date; null on a custom step, which never moves by itself.
+        "deadline_offset_days": s.get("deadline_offset_days"),
         "date_confirmed": bool(s.get("date_confirmed")),
         "completed_date": iso_mtl(_as_utc(s.get("completed_date"))),
         "linked_task_id": s.get("linked_task_id"),
         "linked_hearing_id": s.get("linked_hearing_id"),
         "notes": s.get("notes", ""),
         "is_overdue": is_overdue,
+        # Lot 1b (L6): the phase the step carries — the defaults a new
+        # time entry or task on the dossier is offered — read back, since
+        # update_protocol_step and add_protocol_step now write it.
+        **_phase_pair(s),
         **_stamps(s),
     }
 
@@ -2248,6 +2257,12 @@ def _protocol_payload(p: dict, today: date, dossier: Optional[dict]) -> dict:
         "start_date": date_str(_as_utc(p.get("start_date"))),
         "end_date": date_str(_as_utc(p.get("end_date"))),
         "notes": p.get("notes", ""),
+        # WHO took it out of « actif » (lot 1a): « auto » = the completion
+        # of its last step — the one closure reopening a step undoes by
+        # itself; « web » / « mcp » / … = a deliberate status change; '' =
+        # actif, or closed before the field existed.
+        "closed_by": p.get("closed_by") or "",
+        "closed_at": iso_mtl(_as_utc(p.get("closed_at"))),
         "steps": [_step_row(s, today) for s in p.get("steps", [])],
         **_stamps(p),
     }
@@ -7134,6 +7149,914 @@ def _analyse_payload(
             "refusée. Rétablissez-les, ou réécrivez-la en entier avec "
             "`full`."
         )
+    return payload
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Lot 1b (L6) — the protocols: create_protocol, update_protocol,
+# add_protocol_step, update_protocol_step
+# ════════════════════════════════════════════════════════════════════════
+#
+# Every write goes through services/protocoles.py (lot 1a, L2) — the door
+# the web routes use too — so the rules are met where both paths meet
+# them: the one-actif rule and the C.p.c. locks (model), the non-toggle
+# step status and its cascade (model), the recompute that keeps completed
+# steps and truly-confirmed CS dates (model), the linked-task alignment and
+# its CTag bumps (service).
+#
+# A protocol and its steps are NOT DAV-exposed; the TASKS a protocol write
+# creates or moves are. Those are the syncs reported here — `ctag_bumped`
+# is about the linked tasks, and false when no task was written.
+#
+# L5's discipline, in this order: ids resolve first, STRICTLY (an
+# unreadable protocol is never called missing); the model payload is built
+# key by key; a call whose every value is already stored writes nothing and
+# says so (decided before the etag check — a request that changes nothing
+# needs no current version); the named etag must still be the stored one,
+# else the handler compare-and-sets on its own read; the model guards are
+# REPEATED so a refusal names its field; refusals never quote content.
+# Results carry ids, dates, codes, counts and etags — never a step's notes
+# or description (mcp_idempotency stores them 24 h).
+
+_PROTOCOL_SUBJECT = "Ce protocole a été modifié"
+_STEP_SUBJECT = "Cette étape a été modifiée"
+_PROTOCOL_EDIT_KEYS = ("title", "notes", "court", "start_date", "status")
+_STEP_FIELD_KEYS = (
+    "deadline_date", "notes", "phase", "sous_phase", "title", "description",
+    "cpc_reference",
+)
+# The C.p.c. text of a template (mandatory) step — the law's.
+_STEP_LEGAL_KEYS = ("title", "description", "cpc_reference")
+_STEP_TASK_OUTCOMES = ("none",) + protocol_service.ALIGN_OUTCOMES
+
+
+def _read_protocol(protocol_id: str) -> dict:
+    """The protocol (with its steps) an edit is about — « introuvable »
+    only when the store SAID so (the _read_task rule)."""
+    try:
+        protocol = protocol_model.get_protocol_strict(protocol_id)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture du protocole impossible — réessayez. Rien n'a été "
+            "modifié."
+        )
+    if protocol is None:
+        raise ToolArgumentError(
+            f"Protocole introuvable : {protocol_id}. Utilisez "
+            "list_protocol_steps pour obtenir un protocol_id valide. Rien "
+            "n'a été modifié."
+        )
+    return protocol
+
+
+def _protocol_step(protocol: dict, step_id: str) -> dict:
+    step = next((s for s in protocol.get("steps") or []
+                 if s.get("id") == step_id), None)
+    if step is None:
+        raise ToolArgumentError(
+            f"Étape introuvable dans ce protocole : {step_id}. Utilisez "
+            "list_protocol_steps pour obtenir un step_id valide. Rien n'a "
+            "été modifié."
+        )
+    return step
+
+
+def _inactive_protocol_refusal(protocol: dict) -> ToolArgumentError:
+    """The connector's words for the model's ``protocole_non_actif``: the
+    way out is a tool here, not the web form's button."""
+    status = protocol.get("status", "")
+    label = protocol_model.STATUS_LABELS.get(status, status).lower()
+    return ToolArgumentError(
+        f"Ce protocole est « {label} » : ses étapes ne se modifient pas "
+        "tant qu'il n'est pas réactivé (update_protocol, status "
+        "« actif »). Rien n'a été écrit."
+    )
+
+
+def _is_inactive_error(errors: list[str]) -> bool:
+    """The model's « protocol not actif » refusals — of a field edit
+    (``require_active``) or of a step status — in any status: the protocol
+    may have closed between the handler's read and the transaction."""
+    messages = set()
+    for status in protocol_model.VALID_STATUSES:
+        messages.add(protocol_model.inactive_protocol_edit_error(status))
+        messages.add(protocol_model._inactive_protocol_error(status))
+    return any(e in messages for e in errors)
+
+
+def _bump_task_collection(dossier_id: Optional[str]) -> bool:
+    """Bump the DAV collection a protocol's linked task lives in; return
+    whether it succeeded. Guarded: the task write it announces has ALREADY
+    committed (the note-writer rule — an exception escaping here would read
+    as a retryable failure, and the retry would write twice)."""
+    from utils.logging_setup import log_unexpected
+
+    try:
+        bump_ctag(collection_for(dossier_id))
+        return True
+    except Exception:
+        log_unexpected("mcp protocol write: task CTag bump failed")
+        return False
+
+
+def _dav_visible(dossier_id: str) -> bool:
+    """Whether the dossier's DAV collection is advertised to DavX5. A
+    failed read claims nothing (visible) — the _write_result rule."""
+    dossier = dossier_model.get_dossier(dossier_id) if dossier_id else None
+    if dossier is None:
+        return True
+    return dossier.get("status", "") in ("actif", "en_attente")
+
+
+def _step_brief(s: dict, today: date, protocol: dict) -> dict:
+    """A step in a WRITE result: ids, dates, codes and the etag — never
+    its notes or description."""
+    deadline = _as_utc(s.get("deadline_date"))
+    return {
+        "id": s.get("id", ""),
+        "order": s.get("order", 0),
+        "title": s.get("title", ""),
+        "deadline_date": date_str(deadline),
+        "deadline_offset_days": s.get("deadline_offset_days"),
+        "status": derive_step_status(s.get("status", ""), deadline,
+                                     today=today),
+        "mandatory": bool(s.get("mandatory")),
+        "deadline_locked": bool(s.get("deadline_locked")),
+        "date_is_suggestion": protocol_model.date_needs_confirmation(
+            protocol, s),
+        "linked_task_id": s.get("linked_task_id") or None,
+        **_phase_pair(s),
+        "etag": concurrency.etag_of(s),
+    }
+
+
+def _protocol_entity(p: dict) -> dict:
+    return {
+        "id": p.get("id", ""),
+        "dossier_id": p.get("dossier_id") or "",
+        "dossier_file_number": p.get("dossier_file_number", ""),
+        "dossier_title": p.get("dossier_title", ""),
+        "label": p.get("title", ""),
+        "date": date_str(_as_utc(p.get("start_date"))),
+        "protocol_type": p.get("protocol_type", ""),
+        "status": p.get("status", ""),
+        "end_date": date_str(_as_utc(p.get("end_date"))),
+        "closed_by": p.get("closed_by") or "",
+        # The protocol AS STORED after this call — the next edit's etag.
+        "etag": concurrency.etag_of(p),
+    }
+
+
+def _step_entity(protocol: dict, s: dict) -> dict:
+    return {
+        "id": s.get("id", ""),
+        "dossier_id": protocol.get("dossier_id") or "",
+        "dossier_file_number": protocol.get("dossier_file_number", ""),
+        "dossier_title": protocol.get("dossier_title", ""),
+        "label": s.get("title", ""),
+        "date": date_str(_as_utc(s.get("deadline_date"))),
+        "protocol_id": protocol.get("id", ""),
+        "status": s.get("status", ""),
+        "mandatory": bool(s.get("mandatory")),
+        # The step AS STORED after this call — update_protocol_step's
+        # next expected_etag.
+        "etag": concurrency.etag_of(s),
+    }
+
+
+def _date_valued_changes(before: dict, data: dict, date_keys) -> list[str]:
+    """The keys of *data* whose value differs from *before* — dates
+    compared as calendar days, strings with ``None`` read as ``""``."""
+    changed = []
+    for key, value in data.items():
+        if key in date_keys:
+            if date_str(_as_utc(before.get(key))) != date_str(value):
+                changed.append(key)
+        elif (before.get(key) or "") != (value or ""):
+            changed.append(key)
+    return changed
+
+
+def _reread_protocol(protocol_id: str) -> Optional[dict]:
+    """The protocol re-read AFTER a write, or ``None`` — best-effort: the
+    write has committed, and a failed re-read is reported, never raised."""
+    try:
+        return protocol_model.get_protocol(protocol_id)
+    except Exception:
+        return None
+
+
+# ── create_protocol (WRITE) ─────────────────────────────────────────────
+
+def create_protocol(args: dict) -> dict:
+    return run_write(
+        "create_protocol", args, lambda: _create_protocol_impl(args))
+
+
+def _create_protocol_impl(args: dict) -> dict:
+    dossier_id, dossier = _resolve_write_dossier(args, required=True)
+    ptype = args.get("protocol_type") or ""
+    if ptype not in protocol_model.VALID_PROTOCOL_TYPES:
+        raise ToolArgumentError(
+            "« protocol_type » : valeur hors vocabulaire. Valeurs admises : "
+            + ", ".join(protocol_model.VALID_PROTOCOL_TYPES)
+            + ". Rien n'a été écrit."
+        )
+    start = _write_date(args, "start_date", required=True)
+    title = ""
+    if "title" in args:
+        title = _clean_entity_text(args.get("title") or "", "title")
+    notes = ""
+    if "notes" in args:
+        notes = _clean_entity_text(args.get("notes") or "", "notes")
+
+    # The model's two refusals, repeated so each names its field and the
+    # way out (the model re-decides both inside its transaction).
+    if protocol_model.regime_mismatch(ptype, dossier):
+        reasons = protocol_model._regime_errors(dossier_id, ptype) or [
+            "Le régime du gabarit ne gouverne pas le tribunal de ce dossier."
+        ]
+        raise ToolArgumentError(
+            "`protocol_type` refusé : " + " ".join(reasons)
+            + " Rien n'a été écrit."
+        )
+    try:
+        active = protocol_model._get_active_protocols_strict(dossier_id)
+    except Exception:
+        raise ToolArgumentError(protocol_model.ACTIVE_CHECK_FAILED)
+    if active:
+        raise ToolArgumentError(
+            "Ce dossier a déjà un protocole actif "
+            f"({active[0].get('id', '')}) : un seul peut l'être à la fois. "
+            "Suspendez-le ou complétez-le d'abord (update_protocol, "
+            "status), puis recommencez. Rien n'a été écrit."
+        )
+
+    make_tasks = args.get("create_linked_tasks") is True
+    protocol, errors, report = protocol_service.create_protocol(
+        dossier, ptype, start, title=title, notes=notes,
+        create_linked_tasks=make_tasks,
+    )
+    if errors:
+        if protocol_model.ONE_ACTIVE_ERROR in errors:
+            raise ToolArgumentError(
+                "`dossier_id` refusé : " + " ".join(errors))
+        raise ToolArgumentError("; ".join(errors))
+
+    bumped = False
+    if report["tasks_created"]:
+        bumped = _bump_task_collection(dossier_id)
+    visible = (dossier or {}).get("status", "") in ("actif", "en_attente")
+    today = deadlines.today_mtl()
+    steps = sorted(protocol.get("steps") or [],
+                   key=lambda s: s.get("order", 0))
+    payload: dict[str, Any] = {
+        "created": True,
+        "entity_type": "protocol",
+        "entity": _protocol_entity(protocol),
+        "steps": [_step_brief(s, today, protocol) for s in steps],
+        "tasks_created": report["tasks_created"],
+        "tasks_linked": report["tasks_linked"],
+        "tasks_failed": report["tasks_failed"],
+        "ctag_bumped": bumped,
+        "dav_synced": bumped and visible,
+        "warnings": [],
+    }
+    warnings = payload["warnings"]
+    if ptype == "cs_ordinaire":
+        warnings.append(
+            "Protocole CS : les dates des étapes sont des SUGGESTIONS "
+            "(date_is_suggestion) tant qu'elles ne sont pas confirmées — "
+            "fixez chacune avec update_protocol_step (deadline_date). Une "
+            "date non confirmée suit la date de début si elle change."
+        )
+    if not steps:
+        warnings.append(
+            "Protocole conventionnel : il n'a aucune étape. Ajoutez-les "
+            "avec add_protocol_step."
+        )
+    if report["tasks_failed"] or report["tasks_linked"] < report["tasks_created"]:
+        warnings.append(
+            "Le protocole est enregistré, mais certaines tâches liées n'ont "
+            "pas pu être créées ou rattachées à leur étape "
+            "(linked_task_id null) — vérifiez avec list_protocol_steps. Ne "
+            "pas réessayer : le protocole existe."
+        )
+    if report["tasks_created"] and not bumped:
+        warnings.append(
+            "Les tâches liées sont enregistrées, mais la synchronisation "
+            "DavX5 n'a pas pu être déclenchée : elles apparaîtront sur "
+            "l'appareil au prochain changement dans ce dossier. Ne pas "
+            "réessayer."
+        )
+    if report["tasks_created"] and not visible:
+        warnings.append(
+            f"Le dossier est « {(dossier or {}).get('status', '')} » : les "
+            "tâches liées sont enregistrées et visibles dans l'application, "
+            "mais les dossiers fermés ou archivés ne sont pas exposés à "
+            "DavX5."
+        )
+    return payload
+
+
+# ── update_protocol (WRITE) ─────────────────────────────────────────────
+
+def update_protocol(args: dict) -> dict:
+    return run_write(
+        "update_protocol", args, lambda: _update_protocol_impl(args))
+
+
+def _update_protocol_impl(args: dict) -> dict:
+    protocol_id = (args.get("protocol_id") or "").strip()
+    if not protocol_id:
+        raise ToolArgumentError("`protocol_id` est requis.")
+    existing = _read_protocol(protocol_id)
+    if not any(key in args for key in _PROTOCOL_EDIT_KEYS):
+        raise ToolArgumentError(
+            "Aucun champ à modifier : nommez au moins title, notes, court, "
+            "start_date ou status. Les étapes se modifient avec "
+            "update_protocol_step."
+        )
+    _refuse_outside_vocabulary(args, "status", protocol_model.VALID_STATUSES)
+
+    # EXPLICIT whitelist, presence-based.
+    data: dict[str, Any] = {}
+    if "title" in args:
+        title = _clean_entity_text(args.get("title") or "", "title")
+        if not title:
+            raise ToolArgumentError("« title » ne peut pas être vide.")
+        data["title"] = title
+    for key in ("notes", "court"):
+        if key in args:
+            data[key] = _clean_entity_text(args.get(key) or "", key)
+    if "start_date" in args:
+        if not (args.get("start_date") or "").strip():
+            raise ToolArgumentError(
+                "« start_date » ne peut pas être vide : un protocole a "
+                "toujours une date de début. Rien n'a été modifié."
+            )
+        data["start_date"] = _write_date(args, "start_date", required=True)
+    if "status" in args:
+        data["status"] = args["status"]
+
+    changed = _date_valued_changes(existing, data, ("start_date",))
+    previous_status = existing.get("status", "")
+    if not changed:
+        return _protocol_edit_payload(
+            existing, previous_status=previous_status, changed=[],
+            report=None)
+
+    expected = _expected_etag(
+        args, existing, tool="update_protocol", subject=_PROTOCOL_SUBJECT)
+    new_status = data.get("status", previous_status)
+    if "status" in changed and new_status == "actif":
+        # The model re-decides in its transaction; this names the field.
+        try:
+            others = protocol_model._get_active_protocols_strict(
+                existing.get("dossier_id") or "", exclude_id=protocol_id)
+        except Exception:
+            raise ToolArgumentError(
+                "`status` refusé : " + protocol_model.ACTIVE_CHECK_FAILED)
+        if others:
+            raise ToolArgumentError(
+                "`status` « actif » refusé : un autre protocole est actif "
+                f"dans ce dossier ({others[0].get('id', '')}) — un seul "
+                "peut l'être à la fois. Suspendez-le ou complétez-le "
+                "d'abord. Rien n'a été écrit."
+            )
+
+    protocol, errors, report = protocol_service.update_protocol(
+        protocol_id, {key: data[key] for key in changed},
+        expected_etag=expected,
+    )
+    _raise_if_stale(
+        errors, tool="update_protocol", subject=_PROTOCOL_SUBJECT,
+        reread=lambda: protocol_model.get_protocol(protocol_id),
+    )
+    if errors:
+        if any(e in (protocol_model.OTHER_ACTIVE_ON_REACTIVATION,
+                     protocol_model.ACTIVE_CHECK_FAILED) for e in errors):
+            raise ToolArgumentError("`status` refusé : " + " ".join(errors))
+        raise ToolArgumentError("; ".join(errors))
+    return _protocol_edit_payload(
+        protocol, previous_status=previous_status, changed=changed,
+        report=report)
+
+
+def _protocol_edit_payload(
+    protocol: dict, *, previous_status: str, changed: list[str],
+    report: Optional[dict],
+) -> dict:
+    """``report`` is the service's, or ``None`` when nothing was written."""
+    wrote = report is not None
+    report = report or {}
+    steps = {s.get("id"): s for s in protocol.get("steps") or []}
+    tasks = {t["step_id"]: t for t in report.get("tasks", [])}
+    moved = []
+    for entry in report.get("moved_steps", []):
+        step = steps.get(entry.get("step_id"), {})
+        linked = entry.get("linked_task_id") or None
+        moved.append({
+            "step_id": entry.get("step_id", ""),
+            "title": step.get("title", ""),
+            "from": date_str(_as_utc(entry.get("old"))),
+            "to": date_str(_as_utc(entry.get("new"))),
+            "etag": concurrency.etag_of(step),
+            "linked_task_id": linked,
+            "task_outcome": (tasks.get(entry.get("step_id"), {}).get("outcome")
+                             or "none") if linked else "none",
+        })
+    preserved = [
+        {"step_id": e.get("step_id", ""),
+         "title": steps.get(e.get("step_id"), {}).get("title", ""),
+         "reason": e.get("reason", "")}
+        for e in report.get("preserved_steps", [])
+    ]
+    counts = {key: int(report.get(key, 0) or 0)
+              for key in protocol_service.ALIGN_OUTCOMES}
+    aligned = [t for t in report.get("tasks", []) if t["outcome"] == "aligned"]
+    bumped = bool(aligned) and all(t["ctag_bumped"] for t in aligned)
+    visible = _dav_visible(protocol.get("dossier_id") or "") if aligned else True
+    status = protocol.get("status", "")
+    open_steps = sum(1 for s in steps.values() if s.get("status") != "complété")
+    payload: dict[str, Any] = {
+        "updated": True,
+        "entity_type": "protocol",
+        "entity": {**_protocol_entity(protocol),
+                   "previous_status": previous_status},
+        "changed_fields": changed,
+        "recompute": {"moved": moved, "preserved": preserved},
+        "linked_tasks": counts,
+        "open_steps": open_steps,
+        "ctag_bumped": bumped,
+        "dav_synced": bumped and visible,
+        "warnings": [],
+    }
+    warnings = payload["warnings"]
+    if not wrote:
+        warnings.append(
+            "Toutes les valeurs envoyées étaient déjà enregistrées : rien "
+            "n'a été modifié."
+        )
+        return payload
+    if "status" in changed and status != "actif":
+        warnings.append(
+            f"Le protocole est maintenant « {status} » : ses étapes quittent "
+            "get_agenda, et compléter ou rouvrir une tâche liée ne fait plus "
+            "suivre son étape tant qu'il n'est pas réactivé."
+        )
+        if status == "complété" and open_steps:
+            warnings.append(
+                f"{open_steps} étape(s) restent ouvertes dans ce protocole "
+                "complété."
+            )
+    if "status" in changed and status == "actif":
+        warnings.append(
+            "Le protocole est de nouveau actif : ses étapes reparaissent "
+            "dans get_agenda."
+        )
+    if counts["diverged"]:
+        warnings.append(
+            f"{counts['diverged']} tâche(s) liée(s) gardent leur propre "
+            "échéance, modifiée à la main : elles n'ont pas été déplacées."
+        )
+    if counts["failed"] or counts["missing"]:
+        warnings.append(
+            f"{counts['failed'] + counts['missing']} tâche(s) liée(s) n'ont "
+            "pas pu être mises à jour (ou sont introuvables ou illisibles) — "
+            "vérifiez-les avec list_tasks. Le protocole, lui, est enregistré."
+        )
+    if aligned and not bumped:
+        warnings.append(
+            "Les tâches liées déplacées sont enregistrées, mais la "
+            "synchronisation DavX5 n'a pas pu être déclenchée : elles "
+            "apparaîtront sur l'appareil au prochain changement dans ce "
+            "dossier. Ne pas réessayer."
+        )
+    if aligned and bumped and not visible:
+        warnings.append(
+            "Le dossier est fermé ou archivé : les tâches liées déplacées "
+            "sont enregistrées, mais n'apparaîtront pas sur le téléphone."
+        )
+    return payload
+
+
+# ── add_protocol_step (WRITE) ───────────────────────────────────────────
+
+def add_protocol_step(args: dict) -> dict:
+    return run_write(
+        "add_protocol_step", args, lambda: _add_protocol_step_impl(args))
+
+
+def _add_protocol_step_impl(args: dict) -> dict:
+    protocol_id = (args.get("protocol_id") or "").strip()
+    if not protocol_id:
+        raise ToolArgumentError("`protocol_id` est requis.")
+    protocol = _read_protocol(protocol_id)
+    if protocol.get("status", "") != "actif":
+        raise _inactive_protocol_refusal(protocol)
+    title = _clean_entity_text(args.get("title") or "", "title")
+    if not title:
+        raise ToolArgumentError("« title » ne peut pas être vide.")
+    data: dict[str, Any] = {"title": title}
+    for key in ("description", "cpc_reference", "notes"):
+        if key in args:
+            data[key] = _clean_entity_text(args.get(key) or "", key)
+    if "deadline_date" in args:
+        data["deadline_date"] = _write_date(args, "deadline_date",
+                                            required=False)
+    phase, sous_phase = _resolve_phase_pair(args)
+    if phase or sous_phase:
+        data["phase"], data["sous_phase"] = phase, sous_phase
+
+    make_task = args.get("create_linked_task") is True
+    step, errors, report = protocol_service.add_step(
+        protocol_id, data, create_linked_task=make_task, require_active=True)
+    if errors:
+        if _is_inactive_error(errors):
+            raise _inactive_protocol_refusal(
+                _reread_protocol(protocol_id) or protocol)
+        raise ToolArgumentError("; ".join(errors))
+
+    dossier_id = protocol.get("dossier_id") or ""
+    bumped = _bump_task_collection(dossier_id) if report["task_created"] else False
+    after = _reread_protocol(protocol_id)
+    today = deadlines.today_mtl()
+    payload: dict[str, Any] = {
+        "created": True,
+        "entity_type": "protocol_step",
+        "entity": _step_entity(protocol, step),
+        "step": _step_brief(step, today, protocol),
+        "protocol_etag": concurrency.etag_of(after) if after else "",
+        "linked_task_id": step.get("linked_task_id") or None,
+        "task_created": bool(report["task_created"]),
+        "ctag_bumped": bumped,
+        "dav_synced": bumped and _dav_visible(dossier_id),
+        "warnings": [],
+    }
+    warnings = payload["warnings"]
+    if make_task and not report["task_created"]:
+        warnings.append(
+            "L'étape est enregistrée, mais sa tâche liée n'a pas pu être "
+            "créée. Créez-la avec create_task si elle est nécessaire ; ne "
+            "réessayez pas cet appel (il dédoublerait l'étape)."
+        )
+    elif report["task_created"] and not report["task_linked"]:
+        warnings.append(
+            "L'étape et une tâche sont enregistrées, mais le lien entre les "
+            "deux n'a pas pu être posé : la tâche ne suivra pas l'étape. "
+            "Ne pas réessayer."
+        )
+    if report["task_created"] and not bumped:
+        warnings.append(
+            "La tâche liée est enregistrée, mais la synchronisation DavX5 "
+            "n'a pas pu être déclenchée : elle apparaîtra sur l'appareil au "
+            "prochain changement dans ce dossier. Ne pas réessayer."
+        )
+    if after is None:
+        warnings.append(
+            "L'étape est enregistrée, mais le protocole n'a pas pu être relu "
+            "pour en rendre l'etag (protocol_etag vide) : relisez-le avec "
+            "list_protocol_steps avant de le modifier."
+        )
+    return payload
+
+
+# ── update_protocol_step (WRITE) ────────────────────────────────────────
+
+def update_protocol_step(args: dict) -> dict:
+    return run_write(
+        "update_protocol_step", args,
+        lambda: _update_protocol_step_impl(args),
+    )
+
+
+def _no_status_change() -> dict:
+    """The ``status_change`` object, ALWAYS complete (the schema requires
+    every key); ``requested`` says whether the call asked for one."""
+    return {
+        "requested": False,
+        "step_status_before": "",
+        "step_status_after": "",
+        "task_id": None,
+        "task_status_before": "",
+        "task_status_after": "",
+        "task_sync": "none",
+        "protocol_status_before": "",
+        "protocol_status_after": "",
+        "protocol_closed": False,
+        "protocol_reopened": False,
+        "note": "",
+    }
+
+
+def _no_linked_task(step: dict) -> dict:
+    return {"task_id": step.get("linked_task_id") or None,
+            "outcome": "none", "ctag_bumped": False}
+
+
+def _update_protocol_step_impl(args: dict) -> dict:
+    protocol_id = (args.get("protocol_id") or "").strip()
+    step_id = (args.get("step_id") or "").strip()
+    if not protocol_id or not step_id:
+        raise ToolArgumentError("`protocol_id` et `step_id` sont requis.")
+    protocol = _read_protocol(protocol_id)
+    step = _protocol_step(protocol, step_id)
+    fields = [key for key in _STEP_FIELD_KEYS if key in args]
+    if not fields and "status" not in args:
+        raise ToolArgumentError(
+            "Aucun champ à modifier : nommez deadline_date, notes, phase, "
+            "sous_phase, title, description, cpc_reference — ou status."
+        )
+    if fields and "status" in args:
+        raise ToolArgumentError(
+            "`status` ne se combine pas avec une modification de champs : "
+            "ce seraient deux écritures distinctes, non atomiques. Modifiez "
+            "d'abord les champs, puis le statut dans un second appel (avec "
+            "l'etag rendu par le premier). Rien n'a été écrit."
+        )
+    if "status" in args:
+        return _set_protocol_step_status(args, protocol, step)
+    return _edit_protocol_step_fields(args, protocol, step)
+
+
+def _edit_protocol_step_fields(args: dict, protocol: dict, step: dict) -> dict:
+    protocol_id, step_id = protocol.get("id", ""), step.get("id", "")
+    data: dict[str, Any] = {}
+    for key in ("title", "description", "cpc_reference", "notes"):
+        if key in args:
+            value = _clean_entity_text(args.get(key) or "", key)
+            if key == "title" and not value:
+                raise ToolArgumentError("« title » ne peut pas être vide.")
+            data[key] = value
+    if "deadline_date" in args:
+        data["deadline_date"] = _write_date(args, "deadline_date",
+                                            required=False)
+    pair = _optional_phase_pair(args)
+    if pair is not None:
+        data["phase"], data["sous_phase"] = pair
+
+    # The model's C.p.c. locks, repeated so the refusal names the field.
+    if step.get("mandatory"):
+        for key in _STEP_LEGAL_KEYS:
+            if key in data and (data[key] or "") != (step.get(key) or ""):
+                raise ToolArgumentError(
+                    f"`{key}` refusé : {protocol_model.LEGAL_TEXT_LOCKED}")
+    if ("deadline_date" in data and date_str(data["deadline_date"])
+            != date_str(_as_utc(step.get("deadline_date")))):
+        if step.get("deadline_locked"):
+            raise ToolArgumentError(
+                f"`deadline_date` refusé : {protocol_model.DEADLINE_LOCKED} "
+                "Rien n'a été enregistré.")
+        if data["deadline_date"] is None and step.get("mandatory"):
+            raise ToolArgumentError(
+                "`deadline_date` refusé : "
+                + protocol_model.MANDATORY_DEADLINE_REQUIRED)
+
+    changed = _date_valued_changes(step, data, ("deadline_date",))
+    if not changed:
+        return _step_edit_payload(
+            protocol, step, step, changed=[], date_confirmed_now=False,
+            linked=_no_linked_task(step), status_change=_no_status_change(),
+            wrote=False)
+    expected = _expected_etag(
+        args, step, tool="update_protocol_step", subject=_STEP_SUBJECT)
+    if protocol.get("status", "") != "actif":
+        raise _inactive_protocol_refusal(protocol)
+
+    result, errors, report = protocol_service.update_step(
+        protocol_id, step_id, data, expected_etag=expected,
+        require_active=True,
+    )
+    _raise_if_stale(
+        errors, tool="update_protocol_step", subject=_STEP_SUBJECT,
+        reread=lambda: _stored_step(protocol_id, step_id),
+    )
+    if errors:
+        if _is_inactive_error(errors):
+            raise _inactive_protocol_refusal(
+                _reread_protocol(protocol_id) or protocol)
+        legal = next((k for k in _STEP_LEGAL_KEYS if k in data), "title")
+        named = {protocol_model.LEGAL_TEXT_LOCKED: legal,
+                 protocol_model.DEADLINE_LOCKED: "deadline_date",
+                 protocol_model.MANDATORY_DEADLINE_REQUIRED: "deadline_date"}
+        field = next((named[e] for e in errors if e in named), None)
+        prefix = f"`{field}` refusé : " if field else ""
+        raise ToolArgumentError(prefix + "; ".join(errors))
+
+    entry = next(iter(report.get("tasks") or []), None)
+    linked = (
+        {"task_id": entry["task_id"], "outcome": entry["outcome"],
+         "ctag_bumped": entry["ctag_bumped"]}
+        if entry else _no_linked_task(result)
+    )
+    # Only a CS template date is a suggestion a recompute would move; the
+    # model stamps every changed deadline, and « confirmed » is news only
+    # there.
+    confirmed_at = result.get("date_confirmed_at")
+    confirmed_now = (
+        protocol.get("protocol_type") == "cs_ordinaire"
+        and step.get("deadline_offset_days") is not None
+        and bool(confirmed_at)
+        and confirmed_at != step.get("date_confirmed_at")
+    )
+    return _step_edit_payload(
+        protocol, step, result, changed=changed,
+        date_confirmed_now=confirmed_now,
+        linked=linked, status_change=_no_status_change(), wrote=True)
+
+
+def _stored_step(protocol_id: str, step_id: str) -> Optional[dict]:
+    protocol = protocol_model.get_protocol(protocol_id) or {}
+    return next((s for s in protocol.get("steps") or []
+                 if s.get("id") == step_id), None)
+
+
+def _set_protocol_step_status(args: dict, protocol: dict, step: dict) -> dict:
+    protocol_id, step_id = protocol.get("id", ""), step.get("id", "")
+    target = args.get("status")
+    if target not in protocol_model.STEP_STATUS_TARGETS:
+        raise ToolArgumentError(
+            "« status » : « complété » ou « à_venir » seulement. Rien n'a "
+            "été modifié.")
+    before = step.get("status", "")
+    # The state it already has writes nothing — no etag needed, no open
+    # protocol needed, no cascade (the model's own non-toggle rule).
+    if protocol_model._step_already_at(before, target):
+        unchanged = {
+            **_no_status_change(),
+            "requested": True,
+            "step_status_before": before,
+            "step_status_after": before,
+            "task_id": step.get("linked_task_id") or None,
+            "protocol_status_before": protocol.get("status", ""),
+            "protocol_status_after": protocol.get("status", ""),
+            "note": (
+                "Rien n'a été écrit : l'étape était déjà dans l'état "
+                "demandé (la tâche liée n'a pas été relue)."),
+        }
+        return _step_edit_payload(
+            protocol, step, step, changed=[], date_confirmed_now=False,
+            linked=_no_linked_task(step), status_change=unchanged,
+            wrote=False, already=target)
+    expected = _expected_etag(
+        args, step, tool="update_protocol_step", subject=_STEP_SUBJECT)
+
+    # The model's gate, repeated so the refusal names the way out. The
+    # model re-decides in its transaction and stays the authority.
+    if target == "complété" and protocol.get("status", "") != "actif":
+        raise _inactive_protocol_refusal(protocol)
+    if target == "à_venir":
+        blocked = protocol_model.step_reopen_refusal(protocol, step)
+        if blocked is not None:
+            message, reason = blocked
+            if reason == "protocole_non_actif":
+                raise _inactive_protocol_refusal(protocol)
+            raise ToolArgumentError("`status` refusé : " + message)
+
+    task_id = step.get("linked_task_id") or None
+    task_before = task_model.get_task(task_id) if task_id else None
+    result, errors, outcome = protocol_service.set_step_status(
+        protocol_id, step_id, target, expected_etag=expected)
+    _raise_if_stale(
+        errors, tool="update_protocol_step", subject=_STEP_SUBJECT,
+        reread=lambda: _stored_step(protocol_id, step_id),
+    )
+    if errors:
+        if _is_inactive_error(errors):
+            raise _inactive_protocol_refusal(
+                _reread_protocol(protocol_id) or protocol)
+        raise ToolArgumentError("`status` refusé : " + " ".join(errors))
+
+    # RE-READ, never predicted: the cascade and the completion check run
+    # after the step's commit and report rather than raise.
+    after = _reread_protocol(protocol_id)
+    task_after = task_model.get_task(task_id) if task_id else None
+    step_after = next((s for s in (after or {}).get("steps") or []
+                       if s.get("id") == step_id), None)
+    protocol_before = protocol.get("status", "")
+    protocol_after = (after or {}).get("status", "") if after else ""
+    change = {
+        "requested": True,
+        "step_status_before": before,
+        "step_status_after": (step_after or {}).get("status", ""),
+        "task_id": task_id,
+        "task_status_before": (task_before or {}).get("status", ""),
+        "task_status_after": (task_after or {}).get("status", ""),
+        "task_sync": outcome.get("task_sync") or "none",
+        "protocol_status_before": protocol_before,
+        "protocol_status_after": protocol_after,
+        "protocol_closed": (
+            protocol_before == "actif" and protocol_after == "complété"
+            if after else bool(outcome.get("protocol_closed"))),
+        "protocol_reopened": (
+            protocol_before != "actif" and protocol_after == "actif"
+            if after else bool(outcome.get("protocol_reopened"))),
+        "note": "",
+    }
+    if after is None or step_after is None or (task_id and task_after is None):
+        change["note"] = (
+            "L'étape est enregistrée, mais son état, celui de sa tâche liée "
+            "ou celui de son protocole n'a pas pu être relu après "
+            "l'écriture (ou la tâche est introuvable) : les valeurs "
+            "« after » vides ne disent rien. Vérifiez avec "
+            "list_protocol_steps."
+        )
+    bumped = False
+    if outcome.get("task_sync") == "synced":
+        bumped = _bump_task_collection(
+            (task_after or task_before or {}).get("dossier_id")
+            or protocol.get("dossier_id"))
+    return _step_edit_payload(
+        protocol, step, result, changed=["status"], date_confirmed_now=False,
+        linked=_no_linked_task(result), status_change=change, wrote=True,
+        bumped=bumped, after=after)
+
+
+def _step_edit_payload(
+    protocol: dict, before: dict, step: dict, *, changed: list[str],
+    date_confirmed_now: bool, linked: dict, status_change: dict,
+    wrote: bool, already: str = "", bumped: Optional[bool] = None,
+    after: Any = _UNCHANGED,
+) -> dict:
+    """*after* — the protocol re-read after the write (the status path has
+    it already); re-read here when not given, the stored one on a no-op."""
+    dossier_id = protocol.get("dossier_id") or ""
+    if after is _UNCHANGED:
+        after = _reread_protocol(protocol.get("id", "")) if wrote else protocol
+    if bumped is None:
+        bumped = bool(linked.get("ctag_bumped"))
+    synced = linked.get("outcome") == "aligned" or (
+        status_change.get("task_sync") == "synced")
+    payload: dict[str, Any] = {
+        "updated": True,
+        "entity_type": "protocol_step",
+        "entity": _step_entity(protocol, step),
+        "changed_fields": changed,
+        "date_confirmed_now": date_confirmed_now,
+        "linked_task": linked,
+        "status_change": status_change,
+        "protocol_etag": concurrency.etag_of(after) if after else "",
+        "ctag_bumped": bumped,
+        "dav_synced": bumped and _dav_visible(dossier_id),
+        "warnings": [],
+    }
+    warnings = payload["warnings"]
+    if not wrote:
+        if already:
+            warnings.append(
+                f"L'étape est déjà « {before.get('status', '')} » — "
+                f"« {already} » ne change rien : rien n'a été modifié."
+            )
+        else:
+            warnings.append(
+                "Toutes les valeurs envoyées étaient déjà enregistrées : "
+                "rien n'a été modifié."
+            )
+        return payload
+    if status_change.get("protocol_closed"):
+        warnings.append(
+            "C'était la dernière étape ouverte : le PROTOCOLE ENTIER est "
+            "passé à « complété » (fermeture automatique). Ses étapes "
+            "n'apparaîtront plus dans get_agenda ; rouvrir une de ses "
+            "étapes (status « à_venir ») le réactive."
+        )
+    if status_change.get("protocol_reopened"):
+        warnings.append(
+            "Le protocole, fermé automatiquement à sa dernière étape, est de "
+            "nouveau actif : ses échéances reparaissent dans get_agenda."
+        )
+    sync = status_change.get("task_sync")
+    if sync == "skipped_cancelled":
+        warnings.append(
+            "La tâche liée est annulée : elle n'a pas été modifiée.")
+    elif sync in ("failed", "missing"):
+        warnings.append(
+            "La tâche liée n'a pas pu être mise à jour (ou est introuvable "
+            "ou illisible) — vérifiez-la avec list_tasks. L'étape, elle, "
+            "est enregistrée.")
+    outcome = linked.get("outcome")
+    if outcome == "diverged":
+        warnings.append(
+            "La tâche liée garde sa propre échéance, modifiée à la main : "
+            "elle n'a pas été déplacée.")
+    elif outcome in ("failed", "missing"):
+        warnings.append(
+            "La tâche liée n'a pas pu suivre la nouvelle échéance (ou est "
+            "introuvable ou illisible) — vérifiez-la avec list_tasks.")
+    if synced and not bumped:
+        warnings.append(
+            "La tâche liée est enregistrée, mais la synchronisation DavX5 "
+            "n'a pas pu être déclenchée : elle apparaîtra sur l'appareil au "
+            "prochain changement dans ce dossier. Ne pas réessayer.")
+    if date_confirmed_now:
+        warnings.append(
+            "Cette date est maintenant CONFIRMÉE : un changement de la date "
+            "de début du protocole ne la déplacera plus.")
+    if after is None:
+        warnings.append(
+            "L'étape est enregistrée, mais le protocole n'a pas pu être "
+            "relu pour en rendre l'etag (protocol_etag vide).")
     return payload
 
 

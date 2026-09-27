@@ -20,9 +20,11 @@ Two vocabularies, both French and both closed:
 * ``signalement`` — something worth a look, not a breach.
 
 **A finding is an observation, never an instruction.** Every ``detail``
-string says what to do IN THE APPLICATION. The connector cannot create a
-protocol, verify an identity or file a signification, and a report that
-implied otherwise would invite a write this connector must never make.
+string says what to do IN THE APPLICATION. Some of those fixes are also
+connector writes (``create_protocol`` since lot 1b, ``record_signification``
+since July 2026) — but the connector never verifies an identity or a
+conflict, and a report that implied otherwise would invite a write this
+connector must never make.
 """
 
 from typing import Optional

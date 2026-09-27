@@ -1027,16 +1027,25 @@ def test_every_dav_writer_reports_its_ctag_bump():
 
 
 def test_the_dav_writer_guard_is_not_vacuous():
-    defs, aliases = module_index(_handlers_source())
+    source = _handlers_source()
+    defs, aliases = module_index(source)
     exposed = dav_exposed_models()
+    model_writers = model_dav_writers(exposed)
     writers = set()
     for name in tools.WRITE_TOOLS:
-        _names, attrs = reach(defs, aliases, tools.TOOLS[name]["handler"])
-        if any(m in exposed and _MUTATOR_VERB.match(a) for m, a in attrs):
+        _names, attrs = reach(defs, aliases, tools.TOOLS[name]["handler"],
+                              service_aliases=service_aliases_of(source))
+        if any((m in exposed and _MUTATOR_VERB.match(a))
+               or (m, a) in model_writers for m, a in attrs):
             writers.add(name)
-    # One anchor per DAV surface the connector writes today.
+    # One anchor per DAV surface the connector writes today — and, since
+    # lot 1b (L6), the protocol tools that reach tasks through the service
+    # (create_protocol through a model cascade, update_protocol through the
+    # alignment).
     assert {"create_note", "append_to_note", "create_task", "complete_task",
-            "create_hearing", "create_partie", "update_partie"} <= writers, writers
+            "create_hearing", "create_partie", "update_partie",
+            "create_protocol", "update_protocol", "add_protocol_step",
+            "update_protocol_step"} <= writers, writers
 
 
 def test_the_handlers_import_models_only_through_an_alias():

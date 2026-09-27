@@ -479,6 +479,11 @@ def _step_row(extra: Optional[dict[str, Any]] = None) -> dict:
         ),
         "mandatory": _bool(),
         "deadline_locked": _bool(),
+        "deadline_offset_days": _nint(
+            "Days after the protocol's start date the template computes "
+            "this deadline from (art. 83 C.p.c.): a step that has one moves "
+            "with a new start date unless completed or a confirmed CS date. "
+            "null on a custom step."),
         "date_confirmed": _bool(),
         "completed_date": _nstr(),
         "linked_task_id": _nstr(),
@@ -488,6 +493,7 @@ def _step_row(extra: Optional[dict[str, Any]] = None) -> dict:
             "Equivalent to `status == \"en_retard\"` — both come from one "
             "predicate, so they can never contradict each other."
         ),
+        **_phase_pair(),
         **_stamps(),
         # After _stamps: the step etag's one exception (the overdue stamp).
         **_step_provenance(),
@@ -885,6 +891,88 @@ def _phase_bulk_result(entity_type: str) -> dict:
         "warnings": _arr(_str(), "French; empty when nothing is amiss."),
         **_write_protocol_keys(),
     })
+
+
+# ── Lot 1b (L6) — the protocol writes ───────────────────────────────────
+
+_PROTOCOL_TASK_SYNC = (
+    "About the LINKED TASKS this write created or moved (the protocol and "
+    "its steps are not synced to the phone; their tasks are). false = no "
+    "task was written — or one was and its sync trigger failed, which a "
+    "warning then says: do NOT retry."
+)
+
+
+def _protocol_write_entity(extra: Optional[dict[str, Any]] = None) -> dict:
+    props: dict[str, Any] = {
+        "id": _str("The protocol id."),
+        "dossier_id": _str(),
+        "dossier_file_number": _str(),
+        "dossier_title": _str(),
+        "label": _str("The protocol title."),
+        "date": _nstr("The start date, YYYY-MM-DD."),
+        "protocol_type": _str("cq_simplifié | cs_ordinaire | conventionnel."),
+        "status": _str("actif | suspendu | complété — as stored now."),
+        "end_date": _nstr("YYYY-MM-DD — the latest step deadline."),
+        "closed_by": _str(
+            "« auto » (its last step's completion), « mcp », « web »…; '' "
+            "while actif."),
+        **_written_etag(),
+    }
+    if extra:
+        props.update(extra)
+    return _obj(props, optional=("etag",))
+
+
+def _step_brief() -> dict:
+    """A step in a protocol WRITE result: ids, dates, codes and the etag —
+    never its notes or description (write results are stored 24 h)."""
+    return _obj({
+        "id": _str(),
+        "order": _int(),
+        "title": _str(),
+        "deadline_date": _nstr("YYYY-MM-DD."),
+        "deadline_offset_days": _nint(
+            "Template offset in days after the start date; null on a "
+            "custom step."),
+        "status": _str("Derived from the deadline, as in list_protocol_steps."),
+        "mandatory": _bool(),
+        "deadline_locked": _bool("A CQ C.p.c. deadline: never editable."),
+        "date_is_suggestion": _bool(
+            "true = a CS template date not yet confirmed: a new start "
+            "date moves it. Setting it (update_protocol_step "
+            "deadline_date) confirms it."),
+        "linked_task_id": _nstr(),
+        **_phase_pair(),
+        "etag": _str(
+            "The step's etag as stored after this write — pass it as "
+            "update_protocol_step's `expected_etag`."),
+    }, optional=("etag",))
+
+
+def _step_write_entity() -> dict:
+    return _written_entity({
+        "protocol_id": _str(),
+        "status": _str("The step status as stored now."),
+        "mandatory": _bool("A C.p.c. template step."),
+        **_written_etag(),
+    }, optional=("etag",))
+
+
+def _protocol_etag_key() -> dict[str, Any]:
+    return {"protocol_etag": _str(
+        "The PROTOCOL's etag re-read after this write (a step write "
+        "restamps it) — update_protocol's `expected_etag`. '' when the "
+        "re-read failed: re-read with list_protocol_steps.")}
+
+
+def _protocol_sync_keys() -> dict[str, Any]:
+    return {
+        "ctag_bumped": _bool(_PROTOCOL_TASK_SYNC),
+        "dav_synced": _bool(
+            "ctag_bumped AND the dossier's collection is visible to DavX5 "
+            "(a fermé/archivé dossier's is not)."),
+    }
 
 
 OUTPUT_SCHEMAS: dict[str, dict] = {
@@ -1762,9 +1850,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                 "severity": _str(),
                 "label": _str(),
                 "detail": _str(
-                    "French. Says what to do IN THE APPLICATION: this "
-                    "connector cannot create a protocol, verify an identity "
-                    "or file a signification."
+                    "French. Says what to do IN THE APPLICATION — the "
+                    "connector never verifies an identity or a conflict."
                 ),
             })),
         }), "One entry per dossier WITH findings; clean files are omitted."),
@@ -1826,8 +1913,22 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "start_date": _nstr(),
             "end_date": _nstr(),
             "notes": _str(),
+            "closed_by": _str(
+                "Who took the protocol out of « actif »: « auto » = the "
+                "completion of its last step (reopening one of its steps "
+                "reactivates it); « web » / « mcp » / … = a deliberate "
+                "status change; '' = actif, or closed before this was "
+                "recorded."),
+            "closed_at": _nstr("ISO-8601 Montréal; null while actif."),
             "steps": _arr(_step_row()),
             **_stamps(),
+            # After _stamps: the protocol etag is the one update_protocol
+            # expects.
+            "etag": _str(
+                "Concurrency token of the stored protocol — pass it as "
+                "update_protocol's `expected_etag`. Moved by every write to "
+                "the protocol (a step edit restamps it too). '' on a legacy "
+                "document that never carried one."),
         }, optional=_PROVENANCE_KEYS)),
     }),
 
@@ -2103,6 +2204,144 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "protocol_step_effect": _task_status_effect(),
         },
     ),
+
+    "create_protocol": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « protocol »."),
+        "entity": _protocol_write_entity(),
+        "steps": _arr(_step_brief(), "Every step, in order — empty for a "
+                                     "conventionnel protocol."),
+        "tasks_created": _int("Linked tasks created (0 unless asked)."),
+        "tasks_linked": _int("Of those, the ones linked to their step."),
+        "tasks_failed": _int("Steps whose task could not be created."),
+        **_protocol_sync_keys(),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+
+    "update_protocol": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « protocol »."),
+        "entity": _protocol_write_entity({
+            "previous_status": _str("The status before this call."),
+        }),
+        "changed_fields": _arr(_str(), (
+            "The fields this call actually changed. EMPTY = every value "
+            "sent was already stored: nothing was written.")),
+        "recompute": _obj({
+            "moved": _arr(_obj({
+                "step_id": _str(),
+                "title": _str(),
+                "from": _nstr("The old deadline, YYYY-MM-DD."),
+                "to": _nstr("The new deadline, YYYY-MM-DD."),
+                "etag": _str("The moved step's new etag."),
+                "linked_task_id": _nstr(),
+                "task_outcome": {
+                    "type": "string",
+                    "enum": ["none", "aligned", "unchanged", "diverged",
+                             "closed", "missing", "failed"],
+                    "description": (
+                        "What its linked task did: aligned = followed the "
+                        "step; diverged = its own date, set by hand, left "
+                        "alone; closed = terminée/annulée, left alone; "
+                        "none = no linked task."),
+                },
+            }, optional=("etag",)), "Steps a new start_date moved."),
+            "preserved": _arr(_obj({
+                "step_id": _str(),
+                "title": _str(),
+                "reason": {
+                    "type": "string", "enum": ["completed", "confirmed"],
+                    "description": (
+                        "completed = a past deadline is history; confirmed "
+                        "= a CS date the lawyer confirmed."),
+                },
+            }), "Template steps a new start_date did NOT move."),
+        }, description="Empty unless start_date changed."),
+        "linked_tasks": _obj({
+            "aligned": _int(), "unchanged": _int(), "diverged": _int(),
+            "closed": _int(), "missing": _int(), "failed": _int(),
+        }, description="Counts over the moved steps' linked tasks."),
+        "open_steps": _int("Steps not « complété », after this call."),
+        **_protocol_sync_keys(),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+
+    "add_protocol_step": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « protocol_step »."),
+        "entity": _step_write_entity(),
+        "step": _step_brief(),
+        **_protocol_etag_key(),
+        "linked_task_id": _nstr("The task created and linked, if any."),
+        "task_created": _bool(),
+        **_protocol_sync_keys(),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
+
+    "update_protocol_step": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("Always « protocol_step »."),
+        "entity": _step_write_entity(),
+        "changed_fields": _arr(_str(), (
+            "What this call changed (« status » for a status change). "
+            "EMPTY = nothing was written: the values, or the state, were "
+            "already stored.")),
+        "date_confirmed_now": _bool(
+            "true = this call confirmed a CS template date: a new start "
+            "date will no longer move it."),
+        "linked_task": _obj({
+            "task_id": _nstr(),
+            "outcome": {
+                "type": "string",
+                "enum": ["none", "aligned", "unchanged", "diverged",
+                         "closed", "missing", "failed"],
+                "description": (
+                    "What the linked task did when the DEADLINE changed "
+                    "(aligned = followed it; diverged = its own date, "
+                    "left alone); none = the deadline did not change or "
+                    "no task is linked."),
+            },
+            "ctag_bumped": _bool(),
+        }),
+        "status_change": _obj({
+            "requested": _bool(
+                "false = the call named no status (every other key is then "
+                "empty). true with equal before/after statuses = the step "
+                "already had it: nothing was written."),
+            "step_status_before": _str(),
+            "step_status_after": _str(
+                "RE-READ after the write; '' when that failed (`note`)."),
+            "task_id": _nstr(),
+            "task_status_before": _str(),
+            "task_status_after": _str("RE-READ after the write."),
+            "task_sync": {
+                "type": "string",
+                "enum": ["none", "synced", "noop", "skipped_cancelled",
+                         "skipped", "missing", "failed"],
+                "description": (
+                    "What the cascade did to the linked task: synced = "
+                    "written; noop = already agreed; skipped_cancelled = "
+                    "an annulée task, never touched; none = no linked "
+                    "task, or no status change."),
+            },
+            "protocol_status_before": _str(),
+            "protocol_status_after": _str("RE-READ after the write."),
+            "protocol_closed": _bool(
+                "true = that was the last open step: the WHOLE protocol "
+                "closed and its steps left get_agenda."),
+            "protocol_reopened": _bool(
+                "true = the protocol its last step had closed is actif "
+                "again."),
+            "note": _str("French; empty when there is nothing to add."),
+        }),
+        **_protocol_etag_key(),
+        **_protocol_sync_keys(),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }),
 
     "create_task": _entity_write_result({
         "status": _str("Always « à_faire » — a created task is WORK, "

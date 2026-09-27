@@ -84,6 +84,10 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # update_note (revue L5): only a « <…> » span is refused — the sanitizer
     # deletes exactly that; a lone « < » is stored intact.
     "unpaired angle brackets are refused",
+    # Lot 1b (L6): create_protocol exists — and record_signification had
+    # made « cannot … file a signification » false since July 2026.
+    "cannot create a protocol",
+    "cannot file a signification",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

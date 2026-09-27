@@ -593,6 +593,10 @@ _TIME_ENTRY_ETAG_READERS = ("list_time_entries",)
 _EXPENSE_ETAG_READERS = ("list_expenses",)
 _TASK_ETAG_READERS = ("list_tasks",)
 _NOTE_ETAG_READERS = ("get_note", "list_notes")
+# A protocol's etag is on its list_protocol_steps object; a step's on its
+# row there, and on the get_agenda urgent-step rows.
+_PROTOCOL_ETAG_READERS = ("list_protocol_steps",)
+_STEP_ETAG_READERS = ("list_protocol_steps", "get_agenda")
 
 
 def _expected_etag_required_when(readers: tuple[str, ...], when: str) -> dict:
@@ -723,6 +727,12 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # cause. The replaced prose of a note is kept (revisions); the rest is
     # not — which is why the hint matters.
     "update_task", "reopen_task", "update_note", "edit_analyse",
+    # Lot 1b (L6) — the protocol edits. Each REPLACES a stored value: a
+    # protocol's fields or status (and, by a new start date, the template
+    # deadlines and the linked tasks' due dates), a step's fields or
+    # status (and, by the cascade, its task's and its protocol's). The
+    # two creators (create_protocol, add_protocol_step) replace nothing.
+    "update_protocol", "update_protocol_step",
 })
 
 # Names that PROMISE an edit. A tool whose name starts with one of these must
@@ -1069,6 +1079,13 @@ _EXPENSE_CATEGORIES = [
     "signification", "expertise", "transcription", "deplacement",
     "photocopie", "timbre_judiciaire", "autre",
 ]
+# Lot 1b (L6) — the protocol vocabularies, copied from models.protocol
+# (VALID_PROTOCOL_TYPES, VALID_STATUSES, STEP_STATUS_TARGETS) for the same
+# firestore-at-import reason; pinned against it by
+# tests/test_mcp_protocol_writes.py.
+_PROTOCOL_TYPES = ["cq_simplifié", "cs_ordinaire", "conventionnel"]
+_PROTOCOL_STATUSES = ["actif", "suspendu", "complété"]
+_STEP_STATUS_TARGETS = ["complété", "à_venir"]
 
 # Analyse documentaire — DÉRIVÉS eux aussi, du même précédent.
 # `utils/analyse_taxonomies` est pur (aucun import de modèle, aucun client
@@ -1823,10 +1840,9 @@ TOOLS: dict[str, dict] = {
             "`signalement` = worth a look, not a breach. Codes are stable "
             "across runs, so a file can be tracked from one sweep to the "
             "next. "
-            "EVERY FINDING IS AN OBSERVATION, never an instruction: this "
-            "connector cannot create a protocol, verify an identity or file "
-            "a signification, and each `detail` says what to do in the "
-            "application. "
+            "EVERY FINDING IS AN OBSERVATION, never an instruction: each "
+            "`detail` says what to do in the application — and this "
+            "connector never verifies an identity or a conflict. "
             "ALWAYS read `scope.checks_skipped` and `data_completeness` "
             "before reporting a file as clean: when the protocol index or "
             "the client contacts cannot be read, those checks are SUPPRESSED "
@@ -2069,7 +2085,10 @@ TOOLS: dict[str, dict] = {
             "the template's C.p.c. regime does not govern the dossier's "
             "forum (e.g. a Cour du Québec simplified-track template — arts. "
             "535.x — on a Superior Court file), so its tracked deadlines "
-            "are suspect and must be raised, not relied on."
+            "are suspect and must be raised, not relied on. Each protocol "
+            "carries the `etag` update_protocol expects and `closed_by` "
+            "(« auto » = closed by its last step's completion); each step "
+            "the `etag` update_protocol_step expects."
         ),
         "input_schema": {
             "type": "object",
@@ -2670,6 +2689,234 @@ TOOLS: dict[str, dict] = {
         "idempotency": IDEMPOTENCY_OPTIONAL,
         "concurrency": CONCURRENCY_OPTIONAL,
         "etag_readers": _TASK_ETAG_READERS,
+    },
+    "create_protocol": {
+        "title": "Créer un protocole",
+        "description": (
+            "WRITE — create a dossier's case protocol from a template: "
+            "cq_simplifié (Cour du Québec simplified track: C.p.c. "
+            "deadlines, locked), cs_ordinaire (Cour supérieure: suggested "
+            "dates to confirm) or conventionnel (no steps — add them with "
+            "add_protocol_step). A dossier has at most ONE actif protocol: "
+            "refused while one exists (suspend or complete it first with "
+            "update_protocol). A template whose C.p.c. regime does not "
+            "govern the dossier's court is refused, naming the right one. "
+            "Deadlines are computed from start_date (art. 83 C.p.c.). No "
+            "task is created unless create_linked_tasks is true (one per "
+            "step, synced to the phone, linked so that completing one "
+            "completes the other). Returns each step's id, deadline, phase "
+            "and etag, and the protocol's etag."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dossier_id": _id(
+                    "The dossier (UUIDv4). An id that does not resolve is "
+                    "refused."),
+                "protocol_type": {
+                    "type": "string", "enum": _PROTOCOL_TYPES,
+                    "description": (
+                        "The template. Its regime must govern the "
+                        "dossier's court (see regime_mismatch in "
+                        "list_protocol_steps)."),
+                },
+                "start_date": _date(
+                    "YYYY-MM-DD — the date the template's deadlines run "
+                    "from (e.g. service of the originating application)."),
+                "title": {
+                    "type": "string", "maxLength": 200,
+                    "description": (
+                        "Default « Protocole de l'instance »."),
+                },
+                "notes": {
+                    "type": "string", "maxLength": 2000,
+                    "description": "Free notes on the protocol, in French.",
+                },
+                "create_linked_tasks": {
+                    "type": "boolean",
+                    "description": (
+                        "Default false. true creates one task per step "
+                        "(title, deadline, phase copied) on the dossier."),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["dossier_id", "protocol_type", "start_date"],
+            "additionalProperties": False,
+        },
+        "handler": "create_protocol",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "update_protocol": {
+        "title": "Modifier un protocole",
+        "annotations": {
+            # Values already stored write nothing: a replay is a no-op.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — REPLACES the protocol fields you name; values already "
+            "stored write nothing. A new start_date RECOMPUTES the "
+            "template deadlines in the same write — except completed "
+            "steps and CS dates the lawyer truly confirmed, which stay "
+            "(`recompute`); a linked task still on its step's old date "
+            "follows, one moved by hand stays (`linked_tasks`). status "
+            "« suspendu » or « complété » takes the steps out of "
+            "get_agenda and stops the task↔step cascade; « actif » is "
+            "refused while another protocol of the dossier is actif. "
+            "Never the type, the dossier or the steps "
+            "(update_protocol_step). `notes` replaces without history."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "protocol_id": _id(
+                    "The protocol (UUIDv4), from list_protocol_steps."),
+                "title": {
+                    "type": "string", "minLength": 1, "maxLength": 200,
+                    "description": "New title.",
+                },
+                "notes": {
+                    "type": "string", "maxLength": 2000,
+                    "description": "New notes — replaces the whole text.",
+                },
+                "court": {
+                    "type": "string", "maxLength": 200,
+                    "description": "The court the protocol runs before.",
+                },
+                "start_date": _date(
+                    "New start date, YYYY-MM-DD — recomputes the template "
+                    "deadlines (see description)."),
+                "status": {
+                    "type": "string", "enum": _PROTOCOL_STATUSES,
+                    "description": (
+                        "« suspendu » / « complété » close it (stamped "
+                        "closed_by « mcp »); « actif » reactivates it."),
+                },
+                **_expected_etag_prop(_PROTOCOL_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["protocol_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_protocol",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _PROTOCOL_ETAG_READERS,
+    },
+    "add_protocol_step": {
+        "title": "Ajouter une étape de protocole",
+        "description": (
+            "WRITE — add a custom step at the end of an ACTIVE protocol "
+            "(refused on a suspended or completed one: reactivate it with "
+            "update_protocol first). A custom step is never mandatory nor "
+            "locked, and its deadline is yours to set — compute it with "
+            "compute_judicial_deadline. create_linked_task true also "
+            "creates a task with the step's title, deadline and phase, "
+            "synced to the phone and linked to the step."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "protocol_id": _id(
+                    "The protocol (UUIDv4), from list_protocol_steps."),
+                "title": {
+                    "type": "string", "minLength": 1, "maxLength": 300,
+                    "description": "Step title, in French.",
+                },
+                "description": {
+                    "type": "string", "maxLength": 2000,
+                    "description": "What the step requires.",
+                },
+                "cpc_reference": {
+                    "type": "string", "maxLength": 200,
+                    "description": "E.g. « art. 246 C.p.c. ».",
+                },
+                "deadline_date": _date("YYYY-MM-DD. Omit for no deadline."),
+                **_phase_props(),
+                "notes": {
+                    "type": "string", "maxLength": 2000,
+                    "description": "Free notes on the step.",
+                },
+                "create_linked_task": {
+                    "type": "boolean",
+                    "description": "Default false — see description.",
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["protocol_id", "title"],
+            "additionalProperties": False,
+        },
+        "handler": "add_protocol_step",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "update_protocol_step": {
+        "title": "Modifier une étape de protocole",
+        "annotations": {
+            # Same values, or the same target status, write nothing.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — either REPLACE fields of a step (deadline_date, "
+            "notes, phase; title, description and cpc_reference on a "
+            "custom step only — a template step's C.p.c. text and a CQ "
+            "locked deadline are refused, naming the field) or set its "
+            "`status` — never both in one call (two writes, not atomic). "
+            "`status` is a TARGET, never a toggle: « complété » or "
+            "« à_venir »; the state it already has writes nothing. "
+            "CASCADE: the linked task follows (an annulée one is left "
+            "alone); completing the last open step closes the WHOLE "
+            "protocol; reopening a step of a protocol that closed that way "
+            "reactivates it (refused if another protocol is actif). "
+            "Otherwise refused on a protocol that is not actif. A changed "
+            "deadline carries along a linked task still on the old date. "
+            "`status_change` and `linked_task` are re-read after the write."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "protocol_id": _id(
+                    "The step's protocol (UUIDv4), from list_protocol_steps."),
+                "step_id": _id("The step (UUIDv4)."),
+                "deadline_date": _date(
+                    "New deadline, YYYY-MM-DD; \"\" clears it (refused on "
+                    "a template step)."),
+                "notes": {
+                    "type": "string", "maxLength": 2000,
+                    "description": (
+                        "New notes — replaces the whole text, no history."),
+                },
+                **_phase_props(),
+                "title": {
+                    "type": "string", "minLength": 1, "maxLength": 300,
+                    "description": "New title — custom steps only.",
+                },
+                "description": {
+                    "type": "string", "maxLength": 2000,
+                    "description": "New description — custom steps only.",
+                },
+                "cpc_reference": {
+                    "type": "string", "maxLength": 200,
+                    "description": "New reference — custom steps only.",
+                },
+                "status": {
+                    "type": "string", "enum": _STEP_STATUS_TARGETS,
+                    "description": (
+                        "The state wanted — alone in its call (see "
+                        "description)."),
+                },
+                **_expected_etag_prop(_STEP_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["protocol_id", "step_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_protocol_step",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _STEP_ETAG_READERS,
     },
     "create_task": {
         "title": "Créer une tâche",

@@ -1935,3 +1935,135 @@ def test_get_note_and_get_dossier_conform_with_the_theorie(monkeypatch):
     _conforms("get_note", read)
     assert read["note"]["structure"]["ok"] is True
     assert fake.peek(f"notes/{note['id']}") is not None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 1b (L6) — the protocol writes: one real-handler run per shape
+# ══════════════════════════════════════════════════════════════════════
+#
+# Real models, real service, real run_write, on the shared fake store: a
+# creation with and without its linked tasks, an edit that recomputes and
+# one that changes nothing, a step added with and without its task, a
+# step's fields (with a linked task carried along), its status (the
+# cascade that closes the protocol) and the state it already has.
+
+
+def _protocol_world(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    fake.seed("protocols/p1", {
+        "id": "p1", "dossier_id": "d1", "dossier_file_number": "2026-d1",
+        "dossier_title": "T", "title": "Protocole",
+        "protocol_type": "conventionnel", "status": "actif",
+        "start_date": DATE_ONLY, "end_date": DATE_ONLY, "court": "",
+        "notes": "", "etag": "pe", "created_at": DT, "updated_at": DT,
+    })
+    return fake
+
+
+def _protocol_step(fake, sid, *, order=1, status="à_venir", task=None,
+                   deadline=None):
+    fake.seed(f"protocols/p1/steps/{sid}", {
+        **handlers.protocol_model._default_step(), "id": sid, "order": order,
+        "title": f"Étape {sid}", "deadline_date": deadline or DATE_ONLY,
+        "status": status, "linked_task_id": task,
+        "created_at": DT, "updated_at": DT, "etag": f"se-{sid}",
+    })
+
+
+def test_create_protocol_conforms_with_and_without_tasks(monkeypatch):
+    _agenda_world(monkeypatch)
+    plain = handlers.create_protocol({
+        "dossier_id": "d1", "protocol_type": "cq_simplifié",
+        "start_date": "2026-09-01"})
+    _conforms("create_protocol", plain)
+    handlers.update_protocol({"protocol_id": plain["entity"]["id"],
+                              "status": "suspendu"})
+    tasks = handlers.create_protocol({
+        "dossier_id": "d1", "protocol_type": "cs_ordinaire",
+        "start_date": "2026-09-01", "create_linked_tasks": True})
+    _conforms("create_protocol", tasks)
+    assert tasks["tasks_created"] and tasks["ctag_bumped"] is True
+    empty = handlers.create_protocol({
+        "dossier_id": "d2", "protocol_type": "conventionnel",
+        "start_date": "2026-09-01"})
+    _conforms("create_protocol", empty)
+    assert empty["steps"] == []
+
+
+def test_update_protocol_conforms_on_recompute_and_noop(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    created = handlers.create_protocol({
+        "dossier_id": "d1", "protocol_type": "cq_simplifié",
+        "start_date": "2026-09-01", "create_linked_tasks": True})
+    pid = created["entity"]["id"]
+    handlers.update_protocol_step({"protocol_id": pid,
+                                   "step_id": created["steps"][0]["id"],
+                                   "status": "complété"})
+    moved = handlers.update_protocol({"protocol_id": pid,
+                                      "start_date": "2026-10-05"})
+    _conforms("update_protocol", moved)
+    assert moved["recompute"]["moved"] and moved["recompute"]["preserved"]
+    noop = handlers.update_protocol({"protocol_id": pid,
+                                     "start_date": "2026-10-05"})
+    _conforms("update_protocol", noop)
+    assert noop["changed_fields"] == []
+    closed = handlers.update_protocol({"protocol_id": pid,
+                                       "status": "complété"})
+    _conforms("update_protocol", closed)
+    assert fake.peek(f"protocols/{pid}")["closed_by"] == "mcp"
+
+
+def test_add_protocol_step_conforms_with_and_without_its_task(monkeypatch):
+    _protocol_world(monkeypatch)
+    plain = handlers.add_protocol_step({"protocol_id": "p1",
+                                        "title": "Plaidoirie"})
+    _conforms("add_protocol_step", plain)
+    linked = handlers.add_protocol_step({
+        "protocol_id": "p1", "title": "Expertise",
+        "deadline_date": "2099-06-01", "create_linked_task": True})
+    _conforms("add_protocol_step", linked)
+    assert linked["linked_task_id"] and linked["ctag_bumped"] is True
+
+
+def test_update_protocol_step_conforms_on_fields_status_and_noop(monkeypatch):
+    fake = _protocol_world(monkeypatch)
+    old = datetime(2099, 11, 2, tzinfo=UTC)
+    _protocol_step(fake, "s1", task="t1", deadline=old)
+    _protocol_step(fake, "s2", order=2)
+    _agenda_task(fake, due_date=old)
+    fields = handlers.update_protocol_step({
+        "protocol_id": "p1", "step_id": "s1", "deadline_date": "2099-11-20",
+        "notes": "Suivi."})
+    _conforms("update_protocol_step", fields)
+    assert fields["linked_task"]["outcome"] == "aligned"
+    noop = handlers.update_protocol_step({
+        "protocol_id": "p1", "step_id": "s1", "notes": "Suivi."})
+    _conforms("update_protocol_step", noop)
+    already = handlers.update_protocol_step({
+        "protocol_id": "p1", "step_id": "s1", "status": "à_venir"})
+    _conforms("update_protocol_step", already)
+    first = handlers.update_protocol_step({
+        "protocol_id": "p1", "step_id": "s1", "status": "complété"})
+    _conforms("update_protocol_step", first)
+    closing = handlers.update_protocol_step({
+        "protocol_id": "p1", "step_id": "s2", "status": "complété"})
+    _conforms("update_protocol_step", closing)
+    assert closing["status_change"]["protocol_closed"] is True
+    reopened = handlers.update_protocol_step({
+        "protocol_id": "p1", "step_id": "s2", "status": "à_venir"})
+    _conforms("update_protocol_step", reopened)
+    assert reopened["status_change"]["protocol_reopened"] is True
+
+
+def test_list_protocol_steps_conforms_with_its_etags_and_closure(monkeypatch):
+    fake = _protocol_world(monkeypatch)
+    _protocol_step(fake, "s1")
+    fake.seed("protocols/p1", {**fake.peek("protocols/p1"),
+                               "status": "complété", "closed_by": "auto",
+                               "closed_at": DT})
+    payload = handlers.list_protocol_steps({"dossier_id": "d1",
+                                            "include_history": True})
+    _conforms("list_protocol_steps", payload)
+    proto = payload["protocols"][0]
+    assert proto["closed_by"] == "auto" and proto["etag"] == "pe"
+    assert proto["steps"][0]["deadline_offset_days"] is None

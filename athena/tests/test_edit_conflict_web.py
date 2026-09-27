@@ -467,21 +467,22 @@ _LOTS = ("Lot 1", "Lot 2", "Lot 3", "Lot 4", "Lot 5")
 
 _MUTATOR = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
-    r"delete|toggle|complete|attach|link|import)_"
+    r"delete|toggle|complete|attach|link|import|add)_"
 )
 
 
-def _handler_reach() -> dict[str, set[tuple[str, str]]]:
-    """``{write tool: {(models module, mutator)}}`` — what each write
-    handler reaches, following the names it references inside
-    ``mcp/handlers.py`` (its delegates, the module-level tables whose
-    lambdas hold a setter) down to ``<models alias>.<verb>_…``."""
-    tree = ast.parse(pathlib.Path(handlers.__file__).read_text(encoding="utf-8"))
-    aliases, top = {}, {}
+def _module_index(source: str) -> tuple[dict, dict, dict]:
+    """(module-level name → node, models alias → module, services alias →
+    service module) of a source."""
+    tree = ast.parse(source)
+    aliases, services, top = {}, {}, {}
     for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module == "models":
             for a in node.names:
                 aliases[a.asname or a.name] = a.name
+        elif isinstance(node, ast.ImportFrom) and node.module == "services":
+            for a in node.names:
+                services[a.asname or a.name] = a.name
         elif isinstance(node, ast.FunctionDef):
             top[node.name] = node
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -489,14 +490,34 @@ def _handler_reach() -> dict[str, set[tuple[str, str]]]:
                       else [node.target]):
                 if isinstance(t, ast.Name):
                     top[t.id] = node
+    return top, aliases, services
 
-    def reach(start: str) -> set[tuple[str, str]]:
-        seen, stack, found = set(), [start], set()
+
+def _handler_reach() -> dict[str, set[tuple[str, str]]]:
+    """``{write tool: {(models module, mutator)}}`` — what each write
+    handler reaches, following the names it references inside
+    ``mcp/handlers.py`` (its delegates, the module-level tables whose
+    lambdas hold a setter) down to ``<models alias>.<verb>_…`` — and,
+    since lot 1b (L6), through a ``from services import X as Y`` binding
+    into that service module's own closure (the protocol tools write
+    through ``services/protocoles.py``, the door the web routes use)."""
+    indexes: dict[str, tuple[dict, dict, dict]] = {}
+
+    def index(module: str) -> tuple[dict, dict, dict]:
+        if module not in indexes:
+            path = (pathlib.Path(handlers.__file__) if module == ""
+                    else _ATHENA / "services" / f"{module}.py")
+            indexes[module] = _module_index(path.read_text(encoding="utf-8"))
+        return indexes[module]
+
+    def reach(module: str, start: str, seen: set) -> set[tuple[str, str]]:
+        top, aliases, services = index(module)
+        stack, found = [start], set()
         while stack:
             name = stack.pop()
-            if name in seen or name not in top:
+            if (module, name) in seen or name not in top:
                 continue
-            seen.add(name)
+            seen.add((module, name))
             for sub in ast.walk(top[name]):
                 if isinstance(sub, ast.Name) and sub.id in top:
                     stack.append(sub.id)
@@ -505,9 +526,14 @@ def _handler_reach() -> dict[str, set[tuple[str, str]]]:
                       and sub.value.id in aliases
                       and _MUTATOR.match(sub.attr)):
                     found.add((aliases[sub.value.id], sub.attr))
+                elif (isinstance(sub, ast.Attribute)
+                      and isinstance(sub.value, ast.Name)
+                      and sub.value.id in services):
+                    found |= reach(services[sub.value.id], sub.attr, seen)
         return found
 
-    return {t: reach(tools.TOOLS[t]["handler"]) for t in tools.WRITE_TOOLS}
+    return {t: reach("", tools.TOOLS[t]["handler"], set())
+            for t in tools.WRITE_TOOLS}
 
 
 def _edited_by_edit_tools() -> set[str]:
@@ -537,6 +563,11 @@ def test_the_reach_is_derived_and_not_vacuous():
     assert ("note", "update_note") in reach["append_to_note"]
     assert ("task", "update_task") in reach["complete_task"]
     assert ("document", "record_analyse") in reach["record_document_analysis"]
+    # Through the service (lot 1b, L6): the protocol, and the linked task a
+    # new start date carries along.
+    assert {("protocol", "update_protocol"),
+            ("task", "update_task")} <= reach["update_protocol"]
+    assert ("protocol", "set_step_status") in reach["update_protocol_step"]
     # Every write tool reaches at least one mutator: a handler the walker
     # cannot follow would otherwise vanish from the map in silence.
     assert all(reach.values()), [t for t, r in reach.items() if not r]

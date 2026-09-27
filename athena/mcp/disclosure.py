@@ -168,12 +168,17 @@ FAMILIES: tuple[Family, ...] = (
         key="agenda",
         label="AGENDA",
         scope=SCOPE_WRITE,
-        tools=("update_task", "reopen_task", "update_note", "edit_analyse"),
+        tools=(
+            "update_task", "reopen_task", "update_note", "edit_analyse",
+            "create_protocol", "update_protocol", "add_protocol_step",
+            "update_protocol_step",
+        ),
         consent_template="mcp/families/_agenda.html",
         checkbox_summary_fr=(
             "modifier ou déplacer une tâche ou une note, rouvrir une tâche, "
             "rédiger la théorie de la cause (le texte remplacé d'une note "
-            "est conservé)"
+            "est conservé), créer et tenir le protocole de l'instance et "
+            "ses étapes"
         ),
         instructions_en=(
             "`update_task` and `update_note` REPLACE the fields you name (a "
@@ -191,8 +196,21 @@ FAMILIES: tuple[Family, ...] = (
             "structure and etag; with operations it replaces or completes "
             "whole blocs (entete, A to H), or rewrites the note keeping its "
             "eight headings — `expected_etag` required, each replaced "
-            "version kept. Never retry an edit blindly after a stale_etag "
-            "refusal: re-read, then redo it on the current text."
+            "version kept. Protocols: `create_protocol` creates a "
+            "dossier's protocol from its template (one actif per dossier; "
+            "no task unless create_linked_tasks); `update_protocol` replaces "
+            "its title, notes, court, start_date or status — a new "
+            "start_date recomputes the template deadlines except completed "
+            "steps and truly-confirmed CS dates; `add_protocol_step` adds a "
+            "custom step to an actif protocol; `update_protocol_step` "
+            "replaces a step's deadline, notes or phase (a template step's "
+            "C.p.c. text is locked) OR sets its status to a TARGET "
+            "(complété, à_venir — never a toggle): the linked task follows, "
+            "completing the last open step closes the whole protocol, and "
+            "reopening a step of a protocol closed that way reactivates it. "
+            "A protocol's or a step's replaced notes are NOT kept. Never "
+            "retry an edit blindly after a stale_etag refusal: re-read, "
+            "then redo it on the current text."
         ),
     ),
     Family(

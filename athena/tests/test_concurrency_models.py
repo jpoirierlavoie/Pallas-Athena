@@ -616,6 +616,27 @@ def _analyse(db):
     return note["id"], did
 
 
+def _protocol(db):
+    """A protocol born through the REAL creator (conventionnel: no
+    template steps, so no regime gate on the dossier's tribunal)."""
+    did = _dossier(db)
+    proto, errors = protocol_model.create_protocol(
+        did, "conventionnel", DT, {"title": "Protocole"})
+    assert errors == [], errors
+    return proto["id"]
+
+
+def _protocol_step(db):
+    """A custom step of a real protocol. Its row lives in the steps
+    subcollection, and the tool is addressed by TWO ids: the factory
+    returns (row path under protocols/, the argument dict)."""
+    pid = _protocol(db)
+    step, errors = protocol_model.add_step(pid, {"title": "Étape"})
+    assert errors == [], errors
+    return (f"{pid}/steps/{step['id']}",
+            {"protocol_id": pid, "step_id": step["id"]})
+
+
 def _contains(fragment: str):
     """An expectation on a stored value that is not the argument verbatim
     (edit_analyse writes a bloc INTO the note)."""
@@ -650,6 +671,13 @@ _HANDLER_CASES = {
                      {"operations": [{"bloc": "C", "mode": "append",
                                       "content": "Ajout de Claude."}]},
                      ("content", _contains("Ajout de Claude."))),
+    # Lot 1b (L6) — the protocol edits. A step is addressed by its
+    # protocol AND its own id: no single id key (None), the factory hands
+    # the argument dict.
+    "update_protocol": ("protocols", _protocol, "protocol_id",
+                        {"notes": "Suivi"}, ("notes", "Suivi")),
+    "update_protocol_step": ("protocols", _protocol_step, None,
+                             {"notes": "Suivi"}, ("notes", "Suivi")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -681,6 +709,8 @@ _HANDLER_GETTERS = {
     "reopen_task": (task_model, "get_task_strict"),
     "update_note": (note_model, "get_note_strict"),
     "edit_analyse": (note_model, "find_analyse_note_strict"),
+    "update_protocol": (protocol_model, "get_protocol_strict"),
+    "update_protocol_step": (protocol_model, "get_protocol_strict"),
 }
 
 
@@ -690,7 +720,8 @@ def _e2e_setup(db, tool):
     row_id, arg_id = made if isinstance(made, tuple) else (made, made)
     path = f"{coll}/{row_id}"
     db.reset_logs()
-    return path, {id_key: arg_id, **extra}
+    ids = arg_id if isinstance(arg_id, dict) else {id_key: arg_id}
+    return path, {**ids, **extra}
 
 
 def _stored_as_expected(stored, expected) -> bool:

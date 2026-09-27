@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 53  # 27 lectures + 26 ecritures
+    assert len(tools.TOOLS) == 57  # 27 lectures + 30 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -312,6 +312,11 @@ _IDEMPOTENT_WRITES = frozenset({
     # and every théorie edit demand the CURRENT etag, so an identical
     # second call is refused rather than applied twice.
     "update_task", "reopen_task", "update_note", "edit_analyse",
+    # Lot 1b (L6). Values already stored — or the step state already
+    # reached — write nothing. The two creators are NOT here: a second
+    # add_protocol_step adds a second step, and a second create_protocol
+    # is refused (one actif per dossier), not answered with the first.
+    "update_protocol", "update_protocol_step",
 })
 
 
@@ -342,6 +347,9 @@ def test_write_tools_set_is_pinned():
         # Lot 1b — l'agenda : modifier et deplacer une tache ou une note,
         # rouvrir une tache, rediger la theorie de la cause.
         "update_task", "reopen_task", "update_note", "edit_analyse",
+        # Lot 1b, etape L6 — le protocole de l'instance et ses etapes.
+        "create_protocol", "update_protocol",
+        "add_protocol_step", "update_protocol_step",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -3861,13 +3869,23 @@ def test_checks_narrowing_is_declared_not_silent(cov):
 
 
 def test_the_report_never_promises_the_connector_will_fix_it(cov):
-    """The report creates a call to action the connector must not answer."""
+    """The report creates a call to action the connector must not answer.
+
+    Rewritten deliberately at lot 1b (L6): the description used to say the
+    connector « cannot create a protocol, verify an identity or file a
+    signification » — false about the signification since July 2026
+    (record_signification) and about the protocol since create_protocol.
+    What stays true, and what the regulatory checks need said, is that it
+    never verifies an identity or a conflict; every finding still points
+    to the application."""
     cov["dossiers"] = [_cov_dossier("d1", valeur=None, court_file_number="")]
     payload = handlers.get_coverage_report({})
     details = [f["detail"] for i in payload["items"] for f in i["findings"]]
     assert details
     description = tools.TOOLS["get_coverage_report"]["description"]
-    assert "cannot create a protocol" in description
+    assert "never verifies an identity or a conflict" in description
+    assert "in the application" in description
+    assert "cannot create a protocol" not in description
 
 
 def test_the_codes_enum_is_derived_from_the_running_checks():
