@@ -478,6 +478,11 @@ _EDIT_BY_DECLARATION: dict[str, str] = {
         "cascade, the linked protocol step's — up to closing the whole "
         "protocol (plan lot 0a, disclosure step)"
     ),
+    "decide_rendez_vous": (
+        "replaces a Bookings request's stored decision gate — and its "
+        "refusal cancels the client's Outlook meeting, which notifies him "
+        "(lot 1b, L7; plan D10)"
+    ),
 }
 
 
@@ -784,7 +789,7 @@ def test_the_concurrency_guard_catches_a_reader_without_an_etag_and_a_result_wit
 _DAV_SERIALIZER = re.compile(r"^[a-z_]+_to_v(card|todo|event|journal)$")
 _MUTATOR_VERB = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
-    r"delete|toggle|complete|attach|link|reopen|replace|remove|add)_"
+    r"delete|toggle|complete|attach|link|unlink|reopen|replace|remove|add)_"
 )
 _PACKAGE = _TESTS_DIR.parent
 
@@ -969,23 +974,61 @@ def model_dav_writers(
     return out
 
 
+def model_self_bumping(sources: "dict | None" = None) -> set:
+    """`(models module, function)` of every model function that bumps its
+    OWN DAV collection inside its write batch — a reference to
+    `bump_ctag_in_batch` in its body. Derived, never listed.
+
+    CLAUDE.md's documented exception to « the bump lives in the route » (a
+    batched write puts its bump IN the batch, since commit-then-bump leaves
+    N records DavX5 never re-syncs): `models/hearing.create_hearing_series`
+    and `delete_series`. A handler reaching ONLY such writers has nothing
+    left to bump — bumping again would be a second, pointless sync — so
+    the « reaches bump_ctag » half of the guard is satisfied by the model
+    (lot 1b, L7). The declaration half is not: the tool must still report
+    `ctag_bumped`/`dav_synced`."""
+    if sources is None:
+        sources = {
+            path.stem: path.read_text(encoding="utf-8")
+            for path in sorted((_PACKAGE / "models").glob("*.py"))
+        }
+    out: set = set()
+    for module, source in sorted(sources.items()):
+        for fn in ast.parse(source).body:
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            if any((isinstance(n, ast.Name) and n.id == "bump_ctag_in_batch")
+                   or (isinstance(n, ast.Attribute)
+                       and n.attr == "bump_ctag_in_batch")
+                   or (isinstance(n, ast.alias)
+                       and n.name == "bump_ctag_in_batch")
+                   for n in ast.walk(fn)):
+                out.add((module, fn.name))
+    return out
+
+
 def dav_writer_violations(
     source: str, registry: dict, output_schemas: dict, write_tools,
     exposed: set, *, services: "dict | None" = None,
     model_writers: "set | None" = None,
+    self_bumping: "set | None" = None,
 ) -> list[str]:
     """Every breach of « DAV-writes ⇔ reports its CTag bump »."""
     defs, aliases = module_index(source)
     svc = service_aliases_of(source)
     if model_writers is None:
         model_writers = model_dav_writers(exposed)
+    if self_bumping is None:
+        self_bumping = model_self_bumping()
     out: list[str] = []
     for name in sorted(registry):
         names, attrs = reach(defs, aliases, registry[name]["handler"],
                              service_aliases=svc, services=services)
-        mutated = sorted(f"{m}.{a}" for m, a in attrs
-                         if (m in exposed and _MUTATOR_VERB.match(a))
-                         or (m, a) in model_writers)
+        pairs = sorted((m, a) for m, a in attrs
+                       if (m in exposed and _MUTATOR_VERB.match(a))
+                       or (m, a) in model_writers)
+        mutated = [f"{m}.{a}" for m, a in pairs]
+        bumps_itself = bool(pairs) and all(p in self_bumping for p in pairs)
         is_write = name in write_tools
         declares = (_declares_property(output_schemas[name], "ctag_bumped")
                     and _declares_property(output_schemas[name], "dav_synced"))
@@ -998,7 +1041,7 @@ def dav_writer_violations(
             out.append(
                 f"{name}: writes a DAV-exposed record ({mutated}) but its "
                 "outputSchema does not declare ctag_bumped + dav_synced")
-        if mutated and "bump_ctag" not in names:
+        if mutated and "bump_ctag" not in names and not bumps_itself:
             out.append(f"{name}: writes {mutated} but never reaches bump_ctag")
         if declares and not mutated:
             out.append(
@@ -1045,7 +1088,8 @@ def test_the_dav_writer_guard_is_not_vacuous():
     assert {"create_note", "append_to_note", "create_task", "complete_task",
             "create_hearing", "create_partie", "update_partie",
             "create_protocol", "update_protocol", "add_protocol_step",
-            "update_protocol_step"} <= writers, writers
+            "update_protocol_step", "update_hearing",
+            "create_hearing_series", "decide_rendez_vous"} <= writers, writers
 
 
 def test_the_handlers_import_models_only_through_an_alias():
@@ -1100,6 +1144,17 @@ def undeclared(args):
 def phantom(args):
     return run_write("phantom", args, lambda: dossier_model.update_dossier("d", {}))
 
+def batched(args):
+    return run_write("batched", args, lambda: note_model.create_notes_batch({}))
+
+def half_batched(args):
+    return run_write("half_batched", args, lambda: _half(args))
+
+def _half(args):
+    note_model.create_notes_batch({})
+    note_model.update_note("n", {})
+    return {}
+
 def sneaky_read(args):
     return _good_impl(args)
 '''
@@ -1107,14 +1162,32 @@ def sneaky_read(args):
 
 def _fixture_world():
     registry = {n: {"handler": n} for n in
-                ("good", "silent", "undeclared", "phantom", "sneaky_read")}
+                ("good", "silent", "undeclared", "phantom", "sneaky_read",
+                 "batched", "half_batched")}
     reporting = {"type": "object", "properties": {
         "ctag_bumped": {"type": "boolean"}, "dav_synced": {"type": "boolean"}}}
     plain = {"type": "object", "properties": {}}
     outputs = {"good": reporting, "silent": reporting, "undeclared": plain,
-               "phantom": reporting, "sneaky_read": plain}
-    writes = frozenset({"good", "silent", "undeclared", "phantom"})
+               "phantom": reporting, "sneaky_read": plain,
+               "batched": reporting, "half_batched": reporting}
+    writes = frozenset({"good", "silent", "undeclared", "phantom",
+                        "batched", "half_batched"})
     return registry, outputs, writes
+
+
+def test_the_self_bumping_model_writers_are_derived_and_not_vacuous():
+    """The series writers are the documented exception (the bump rides in
+    the batch); an ordinary mutator never qualifies."""
+    found = model_self_bumping()
+    assert {("hearing", "create_hearing_series"),
+            ("hearing", "delete_series")} <= found, found
+    assert not {("hearing", "create_hearing"), ("hearing", "update_hearing"),
+                ("hearing", "unlink_hearing")} & found
+    planted = model_self_bumping({"x": (
+        "def f():\n    from dav.sync import bump_ctag_in_batch\n"
+        "    bump_ctag_in_batch(b, 'c')\n"
+        "def g():\n    return 1\n")})
+    assert planted == {("x", "f")}
 
 
 def test_the_model_dav_writers_are_derived_and_not_vacuous():
@@ -1222,8 +1295,14 @@ def test_the_dav_writer_guard_follows_services_and_model_cascades():
 def test_the_dav_writer_guard_catches_what_it_claims():
     registry, outputs, writes = _fixture_world()
     found = dav_writer_violations(
-        _DAV_FIXTURE, registry, outputs, writes, {"note"})
+        _DAV_FIXTURE, registry, outputs, writes, {"note"},
+        self_bumping={("note", "create_notes_batch")})
     assert not any(v.startswith("good:") for v in found), found
+    # A writer that bumps inside its own batch satisfies the bump half…
+    assert not any(v.startswith("batched:") for v in found), found
+    # …but only when EVERY record the tool writes is written that way.
+    assert any(v.startswith("half_batched:") and "never reaches bump_ctag" in v
+               for v in found), found
     assert any(v.startswith("silent:") and "never reaches bump_ctag" in v
                for v in found), found
     assert any(v.startswith("undeclared:") and "does not declare" in v
@@ -1426,3 +1505,90 @@ def test_the_conformance_scan_recognises_both_call_forms():
     calls = _handler_calls(fn)
     assert {"list_notes", "get_note"} <= calls
     assert "create_note" not in calls  # a MODEL call does not pass for the handler
+
+
+# ══════════════════════════════════════════════════════════════════════
+# (k) Outbound tools: declared, derived, and held to the strict policies
+# ══════════════════════════════════════════════════════════════════════
+#
+# Lot 1b (L7) shipped the connector's first effect OUTSIDE the practice's
+# records: decide_rendez_vous's refusal cancels a client's Outlook meeting
+# (plan D10). MCP's openWorldHint is DERIVED from tools.OUTBOUND_TOOLS; this
+# section makes the set itself derived from the code, both ways — a tool
+# whose closure (services followed) reaches an outbound module is a member,
+# and a member that reaches none is refused as a false alarm — and holds
+# every member to plan rules 3 and 7: the etag AND the key demanded.
+
+# Names through which an outbound effect is reached: the Graph calendar
+# module (the Bookings cancellation) and the raw Graph write verbs. A
+# reference to any of them in a tool's closure is the fact. The email
+# module is NOT a marker, deliberately: the closure collects bare names, and
+# `courriel` is also an ordinary local variable (services/rendez_vous reads
+# the requester's address into one) — a marker that fires on it would make
+# list_hearings an « outbound » tool. utils.courriel is forbidden outright
+# to every connector module and reached service instead (the
+# « client_message » and « invoice_status » nevers, tests/test_mcp_disclosure).
+_OUTBOUND_MARKERS = frozenset({
+    "graph_calendrier", "graph_post", "graph_patch", "graph_delete",
+})
+
+
+def outbound_violations(source: str, registry: dict, outbound: frozenset,
+                        *, services: "dict | None" = None) -> list[str]:
+    defs, aliases = module_index(source)
+    svc = service_aliases_of(source)
+    out: list[str] = []
+    for name in sorted(registry):
+        names, _attrs = reach(defs, aliases, registry[name]["handler"],
+                              service_aliases=svc, services=services)
+        reaches = bool(names & _OUTBOUND_MARKERS)
+        if reaches and name not in outbound:
+            out.append(f"{name}: reaches an outbound effect but is not in "
+                       "OUTBOUND_TOOLS (openWorldHint would under-warn)")
+        if name in outbound and not reaches:
+            out.append(f"{name}: in OUTBOUND_TOOLS but reaches no outbound "
+                       "effect — a false alarm")
+    return out
+
+
+def test_the_outbound_set_is_derived_from_the_code():
+    assert outbound_violations(
+        _handlers_source(), tools.TOOLS, tools.OUTBOUND_TOOLS) == []
+
+
+def test_every_outbound_tool_demands_its_key_and_its_etag():
+    assert tools.OUTBOUND_TOOLS, "non-vacuous: decide_rendez_vous"
+    for name in tools.OUTBOUND_TOOLS:
+        spec = tools.TOOLS[name]
+        assert name in tools.WRITE_TOOLS and name in tools.EDIT_TOOLS, name
+        assert spec.get("idempotency") == tools.IDEMPOTENCY_REQUIRED, name
+        assert spec.get("concurrency") == tools.CONCURRENCY_REQUIRED, name
+        required = spec["input_schema"].get("required", [])
+        assert {"idempotency_key", "expected_etag"} <= set(required), name
+
+
+_OUTBOUND_FIXTURE = '''
+from services import mailer as mailer_service
+
+def loud(args):
+    return run_write("loud", args, lambda: mailer_service.send(args))
+
+def quiet(args):
+    return run_write("quiet", args, lambda: {})
+'''
+
+
+def test_the_outbound_guard_catches_what_it_claims():
+    registry = {"loud": {"handler": "loud"}, "quiet": {"handler": "quiet"}}
+    services = {"mailer": "from utils import graph_calendrier\n"
+                          "def send(a):\n"
+                          "    graph_calendrier.annuler_reservation('x', 'y')\n"}
+    found = outbound_violations(_OUTBOUND_FIXTURE, registry, frozenset(),
+                                services=services)
+    assert any(v.startswith("loud:") and "not in OUTBOUND_TOOLS" in v
+               for v in found), found
+    found = outbound_violations(_OUTBOUND_FIXTURE, registry,
+                                frozenset({"loud", "quiet"}),
+                                services=services)
+    assert found == ["quiet: in OUTBOUND_TOOLS but reaches no outbound "
+                     "effect — a false alarm"], found

@@ -55,6 +55,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import document as document_model
     from models import dossier as dossier_model
     from models import expense as expense_model
+    from models import hearing as hearing_model
     from models import note as note_model
     from models import partie as partie_model
     from models import protocol as protocol_model
@@ -595,8 +596,10 @@ def _e2e_db(monkeypatch):
     # refuses proves nothing.
     # models.revision too: a content replacement stages its write-once
     # snapshot through that module's OWN client reference.
+    # hearing_model too (lot 1b, L7): update_hearing and decide_rendez_vous
+    # write calendar events through their model.
     return install(monkeypatch, *_MODULES, protocol_model, revision_model,
-                   dav_sync, write_support)
+                   hearing_model, dav_sync, write_support)
 
 
 def _closed_task(db):
@@ -635,6 +638,26 @@ def _protocol_step(db):
     assert errors == [], errors
     return (f"{pid}/steps/{step['id']}",
             {"protocol_id": pid, "step_id": step["id"]})
+
+
+def _hearing(db):
+    """A calendar event born through the REAL creator (« Général »)."""
+    doc, errors = hearing_model.create_hearing(
+        {"title": "Rencontre", "start_datetime": DT.replace(hour=14)})
+    assert errors == [], errors
+    return doc["id"]
+
+
+def _booking(db):
+    """A pending « Bookings with me » request: a real event, then the
+    server-owned gate the Bookings sync sets — through the model's own
+    server_fields door, the one the sync uses."""
+    hid = _hearing(db)
+    _doc, errors = hearing_model.update_hearing(hid, {}, server_fields={
+        "source": "bookings", "confirmation": "à_confirmer",
+        "graph_event_id": "EVT-1", "client_email": "client@ex.com"})
+    assert errors == [], errors
+    return hid
 
 
 def _contains(fragment: str):
@@ -678,6 +701,14 @@ _HANDLER_CASES = {
                         {"notes": "Suivi"}, ("notes", "Suivi")),
     "update_protocol_step": ("protocols", _protocol_step, None,
                              {"notes": "Suivi"}, ("notes", "Suivi")),
+    # Lot 1b (L7) — the calendar. The decision demands its key (plan rule
+    # 7), so its case carries one.
+    "update_hearing": ("hearings", _hearing, "hearing_id",
+                       {"notes": "Suivi"}, ("notes", "Suivi")),
+    "decide_rendez_vous": ("hearings", _booking, "hearing_id",
+                           {"action": "confirmer", "lier_partie": False,
+                            "idempotency_key": "cle-decision-e2e"},
+                           ("confirmation", "")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -694,7 +725,12 @@ _SECOND_ARGS = {
 # Tools that DEMAND expected_etag for the change the case makes (plan rule
 # 3, D8: replacing prose). They cannot « guard their own read » without
 # one — they refuse the call instead, which the own-read test asserts.
-_ETAG_DEMANDED = {"edit_analyse"}
+_ETAG_DEMANDED = {"edit_analyse", "decide_rendez_vous"}
+
+# A decision is taken ONCE (lot 1b, L7): the chained-edit test cannot make a
+# second, different write — confirming a confirmed request is the honest
+# no-op, refusing it is refused. Its second call proves that instead.
+_SINGLE_DECISION = {"decide_rendez_vous"}
 
 # The getter the HANDLER reads its record through (the bulk reader for the
 # reclassifiers) — the seam a rival write is slipped in after.
@@ -711,6 +747,8 @@ _HANDLER_GETTERS = {
     "edit_analyse": (note_model, "find_analyse_note_strict"),
     "update_protocol": (protocol_model, "get_protocol_strict"),
     "update_protocol_step": (protocol_model, "get_protocol_strict"),
+    "update_hearing": (hearing_model, "get_hearing_strict"),
+    "decide_rendez_vous": (hearing_model, "get_hearing_strict"),
 }
 
 
@@ -837,6 +875,16 @@ def test_a_chained_edit_presents_the_etag_the_first_one_returned(
     first = getattr(handlers, tool)(first_args)
     etag1 = first["entity"]["etag"]
     assert etag1 == db.peek(path)["etag"]
+
+    if tool in _SINGLE_DECISION:
+        # Another key: the same key with another expected_etag is refused
+        # as a different call (write_support's fingerprint).
+        second = getattr(handlers, tool)({
+            **args, "expected_etag": etag1,
+            "idempotency_key": "cle-decision-e2e-bis"})
+        assert second["changed"] is False
+        assert second["entity"]["etag"] == etag1 == db.peek(path)["etag"]
+        return
 
     if tool in _SECOND_ARGS:
         second_args = {**args, **_SECOND_ARGS[tool]}

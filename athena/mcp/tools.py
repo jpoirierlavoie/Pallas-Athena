@@ -27,6 +27,7 @@ from tz import to_mtl
 # models.* (see the literal-enum comment below).
 from utils import analyse_taxonomies as _tax
 from utils import phases
+from utils import recurrence
 
 # ── Money / date formatting (§10.1 conventions) ─────────────────────────
 
@@ -597,6 +598,11 @@ _NOTE_ETAG_READERS = ("get_note", "list_notes")
 # row there, and on the get_agenda urgent-step rows.
 _PROTOCOL_ETAG_READERS = ("list_protocol_steps",)
 _STEP_ETAG_READERS = ("list_protocol_steps", "get_agenda")
+# A calendar event's etag is on its list_hearings row and on the get_agenda
+# hearing rows; a pending Bookings request is listed only by
+# list_hearings (bookings: "pending").
+_HEARING_ETAG_READERS = ("list_hearings", "get_agenda")
+_RENDEZ_VOUS_ETAG_READERS = ("list_hearings",)
 
 
 def _expected_etag_required_when(readers: tuple[str, ...], when: str) -> dict:
@@ -733,7 +739,26 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # status (and, by the cascade, its task's and its protocol's). The
     # two creators (create_protocol, add_protocol_step) replace nothing.
     "update_protocol", "update_protocol_step",
+    # Lot 1b (L7) — the calendar. update_hearing REPLACES an event's fields
+    # (its slot, its status — annulée removes the Outlook copy —, its
+    # notes, which are not kept) and can move it or take it out of its
+    # series. decide_rendez_vous REPLACES a Bookings request's decision
+    # gate, and its refusal cancels the client's Outlook meeting: the one
+    # write here whose effect leaves the building (OUTBOUND_TOOLS below).
+    "update_hearing", "decide_rendez_vous",
 })
+
+# Writes with an effect OUTSIDE the practice's own records — a message a
+# third party receives. MCP's openWorldHint is DERIVED from this set in
+# list_tool_descriptors, never restated per tool (the override is refused
+# by tests/test_mcp_framework_guards (d)). decide_rendez_vous's refusal
+# cancels the Outlook meeting of a « Bookings with me » request, which
+# notifies the client: the connector's first outbound effect (plan D10).
+# A member must also declare idempotency AND concurrency « required »
+# (plan rules 3 and 7), and the guards derive membership from the code: a
+# tool whose closure reaches an outbound call is a member, and a member
+# that reaches none is refused as a false alarm.
+OUTBOUND_TOOLS: frozenset[str] = frozenset({"decide_rendez_vous"})
 
 # Names that PROMISE an edit. A tool whose name starts with one of these must
 # be in EDIT_TOOLS (destructiveHint) unless exempted with a reason in
@@ -1087,6 +1112,23 @@ _PROTOCOL_TYPES = ["cq_simplifié", "cs_ordinaire", "conventionnel"]
 _PROTOCOL_STATUSES = ["actif", "suspendu", "complété"]
 _STEP_STATUS_TARGETS = ["complété", "à_venir"]
 
+# Lot 1b (L7) — the calendar vocabularies, copied from models.hearing
+# (VALID_MODALITES, VALID_STATUSES, VALID_REMINDER_MINUTES) for the same
+# firestore-at-import reason; pinned against it by
+# tests/test_mcp_hearing_writes.py. The series frequencies and ceiling are
+# DERIVED from utils/recurrence (pure), the phase precedent.
+_HEARING_MODALITES = ["présentiel", "visioconférence", "téléphonique"]
+_HEARING_STATUSES = [
+    "confirmée", "à_confirmer", "reportée", "annulée", "terminée",
+]
+# A creation records a date that is either certain or still to confirm —
+# never a postponement, a cancellation or an event already held.
+_HEARING_CREATE_STATUSES = ["à_confirmer", "confirmée"]
+_HEARING_REMINDERS = [15, 30, 60, 120, 1440, 2880, 10080]
+_SERIES_FREQUENCIES = list(recurrence.VALID_FREQUENCIES)
+_SERIES_MAX = recurrence.MAX_SERIE_OCCURRENCES
+_RENDEZ_VOUS_ACTIONS = ["confirmer", "refuser"]
+
 # Analyse documentaire — DÉRIVÉS eux aussi, du même précédent.
 # `utils/analyse_taxonomies` est pur (aucun import de modèle, aucun client
 # Firestore au chargement), donc l'enum ne peut pas dériver du vocabulaire
@@ -1139,6 +1181,106 @@ def _phase_props() -> dict:
         },
     }
 
+
+
+def _hearing_modality_props() -> dict:
+    """modalite / conference_uri / reminder_minutes — shared, fresh per
+    usage, by create_hearing, create_hearing_series and update_hearing."""
+    return {
+        "modalite": {
+            "type": "string",
+            "enum": _HEARING_MODALITES,
+            "description": (
+                "présentiel (default at creation), visioconférence or "
+                "téléphonique."
+            ),
+        },
+        "conference_uri": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": (
+                "Video link — http:// or https:// only (anything else is "
+                "refused, naming this field). Shown on the phone and in "
+                "Outlook for a visioconférence."
+            ),
+        },
+        "reminder_minutes": {
+            "type": "integer",
+            "enum": _HEARING_REMINDERS,
+            "description": "Reminder before the start, in minutes (1440 = 24 h, the default).",
+        },
+    }
+
+
+def _hearing_create_props() -> dict:
+    """The create_hearing arguments — shared, fresh per usage, by
+    create_hearing and create_hearing_series (a series is N copies of ONE
+    create_hearing prototype, so the two cannot describe it two ways)."""
+    return {
+        "dossier_id": _id(
+            "The dossier this event belongs to (UUIDv4). Omit for "
+            "a standalone (« Général ») event."
+        ),
+        "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "Event title, in French.",
+        },
+        "hearing_type": {
+            "type": "string",
+            "enum": _HEARING_TYPES,
+            "description": (
+                "Two-tier vocabulary; the FORUM derives from it. "
+                "Defaults to 'rencontre' (extrajudiciaire) — pick "
+                "a judicial type only for a real court event."
+            ),
+        },
+        "date": _date("Event date, YYYY-MM-DD (Montréal). Required."),
+        "start_time": {
+            "type": "string",
+            "maxLength": 5,
+            "description": "HH:MM Montréal. Omit for an all-day event.",
+        },
+        "end_time": {
+            "type": "string",
+            "maxLength": 5,
+            "description": "HH:MM Montréal. Defaults to start + 1 h.",
+        },
+        "all_day": {
+            "type": "boolean",
+            "description": "true forces an all-day event.",
+        },
+        "location": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "Room, address or palais de justice.",
+        },
+        "court": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Court name, for judicial events.",
+        },
+        "judge": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Presiding judge, when known.",
+        },
+        "notes": {
+            "type": "string",
+            "maxLength": 1500,
+            "description": (
+                "Free notes, in French. A provenance stamp is "
+                "appended automatically."
+            ),
+        },
+        **_hearing_modality_props(),
+        "status": {
+            "type": "string",
+            "enum": _HEARING_CREATE_STATUSES,
+            "description": "à_confirmer (default) or confirmée when the date is certain.",
+        },
+    }
 
 # Items per bulk reclassification call. Sized in the MAX_ZIP_FILES tradition
 # — against gunicorn's 60 s SIGKILL, not against a round number: one batched
@@ -1358,8 +1500,12 @@ TOOLS: dict[str, dict] = {
             "today to +60 days, max span 366 days), optionally scoped to one "
             "dossier. Includes cancelled hearings (status annulée) — check the "
             "status field. Each row carries the derived forum "
-            "(judiciaire/extrajudiciaire), the modalité, and a conference_uri "
-            "for video events."
+            "(judiciaire/extrajudiciaire), the modalité, a conference_uri for "
+            "video events, and its etag (update_hearing). Two other modes, "
+            "exclusive of the date window and of each other: `serie_id` lists "
+            "one recurring chain whole (past included); `bookings` \"pending\" "
+            "lists the « Bookings with me » requests awaiting a decision "
+            "(decide_rendez_vous), with the requester's name and email."
         ),
         "input_schema": {
             "type": "object",
@@ -1373,6 +1519,21 @@ TOOLS: dict[str, dict] = {
                 "dossier_id": _id(
                     "Only hearings of this dossier (UUIDv4). Omit for all."
                 ),
+                "serie_id": _id(
+                    "List this recurring chain whole, past occurrences "
+                    "included (from a row's serie_id). Not with the date "
+                    "window, dossier_id or bookings."
+                ),
+                "bookings": {
+                    "type": "string",
+                    "enum": ["pending"],
+                    "description": (
+                        "\"pending\": the Bookings requests awaiting a "
+                        "decision — à_confirmer, or annulée_client (the "
+                        "client cancelled; refuser removes it). Not with the "
+                        "date window, dossier_id or serie_id."
+                    ),
+                },
                 "limit": _limit(25),
                 "cursor": _cursor(
                     "Hearings page OLDEST-first (agenda order), so the "
@@ -2992,74 +3153,16 @@ TOOLS: dict[str, dict] = {
             "_préparatoire) read as court events; it defaults to "
             "« rencontre » (extrajudiciaire). Times are Montréal local "
             "(HH:MM); omitting start_time makes it an all-day event. The "
-            "event is created with status à_confirmer and syncs to the "
-            "lawyer's phone; this connector can never edit or delete it. "
-            "Confirm with the user before calling."
+            "event is created à_confirmer unless you pass status confirmée, "
+            "and syncs to the lawyer's phone. Correct or reschedule it "
+            "later with update_hearing; it cannot be deleted here. For a "
+            "recurring event use create_hearing_series. Confirm with the "
+            "user before calling."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "dossier_id": _id(
-                    "The dossier this event belongs to (UUIDv4). Omit for "
-                    "a standalone (« Général ») event."
-                ),
-                "title": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 300,
-                    "description": "Event title, in French.",
-                },
-                "hearing_type": {
-                    "type": "string",
-                    "enum": _HEARING_TYPES,
-                    "description": (
-                        "Two-tier vocabulary; the FORUM derives from it. "
-                        "Defaults to 'rencontre' (extrajudiciaire) — pick "
-                        "a judicial type only for a real court event."
-                    ),
-                },
-                "date": _date("Event date, YYYY-MM-DD (Montréal). Required."),
-                "start_time": {
-                    "type": "string",
-                    "maxLength": 5,
-                    "description": (
-                        "HH:MM Montréal. Omit for an all-day event."
-                    ),
-                },
-                "end_time": {
-                    "type": "string",
-                    "maxLength": 5,
-                    "description": (
-                        "HH:MM Montréal. Defaults to start + 1 h."
-                    ),
-                },
-                "all_day": {
-                    "type": "boolean",
-                    "description": "true forces an all-day event.",
-                },
-                "location": {
-                    "type": "string",
-                    "maxLength": 300,
-                    "description": "Room, address or palais de justice.",
-                },
-                "court": {
-                    "type": "string",
-                    "maxLength": 200,
-                    "description": "Court name, for judicial events.",
-                },
-                "judge": {
-                    "type": "string",
-                    "maxLength": 200,
-                    "description": "Presiding judge, when known.",
-                },
-                "notes": {
-                    "type": "string",
-                    "maxLength": 1500,
-                    "description": (
-                        "Free notes, in French. A provenance stamp is "
-                        "appended automatically."
-                    ),
-                },
+                **_hearing_create_props(),
                 **_write_protocol_props(),
             },
             "required": ["title", "date"],
@@ -3068,6 +3171,230 @@ TOOLS: dict[str, dict] = {
         "handler": "create_hearing",
         "scope": SCOPE_WRITE,
         "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "create_hearing_series": {
+        "title": "Créer une série d'événements",
+        "description": (
+            "WRITE — create a RECURRING series: N ordinary events sharing "
+            "a serie_id, written in ONE atomic batch (all or nothing) and "
+            "synced to the phone. Same arguments as create_hearing, plus "
+            "`frequency` and EXACTLY one bound: `count` (1 to "
+            f"{_SERIES_MAX}) or `until` (YYYY-MM-DD, inclusive — refused, "
+            f"never truncated, past {_SERIES_MAX} occurrences). Each "
+            "occurrence keeps the Montréal wall-clock hour across "
+            "daylight-saving changes and is never moved off a weekend or "
+            "holiday. `idempotency_key` is REQUIRED. Change one occurrence "
+            "with update_hearing (detach_from_series takes it out of the "
+            "chain); list a chain with list_hearings(serie_id). Confirm "
+            "with the user before calling."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **_hearing_create_props(),
+                "frequency": {
+                    "type": "string",
+                    "enum": _SERIES_FREQUENCIES,
+                    "description": "How often the event repeats.",
+                },
+                "count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": _SERIES_MAX,
+                    "description": (
+                        "Number of occurrences, the first one included. "
+                        "Not with `until`."
+                    ),
+                },
+                "until": _date(
+                    "Last possible day, YYYY-MM-DD (inclusive). Not with "
+                    "`count`."
+                ),
+                **_write_protocol_props(),
+            },
+            "required": ["title", "date", "frequency", "idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": "create_hearing_series",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+    },
+    "update_hearing": {
+        "title": "Modifier un événement du calendrier",
+        "annotations": {
+            # Values already stored write nothing: a replay is a no-op.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — REPLACES the fields you name; a field you omit is "
+            "untouched, and values already stored write nothing. "
+            "Reschedule with date / start_time / end_time (Montréal): an "
+            "omitted hour keeps the stored wall-clock hour, an omitted end "
+            "keeps the duration. `status` annulée drops the event from "
+            "get_agenda and removes its Outlook copy at the next 10-minute "
+            "cycle (the phone shows it cancelled). `dossier_id` MOVES it "
+            "(\"\" = « Général ») — a series occurrence moves only with "
+            "detach_from_series true. A pending or refused Bookings request "
+            "is refused here (decide_rendez_vous). A CONFIRMED Bookings "
+            "rendez-vous can be edited, but Outlook, the client and "
+            "free/busy are NOT updated — say so to the user. Replaced notes "
+            "are NOT kept."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hearing_id": _id(
+                    "The event to modify (UUIDv4), from list_hearings or "
+                    "get_agenda."
+                ),
+                "title": {
+                    "type": "string", "minLength": 1, "maxLength": 300,
+                    "description": "New title, in French.",
+                },
+                "hearing_type": {
+                    "type": "string", "enum": _HEARING_TYPES,
+                    "description": "New type (the forum derives from it).",
+                },
+                "date": _date(
+                    "New day, YYYY-MM-DD (Montréal). Omitted: the stored day."
+                ),
+                "start_time": {
+                    "type": "string", "maxLength": 5,
+                    "description": (
+                        "New start, HH:MM Montréal; makes the event timed. "
+                        "Required to turn an all-day event into a timed one."
+                    ),
+                },
+                "end_time": {
+                    "type": "string", "maxLength": 5,
+                    "description": (
+                        "New end, HH:MM Montréal, same day, after the start. "
+                        "Omitted: the stored duration."
+                    ),
+                },
+                "all_day": {
+                    "type": "boolean",
+                    "description": (
+                        "true: an all-day event (then no start_time or "
+                        "end_time); false: a timed one (needs start_time if "
+                        "it was all-day)."
+                    ),
+                },
+                "location": {
+                    "type": "string", "maxLength": 300,
+                    "description": "New location; \"\" empties it.",
+                },
+                "court": {
+                    "type": "string", "maxLength": 200,
+                    "description": "New court; \"\" empties it.",
+                },
+                "judge": {
+                    "type": "string", "maxLength": 200,
+                    "description": "New judge; \"\" empties it.",
+                },
+                **_hearing_modality_props(),
+                "notes": {
+                    "type": "string", "maxLength": 2000,
+                    "description": (
+                        "REPLACES the whole notes (\"\" empties them); the "
+                        "old text is NOT kept. Refused, never truncated, "
+                        "past 2000 characters. Not with notes_append."
+                    ),
+                },
+                "notes_append": {
+                    "type": "string", "minLength": 1, "maxLength": 1500,
+                    "description": (
+                        "Appended under a dated « Ajouté par Claude » line; "
+                        "the notes as stored must still fit 2000 characters "
+                        "(refused otherwise). Not with notes."
+                    ),
+                },
+                "status": {
+                    "type": "string", "enum": _HEARING_STATUSES,
+                    "description": (
+                        "New status. terminée is refused on a future day."
+                    ),
+                },
+                "detach_from_series": {
+                    "type": "boolean",
+                    "description": (
+                        "true: this occurrence leaves its series and becomes "
+                        "a standalone event, in the same write as the other "
+                        "fields (a no-op when it is in no series)."
+                    ),
+                },
+                "dossier_id": _id(
+                    "MOVE the event to this dossier (UUIDv4), or \"\" for "
+                    "« Général ». An id that does not resolve is refused, "
+                    "never downgraded."
+                ),
+                **_expected_etag_prop(_HEARING_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["hearing_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_hearing",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _HEARING_ETAG_READERS,
+    },
+    "decide_rendez_vous": {
+        "title": "Confirmer ou refuser un rendez-vous Bookings",
+        "annotations": {
+            # The same decision twice writes nothing and never contacts the
+            # client again.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE, OUTBOUND — decide a pending « Bookings with me » "
+            "request (list them with list_hearings, bookings \"pending\"). "
+            "`confirmer`: the event enters the calendar and the phone; with "
+            "lier_partie (default true) the contact whose email is EXACTLY "
+            "the requester's is linked, and the call is refused when none "
+            "matches (resend with lier_partie false). A request the client "
+            "cancelled cannot be confirmed. `refuser` CANCELS THE OUTLOOK "
+            "MEETING, WHICH NOTIFIES THE CLIENT, with a fixed text you "
+            "cannot change; a request the client cancelled is only removed. "
+            "`expected_etag` (from that listing) and `idempotency_key` are "
+            "REQUIRED; the same decision twice writes nothing and never "
+            "contacts the client again. Always confirm with the user first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hearing_id": _id(
+                    "The pending request (UUIDv4), from list_hearings with "
+                    "bookings \"pending\"."
+                ),
+                "action": {
+                    "type": "string", "enum": _RENDEZ_VOUS_ACTIONS,
+                    "description": (
+                        "confirmer (accept) or refuser (decline — notifies "
+                        "the client)."
+                    ),
+                },
+                "lier_partie": {
+                    "type": "boolean",
+                    "description": (
+                        "confirmer only (default true): link the contact "
+                        "matched server-side on the requester's exact email."
+                    ),
+                },
+                **_expected_etag_prop(_RENDEZ_VOUS_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": [
+                "hearing_id", "action", "expected_etag", "idempotency_key",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": "decide_rendez_vous",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_REQUIRED,
+        "concurrency": CONCURRENCY_REQUIRED,
+        "etag_readers": _RENDEZ_VOUS_ETAG_READERS,
     },
     "create_time_entry": {
         "title": "Créer une entrée de temps",
@@ -4337,6 +4664,11 @@ def list_tool_descriptors(granted: Optional[frozenset[str]] = None) -> list[dict
             # sense, and a future editor gets the honest hint by membership
             # alone rather than by someone remembering to add an override.
             annotations["destructiveHint"] = True
+        # DERIVED from OUTBOUND_TOOLS: a tool whose effect reaches a third
+        # party (the Outlook cancellation a refused Bookings request sends
+        # the client) interacts with an « open world » in the spec's sense;
+        # every other tool touches the practice's own records only.
+        annotations["openWorldHint"] = name in OUTBOUND_TOOLS
         # A tool may correct a hint the family default gets wrong for it.
         # complete_task is genuinely idempotent — a second call with the
         # same status is a no-op that writes nothing — while every creator

@@ -171,14 +171,15 @@ FAMILIES: tuple[Family, ...] = (
         tools=(
             "update_task", "reopen_task", "update_note", "edit_analyse",
             "create_protocol", "update_protocol", "add_protocol_step",
-            "update_protocol_step",
+            "update_protocol_step", "update_hearing", "create_hearing_series",
         ),
         consent_template="mcp/families/_agenda.html",
         checkbox_summary_fr=(
             "modifier ou déplacer une tâche ou une note, rouvrir une tâche, "
             "rédiger la théorie de la cause (le texte remplacé d'une note "
             "est conservé), créer et tenir le protocole de l'instance et "
-            "ses étapes"
+            "ses étapes, modifier, reporter, annuler ou déplacer un "
+            "événement du calendrier et créer une série d'événements"
         ),
         instructions_en=(
             "`update_task` and `update_note` REPLACE the fields you name (a "
@@ -208,9 +209,41 @@ FAMILIES: tuple[Family, ...] = (
             "(complété, à_venir — never a toggle): the linked task follows, "
             "completing the last open step closes the whole protocol, and "
             "reopening a step of a protocol closed that way reactivates it. "
-            "A protocol's or a step's replaced notes are NOT kept. Never "
-            "retry an edit blindly after a stale_etag refusal: re-read, "
-            "then redo it on the current text."
+            "A protocol's or a step's replaced notes are NOT kept. "
+            "Calendar: `update_hearing` REPLACES an event's fields — a "
+            "reschedule keeps the Montréal hour and the duration you do "
+            "not name; status annulée removes the event's Outlook copy; a "
+            "series occurrence changes dossier only with "
+            "detach_from_series; replaced event notes are NOT kept — and a "
+            "CONFIRMED Bookings rendez-vous can be edited, but neither "
+            "Outlook, the client nor free/busy is updated: tell the user. "
+            "`create_hearing_series` writes a recurring series in one "
+            "atomic batch (idempotency_key required). Never retry an edit "
+            "blindly after a stale_etag refusal: re-read, then redo it on "
+            "the current text."
+        ),
+    ),
+    Family(
+        key="bookings",
+        label="BOOKINGS",
+        scope=SCOPE_WRITE,
+        tools=("decide_rendez_vous",),
+        consent_template="mcp/families/_bookings.html",
+        checkbox_summary_fr=(
+            "confirmer ou refuser une demande de rendez-vous Bookings — "
+            "refuser annule la réunion Outlook, ce qui prévient le client "
+            "par un texte fixe"
+        ),
+        instructions_en=(
+            "`decide_rendez_vous` decides a pending « Bookings with me » "
+            "request, listed by `list_hearings` with bookings \"pending\": "
+            "`confirmer` puts it in the calendar (linking the contact "
+            "matched on the requester's exact email unless lier_partie is "
+            "false); `refuser` CANCELS THE OUTLOOK MEETING AND SO NOTIFIES "
+            "THE CLIENT, with a fixed text — the connector's ONLY outbound "
+            "effect. `expected_etag` and `idempotency_key` are required; a "
+            "repeated decision writes nothing and contacts nobody. Confirm "
+            "with the user every time."
         ),
     ),
     Family(
@@ -439,6 +472,32 @@ NEVERS: tuple[Never, ...] = (
         ),
     ),
     Never(
+        key="client_message",
+        fr=(
+            "<strong>rédiger un message</strong> destiné à un client ou à "
+            "un tiers — le seul effet extérieur possible est l'annulation "
+            "Outlook d'une demande de rendez-vous Bookings refusée, dont le "
+            "texte est fixe"
+        ),
+        en=(
+            "It never composes a message to anyone outside the practice: "
+            "its ONE outbound effect is the Outlook cancellation a refused "
+            "Bookings request sends, with a fixed text."
+        ),
+        # The Graph verbs that send or rewrite something in a mailbox or a
+        # calendar, and the email module: no connector module and no
+        # service a tool reaches may name them. The one outbound call the
+        # connector reaches is services/rendez_vous → graph_calendrier
+        # .annuler_reservation(gid, REFUS_MOTIF), whose text no argument
+        # can carry — the behavioural test proves it.
+        forbidden=("envoyer", "graph_post", "graph_patch", "graph_delete"),
+        forbidden_modules=("utils.courriel",),
+        behavioural_test=(
+            "tests/test_mcp_hearing_writes.py::"
+            "test_a_refusal_sends_only_the_fixed_cancellation_text"
+        ),
+    ),
+    Never(
         key="document",
         fr=(
             "modifier le <strong>fichier</strong> d'un document, son nom ou "
@@ -611,9 +670,10 @@ def build_instructions(
             "from its last write result. If the record changed since — "
             "in the application, on the phone or through another call — the "
             "write is REFUSED and nothing is written: re-read, then retry. "
-            "Omitted — where the tool allows it (replacing a note's text or "
-            "editing the théorie de la cause does not) — the tool still "
-            "refuses a change landing between its own read and its commit."
+            "Omitted — where the tool allows it (replacing a note's text, "
+            "editing the théorie de la cause or deciding a Bookings request "
+            "does not) — the tool still refuses a change landing between "
+            "its own read and its commit."
         )
     # The writes that take no etag but rewrite what they READ (a note plus
     # the appended block, a task's status and description, a dossier's

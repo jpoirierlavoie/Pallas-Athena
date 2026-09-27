@@ -1,0 +1,25 @@
+{# Family BOOKINGS (mcp/disclosure.FAMILIES, key "bookings") — lot 1b,
+   step L7: decide_rendez_vous, the connector's FIRST outbound effect (plan
+   D10). Stated in a block of its own, and first of all what reaches the
+   client: the refusal cancels the Outlook meeting, which notifies him, with
+   the fixed text of services/rendez_vous.REFUS_MOTIF. Class strings are the
+   ones the other partials already use (no Tailwind rebuild). #}
+<p class="mt-3"><strong>Décider des demandes de rendez-vous Bookings</strong>&nbsp;:</p>
+<ul class="list-disc list-inside mt-1 space-y-1">
+  <li><strong>confirmer</strong> une demande en attente&nbsp;: le rendez-vous
+    entre au calendrier et sur votre téléphone, lié au contact dont le
+    courriel est exactement celui du demandeur (ou sans contact, sur
+    demande)&nbsp;; une demande que le client a annulée ne se confirme
+    pas&nbsp;;</li>
+  <li><strong>refuser</strong> une demande en attente&nbsp;:
+    <strong>la réunion Outlook est annulée, ce qui prévient le
+    client</strong>, avec le texte fixe «&nbsp;Rendez-vous refusé par le
+    juriste.&nbsp;» — Claude ne rédige jamais ce message. Une demande que le
+    client a lui-même annulée est seulement retirée.</li>
+</ul>
+<p class="mt-2">
+  Chaque décision s'engage contre la version lue&nbsp;: si la demande a
+  changé entre-temps (le client l'a déplacée, par exemple), rien n'est fait,
+  et Outlook n'est pas touché. La même décision répétée n'écrit rien et ne
+  recontacte jamais le client.
+</p>

@@ -98,10 +98,14 @@ from models import time_entry as time_entry_model
 from models import trust as trust_model
 from security import sanitize
 from services import protocoles as protocol_service
-from tz import MTL
-from utils import analyse_blocs, deadlines, pdf_text, phases, taxonomie
+from services import rendez_vous as rendez_vous_service
+from tz import MTL, mtl_to_utc
+from utils import (
+    analyse_blocs, deadlines, pdf_text, phases, recurrence, taxonomie,
+)
 from utils.cabinet import cabinet_dict
 from utils.format_fr import format_date_fr, format_rate_fr
+from utils.logging_setup import log_hearing_series_event
 from utils.recours import PRESCRIPTION_LABELS, compute_class
 from utils.taxonomie import DOMAINE_LABELS
 from utils.template_fields import selected_address
@@ -304,12 +308,31 @@ def _stamps(doc: dict) -> dict:
     }
 
 
-def _hearing_row(h: dict) -> dict:
+def _reminder_minutes(h: dict) -> Optional[int]:
+    """The stored reminder as an integer, ``None`` when unusable.
+
+    The web form and the connector store one of VALID_REMINDER_MINUTES, but
+    a phone VALARM may carry any duration (``vevent_to_hearing``), and a
+    legacy document may lack the key — in which case the VEVENT serializer
+    applies 1440, which is therefore what the phone shows."""
+    value = h.get("reminder_minutes", 1440)
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hearing_row(h: dict, *, pending: bool = False) -> dict:
+    """One calendar event. *pending* (the bookings "pending" mode of
+    list_hearings, lot 1b L7) adds the requester and the contact a
+    confirmation would link — never on an ordinary agenda row."""
     all_day = bool(h.get("all_day"))
     start = _as_utc(h.get("start_datetime"))
     end = _as_utc(h.get("end_datetime"))
     modalite = h.get("modalite", "présentiel")
-    return {
+    row = {
         "id": h.get("id", ""),
         "title": h.get("title", ""),
         "hearing_type": h.get("hearing_type", ""),
@@ -330,8 +353,18 @@ def _hearing_row(h: dict) -> dict:
         "dossier_id": h.get("dossier_id", "") or "",
         "dossier_file_number": h.get("dossier_file_number", ""),
         "dossier_title": h.get("dossier_title", ""),
+        "reminder_minutes": _reminder_minutes(h),
+        "serie_id": str(h.get("serie_id") or ""),
+        "source": str(h.get("source") or ""),
         **_stamps(h),
     }
+    if pending:
+        row["confirmation"] = str(h.get("confirmation") or "")
+        row["client_nom"] = str(h.get("client_nom") or "")
+        row["client_email"] = str(h.get("client_email") or "")
+        row["partie_suggeree_id"] = str(h.get("_partie_id") or "")
+        row["partie_suggeree_nom"] = str(h.get("_partie_nom") or "")
+    return row
 
 
 def _task_row(t: dict, *, today: Optional[date] = None) -> dict:
@@ -932,8 +965,88 @@ def list_tasks(args: dict) -> dict:
 
 # ── 5. list_hearings ────────────────────────────────────────────────────
 
+# The arguments of the DATE-WINDOW mode, which the two selection modes
+# (serie_id, bookings) refuse rather than silently ignore — a caller that
+# sends both is told which one applies.
+_HEARING_WINDOW_ARGS = ("date_from", "date_to", "dossier_id")
+
+
+def _hearing_key(h: dict) -> tuple:
+    """(start, id) — the ascending agenda order every mode pages on."""
+    return (_as_utc(h.get("start_datetime")) or _UTC_MIN,
+            str(h.get("id") or ""))
+
+
+def _hearing_selection(args: dict) -> tuple[list[dict], str]:
+    """The rows of the serie / bookings modes, and the mode's name.
+
+    Both are STRICT reads: a failure is a refusal, never an empty list —
+    « aucune demande en attente » or « cette série est vide » over a
+    Firestore outage would be a false statement a caller acts on."""
+    if "bookings" in args and "serie_id" in args:
+        raise ToolArgumentError(
+            "`bookings` et `serie_id` s'excluent : un seul mode par appel."
+        )
+    for key in _HEARING_WINDOW_ARGS:
+        if key in args:
+            raise ToolArgumentError(
+                f"`{key}` ne s'applique pas avec `bookings` ou `serie_id` : "
+                "ces modes rendent la liste entière qu'ils désignent."
+            )
+    if "bookings" in args:
+        if args.get("bookings") != "pending":
+            raise ToolArgumentError("`bookings` n'admet que « pending ».")
+        try:
+            rows = rendez_vous_service.lister_en_attente()
+        except rendez_vous_service.LectureImpossible:
+            raise ToolArgumentError(rendez_vous_service.LECTURE_IMPOSSIBLE)
+        return rows, "bookings_pending"
+    serie_id = str(args.get("serie_id") or "").strip()
+    if not serie_id:
+        # "" is a STORED value (every standalone event): list_series
+        # refuses it, and so does this mode.
+        raise ToolArgumentError(
+            "`serie_id` est vide : prenez-le sur une ligne de list_hearings."
+        )
+    try:
+        rows = hearing_model.list_series(serie_id)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture de la série impossible — réessayez dans un moment."
+        )
+    # The MCP read contract: never an unconfirmed Bookings import outside
+    # the pending mode (a series never holds one; the rule is kept anyway).
+    return [h for h in rows if (h.get("confirmation") or "") == ""], "serie"
+
+
+def _list_hearings_selected(args: dict, limit: int) -> dict:
+    rows, mode = _hearing_selection(args)
+    resume = decode_cursor(args.get("cursor"))
+    rows = sorted(rows, key=_hearing_key)
+    if resume and len(resume) == 2 and isinstance(resume[0], datetime):
+        marker = (resume[0], str(resume[1]))
+        rows = [h for h in rows if _hearing_key(h) > marker]
+    truncated = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = None
+    if truncated and page:
+        last_start, last_id = _hearing_key(page[-1])
+        next_cursor = encode_cursor([last_start, last_id])
+    page = _freshen_dossier_labels(page, _live_dossiers(page))
+    payload = _list_payload(
+        [_hearing_row(h, pending=mode == "bookings_pending") for h in page],
+        truncated,
+    )
+    payload["mode"] = mode
+    payload["window"] = {"from": None, "to": None}
+    payload["next_cursor"] = next_cursor
+    return payload
+
+
 def list_hearings(args: dict) -> dict:
     limit = _limit_arg(args, 25)
+    if "bookings" in args or "serie_id" in args:
+        return _list_hearings_selected(args, limit)
     today = datetime.now(MTL).date()
     date_from = (
         _parse_iso_date(args["date_from"], "date_from")
@@ -1010,6 +1123,7 @@ def list_hearings(args: dict) -> dict:
             next_cursor = encode_cursor([last_start, last_id])
     page = _freshen_dossier_labels(page, _live_dossiers(page))
     payload = _list_payload([_hearing_row(h) for h in page], truncated)
+    payload["mode"] = "window"
     payload["window"] = {"from": date_from.isoformat(), "to": date_to.isoformat()}
     payload["next_cursor"] = next_cursor
     return payload
@@ -5386,12 +5500,105 @@ def _parse_hhmm(raw: str, name: str) -> tuple[int, int]:
         raise ToolArgumentError(f"`{name}` doit être une heure HH:MM.")
 
 
-def _create_hearing_impl(args: dict) -> dict:
+_DEFAULT_REMINDER = 1440
+_HEARING_CREATE_STATUSES = ("à_confirmer", "confirmée")
+
+
+def _clean_conference_uri(raw: Any) -> str:
+    """The video link, refused (naming the field) unless http/https.
+
+    ``conference_uri`` is rendered as an ``<a href>`` in the application:
+    the model's whitelist (``is_safe_conference_uri``) is its only guard,
+    and it is REPEATED here so the refusal names the field instead of
+    arriving as the model's generic sentence."""
+    uri = _clean_entity_text(str(raw or ""), "conference_uri")
+    if not hearing_model.is_safe_conference_uri(uri):
+        raise ToolArgumentError(
+            "« conference_uri » doit être une adresse http:// ou https:// — "
+            "tout autre schéma serait un lien dangereux dans l'application. "
+            "Rien n'a été écrit."
+        )
+    return uri
+
+
+def _hearing_modality_data(args: dict, *, defaults: bool) -> dict:
+    """modalite / conference_uri / reminder_minutes, by PRESENCE.
+
+    With *defaults* (a creation) the model's own defaults are written
+    explicitly, so the result echoes what was stored rather than what the
+    model would have filled in behind the handler's back."""
+    data: dict[str, Any] = {}
+    if "modalite" in args:
+        _refuse_outside_vocabulary(
+            args, "modalite", hearing_model.VALID_MODALITES)
+        data["modalite"] = args["modalite"]
+    elif defaults:
+        data["modalite"] = "présentiel"
+    if "conference_uri" in args:
+        data["conference_uri"] = _clean_conference_uri(args["conference_uri"])
+    elif defaults:
+        data["conference_uri"] = ""
+    if "reminder_minutes" in args:
+        value = args["reminder_minutes"]
+        if (isinstance(value, bool)
+                or value not in hearing_model.VALID_REMINDER_MINUTES):
+            raise ToolArgumentError(
+                "« reminder_minutes » : valeur hors vocabulaire. Valeurs "
+                "admises : "
+                + ", ".join(str(v) for v in hearing_model.VALID_REMINDER_MINUTES)
+                + ". Rien n'a été écrit."
+            )
+        data["reminder_minutes"] = int(value)
+    elif defaults:
+        data["reminder_minutes"] = _DEFAULT_REMINDER
+    return data
+
+
+def _modality_warnings(doc: dict, args: dict) -> list[str]:
+    """A video link stored beside a modality that does not show it — said,
+    since the model keeps the link (round-trip) and the caller would
+    otherwise believe the phone and Outlook carry it."""
+    if not ({"modalite", "conference_uri"} & args.keys()):
+        return []
+    if doc.get("conference_uri") and doc.get("modalite") != "visioconférence":
+        return [
+            "Le lien de visioconférence est enregistré, mais il n'est "
+            "transmis au téléphone et à Outlook qu'en modalité "
+            "« visioconférence »."
+        ]
+    return []
+
+
+def _hearing_create_data(args: dict) -> tuple[dict, dict]:
+    """The model payload of a creation, and the resolved dossier.
+
+    SHARED by create_hearing and create_hearing_series — a series is N
+    copies of this one prototype, so the two tools cannot build it two
+    ways. An EXPLICIT whitelist: ``id``/``vevent_uid`` are never
+    addressable (create_hearing honoured a caller-supplied id with a set()
+    until lot 1a, which here would have overwritten an existing event; it
+    discards them now — only the DAV create's ``dav_id`` keyword names a
+    document — and this whitelist stays as the belt). ``status`` is only
+    à_confirmer (the default) or confirmée, and ``confirmation`` stays ""
+    (visible everywhere — this is not a Bookings import)."""
     dossier_id, dossier = _resolve_write_dossier(args, required=False)
     title = _clean_entity_text(args.get("title") or "", "title")
     if not title:
         raise ToolArgumentError("`title` est requis.")
     hearing_type = args.get("hearing_type") or "rencontre"
+    if hearing_type not in hearing_model.VALID_HEARING_TYPES:
+        raise ToolArgumentError(
+            "« hearing_type » : valeur hors vocabulaire — voir l'énumération "
+            "du schéma. Rien n'a été créé."
+        )
+    status = args.get("status") or "à_confirmer"
+    if status not in _HEARING_CREATE_STATUSES:
+        raise ToolArgumentError(
+            "« status » : à la création, seulement « à_confirmer » ou "
+            "« confirmée ». Un report, une annulation ou un événement déjà "
+            "tenu se consignent ensuite avec update_hearing. Rien n'a été "
+            "créé."
+        )
     all_day = bool(args.get("all_day"))
 
     raw_date = (args.get("date") or "").strip()
@@ -5421,13 +5628,6 @@ def _create_hearing_impl(args: dict) -> dict:
     notes_text = f"{notes_text}\n\n{stamp}" if notes_text else stamp
     notes_text = _clean_entity_text(notes_text, "notes")
 
-    # EXPLICIT whitelist — `id`/`vevent_uid` must never be addressable
-    # (create_hearing HONOURED a caller-supplied id with a set() until lot
-    # 1a, which here would have overwritten an existing event; it discards
-    # them now — only the DAV create's `dav_id` keyword names a document —
-    # and this whitelist stays as the belt); status
-    # stays the model default « à_confirmer » and `confirmation` stays ""
-    # (visible everywhere — this is not a Bookings import).
     data = {
         "dossier_id": dossier_id,
         "dossier_file_number": dossier.get("file_number", ""),
@@ -5441,30 +5641,775 @@ def _create_hearing_impl(args: dict) -> dict:
         "court": _clean_entity_text(args.get("court") or "", "court"),
         "judge": _clean_entity_text(args.get("judge") or "", "judge"),
         "notes": notes_text,
+        "status": status,
+        **_hearing_modality_data(args, defaults=True),
         "created_via": "mcp",
     }
+    return data, dossier
 
-    def _entity(doc: dict) -> dict:
-        d_all_day = bool(doc.get("all_day"))
-        start = _as_utc(doc.get("start_datetime"))
-        return {
+
+def _hearing_entity(doc: dict) -> dict:
+    """The event AS STORED after a write — the shape every calendar write
+    result shares (create_hearing, update_hearing). ``etag`` is the one the
+    next edit presents."""
+    all_day = bool(doc.get("all_day"))
+    start = _as_utc(doc.get("start_datetime"))
+    end = _as_utc(doc.get("end_datetime"))
+    return {
+        "id": doc.get("id", ""),
+        "dossier_id": doc.get("dossier_id") or "",
+        "dossier_file_number": doc.get("dossier_file_number", ""),
+        "dossier_title": doc.get("dossier_title", ""),
+        "label": doc.get("title", ""),
+        "date": date_str(start) if all_day else iso_mtl(start),
+        "end": date_str(end) if all_day else iso_mtl(end),
+        "hearing_type": doc.get("hearing_type", ""),
+        "forum": hearing_model.forum_of(doc.get("hearing_type", "")),
+        "all_day": all_day,
+        "status": str(doc.get("status") or ""),
+        "modalite": str(doc.get("modalite") or "présentiel"),
+        "conference_uri": str(doc.get("conference_uri") or ""),
+        "reminder_minutes": _reminder_minutes(doc),
+        "serie_id": str(doc.get("serie_id") or ""),
+        "source": str(doc.get("source") or ""),
+        "etag": concurrency.etag_of(doc),
+    }
+
+
+def _create_hearing_impl(args: dict) -> dict:
+    data, dossier = _hearing_create_data(args)
+    hearing, errors = hearing_model.create_hearing(data)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+    payload = _entity_write_result(
+        "hearing", _hearing_entity(hearing), dossier=dossier, dav_exposed=True,
+    )
+    payload["warnings"].extend(_modality_warnings(hearing, args))
+    return payload
+
+
+# ── create_hearing_series (WRITE, lot 1b L7) ───────────────────────────
+
+def create_hearing_series(args: dict) -> dict:
+    return run_write(
+        "create_hearing_series", args,
+        lambda: _create_hearing_series_impl(args),
+    )
+
+
+def _create_hearing_series_impl(args: dict) -> dict:
+    """N linked occurrences in ONE atomic batch, through the model.
+
+    The CTag bump rides INSIDE the model's batch (``bump_ctag_in_batch``):
+    committing and then bumping would leave N events live in the
+    application that DavX5 never re-syncs. So this handler never bumps —
+    no ``_entity_write_result`` (which would bump a second time), and no
+    ``list_series`` re-read after the commit (it propagates errors, and a
+    raise there would report a committed series as a failure)."""
+    data, dossier = _hearing_create_data(args)
+    frequency = str(args.get("frequency") or "")
+    if frequency not in recurrence.VALID_FREQUENCIES:
+        raise ToolArgumentError(
+            "« frequency » : valeur hors vocabulaire. Valeurs admises : "
+            + ", ".join(recurrence.VALID_FREQUENCIES) + ". Rien n'a été créé."
+        )
+    has_count = args.get("count") is not None
+    has_until = bool(str(args.get("until") or "").strip())
+    if has_count == has_until:
+        raise ToolArgumentError(
+            "Indiquez EXACTEMENT une borne : `count` (1 à "
+            f"{recurrence.MAX_SERIE_OCCURRENCES}) ou `until` (AAAA-MM-JJ) — "
+            "une série doit se terminer, et d'une seule façon. Rien n'a été "
+            "créé."
+        )
+    count: Optional[int] = None
+    until: Optional[date] = None
+    if has_count:
+        count = args["count"]
+        if (isinstance(count, bool) or not isinstance(count, int)
+                or not 1 <= count <= recurrence.MAX_SERIE_OCCURRENCES):
+            raise ToolArgumentError(
+                "« count » doit être un entier de 1 à "
+                f"{recurrence.MAX_SERIE_OCCURRENCES}. Rien n'a été créé."
+            )
+    else:
+        until = _parse_iso_date(str(args["until"]), "until")
+
+    occurrences, errors = hearing_model.create_hearing_series(
+        data, frequency, count=count, until=until,
+    )
+    if errors:
+        # The model's words (utils.recurrence.validate_rule — French, never
+        # a truncation: a series past the ceiling is refused whole).
+        raise ToolArgumentError("; ".join(errors) + " Rien n'a été créé.")
+
+    first = occurrences[0]
+    serie_id = str(first.get("serie_id") or "")
+    status = dossier.get("status", "")
+    dav_visible = status in ("actif", "en_attente")
+    warnings: list[str] = []
+    if not dav_visible:
+        warnings.append(
+            f"Le dossier est « {status} » : la série est enregistrée et "
+            "visible dans l'application, mais les dossiers fermés ou "
+            "archivés ne sont pas exposés à DavX5 — elle n'apparaîtra pas "
+            "sur le téléphone."
+        )
+    first_day = hearing_model.occurrence_day(first)
+    if first_day is not None and first_day < deadlines.today_mtl():
+        warnings.append(
+            "La première occurrence est déjà passée : la série commence "
+            "dans le passé, comme demandé."
+        )
+    warnings.extend(_modality_warnings(first, args))
+    log_hearing_series_event(
+        "series_created", serie_id,
+        occurrences=len(occurrences),
+        dossier_id=first.get("dossier_id", "") or "",
+        frequence=frequency,
+        ctag_bumped=True,
+        via="mcp",
+    )
+
+    all_day = bool(first.get("all_day"))
+
+    def _when(value) -> Optional[str]:
+        value = _as_utc(value)
+        return date_str(value) if all_day else iso_mtl(value)
+
+    return {
+        "created": True,
+        "entity_type": "hearing_series",
+        "entity": {
+            "id": serie_id,
+            "dossier_id": first.get("dossier_id") or "",
+            "dossier_file_number": first.get("dossier_file_number", ""),
+            "dossier_title": first.get("dossier_title", ""),
+            "label": first.get("title", ""),
+            "date": _when(first.get("start_datetime")),
+            "hearing_type": first.get("hearing_type", ""),
+            "forum": hearing_model.forum_of(first.get("hearing_type", "")),
+            "all_day": all_day,
+            "status": str(first.get("status") or ""),
+            "modalite": str(first.get("modalite") or "présentiel"),
+        },
+        "serie_id": serie_id,
+        "frequency": frequency,
+        "rule_label": recurrence.describe(first.get("serie_rule")),
+        "occurrences_count": len(occurrences),
+        "occurrences": [
+            {
+                "id": occ.get("id", ""),
+                "start": _when(occ.get("start_datetime")),
+                "end": _when(occ.get("end_datetime")),
+                "etag": concurrency.etag_of(occ),
+            }
+            for occ in occurrences
+        ],
+        # The bump committed in the same batch as the occurrences.
+        "ctag_bumped": True,
+        "dav_synced": dav_visible,
+        "warnings": warnings,
+    }
+
+
+# ── update_hearing (WRITE, lot 1b L7) ──────────────────────────────────
+
+_HEARING_SUBJECT = "Cet événement a été modifié"
+_RDV_SUBJECT = "Ce rendez-vous a été modifié"
+_HEARING_EDIT_KEYS = (
+    "title", "hearing_type", "date", "start_time", "end_time", "all_day",
+    "location", "court", "judge", "modalite", "conference_uri",
+    "reminder_minutes", "notes", "notes_append", "status",
+    "detach_from_series", "dossier_id",
+)
+_HEARING_TEXT_KEYS = ("location", "court", "judge")
+_HEARING_SLOT_KEYS = ("start_datetime", "end_datetime", "all_day")
+# D10 — said on EVERY response about a confirmed Bookings rendez-vous: the
+# Outlook meeting is the client's, created by Bookings, and nothing here
+# writes back to it.
+_BOOKINGS_NOT_UPDATED = (
+    "Ce rendez-vous vient de Bookings : la modification reste dans Athéna — "
+    "la réunion Outlook, le client et votre disponibilité (libre/occupé) ne "
+    "sont PAS mis à jour. Prévenez le client et corrigez Outlook vous-même "
+    "au besoin."
+)
+_HEARING_CANCELLED = (
+    "L'événement est annulé : il sort de get_agenda, sa copie dans votre "
+    "calendrier Outlook est retirée au prochain cycle (10 minutes au plus), "
+    "et le téléphone le montre annulé."
+)
+
+
+def _read_hearing(hearing_id: str) -> dict:
+    """The event an edit is about — « introuvable » only when the store SAID
+    so (the :func:`_read_task` rule: ``get_hearing`` answers ``None`` on a
+    read error too)."""
+    try:
+        hearing = hearing_model.get_hearing_strict(hearing_id)
+    except Exception:
+        raise ToolArgumentError(
+            "Lecture de l'événement impossible — réessayez. Rien n'a été "
+            "modifié."
+        )
+    if not hearing:
+        raise ToolArgumentError(
+            f"Événement introuvable : {hearing_id}. Utilisez list_hearings "
+            "ou get_agenda pour obtenir un hearing_id valide. Rien n'a été "
+            "modifié."
+        )
+    return hearing
+
+
+def _refuse_undecided_booking(hearing: dict) -> None:
+    """A Bookings import still awaiting (or refused) is not an event of the
+    calendar: the MCP reads never show one, and ``get_hearing`` — which
+    does not filter — must not become a side door that edits it. The
+    decision has its own tool."""
+    confirmation = hearing.get("confirmation") or ""
+    if confirmation == "refusée":
+        raise ToolArgumentError(
+            "Cette demande Bookings a été refusée : elle ne se modifie plus. "
+            "Rien n'a été modifié."
+        )
+    if confirmation:
+        raise ToolArgumentError(
+            "Cet événement est une demande Bookings qui attend votre "
+            "décision : il ne se modifie pas ici. Confirmez-la ou refusez-la "
+            "avec decide_rendez_vous (liste : list_hearings, bookings "
+            "« pending »). Rien n'a été modifié."
+        )
+
+
+def _hearing_slot_data(args: dict, existing: dict) -> dict:
+    """The slot keys of an edit, from date / start_time / end_time /
+    all_day — Montréal wall-clock in, UTC out.
+
+    * An omitted day keeps the stored civil day (``occurrence_day``: the
+      UTC date of an all-day event, the Montréal date of a timed one).
+    * An omitted start hour keeps the stored MONTRÉAL wall-clock hour, and
+      the instant is recomputed on the new day through ``mtl_to_utc`` — so
+      « 9 h » stays 9 h across a daylight-saving change (the series rule,
+      ``models.hearing._occurrence_slots``).
+    * An omitted end is left to the model, which keeps the stored duration
+      (``_renormalize_slot``) — or, on an all-day ↔ timed flip, the
+      default slot.
+    """
+    if not any(k in args for k in ("date", "start_time", "end_time", "all_day")):
+        return {}
+    stored_all_day = bool(existing.get("all_day"))
+    if "all_day" in args:
+        all_day = bool(args["all_day"])
+    elif "start_time" in args or "end_time" in args:
+        all_day = False
+    else:
+        all_day = stored_all_day
+    if all_day and ("start_time" in args or "end_time" in args):
+        raise ToolArgumentError(
+            "« all_day » vrai n'admet ni start_time ni end_time : un "
+            "événement d'une journée entière n'a pas d'heure. Rien n'a été "
+            "modifié."
+        )
+    toggled = all_day != stored_all_day
+    if "date" in args:
+        day = _parse_iso_date(str(args["date"]), "date")
+    else:
+        day = hearing_model.occurrence_day(existing)
+    if day is None:
+        raise ToolArgumentError(
+            "`date` est requise : l'événement enregistré n'a pas de date "
+            "lisible. Rien n'a été modifié."
+        )
+    data: dict[str, Any] = {}
+    if "all_day" in args or toggled:
+        data["all_day"] = all_day
+    if all_day:
+        if "date" in args or toggled:
+            data["start_datetime"] = datetime(
+                day.year, day.month, day.day, tzinfo=timezone.utc)
+        return data
+
+    if "start_time" in args:
+        hh, mm = _parse_hhmm(str(args["start_time"]), "start_time")
+        wall = dtime(hh, mm)
+    elif stored_all_day:
+        raise ToolArgumentError(
+            "`start_time` est requis pour donner une heure à un événement "
+            "d'une journée entière. Rien n'a été modifié."
+        )
+    else:
+        stored_start = _as_utc(existing.get("start_datetime"))
+        if not isinstance(stored_start, datetime):
+            raise ToolArgumentError(
+                "`start_time` est requis : l'événement enregistré n'a pas "
+                "d'heure de début lisible. Rien n'a été modifié."
+            )
+        wall = stored_start.astimezone(MTL).time().replace(tzinfo=None)
+    start = mtl_to_utc(datetime.combine(day, wall))
+    if "date" in args or "start_time" in args or toggled:
+        data["start_datetime"] = start
+    if "end_time" in args:
+        eh, em = _parse_hhmm(str(args["end_time"]), "end_time")
+        end = mtl_to_utc(datetime.combine(day, dtime(eh, em)))
+        if end <= start:
+            raise ToolArgumentError(
+                "« end_time » doit suivre l'heure de début, le même jour. "
+                "Rien n'a été modifié."
+            )
+        data["end_datetime"] = end
+    return data
+
+
+def _appended_hearing_notes(existing: dict, raw: Any) -> str:
+    """The notes AS THEY WILL BE STORED after an append — validated whole.
+
+    The length is checked FIRST (``sanitize`` truncates at 2000 with no
+    signal), then the post-condition ``sanitize(combined) == combined``:
+    an unpaired ``<`` already in the notes plus a ``>`` in the addition
+    would make the tag regex span the join and delete text — both halves
+    pass a per-field check (the append_to_note lesson)."""
+    addition = str(raw or "").strip()
+    if not addition:
+        raise ToolArgumentError(
+            "« notes_append » est vide. Rien n'a été modifié.")
+    stored = str(existing.get("notes") or "")
+    stamp = f"*Ajouté par Claude le {format_date_fr(_today_mtl())}*"
+    combined = (f"{stored}\n\n{stamp}\n{addition}" if stored.strip()
+                else f"{stamp}\n{addition}")
+    if len(combined) > _ENTITY_FIELD_MAX:
+        raise ToolArgumentError(
+            f"Les notes ainsi complétées dépasseraient {_ENTITY_FIELD_MAX} "
+            f"caractères ({len(combined)}) — elles seraient tronquées à "
+            "l'enregistrement. Raccourcissez l'ajout, ou versez le détail "
+            "dans une note (create_note). Rien n'a été modifié."
+        )
+    if not _survives_storage(combined, _ENTITY_FIELD_MAX):
+        raise ToolArgumentError(
+            "Les notes ainsi complétées contiennent du texte entre chevrons "
+            "qui serait supprimé à l'enregistrement (avec celui qu'elles "
+            f"portent déjà). {_CHEVRON_ADVICE}"
+        )
+    return combined
+
+
+def _hearing_changed_fields(
+    existing: dict, data: dict, merged: dict,
+) -> list[str]:
+    """The model fields this edit changes. The slot is judged on the
+    RENORMALIZED document (what the model will store), never on the raw
+    arguments: a new start keeps the duration, so the end moves too."""
+    changed = []
+    for key in _HEARING_SLOT_KEYS:
+        before, after = existing.get(key), merged.get(key)
+        if key == "all_day":
+            if bool(before) != bool(after):
+                changed.append(key)
+        elif _as_utc(before) != _as_utc(after):
+            changed.append(key)
+    for key, value in data.items():
+        if key in _HEARING_SLOT_KEYS or key in (
+                "dossier_id", "dossier_file_number", "dossier_title"):
+            continue
+        before = existing.get(key)
+        if key == "reminder_minutes":
+            if before != value:
+                changed.append(key)
+        elif (before or "") != (value or ""):
+            changed.append(key)
+    return changed
+
+
+def update_hearing(args: dict) -> dict:
+    return run_write("update_hearing", args, lambda: _update_hearing_impl(args))
+
+
+def _update_hearing_impl(args: dict) -> dict:
+    hearing_id = (args.get("hearing_id") or "").strip()
+    if not hearing_id:
+        raise ToolArgumentError("`hearing_id` est requis.")
+    existing = _read_hearing(hearing_id)
+    _refuse_undecided_booking(existing)
+    if not any(key in args for key in _HEARING_EDIT_KEYS):
+        raise ToolArgumentError(
+            "Aucun champ à modifier : nommez au moins title, hearing_type, "
+            "date, start_time, end_time, all_day, location, court, judge, "
+            "modalite, conference_uri, reminder_minutes, notes, "
+            "notes_append, status, detach_from_series ou dossier_id."
+        )
+    if "notes" in args and "notes_append" in args:
+        raise ToolArgumentError(
+            "`notes` (remplacer) et `notes_append` (ajouter) s'excluent : "
+            "un seul par appel. Rien n'a été modifié."
+        )
+    _refuse_outside_vocabulary(
+        args, "hearing_type", hearing_model.VALID_HEARING_TYPES)
+    _refuse_outside_vocabulary(args, "status", hearing_model.VALID_STATUSES)
+
+    # EXPLICIT whitelist, presence-based: an absent key is left alone, a
+    # present one replaces. Never a server-owned key (source, confirmation,
+    # graph_*, the requester, partie_id): the model refuses them outside
+    # server_fields, and the series link moves only through unlink_hearing.
+    data: dict[str, Any] = {}
+    if "title" in args:
+        title = _clean_entity_text(args.get("title") or "", "title")
+        if not title:
+            raise ToolArgumentError("« title » ne peut pas être vide.")
+        data["title"] = title
+    if "hearing_type" in args:
+        data["hearing_type"] = args["hearing_type"]
+    for key in _HEARING_TEXT_KEYS:
+        if key in args:
+            data[key] = _clean_entity_text(args.get(key) or "", key)
+    data.update(_hearing_modality_data(args, defaults=False))
+    if "status" in args:
+        data["status"] = args["status"]
+    if "notes" in args:
+        data["notes"] = _clean_entity_text(args.get("notes") or "", "notes")
+    elif "notes_append" in args:
+        data["notes"] = _appended_hearing_notes(existing, args["notes_append"])
+    data.update(_hearing_slot_data(args, existing))
+
+    old_dossier = existing.get("dossier_id") or ""
+    new_dossier = (
+        (args.get("dossier_id") or "").strip() if "dossier_id" in args
+        else old_dossier
+    )
+    moved = new_dossier != old_dossier
+    serie_id = str(existing.get("serie_id") or "")
+    detaching = bool(args.get("detach_from_series")) and bool(serie_id)
+    if moved and serie_id and not detaching:
+        raise ToolArgumentError(
+            "`dossier_id` refusé : cet événement est une occurrence d'une "
+            "série, et une série ne s'étend pas sur plusieurs dossiers. "
+            "Détachez-la d'abord — detach_from_series: true, dans le même "
+            "appel ou avant. Rien n'a été modifié."
+        )
+
+    merged = {**existing, **data}
+    hearing_model._renormalize_slot(existing, data, merged)
+    changed = _hearing_changed_fields(existing, data, merged)
+    if moved:
+        changed.append("dossier_id")
+    if detaching:
+        changed.append("serie_id")
+    notes_pre: list[str] = []
+    if args.get("detach_from_series") and not serie_id:
+        notes_pre.append(
+            "Cet événement n'appartient à aucune série : detach_from_series "
+            "n'avait rien à faire."
+        )
+    if not changed:
+        return _hearing_edit_payload(
+            existing, args, dossier=_dossier_for(old_dossier), changed=[],
+            moved=False, old_dossier=old_dossier, wrote=False,
+            detached=False, previous_serie_id="",
+            previous_status=str(existing.get("status") or ""),
+            notes=notes_pre,
+        )
+
+    # « terminée » records something that HAPPENED: never on a future day
+    # (judged on the event as it will be stored, so a reschedule into the
+    # future in the same call is caught too).
+    if merged.get("status") == "terminée" and (
+            "status" in changed or set(_HEARING_SLOT_KEYS) & set(changed)):
+        day = hearing_model.occurrence_day(merged)
+        if day is not None and day > deadlines.today_mtl():
+            raise ToolArgumentError(
+                "« status » terminée refusé : l'événement est daté du "
+                f"{format_date_fr(day)} — un événement à venir ne peut pas "
+                "être dit terminé. Rien n'a été modifié."
+            )
+
+    expected = _expected_etag(
+        args, existing, tool="update_hearing", subject=_HEARING_SUBJECT)
+    target: Optional[dict] = None
+    if moved:
+        new_dossier, target = _resolve_move(new_dossier)
+        # The labels are re-snapshotted from the TARGET — what the phone
+        # prints and what the Outlook mirror writes as « N/R ».
+        data["dossier_id"] = new_dossier
+        data["dossier_file_number"] = target.get("file_number", "")
+        data["dossier_title"] = target.get("title", "")
+
+    # The model re-validates the WHOLE merged document: a legacy event with
+    # an out-of-vocabulary value fails for a reason invisible in the app.
+    # Said here, before any write.
+    errors = hearing_model._validate(merged)
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    if detaching:
+        updated, errors = hearing_model.unlink_hearing(
+            hearing_id, data, expected_etag=expected)
+    else:
+        updated, errors = hearing_model.update_hearing(
+            hearing_id, data, expected_etag=expected)
+    _raise_if_stale(
+        errors, tool="update_hearing", subject=_HEARING_SUBJECT,
+        reread=lambda: hearing_model.get_hearing(hearing_id),
+    )
+    if errors:
+        raise ToolArgumentError("; ".join(errors))
+
+    payload = _hearing_edit_payload(
+        updated, args, dossier=target if moved else _dossier_for(old_dossier),
+        changed=changed, moved=moved, old_dossier=old_dossier, wrote=True,
+        detached=detaching, previous_serie_id=serie_id if detaching else "",
+        previous_status=str(existing.get("status") or ""), notes=notes_pre,
+    )
+    if detaching:
+        log_hearing_series_event(
+            "series_unlinked", serie_id,
+            hearing_id=hearing_id,
+            dossier_id=updated.get("dossier_id") or "",
+            ctag_bumped=payload["ctag_bumped"],
+            via="mcp",
+        )
+    return payload
+
+
+def _hearing_edit_payload(
+    doc: dict, args: dict, *, dossier: Optional[dict], changed: list[str],
+    moved: bool, old_dossier: str, wrote: bool, detached: bool,
+    previous_serie_id: str, previous_status: str, notes: list[str],
+) -> dict:
+    payload = _entity_write_result(
+        "hearing", _hearing_entity(doc), dossier=dossier, dav_exposed=True,
+        verb="updated", created=False, wrote=wrote,
+        previous_dossier_id=old_dossier,
+    )
+    bookings = doc.get("source") == "bookings"
+    if not wrote:
+        mirror = "unchanged"
+    elif bookings:
+        mirror = "not_mirrored"
+    elif doc.get("status") == "annulée":
+        mirror = "removed"
+    else:
+        mirror = "follows"
+    payload.update({
+        "changed_fields": changed,
+        "moved": moved,
+        "detached": detached,
+        "previous_serie_id": previous_serie_id,
+        "previous_status": previous_status,
+        "outlook_mirror": mirror,
+    })
+    warnings = payload["warnings"]
+    if bookings:
+        warnings.append(_BOOKINGS_NOT_UPDATED)
+    elif wrote and "status" in changed and doc.get("status") == "annulée":
+        warnings.append(_HEARING_CANCELLED)
+    if wrote:
+        warnings.extend(_modality_warnings(doc, args))
+    warnings.extend(notes)
+    if not wrote:
+        warnings.append(
+            "Toutes les valeurs envoyées étaient déjà enregistrées : rien "
+            "n'a été modifié."
+        )
+    return payload
+
+
+# ── decide_rendez_vous (WRITE, OUTBOUND — lot 1b L7) ───────────────────
+
+# The service's sentences are Réception's (« rechargez la page », « Ne
+# cliquez pas… »). The connector says the same refusals in ITS terms,
+# naming the argument that changes the outcome — never the requester.
+_RDV_REFUSALS = {
+    rendez_vous_service.ANNULE_PAR_LE_CLIENT: (
+        "Le client a annulé ce rendez-vous : il ne peut plus être confirmé. "
+        "action « refuser » le retire (sans rien envoyer au client). Rien "
+        "n'a été écrit."
+    ),
+    rendez_vous_service.DEJA_REFUSE: (
+        "Ce rendez-vous a déjà été refusé : il ne peut plus être confirmé. "
+        "Rien n'a été écrit."
+    ),
+    rendez_vous_service.DEJA_CONFIRME_NE_SE_REFUSE_PLUS: (
+        "Ce rendez-vous est déjà confirmé : il ne se refuse plus. Pour "
+        "l'annuler, update_hearing avec status « annulée » — Outlook et le "
+        "client ne sont alors PAS prévenus. Rien n'a été écrit."
+    ),
+    rendez_vous_service.SANS_COURRIEL: (
+        "Ce rendez-vous ne porte aucun courriel : aucun contact ne peut y "
+        "être lié. Renvoyez l'appel avec lier_partie false pour confirmer "
+        "sans contact. Rien n'a été écrit."
+    ),
+    rendez_vous_service.AUCUN_CONTACT: (
+        "Aucun contact ne porte le courriel du demandeur : rien n'a été "
+        "confirmé. Renvoyez l'appel avec lier_partie false, ou créez d'abord "
+        "le contact (create_partie)."
+    ),
+    rendez_vous_service.CONTACTS_ILLISIBLES: (
+        "Impossible de vérifier quel contact porte ce courriel — réessayez "
+        "dans un moment. Rien n'a été écrit."
+    ),
+}
+# The one post-cancellation sentence reworded for a caller that is a model:
+# the client HAS been notified; calling again would call Outlook again.
+_REFUS_NON_INSCRIT_MCP = (
+    "La réunion Outlook a été annulée et le client prévenu, mais le refus "
+    "n'a pas pu être inscrit dans Athéna. N'appelez PAS decide_rendez_vous "
+    "de nouveau : la synchronisation Bookings (10 minutes au plus) marquera "
+    "la demande « annulée par le client », et la réception pourra alors la "
+    "retirer."
+)
+_DECISION_ALREADY_STORED = (
+    "Cette décision était déjà enregistrée : rien n'a été écrit, et "
+    "personne n'a été contacté."
+)
+_NO_CONTACT_LINKED = (
+    "Aucun contact n'a été lié. Le formulaire d'ouverture de dossier ne "
+    "part pas du connecteur : envoyez-le depuis la Réception au besoin."
+)
+
+
+def _read_rendez_vous(hearing_id: str) -> dict:
+    """The request a decision is about, read STRICTLY — a blip must never
+    read as « introuvable » about a live reservation."""
+    try:
+        hearing = hearing_model.get_hearing_strict(hearing_id)
+    except Exception:
+        raise ToolArgumentError(hearing_model.CONFIRMATION_READ_ERROR)
+    if not hearing:
+        raise ToolArgumentError(
+            f"Rendez-vous introuvable : {hearing_id}. Les demandes en "
+            "attente se lisent avec list_hearings (bookings « pending »). "
+            "Rien n'a été écrit."
+        )
+    if hearing.get("source") != "bookings":
+        raise ToolArgumentError(
+            "Cet événement n'est pas une demande Bookings : "
+            "decide_rendez_vous ne s'applique pas — un événement ordinaire "
+            "se modifie avec update_hearing. Rien n'a été écrit."
+        )
+    return hearing
+
+
+def decide_rendez_vous(args: dict) -> dict:
+    return run_write(
+        "decide_rendez_vous", args, lambda: _decide_rendez_vous_impl(args)
+    )
+
+
+def _decide_rendez_vous_impl(args: dict) -> dict:
+    """Through ``services/rendez_vous`` — the ONE place a Bookings decision
+    is taken, Réception's door too, so the two cannot decide two ways.
+
+    What the service guarantees and this handler relies on: the version is
+    compared BEFORE the Outlook call (a stale view is refused with nothing
+    done, Outlook untouched); the cancellation text is fixed
+    (``REFUS_MOTIF`` — no argument here can carry text to the client); the
+    local write after a successful cancellation is unconditional, and its
+    failure is a warned SUCCESS, never a retryable error — a retry would
+    call Outlook again on a cancelled meeting. Such a result is stored
+    under the idempotency key (required), so a same-key retry replays it
+    instead of re-contacting anyone."""
+    hearing_id = (args.get("hearing_id") or "").strip()
+    if not hearing_id:
+        raise ToolArgumentError("`hearing_id` est requis.")
+    action = args.get("action")
+    if action not in ("confirmer", "refuser"):
+        raise ToolArgumentError(
+            "« action » : « confirmer » ou « refuser ». Rien n'a été écrit.")
+    if "expected_etag" not in args:
+        raise ToolArgumentError(
+            "`expected_etag` est requis : prenez-le sur la ligne de la "
+            "demande (list_hearings, bookings « pending »). Une décision "
+            "part de la version que l'utilisateur a vue — et un refus "
+            "prévient le client. Rien n'a été écrit."
+        )
+    if action == "refuser" and "lier_partie" in args:
+        raise ToolArgumentError(
+            "`lier_partie` ne s'applique qu'à « confirmer ». Rien n'a été "
+            "écrit."
+        )
+    existing = _read_rendez_vous(hearing_id)
+    expected = str(args.get("expected_etag") or "")
+    if action == "confirmer":
+        written, errors, report = rendez_vous_service.confirmer(
+            hearing_id, lier_partie=bool(args.get("lier_partie", True)),
+            expected_etag=expected,
+        )
+    else:
+        written, errors, report = rendez_vous_service.refuser(
+            hearing_id, expected_etag=expected,
+        )
+    if errors:
+        _raise_if_stale(
+            errors, tool="decide_rendez_vous", subject=_RDV_SUBJECT,
+            reread=lambda: hearing_model.get_hearing(hearing_id),
+        )
+        message = " ".join(_RDV_REFUSALS.get(e, e) for e in errors)
+        if report.get("graph_attempted"):
+            # Outlook was asked and did NOT confirm the cancellation, and
+            # the local write failed too: nothing is recorded, and a retry
+            # is the right answer (the service's contract).
+            message = (
+                "Le refus n'a pas pu être inscrit dans Athéna. "
+                + (str(report.get("warning") or "") + " " if report.get("warning") else "")
+                + message
+            )
+        raise ToolArgumentError(message)
+    return _decide_payload(str(action), written or existing, report)
+
+
+def _decide_payload(action: str, doc: dict, report: dict) -> dict:
+    confirming = action == "confirmer"
+    changed = bool(report.get("changed"))
+    graph_attempted = bool(report.get("graph_attempted"))
+    graph_cancelled = bool(report.get("graph_cancelled"))
+    local_written = changed if confirming else bool(report.get("local_written"))
+    bumped = confirming and changed and bool(report.get("dav_synced"))
+    visible = False
+    if bumped:
+        dossier = _dossier_for(doc.get("dossier_id"))
+        status = dossier.get("status", "") if dossier is not None else None
+        visible = status is None or status in ("actif", "en_attente")
+
+    warnings: list[str] = []
+    service_warning = str(report.get("warning") or "")
+    if service_warning == rendez_vous_service.REFUS_NON_INSCRIT:
+        warnings.append(_REFUS_NON_INSCRIT_MCP)
+    elif service_warning:
+        warnings.append(service_warning)
+    if not changed and not graph_attempted:
+        warnings.append(_DECISION_ALREADY_STORED)
+    if confirming and changed and not report.get("partie_liee"):
+        warnings.append(_NO_CONTACT_LINKED)
+
+    all_day = bool(doc.get("all_day"))
+    start = _as_utc(doc.get("start_datetime"))
+    return {
+        "decided": True,
+        "entity_type": "hearing",
+        "entity": {
             "id": doc.get("id", ""),
             "dossier_id": doc.get("dossier_id") or "",
             "dossier_file_number": doc.get("dossier_file_number", ""),
             "dossier_title": doc.get("dossier_title", ""),
             "label": doc.get("title", ""),
-            "date": date_str(start) if d_all_day else iso_mtl(start),
-            "hearing_type": doc.get("hearing_type", ""),
-            "forum": hearing_model.forum_of(doc.get("hearing_type", "")),
-            "all_day": d_all_day,
-        }
-
-    hearing, errors = hearing_model.create_hearing(data)
-    if errors:
-        raise ToolArgumentError("; ".join(errors))
-    return _entity_write_result(
-        "hearing", _entity(hearing), dossier=dossier, dav_exposed=True,
-    )
+            "date": date_str(start) if all_day else iso_mtl(start),
+            "status": str(doc.get("status") or ""),
+            "all_day": all_day,
+            "confirmation": str(doc.get("confirmation") or ""),
+            "etag": concurrency.etag_of(doc),
+        },
+        "action": action,
+        "changed": changed,
+        "partie_liee": bool(report.get("partie_liee")),
+        "partie_id": str(report.get("partie_id") or ""),
+        "local_written": local_written,
+        "graph_attempted": graph_attempted,
+        "graph_cancelled": graph_cancelled,
+        "client_notified": graph_cancelled,
+        "cancellation_message": (
+            rendez_vous_service.REFUS_MOTIF if graph_cancelled else None),
+        "ctag_bumped": bumped,
+        "dav_synced": bumped and visible,
+        "warnings": warnings,
+    }
 
 
 # ── 25. create_time_entry (WRITE) ───────────────────────────────────────

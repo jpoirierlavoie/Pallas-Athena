@@ -2067,3 +2067,153 @@ def test_list_protocol_steps_conforms_with_its_etags_and_closure(monkeypatch):
     proto = payload["protocols"][0]
     assert proto["closed_by"] == "auto" and proto["etag"] == "pe"
     assert proto["steps"][0]["deadline_offset_days"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 1b (L7) — the calendar: one real-handler run per shape emitted
+# ══════════════════════════════════════════════════════════════════════
+#
+# On the shared fake Firestore with the REAL models and the REAL
+# services/rendez_vous underneath; only Graph is replaced. Each shape the
+# three new tools emit is validated — a write, a no-op, a move, a
+# confirmed Bookings rendez-vous, a series, a confirmation, a refusal, and
+# the warned success after a cancellation the local write could not
+# follow — plus create_hearing's added keys and list_hearings' two modes.
+
+L7_START = datetime(2026, 10, 15, 13, tzinfo=UTC)   # 09:00 Montréal
+
+
+def _calendar_world(monkeypatch):
+    fake = _agenda_world(monkeypatch)
+    from services import rendez_vous
+
+    monkeypatch.setattr(rendez_vous.Config, "bookings_configured", lambda: True)
+    monkeypatch.setattr(rendez_vous.graph_calendrier, "annuler_reservation",
+                        lambda gid, motif="": None)
+    monkeypatch.setattr(handlers.deadlines, "today_mtl",
+                        lambda: datetime(2026, 10, 1).date())
+    return fake
+
+
+def _l7_hearing(fake, hid="h1", **over):
+    doc = {
+        "id": hid, "title": "Rencontre", "hearing_type": "rencontre",
+        "dossier_id": "d1", "dossier_file_number": "2026-d1",
+        "dossier_title": "T", "start_datetime": L7_START,
+        "end_datetime": L7_START.replace(hour=14), "all_day": False,
+        "notes": "", "reminder_minutes": 1440, "status": "confirmée",
+        "modalite": "présentiel", "conference_uri": "", "source": "",
+        "confirmation": "", "serie_id": "", "serie_rule": None,
+        "vevent_uid": f"u-{hid}", "etag": f"e-{hid}",
+        "created_at": DT, "updated_at": DT,
+    }
+    doc.update(over)
+    fake.seed(f"hearings/{hid}", doc)
+
+
+def _l7_booking(fake, hid="b1", confirmation="à_confirmer"):
+    _l7_hearing(fake, hid, dossier_id="", dossier_file_number="",
+                dossier_title="", title="Consultation",
+                hearing_type="consultation", source="bookings",
+                confirmation=confirmation, graph_event_id=f"EVT-{hid}",
+                client_email="client@ex.com", client_nom="Jean Tremblay")
+
+
+def test_create_hearing_with_the_new_fields_conforms(monkeypatch):
+    _calendar_world(monkeypatch)
+    payload = handlers.create_hearing({
+        "dossier_id": "d1", "title": "Audience", "hearing_type": "audience",
+        "date": "2026-11-03", "start_time": "09:30",
+        "modalite": "visioconférence", "conference_uri": "https://ex.com/v",
+        "reminder_minutes": 60, "status": "confirmée"})
+    _conforms("create_hearing", payload)
+    assert payload["entity"]["status"] == "confirmée"
+
+
+def test_update_hearing_conforms_on_write_noop_move_and_bookings(monkeypatch):
+    fake = _calendar_world(monkeypatch)
+    _l7_hearing(fake)
+    written = handlers.update_hearing({"hearing_id": "h1",
+                                       "date": "2026-11-06",
+                                       "expected_etag": "e-h1"})
+    _conforms("update_hearing", written)
+    noop = handlers.update_hearing({"hearing_id": "h1",
+                                    "title": "Rencontre"})
+    _conforms("update_hearing", noop)
+    assert noop["changed_fields"] == [] and noop["ctag_bumped"] is False
+    moved = handlers.update_hearing({"hearing_id": "h1", "dossier_id": "d2",
+                                     "status": "annulée"})
+    _conforms("update_hearing", moved)
+    assert moved["moved"] is True and moved["outlook_mirror"] == "removed"
+    _l7_hearing(fake, "h2", serie_id="s1")
+    detached = handlers.update_hearing({"hearing_id": "h2",
+                                        "detach_from_series": True})
+    _conforms("update_hearing", detached)
+    _l7_booking(fake, "b1", confirmation="")
+    booking = handlers.update_hearing({"hearing_id": "b1",
+                                       "notes_append": "Salle 2.08."})
+    _conforms("update_hearing", booking)
+    assert booking["outlook_mirror"] == "not_mirrored"
+
+
+def test_create_hearing_series_conforms_timed_and_all_day(monkeypatch):
+    _calendar_world(monkeypatch)
+    timed = handlers.create_hearing_series({
+        "dossier_id": "d1", "title": "Suivi", "date": "2026-10-26",
+        "start_time": "09:00", "frequency": "hebdomadaire", "count": 3,
+        "idempotency_key": "cle-serie-conf-1"})
+    _conforms("create_hearing_series", timed)
+    all_day = handlers.create_hearing_series({
+        "title": "Revue", "date": "2026-10-26", "frequency": "mensuelle",
+        "until": "2026-12-31", "idempotency_key": "cle-serie-conf-2"})
+    _conforms("create_hearing_series", all_day)
+    assert all_day["entity"]["all_day"] is True
+
+
+def test_decide_rendez_vous_conforms_on_every_outcome(monkeypatch):
+    fake = _calendar_world(monkeypatch)
+    _l7_booking(fake, "b1")
+    confirmed = handlers.decide_rendez_vous({
+        "hearing_id": "b1", "action": "confirmer", "lier_partie": False,
+        "expected_etag": "e-b1", "idempotency_key": "cle-rdv-conf-1"})
+    _conforms("decide_rendez_vous", confirmed)
+    assert confirmed["ctag_bumped"] is True
+    already = handlers.decide_rendez_vous({
+        "hearing_id": "b1", "action": "confirmer", "lier_partie": False,
+        "expected_etag": "e-b1", "idempotency_key": "cle-rdv-conf-2"})
+    _conforms("decide_rendez_vous", already)
+    assert already["changed"] is False
+    _l7_booking(fake, "b2")
+    refused = handlers.decide_rendez_vous({
+        "hearing_id": "b2", "action": "refuser",
+        "expected_etag": "e-b2", "idempotency_key": "cle-rdv-conf-3"})
+    _conforms("decide_rendez_vous", refused)
+    assert refused["cancellation_message"]
+
+    # The warned success: Outlook cancelled, the local write failed twice.
+    from google.api_core import exceptions as gexc
+
+    _l7_booking(fake, "b3")
+
+    def _fail(info):
+        if any(p == "hearings/b3" for _k, p in info.ops):
+            raise gexc.ServiceUnavailable("injected")
+
+    fake.add_commit_hook(_fail)
+    warned = handlers.decide_rendez_vous({
+        "hearing_id": "b3", "action": "refuser",
+        "expected_etag": "e-b3", "idempotency_key": "cle-rdv-conf-4"})
+    _conforms("decide_rendez_vous", warned)
+    assert warned["local_written"] is False and warned["graph_cancelled"]
+
+
+def test_list_hearings_conforms_in_its_two_selection_modes(monkeypatch):
+    fake = _calendar_world(monkeypatch)
+    _l7_booking(fake, "b1")
+    pending = handlers.list_hearings({"bookings": "pending"})
+    _conforms("list_hearings", pending)
+    assert pending["items"][0]["client_nom"] == "Jean Tremblay"
+    _l7_hearing(fake, "h1", serie_id="s1")
+    serie = handlers.list_hearings({"serie_id": "s1"})
+    _conforms("list_hearings", serie)
+    assert serie["mode"] == "serie" and serie["window"]["from"] is None

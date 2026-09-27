@@ -404,6 +404,17 @@ def _stamps() -> dict[str, Any]:
     }
 
 
+# Keys a list_hearings row carries ONLY in the bookings "pending" mode — the
+# requester and the contact a confirmation would link. Typed, never
+# required: the window and serie modes never emit them (the folder_path
+# rule), and a CONFIRMED Bookings event's requester stays out of the
+# ordinary agenda rows.
+_PENDING_ROW_KEYS: tuple[str, ...] = (
+    "confirmation", "client_nom", "client_email", "partie_suggeree_id",
+    "partie_suggeree_nom",
+)
+
+
 def _hearing_row() -> dict:
     return _obj({
         "id": _str(),
@@ -424,8 +435,31 @@ def _hearing_row() -> dict:
         "dossier_id": _str("Empty string for a « Général » (standalone) event."),
         "dossier_file_number": _str(),
         "dossier_title": _str(),
+        "reminder_minutes": _nint(
+            "Reminder before the start, in minutes; null when none is "
+            "stored in a usable form."),
+        "serie_id": _str(
+            "'' = a standalone event; otherwise its recurring chain — list "
+            "it whole with list_hearings(serie_id)."),
+        "source": _str(
+            "'' for an ordinary event; « bookings » for a « Bookings with "
+            "me » reservation, whose Outlook meeting and client an edit "
+            "here does NOT update."),
+        "confirmation": _str(
+            "Bookings \"pending\" mode only: « à_confirmer » (awaiting a "
+            "decision) or « annulée_client » (the client cancelled — "
+            "refuser removes it). Every other row is a confirmed event."),
+        "client_nom": _str("Bookings \"pending\" mode only: the requester."),
+        "client_email": _str(
+            "Bookings \"pending\" mode only: the requester's email."),
+        "partie_suggeree_id": _str(
+            "Bookings \"pending\" mode only: the contact whose email is "
+            "exactly the requester's — the one decide_rendez_vous links; '' "
+            "when none."),
+        "partie_suggeree_nom": _str(
+            "Bookings \"pending\" mode only: that contact's name."),
         **_stamps(),
-    }, optional=_PROVENANCE_KEYS)
+    }, optional=_PROVENANCE_KEYS + _PENDING_ROW_KEYS)
 
 
 def _task_row(extra: Optional[dict[str, Any]] = None) -> dict:
@@ -717,6 +751,118 @@ def _entity_write_result(
     if extra:
         props.update(extra)
     return _obj(props, optional=optional)
+
+
+# The hearing entity keys lot 1b (L7) added — every write result of an
+# event carries them. On create_hearing (a contract that predates them)
+# they are declared optional, the _written_etag rule.
+_HEARING_ENTITY_ADDED: tuple[str, ...] = (
+    "end", "status", "modalite", "conference_uri", "reminder_minutes",
+    "serie_id", "source",
+)
+
+
+def _hearing_entity_extra() -> dict[str, Any]:
+    return {
+        "end": _nstr("ISO-8601 Montréal for a timed event; YYYY-MM-DD "
+                     "(exclusive) for an all-day one."),
+        "status": _str("confirmée | à_confirmer | reportée | annulée | "
+                       "terminée."),
+        "modalite": _str("présentiel | visioconférence | téléphonique."),
+        "conference_uri": _str("Video link (http/https); '' when none."),
+        "reminder_minutes": _nint("Reminder before the start, in minutes."),
+        "serie_id": _str("'' = standalone; else its recurring chain."),
+        "source": _str("'' ordinary; « bookings » = a Bookings "
+                       "reservation."),
+    }
+
+
+def _hearing_series_result() -> dict:
+    """create_hearing_series' contract. The series bumps its DAV
+    collection INSIDE its write batch (models.hearing
+    .create_hearing_series), so ``ctag_bumped`` is true on every success —
+    the handler never bumps a second time."""
+    occurrence = _obj({
+        "id": _str("The occurrence's stored id."),
+        "start": _nstr("ISO-8601 Montréal (timed) or YYYY-MM-DD (all-day)."),
+        "end": _nstr(),
+        "etag": _str("Its etag AS STORED — update_hearing's "
+                     "`expected_etag`."),
+    }, optional=("etag",))
+    return _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("« hearing_series »."),
+        "entity": _written_entity({
+            "hearing_type": _str(),
+            "forum": _str("Derived from the type."),
+            "all_day": _bool(),
+            "status": _str(),
+            "modalite": _str(),
+        }),
+        "serie_id": _str("The chain's id — the entity id; list it with "
+                         "list_hearings(serie_id)."),
+        "frequency": _str(),
+        "rule_label": _str("French, e.g. « Chaque mois — 12 occurrences »."),
+        "occurrences_count": _int(),
+        "occurrences": _arr(occurrence, "Chronological, the first first."),
+        "ctag_bumped": _bool(
+            "true: the sync trigger rode inside the same atomic write."),
+        "dav_synced": _bool(
+            "ctag_bumped AND the collection is visible to DavX5 (a "
+            "fermé/archivé dossier's is not)."),
+        "warnings": _arr(_str(), "French, human-readable; empty when clean."),
+        **_write_protocol_keys(),
+    })
+
+
+def _decide_rendez_vous_result() -> dict:
+    """decide_rendez_vous' contract — the decision, and what reached the
+    client. The two DAV keys keep their meaning: a confirmation puts the
+    event in its collection (and bumps it); a refusal concerns no
+    collection — a pending request was never on the phone — so both read
+    false there, which is not a failure."""
+    return _obj({
+        "decided": {"type": "boolean", "enum": [True]},
+        "entity_type": _str("« hearing »."),
+        "entity": _written_entity({
+            "status": _str(),
+            "all_day": _bool(),
+            "confirmation": _str(
+                "The decision gate AS STORED: '' = confirmed (now in the "
+                "calendar), « refusée »; still « à_confirmer » when the "
+                "local write failed after Outlook was cancelled (see "
+                "local_written)."),
+            **_written_etag(),
+        }, optional=("etag",)),
+        "action": _str("confirmer | refuser."),
+        "changed": _bool(
+            "false = that decision was already stored: nothing was "
+            "written, nobody was contacted (a safe replay)."),
+        "partie_liee": _bool("confirmer: a contact was linked."),
+        "partie_id": _str("The linked contact's id; '' when none."),
+        "local_written": _bool(
+            "Whether Athéna recorded the decision. false with "
+            "graph_cancelled true = the client WAS notified but the refusal "
+            "could not be recorded — do NOT call again (see warnings)."),
+        "graph_attempted": _bool("refuser: Outlook was asked to cancel."),
+        "graph_cancelled": _bool(
+            "refuser: Outlook accepted the cancellation."),
+        "client_notified": _bool(
+            "true = the cancellation went out, and Bookings sends it to "
+            "the client."),
+        "cancellation_message": _nstr(
+            "The FIXED text sent with that cancellation; null when nothing "
+            "was sent."),
+        "ctag_bumped": _bool(
+            "confirmer: whether the DavX5 sync trigger fired (false with a "
+            "warning = the event is confirmed and will reach the phone at "
+            "the next change; do not retry). false on a refusal, which "
+            "concerns no collection."),
+        "dav_synced": _bool("ctag_bumped AND the collection is visible to "
+                            "DavX5."),
+        "warnings": _arr(_str(), "French, human-readable; empty when clean."),
+        **_write_protocol_keys(),
+    })
 
 
 def _record_prescription_event_result() -> dict:
@@ -1216,11 +1362,22 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
     "list_hearings": _list_envelope(
         _hearing_row(),
         extra={
-            "window": _obj({"from": _str(), "to": _str()}),
+            "mode": {
+                "type": "string",
+                "enum": ["window", "serie", "bookings_pending"],
+                "description": (
+                    "window = the date window (default); serie = one "
+                    "recurring chain whole; bookings_pending = the "
+                    "Bookings requests awaiting a decision."),
+            },
+            "window": _obj({
+                "from": _nstr("YYYY-MM-DD; null outside the window mode."),
+                "to": _nstr("YYYY-MM-DD; null outside the window mode."),
+            }),
             **_next_cursor("Hearings page oldest-first, so it advances "
                            "forward in time."),
         },
-        extra_required=["window", "next_cursor"],
+        extra_required=["mode", "window", "next_cursor"],
     ),
 
     "list_notes": _list_envelope(_obj({
@@ -2353,11 +2510,57 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
         "sous_phase": _str("Sous-code de phase ('' = non renseignée)."),
     }, dav=True),
 
+    # The keys added in lot 1b (L7) are EMITTED on every call but declared
+    # optional: an idempotency replay may return a result stored before the
+    # deploy (the cache lives 24 h) — the _written_etag rule, which CLAUDE.md
+    # states as « required gains only always-present keys ».
     "create_hearing": _entity_write_result({
         "hearing_type": _str(),
         "forum": _str("Derived from the type."),
         "all_day": _bool(),
-    }, dav=True),
+        **_hearing_entity_extra(),
+        **_written_etag(),
+    }, dav=True, entity_optional=_HEARING_ENTITY_ADDED + ("etag",)),
+
+    "create_hearing_series": _hearing_series_result(),
+
+    "update_hearing": _entity_write_result(
+        {
+            "hearing_type": _str(),
+            "forum": _str("Derived from the type."),
+            "all_day": _bool(),
+            **_hearing_entity_extra(),
+            **_written_etag(),
+        },
+        dav=True, verb="updated", relocates=True, entity_optional=("etag",),
+        extra={
+            "changed_fields": _arr(_str(), (
+                "The fields this call actually changed. EMPTY = every value "
+                "sent was already stored: nothing was written, no CTag "
+                "moved (a safe replay).")),
+            "moved": _bool("true = the event changed dossier (or went to "
+                           "or from « Général »)."),
+            "detached": _bool("true = this call took the occurrence out of "
+                              "its series."),
+            "previous_serie_id": _str(
+                "The chain it left when detached; '' otherwise."),
+            "previous_status": _str("The status before this call."),
+            "outlook_mirror": {
+                "type": "string",
+                "enum": ["follows", "removed", "not_mirrored", "unchanged"],
+                "description": (
+                    "What the 10-minute Outlook mirror of confirmed events "
+                    "(when active; events 30 days back to 365 ahead) does "
+                    "with this write: follows = its copy is created or "
+                    "updated at the next cycle; removed = status annulée, "
+                    "the copy is deleted; not_mirrored = a Bookings "
+                    "rendez-vous, whose Outlook meeting is the client's and "
+                    "is NOT updated; unchanged = nothing was written."),
+            },
+        },
+    ),
+
+    "decide_rendez_vous": _decide_rendez_vous_result(),
 
     "create_time_entry": _entity_write_result({
         "hours": _num(),

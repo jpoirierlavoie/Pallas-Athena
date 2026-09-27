@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 57  # 27 lectures + 30 ecritures
+    assert len(tools.TOOLS) == 60  # 27 lectures + 33 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -317,6 +317,11 @@ _IDEMPOTENT_WRITES = frozenset({
     # add_protocol_step adds a second step, and a second create_protocol
     # is refused (one actif per dossier), not answered with the first.
     "update_protocol", "update_protocol_step",
+    # Lot 1b (L7). Values already stored write nothing (update_hearing); the
+    # same decision twice writes nothing and never re-contacts the client
+    # (decide_rendez_vous). create_hearing_series is NOT here: a second call
+    # without the key would write a second series.
+    "update_hearing", "decide_rendez_vous",
 })
 
 
@@ -350,6 +355,10 @@ def test_write_tools_set_is_pinned():
         # Lot 1b, etape L6 — le protocole de l'instance et ses etapes.
         "create_protocol", "update_protocol",
         "add_protocol_step", "update_protocol_step",
+        # Lot 1b, etape L7 — le calendrier : modifier un evenement, creer
+        # une serie, decider d'une demande Bookings (le premier effet
+        # sortant du connecteur).
+        "update_hearing", "create_hearing_series", "decide_rendez_vous",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -372,7 +381,10 @@ def test_annotations_split_both_directions(monkeypatch):
     idempotent = _IDEMPOTENT_WRITES
     for name, d in descriptors.items():
         ann = d["annotations"]
-        assert ann["openWorldHint"] is False
+        # REWRITTEN in lot 1b (L7): this read `is False` for every tool —
+        # true until decide_rendez_vous, whose refusal cancels the client's
+        # Outlook meeting. The hint is DERIVED from OUTBOUND_TOOLS.
+        assert ann["openWorldHint"] is (name in tools.OUTBOUND_TOOLS), name
         if name in tools.WRITE_TOOLS:
             assert ann["readOnlyHint"] is False
             # destructiveHint must be explicit IN BOTH DIRECTIONS: the MCP

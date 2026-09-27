@@ -88,6 +88,12 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     # made « cannot … file a signification » false since July 2026.
     "cannot create a protocol",
     "cannot file a signification",
+    # Lot 1b (L7): update_hearing edits an event — create_hearing's old
+    # description said the connector never could — and decide_rendez_vous
+    # cancels a client's Outlook meeting: « nothing outbound » is false.
+    "this connector can never edit or delete it",
+    "the connector sends nothing outside",
+    "n'envoie jamais rien",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     r"\bsignée\b",                         # « signée Claude »

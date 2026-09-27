@@ -410,10 +410,11 @@ CASES = [
         lambda d, m: _document_form(d, m, category="inventée"),
         "notes_internes", "SOUMIS-7Q4",
     ),
-    # Lot 1a (L4): the hearing edit form. Like the protocol forms below,
-    # no connector write modifies a hearing yet (update_hearing is lot
-    # 1b's), so the derived map does not require it — wired first, as the
-    # plan orders, and its cycle proved like every other.
+    # Lot 1a (L4): the hearing edit form — wired first, as the plan orders,
+    # and its cycle proved like every other. Since lot 1b (L7) the derived
+    # map REQUIRES it: update_hearing and decide_rendez_vous rewrite a
+    # hearing. (Réception's rendez-vous cards carry their version too —
+    # tests/test_reception_rdv.py; this case is the event form.)
     FormCase(
         "hearing", "hearing", "hearings", _seed_hearing,
         lambda i: f"/audiences/{i}/edit", lambda i: f"/audiences/{i}",
@@ -467,7 +468,7 @@ _LOTS = ("Lot 1", "Lot 2", "Lot 3", "Lot 4", "Lot 5")
 
 _MUTATOR = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
-    r"delete|toggle|complete|attach|link|import|add)_"
+    r"delete|toggle|complete|attach|link|unlink|import|add)_"
 )
 
 
@@ -568,6 +569,12 @@ def test_the_reach_is_derived_and_not_vacuous():
     assert {("protocol", "update_protocol"),
             ("task", "update_task")} <= reach["update_protocol"]
     assert ("protocol", "set_step_status") in reach["update_protocol_step"]
+    # Lot 1b (L7): the calendar — directly, through the series link, and
+    # through the Bookings decision service.
+    assert {("hearing", "update_hearing"),
+            ("hearing", "unlink_hearing")} <= reach["update_hearing"]
+    assert ("hearing", "set_bookings_confirmation") in (
+        reach["decide_rendez_vous"])
     # Every write tool reaches at least one mutator: a handler the walker
     # cannot follow would otherwise vanish from the map in silence.
     assert all(reach.values()), [t for t, r in reach.items() if not r]
