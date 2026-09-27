@@ -16,7 +16,9 @@ Ce que ces tests épinglent, dans l'ordre d'importance :
    (exemption CSRF, espace d'URL, appartenance au paquet du connecteur).
 3. Chaque mutateur que le connecteur atteint estampille ET note son point de
    validation (``note_commit``) après son écriture — dérivé des références
-   ``<x>_model.<verbe>`` de ``mcp/handlers.py``.
+   ``<x>_model.<verbe>`` de ``mcp/handlers.py`` ET des modules ``services/``
+   qu'il importe (lot 1b) ; un mutateur qui délègue toutes ses écritures est
+   jugé sur ses délégués.
 4. Le vrai magasin : les modèles tournent au-dessus du faux Firestore partagé
    (``tests/_fake_firestore.py`` — le client est le vrai), et l'on relit ce
    qui est STOCKÉ, jamais un dictionnaire remis à un mock.
@@ -516,8 +518,28 @@ def test_the_sweep_is_not_vacuous():
 
 _MUTATOR_VERB = re.compile(
     r"^(create|update|set|record|append|void|reverse|clear|confirm|move|"
-    r"delete|toggle|complete|attach|link)_"
+    r"delete|toggle|complete|attach|link|add|unlink|ensure)_"
 )
+# Lot 1 completeness review: lot 1b's handlers reach models THROUGH the
+# service modules the web routes also use (``services/protocoles.py``,
+# ``services/rendez_vous.py``). A sweep of ``mcp/handlers.py`` alone never
+# saw ``protocol.set_step_status`` or ``hearing.set_bookings_confirmation``,
+# so a service-reached mutator losing its ``note_commit`` would have gone
+# unnoticed — and a failure after its commit would come back as a retryable
+# « internal error » that writes twice.
+_SERVICES = ATHENA / "services"
+# Mutators that write NOTHING themselves: they delegate every write to the
+# functions named here, which the sweep then holds to the rule instead.
+_DELEGATING_MUTATORS: dict[tuple[str, str], tuple[tuple[str, str], ...]] = {
+    # One create_task per step, then the step↔task link.
+    ("protocol", "create_linked_tasks"): (
+        ("task", "create_task"), ("protocol", "_link_task_to_step"),
+    ),
+    # Detaching IS an update_hearing of the series fields.
+    ("hearing", "unlink_hearing"): (("hearing", "update_hearing"),),
+    # Finds, or creates through create_note.
+    ("note", "ensure_analyse_note"): (("note", "create_note"),),
+}
 _STAMP_HELPERS = {"stamp_create", "stamp_update", "update_fields", "create_fields"}
 # ``commit_document``/``commit_fields`` since 2026-09-25 (lot 0a, étape 5):
 # the etag-guarded edits write through ``models.concurrency``, and its call
@@ -526,11 +548,11 @@ _WRITE_ATTRS = {"set", "update", "create", "commit",
                 "commit_document", "commit_fields"}
 
 
-def reached_mutators() -> set[tuple[str, str]]:
-    """``(models module, function)`` for every ``<alias>.<verb>_…`` the
-    connector's handlers reference, where ``<alias>`` is a ``from models
-    import X as <alias>`` binding."""
-    tree = ast.parse(pathlib.Path(handlers.__file__).read_text(encoding="utf-8"))
+def _model_references(path: pathlib.Path) -> set[tuple[str, str]]:
+    """``(models module, function)`` for every ``<alias>.<verb>_…`` in the
+    module at *path*, where ``<alias>`` is a ``from models import X as
+    <alias>`` binding."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     aliases = {}
     for node in tree.body:
         if isinstance(node, ast.ImportFrom) and node.module == "models":
@@ -543,6 +565,27 @@ def reached_mutators() -> set[tuple[str, str]]:
                 and node.value.id in aliases
                 and _MUTATOR_VERB.match(node.attr)):
             found.add((aliases[node.value.id], node.attr))
+    return found
+
+
+def _services_reached() -> list[pathlib.Path]:
+    """The ``services/*.py`` modules the handlers import (``from services
+    import X [as Y]``) — derived, so a new service door is followed the day
+    a handler starts using it."""
+    tree = ast.parse(pathlib.Path(handlers.__file__).read_text(encoding="utf-8"))
+    names = {a.name for node in ast.walk(tree)
+             if isinstance(node, ast.ImportFrom) and node.module == "services"
+             for a in node.names}
+    return [_SERVICES / f"{n}.py" for n in sorted(names)]
+
+
+def reached_mutators() -> set[tuple[str, str]]:
+    """``(models module, function)`` for every mutator the connector's
+    handlers reference — directly, or through a service module they
+    import."""
+    found = _model_references(pathlib.Path(handlers.__file__))
+    for path in _services_reached():
+        found |= _model_references(path)
     return found
 
 
@@ -577,11 +620,31 @@ def test_the_reached_set_is_derived_and_not_vacuous():
     assert not {n for _, n in reached} & {"display_name", "billing_address_from"}
 
 
-@pytest.mark.parametrize(
-    "module, name", sorted(reached_mutators()),
-    ids=[f"{m}.{n}" for m, n in sorted(reached_mutators())],
-)
-def test_each_reached_mutator_stamps_and_notes_its_commit(module, name):
+def test_the_sweep_follows_the_service_doors_the_handlers_use():
+    """The lot-1b writes the handlers reach ONLY through a service — never
+    by a direct model reference — are in the swept set."""
+    services = {p.name for p in _services_reached()}
+    assert {"protocoles.py", "rendez_vous.py"} <= services, services
+    direct = _model_references(pathlib.Path(handlers.__file__))
+    via_services = reached_mutators() - direct
+    assert {("protocol", "set_step_status"), ("protocol", "add_step"),
+            ("hearing", "set_bookings_confirmation")} <= via_services, (
+        via_services)
+
+
+def test_the_delegating_mutators_are_reached_and_really_delegate():
+    reached = reached_mutators()
+    for (module, name), delegates in _DELEGATING_MUTATORS.items():
+        assert (module, name) in reached, f"stale entry: {module}.{name}"
+        fn = _function(module, name)
+        called = {n.func.id if isinstance(n.func, ast.Name) else n.func.attr
+                  for n in ast.walk(fn) if isinstance(n, ast.Call)
+                  and isinstance(n.func, (ast.Name, ast.Attribute))}
+        for _, delegate in delegates:
+            assert delegate in called, f"{module}.{name} no longer calls {delegate}"
+
+
+def _assert_stamps_and_notes_its_commit(module: str, name: str) -> None:
     fn = _function(module, name)
     stamps = [c for h in _STAMP_HELPERS for c in _calls(fn, h)]
     assert stamps, f"models.{module}.{name} writes without a provenance stamp"
@@ -596,6 +659,15 @@ def test_each_reached_mutator_stamps_and_notes_its_commit(module, name):
     assert writes and max(c.lineno for c in commits) > max(writes), (
         f"models.{module}.{name}: note_commit must follow the last write"
     )
+
+
+@pytest.mark.parametrize(
+    "module, name", sorted(reached_mutators()),
+    ids=[f"{m}.{n}" for m, n in sorted(reached_mutators())],
+)
+def test_each_reached_mutator_stamps_and_notes_its_commit(module, name):
+    for target in _DELEGATING_MUTATORS.get((module, name), ((module, name),)):
+        _assert_stamps_and_notes_its_commit(*target)
 
 
 # ══════════════════════════════════════════════════════════════════════
