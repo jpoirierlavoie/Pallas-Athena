@@ -130,17 +130,27 @@ def _template_context() -> dict:
     }
 
 
-def _enrich_dossier_info(data: dict) -> dict:
-    """Attach the denormalized dossier labels (shared helper).
+def _enrich_dossier_info(data: dict) -> tuple[dict, list[str]]:
+    """Attach the denormalized dossier labels; return (data, errors).
 
-    Hearings may be standalone agenda events (no dossier). An empty — or
-    unresolvable — dossier_id is blanked to "" along with the labels, so no
-    stale label lingers on a hearing detached from its dossier.
+    A hearing may legitimately have NO dossier (a standalone agenda event,
+    synced under « Général »), so an unresolvable dossier_id can no longer
+    be blanked: the model accepts "" and the court date would quietly move
+    to « Général » — off the dossier's calendar tab, into another DAV
+    collection on the phone — with a success redirect. « Aucun dossier
+    choisi » and « dossier introuvable » must stay distinguishable, so the
+    second is refused (the notes doctrine, routes/notes._enrich_dossier_info).
+    An EMPTY id is still « no dossier ».
     """
-    data, _ = enrich_dossier_labels(
-        data, blank_value="", resolver=get_dossier
+    return enrich_dossier_labels(
+        data,
+        strict=True,
+        resolver=get_dossier,
+        not_found_error=(
+            "Dossier introuvable. Choisissez un dossier existant, ou laissez "
+            "le champ vide pour classer l'audience dans « Général »."
+        ),
     )
-    return data
 
 
 def _form_data() -> dict:
@@ -474,7 +484,7 @@ def hearing_new() -> str:
 def hearing_create() -> str:
     """Handle new hearing form submission."""
     data = _form_data()
-    data = _enrich_dossier_info(data)
+    data, link_errors = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
     frequence, count, until = _recurrence_from_form()
 
@@ -486,6 +496,10 @@ def hearing_create() -> str:
         data["dossier_title"] = data.get("dossier_title", "")
         ctx.update(hearing=data, errors=errors, return_to=return_to)
         return render_template("hearings/form.html", **ctx)
+
+    if link_errors:
+        # Re-rendered at 200 like every refusal here: htmx swaps only 2xx.
+        return _reject(link_errors)
 
     if frequence:
         occurrences, errors = create_hearing_series(
@@ -581,10 +595,13 @@ def hearing_update(hearing_id: str) -> str:
     old_dossier_id = existing_hearing.get("dossier_id") if existing_hearing else None
 
     data = _form_data()
-    data = _enrich_dossier_info(data)
+    data, link_errors = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
 
-    hearing, errors = update_hearing(hearing_id, data)
+    hearing, errors = (
+        (None, link_errors) if link_errors
+        else update_hearing(hearing_id, data)
+    )
 
     if errors:
         data["id"] = hearing_id
