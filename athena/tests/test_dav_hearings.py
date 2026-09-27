@@ -33,6 +33,8 @@ with mock.patch("google.cloud.firestore.Client"):
     import dav.sync as dav_sync
     import models.hearing as hearing_model
 
+from tests._fake_firestore import install  # noqa: E402
+
 UTC = timezone.utc
 CAL = "urn:ietf:params:xml:ns:caldav"
 DAVNS = "DAV:"
@@ -360,15 +362,22 @@ def test_sync_collection_reports_hearings(app, linked_and_standalone):
 # PUT — the URL decides the collection
 # ══════════════════════════════════════════════════════════════════════
 
+def _nothing_stored(monkeypatch):
+    """The PUT path reads through the STRICT readers (lot 1a): a create
+    branch is reached only when the store answered « absent » for all
+    three components."""
+    for name in ("get_hearing_strict", "get_task_strict", "get_note_strict"):
+        monkeypatch.setattr(dc, name, lambda i: None)
+
+
 def test_put_forces_the_dossier_from_the_url(app, monkeypatch):
     """hearing_to_vevent emits X-PALLAS-DOSSIER-ID and vevent_to_hearing
     reads it back, so a round-tripped payload could otherwise claim a
     different dossier than the collection it was PUT into — and the CTag
     bump would then target the wrong collection."""
     seen = {}
-    monkeypatch.setattr(dc, "get_hearing", lambda i: None)
-    monkeypatch.setattr(dc, "get_task", lambda i: None)
-    monkeypatch.setattr(dc, "get_note", lambda i: None)
+    seen_kw = {}
+    _nothing_stored(monkeypatch)
     monkeypatch.setattr(
         dc, "get_dossier",
         lambda i: {"id": "d1", "file_number": "2026-001",
@@ -380,8 +389,9 @@ def test_put_forces_the_dossier_from_the_url(app, monkeypatch):
                    "start_datetime": datetime(2026, 9, 1, tzinfo=UTC)},
     )
 
-    def _create(data):
+    def _create(data, **kw):
         seen.update(data)
+        seen_kw.update(kw)
         return {**data, "etag": "new"}, []
 
     monkeypatch.setattr(dc, "create_hearing", _create)
@@ -396,7 +406,10 @@ def test_put_forces_the_dossier_from_the_url(app, monkeypatch):
     )
     assert resp.status_code == 201
     assert seen["dossier_id"] == "d1"          # URL wins, not the payload
-    assert seen["id"] == "h-new"               # id comes from the URL
+    # The id comes from the URL, through the creator's explicit keyword —
+    # never through the payload, which create_hearing now discards.
+    assert seen_kw["dav_id"] == "h-new"
+    assert "id" not in seen
     assert bumps == ["dossier:d1"]
 
 
@@ -408,9 +421,7 @@ def test_put_created_event_without_type_defaults_to_rencontre(app, monkeypatch):
     defaults to « rencontre » (extrajudiciaire); an explicitly-typed PUT
     keeps its type; and the UPDATE path stays under the non-effacement rule
     (an absent property never re-defaults an existing type)."""
-    monkeypatch.setattr(dc, "get_hearing", lambda i: None)
-    monkeypatch.setattr(dc, "get_task", lambda i: None)
-    monkeypatch.setattr(dc, "get_note", lambda i: None)
+    _nothing_stored(monkeypatch)
     monkeypatch.setattr(
         dc, "get_dossier",
         lambda i: {"id": "d1", "file_number": "2026-001",
@@ -418,10 +429,11 @@ def test_put_created_event_without_type_defaults_to_rencontre(app, monkeypatch):
     )
     monkeypatch.setattr(dc, "bump_ctag", lambda n: None)
     monkeypatch.setattr(dc, "remove_tombstone", lambda n, r: None)
+    monkeypatch.setattr(dav_sync, "bump_ctag", lambda n: None)
 
     seen = {}
 
-    def _create(data):
+    def _create(data, **kw):
         seen.clear()
         seen.update(data)
         return {**data, "etag": "new"}, []
@@ -457,7 +469,7 @@ def test_put_created_event_without_type_defaults_to_rencontre(app, monkeypatch):
 
     # UPDATE path: the stored type survives an untyped edit (non-effacement).
     monkeypatch.setattr(
-        dc, "get_hearing",
+        dc, "get_hearing_strict",
         lambda i: {"id": "h-live", "dossier_id": "d1", "etag": "e1",
                    "hearing_type": "audience"},
     )
@@ -481,35 +493,58 @@ def test_put_created_event_without_type_defaults_to_rencontre(app, monkeypatch):
     assert "hearing_type" not in updated   # merge keeps the stored value
 
 
-def test_create_hearing_honours_a_supplied_id_and_uid(monkeypatch):
-    """A CalDAV PUT names the resource in its URL. Minting a fresh uuid
-    stored the event under an id the client never learns: every later GET of
-    that href 404s while a duplicate syncs down under another id."""
-    written = {}
-
-    class _Doc:
-        def set(self, payload):
-            written.update(payload)
-
-    class _Coll:
-        def document(self, doc_id):
-            written["_doc_id"] = doc_id
-            return _Doc()
-
-    monkeypatch.setattr(
-        hearing_model, "db", mock.Mock(collection=lambda name: _Coll())
-    )
+def test_create_hearing_discards_a_payload_id_and_uid(monkeypatch):
+    """REWRITTEN in lot 1a (it pinned the defect). create_hearing used to
+    HONOUR an ``id`` in its payload and write it with set(): the DAV PUT
+    reached it whenever its fail-open read missed the stored event, so a
+    transient read error turned a phone edit into a full-document
+    replacement. A payload id/UID is now discarded; only the explicit
+    ``dav_id`` keyword of the DAV create branch names the document."""
+    fake = install(monkeypatch, hearing_model)
+    fake.seed("hearings/victim", {"id": "victim", "title": "Ne pas écraser",
+                                  "serie_id": "s1", "etag": "v0"})
     created, errors = hearing_model.create_hearing({
-        "id": "from-url",
-        "vevent_uid": "client-uid",
+        "id": "victim",
+        "vevent_uid": "forged",
         "title": "Audience",
         "start_datetime": datetime(2026, 9, 1, 13, 0, tzinfo=UTC),
     })
     assert errors == []
-    assert created["id"] == "from-url"
-    assert created["vevent_uid"] == "client-uid"
-    assert written["_doc_id"] == "from-url"
+    assert created["id"] != "victim" and created["vevent_uid"] != "forged"
+    assert fake.peek("hearings/victim")["title"] == "Ne pas écraser"
+    assert fake.peek("hearings/victim")["serie_id"] == "s1"
+
+
+def test_create_hearing_honours_the_dav_id_and_uid(monkeypatch):
+    """A CalDAV PUT names the resource in its URL. Minting a fresh uuid
+    stored the event under an id the client never learns: every later GET of
+    that href 404s while a duplicate syncs down under another id."""
+    fake = install(monkeypatch, hearing_model)
+    created, errors = hearing_model.create_hearing(
+        {"title": "Audience",
+         "start_datetime": datetime(2026, 9, 1, 13, 0, tzinfo=UTC)},
+        dav_id="from-url", dav_uid="client-uid",
+    )
+    assert errors == []
+    stored = fake.peek("hearings/from-url")
+    assert stored["id"] == "from-url" and stored["vevent_uid"] == "client-uid"
     assert created["dav_href"] == "/dav/general/from-url.ics"
+
+
+def test_create_hearing_with_a_dav_id_never_overwrites(monkeypatch):
+    """create(), not set(): a racing PUT that stored the event first wins,
+    and this one is refused — never a silent replacement."""
+    fake = install(monkeypatch, hearing_model)
+    fake.seed("hearings/taken", {"id": "taken", "title": "Premier",
+                                 "etag": "t0"})
+    before = fake.peek("hearings/taken")
+    created, errors = hearing_model.create_hearing(
+        {"title": "Second",
+         "start_datetime": datetime(2026, 9, 1, 13, 0, tzinfo=UTC)},
+        dav_id="taken",
+    )
+    assert created is None and errors == [hearing_model.dav_ids.DAV_ID_TAKEN]
+    assert fake.peek("hearings/taken") == before
 
 
 def test_create_hearing_still_mints_an_id_when_none_given(monkeypatch):
@@ -605,9 +640,7 @@ _VJOURNAL_BODY = "BEGIN:VCALENDAR\nBEGIN:VJOURNAL\nEND:VJOURNAL\nEND:VCALENDAR"
 
 def _put_analyse_setup(monkeypatch, seen):
     """Create-branch PUT of a VJOURNAL whose parsed data claims is_analyse."""
-    monkeypatch.setattr(dc, "get_hearing", lambda i: None)
-    monkeypatch.setattr(dc, "get_task", lambda i: None)
-    monkeypatch.setattr(dc, "get_note", lambda i: None)  # create branch
+    _nothing_stored(monkeypatch)  # create branch
     monkeypatch.setattr(
         dc, "get_dossier",
         lambda i: {"id": "d1", "file_number": "2026-001",
@@ -619,7 +652,7 @@ def _put_analyse_setup(monkeypatch, seen):
                    "is_analyse": True, "dateless": True},
     )
 
-    def _create(data):
+    def _create(data, **kw):
         seen.update(data)
         return {**data, "etag": "new"}, []
 
@@ -700,15 +733,15 @@ def test_put_into_general_forces_an_empty_dossier(app, monkeypatch):
     """Symmetric to the dossier scope forcing its id: the URL decides, so a
     payload claiming a dossier must not drag the item out of Général."""
     seen = {}
-    for name in ("get_hearing", "get_task", "get_note"):
-        monkeypatch.setattr(dc, name, lambda i: None)
+    _nothing_stored(monkeypatch)
     monkeypatch.setattr(
         dc, "vevent_to_hearing",
         lambda s: {"title": "A", "dossier_id": "UN-DOSSIER",
                    "start_datetime": datetime(2026, 9, 1, tzinfo=UTC)},
     )
-    monkeypatch.setattr(dc, "create_hearing",
-                        lambda d: (seen.update(d) or ({**d, "etag": "e"}, [])))
+    monkeypatch.setattr(
+        dc, "create_hearing",
+        lambda d, **kw: (seen.update(d) or ({**d, "etag": "e"}, [])))
     bumps = []
     monkeypatch.setattr(dc, "bump_ctag", lambda n: bumps.append(n))
     monkeypatch.setattr(dc, "remove_tombstone", lambda n, r: None)

@@ -37,6 +37,7 @@ from dav.sync import (
     get_sync_token,
     get_tombstones,
     record_tombstone,
+    relocate_resource,
     remove_tombstone,
 )
 from models.audit_event import record_deletion
@@ -53,11 +54,13 @@ from dav.xml_utils import (
     propfind_requests_prop,
     serialize_multistatus,
 )
+from models.dav_ids import DAV_ID_INVALID, DAV_ID_TAKEN, valid_resource_id
 from models.dossier import get_dossier
 from models.hearing import (
     create_hearing,
     delete_hearing,
     get_hearing,
+    get_hearing_strict,
     hearing_to_vevent,
     list_hearings,
     strip_dav_description_suffix as strip_hearing_description_suffix,
@@ -69,21 +72,21 @@ from models.note import (
     delete_note,
     get_analyse_note,
     get_note,
+    get_note_strict,
     list_notes,
     note_to_vjournal,
     update_note,
     vjournal_to_note,
 )
 from models.task import (
-    DAV_ID_TAKEN,
     create_task,
     delete_task,
     get_task,
+    get_task_strict,
     list_tasks,
     strip_dav_description_suffix,
     task_to_vtodo,
     update_task,
-    valid_resource_id,
     vtodo_to_task,
 )
 from utils.logging_setup import log_dav_operation, sanitize_log_value
@@ -762,6 +765,148 @@ def put_resource(dossier_id: str, resource_id: str) -> Response:
         return Response("Unsupported component type", status=400)
 
 
+# The three PUT branches share their READ and their CREATE rules.
+#
+# READ. A PUT decides « edit » or « create » on whether the resource exists,
+# so the read must say which — never « the read failed ». The fail-open
+# get_* readers turn a transient error into « absent » and routed a phone
+# EDIT into the create branch, where the hearing and note creators then
+# OVERWROTE the stored document with set() (every server-owned key — the
+# series link, the Bookings gate, the graph_* reconciliation keys — gone).
+# The PUT path reads through the strict readers and answers 503 (retried by
+# the client) when the store cannot answer.
+#
+# CREATE. The URL names the new resource and the body carries its UID: the
+# object is stored under BOTH (the create_task rule, lot 0b B3), through the
+# creator's explicit dav_id keyword and a create() that refuses — never
+# overwrites — a document already stored under that id (a racing PUT).
+# Tasks, notes and hearings share ONE href space per collection, and
+# _resolve_resource tries the task first, then the note, then the event: a
+# resource created under an id another component already holds would be
+# hidden (or hide it) on every later GET, so that id is refused too.
+
+_COMPONENTS = ("VTODO", "VJOURNAL", "VEVENT")
+
+
+def _read_strict(component: str, resource_id: str) -> dict | None:
+    """The PUT path's read of *component*: ``None`` only when the store
+    answered « absent »; a read failure propagates. The readers are looked
+    up at call time, so a test patching one of them sees every read."""
+    if component == "VTODO":
+        return get_task_strict(resource_id)
+    if component == "VJOURNAL":
+        return get_note_strict(resource_id)
+    return get_hearing_strict(resource_id)
+
+
+def _read_existing(
+    component: str, dossier_id: str, resource_id: str
+) -> tuple[dict | None, Response | None]:
+    """``(existing, None)``, or ``(None, refusal)`` when the read failed.
+
+    A name the store itself refuses (reserved ``__x__``, « . »…) can hold no
+    document, so its failed read is answered as the create it would be —
+    400, never 503. Any other failure is a 503: whether the resource exists
+    is unknown, and guessing either way writes the wrong branch.
+    """
+    try:
+        return _read_strict(component, resource_id), None
+    except Exception:
+        if not valid_resource_id(resource_id):
+            return None, _refused_create(dossier_id, 400, "nom_invalide")
+        return None, _read_unavailable(dossier_id)
+
+
+def _read_unavailable(dossier_id: str) -> Response:
+    """503 — the store could not say whether the resource exists."""
+    log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                      status_code=503, reason="lecture_indisponible")
+    resp = Response("Service Unavailable", status=503)
+    resp.headers["Retry-After"] = "30"
+    return resp
+
+
+def _refused_create(dossier_id: str, status: int, reason: str) -> Response:
+    log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                      status_code=status, reason=reason)
+    if status == 400:
+        return Response("Bad Request — identifiant de ressource invalide.",
+                        status=400)
+    return Response("Precondition Failed", status=412)
+
+
+def _create_refusal(
+    dossier_id: str, resource_id: str, component: str
+) -> Response | None:
+    """The refusal a CREATE of *component* under *resource_id* earns, or
+    ``None`` when it may proceed. Runs before any write."""
+    if not valid_resource_id(resource_id):
+        return _refused_create(dossier_id, 400, "nom_invalide")
+    try:
+        taken = any(
+            _read_strict(other, resource_id) is not None
+            for other in _COMPONENTS
+            if other != component
+        )
+    except Exception:
+        return _read_unavailable(dossier_id)
+    if taken:
+        return _refused_create(dossier_id, 412, "id_autre_composant")
+    return None
+
+
+def _create_errors_response(
+    dossier_id: str, resource_id: str, component: str, errors: list[str]
+) -> Response | None:
+    """Map a creator's refusal to its HTTP answer; ``None`` when it created."""
+    if errors == [DAV_ID_TAKEN]:
+        # create() found a document the read did not see (a racing PUT):
+        # refused, never overwritten.
+        return _refused_create(dossier_id, 412, "id_pris")
+    if errors == [DAV_ID_INVALID]:
+        return _refused_create(dossier_id, 400, "nom_invalide")
+    if errors:
+        logger.warning(
+            "Dossier DAV PUT (%s) validation failed for %s: %s",
+            component, sanitize_log_value(resource_id),
+            sanitize_log_value(errors),
+        )
+        return Response("Données invalides.", status=422)
+    return None
+
+
+def _precondition_failed(
+    existing: dict | None, if_match: str | None, if_none_match: str | None
+) -> bool:
+    """If-None-Match: * on an existing resource, or an If-Match that does
+    not name the stored etag (or names a resource that does not exist)."""
+    if if_none_match == "*" and existing:
+        return True
+    if if_match and existing:
+        return if_match != f'"{existing.get("etag", "")}"'
+    return bool(if_match and not existing)
+
+
+def _force_scope(data: dict, dossier_id: str, dossier: dict) -> None:
+    """The URL decides the dossier: the collection a PUT landed in, never an
+    X-PALLAS-DOSSIER-ID the client round-tripped (the serializers emit it
+    and the parsers read it back) — the CTag bump would otherwise target
+    the wrong collection."""
+    data["dossier_id"] = dossier_id
+    data["dossier_file_number"] = (
+        "" if _is_general(dossier_id) else dossier.get("file_number", "")
+    )
+    data["dossier_title"] = (
+        "" if _is_general(dossier_id) else dossier.get("title", "")
+    )
+
+
+def _finish(resp: Response) -> Response:
+    if "return=minimal" in request.headers.get("Prefer", ""):
+        resp.headers["Preference-Applied"] = "return=minimal"
+    return resp
+
+
 def _put_hearing(
     dossier_id: str,
     dossier: dict,
@@ -771,15 +916,11 @@ def _put_hearing(
     if_none_match: str | None,
 ) -> Response:
     """Handle PUT for a VEVENT resource (mirrors :func:`_put_task`)."""
-    existing = get_hearing(resource_id)
+    existing, refusal = _read_existing("VEVENT", dossier_id, resource_id)
+    if refusal is not None:
+        return refusal
 
-    # Precondition checks
-    if if_none_match == "*" and existing:
-        return Response("Precondition Failed", status=412)
-    if if_match and existing:
-        if if_match != f'"{existing.get("etag", "")}"':
-            return Response("Precondition Failed", status=412)
-    if if_match and not existing:
+    if _precondition_failed(existing, if_match, if_none_match):
         return Response("Precondition Failed", status=412)
 
     try:
@@ -787,29 +928,10 @@ def _put_hearing(
     except Exception:
         return Response("Bad Request — invalid iCalendar", status=400)
 
-    # Force dossier_id from the URL: the collection determines the dossier.
-    # hearing_to_vevent emits X-PALLAS-DOSSIER-ID and vevent_to_hearing reads
-    # it back, so a client round-tripping that property could otherwise write
-    # a dossier_id disagreeing with the collection the PUT landed in — and
-    # the CTag bump below would then target the wrong collection.
-    data["dossier_id"] = dossier_id
-    data["dossier_file_number"] = (
-        "" if _is_general(dossier_id) else dossier.get("file_number", "")
-    )
-    data["dossier_title"] = (
-        "" if _is_general(dossier_id) else dossier.get("title", "")
-    )
-
+    _force_scope(data, dossier_id, dossier)
     sync_name = collection_for(dossier_id)
 
     if existing:
-        # Moved in from another collection: tombstone it there. A hearing with
-        # no dossier lived in the shared "hearings" collection.
-        old_scope = collection_for(existing.get("dossier_id"))
-        if old_scope != sync_name:
-            record_tombstone(old_scope, resource_id)
-            bump_ctag(old_scope)
-
         # The UID names an EXISTING resource and never changes (RFC 4791
         # no-uid-conflict); update_hearing refuses it among the fields a
         # payload may set, so it is dropped here rather than 422-ing every
@@ -827,41 +949,76 @@ def _put_hearing(
                 sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
-        if old_scope != sync_name:
-            # Resource (re)enters this collection — drop any stale tombstone
-            remove_tombstone(sync_name, resource_id)
-        bump_ctag(sync_name)
+        # Moved in from another collection (another dossier, or « Général »):
+        # tombstone + bump the old one, un-tombstone + bump this one — AFTER
+        # the write, so a refused edit (422) no longer tombstones and bumps
+        # a collection the resource never left.
+        relocate_resource(
+            resource_id,
+            old_dossier_id=existing.get("dossier_id"),
+            new_dossier_id=dossier_id,
+        )
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
-    else:
-        data["id"] = resource_id
-        # A phone-created VEVENT (Google Calendar via DavX5) carries no
-        # X-PALLAS-HEARING-TYPE, so _default_doc stamped it « audience » —
-        # every personal appointment silently became forum="judiciaire"
-        # (PA-D01, the psychologist-appointment defect). A phone-created
-        # event is far more often a meeting than a court date, and a real
-        # court date gets its type set in the app; the CREATE path defaults
-        # to « rencontre » (extrajudiciaire) instead. Updates keep the
-        # non-effacement rule — an absent property never re-defaults an
-        # existing type (vevent_to_hearing omits the key).
-        data.setdefault("hearing_type", "rencontre")
-        created, errors = create_hearing(data)
-        if errors:
-            logger.warning(
-                "Dossier DAV PUT (VEVENT) validation failed for %s: %s",
-                sanitize_log_value(resource_id), sanitize_log_value(errors),
-            )
-            return Response("Données invalides.", status=422)
-        # Resource (re)enters the collection — drop any stale tombstone
-        remove_tombstone(sync_name, resource_id)
-        bump_ctag(sync_name)
-        resp = Response("", status=201)
-        resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+        return _finish(resp)
 
-    if "return=minimal" in request.headers.get("Prefer", ""):
-        resp.headers["Preference-Applied"] = "return=minimal"
+    refusal = _create_refusal(dossier_id, resource_id, "VEVENT")
+    if refusal is not None:
+        return refusal
+    # A phone-created VEVENT (Google Calendar via DavX5) carries no
+    # X-PALLAS-HEARING-TYPE, so _default_doc stamped it « audience » — every
+    # personal appointment silently became forum="judiciaire" (PA-D01, the
+    # psychologist-appointment defect). A phone-created event is far more
+    # often a meeting than a court date, and a real court date gets its type
+    # set in the app; the CREATE path defaults to « rencontre »
+    # (extrajudiciaire) instead. Updates keep the non-effacement rule — an
+    # absent property never re-defaults an existing type (vevent_to_hearing
+    # omits the key).
+    data.setdefault("hearing_type", "rencontre")
+    uid = data.pop("vevent_uid", None)
+    created, errors = create_hearing(data, dav_id=resource_id, dav_uid=uid)
+    refused = _create_errors_response(dossier_id, resource_id, "VEVENT", errors)
+    if refused is not None:
+        return refused
+    # Resource (re)enters the collection — drop any stale tombstone
+    remove_tombstone(sync_name, resource_id)
+    bump_ctag(sync_name)
+    resp = Response("", status=201)
+    resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+    return _finish(resp)
 
-    return resp
+
+def _strip_served_task_suffix(
+    data: dict, served_dossier_id: str | None, dossier_id: str, dossier: dict
+) -> None:
+    """Take the « Dossier: … » line off a CREATED task's description.
+
+    A jtx/DavX5 move does not PUT the resource back under its own name: it
+    uploads it to the target collection under a NEW name — the CREATE
+    branch — carrying the DESCRIPTION it was served, dossier line included,
+    and the X-PALLAS-DOSSIER-ID of the collection it left. The update branch
+    strips that line against the stored task; here there is none, so the
+    line is rebuilt from the dossier the resource says it was served from,
+    and from this collection's own dossier (whose line the serializer
+    appends again on every GET — stripping it is display-neutral). Only the
+    serializer's exact output is removed (strip_dav_description_suffix): a
+    lawyer's own text is never touched, and a dossier that cannot be read
+    strips nothing.
+    """
+    if not isinstance(data.get("description"), str):
+        return
+    sources: list[dict] = []
+    if served_dossier_id and served_dossier_id != dossier_id:
+        previous = get_dossier(served_dossier_id)
+        if previous:
+            sources.append(previous)
+    if not _is_general(dossier_id):
+        sources.append(dossier)
+    for source in sources:
+        strip_dav_description_suffix(data, {
+            "dossier_file_number": source.get("file_number", ""),
+            "dossier_title": source.get("title", ""),
+        })
 
 
 def _put_task(
@@ -873,42 +1030,25 @@ def _put_task(
     if_none_match: str | None,
 ) -> Response:
     """Handle PUT for a VTODO resource."""
-    existing = get_task(resource_id)
+    existing, refusal = _read_existing("VTODO", dossier_id, resource_id)
+    if refusal is not None:
+        return refusal
 
-    # Precondition checks
-    if if_none_match == "*" and existing:
-        return Response("Precondition Failed", status=412)
-    if if_match and existing:
-        if if_match != f'"{existing.get("etag", "")}"':
-            return Response("Precondition Failed", status=412)
-    if if_match and not existing:
+    if _precondition_failed(existing, if_match, if_none_match):
         return Response("Precondition Failed", status=412)
 
     try:
         data = vtodo_to_task(ical_str)
     except Exception:
-        return Response("Bad Request \u2014 invalid iCalendar", status=400)
+        return Response("Bad Request — invalid iCalendar", status=400)
 
-    # Force dossier_id from URL (the collection implies the dossier)
-    data["dossier_id"] = dossier_id
-    data["dossier_file_number"] = (
-        "" if _is_general(dossier_id) else dossier.get("file_number", "")
-    )
-    data["dossier_title"] = (
-        "" if _is_general(dossier_id) else dossier.get("title", "")
-    )
-
+    # The X-PALLAS-DOSSIER-ID the resource was SERVED with, read before the
+    # URL overwrites it: on a jtx move it names the collection it left.
+    served_dossier_id = data.get("dossier_id")
+    _force_scope(data, dossier_id, dossier)
     sync_name = collection_for(dossier_id)
 
     if existing:
-        # If task was previously in a different collection, record a
-        # tombstone there: another dossier's collection, or the standalone
-        # « Général » when it had no dossier at all.
-        old_scope = collection_for(existing.get("dossier_id"))
-        if old_scope != sync_name:
-            record_tombstone(old_scope, resource_id)
-            bump_ctag(old_scope)
-
         # The phone sends back the DESCRIPTION it was served, dossier line
         # included; stored as-is, every phone edit grew the description by
         # one « Dossier: … » block. `existing` is what the phone was served.
@@ -920,53 +1060,32 @@ def _put_task(
                 sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
-        if old_scope != sync_name:
-            # Task (re)enters this collection — drop any stale tombstone
-            remove_tombstone(sync_name, resource_id)
-        bump_ctag(sync_name)
+        # Moved in from another collection: the old one is tombstoned and
+        # bumped AFTER the write (see _put_hearing).
+        relocate_resource(
+            resource_id,
+            old_dossier_id=existing.get("dossier_id"),
+            new_dossier_id=dossier_id,
+        )
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
-    else:
-        # The URL names the new resource and the body carries its UID: the
-        # task is stored under BOTH, or the client's href 404s on every later
-        # GET/PUT and a duplicate with another UID syncs down.
-        if not valid_resource_id(resource_id):
-            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
-                              status_code=400, reason="nom_invalide")
-            return Response("Bad Request — identifiant de ressource invalide.",
-                            status=400)
-        # Tasks, notes and hearings share one href space here, and
-        # _resolve_resource tries the task first: a task created under the
-        # id of a note or an event would hide it from every later GET. A
-        # minted id could never collide; a client-chosen one can.
-        if get_note(resource_id) or get_hearing(resource_id):
-            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
-                              status_code=412, reason="id_autre_composant")
-            return Response("Precondition Failed", status=412)
-        uid = data.pop("vtodo_uid", None)
-        created, errors = create_task(data, dav_id=resource_id, dav_uid=uid)
-        if errors == [DAV_ID_TAKEN]:
-            # create() found a task our fail-open read did not see (a read
-            # error, or a racing PUT): refused, never overwritten.
-            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
-                              status_code=412, reason="id_pris")
-            return Response("Precondition Failed", status=412)
-        if errors:
-            logger.warning(
-                "Dossier DAV PUT (VTODO) validation failed for %s: %s",
-                sanitize_log_value(resource_id), sanitize_log_value(errors),
-            )
-            return Response("Données invalides.", status=422)
-        # Resource (re)enters the collection — drop any stale tombstone
-        remove_tombstone(sync_name, resource_id)
-        bump_ctag(sync_name)
-        resp = Response("", status=201)
-        resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+        return _finish(resp)
 
-    if "return=minimal" in request.headers.get("Prefer", ""):
-        resp.headers["Preference-Applied"] = "return=minimal"
-
-    return resp
+    refusal = _create_refusal(dossier_id, resource_id, "VTODO")
+    if refusal is not None:
+        return refusal
+    _strip_served_task_suffix(data, served_dossier_id, dossier_id, dossier)
+    uid = data.pop("vtodo_uid", None)
+    created, errors = create_task(data, dav_id=resource_id, dav_uid=uid)
+    refused = _create_errors_response(dossier_id, resource_id, "VTODO", errors)
+    if refused is not None:
+        return refused
+    # Resource (re)enters the collection — drop any stale tombstone
+    remove_tombstone(sync_name, resource_id)
+    bump_ctag(sync_name)
+    resp = Response("", status=201)
+    resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+    return _finish(resp)
 
 
 def _put_note(
@@ -978,15 +1097,11 @@ def _put_note(
     if_none_match: str | None,
 ) -> Response:
     """Handle PUT for a VJOURNAL resource."""
-    existing = get_note(resource_id)
+    existing, refusal = _read_existing("VJOURNAL", dossier_id, resource_id)
+    if refusal is not None:
+        return refusal
 
-    # Precondition checks
-    if if_none_match == "*" and existing:
-        return Response("Precondition Failed", status=412)
-    if if_match and existing:
-        if if_match != f'"{existing.get("etag", "")}"':
-            return Response("Precondition Failed", status=412)
-    if if_match and not existing:
+    if _precondition_failed(existing, if_match, if_none_match):
         return Response("Precondition Failed", status=412)
 
     try:
@@ -994,14 +1109,7 @@ def _put_note(
     except Exception:
         return Response("Bad Request — invalid iCalendar", status=400)
 
-    data["dossier_id"] = dossier_id
-    data["dossier_file_number"] = (
-        "" if _is_general(dossier_id) else dossier.get("file_number", "")
-    )
-    data["dossier_title"] = (
-        "" if _is_general(dossier_id) else dossier.get("title", "")
-    )
-
+    _force_scope(data, dossier_id, dossier)
     sync_name = collection_for(dossier_id)
 
     if existing:
@@ -1012,39 +1120,45 @@ def _put_note(
                 sanitize_log_value(resource_id), sanitize_log_value(errors),
             )
             return Response("Données invalides.", status=422)
-        bump_ctag(sync_name)
+        # A note PUT into another collection used to bump only the new one:
+        # the old collection was never tombstoned and the phone kept both
+        # copies. Same choreography as tasks and hearings, after the write.
+        relocate_resource(
+            resource_id,
+            old_dossier_id=existing.get("dossier_id"),
+            new_dossier_id=dossier_id,
+        )
         resp = Response("", status=204)
         resp.headers["ETag"] = f'"{updated.get("etag", "")}"'
-    else:
-        data["id"] = resource_id
-        # A created VJOURNAL may carry X-PALLAS-ANALYSE (a jtx move/copy of
-        # the théorie de la cause — jtx preserves unknown X-properties).
-        # is_analyse is the app's one-per-dossier singleton: drop the flag
-        # on the « Général » scope (an analyse note belongs to a dossier)
-        # and when the target dossier already has its analyse note — the
-        # resource is then stored as an ordinary dateless note instead of
-        # silently shadowing the existing analysis.
-        if data.get("is_analyse") and (
-            _is_general(dossier_id) or get_analyse_note(dossier_id)
-        ):
-            data.pop("is_analyse")
-        created, errors = create_note(data)
-        if errors:
-            logger.warning(
-                "Dossier DAV PUT (VJOURNAL) validation failed for %s: %s",
-                sanitize_log_value(resource_id), sanitize_log_value(errors),
-            )
-            return Response("Données invalides.", status=422)
-        # Resource (re)enters the collection — drop any stale tombstone
-        remove_tombstone(sync_name, resource_id)
-        bump_ctag(sync_name)
-        resp = Response("", status=201)
-        resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+        return _finish(resp)
 
-    if "return=minimal" in request.headers.get("Prefer", ""):
-        resp.headers["Preference-Applied"] = "return=minimal"
-
-    return resp
+    refusal = _create_refusal(dossier_id, resource_id, "VJOURNAL")
+    if refusal is not None:
+        return refusal
+    # A created VJOURNAL may carry X-PALLAS-ANALYSE (a jtx move/copy of the
+    # théorie de la cause — jtx preserves unknown X-properties). is_analyse
+    # is the app's one-per-dossier singleton: drop the flag on the
+    # « Général » scope (an analyse note belongs to a dossier) and when the
+    # target dossier already has its analyse note — the resource is then
+    # stored as an ordinary dateless note instead of silently shadowing the
+    # existing analysis.
+    if data.get("is_analyse") and (
+        _is_general(dossier_id) or get_analyse_note(dossier_id)
+    ):
+        data.pop("is_analyse")
+    uid = data.pop("vjournal_uid", None)
+    created, errors = create_note(data, dav_id=resource_id, dav_uid=uid)
+    refused = _create_errors_response(
+        dossier_id, resource_id, "VJOURNAL", errors
+    )
+    if refused is not None:
+        return refused
+    # Resource (re)enters the collection — drop any stale tombstone
+    remove_tombstone(sync_name, resource_id)
+    bump_ctag(sync_name)
+    resp = Response("", status=201)
+    resp.headers["ETag"] = f'"{created.get("etag", "")}"'
+    return _finish(resp)
 
 
 # -- DELETE ------------------------------------------------------------------

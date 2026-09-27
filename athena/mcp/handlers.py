@@ -2929,12 +2929,13 @@ def _create_note_impl(args: dict) -> dict:
             + _CHEVRON_ADVICE
         )
 
-    # EXPLICIT whitelist — never `**args`. models/note.create_note honours a
-    # caller-supplied `id` and then does an unconditional full-document
-    # set(), so a stray `id` would overwrite an existing note outright;
-    # `vjournal_uid` and `created_at` are equally passthrough and would
-    # corrupt the VJOURNAL (a non-datetime created_at drops CREATED, the
-    # documented jtx Board NOT-NULL crash).
+    # EXPLICIT whitelist — never `**args`. models/note.create_note used to
+    # honour a caller-supplied `id` and set() the whole document, so a stray
+    # `id` overwrote an existing note outright; it discards `id` and
+    # `vjournal_uid` since lot 1a (only the DAV create's `dav_id` keyword
+    # names a document), and this whitelist stays as the belt. `created_at`
+    # is still passthrough and would corrupt the VJOURNAL (a non-datetime
+    # created_at drops CREATED, the documented jtx Board NOT-NULL crash).
     data = {
         "dossier_id": dossier_id,
         "dossier_file_number": dossier.get("file_number", ""),

@@ -34,6 +34,7 @@ from tz import mtl_to_utc, to_mtl  # noqa: E402
 from utils.icons import ms  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
+    import dav.sync as dav_sync
     import routes.hearings as rh
 
 UTC = timezone.utc
@@ -65,10 +66,17 @@ def client(monkeypatch):
 
 @pytest.fixture()
 def bumps(monkeypatch):
+    """Every DAV primitive the routes can reach, recorded in order: through
+    the route's own imported names AND through dav.sync, where
+    relocate_resource (the edit route's move choreography since lot 1a)
+    looks them up at call time."""
     seen = []
-    monkeypatch.setattr(rh, "bump_ctag", seen.append)
-    monkeypatch.setattr(rh, "record_tombstone", lambda *a: seen.append(a))
-    monkeypatch.setattr(rh, "remove_tombstone", lambda *a: seen.append(a))
+    for module in (rh, dav_sync):
+        for name, fn in (("bump_ctag", seen.append),
+                         ("record_tombstone", lambda *a: seen.append(a)),
+                         ("remove_tombstone", lambda *a: seen.append(a))):
+            if hasattr(module, name):
+                monkeypatch.setattr(module, name, fn)
     return seen
 
 

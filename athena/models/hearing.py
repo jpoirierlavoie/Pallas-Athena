@@ -9,9 +9,10 @@ from urllib.parse import urlsplit
 
 import icalendar
 
+from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db, provenance
+from models import dav_ids, db, provenance
 from security import sanitize
 from tz import MTL, mtl_to_utc, to_mtl
 from utils.logging_setup import log_unexpected, sanitize_log_value
@@ -380,8 +381,40 @@ def dav_href_for(dossier_id: str, hearing_id: str) -> str:
     return f"/dav/general/{hearing_id}.ics"
 
 
-def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+def create_hearing(
+    data: dict,
+    *,
+    dav_id: Optional[str] = None,
+    dav_uid: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Validate, generate IDs, write to Firestore. Returns (doc, errors).
+
+    The id and the VEVENT UID are minted here — an ``id`` or ``vevent_uid``
+    inside *data* is DISCARDED, whoever sends it. Until 2026-09-27 both were
+    honoured and the document written with ``set()``: a forwarded ``id``
+    let a caller pick, and silently overwrite, an existing hearing — the
+    DAV PUT reached this function whenever its FAIL-OPEN read missed the
+    stored event, so a transient read error turned a phone edit into a
+    full-document replacement (serie_id, source, confirmation and every
+    graph_* key gone).
+
+    ``dav_id`` / ``dav_uid`` (keyword-only) serve ONE caller, the DAV PUT
+    create branch (the ``create_task`` rule, lot 0b B3). A CalDAV client
+    names the new resource in its URL and carries its own UID; the event is
+    stored under both, or every later GET of the client's href 404s while a
+    duplicate with another UID syncs down. With ``dav_id`` the document is
+    written with ``create()``, never ``set()``: an event already stored
+    under that id is refused (``[DAV_ID_TAKEN]``), never overwritten. An
+    unusable name returns ``[DAV_ID_INVALID]``. ``dav_uid`` is kept only
+    when it can be stored verbatim (``dav_ids.client_uid``), and is ignored
+    without ``dav_id``.
+    """
+    data = dict(data)
+    data.pop("id", None)
+    data.pop("vevent_uid", None)
+    if dav_id is not None and not dav_ids.valid_resource_id(dav_id):
+        return None, [dav_ids.DAV_ID_INVALID]
+
     merged = {**_default_doc(), **_sanitize_data(data)}
 
     # Auto-set end_datetime if not provided (start + 1 hour)
@@ -393,15 +426,11 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    # Honour a caller-supplied id / UID, as create_note does (create_task
-    # honours the URL's id only through its explicit dav_id keyword, with a
-    # create() that never overwrites). A CalDAV PUT names the resource in its URL, so minting a fresh uuid
-    # here stored the event under an id the client never learns: it PUTs
-    # /dav/.../abc.ics, gets 201, and every later GET of abc.ics 404s while
-    # a duplicate under another id syncs down. Same for vevent_uid — a
-    # regenerated UID reads as a different event to the client.
-    hearing_id = merged.get("id") or str(uuid.uuid4())
-    vevent_uid = merged.get("vevent_uid") or str(uuid.uuid4())
+    hearing_id = dav_id if dav_id is not None else str(uuid.uuid4())
+    vevent_uid = (
+        (dav_ids.client_uid(dav_uid) if dav_id is not None else None)
+        or str(uuid.uuid4())
+    )
 
     merged.update({
         "id": hearing_id,
@@ -413,7 +442,13 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
     )
 
     try:
-        db.collection(COLLECTION).document(hearing_id).set(merged)
+        ref = db.collection(COLLECTION).document(hearing_id)
+        if dav_id is not None:
+            ref.create(merged)
+        else:
+            ref.set(merged)
+    except AlreadyExists:
+        return None, [dav_ids.DAV_ID_TAKEN]
     except Exception:
         log_unexpected("hearing write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -422,12 +457,27 @@ def create_hearing(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def get_hearing_strict(hearing_id: str) -> Optional[dict]:
+    """Fetch a single hearing by ID; a read failure PROPAGATES.
+
+    ``None`` means the store answered « no such document » — never « the
+    read failed ». For a caller that WRITES on the strength of an absence:
+    the DAV PUT routes a missing resource to its create branch, and
+    :func:`get_hearing`'s fail-open ``None`` would route a phone EDIT there
+    on a transient error (refused by ``create()`` since 2026-09-27, but
+    answered 412 — a refusal of a legitimate edit — rather than the 503 a
+    client retries).
+    """
+    doc = db.collection(COLLECTION).document(hearing_id).get()
+    if doc.exists:
+        return _migrate_hearing(doc.to_dict())
+    return None
+
+
 def get_hearing(hearing_id: str) -> Optional[dict]:
-    """Fetch a single hearing by ID."""
+    """Fetch a single hearing by ID (fail-open: ``None`` on a read error)."""
     try:
-        doc = db.collection(COLLECTION).document(hearing_id).get()
-        if doc.exists:
-            return _migrate_hearing(doc.to_dict())
+        return get_hearing_strict(hearing_id)
     except Exception as exc:
         logger.warning("get_hearing failed for %s: %s", sanitize_log_value(hearing_id), exc)
     return None
@@ -1023,11 +1073,12 @@ def create_hearing_series(
     if merged.get("start_datetime") and not merged.get("end_datetime"):
         merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
 
-    # L'appelant ne nomme JAMAIS l'identité d'une occurrence. create_hearing
-    # honore un id fourni (l'affordance CalDAV), donc laisser passer un id ou
-    # un vevent_uid ici ferait N batch.set() sur LA MÊME référence : Firestore
-    # garde le dernier, en silence, et 59 occurrences sur 60 disparaissent
-    # avec un retour de succès. Idem pour les champs appartenant au serveur.
+    # The caller NEVER names an occurrence's identity. This function builds
+    # its own batch (it does not go through create_hearing, which discards
+    # an id since 2026-09-27), so letting an id or a vevent_uid through here
+    # would make N batch.set() on THE SAME reference: Firestore keeps the
+    # last one, silently, and 59 occurrences out of 60 vanish behind a
+    # success return. Same for the server-owned fields.
     for cle in ("id", "vevent_uid", "dav_href", "serie_id", "serie_rule"):
         merged.pop(cle, None)
     merged = {**_default_doc(), **merged}

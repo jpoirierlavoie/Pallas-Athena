@@ -19,10 +19,10 @@ from typing import Optional
 
 import icalendar
 
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import AlreadyExists, NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import concurrency, db, provenance
+from models import concurrency, dav_ids, db, provenance
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -154,8 +154,37 @@ def _validate(data: dict) -> list[str]:
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def create_note(data: dict) -> tuple[Optional[dict], list[str]]:
-    """Validate, generate IDs, write to Firestore. Returns (doc, errors)."""
+def create_note(
+    data: dict,
+    *,
+    dav_id: Optional[str] = None,
+    dav_uid: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Validate, generate IDs, write to Firestore. Returns (doc, errors).
+
+    The id and the VJOURNAL UID are minted here — an ``id`` or
+    ``vjournal_uid`` inside *data* is DISCARDED, whoever sends it. Until
+    2026-09-27 both were honoured and the document written with ``set()``:
+    a forwarded ``id`` let a caller pick, and silently overwrite, an
+    existing note — the DAV PUT reached this function whenever its
+    FAIL-OPEN read missed the stored note, so a transient read error turned
+    a phone edit into a full-document replacement.
+
+    ``dav_id`` / ``dav_uid`` (keyword-only) serve ONE caller, the DAV PUT
+    create branch (the ``create_task`` rule, lot 0b B3): the note is stored
+    under the URL's resource name and the client's UID, written with
+    ``create()`` — a note already stored under that id is refused
+    (``[DAV_ID_TAKEN]``), never overwritten; an unusable name returns
+    ``[DAV_ID_INVALID]``; ``dav_uid`` is kept only when it can be stored
+    verbatim and is ignored without ``dav_id``. A ``created_at`` in *data*
+    (a VJOURNAL's DTSTART) is still honoured.
+    """
+    data = dict(data)
+    data.pop("id", None)
+    data.pop("vjournal_uid", None)
+    if dav_id is not None and not dav_ids.valid_resource_id(dav_id):
+        return None, [dav_ids.DAV_ID_INVALID]
+
     merged = {**_default_doc(), **_sanitize_data(data)}
 
     errors = _validate(merged)
@@ -163,8 +192,11 @@ def create_note(data: dict) -> tuple[Optional[dict], list[str]]:
         return None, errors
 
     now = datetime.now(timezone.utc)
-    note_id = merged.get("id") or str(uuid.uuid4())
-    vjournal_uid = merged.get("vjournal_uid") or str(uuid.uuid4())
+    note_id = dav_id if dav_id is not None else str(uuid.uuid4())
+    vjournal_uid = (
+        (dav_ids.client_uid(dav_uid) if dav_id is not None else None)
+        or str(uuid.uuid4())
+    )
 
     merged.update({
         "id": note_id,
@@ -175,7 +207,13 @@ def create_note(data: dict) -> tuple[Optional[dict], list[str]]:
     )
 
     try:
-        db.collection(COLLECTION).document(note_id).set(merged)
+        ref = db.collection(COLLECTION).document(note_id)
+        if dav_id is not None:
+            ref.create(merged)
+        else:
+            ref.set(merged)
+    except AlreadyExists:
+        return None, [dav_ids.DAV_ID_TAKEN]
     except Exception:
         log_unexpected("note write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
@@ -184,12 +222,24 @@ def create_note(data: dict) -> tuple[Optional[dict], list[str]]:
     return merged, []
 
 
+def get_note_strict(note_id: str) -> Optional[dict]:
+    """Fetch a single note by ID; a read failure PROPAGATES.
+
+    ``None`` means the store answered « no such document » — never « the
+    read failed ». For the DAV PUT, which routes a missing resource to its
+    create branch: :func:`get_note`'s fail-open ``None`` would route a
+    phone EDIT there on a transient read error.
+    """
+    doc = db.collection(COLLECTION).document(note_id).get()
+    if doc.exists:
+        return _migrate_category(doc.to_dict())
+    return None
+
+
 def get_note(note_id: str) -> Optional[dict]:
-    """Fetch a single note by ID."""
+    """Fetch a single note by ID (fail-open: ``None`` on a read error)."""
     try:
-        doc = db.collection(COLLECTION).document(note_id).get()
-        if doc.exists:
-            return _migrate_category(doc.to_dict())
+        return get_note_strict(note_id)
     except Exception as exc:
         logger.warning("get_note failed for %s: %s", sanitize_log_value(note_id), exc)
     return None

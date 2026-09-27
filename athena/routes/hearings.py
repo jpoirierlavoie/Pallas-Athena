@@ -16,7 +16,7 @@ from flask import (
 )
 
 from auth import login_required
-from dav.sync import bump_ctag, collection_for, record_tombstone, remove_tombstone
+from dav.sync import bump_ctag, collection_for, record_tombstone, relocate_resource
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from utils import recurrence
@@ -682,14 +682,17 @@ def hearing_update(hearing_id: str) -> str:
         ctx.update(hearing=data, errors=errors, return_to=return_to)
         return render_template("hearings/form.html", **ctx)
 
-    new_dossier_id = hearing.get("dossier_id")
-    if old_dossier_id != new_dossier_id:
-        record_tombstone(collection_for(old_dossier_id), hearing_id)
-        bump_ctag(collection_for(old_dossier_id))
-        # The hearing (re)enters its new collection — drop any stale tombstone
-        # so one sync REPORT never reports it as both live and deleted.
-        remove_tombstone(collection_for(new_dossier_id), hearing_id)
-    bump_ctag(collection_for(new_dossier_id))
+    # A hearing moved between collections (dossier <-> dossier, or to/from
+    # « Général ») tombstones + bumps the OLD one and un-tombstones + bumps
+    # the new; otherwise one bump. The order lives in dav.sync
+    # (relocation_plan). This route used to compare the RAW ids, so None
+    # and "" — both « Général » — read as a move: a tombstone recorded
+    # then removed in the same collection, and two bumps.
+    relocate_resource(
+        hearing_id,
+        old_dossier_id=old_dossier_id,
+        new_dossier_id=hearing.get("dossier_id"),
+    )
 
     fallback = url_for("hearings.hearing_detail", hearing_id=hearing_id)
     target = safe_internal_redirect(return_to, fallback)

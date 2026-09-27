@@ -232,12 +232,25 @@ def create_task(
     return merged, []
 
 
+def get_task_strict(task_id: str) -> Optional[dict]:
+    """Fetch a single task by ID; a read failure PROPAGATES.
+
+    ``None`` means the store answered « no such document » — never « the
+    read failed ». For the DAV PUT, which routes a missing resource to its
+    create branch: :func:`get_task`'s fail-open ``None`` routed a phone EDIT
+    there on a transient read error, where ``create()`` refused it with a
+    412 instead of the 503 a client retries.
+    """
+    doc = db.collection(COLLECTION).document(task_id).get()
+    if doc.exists:
+        return doc.to_dict()
+    return None
+
+
 def get_task(task_id: str) -> Optional[dict]:
-    """Fetch a single task by ID."""
+    """Fetch a single task by ID (fail-open: ``None`` on a read error)."""
     try:
-        doc = db.collection(COLLECTION).document(task_id).get()
-        if doc.exists:
-            return doc.to_dict()
+        return get_task_strict(task_id)
     except Exception as exc:
         logger.warning("get_task failed for %s: %s", sanitize_log_value(task_id), exc)
     return None

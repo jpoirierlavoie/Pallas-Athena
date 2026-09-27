@@ -136,14 +136,17 @@ def test_the_stored_task_keeps_the_url_id_and_the_phone_uid(fake, client):
 def test_a_create_racing_an_existing_task_is_refused_never_overwritten(
     fake, client, monkeypatch
 ):
-    """``get_task`` fails OPEN (a read error reads as « absent »), so the
-    create branch must not be allowed to overwrite a document it did not
-    see: ``document(id).create()`` refuses, and DAV answers 412."""
+    """A racing PUT can store the task between the PUT path's read and its
+    create, so the create branch must not be allowed to overwrite a
+    document it did not see: ``document(id).create()`` refuses, and DAV
+    answers 412. (Since lot 1a the read is STRICT — a read error answers
+    503, test_a_failed_read_is_a_503_never_a_create — so the stand-in for
+    « the read did not see it » is now the strict reader itself.)"""
     fake.seed(f"tasks/{RID}", {"id": RID, "title": "Existante",
                                "status": "à_faire", "vtodo_uid": "u0",
                                "dossier_id": "d1", "etag": "e0"})
     before = fake.peek(f"tasks/{RID}")
-    monkeypatch.setattr(dc, "get_task", lambda i: None)  # the fail-open read
+    monkeypatch.setattr(dc, "get_task_strict", lambda i: None)  # the race
     resp = _put(client, HREF, _vtodo())
     assert resp.status_code == 412
     assert fake.peek(f"tasks/{RID}") == before

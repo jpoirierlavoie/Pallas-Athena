@@ -17,8 +17,9 @@ est déjà engagée). On épingle :
    déplacement, et l'arrêt à la première panne ;
 3. la PARITÉ, octet pour octet, avec le code des trois routes qui
    portaient la chorégraphie — transcrit tel qu'il était à 65a6d17 — et
-   avec les routes réelles elles-mêmes ; et la raison pour laquelle la route
-   des audiences ne peut pas basculer telle quelle ;
+   avec les routes réelles elles-mêmes ; la route des audiences, qui
+   comparait les ids BRUTS, a basculé au lot 1a en corrigeant le seul écart
+   (None contre « » dans « Général ») ;
 4. ``_dav_resync`` — les deux moitiés indépendantes, rien qui lève ;
 5. ``_entity_write_result(previous_dossier_id=…)`` et son contrat, et
    l'appariement DÉRIVÉ outil ↔ clé ``previous_collection_cleared``.
@@ -44,6 +45,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.handlers as handlers
     import mcp.output_schemas as output_schemas
     import mcp.tools as tools
+    import routes.hearings as hearings_routes
     import routes.notes as notes_routes
     import routes.tasks as tasks_routes
     from mcp.output_schemas import OUTPUT_SCHEMAS
@@ -281,12 +283,15 @@ def test_the_two_executors_issue_the_same_calls(monkeypatch, old, new, created):
             == _relocate_calls(monkeypatch, old, new, created))
 
 
-def test_the_hearing_route_differs_only_on_general_spelled_two_ways(monkeypatch):
-    """Why routes/hearings.py was NOT switched: its block compares RAW ids,
-    so None vs "" — both « Général » — records a tombstone there, removes
-    it, and bumps twice. relocation_plan calls that no move. Replacing the
-    block would change behaviour on exactly these inputs, and the switch
-    was allowed only where it changes nothing."""
+def test_the_legacy_hearing_route_differed_only_on_general_spelled_two_ways(
+    monkeypatch,
+):
+    """The hearing route's former block compared RAW ids, so None vs "" —
+    both « Général » — recorded a tombstone there, removed it, and bumped
+    twice. That is the ONLY place it disagreed with relocation_plan, and it
+    is why the route was left alone in lot 0a (a switch had to change
+    nothing). Lot 1a switched it anyway, deliberately, to fix exactly
+    those inputs — pinned against the real route below."""
     differs = {
         (old, new) for old in IDS for new in IDS
         if _relocate_calls(monkeypatch, old, new)
@@ -368,10 +373,38 @@ def test_the_note_route_moves_exactly_as_before(monkeypatch, old, new):
     assert calls == _legacy_calls(_legacy_note_route, old, new)
 
 
+@pytest.mark.parametrize("old", IDS)
+@pytest.mark.parametrize("new", ["", "d1", "d2"])   # the form posts "" for none
+def test_the_hearing_route_moves_like_relocate_resource(monkeypatch, old, new):
+    """Lot 1a: routes/hearings.hearing_update runs relocation_plan. Every
+    input moves as relocate_resource does — including a hearing stored with
+    dossier_id None saved from the form with "" (« Général » both times):
+    one bump, and no tombstone recorded then removed in the same collection
+    (the old block's double churn)."""
+    calls = _route_recorder(monkeypatch, hearings_routes)
+    monkeypatch.setattr(hearings_routes, "get_hearing",
+                        lambda i: {"id": i, "dossier_id": old, "title": "A"})
+    monkeypatch.setattr(hearings_routes, "get_dossier", _dossier)
+    monkeypatch.setattr(
+        hearings_routes, "update_hearing",
+        lambda hid, data, **kw: ({"id": hid, **data}, []),
+    )
+    resp = _client(hearings_routes.hearings_bp).post("/audiences/r1", data={
+        "title": "A", "start_date": "2026-10-15", "start_time": "09:00",
+        "end_time": "10:00", "hearing_type": "audience",
+        "status": "confirmée", "dossier_id": new,
+    })
+    assert resp.status_code == 302
+    assert calls == _relocate_calls(monkeypatch, old, new)
+    if old in (None, "") and new == "":
+        assert calls == [("bump_ctag", GEN)]
+
+
 def test_the_switched_routes_call_the_shared_helper():
     """The parity above is only worth something if the routes really go
     through relocate_resource — never back to a hand-written copy."""
-    for module, fn in ((tasks_routes, "task_update"), (notes_routes, "note_update")):
+    for module, fn in ((tasks_routes, "task_update"), (notes_routes, "note_update"),
+                       (hearings_routes, "hearing_update")):
         tree = ast.parse(pathlib.Path(module.__file__).read_text(encoding="utf-8"))
         node = next(n for n in ast.walk(tree)
                     if isinstance(n, ast.FunctionDef) and n.name == fn)
