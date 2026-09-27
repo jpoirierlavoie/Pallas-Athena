@@ -867,16 +867,33 @@ def _mandataire_fitness_errors(
     ]
 
 
+# The three refusals of ``delete_partie`` that are NOT a reference
+# conflict. Constants, so a caller can map each to its own answer without
+# parsing French — the CardDAV DELETE answers 404 / 503 / 500 for these
+# and 409 for every other refusal (a dossier link, a represented contact),
+# whose text is dynamic and may NAME a contact.
+PARTIE_NOT_FOUND = "Contact introuvable."
+PARTIE_DELETE_CHECK_UNAVAILABLE = (
+    "Impossible de vérifier les références de ce contact. "
+    "Veuillez réessayer."
+)
+PARTIE_DELETE_FAILED = "Erreur lors de la suppression. Veuillez réessayer."
+
+
 def delete_partie(partie_id: str) -> tuple[bool, str]:
     """Delete a partie. Returns (success, error_message).
 
     Refuses deletion while the partie is still referenced by a dossier
     (as client or opposing party) or listed as a mandataire by another
     partie — the FK safety check applies to every caller (UI + DAV).
+    A refusal message is either one of :data:`PARTIE_NOT_FOUND`,
+    :data:`PARTIE_DELETE_CHECK_UNAVAILABLE`, :data:`PARTIE_DELETE_FAILED`,
+    or a reference conflict whose text may name the represented contacts —
+    never log it.
     """
     existing = get_partie(partie_id)
     if not existing:
-        return False, "Contact introuvable."
+        return False, PARTIE_NOT_FOUND
 
     # FK safety — fail CLOSED: if either check cannot be established the
     # deletion is refused rather than risking dangling references.
@@ -891,10 +908,7 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
             "delete_partie: FK check failed for %s: %s",
             sanitize_log_value(partie_id), type(exc).__name__,
         )
-        return False, (
-            "Impossible de vérifier les références de ce contact. "
-            "Veuillez réessayer."
-        )
+        return False, PARTIE_DELETE_CHECK_UNAVAILABLE
 
     if linked_count > 0:
         return False, (
@@ -915,7 +929,7 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
         return True, ""
     except Exception:
         log_unexpected("partie delete failed")
-        return False, "Erreur lors de la suppression. Veuillez réessayer."
+        return False, PARTIE_DELETE_FAILED
 
 
 def update_kyc_status(

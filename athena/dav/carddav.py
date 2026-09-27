@@ -37,6 +37,9 @@ from models.audit_event import record_deletion
 from models.dav_ids import DAV_ID_INVALID, DAV_ID_TAKEN, valid_resource_id
 from models.partie import (
     MANDATAIRE_CHECK_UNAVAILABLE,
+    PARTIE_DELETE_CHECK_UNAVAILABLE,
+    PARTIE_DELETE_FAILED,
+    PARTIE_NOT_FOUND,
     create_partie,
     delete_partie,
     display_name,
@@ -471,11 +474,7 @@ def delete_resource(partie_id: str) -> Response:
 
     success, error = delete_partie(partie_id)
     if not success:
-        logger.error(
-            "CardDAV DELETE failed for %s: %s",
-            sanitize_log_value(partie_id), sanitize_log_value(error),
-        )
-        return Response("Erreur serveur.", status=500)
+        return _delete_refused(error)
 
     record_tombstone(COLLECTION_NAME, partie_id)
     bump_ctag(COLLECTION_NAME)
@@ -487,6 +486,41 @@ def delete_resource(partie_id: str) -> Response:
         status=existing.get("contact_role", ""),
     )
     return Response("", status=204)
+
+
+def _delete_refused(error: str) -> Response:
+    """The answer to a DELETE the model refused.
+
+    Each refusal gets its own status, and the log line carries a machine
+    ``reason`` — never the text: a reference conflict NAMES the represented
+    contacts (« … mandataire de Sophie Gagnon »), and the redaction filter
+    never scrubs names. (Until the lot 0b review this path logged that text
+    at ERROR and answered 500 « Erreur serveur. » to a business refusal.)
+
+    * the contact vanished between the two reads → 404;
+    * the reference check could not RUN → 503 + ``Retry-After`` (not the
+      client's fault: the same DELETE succeeds later);
+    * the store refused the write → 500 (``delete_partie`` already logged
+      an ``unexpected`` ERROR with the traceback);
+    * every other refusal is a CONFLICT with the contact's current state
+      (still linked to a dossier, or the mandataire of another contact) →
+      409 with the French reason in the body.
+    """
+    if error == PARTIE_NOT_FOUND:
+        status, reason = 404, "introuvable"
+    elif error == PARTIE_DELETE_CHECK_UNAVAILABLE:
+        status, reason = 503, "verification_indisponible"
+    elif error == PARTIE_DELETE_FAILED:
+        status, reason = 500, "ecriture_echouee"
+    else:
+        status, reason = 409, "references"
+    log_dav_operation("delete", "addressbook", status_code=status,
+                      reason=reason)
+    resp = Response(error, status=status,
+                    content_type="text/plain; charset=utf-8")
+    if status == 503:
+        resp.headers["Retry-After"] = "60"
+    return resp
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

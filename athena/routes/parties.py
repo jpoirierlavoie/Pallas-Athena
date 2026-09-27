@@ -12,7 +12,6 @@ from flask import (
     request,
     url_for,
 )
-from markupsafe import escape
 
 from auth import login_required
 from utils.cabinet import cabinet_dict
@@ -30,6 +29,7 @@ from pagination import (
 from security import sanitize
 from models.partie import (
     MANDATAIRE_KIND_LABELS,
+    PARTIE_NOT_FOUND,
     ROLE_LABELS,
     VALID_CONTACT_ROLES,
     count_parties_page,
@@ -354,6 +354,10 @@ def partie_detail(partie_id: str) -> str:
         # champs appliqués, combien de contacts adverses créés). Sans lui, le
         # message était construit puis silencieusement perdu.
         message=sanitize(request.args.get("message", ""), max_length=300),
+        # Bandeau d'erreur : un « Supprimer » REFUSÉ revient ici avec la
+        # raison (contact lié à un dossier, mandataire d'un autre contact).
+        # 600 et non 300 : la raison nomme jusqu'à trois contacts.
+        erreur=sanitize(request.args.get("erreur", ""), max_length=600),
         role_labels=ROLE_LABELS,
         mandataires=mandataires,
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
@@ -488,14 +492,22 @@ def partie_delete(partie_id: str) -> str:
             status=(existing or {}).get("contact_role", ""),
         )
 
+    # A REFUSED deletion lands back on the contact's own page with the
+    # French reason in a red banner — it used to redirect to the LIST like a
+    # success, so a contact still linked to a dossier, or still the
+    # mandataire of another contact, silently stayed while the lawyer
+    # believed it gone (lot 0b review). Always a redirect: htmx swaps 2xx
+    # only, and the confirmation dialog is a plain form POST anyway.
+    if success or error == PARTIE_NOT_FOUND:
+        target = url_for("parties.partie_list")
+    else:
+        target = url_for(
+            "parties.partie_detail", partie_id=partie_id, erreur=error
+        )
+    resp = redirect(target)
     if _is_htmx():
-        if success:
-            resp = redirect(url_for("parties.partie_list"))
-            resp.headers["HX-Redirect"] = url_for("parties.partie_list")
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
-
-    return redirect(url_for("parties.partie_list"))
+        resp.headers["HX-Redirect"] = target
+    return resp
 
 
 # ── Export ───────────────────────────────────────────────────────────────
