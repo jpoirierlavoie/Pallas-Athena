@@ -101,13 +101,31 @@ def _template_context() -> dict:
     }
 
 
-def _enrich_dossier_info(data: dict) -> dict:
-    """Attach the denormalized dossier labels (shared helper — an
-    unresolvable or empty id becomes None, tasks' « no dossier » value)."""
-    data, _ = enrich_dossier_labels(
-        data, blank_value=None, resolver=get_dossier
+def _enrich_dossier_info(data: dict) -> tuple[dict, list[str]]:
+    """Attach the denormalized dossier labels; return (data, errors).
+
+    A task may legitimately have NO dossier (it then belongs to
+    « Général »), so an UNRESOLVABLE dossier_id must never be blanked: the
+    old helper turned it into None and the task — often a dossier's court
+    deadline — silently left the dossier's tab and moved to another DAV
+    collection on the phone, behind a success redirect. « Aucun dossier
+    choisi » and « dossier introuvable » must stay distinguishable, so the
+    second is refused (the notes doctrine, routes/notes._enrich_dossier_info;
+    hearings since lot 0b). An EMPTY id is still « no dossier », stored as
+    None — tasks' value for it (collection_for routes both falsy values to
+    « Général »).
+    """
+    data, errors = enrich_dossier_labels(
+        data,
+        strict=True,
+        resolver=get_dossier,
+        not_found_error=(
+            "Dossier introuvable. Choisissez un dossier existant, ou laissez "
+            "le champ vide pour classer la tâche dans « Général »."
+        ),
     )
-    return data
+    data["dossier_id"] = data.get("dossier_id") or None
+    return data, errors
 
 
 def _form_data() -> dict:
@@ -304,10 +322,11 @@ def task_new() -> str:
 def task_create() -> str:
     """Handle new task form submission."""
     data = _form_data()
-    data = _enrich_dossier_info(data)
+    data, link_errors = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
 
-    task, errors = create_task(data)
+    # Re-rendered at 200 like every refusal here: htmx swaps only 2xx.
+    task, errors = (None, link_errors) if link_errors else create_task(data)
 
     if errors:
         ctx = _template_context()
@@ -379,10 +398,13 @@ def task_update(task_id: str) -> str:
 
     expected = edit_conflict.submitted_etag()
     data = _form_data()
-    data = _enrich_dossier_info(data)
+    data, link_errors = _enrich_dossier_info(data)
     return_to = request.form.get("return_to", "")
 
-    task, errors = update_task(task_id, data, expected_etag=expected)
+    task, errors = (
+        (None, link_errors) if link_errors
+        else update_task(task_id, data, expected_etag=expected)
+    )
 
     if errors:
         errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
