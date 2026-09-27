@@ -416,7 +416,14 @@ _TASK_SYNC_NOTICE = {
         "La tâche liée n'a pas pu être mise à jour — vérifiez-la depuis sa "
         "fiche."
     ),
-    "missing": "La tâche liée est introuvable : elle n'a pas été modifiée.",
+    # « ou illisible »: get_task FAILS OPEN, so a Firestore read error
+    # reaches the cascade as « no such task » — the two cannot be told
+    # apart there, and asserting the wrong one is worse than naming both
+    # (the lot-Q « introuvable ou illisible » rule).
+    "missing": (
+        "La tâche liée est introuvable ou n'a pas pu être lue : elle n'a pas "
+        "été modifiée."
+    ),
 }
 
 

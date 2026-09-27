@@ -460,6 +460,39 @@ def test_the_cancelled_task_is_named_on_the_page(client, fake):
     assert fake.peek("tasks/t1")["status"] == "annulée"
 
 
+def test_a_vanished_linked_task_is_named_honestly(client, fake):
+    """The step still moves; the link points at no task. ``get_task``
+    fails OPEN, so the cascade cannot tell « deleted » from « unreadable »
+    — the banner names both instead of asserting the wrong one."""
+    _step(fake, "s1", task="t-gone")
+    _step(fake, "s2", order=2)
+    params = _click(client, "s1", "complété")
+    assert params == {"message": "Étape mise à jour. La tâche liée est "
+                                 "introuvable ou n'a pas pu être lue : elle "
+                                 "n'a pas été modifiée."}
+    assert _step_doc(fake, "s1")["status"] == "complété"
+    assert fake.peek_collection("tasks") == {}
+    assert _ctag(fake) == "c0"
+
+
+def test_a_refused_task_write_is_named_on_the_page(client, fake):
+    """A legacy task the model refuses to rewrite (here an unknown category)
+    leaves the step and its task out of step: said, never swallowed."""
+    _step(fake, "s1", task="t1")
+    _step(fake, "s2", order=2)
+    _task(fake, "t1")
+    doc = fake.peek("tasks/t1")
+    doc["category"] = "catégorie_disparue"
+    fake.seed("tasks/t1", doc)
+    params = _click(client, "s1", "complété")
+    assert params == {"message": "Étape mise à jour. La tâche liée n'a pas "
+                                 "pu être mise à jour — vérifiez-la depuis "
+                                 "sa fiche."}
+    assert _step_doc(fake, "s1")["status"] == "complété"
+    assert fake.peek("tasks/t1")["status"] == "à_faire"
+    assert _ctag(fake) == "c0"
+
+
 def test_closing_the_protocol_is_announced(client, fake):
     _step(fake, "s1")
     params = _click(client, "s1", "complété")

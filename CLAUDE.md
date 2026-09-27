@@ -2308,13 +2308,16 @@ Every model exports the standard CRUD set. Module-specific additions:
 - `create_hearing`/`update_hearing`/`_validate` treat `dossier_id` as **optional** — a hearing may be a standalone agenda event with no dossier (like standalone tasks); `_validate` requires only a title + start datetime. All hearings, linked or standalone, live in the single shared `hearings` / `/dav/calendar/` collection, so standalone events sync to DavX5 with no extra DAV routing (contrast tasks, which split per-dossier). `hearing_to_vevent` omits the `Dossier:` DESCRIPTION line when there is no dossier.
 
 ### `models/task.py`
+- `create_task(data, *, dav_id=None, dav_uid=None) -> (doc, errors)` — mints the id and VTODO UID; an `id`/`vtodo_uid` inside `data` is DISCARDED on every path (lot 0b). `dav_id`/`dav_uid` serve the DAV PUT create branch ALONE: the URL id is written with `document(id).create()` (never `set()`), `AlreadyExists` → `[DAV_ID_TAKEN]` (412 at the DAV layer), an unusable name → `[DAV_ID_INVALID]`; the phone's UID is kept only when it stores verbatim
+- `valid_resource_id(resource_id) -> bool` — may a client-chosen DAV name become a document id (not empty, no `/`, not `.`/`..`, not `__x__`, ≤ `RESOURCE_ID_MAX_LENGTH` = 128, no control character)
+- `dav_description_suffix(task) -> str` / `strip_dav_description_suffix(data, existing) -> dict` — the « Dossier: … » line `task_to_vtodo` appends to DESCRIPTION, built ONCE for the serializer and the stripper; the DAV UPDATE branch takes exactly that line (built from the STORED task, what the phone was served) back off, peeling repeats, touching nothing else, and leaving an absent `description` absent
 - `list_urgent_tasks(cutoff, limit=50) -> list[dict]` — server-side `status in (à_faire, en_cours) AND due_date <= cutoff`, ordered + bounded (dashboard; needs the `tasks` composite index)
 - `set_task_completion(task_id, target) -> (doc, errors, changed)` (2026-09-25) — the web checkbox's writer: `target` ∈ `COMPLETION_TARGETS` (`terminée`/`à_faire`), SET, never toggled. The same state is a no-op (no write, no cascade — `à_faire` on an `en_cours` task included), a cancelled task is refused both ways, and the status write compare-and-sets against the version just read
 - `toggle_task_complete(task_id) -> tuple[Optional[dict], list[str]]` — flips `à_faire` ↔ `terminée` (and sends `annulée` back to `à_faire`); fires `_sync_protocol_step`. **No caller since 2026-09-25** — kept only because `test_mcp_tools` pins that the connector never calls it
 - `_sync_protocol_step(task_id, new_status)` — bidirectional sync; uses module-level `_SYNCING` set to prevent loops
 - `get_task_summary(dossier_id) -> dict`
 - `task_to_vtodo(task) -> str` — VTODO with PRIORITY, STATUS, DUE, COMPLETED, CATEGORIES, and `RELATED-TO;RELTYPE=PARENT:{note_vjournal_uid}` when `related_note_id` is set
-- `vtodo_to_task(ical_str) -> dict` — inverse, resolves RELATED-TO via `note._find_note_by_vjournal_uid`
+- `vtodo_to_task(ical_str) -> dict` — inverse, resolves RELATED-TO via `note._find_note_by_vjournal_uid`. Reads DESCRIPTION WHOLE — the dossier line is still on it, and only the caller knows which line the phone was served (`strip_dav_description_suffix`)
 
 ### `models/note.py`
 - `set_pinned(note_id, pinned) -> (doc, errors, changed)` (2026-09-25) — a partial `update()` of the flag and its stamp (never `update_note`'s full `set()`, which would rewrite the content the page read); the same state writes nothing

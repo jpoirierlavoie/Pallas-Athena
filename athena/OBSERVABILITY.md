@@ -229,7 +229,7 @@ Invoice lifecycle (lot 0b, 2026-09-26) — emitted by `models/invoice.py` itself
 
 ### `log_protocol_event(event, protocol_id, *, outcome='success', reason=None, **extra)` — logger `pallas.protocol`
 
-Protocol steps and the task cascade they drive (lot 0b, 2026-09-26) — emitted by `models/protocol.py` itself, so every caller of `set_step_status` leaves the same trace. A step status change rewrites a DAV-exposed task behind the caller's back, and before this family neither the change nor a cascade that deliberately LEFT the task alone left any line. `outcome` ∈ `{"success", "refused"}` → INFO / WARNING. **IDs, statuses and machine reasons only** — never a step or task title (it names the case, and the `RedactionFilter` scrubs neither names nor free text). Cascade exceptions and a failed CTag bump stay `unexpected` ERRORs (`protocol cascade: task status sync failed`, `protocol cascade: task CTag bump failed`).
+Protocol steps and the task cascade they drive (lot 0b, 2026-09-26) — emitted by `models/protocol.py` itself, so every caller of `set_step_status` leaves the same trace. A step status change rewrites a DAV-exposed task behind the caller's back, and before this family neither the change nor a cascade that deliberately LEFT the task alone left any line. `outcome` ∈ `{"success", "refused"}` → INFO / WARNING. **IDs, statuses and machine reasons only** — never a step or task title (it names the case, and the `RedactionFilter` scrubs neither names nor free text). A store failure of the step write itself, cascade exceptions and a failed CTag bump stay `unexpected` ERRORs (`protocol step status write failed`, `protocol cascade: task status sync failed`, `protocol cascade: task CTag bump failed`).
 
 | `event` | Typical outcome | Notes |
 |---|---|---|
