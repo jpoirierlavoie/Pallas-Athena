@@ -111,6 +111,21 @@ _SIMPLE_KINDS = ("encaissement_facture", "recette_autre", "dépense")
 # The only kinds an EDIT may keep or become (invoice-linked entries are
 # reverse-only — see ``_entry_lock_reason``).
 _EDITABLE_KINDS = ("recette_autre", "dépense")
+# The sign of a simple kind is IMPLIED, never chosen. Until lot 0b only the
+# web route derived it (its form has no « Sens » select); the model checked
+# encaissement ⇒ recette and dépense ⇒ déboursé but NOT recette_autre, so a
+# direct model call could store an « Autre recette » as a DÉBOURSÉ — a
+# debit under a receipt's label, the ledger moving the wrong way while every
+# report still read « recette ». The model now derives an absent direction
+# and refuses a supplied one that disagrees (``_validate_business``); an
+# edit that changes the kind re-derives it (``update_transaction``). The two
+# structural kinds (``paiement_carte``, ``correction``) take their direction
+# from their own write path.
+_KIND_DIRECTION = {
+    "encaissement_facture": "recette",
+    "recette_autre": "recette",
+    "dépense": "déboursé",
+}
 
 VALID_METHODS = (
     "chèque", "virement", "prélèvement", "dépôt_direct", "carte", "comptant", "autre",
@@ -350,6 +365,11 @@ _ABORT_MESSAGES = {
     "compte_fermé": "Ce compte est fermé.",
     "montant_invalide": "Le montant doit être un nombre entier de cents positif.",
     "direction_invalide": "Le sens de l'opération est invalide.",
+    "sens_incohérent": (
+        "Le sens de l'opération contredit son type : une dépense est un "
+        "déboursé, une autre recette et un encaissement de facture sont des "
+        "recettes. Le sens découle du type — changez le type, jamais le sens."
+    ),
     "type_invalide": "Le type d'opération est invalide.",
     "type_non_modifiable": (
         "Le type de cette écriture ne peut pas être modifié. Corrigez par une "
@@ -725,59 +745,62 @@ def _build_transaction_doc(
     }
 
 
-def _validate_business(clean: dict) -> tuple[Optional[dict], list[str]]:
+def _validate_business(clean: dict) -> tuple[Optional[dict], Optional[str]]:
     """No-read guards shared by create and update: vocabulary membership,
-    direction/kind coherence, category presence, ventilation, date sanity.
-    Returns ``(normalized_ventilation, errors)``."""
+    the kind-implied direction, category presence, ventilation, date sanity.
+
+    The direction is DERIVED from the kind (``_KIND_DIRECTION``): an absent
+    one is written into ``clean``; a supplied one must agree, or the call is
+    refused (``sens_incohérent``). Returns ``(normalized_ventilation, None)``
+    or ``(None, reason)`` — ``reason`` a machine-stable ``_ABORT_MESSAGES``
+    key, so a caller logs WHY without reverse-mapping a French message."""
     amount = clean.get("amount")
-    direction = clean.get("direction", "")
     kind = clean.get("kind", "")
     method = clean.get("method", "")
     counterparty = (clean.get("counterparty") or "").strip()
     category = clean.get("category") or None
 
-    def _msg(reason: str) -> tuple[None, list[str]]:
-        return None, [_ABORT_MESSAGES[reason]]
-
     if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
-        return _msg("montant_invalide")
-    if direction not in VALID_DIRECTIONS:
-        return _msg("direction_invalide")
+        return None, "montant_invalide"
     if kind not in _SIMPLE_KINDS:
         # paiement_carte and correction are minted only by their own paths.
-        return _msg("type_invalide")
-    if kind == "encaissement_facture" and direction != "recette":
-        return _msg("type_invalide")
-    if kind == "dépense" and direction != "déboursé":
-        return _msg("type_invalide")
+        return None, "type_invalide"
+    implied = _KIND_DIRECTION[kind]
+    direction = clean.get("direction") or ""
+    if not direction:
+        clean["direction"] = direction = implied
+    elif direction not in VALID_DIRECTIONS:
+        return None, "direction_invalide"
+    elif direction != implied:
+        return None, "sens_incohérent"
     if method not in VALID_METHODS:
-        return _msg("mode_invalide")
+        return None, "mode_invalide"
     if not counterparty:
-        return _msg("contrepartie_requise")
+        return None, "contrepartie_requise"
     if kind == "dépense":
         if not category:
-            return _msg("catégorie_requise")
+            return None, "catégorie_requise"
         if category not in ADMIN_EXPENSE_CATEGORIES:
-            return _msg("catégorie_invalide")
+            return None, "catégorie_invalide"
     else:
         # Category belongs to expenses alone; stray values are dropped.
         clean["category"] = None
 
     tx_date = clean.get("date")
     if _midnight_utc(tx_date) is None:
-        return _msg("date_requise")
+        return None, "date_requise"
     if _midnight_utc(tx_date).date() > today_mtl():
         # The ONE clock is Montréal (utils/deadlines doctrine) — a UTC
         # evening must not refuse a date that is still « today ».
-        return _msg("date_future")
+        return None, "date_future"
 
     ventilation, reason = validate_ventilation(
         direction, amount,
         clean.get("net_amount"), clean.get("gst_amount"), clean.get("qst_amount"),
     )
     if ventilation is None:
-        return _msg(reason)
-    return ventilation, []
+        return None, reason
+    return ventilation, None
 
 
 # ── create_transaction ─────────────────────────────────────────────────────
@@ -799,9 +822,15 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
     clean = _sanitize_data(data)
     if not clean.get("account_id"):
         return None, [_ABORT_MESSAGES["compte_introuvable"]]
-    ventilation, errors = _validate_business(clean)
-    if errors:
-        return None, errors
+    ventilation, reason = _validate_business(clean)
+    if reason:
+        # A no-read refusal is a refusal too (the registry's « any
+        # create/update abort ») — a forged direction must leave a trace.
+        log_admin_ledger_event(
+            "admin_transaction_refused", "refused",
+            account_id=clean["account_id"], reason=reason,
+        )
+        return None, [_ABORT_MESSAGES[reason]]
 
     account_id = clean["account_id"]
     direction = clean["direction"]
@@ -989,13 +1018,19 @@ def update_transaction(tx_id: str, data: dict) -> tuple[Optional[dict], list[str
             if merged.get("kind") != existing.get("kind"):
                 raise _TxnAbort("type_non_modifiable")
 
-        ventilation, verrors = _validate_business(merged)
-        if verrors:
-            # Re-raise through the abort channel with the matching reason.
-            for reason_key, msg in _ABORT_MESSAGES.items():
-                if msg == verrors[0]:
-                    raise _TxnAbort(reason_key)
-            raise _TxnAbort("montant_invalide")
+        # A kind named without a direction carries its implied sign: turning
+        # a dépense into an « Autre recette » used to keep the stored
+        # déboursé — a debit under a receipt's label. A direction the caller
+        # DOES name is held to agreeing with the kind in _validate_business,
+        # so a sign can never change except through its kind.
+        if "kind" in clean and not clean.get("direction"):
+            implied = _KIND_DIRECTION.get(merged.get("kind"))
+            if implied:
+                merged["direction"] = implied
+
+        ventilation, reason = _validate_business(merged)
+        if reason:
+            raise _TxnAbort(reason)
         # The NEW date must also sit above the lock floor.
         if lock_floor is not None and _midnight_utc(merged.get("date")).date() <= lock_floor.date():
             raise _TxnAbort("période_verrouillée")

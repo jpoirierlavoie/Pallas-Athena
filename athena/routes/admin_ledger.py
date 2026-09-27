@@ -67,12 +67,9 @@ logger = logging.getLogger(__name__)
 
 admin_bp = Blueprint("admin_ledger", __name__, url_prefix="/administration")
 
-# The simple kinds' direction is implied — the form has no Sens select.
-_KIND_DIRECTION = {
-    "encaissement_facture": "recette",
-    "recette_autre": "recette",
-    "dépense": "déboursé",
-}
+# The form has no « Sens » select, and the route no longer derives one: the
+# MODEL implies the direction from the kind (models/admin_ledger
+# ._KIND_DIRECTION, lot 0b). One rule, wherever the call comes from.
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -264,7 +261,6 @@ def _entry_form_data() -> dict:
     return {
         "account_id": f.get("account_id", "").strip(),
         "kind": kind,
-        "direction": _KIND_DIRECTION.get(kind, ""),
         "amount": _parse_cents(f.get("amount", "")),
         "method": f.get("method", "").strip(),
         "counterparty": f.get("counterparty", "").strip(),
