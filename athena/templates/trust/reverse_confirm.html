@@ -13,10 +13,18 @@
   </div>
   {% endif %}
 
+  {% if not refusal %}
   <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+    {% if both_legs %}
+    Cette écriture est un volet d'un virement inter-dossiers : <strong>ses deux volets</strong>
+    seront contre-passés ensemble, par deux écritures « Correction » compensées aussitôt
+    (les fonds n'ont jamais quitté le compte). Le client qui a reçu le virement doit encore
+    en détenir les fonds compensés.
+    {% else %}
     Une contre-passation crée une écriture « Correction » de sens inverse.
     {% if entry.status == 'en_circulation' %}L'écriture originale et sa contre-passation seront toutes deux marquées <strong>annulée</strong>.
     {% else %}L'écriture originale demeure compensée; la contre-passation entre <strong>en circulation</strong>.{% endif %}
+    {% endif %}
     L'écriture n'est jamais modifiée ni supprimée.
   </div>
 
@@ -31,5 +39,6 @@
       <button type="submit" class="px-4 py-2.5 text-sm font-medium text-white bg-red-600 rounded-xl hover:bg-red-700">Contre-passer</button>
     </div>
   </form>
+  {% endif %}
 </div>
 {% endblock %}

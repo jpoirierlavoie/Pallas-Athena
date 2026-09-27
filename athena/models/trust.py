@@ -85,6 +85,9 @@ NO_DOSSIER_PURPOSES = ("intérêts", "frais_bancaires", "correction")
 # Reserved for entries minted by ``reverse_transaction`` only — rejected at the
 # create route/path so reversal stays the sole way to produce one (§3.2, §5.2).
 REVERSAL_PURPOSE = "correction"
+# The purpose of BOTH legs of an inter-dossier transfer; a pair is linked by
+# ``related_transaction_id`` and reverses as one (see reverse_transaction).
+TRANSFER_PURPOSE = "virement_inter_dossiers"
 
 # ── Withdrawal rules of RLRQ c. B-1, r. 5 (verified 2026-09-25, D14) ───────
 # Art. 58: fees and disbursements leave the general trust account « seulement
@@ -369,6 +372,24 @@ _ABORT_MESSAGES = {
     "compteur_indisponible": "Impossible d'allouer le numéro de séquence. Veuillez réessayer.",
     "motif_requis": "Un motif de contre-passation est requis.",
     "déjà_contrepassée": "Cette écriture a déjà été contre-passée.",
+    "correction_non_contre_passable": (
+        "Une écriture de correction ne se contre-passe pas : réinscrivez plutôt "
+        "l'écriture voulue, datée d'aujourd'hui."
+    ),
+    "volet_virement_introuvable": (
+        "L'autre volet de ce virement inter-dossiers est introuvable : la "
+        "contre-passation est refusée, pour ne jamais défaire un seul côté du "
+        "virement."
+    ),
+    "virement_état_incohérent": (
+        "Les deux volets de ce virement inter-dossiers ne concordent pas : la "
+        "contre-passation est refusée, pour ne jamais défaire un seul côté du "
+        "virement. Vérifiez le registre."
+    ),
+    "contre_passation_virement_solde": (
+        "Le client qui a reçu ce virement n'a plus assez de fonds compensés pour "
+        "le rendre : le contre-passer créerait un découvert dans son dossier."
+    ),
     "écriture_introuvable": "Écriture introuvable.",
     "compensation_invalide": (
         "Impossible de compenser : écriture déjà compensée ou annulée, "
@@ -1262,11 +1283,51 @@ def clear_transactions_bulk(
 # ── reverse_transaction (spec §5.2) ────────────────────────────────────────
 
 
+def reversal_refusal(entry: dict) -> Optional[str]:
+    """Why *entry* can NEVER be reversed — ``None`` when it may be.
+
+    Pure, no read: the confirmation page asks it before offering a form the
+    model would refuse anyway (the model re-checks inside the transaction).
+    """
+    if entry.get("reversed_by_id"):
+        return _ABORT_MESSAGES["déjà_contrepassée"]
+    if entry.get("purpose") == REVERSAL_PURPOSE or entry.get("reverses_id"):
+        return _ABORT_MESSAGES["correction_non_contre_passable"]
+    return None
+
+
+def is_transfer_pair_leg(entry: dict) -> bool:
+    """A leg of a genuine two-leg inter-dossier transfer (linked by
+    ``related_transaction_id``). A legacy SINGLE-leg ``virement_inter_dossiers``
+    — the create form offered the purpose — carries no link and reverses
+    alone, like any entry."""
+    return entry.get("purpose") == TRANSFER_PURPOSE and bool(entry.get("related_transaction_id"))
+
+
 def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[str]]:
     """Contre-passation: create an opposite « correction » entry; never edit the
     original's amount or direction (§5.2). Reversing an ``en_circulation`` entry
     stamps BOTH annulée; reversing a ``compensée`` entry creates an
-    ``en_circulation`` reversal. The overdraft control does NOT apply here."""
+    ``en_circulation`` reversal. The overdraft control does NOT apply here —
+    with ONE exception, below.
+
+    Two shapes are special (lot 0b, D14):
+
+    * A **correction** is never reversed again. Re-reversing one re-applied
+      the original movement with none of its guards — for a reversed fee
+      payment, fees left trust again with no invoice and no admin recette.
+      The undo of a mistaken reversal is a fresh entry (admin_ledger refuses
+      the same since 2026-08).
+    * A leg of a **two-leg inter-dossier transfer** reverses BOTH legs, in
+      one transaction. Reversing one leg alone moved one client's balance
+      with no bank movement and no counter-leg. Both reversals are born
+      ``compensée`` — the funds never left the account, exactly like the
+      transfer's own legs — and the recipient's cleared balance must cover
+      the amount (the overdraft control of the reverse transfer this is):
+      a reversal must not open a shortfall in a dossier that already spent
+      the money. If the other leg was already reversed alone (before this
+      rule), this leg reverses alone too, completing the pair.
+    """
     reason = (reason or "").strip()
     if not reason:
         return None, [_ABORT_MESSAGES["motif_requis"]]
@@ -1274,19 +1335,40 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
     orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
     now = datetime.now(timezone.utc)
     today = _today_midnight_utc()
-    rev_id = str(uuid.uuid4())
-    rev_ref = db.collection(TRANSACTIONS_COLLECTION).document(rev_id)
     transaction = db.transaction()
     result: dict = {}
 
     @firestore.transactional
     def _reverse(txn) -> None:
+        # 1. READS (all before any write)
         o_snap = orig_ref.get(transaction=txn)
         if not o_snap.exists:
             raise _TxnAbort("écriture_introuvable")
         original = o_snap.to_dict()
         if original.get("reversed_by_id"):
             raise _TxnAbort("déjà_contrepassée")
+        if original.get("purpose") == REVERSAL_PURPOSE or original.get("reverses_id"):
+            raise _TxnAbort("correction_non_contre_passable")
+
+        pair = None
+        if is_transfer_pair_leg(original):
+            other_snap = db.collection(TRANSACTIONS_COLLECTION).document(
+                original["related_transaction_id"]
+            ).get(transaction=txn)
+            if not other_snap.exists:
+                raise _TxnAbort("volet_virement_introuvable")
+            other = other_snap.to_dict()
+            if not other.get("reversed_by_id"):
+                if (
+                    other.get("related_transaction_id") != original.get("id")
+                    or other.get("purpose") != TRANSFER_PURPOSE
+                    or other.get("account_id") != original.get("account_id")
+                    or int(other.get("amount", 0)) != int(original.get("amount", 0))
+                    or original.get("status") != "compensée"
+                    or other.get("status") != "compensée"
+                ):
+                    raise _TxnAbort("virement_état_incohérent")
+                pair = other
 
         account_id = original.get("account_id")
         account_ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
@@ -1306,6 +1388,13 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
             raise _TxnAbort(
                 "contre_passation_période_verrouillée", detail=_floor_label(lock_floor)
             )
+
+        if pair is not None:
+            _stage_pair_reversal(
+                txn, original, pair, account_ref, account, counter_ref,
+                seq_current, reason, today, now, result,
+            )
+            return
 
         dossier_id = original.get("dossier_id")
         client_id = original.get("client_id")
@@ -1347,21 +1436,15 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
             int(book_map.get(client_id, 0)) + total["book"] if client_id else 0
         )
 
-        reversal = _build_transaction_doc(
-            tx_id=rev_id, account_id=account_id, sequence=seq, date=today,
-            direction=rev_dir, amount=amount, purpose=REVERSAL_PURPOSE,
-            method=original.get("method", ""), counterparty=original.get("counterparty", ""),
-            dossier=None, dossier_id=dossier_id, client_id=client_id,
-            reference=original.get("reference", ""), description=reason, invoice_id=None,
-            balance_after_account=book_after_account, balance_after_client=book_after_client,
-            now=now, status=rev_status, cleared_date=None, reverses_id=tx_id,
+        rev_id = str(uuid.uuid4())
+        reversal = _reversal_doc(
+            original, rev_id=rev_id, sequence=seq, direction=rev_dir,
+            reason=reason, today=today, now=now, status=rev_status,
+            cleared_date=None, balance_after_account=book_after_account,
+            balance_after_client=book_after_client,
         )
-        # Copy the frozen snapshots off the original (dossier=None above).
-        reversal["dossier_file_number"] = original.get("dossier_file_number", "")
-        reversal["dossier_title"] = original.get("dossier_title", "")
-        reversal["client_name"] = original.get("client_name", "")
 
-        txn.set(rev_ref, reversal)
+        txn.set(db.collection(TRANSACTIONS_COLLECTION).document(rev_id), reversal)
         txn.set(counter_ref, {"seq": seq, "updated_at": now})
         txn.update(orig_ref, {
             "status": orig_new_status,
@@ -1383,6 +1466,7 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
                 **provenance.update_fields(now),
             })
         result["reversal"] = reversal
+        result["reversals"] = [reversal]
         result["annulled"] = rev_status == "annulée"
 
     try:
@@ -1401,13 +1485,136 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         )
         return None, ["Erreur lors de la contre-passation. Veuillez réessayer."]
 
-    reversal = result["reversal"]
-    log_trust_event(
-        "trust_transaction_reversed", transaction_id=rev_id,
-        account_id=reversal.get("account_id"), dossier_id=reversal.get("dossier_id"),
-        reverses_id=tx_id, annulled=result["annulled"],
+    for reversal in result["reversals"]:
+        log_trust_event(
+            "trust_transaction_reversed", transaction_id=reversal["id"],
+            account_id=reversal.get("account_id"), dossier_id=reversal.get("dossier_id"),
+            reverses_id=reversal.get("reverses_id"), annulled=result["annulled"],
+        )
+    return result["reversal"], []
+
+
+def _reversal_doc(
+    leg: dict, *, rev_id: str, sequence: int, direction: str, reason: str,
+    today: datetime, now: datetime, status: str, cleared_date,
+    balance_after_account: int, balance_after_client: int,
+    related_transaction_id: Optional[str] = None,
+) -> dict:
+    """The « correction » entry reversing *leg*, its frozen label snapshots
+    copied off the original (never re-read off the dossier)."""
+    reversal = _build_transaction_doc(
+        tx_id=rev_id, account_id=leg.get("account_id"), sequence=sequence,
+        date=today, direction=direction, amount=int(leg.get("amount", 0)),
+        purpose=REVERSAL_PURPOSE, method=leg.get("method", ""),
+        counterparty=leg.get("counterparty", ""), dossier=None,
+        dossier_id=leg.get("dossier_id"), client_id=leg.get("client_id"),
+        reference=leg.get("reference", ""), description=reason, invoice_id=None,
+        balance_after_account=balance_after_account,
+        balance_after_client=balance_after_client, now=now, status=status,
+        cleared_date=cleared_date, reverses_id=leg.get("id"),
+        related_transaction_id=related_transaction_id,
     )
-    return reversal, []
+    reversal["dossier_file_number"] = leg.get("dossier_file_number", "")
+    reversal["dossier_title"] = leg.get("dossier_title", "")
+    reversal["client_name"] = leg.get("client_name", "")
+    return reversal
+
+
+def _stage_pair_reversal(
+    txn, original: dict, pair: dict, account_ref, account: dict, counter_ref,
+    seq_current: int, reason: str, today: datetime, now: datetime, result: dict,
+) -> None:
+    """Reverse BOTH legs of a two-leg inter-dossier transfer inside *txn*.
+
+    Reads first (the one or two dossiers), then the guard, then the writes —
+    the caller has already read the account, counter and lock floor. The
+    two reversals are born ``compensée`` (the funds never left the account),
+    sequenced in the originals' order, with EXACT running balances (the
+    recette reversal first lifts the book, the déboursé reversal brings it
+    back), and linked to each other the way the transfer's legs are."""
+    legs = sorted([original, pair], key=lambda leg: int(leg.get("sequence", 0)))
+    amount = int(original.get("amount", 0))
+
+    # READS — a leg without its dossier is refused: both balances must move.
+    dossiers: dict = {}
+    for leg in legs:
+        did = leg.get("dossier_id")
+        if not did or not leg.get("client_id"):
+            raise _TxnAbort("virement_état_incohérent")
+        if did in dossiers:
+            continue
+        dref = db.collection(DOSSIERS_COLLECTION).document(did)
+        dsnap = dref.get(transaction=txn)
+        if not dsnap.exists:
+            raise _TxnAbort("dossier_introuvable")
+        ddoc = dsnap.to_dict()
+        dossiers[did] = {
+            "ref": dref,
+            "book": dict(ddoc.get("trust_balance_by_client") or {}),
+            "cleared": dict(ddoc.get("trust_cleared_by_client") or {}),
+        }
+
+    # GUARD — the recipient gives the money back: its cleared balance must
+    # cover it, as for the reverse transfer this amounts to.
+    recipient = next(leg for leg in legs if leg.get("direction") == "recette")
+    r_cleared = dossiers[recipient["dossier_id"]]["cleared"]
+    ok, _reason = check_disbursement_allowed(
+        int(r_cleared.get(recipient["client_id"], 0)), amount
+    )
+    if not ok:
+        raise _TxnAbort("contre_passation_virement_solde")
+
+    # COMPUTE
+    rev_ids = {leg["id"]: str(uuid.uuid4()) for leg in legs}
+    running = int(account.get("book_balance", 0))
+    bank_delta = 0
+    reversals = []
+    for i, leg in enumerate(legs):
+        rev_dir = "déboursé" if leg.get("direction") == "recette" else "recette"
+        delta = compute_deltas(rev_dir, amount, "compensée")
+        running += delta["book"]
+        bank_delta += delta["bank"]
+        d = dossiers[leg["dossier_id"]]
+        cid = leg["client_id"]
+        d["book"][cid] = int(d["book"].get(cid, 0)) + delta["book"]
+        d["cleared"][cid] = int(d["cleared"].get(cid, 0)) + delta["cleared"]
+        other_id = next(lid for lid in rev_ids if lid != leg["id"])
+        reversals.append(_reversal_doc(
+            leg, rev_id=rev_ids[leg["id"]], sequence=seq_current + 1 + i,
+            direction=rev_dir, reason=reason, today=today, now=now,
+            status="compensée", cleared_date=today,
+            balance_after_account=running,
+            balance_after_client=d["book"][cid],
+            related_transaction_id=rev_ids[other_id],
+        ))
+
+    # WRITES (single commit)
+    for reversal in reversals:
+        txn.set(db.collection(TRANSACTIONS_COLLECTION).document(reversal["id"]), reversal)
+    txn.set(counter_ref, {"seq": seq_current + len(legs), "updated_at": now})
+    for leg in legs:
+        # Status unchanged (compensée) — the reversal carries the movement.
+        txn.update(db.collection(TRANSACTIONS_COLLECTION).document(leg["id"]), {
+            "reversed_by_id": rev_ids[leg["id"]],
+            **provenance.update_fields(now),
+        })
+    # Book and bank net to zero, but the account etag MUST regenerate — the
+    # reconciliation sentinel has to see this movement.
+    txn.update(account_ref, {
+        "book_balance": running,
+        "bank_balance": int(account.get("bank_balance", 0)) + bank_delta,
+        **provenance.update_fields(now),
+    })
+    for d in dossiers.values():
+        txn.update(d["ref"], {
+            "trust_balance_by_client": d["book"],
+            "trust_cleared_by_client": d["cleared"],
+            "trust_balance": sum(int(v) for v in d["book"].values()),
+            **provenance.update_fields(now),
+        })
+    result["reversal"] = next(r for r in reversals if r["reverses_id"] == original["id"])
+    result["reversals"] = reversals
+    result["annulled"] = False
 
 
 # ── create_inter_dossier_transfer (spec §6.4) ──────────────────────────────

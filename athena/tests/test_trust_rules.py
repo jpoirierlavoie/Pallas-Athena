@@ -28,6 +28,9 @@ antérieur (vérifié en le rétablissant, commit par commit) :
 5. **Un virement entre deux clients d'un même dossier** débite enfin la
    source : les deux côtés partagent un seul document et une seule mise à
    jour.
+6. **Un virement à deux volets se contre-passe en entier**, dans une seule
+   transaction, les deux corrections nées compensées ; un volet isolé hérité
+   reste contre-passable seul. **Une correction ne se contre-passe jamais.**
 
 Le banc est le faux Firestore partagé (``tests/_fake_firestore.py``) : le
 client, ses transactions et la boucle de reprise de ``transactional`` sont
@@ -776,3 +779,206 @@ def test_un_virement_entre_deux_clients_du_meme_dossier_debite_la_source(fake, m
     assert doc["trust_cleared_by_client"] == {"c1": 60000, "c3": 40000}
     assert doc["trust_balance"] == 100000
     assert fake.peek("trust_accounts/acc1")["book_balance"] == 100000
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 6. Un virement à deux volets se contre-passe en entier ; une correction
+#    jamais
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _transfer(amount: int = 40000, to=("dos2", "c2")) -> tuple[dict, dict]:
+    """A funded two-leg transfer dos1/c1 → *to*; returns (source, recipient)."""
+    _funded(amount=100000, day=2)
+    leg, errs = trust.create_inter_dossier_transfer(
+        "acc1", "dos1", "c1", to[0], to[1], amount, "instruction", "virement", ""
+    )
+    assert errs == []
+    return leg, trust.get_transaction(leg["related_transaction_id"])
+
+
+def _maps(fake, did: str) -> tuple[dict, dict]:
+    doc = fake.peek(f"dossiers/{did}")
+    return doc["trust_balance_by_client"], doc["trust_cleared_by_client"]
+
+
+@pytest.mark.parametrize("which", ["source", "recipient"])
+def test_contre_passer_un_volet_contre_passe_les_deux(fake, monkeypatch, which):
+    """Contre-passer un seul volet bougeait le solde d'un seul client, sans
+    mouvement bancaire ni contre-volet. Désormais les deux volets, dans UNE
+    transaction ; les deux corrections naissent compensées (les fonds n'ont
+    jamais quitté le compte), liées l'une à l'autre."""
+    _evening(monkeypatch)
+    source, recipient = _transfer()
+    account_before = fake.peek("trust_accounts/acc1")
+    fake.reset_logs()
+    target = source if which == "source" else recipient
+    rev, errs = trust.reverse_transaction(target["id"], "virement erroné")
+    assert errs == []
+    assert rev["reverses_id"] == target["id"]
+
+    corrections = sorted(
+        (t for t in fake.peek_collection("trust_transactions").values()
+         if t["purpose"] == "correction"),
+        key=lambda t: t["sequence"],
+    )
+    assert [c["reverses_id"] for c in corrections] == [source["id"], recipient["id"]]
+    assert [c["direction"] for c in corrections] == ["recette", "déboursé"]
+    for c in corrections:
+        assert c["status"] == "compensée"
+        assert c["date"] == _d(2026, 9, 25) and c["cleared_date"] == _d(2026, 9, 25)
+    assert corrections[0]["related_transaction_id"] == corrections[1]["id"]
+    assert corrections[1]["related_transaction_id"] == corrections[0]["id"]
+    # Exact running balances: the recette reversal lifts the book, the
+    # déboursé reversal brings it back.
+    assert corrections[0]["balance_after_account"] == 140000
+    assert corrections[1]["balance_after_account"] == 100000
+    for leg in (source, recipient):
+        stored = fake.peek(f"trust_transactions/{leg['id']}")
+        assert stored["status"] == "compensée" and stored["reversed_by_id"]
+
+    assert _maps(fake, "dos1") == ({"c1": 100000}, {"c1": 100000})
+    assert _maps(fake, "dos2") == ({"c2": 0}, {"c2": 0})
+    account = fake.peek("trust_accounts/acc1")
+    assert account["book_balance"] == account_before["book_balance"]
+    assert account["bank_balance"] == account_before["bank_balance"]
+    assert account["etag"] != account_before["etag"]  # the reconciliation sentinel
+    assert fake.peek("counters/trust-acc1")["seq"] == 5
+    # ONE commit carries both reversals and both originals.
+    assert len(fake.commits) == 1
+    written = {path for _kind, path in fake.commits[0].ops}
+    assert {f"trust_transactions/{c['id']}" for c in corrections} <= written
+    assert {f"trust_transactions/{source['id']}",
+            f"trust_transactions/{recipient['id']}"} <= written
+
+
+def test_la_contre_passation_d_un_virement_est_tout_ou_rien(fake, monkeypatch):
+    """Une panne au commit n'applique RIEN — ni l'un ni l'autre volet."""
+    _evening(monkeypatch)
+    source, recipient = _transfer()
+    before = fake.peek_collection("trust_transactions")
+
+    def _boom(info):
+        raise RuntimeError("commit refusé")
+
+    remove = fake.add_commit_hook(_boom)
+    try:
+        _, errs = trust.reverse_transaction(source["id"], "virement erroné")
+    finally:
+        remove()
+    assert errs
+    assert fake.peek_collection("trust_transactions") == before
+
+
+def test_le_destinataire_qui_a_depense_les_fonds_ne_se_voit_pas_mis_a_decouvert(fake, monkeypatch):
+    _evening(monkeypatch)
+    source, recipient = _transfer(amount=40000)
+    _, errs = trust.create_transaction(_entry(
+        direction="déboursé", purpose="déboursé_tiers", amount=30000,
+        dossier_id="dos2", client_id="c2", date=_d(2026, 9, 25),
+    ))
+    assert errs == []
+    before = fake.peek_collection("trust_transactions")
+    _, errs = trust.reverse_transaction(source["id"], "virement erroné")
+    assert errs == [trust._ABORT_MESSAGES["contre_passation_virement_solde"]]
+    assert fake.peek_collection("trust_transactions") == before
+
+
+def test_un_virement_entre_clients_du_meme_dossier_se_contre_passe(fake, monkeypatch):
+    _evening(monkeypatch)
+    _second_client(fake)
+    source, _recipient = _transfer(to=("dos1", "c3"))
+    _, errs = trust.reverse_transaction(source["id"], "mauvais client")
+    assert errs == []
+    book, cleared = _maps(fake, "dos1")
+    assert book == {"c1": 100000, "c3": 0} and cleared == {"c1": 100000, "c3": 0}
+    assert fake.peek("dossiers/dos1")["trust_balance"] == 100000
+
+
+def test_un_volet_isole_herite_reste_contre_passable_seul(fake, monkeypatch):
+    """Le formulaire d'écriture offrait l'objet « virement inter-dossiers » :
+    ces volets ISOLÉS n'ont pas de contre-volet — refuser leur
+    contre-passation les rendrait incorrigibles à jamais."""
+    _evening(monkeypatch)
+    single = _create(purpose="virement_inter_dossiers", amount=5000, date=_d(2026, 9, 5))
+    rev, errs = trust.reverse_transaction(single["id"], "saisie erronée")
+    assert errs == []
+    assert rev["status"] == "annulée"
+    assert len(fake.peek_collection("trust_transactions")) == 2
+
+
+def test_un_volet_dont_le_partenaire_fut_contre_passe_seul_se_contre_passe_seul(fake, monkeypatch):
+    """Une paire à moitié contre-passée avant la règle se complète : le volet
+    restant se contre-passe seul."""
+    _evening(monkeypatch)
+    source, recipient = _transfer()
+    stored = fake.peek(f"trust_transactions/{recipient['id']}")
+    stored["reversed_by_id"] = "legacy-correction"
+    fake.seed(f"trust_transactions/{recipient['id']}", stored)
+    rev, errs = trust.reverse_transaction(source["id"], "compléter la paire")
+    assert errs == []
+    corrections = [t for t in fake.peek_collection("trust_transactions").values()
+                   if t["purpose"] == "correction"]
+    assert [c["reverses_id"] for c in corrections] == [source["id"]]
+    assert rev["status"] == "en_circulation"  # the ordinary compensée algebra
+
+
+def test_un_volet_sans_son_partenaire_est_refuse(fake, monkeypatch):
+    _evening(monkeypatch)
+    source, recipient = _transfer()
+    fake.external_delete(f"trust_transactions/{recipient['id']}")
+    before = fake.peek_collection("trust_transactions")
+    _, errs = trust.reverse_transaction(source["id"], "x")
+    assert errs == [trust._ABORT_MESSAGES["volet_virement_introuvable"]]
+    assert fake.peek_collection("trust_transactions") == before
+
+
+@pytest.mark.parametrize("cleared_first", [True, False])
+def test_une_correction_ne_se_contre_passe_jamais(fake, monkeypatch, cleared_first):
+    """Contre-passer une correction ré-appliquait le mouvement d'origine sans
+    AUCUNE de ses gardes — pour un paiement d'honoraires contre-passé, les
+    honoraires ressortaient du fidéicommis sans facture ni recette."""
+    _evening(monkeypatch)
+    r = _funded(day=2) if cleared_first else _create(date=_d(2026, 9, 2))
+    correction, errs = trust.reverse_transaction(r["id"], "erreur")
+    assert errs == []
+    before = fake.peek_collection("trust_transactions")
+    _, errs = trust.reverse_transaction(correction["id"], "annuler la correction")
+    assert errs == [trust._ABORT_MESSAGES["correction_non_contre_passable"]]
+    assert fake.peek_collection("trust_transactions") == before
+    assert trust.reversal_refusal(correction) == errs[0]
+
+
+def test_la_page_de_contre_passation_dit_ce_que_le_modele_fera(fake, client, monkeypatch):
+    _evening(monkeypatch)
+    source, recipient = _transfer()
+    page = client.get(f"/fideicommis/{source['id']}/contrepasser").get_data(as_text=True)
+    assert "ses deux volets" in page
+    resp = client.post(f"/fideicommis/{source['id']}/contrepasser",
+                       data={"reason": "virement erroné"})
+    assert resp.status_code == 302
+    correction_id = resp.location.rsplit("/", 1)[-1]
+    correction = fake.peek(f"trust_transactions/{correction_id}")
+    assert correction["reverses_id"] == source["id"]
+
+    # A correction: no form, the refusal instead — and no link on its page.
+    page = client.get(f"/fideicommis/{correction_id}/contrepasser").get_data(as_text=True)
+    assert "Une écriture de correction ne se contre-passe pas" in page
+    assert 'name="reason"' not in page
+    detail = client.get(f"/fideicommis/{correction_id}").get_data(as_text=True)
+    assert f"/fideicommis/{correction_id}/contrepasser" not in detail
+    resp = client.post(f"/fideicommis/{correction_id}/contrepasser", data={"reason": "x"})
+    assert resp.status_code == 400
+    assert "ne se contre-passe pas" in resp.get_data(as_text=True)
+
+
+def test_le_refus_du_destinataire_s_affiche(fake, client, monkeypatch):
+    _evening(monkeypatch)
+    source, _recipient = _transfer(amount=40000)
+    trust.create_transaction(_entry(
+        direction="déboursé", purpose="déboursé_tiers", amount=30000,
+        dossier_id="dos2", client_id="c2", date=_d(2026, 9, 25),
+    ))
+    resp = client.post(f"/fideicommis/{source['id']}/contrepasser", data={"reason": "x"})
+    assert resp.status_code == 400
+    assert "créerait un découvert" in resp.get_data(as_text=True)

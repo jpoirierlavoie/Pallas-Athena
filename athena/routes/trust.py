@@ -596,7 +596,26 @@ def entry_reverse_confirm(tx_id: str):
     entry = trust.get_transaction(tx_id)
     if not entry:
         return render_template("errors/404.html"), 404
-    return render_template("trust/reverse_confirm.html", entry=entry, errors=[], **_labels())
+    return _render_reverse_confirm(entry, [])
+
+
+def _render_reverse_confirm(entry: dict, errors: list[str]) -> str:
+    """The confirmation page, told what the model WILL do: refuse outright
+    (a correction, an entry already reversed — no form is offered), or
+    reverse both legs of an inter-dossier transfer at once. The model stays
+    the verdict; this only keeps the page from promising something else."""
+    refusal = trust.reversal_refusal(entry)
+    both_legs = False
+    if refusal is None and trust.is_transfer_pair_leg(entry):
+        other = trust.get_transaction(entry["related_transaction_id"])
+        # A leg whose partner was already reversed alone (before the pair
+        # rule) reverses alone, completing the pair.
+        both_legs = not (other and other.get("reversed_by_id"))
+    return render_template(
+        "trust/reverse_confirm.html", entry=entry,
+        errors=errors or ([refusal] if refusal else []),
+        refusal=refusal, both_legs=both_legs, **_labels(),
+    )
 
 
 @trust_bp.route("/<tx_id>/contrepasser", methods=["POST"])
@@ -607,9 +626,9 @@ def entry_reverse(tx_id: str):
     reversal, errors = trust.reverse_transaction(tx_id, reason)
     if errors:
         entry = trust.get_transaction(tx_id)
-        return render_template(
-            "trust/reverse_confirm.html", entry=entry, errors=errors, **_labels()
-        ), 400
+        if not entry:
+            return render_template("errors/404.html"), 404
+        return _render_reverse_confirm(entry, errors), 400
     params = {}
     if original and original.get("purpose") == "virement_honoraires":
         # The fee transfer may have auto-created its admin recette (décision

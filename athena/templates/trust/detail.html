@@ -75,7 +75,8 @@
       <button type="submit" class="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800">Compenser</button>
     </form>
     {% endif %}
-    {% if not entry.reversed_by_id and entry.status != 'annulée' %}
+    {# A correction is never reversed again (the model refuses it). #}
+    {% if not entry.reversed_by_id and entry.status != 'annulée' and entry.purpose != 'correction' %}
     <a href="{{ url_for('trust.entry_reverse_confirm', tx_id=entry.id) }}" class="text-sm text-red-600 hover:text-red-700 font-medium">Contre-passer</a>
     {% endif %}
   </div>
