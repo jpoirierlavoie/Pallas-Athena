@@ -1064,3 +1064,40 @@ def test_les_refus_sans_lecture_de_la_contre_passation_et_du_virement_se_journal
     allowed = {"transaction_id", "account_id", "dossier_id", "reason", "operation"}
     assert all(set(kw) <= allowed for _e, _o, kw in calls)
     assert fake.peek_collection("trust_transactions") == {}
+
+
+def test_le_formulaire_n_ecrit_jamais_une_valeur_postee_crue_dans_le_x_data(
+    fake, client, monkeypatch
+):
+    """Un refus (400) ré-affiche ce que le formulaire a POSTÉ. L'attribut
+    x-data est décodé de ses entités AVANT qu'Alpine l'évalue : une
+    apostrophe dans une valeur crue fermait la chaîne JS — formulaire mort
+    et, sous 'unsafe-eval', injection d'expression. B5 a passé direction et
+    method par |jsattr ; dossierId, clientId et purpose, dans le même bloc,
+    restaient crus (revue, lot 0b). On épingle le RENDU, avec la sémantique
+    réelle du filtre de main.py."""
+    import json as _json
+
+    from markupsafe import Markup
+
+    def _jsattr(value):  # main.py's filter, verbatim semantics
+        js = _json.dumps(str(value), ensure_ascii=False)
+        return Markup(js.replace("&", "&amp;").replace("<", "&lt;")
+                      .replace(">", "&gt;").replace('"', "&quot;"))
+
+    client.application.jinja_env.filters["jsattr"] = _jsattr
+    _evening(monkeypatch)
+    hostile = "x');alert(1);('"
+    resp = client.post("/fideicommis/", data={
+        "account_id": "acc1", "direction": "recette", "amount": "10,00",
+        "purpose": hostile, "method": "chèque", "counterparty": "Client",
+        "dossier_id": "inconnu" + hostile, "client_id": "c1" + hostile,
+        "date": "2026-09-20",
+    })
+    assert resp.status_code == 400
+    html = resp.get_data(as_text=True)
+    for key in ("dossierId", "clientId", "purpose", "direction", "method"):
+        assert f"{key}: '" not in html, key
+        assert f"{key}: &quot;" in html, key
+    assert "purpose: &quot;x');alert(1);('&quot;" in html
+    assert fake.peek_collection("trust_transactions") == {}

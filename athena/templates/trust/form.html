@@ -23,14 +23,18 @@
 
   <form method="post" action="{{ url_for('trust.entry_create') }}"
         x-data="{
-          dossierId: '{{ (dossier.id if dossier else (entry.dossier_id if entry else '')) or '' }}',
+          {# |jsattr on EVERY echoed value: a 400 re-render echoes what the
+             form POSTED, and the attribute is entity-decoded BEFORE Alpine
+             evaluates it — a quote in a raw value ends the JS string (revue
+             lot 0b : dossierId, clientId et purpose l'étaient encore). #}
+          dossierId: {{ ((dossier.id if dossier else (entry.dossier_id if entry else '')) or '') | jsattr }},
           {# |jsattr : un titre avec apostrophe interpolé cru casse le x-data
              entier (revue 2026-08-13 — le même correctif que le formulaire
              d'administration ; les formulaires notes/tâches l'avaient déjà). #}
           dossierDisplay: {{ ((dossier.file_number ~ ' — ' ~ dossier.title) if dossier else '') | jsattr }},
-          clientId: '{{ entry.client_id if entry else '' }}',
+          clientId: {{ ((entry.client_id if entry else '') or '') | jsattr }},
           clients: JSON.parse(document.getElementById('trust-clients-data').textContent || '[]'),
-          purpose: '{{ (entry.purpose if entry and entry.purpose else valid_purposes[0]) }}',
+          purpose: {{ (entry.purpose if entry and entry.purpose else valid_purposes[0]) | jsattr }},
           {# Sens + mode drive the art. 57/72 cash block below. |jsattr: a
              re-render echoes what the form POSTED, never raw into JS. #}
           direction: {{ (entry.direction if entry and entry.direction else valid_directions[0]) | jsattr }},
