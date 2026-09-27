@@ -1610,14 +1610,12 @@ def list_prescription_alerts(cutoff: datetime, limit: int = 50) -> list[dict]:
     for d in raw:
         try:
             derived = derive_prescription(d)
-        except Exception as exc:
+        except Exception:
             # A row the derivation cannot read is ALERTED as « a_verifier »
             # on its raw date, never dropped — and it no longer empties the
-            # whole list, as it did through the old enclosing try.
-            logger.warning(
-                "list_prescription_alerts: derivation failed: %s",
-                type(exc).__name__,
-            )
+            # whole list, as it did through the old enclosing try. A bug in
+            # the one derivation seam is unexpected: ERROR, typed helper.
+            log_unexpected("list_prescription_alerts: derivation failed")
             derived = {"status": "a_verifier", "date_effective": None}
         if derived["status"] in ("interrompue", "imprescriptible"):
             continue
