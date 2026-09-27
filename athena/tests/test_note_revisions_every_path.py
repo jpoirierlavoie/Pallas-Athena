@@ -312,6 +312,31 @@ def test_an_unguarded_caller_that_keeps_losing_is_refused_not_looped(
     assert fake.peek(f"notes/{NID}")["content"] == "Rival."
 
 
+def test_a_phone_edit_that_loses_every_race_is_retried_not_refused(
+    fake, dav, monkeypatch,
+):
+    """Revue de D17 : l'échec de toutes les tentatives répondait 422
+    « Données invalides » — DavX5 y lit un corps refusé pour de bon. Rien
+    n'est invalide : une écriture concurrente a gagné chaque fois. 503 +
+    Retry-After garde la modification sur le téléphone, qui la renvoie."""
+    _seed(fake)
+    real = note_model.get_note
+    counter = iter(range(100))
+
+    def always_racing(nid):
+        doc = real(nid)
+        fake.external_write(f"notes/{NID}", _note(
+            content="Rival.", etag=f"o-rival-{next(counter)}"))
+        return doc
+
+    monkeypatch.setattr(note_model, "get_note", always_racing)
+    resp = _put(dav, _vjournal("Revu au téléphone."))
+    assert resp.status_code == 503
+    assert resp.headers["Retry-After"] == "30"
+    assert fake.peek(f"notes/{NID}")["content"] == "Rival."
+    assert _revisions(fake) == []
+
+
 def test_a_named_version_is_still_refused_rather_than_retried(
     fake, monkeypatch,
 ):

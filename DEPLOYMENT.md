@@ -1730,7 +1730,9 @@ Notes:
   only), and the note page says « Versions précédentes : N » once there is
   one. A phone PUT that changes a note's text now commits in a transaction
   (guarded on the version just read, re-read on a lost race —
-  last-write-wins is unchanged); one that changes only its title or
+  last-write-wins is unchanged; one that loses every attempt answers 503
+  with `Retry-After`, so the phone keeps its edit and re-sends it — never
+  the 422 that would read as a refused body); one that changes only its title or
   category is the same bare write as before. Then, on scratch dossiers —
   DavX5 fails silently, so the `REPORT sync-collection` is the proof and
   the phone the confirmation:

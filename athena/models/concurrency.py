@@ -11,7 +11,8 @@ compared nothing: every full-document ``set()`` was last-write-wins, so a
 stale browser tab, the phone and the connector silently erased each other's
 edits. The web forms now carry the etag they were rendered from
 (``routes/edit_conflict.py``). (Routing that DAV check through ``expected_etag`` would make it
-atomic; it is not done here, and DAV keeps the legacy path.)
+atomic; it is not done here, and DAV keeps the legacy path — bar a note
+PUT that changes the text, which ``note.update_note`` guards itself, below.)
 
 The contract, for a caller that passes ``expected_etag``:
 
@@ -37,6 +38,16 @@ Two models step outside these helpers on purpose:
 between their read and their full-document write, whose ``invoiced`` flip
 the write would undo — is not a matter of which version the caller read,
 so no caller can opt out of it. They still compare with :func:`matches`.
+
+A third keeps the legacy path only when it has nothing to snapshot:
+``note.update_note`` (D17, 2026-09-27) keeps a revision of every change of
+a note's CONTENT, and a revision travels only on the guarded branch — so
+when a caller that passed ``None`` (a DAV PUT, a page older than its etag
+field) changes the text, the model passes the etag it has just read as
+``expected_etag`` itself, and re-reads and re-merges on a lost race
+instead of refusing: the caller still asserts nothing and still wins,
+and the snapshot is the text actually overwritten. A write that leaves
+the content unchanged is the plain legacy ``set()``.
 
 ``''`` is a legitimate expected etag: it matches a legacy document written
 before Rule 7, whose stored etag is absent (a caller that read such a row

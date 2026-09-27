@@ -1133,6 +1133,19 @@ def _put_note(
 
     if existing:
         updated, errors = update_note(resource_id, data)
+        if STALE_ETAG_ERROR in errors:
+            # D17: a content change carries its revision, so the model
+            # guards the commit on the version it read and re-reads on a
+            # lost race; STALE here means it lost every attempt to a
+            # concurrent writer. Nothing was written, and the phone's edit
+            # is not invalid — a 422 would read to DavX5 as a permanent
+            # refusal of the body. 503 + Retry-After keeps the edit dirty on
+            # the phone and re-sends it (last-write-wins, as before).
+            log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
+                              status_code=503, reason="ecriture_concurrente")
+            resp = Response("Service Unavailable", status=503)
+            resp.headers["Retry-After"] = "30"
+            return resp
         if errors:
             logger.warning(
                 "Dossier DAV PUT (VJOURNAL) validation failed for %s: %s",
