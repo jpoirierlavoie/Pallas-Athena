@@ -7,13 +7,20 @@
    _resolve_invoice_number (égalité exacte dans le dossier) reste le
    verdict final ; un select désactivé ne soumet rien — le champ « facture
    antérieure » demeure la voie des factures papier pré-Athéna.
-   Contexte requis : factures ([{invoice_number, solde_fmt}]), selected. #}
+   Contexte requis : factures ([{invoice_number, solde_fmt, provision}]),
+   selected. #}
 {% if factures %}
 <select name="invoice_number"
         class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white">
   <option value="">Choisir la facture…</option>
   {% for f in factures %}
+  {% if f.provision %}
+  {# Provision imputée par la facture : un paiement d'honoraires la
+     compterait deux fois — le modèle refuse, l'option le dit. #}
+  <option value="" disabled>{{ f.invoice_number }} — provision imputée : non payable du fidéicommis</option>
+  {% else %}
   <option value="{{ f.invoice_number }}" {% if f.invoice_number == selected %}selected{% endif %}>{{ f.invoice_number }} — solde dû {{ f.solde_fmt }}</option>
+  {% endif %}
   {% endfor %}
 </select>
 {% else %}

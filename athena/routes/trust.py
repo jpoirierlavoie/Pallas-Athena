@@ -389,6 +389,10 @@ def _factures_emises(dossier_id) -> list[dict]:
         out.append({
             "invoice_number": inv.get("invoice_number", ""),
             "solde_fmt": format_cents_fr(solde),
+            # Shown but NOT selectable — the transaction refuses a fee
+            # payment on an invoice that imputes a provision (D14), and a
+            # silently missing invoice would leave the lawyer guessing why.
+            "provision": int(inv.get("retainer_applied") or 0) > 0,
         })
     return out
 

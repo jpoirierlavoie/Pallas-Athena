@@ -347,6 +347,13 @@ _ABORT_MESSAGES = {
     "facture_non_émise": "La facture doit être émise (envoyée ou en retard).",
     "facture_autre_dossier": "La facture appartient à un autre dossier.",
     "virement_excède_facture": "Le montant dépasse le solde dû de la facture.",
+    "facture_avec_provision": (
+        "Cette facture impute déjà une provision : son solde dû en est net. Un "
+        "paiement d'honoraires tiré du fidéicommis compterait la provision deux "
+        "fois. Refaites la facture sans provision (annulez-la, puis émettez-en "
+        "une nouvelle) : c'est le paiement d'honoraires tiré du fidéicommis qui "
+        "en tiendra lieu."
+    ),
     "facture_requise": (
         "Un paiement d'honoraires doit être appuyé par une facture : indiquez une "
         "facture de Pallas Athéna ou, pour une facture antérieure, son numéro externe."
@@ -957,6 +964,15 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
                     raise _TxnAbort("facture_non_émise")
                 if invoice.get("dossier_id") != dossier_id:
                     raise _TxnAbort("facture_autre_dossier")
+                # A provision imputed BY THE INVOICE (retainer_applied) is
+                # the client's trust money, already deducted from
+                # amount_due: withdrawing it again as a fee payment counts
+                # it twice — silently whenever the residual due still
+                # covers the transfer (the CLAUDE.md « provision » gotcha;
+                # the reprise refused these invoices at both stages).
+                # D14, 2026-09-25: refused outright, web and connector alike.
+                if int(invoice.get("retainer_applied") or 0) > 0:
+                    raise _TxnAbort("facture_avec_provision")
                 # The LIVE balance (amount_due − amount_paid), not the frozen
                 # amount_due: since Lot P recorded payments exist, a transfer
                 # capped on the frozen figure could take MORE of the client's

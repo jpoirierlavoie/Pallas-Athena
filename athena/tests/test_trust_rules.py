@@ -22,6 +22,9 @@ antérieur (vérifié en le rétablissant, commit par commit) :
    la recette citée (``cash_receipt_id``), le seuil portant sur la somme
    reçue et non sur le remboursement. Un paiement d'honoraires ne sort que
    par chèque ou par virement.
+4. **Pas de paiement d'honoraires sur une facture à provision** (D14). Son
+   solde dû est déjà net de la provision : un paiement tiré du fidéicommis
+   la compterait deux fois.
 
 Le banc est le faux Firestore partagé (``tests/_fake_firestore.py``) : le
 client, ses transactions et la boucle de reprise de ``transactional`` sont
@@ -656,3 +659,85 @@ def test_le_formulaire_dit_chaque_refus_des_especes(fake, client, monkeypatch):
     assert page.status_code == 400
     assert "art. 58" in page.get_data(as_text=True)
     assert len(fake.peek_collection("trust_transactions")) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. Aucun paiement d'honoraires sur une facture qui impute une provision
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _invoice(fake, inv_id: str = "inv1", **over) -> None:
+    doc = {
+        "id": inv_id, "invoice_number": "2026-F040", "dossier_id": "dos1",
+        "status": "envoyée", "total": 114975, "retainer_applied": 0,
+        "amount_due": 114975, "amount_paid": 0,
+    }
+    doc.update(over)
+    fake.seed(f"invoices/{inv_id}", doc)
+
+
+def _fee_payment(amount: int = 50000, **over):
+    fields = dict(direction="déboursé", purpose="virement_honoraires",
+                  method="chèque", amount=amount, date=_d(2026, 9, 5),
+                  invoice_id="inv1")
+    fields.update(over)
+    return trust.create_transaction(_entry(**fields))
+
+
+def test_un_paiement_d_honoraires_sur_une_facture_a_provision_est_refuse(fake, monkeypatch):
+    """Le solde dû de la facture est déjà NET de la provision : la retirer du
+    fidéicommis comme paiement d'honoraires la compterait deux fois — en
+    silence tant que le dû résiduel couvre le virement (ici : 50 000 ¢ sur
+    un dû de 64 975 ¢, sous toutes les autres gardes)."""
+    _evening(monkeypatch)
+    _funded(day=2)
+    _invoice(fake, retainer_applied=50000, amount_due=64975)
+    before = fake.peek("dossiers/dos1")
+    _, errs = _fee_payment(50000)
+    assert errs == [trust._ABORT_MESSAGES["facture_avec_provision"]]
+    assert "compterait la provision deux fois" in errs[0]
+    assert fake.peek("dossiers/dos1") == before
+    assert len(fake.peek_collection("trust_transactions")) == 1
+
+
+def test_une_facture_sans_provision_reste_payable(fake, monkeypatch):
+    _evening(monkeypatch)
+    _funded(day=2)
+    _invoice(fake)
+    entry, errs = _fee_payment(50000)
+    assert errs == [] and entry["invoice_id"] == "inv1"
+
+
+def test_le_selecteur_montre_la_facture_a_provision_sans_l_offrir(fake, client, monkeypatch):
+    _evening(monkeypatch)
+    _invoice(fake, "inv1", invoice_number="2026-F041")
+    _invoice(fake, "inv2", invoice_number="2026-F042",
+             retainer_applied=50000, amount_due=64975)
+    rows = trust_routes._factures_emises("dos1")
+    by_number = {r["invoice_number"]: r for r in rows}
+    assert by_number["2026-F041"]["provision"] is False
+    assert by_number["2026-F042"]["provision"] is True
+    html = client.get("/fideicommis/factures-du-dossier?dossier_id=dos1").get_data(as_text=True)
+    assert '<option value="2026-F041"' in html
+    assert '<option value="2026-F042"' not in html
+    assert "2026-F042 — provision imputée : non payable du fidéicommis" in html
+
+
+def test_le_formulaire_dit_le_refus_de_la_provision(fake, client, monkeypatch):
+    _evening(monkeypatch)
+    _funded(day=2)
+    _invoice(fake, retainer_applied=50000, amount_due=64975)
+    fake.seed("admin_accounts/ops1", {
+        "id": "ops1", "name": "Opérations", "account_type": "opérations",
+        "status": "actif", "ledger_balance": 0,
+    })
+    resp = client.post("/fideicommis/", data={
+        "account_id": "acc1", "direction": "déboursé", "amount": "500,00",
+        "purpose": "virement_honoraires", "method": "chèque", "counterparty": "Me X",
+        "dossier_id": "dos1", "client_id": "c1", "date": "2026-09-05",
+        "invoice_number": "2026-F040", "admin_account_id": "ops1",
+    })
+    assert resp.status_code == 400
+    assert "compterait la provision deux fois" in resp.get_data(as_text=True)
+    assert len(fake.peek_collection("trust_transactions")) == 1
+    assert fake.peek_collection("admin_transactions") == {}
