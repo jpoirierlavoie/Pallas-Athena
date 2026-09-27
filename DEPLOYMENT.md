@@ -1642,6 +1642,37 @@ Notes:
      the copy becomes the target dossier's théorie only if that dossier has
      none (otherwise an ordinary undated note), and the original's deletion
      now leaves its snapshot. Nothing to do unless you move one.
+- **Bookings rendez-vous, the hearing form and the task form (lot 1a, L4):**
+  no index (the Bookings reads are `source == "bookings"` equalities, served
+  by the automatic index), no data migration, no cron change. What changes on
+  screen, to announce: the Réception « Rendez-vous » tab shows « Lecture des
+  rendez-vous impossible » instead of « Aucun rendez-vous à confirmer » when
+  Firestore cannot be read; « Confirmer » and « Refuser » from a page older
+  than the rendez-vous (the Bookings sync moves a pending slot silently) are
+  refused with a red banner — and a stale « Refuser » no longer touches
+  Outlook; a rendez-vous the client cancelled can no longer be confirmed;
+  « Lier à … » links the contact whose address matches the requester's
+  exactly, whatever the page posted; the hearing edit form refuses a save
+  over a change made elsewhere (amber banner); the task form refuses an
+  unknown dossier instead of filing the task under « Général ». The
+  connector gains nothing yet (`decide_rendez_vous` is lot 1b). Check once
+  after the deploy, with a Bookings reservation booked under an ALIAS
+  address (never a real client — a refusal emails the booker):
+  1. *A refusal still cancels the meeting, once.* Wait for the reservation
+     to appear in Réception (≤ 10 min), click « Refuser »: the green banner
+     says the Outlook meeting was cancelled and the client notified, the
+     alias receives the cancellation (the comment Graph forwards is the
+     fixed « Rendez-vous refusé par le juriste. »), and the card is gone.
+     Click « Refuser » again from a second tab left open on the old page:
+     « Ce rendez-vous était déjà refusé. », and no second cancellation
+     email.
+  2. *A stale page never reaches Outlook.* Book a second reservation, open
+     Réception, then MOVE that reservation in Bookings (or in Outlook) and
+     wait for the next sync (the card's time changes on a reload). From the
+     tab still showing the OLD time, click « Refuser »: red banner
+     « Ce rendez-vous a changé… Outlook n'a pas été touché », no email.
+     Reload and confirm it: it enters the calendar and the phone (a
+     `REPORT sync-collection` of `/dav/general/` returns a new token).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
