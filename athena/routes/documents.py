@@ -7,6 +7,7 @@ import logging
 import uuid
 
 from firebase_admin import storage
+from google.cloud.exceptions import NotFound
 from flask import (
     Blueprint,
     jsonify,
@@ -314,6 +315,21 @@ def document_upload_form() -> str:
     )
 
 
+def _upload_metadata(donnees: dict) -> dict:
+    """The upload form's metadata, as both upload endpoints read it — one
+    builder, so the session-open check judges exactly what the
+    finalization will write (the folder aside: it needs a read)."""
+    tags_raw = str(donnees.get("tags") or "")
+    return {
+        "category": str(donnees.get("category") or "autre").strip(),
+        "tags": [t.strip() for t in tags_raw.split(",") if t.strip()],
+        "display_name": str(donnees.get("display_name") or "").strip(),
+        # The document's OWN date (PV, jugement…) — optional, distinct
+        # from the upload instant.
+        "document_date": str(donnees.get("document_date") or "").strip(),
+    }
+
+
 @documents_bp.route("/api/televersement", methods=["POST"])
 @login_required
 def api_televersement():
@@ -343,6 +359,18 @@ def api_televersement():
         return jsonify({
             "erreur": "Chaque fichier doit faire entre 1 octet et 200 Mo."
         }), 422
+    # Les métadonnées du formulaire sont jugées ICI, avant qu'un octet ne
+    # parte (lot 2A, revue de T1). Le modèle refuse désormais un nom
+    # d'affichage ou des étiquettes que `sanitize` retoucherait ; refusés
+    # seulement à la finalisation, ils coûtaient le téléversement entier
+    # (jusqu'à 200 Mo), le staging étant consommé sur refus. Une page
+    # d'avant ce contrôle n'envoie pas ces clés : leurs défauts passent, et
+    # la finalisation, qui refait le même jugement, reste l'autorité.
+    erreurs_meta = document_model.record_metadata_errors(
+        _upload_metadata(donnees)
+    )
+    if erreurs_meta:
+        return jsonify({"erreur": " ".join(erreurs_meta)}), 422
 
     # Type déclaré par le navigateur — indicatif seulement (l'ingestion
     # re-sniffe les octets) ; réduit à l'ASCII imprimable.
@@ -420,21 +448,28 @@ def api_finaliser():
     try:
         blob = storage.bucket().blob(objet)
         blob.reload()
+    except NotFound:
+        # The same finalization, arriving AGAIN after the first one
+        # consumed the staging object (a request replayed by the network).
+        # The reserved id says whether the upload landed: answer with its
+        # document rather than « introuvable », which would invite the
+        # lawyer to upload the file a second time.
+        deja = get_document(document_id)
+        if deja and deja.get("dossier_id") == dossier_id:
+            return jsonify({"ok": True, "document_id": deja["id"]})
+        logger.exception("documents: staging blob reload failed")
+        return jsonify({
+            "erreur": "Fichier téléversé introuvable. Réessayez."
+        }), 422
     except Exception:
         logger.exception("documents: staging blob reload failed")
         return jsonify({
             "erreur": "Fichier téléversé introuvable. Réessayez."
         }), 422
 
-    tags_raw = str(donnees.get("tags") or "")
     metadata = {
-        "category": str(donnees.get("category") or "autre").strip(),
-        "tags": [t.strip() for t in tags_raw.split(",") if t.strip()],
-        "display_name": str(donnees.get("display_name") or "").strip(),
+        **_upload_metadata(donnees),
         "folder_id": str(donnees.get("folder_id") or "").strip() or None,
-        # The document's OWN date (PV, jugement…) — optional, distinct
-        # from the upload instant.
-        "document_date": str(donnees.get("document_date") or "").strip(),
     }
     document, errors = ingest_blob_as_document(
         blob,

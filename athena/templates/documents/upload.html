@@ -283,9 +283,15 @@ function uploadForm() {
         f.statut = 'en cours'; f.pct = 0; f.motif = '';
         const ouverture = await fetch('{{ url_for('documents.api_televersement') }}', {
           method: 'POST', headers: this.entetes(),
+          // Les métadonnées partent AVEC l'ouverture : le serveur les juge
+          // avant le premier octet, pas après 200 Mo (lot 2A, revue de T1).
           body: JSON.stringify({
             name: f.name, size: f.size,
             content_type: f.file.type || 'application/octet-stream',
+            category: this.champ('category'),
+            tags: this.champ('tags'),
+            display_name: this.champ('display_name'),
+            document_date: this.champ('document_date'),
           }),
         });
         const donnees = await ouverture.json().catch(function () { return {}; });

@@ -44,6 +44,7 @@ from models.document import (
     ALLOWED_EXTENSIONS,
     CATEGORY_CHOICES,
     CATEGORY_LABELS,
+    DISPLAY_NAME_MAX,
     MAX_FILE_SIZE,
     PORTAL_FOLDER_NAME,
     build_attachment_disposition,
@@ -747,6 +748,21 @@ def telecharger(inv_id: str, batch: str, seq: int):
     return redirect(url)
 
 
+def _nom_par_defaut(nom_client: str) -> str:
+    """The display name a versed file gets when the lawyer typed none.
+
+    The client's file name, made acceptable to the model rather than
+    refused there (the lawyer never typed it): NO chevron at all — a single
+    ``sanitize`` pass can leave one (« <<a>b> » → « <b> »), which the model
+    would then refuse — and bounded to its ceiling. Control characters are
+    dropped like the storage name's.
+    """
+    propre = "".join(
+        ch for ch in nom_client if ch not in "<>" and ch.isprintable()
+    ).strip()
+    return propre[:DISPLAY_NAME_MAX].strip()
+
+
 @reception_bp.post("/lots/<inv_id>/<batch>/fichiers/<int:seq>/verser")
 @login_required
 def verser(inv_id: str, batch: str, seq: int):
@@ -827,12 +843,14 @@ def verser(inv_id: str, batch: str, seq: int):
     folder = get_or_create_folder(dossier_reel, PORTAL_FOLDER_NAME)
     metadata = {
         "category": request.form.get("category", "autre"),
-        # The client's own file name is a DERIVED default, not something the
-        # lawyer typed: it is bounded here, because the model refuses (never
-        # mangles) a name over its ceiling or carrying « < … > » (lot 2A).
-        "display_name": sanitize(request.form.get("display_name", ""),
-                                 max_length=200)
-        or sanitize(entree.get("name", ""), max_length=200),
+        # What the LAWYER typed goes to the model as typed: it refuses
+        # (never mangles) a name over its ceiling or carrying « < … > »
+        # (lot 2A), and the refusal comes back on the banner with the file
+        # still in quarantine. Pre-sanitizing it here stripped and cut it in
+        # silence (revue de T1). The CLIENT's own file name is only a
+        # derived default, so it is made acceptable instead (_nom_par_defaut).
+        "display_name": (request.form.get("display_name") or "").strip()
+        or _nom_par_defaut(entree.get("name") or ""),
         "tags": ["portail"],
         "folder_id": folder["id"] if folder else None,
     }

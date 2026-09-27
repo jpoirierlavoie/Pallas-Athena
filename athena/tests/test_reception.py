@@ -619,3 +619,61 @@ def test_inviter_submit_ignore_partie_inconnue(web, monkeypatch):
     # id non résolu → ignoré, jamais bloquant ; le nom manuel subsiste.
     assert captures["partie_id"] is None
     assert captures["client_name"] == "Jean"
+
+
+# ── Revue adversariale de T1 (2026-09-27) — chacun échoue sur 04722bb ────
+
+
+def _verser_capture(web, monkeypatch, *, nom_client="piece.pdf",
+                    nom_tape=""):
+    manifeste = _manifeste(_entree(sha512=_SHA_PDF, name=nom_client))
+    monkeypatch.setattr(rc, "_lire_manifeste", lambda i, b: manifeste)
+    monkeypatch.setattr(rc, "_ecrire_manifeste", lambda i, b, m: None)
+    bucket = mock.Mock()
+    bucket.blob.return_value = _blob_quarantaine()
+    monkeypatch.setattr(rc, "_bucket", lambda: bucket)
+    monkeypatch.setattr(rc, "get_dossier",
+                        lambda d: _dossier() if d == "d1" else None)
+    monkeypatch.setattr(rc, "get_or_create_folder",
+                        lambda d, nom: {"id": "f-portail", "name": nom})
+    ingest = mock.Mock(return_value=({"id": "doc9"}, []))
+    monkeypatch.setattr(rc, "ingest_blob_as_document", ingest)
+    web.post("/reception/lots/inv1/b1/fichiers/0/verser",
+             data={"dossier_id": "d1", "category": "pièce",
+                   "display_name": nom_tape})
+    return ingest.call_args.args[4]
+
+
+def test_verser_ne_retouche_jamais_le_nom_que_le_juriste_a_tape(
+    web, monkeypatch,
+):
+    """The route sanitized the lawyer's typed name — chevrons stripped, the
+    text cut at 200 — so the model's refusal (lot 2A) never ran and the
+    name was altered in silence. It now reaches the model as typed."""
+    metadata = _verser_capture(web, monkeypatch,
+                               nom_tape="  Pièce <A> du client  ")
+    assert metadata["display_name"] == "Pièce <A> du client"
+
+
+def test_verser_nom_du_client_par_defaut_toujours_acceptable(
+    web, monkeypatch,
+):
+    """The CLIENT's file name is a derived default: one sanitize pass could
+    leave a chevron run (« <<a>b> » → « <b> »), which the model refuses —
+    a versement refused for a name the lawyer never typed."""
+    from models import document as document_model
+
+    metadata = _verser_capture(web, monkeypatch,
+                               nom_client="<<a>b> rapport.pdf")
+    nom = metadata["display_name"]
+    assert "<" not in nom and ">" not in nom and nom
+    assert document_model.record_metadata_errors(
+        {"display_name": nom}) == []
+
+
+def test_verser_nom_du_client_borne_au_plafond_du_modele(web, monkeypatch):
+    from models import document as document_model
+
+    metadata = _verser_capture(web, monkeypatch,
+                               nom_client="n" * 400 + ".pdf")
+    assert len(metadata["display_name"]) == document_model.DISPLAY_NAME_MAX

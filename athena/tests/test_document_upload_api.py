@@ -285,3 +285,112 @@ def test_finaliser_refuse_un_segment_qui_n_est_pas_un_identifiant(
     assert reponse.get_json()["erreur"] == "Requête invalide."
     bucket.blob.assert_not_called()
     ingest.assert_not_called()
+
+
+# ── Revue adversariale de T1 (2026-09-27) — chacun échoue sur 04722bb ────
+#
+# The model now REFUSES a display name or tags that `sanitize` would alter
+# (lot 2A, T1). Judged only at finalization, such a refusal cost the whole
+# upload — up to 200 MB, the staging object being consumed on refusal. The
+# same judgement now runs at session open, before the first byte.
+
+
+@pytest.mark.parametrize("champs, fragment", [
+    ({"display_name": "Lettre <brouillon>"}, "chevrons"),
+    ({"display_name": "x" * 301}, "300 caractères"),
+    ({"tags": ", ".join(f"t{i}" for i in range(31))}, "30 au plus"),
+    ({"category": "inventée"}, "Catégorie invalide"),
+])
+def test_televersement_juge_les_metadonnees_avant_le_premier_octet(
+    web, monkeypatch, champs, fragment,
+):
+    bucket = mock.Mock()
+    monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
+
+    reponse = _post(web, "/documents/api/televersement", {
+        "name": "piece.pdf", "size": 150 * 1024 * 1024, **champs})
+
+    assert reponse.status_code == 422
+    assert fragment in reponse.get_json()["erreur"]
+    bucket.blob.assert_not_called()          # aucune session, aucun octet
+
+
+def test_televersement_accepte_des_metadonnees_valides(web, monkeypatch):
+    blob = mock.Mock()
+    blob.create_resumable_upload_session.return_value = "https://up.example/s2"
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
+
+    reponse = _post(web, "/documents/api/televersement", {
+        "name": "piece.pdf", "size": 100, "display_name": "Lettre a < b",
+        "tags": "urgent, client", "category": "pièce",
+        "document_date": "2026-07-15"})
+
+    assert reponse.status_code == 200
+    assert reponse.get_json()["url"] == "https://up.example/s2"
+
+
+def test_le_formulaire_envoie_les_metadonnees_a_l_ouverture():
+    """Source pin: the page sends the four fields with the session-open
+    request, not only with the finalization — otherwise the check above
+    never sees them."""
+    chemin = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "templates", "documents", "upload.html",
+    )
+    html = open(chemin, encoding="utf-8").read()
+    ouverture = html[html.index("documents.api_televersement"):
+                     html.index("documents.api_finaliser')")]
+    for champ in ("category", "tags", "display_name", "document_date"):
+        assert f"{champ}: this.champ('{champ}')" in ouverture, champ
+
+
+def _staging_consomme(monkeypatch):
+    from google.cloud.exceptions import NotFound
+
+    blob = mock.MagicMock()
+    blob.reload.side_effect = NotFound("404 staging")
+    bucket = mock.Mock()
+    bucket.blob.return_value = blob
+    monkeypatch.setattr(rd.storage, "bucket", lambda: bucket)
+    monkeypatch.setattr(rd, "get_dossier",
+                        lambda d: {"id": d, "file_number": "2026-001"})
+    ingest = mock.Mock()
+    monkeypatch.setattr(rd, "ingest_blob_as_document", ingest)
+    return ingest
+
+
+def test_finaliser_rejoue_rend_le_document_deja_verse(web, monkeypatch):
+    """The same finalization arriving AGAIN after the first consumed the
+    staging object: the reserved id says it landed. « Introuvable » would
+    have invited a second upload of the same file."""
+    ingest = _staging_consomme(monkeypatch)
+    monkeypatch.setattr(rd, "get_document",
+                        lambda i: {"id": i, "dossier_id": "d1"}
+                        if i == _SEG else None)
+
+    reponse = _post(web, "/documents/api/finaliser", {
+        "objet": f"staging/u1/{_SEG}/piece.pdf", "name": "piece.pdf",
+        "dossier_id": "d1"})
+
+    assert reponse.status_code == 200
+    assert reponse.get_json() == {"ok": True, "document_id": _SEG}
+    ingest.assert_not_called()
+
+
+@pytest.mark.parametrize("existant", [None, {"dossier_id": "autre"}])
+def test_finaliser_sans_document_verse_reste_introuvable(
+    web, monkeypatch, existant,
+):
+    _staging_consomme(monkeypatch)
+    monkeypatch.setattr(
+        rd, "get_document",
+        lambda i: {"id": i, **existant} if existant else None)
+
+    reponse = _post(web, "/documents/api/finaliser", {
+        "objet": f"staging/u1/{_SEG}/piece.pdf", "name": "piece.pdf",
+        "dossier_id": "d1"})
+
+    assert reponse.status_code == 422
+    assert "introuvable" in reponse.get_json()["erreur"]
