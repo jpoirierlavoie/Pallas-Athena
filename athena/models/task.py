@@ -380,8 +380,10 @@ STEP_LINK_CHECK_FAILED = (
 )
 
 
-def _step_link_refusal(task_id: str, dossier_id: Optional[str]) -> Optional[str]:
-    """Why this task may not change dossier, or None.
+def _step_link_refusal(
+    task_id: str, dossier_id: Optional[str], new_dossier_id: Optional[str]
+) -> Optional[str]:
+    """Why this task may not move from *dossier_id* to *new_dossier_id*.
 
     A task linked from a protocol step stays in that protocol's dossier:
     moved away, the step no longer finds it where the connector's reports
@@ -389,6 +391,12 @@ def _step_link_refusal(task_id: str, dossier_id: Optional[str]) -> Optional[str]
     the phone (a jtx move) and the connector, so it lives here. The lookup
     is STRICT: an unreadable store refuses the move rather than assuming
     « not linked ».
+
+    The one move it allows is the move BACK: a task moved away before the
+    rule existed (the firm-wide fallback of ``find_step_for_task`` still
+    finds its step) may return to its protocol's dossier — refusing that
+    too would strand it for ever, under a message saying it « stays » in
+    a dossier it is not in.
     """
     from models.protocol import find_step_for_task
 
@@ -398,6 +406,8 @@ def _step_link_refusal(task_id: str, dossier_id: Optional[str]) -> Optional[str]
         log_unexpected("task move: step link lookup failed", task_id=task_id)
         return STEP_LINK_CHECK_FAILED
     if found is None:
+        return None
+    if (found[0].get("dossier_id") or "") == (new_dossier_id or ""):
         return None
     log_protocol_event("task_move_refused", found[0].get("id", ""),
                        outcome="refused", reason="tache_liee",
@@ -430,7 +440,8 @@ def update_task(
     if "dossier_id" in data and (
         (data.get("dossier_id") or "") != (existing.get("dossier_id") or "")
     ):
-        refusal = _step_link_refusal(task_id, existing.get("dossier_id"))
+        refusal = _step_link_refusal(task_id, existing.get("dossier_id"),
+                                     data.get("dossier_id"))
         if refusal:
             return None, [refusal]
 

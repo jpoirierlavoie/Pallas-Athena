@@ -266,6 +266,28 @@ def test_a_step_of_a_closed_protocol_still_keeps_its_task(fake):
     assert fake.peek("tasks/t1")["dossier_id"] == "d1"
 
 
+def test_a_task_moved_away_before_the_rule_may_come_back(fake):
+    """Revue L2 : une tâche déplacée AVANT la règle (son étape la retrouve
+    par le repli des protocoles actifs du cabinet) pouvait être refusée
+    même pour REVENIR dans le dossier de son protocole — bloquée à jamais,
+    sous un message affirmant qu'elle « reste » dans un dossier où elle
+    n'est pas. Le retour est permis ; tout autre départ reste refusé."""
+    _protocol(fake, dossier_id="d1")
+    _step(fake, "s1", task="t1")
+    _task(fake, "t1", dossier_id="d2")
+    fake.seed("dossiers/d3", {"id": "d3", "file_number": "2026-003",
+                              "title": "T c. L", "status": "actif"})
+    _doc, errors = task_model.update_task("t1", {"dossier_id": "d3"})
+    assert errors == [task_model.STEP_LINKED_MOVE_REFUSED]
+    assert fake.peek("tasks/t1")["dossier_id"] == "d2"
+    _doc, errors = task_model.update_task("t1", {"dossier_id": "d1"})
+    assert errors == []
+    assert fake.peek("tasks/t1")["dossier_id"] == "d1"
+    # Home again, the rule holds as for any linked task.
+    _doc, errors = task_model.update_task("t1", {"dossier_id": "d2"})
+    assert errors == [task_model.STEP_LINKED_MOVE_REFUSED]
+
+
 def test_an_unlinked_task_moves_freely(fake):
     _protocol(fake)
     _step(fake, "s1", task="t-other")
