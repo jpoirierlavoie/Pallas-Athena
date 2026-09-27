@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, time, timezone, timedelta
 from typing import NamedTuple, Optional
 from urllib.parse import urlsplit
 
@@ -645,19 +645,206 @@ def list_hearings_window(
         return []
 
 
+# ── Update: which keys a caller may name ────────────────────────────────
+# update_hearing merges {**existing, **data} and writes the WHOLE document,
+# so until 2026-09-26 it honoured any key a caller sent: an « id » corrupted
+# the id FIELD (the document path stayed put), a « serie_id »: "" silently
+# detached an occurrence, a « confirmation » re-gated or un-gated DAV/MCP
+# visibility, a « graph_* » broke the Bookings reconciliation. The keys are
+# now in two closed sets.
+#
+# CONTENT — what a generic edit names: the web form, the DAV PUT (every key
+# vevent_to_hearing can produce, minus the UID the route drops), a future
+# connector edit. Anything else in ``data`` is REFUSED, naming the field.
+UPDATE_FIELDS = frozenset({
+    "dossier_id", "dossier_file_number", "dossier_title",
+    "title", "hearing_type",
+    "start_datetime", "end_datetime", "all_day",
+    "location", "court", "judge", "notes",
+    "reminder_minutes", "status", "modalite", "conference_uri",
+})
+# SERVER-OWNED — set only by the machine paths that own them, through the
+# explicit ``server_fields=`` keyword: the Bookings sync and Réception (the
+# confirmation gate, the graph_* reconciliation keys, the requester, the
+# divergence, the linked partie) and unlink_hearing (the series link). A
+# dictionary relayed from a form or a VEVENT can never reach them.
+SERVER_FIELDS = frozenset({
+    "source", "confirmation",
+    "graph_event_id", "graph_ical_uid", "graph_last_modified",
+    "client_email", "client_nom", "bookings_divergence", "partie_id",
+    "serie_id", "serie_rule",
+})
+# Neither set: id, vevent_uid, dav_href (recomputed on every update),
+# created_at/created_via, updated_at/updated_via, etag — identity and stamps
+# belong to the model alone.
+
+_SLOT_FIELDS = frozenset({"start_datetime", "end_datetime", "all_day"})
+_DEFAULT_DURATION = timedelta(hours=1)
+_ONE_DAY = timedelta(days=1)
+_ONE_MICROSECOND = timedelta(microseconds=1)
+
+
+def update_key_errors(
+    data: dict, server_fields: Optional[dict] = None
+) -> list[str]:
+    """French refusals for keys ``update_hearing`` will not honour.
+
+    Pure. Exposed so a caller's test can prove it splits its payload the
+    way the model requires, without a Firestore round trip. Names the field
+    (a code identifier, never user content).
+    """
+    errors = [
+        f"Le champ « {key} » ne peut pas être modifié par cette voie."
+        for key in sorted(k for k in data if k not in UPDATE_FIELDS)
+    ]
+    errors += [
+        f"Le champ « {key} » n'appartient pas aux champs réservés au serveur."
+        for key in sorted(
+            k for k in (server_fields or {}) if k not in SERVER_FIELDS
+        )
+    ]
+    return errors
+
+
+def _is_utc_midnight(dt: datetime) -> bool:
+    u = _to_utc(dt)
+    return (u.hour, u.minute, u.second, u.microsecond) == (0, 0, 0, 0)
+
+
+def _utc_midnight(day: date) -> datetime:
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+
+
+def _as_all_day_start(dt: datetime) -> datetime:
+    """A start in the all-day convention: midnight UTC of its civil day.
+
+    A value already at midnight UTC IS the convention (the web form's
+    date input, a VEVENT DATE) and is kept. Anything else is a timed
+    instant, whose civil day is the MONTRÉAL one — reading ``.date()`` on
+    the UTC value would put a 21 h event on the next day.
+    """
+    if _is_utc_midnight(dt):
+        return _to_utc(dt)
+    return _utc_midnight(to_mtl(dt).date())
+
+
+def _as_all_day_end(dt: datetime) -> datetime:
+    """The exclusive all-day end a TIMED instant stands for.
+
+    Called only for a named end that is not already at midnight UTC — a
+    midnight-UTC end is the convention itself (the exclusive DTEND a VEVENT
+    DATE carries, the web form's date input) and is never rewritten. A
+    timed instant covers its Montréal civil day, so the exclusive end is
+    the NEXT midnight — measured just before the instant, so an end at 00 h
+    Montréal does not claim the following day.
+    """
+    return _utc_midnight(to_mtl(dt - _ONE_MICROSECOND).date() + _ONE_DAY)
+
+
+def _renormalize_slot(existing: dict, data: dict, merged: dict) -> None:
+    """Keep the stored slot coherent with what an update named. Mutates
+    *merged*.
+
+    The merge used to fill ``end_datetime`` only when it was MISSING, so a
+    rescheduled start kept the OLD absolute end: moving a one-hour meeting
+    to the previous day silently made it a 25-hour event (``_validate``
+    only checks end > start), on the phone, in Outlook and in the web.
+    And flipping « toute la journée » reinterpreted the stored instant in
+    the other convention, landing the event on the wrong civil day.
+
+    The rules, by what *data* names (presence, never truthiness):
+
+    * nothing about the slot → left exactly as stored;
+    * a start WITHOUT an end key → the stored DURATION is kept (the stored
+      end is in the same convention as the stored start, so an all-day
+      span stays a span and a one-hour meeting stays one hour);
+    * « all_day » flipped with no start named → the stored start is
+      carried to the other convention on the SAME civil day (all-day:
+      midnight UTC of its Montréal day; timed: 00 h Montréal of the stored
+      date), and an unnamed end falls back to the default slot — a timed
+      duration means nothing across the conventions, nor an exclusive
+      all-day end;
+    * a start named for an all-day event keeps the convention: midnight
+      UTC is taken as it stands, any other instant lands on its Montréal
+      civil day; a named timed end becomes the exclusive midnight after its
+      civil day (RFC 5545 §3.8.2.2 — what hearing_to_vevent and the Outlook
+      mirror both read);
+    * an end named as ``None``, or still missing → start + 1 h, as create
+      does (hearing_to_vevent serializes that as a one-day all-day event).
+    """
+    start = merged.get("start_datetime")
+    if not (_SLOT_FIELDS & data.keys()) or not isinstance(start, datetime):
+        if isinstance(start, datetime) and not merged.get("end_datetime"):
+            merged["end_datetime"] = start + _DEFAULT_DURATION
+        return
+
+    all_day = bool(merged.get("all_day"))
+    toggled = all_day != bool(existing.get("all_day"))
+    start_named = "start_datetime" in data
+    end_named = "end_datetime" in data
+
+    if all_day and start_named:
+        start = _as_all_day_start(start)
+    elif all_day and toggled:
+        # Timed → all-day: the stored value is certainly an INSTANT, even
+        # one that happens to sit at midnight UTC (20 h in Montréal in
+        # summer), so its day is the Montréal one — never the UTC date.
+        start = _utc_midnight(to_mtl(start).date())
+    elif toggled and not start_named:
+        # All-day → timed: the stored value is a civil DATE at midnight UTC.
+        # Read as an instant it is 19 h/20 h the previous Montréal day.
+        start = mtl_to_utc(datetime.combine(_to_utc(start).date(), time()))
+    merged["start_datetime"] = start
+
+    end = merged.get("end_datetime") if end_named else None
+    if end_named:
+        if all_day and isinstance(end, datetime) and not _is_utc_midnight(end):
+            end = _as_all_day_end(end)
+            if end <= start:
+                end = None  # a timed end inside the start's own day
+    elif not toggled:
+        old_start = existing.get("start_datetime")
+        old_end = existing.get("end_datetime")
+        if (
+            isinstance(old_start, datetime)
+            and isinstance(old_end, datetime)
+            and old_end > old_start
+        ):
+            end = start + (old_end - old_start)
+    merged["end_datetime"] = end or start + _DEFAULT_DURATION
+
+
 def update_hearing(
-    hearing_id: str, data: dict
+    hearing_id: str,
+    data: dict,
+    *,
+    server_fields: Optional[dict] = None,
 ) -> tuple[Optional[dict], list[str]]:
-    """Update an existing hearing. Returns (updated_doc, errors)."""
+    """Update an existing hearing. Returns (updated_doc, errors).
+
+    *data* may name only :data:`UPDATE_FIELDS`; the server-owned
+    :data:`SERVER_FIELDS` travel through ``server_fields`` (keyword-only).
+    Any other key — ``id``, ``vevent_uid``, a stamp — is refused before
+    anything is read. Presence-merge as before: a key present overwrites,
+    an absent key survives. The slot is renormalized (see
+    :func:`_renormalize_slot`) and ``dav_href`` recomputed.
+    """
+    errors = update_key_errors(data, server_fields)
+    if errors:
+        return None, errors
+
     existing = get_hearing(hearing_id)
     if not existing:
         return None, ["Audience introuvable."]
 
-    merged = {**existing, **_sanitize_data(data)}
-
-    # Auto-set end_datetime if not provided
-    if merged.get("start_datetime") and not merged.get("end_datetime"):
-        merged["end_datetime"] = merged["start_datetime"] + timedelta(hours=1)
+    merged = {
+        **existing,
+        **_sanitize_data(data),
+        **_sanitize_data(server_fields or {}),
+    }
+    _renormalize_slot(existing, data, merged)
+    merged["id"] = hearing_id
+    merged["dav_href"] = dav_href_for(merged.get("dossier_id", ""), hearing_id)
 
     errors = _validate(merged)
     if errors:
@@ -947,7 +1134,9 @@ def unlink_hearing(hearing_id: str) -> tuple[Optional[dict], list[str]]:
         return None, ["Audience introuvable."]
     if not existing.get("serie_id"):
         return None, ["Cette audience ne fait pas partie d'une série."]
-    return update_hearing(hearing_id, {"serie_id": "", "serie_rule": None})
+    return update_hearing(
+        hearing_id, {}, server_fields={"serie_id": "", "serie_rule": None}
+    )
 
 
 # ── Summary ──────────────────────────────────────────────────────────────

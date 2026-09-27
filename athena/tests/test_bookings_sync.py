@@ -56,9 +56,19 @@ class _Spy:
         self.creates.append(data)
         return dict(data, id="h-new"), []
 
-    def update(self, hid, data):
-        self.updates.append((hid, data))
-        return {"id": hid, **data}, []
+    def update(self, hid, data, *, server_fields=None):
+        # Widened 2026-09-26 (lot 0b, B4): update_hearing refuses a
+        # server-owned key in the content dict, so the sync splits its
+        # payload. The spy runs the MODEL's own key check — a caller that
+        # put graph_*/confirmation back in `data` fails here, not in
+        # production — then records the merged payload the model would
+        # write, so the assertions below keep reading one dict.
+        assert h.update_key_errors(data, server_fields) == [], (
+            data, server_fields,
+        )
+        merged = {**data, **(server_fields or {})}
+        self.updates.append((hid, merged))
+        return {"id": hid, **merged}, []
 
 
 @pytest.fixture()

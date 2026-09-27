@@ -24,6 +24,7 @@ from flask import Flask  # noqa: E402
 
 with mock.patch("google.cloud.firestore.Client"):
     import routes.reception as reception
+    import models.hearing as hearing_model
 
 # NB: Config is reached through `reception.Config` (monkeypatched there), so a
 # direct import would be unused.
@@ -45,11 +46,25 @@ def client():
 
 
 def _spy_update(monkeypatch):
+    """Record each update as the ONE merged payload the model would write.
+
+    Widened 2026-09-26 (lot 0b, B4): update_hearing now takes the
+    server-owned keys (confirmation, partie_id, bookings_divergence)
+    through ``server_fields=`` and refuses them in the content dict. The
+    spy runs the model's own key check, so a route that put them back in
+    ``data`` fails here instead of in production.
+    """
     calls = []
-    monkeypatch.setattr(
-        reception, "update_hearing",
-        lambda i, d: (calls.append((i, d)) or ({"id": i, **d}, [])),
-    )
+
+    def _update(i, d, *, server_fields=None):
+        assert hearing_model.update_key_errors(d, server_fields) == [], (
+            d, server_fields,
+        )
+        merged = {**d, **(server_fields or {})}
+        calls.append((i, merged))
+        return {"id": i, **merged}, []
+
+    monkeypatch.setattr(reception, "update_hearing", _update)
     return calls
 
 

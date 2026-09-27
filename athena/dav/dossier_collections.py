@@ -809,6 +809,11 @@ def _put_hearing(
             record_tombstone(old_scope, resource_id)
             bump_ctag(old_scope)
 
+        # The UID names an EXISTING resource and never changes (RFC 4791
+        # no-uid-conflict); update_hearing refuses it among the fields a
+        # payload may set, so it is dropped here rather than 422-ing every
+        # phone edit.
+        data.pop("vevent_uid", None)
         updated, errors = update_hearing(resource_id, data)
         if errors:
             logger.warning(

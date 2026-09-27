@@ -117,6 +117,9 @@ def _rapprocher_modif(existing: dict, r: dict, counters: dict) -> None:
 
     conf = existing.get("confirmation") or ""
     if conf == "à_confirmer":
+        # The slot and its wording are content; the requester and the
+        # graph_* reconciliation keys are server-owned and travel apart
+        # (models.hearing.update_hearing refuses them in the content dict).
         hearing.update_hearing(existing["id"], {
             "title": r["title"],
             "start_datetime": r["start_datetime"],
@@ -124,6 +127,7 @@ def _rapprocher_modif(existing: dict, r: dict, counters: dict) -> None:
             "location": r["location"],
             "modalite": r["modalite"],
             "conference_uri": r["conference_uri"],
+        }, server_fields={
             "client_email": r["client_email"],
             "client_nom": r["client_nom"],
             "graph_event_id": r["graph_event_id"],
@@ -146,13 +150,16 @@ def _rapprocher_modif(existing: dict, r: dict, counters: dict) -> None:
             "nouveau_fin": new_end.isoformat() if new_end else "",
             "vu": False,
         }
-        hearing.update_hearing(existing["id"], {
+        hearing.update_hearing(existing["id"], {}, server_fields={
             "bookings_divergence": div,
             "graph_last_modified": incoming_mod,
         })
         counters["divergences"] += 1
     else:
-        hearing.update_hearing(existing["id"], {"graph_last_modified": incoming_mod})
+        hearing.update_hearing(
+            existing["id"], {},
+            server_fields={"graph_last_modified": incoming_mod},
+        )
 
 
 def _appliquer_annulation(existing: dict, counters: dict) -> None:
@@ -164,7 +171,10 @@ def _appliquer_annulation(existing: dict, counters: dict) -> None:
     """
     conf = existing.get("confirmation") or ""
     if conf == "à_confirmer":
-        hearing.update_hearing(existing["id"], {"confirmation": "annulée_client"})
+        hearing.update_hearing(
+            existing["id"], {},
+            server_fields={"confirmation": "annulée_client"},
+        )
         counters["annules"] += 1
     elif conf == "":  # confirmed
         current = existing.get("bookings_divergence") or {}
@@ -175,7 +185,9 @@ def _appliquer_annulation(existing: dict, counters: dict) -> None:
             "detail": "Le client a annulé le rendez-vous côté Bookings.",
             "vu": False,
         }
-        hearing.update_hearing(existing["id"], {"bookings_divergence": div})
+        hearing.update_hearing(
+            existing["id"], {}, server_fields={"bookings_divergence": div}
+        )
         counters["annules"] += 1
 
 

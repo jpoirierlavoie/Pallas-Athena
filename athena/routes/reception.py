@@ -1030,6 +1030,8 @@ def rdv_confirmer(hid: str):
     if hearing is None:
         return _rediriger(erreur="Rendez-vous introuvable.", onglet="rdv")
 
+    # Both keys are server-owned: they travel through server_fields, never
+    # through the content payload (models.hearing.SERVER_FIELDS).
     data = {"confirmation": ""}
     partie_liee = False
     if request.form.get("lier") == "on":
@@ -1038,7 +1040,7 @@ def rdv_confirmer(hid: str):
             data["partie_id"] = pid
             partie_liee = True
 
-    _updated, errors = update_hearing(hid, data)
+    _updated, errors = update_hearing(hid, {}, server_fields=data)
     if errors:
         return _rediriger(erreur=" ".join(errors), onglet="rdv")
 
@@ -1118,7 +1120,9 @@ def rdv_refuser(hid: str):
                 "côté Outlook — annulez-la manuellement pour prévenir le client."
             )
 
-    _updated, errors = update_hearing(hid, {"confirmation": "refusée"})
+    _updated, errors = update_hearing(
+        hid, {}, server_fields={"confirmation": "refusée"}
+    )
     if errors:
         return _rediriger(erreur=" ".join(errors), onglet="rdv")
     # No CTag bump — a refused/pending import was never in DAV.
@@ -1148,14 +1152,18 @@ def rdv_divergence(hid: str, action: str):
     if not div.get("motif"):
         return _rediriger(erreur="Aucune divergence à traiter.", onglet="rdv")
 
+    # The slot is content (data); the divergence and the confirmation gate
+    # are server-owned (server) — models.hearing.update_hearing refuses the
+    # other split.
     data: dict = {}
+    server: dict = {}
     bump = False
     tombstone = False
     if action == "appliquer" and div.get("motif") == "modifié_côté_client":
         # Apply the client's new slot from the stashed values, then clear. The
         # event STAYS live (still confirmed) — an update, not a removal, so no
         # tombstone.
-        data["bookings_divergence"] = None
+        server["bookings_divergence"] = None
         try:
             if div.get("nouveau_debut"):
                 data["start_datetime"] = datetime.fromisoformat(div["nouveau_debut"])
@@ -1169,15 +1177,15 @@ def rdv_divergence(hid: str, action: str):
         # bump alone does NOT propagate the removal — DavX5 keeps its local
         # copy unless a tombstone reports the 404 (RFC 6578). Record one, or
         # the cancelled meeting lingers on the device forever.
-        data["confirmation"] = "annulée_client"
-        data["bookings_divergence"] = None
+        server["confirmation"] = "annulée_client"
+        server["bookings_divergence"] = None
         bump = True
         tombstone = True
     else:
         # ignorer / conserver → dismiss the alert (vu=True), keep the event.
-        data["bookings_divergence"] = {**div, "vu": True}
+        server["bookings_divergence"] = {**div, "vu": True}
 
-    _updated, errors = update_hearing(hid, data)
+    _updated, errors = update_hearing(hid, data, server_fields=server)
     if errors:
         return _rediriger(erreur=" ".join(errors), onglet="rdv")
     sync_name = collection_for(hearing.get("dossier_id"))
