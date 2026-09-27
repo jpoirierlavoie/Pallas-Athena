@@ -1524,6 +1524,43 @@ def _reopen_blocker(protocol: dict, protocol_id: str, txn) -> Optional[_Refusal]
     return None
 
 
+def step_reopen_refusal(
+    protocol: dict, step: dict
+) -> Optional[tuple[str, str]]:
+    """Why reopening *step* (to « à_venir ») would be refused now, or ``None``.
+
+    Returns ``(message, reason)`` — the French refusal and the machine
+    reason :func:`set_step_status` would log. It is the READ-ONLY twin of
+    that function's gate for a reopen, the same rules in the same order:
+    a step already open needs nothing; an « actif » protocol accepts; a
+    protocol the CASCADE closed (``closed_by == CLOSED_BY_AUTO``) accepts
+    provided no other protocol of the dossier is actif (read fail-closed);
+    anything else — suspended, or completed on purpose or before
+    ``closed_by`` existed — refuses.
+
+    For a caller that must decide BEFORE its own write whether the cascade
+    can follow: the connector's ``reopen_task`` (through
+    ``models/task.update_task(require_step_follow=True)``), which must not
+    leave a task reopened beside a step that stays « complété » — the very
+    state ``set_step_status`` refuses to create. It is a prediction, read
+    outside any transaction: ``set_step_status`` re-decides in its own and
+    stays the authority. *protocol* is the protocol's document (without
+    steps, as ``find_step_for_task`` returns it).
+    """
+    if _step_already_at(step.get("status", ""), "à_venir"):
+        return None
+    status = protocol.get("status", "")
+    if status == "actif":
+        return None
+    if not (status == "complété"
+            and protocol.get("closed_by") == CLOSED_BY_AUTO):
+        return _inactive_protocol_error(status), "protocole_non_actif"
+    blocker = _reopen_blocker(protocol, protocol.get("id", ""), None)
+    if blocker is not None:
+        return blocker.messages[0], blocker.reason
+    return None
+
+
 def set_step_status(
     protocol_id: str,
     step_id: str,

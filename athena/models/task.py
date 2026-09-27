@@ -290,6 +290,22 @@ def list_tasks(
         return []
 
 
+def list_tasks_for_note(note_id: str) -> list[dict]:
+    """The tasks whose ``related_note_id`` is *note_id* — STRICT.
+
+    A read failure PROPAGATES: the caller (the connector's ``update_note``,
+    reporting the tasks a note move leaves behind in the old collection)
+    must be able to tell « none » from « could not tell ». One equality
+    query on a single field — the automatic index, no composite.
+    """
+    if not note_id:
+        return []
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("related_note_id", "==", note_id)
+    )
+    return [snap.to_dict() or {} for snap in query.stream()]
+
+
 def sort_tasks_for_display(tasks: list[dict]) -> list[dict]:
     """Sort tasks for list views: dated before undated, soonest due first,
     then by priority (haute < normale < basse)."""
@@ -415,8 +431,57 @@ def _step_link_refusal(
     return STEP_LINKED_MOVE_REFUSED
 
 
+REOPEN_STEP_BLOCKED = (
+    "Rouvrir cette tâche rouvrirait aussi l'étape de protocole qui la lie, "
+    "et cette étape ne peut pas être rouverte pour l'instant : {reason}"
+)
+
+
+def reopen_step_refusal(
+    task_id: str, dossier_id: Optional[str]
+) -> Optional[str]:
+    """Why reopening this task would leave its protocol step behind, or ``None``.
+
+    A reopened task sends its step back to « à_venir »
+    (:func:`_sync_protocol_step` → ``protocol.set_step_status``). When that
+    step is « complété » inside a protocol that cannot reopen — suspended,
+    closed on purpose, or auto-closed while another protocol of the dossier
+    is actif — the step refuses AFTER the task has committed, and the task
+    ends open beside a completed step. That is tolerated for the web form
+    and the phone (lot 1a: the refusal is logged, the lawyer sees both
+    pages); a caller that must not create it asks here first
+    (``update_task(require_step_follow=True)``).
+
+    STRICT: an unreadable store refuses (:data:`STEP_LINK_CHECK_FAILED`)
+    rather than assuming « not linked ». Logs ``task_reopen_refused`` (ids
+    and the step's machine reason) when it refuses.
+    """
+    from models.protocol import find_step_for_task, step_reopen_refusal
+
+    try:
+        found = find_step_for_task(task_id, dossier_id)
+    except Exception:
+        log_unexpected("task reopen: step link lookup failed", task_id=task_id)
+        return STEP_LINK_CHECK_FAILED
+    if found is None:
+        return None
+    protocol, step = found
+    refusal = step_reopen_refusal(protocol, step)
+    if refusal is None:
+        return None
+    message, reason = refusal
+    log_protocol_event("task_reopen_refused", protocol.get("id", ""),
+                       outcome="refused", reason=reason,
+                       task_id=task_id, step_id=step.get("id", ""))
+    return REOPEN_STEP_BLOCKED.format(reason=message)
+
+
 def update_task(
-    task_id: str, data: dict, *, expected_etag: Optional[str] = None
+    task_id: str,
+    data: dict,
+    *,
+    expected_etag: Optional[str] = None,
+    require_step_follow: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing task. Returns (updated_doc, errors).
 
@@ -431,6 +496,13 @@ def update_task(
     task is linked from a protocol step (:func:`_step_link_refusal`, looked
     up strictly) — the web form, a jtx move and the connector alike. A
     status change then carries to that step (:func:`_sync_protocol_step`).
+
+    ``require_step_follow`` (keyword-only, default ``False``): when a status
+    change would REOPEN the linked step (the new status is à_faire or
+    en_cours), refuse BEFORE writing if that step cannot follow
+    (:func:`reopen_step_refusal`). The connector's ``reopen_task`` passes
+    it; the web form, the checkbox and the DAV PUT do not — their reopen
+    commits and the step's refusal is logged, as since lot 1a.
     """
     existing = get_task(task_id)
     if not existing:
@@ -462,6 +534,15 @@ def update_task(
     errors = _validate(merged)
     if errors:
         return None, errors
+
+    if (
+        require_step_follow
+        and merged.get("status", "") != existing.get("status", "")
+        and _STEP_TARGET_FOR_TASK.get(merged.get("status", "")) == "à_venir"
+    ):
+        refusal = reopen_step_refusal(task_id, merged.get("dossier_id"))
+        if refusal:
+            return None, [refusal]
 
     now = datetime.now(timezone.utc)
     provenance.stamp_update(merged, now)

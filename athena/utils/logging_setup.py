@@ -684,6 +684,7 @@ ProtocolEvent = Literal[
     "protocol_refused",
     "linked_tasks_created",
     "task_move_refused",
+    "task_reopen_refused",
     "protocol_updated",
     "step_added",
     "step_updated",
