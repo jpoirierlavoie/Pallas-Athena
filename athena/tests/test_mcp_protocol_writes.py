@@ -800,3 +800,24 @@ def test_a_cs_suggestion_sent_back_unchanged_is_said_to_stay_one(fake):
         "deadline_date": "2099-03-15"})
     assert moved["date_confirmed_now"] is True
     assert not any("reste une SUGGESTION" in w for w in moved["warnings"])
+
+
+def test_the_status_cascade_bumps_the_collection_the_task_lives_in(fake):
+    """A linked task stored without a dossier (linked before lot 1a refused
+    moving one) lives in « Général ». The handler's own bump fell back, by
+    an `or`, to the PROTOCOL's dossier — a collection the task is not in —
+    and reported that bump as the task's sync."""
+    fake.seed("dav_sync/general", {"ctag": "g0", "sync_token": "g0",
+                                   "updated_at": WHEN})
+    _protocol(fake)
+    _step(fake, "s1", task="t1")
+    _step(fake, "s2", order=2)
+    _task(fake, "t1", dossier_id=None)
+    fake.reset_logs()
+    payload = handlers.update_protocol_step({
+        "protocol_id": P, "step_id": "s1", "status": "complété"})
+    assert payload["status_change"]["task_sync"] == "synced"
+    assert fake.peek("tasks/t1")["status"] == "terminée"
+    assert payload["ctag_bumped"] is True
+    assert fake.peek("dav_sync/general")["ctag"] != "g0"
+    assert _ctag(fake) == "c0"          # the protocol's dossier: untouched

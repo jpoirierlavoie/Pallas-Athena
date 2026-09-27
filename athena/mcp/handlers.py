@@ -7991,9 +7991,16 @@ def _set_protocol_step_status(args: dict, protocol: dict, step: dict) -> dict:
         )
     bumped = False
     if outcome.get("task_sync") == "synced":
+        # The collection the TASK lives in — « Général » included (a task
+        # stored without a dossier, linked before lot 1a refused moving a
+        # linked task): the model's own bump used the task's, and an `or`
+        # falling back to the protocol's dossier would bump — and report —
+        # a collection the task is not in. The protocol's dossier only when
+        # the task could not be read at all.
+        known = task_after or task_before
         bumped = _bump_task_collection(
-            (task_after or task_before or {}).get("dossier_id")
-            or protocol.get("dossier_id"))
+            known.get("dossier_id") if known is not None
+            else protocol.get("dossier_id"))
     return _step_edit_payload(
         protocol, step, result, changed=["status"], date_confirmed_now=False,
         linked=_no_linked_task(result), status_change=change, wrote=True,
