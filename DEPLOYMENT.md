@@ -1654,7 +1654,12 @@ Notes:
   « Lier à … » links the contact whose address matches the requester's
   exactly, whatever the page posted; the hearing edit form refuses a save
   over a change made elsewhere (amber banner); the task form refuses an
-  unknown dossier instead of filing the task under « Général ». The
+  unknown dossier instead of filing the task under « Général »; and
+  refusing a pending rendez-vous while Outlook cannot be reached at all
+  (Graph unconfigured, or no event id) now shows a RED banner — « la
+  réunion Outlook n'a PAS été annulée … annulez-la manuellement » —
+  where it used to print a green « Rendez-vous refusé. » with the client
+  still booked. The
   connector gains nothing yet (`decide_rendez_vous` is lot 1b). Check once
   after the deploy, with a Bookings reservation booked under an ALIAS
   address (never a real client — a refusal emails the booker):
