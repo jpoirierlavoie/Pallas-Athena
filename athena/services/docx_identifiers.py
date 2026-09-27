@@ -23,11 +23,16 @@ What it collects:
 What it leaves out: the FIRM's own details (``utils.cabinet.cabinet_dict``).
 The firm appears on every letter it sends — its name, address, phone and
 email are the letterhead — so an identifier whose words all occur inside
-one of the firm's own strings is dropped; otherwise the lawyer's own record,
-often linked as a party's lawyer, would flag every template ever
-registered. The residue, stated: a client whose surname is part of the
-firm's name (a « Lavoie » at « Poirier Lavoie, avocat ») loses the
-surname-alone check — never the full name, which is not inside the firm's.
+one of the firm's own strings is dropped. And the firm's own CONTACT record
+— the lawyer's, often linked as a client's lawyer, recognised by its full
+name being exactly the firm's lawyer's (or, for an organisation, the firm's
+name) — contributes nothing at all: its bar number, its « Nom Prénom » form
+and a personal cell are not in the letterhead strings, yet they are the
+firm's, not the client's, and they would otherwise flag every procedure
+whose signature block carries them. The residue, stated: a client whose
+surname is part of the firm's name (a « Lavoie » at « Poirier Lavoie,
+avocat ») loses the surname-alone check — never the full name, which is not
+inside the firm's.
 
 Fail-CLOSED. The parties are read with ``partie.get_parties_bulk``, which
 fails open to ``{}`` (and simply omits an id that does not exist); here any
@@ -153,6 +158,18 @@ def _firm_forms(firm: Mapping) -> list[str]:
     return [f for f in forms if f]
 
 
+def _is_firm_record(partie: Mapping, firm: Mapping) -> bool:
+    """The firm's OWN contact record: an individual whose full name (no
+    civility) is exactly the firm's lawyer's, or an organisation named
+    exactly as the firm. Exact equality of the folded words — a client who
+    merely shares a surname with the firm is never mistaken for it."""
+    if partie.get("type") == "organization":
+        own = fold_key(_text(firm.get("organisation")))
+        return bool(own) and fold_key(_text(partie.get("organization_name"))) == own
+    own = fold_key(_strip_civility_prefix(_text(firm.get("nom"))))
+    return bool(own) and fold_key(_text(_nom_bare(dict(partie)))) == own
+
+
 def _entries(dossier: Mapping) -> list[Mapping]:
     out: list[Mapping] = []
     for key in ("clients", "opposing_parties"):
@@ -226,13 +243,17 @@ def dossier_identifiers(
         forms += _name_forms(entry.get("name"))
         forms += _name_forms(entry.get("avocat_name"))
 
+    firm = firm if firm is not None else cabinet_dict()
     parties = _load(_linked_ids(dossier, entries))
-    mandataires = _load(_mandataire_ids(parties.values(), set(parties)))
-    for partie in list(parties.values()) + list(mandataires.values()):
-        forms += _party_forms(partie)
+    # The firm's own record is still READ (a missing one still refuses):
+    # it is skipped, never trusted absent.
+    kept = [p for p in parties.values() if not _is_firm_record(p, firm)]
+    mandataires = _load(_mandataire_ids(kept, set(parties)))
+    for partie in kept + list(mandataires.values()):
+        if not _is_firm_record(partie, firm):
+            forms += _party_forms(partie)
 
-    firm_keys = [fold_key(f) for f in _firm_forms(
-        firm if firm is not None else cabinet_dict())]
+    firm_keys = [fold_key(f) for f in _firm_forms(firm)]
     kept: dict[tuple, str] = {}
     for form in forms:
         key = fold_key(form)

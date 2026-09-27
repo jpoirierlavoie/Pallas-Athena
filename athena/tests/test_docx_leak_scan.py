@@ -682,6 +682,7 @@ C1 = "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e61"
 C2 = "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e62"
 AV = "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e63"
 MD = "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e64"
+OC = "0f8b6c1e-3a2d-4c5b-9e7f-1a2b3c4d5e65"
 FIRM = {"nom": "Me Jason Poirier Lavoie", "organisation": "Poirier Lavoie, avocat",
         "adresse_civique": "1 rue du Cabinet, bureau 2", "code_postal": "H3A 1A1",
         "telephone": "(514) 737-2525", "telecopieur": "", "courriel":
@@ -695,9 +696,16 @@ PARTIES = {
     C2: {"id": C2, "type": "organization", "organization_name": "Béton Nord inc.",
          "trade_name": "Béton Nord", "company_neq": "1234567890",
          "work_address_street": ["12 boul. Industriel", "local 3"]},
+    # The FIRM's own lawyer, linked as the client's lawyer: his bar number,
+    # his personal cell and « Nom Prénom » are not letterhead strings.
     AV: {"id": AV, "type": "individual", "prefix": "Me", "first_name": "Jason",
          "last_name": "Poirier Lavoie", "phone_work": "+15147372525",
+         "phone_cell": "+15145550000",
          "email_work": "reception@poirierlavoie.ca", "bar_number": "123456"},
+    # Opposing counsel, with a record of his own.
+    OC: {"id": OC, "type": "individual", "prefix": "Me", "first_name": "Paul",
+         "last_name": "Gagnon", "bar_number": "987654",
+         "email_work": "pgagnon@example.com"},
     MD: {"id": MD, "type": "individual", "prefix": "Mme", "first_name": "Luce",
          "last_name": "Roy"},
 }
@@ -707,8 +715,8 @@ DOSSIER = {
     "clients": [{"id": C1, "name": "M. Jean Tremblay", "roles": ["demandeur"],
                  "avocat_id": AV, "avocat_name": "Me Jason Poirier Lavoie"}],
     "opposing_parties": [{"id": C2, "name": "Béton Nord inc.", "roles": [],
-                          "avocat_id": "", "avocat_name": "Me Paul Gagnon"}],
-    "client_ids": [C1], "opposing_party_ids": [C2], "avocat_ids": [AV],
+                          "avocat_id": OC, "avocat_name": "Me Paul Gagnon"}],
+    "client_ids": [C1], "opposing_party_ids": [C2], "avocat_ids": [AV, OC],
 }
 
 
@@ -734,13 +742,13 @@ def test_the_identifiers_cover_the_dossier_its_parties_and_their_mandataires(mon
         "(514) 555-1234", "450 rue Sainte-Catherine Ouest", "H2X 1Y4", "H2X1Y4",
         "Béton Nord inc.", "Béton Nord", "1234567890",
         "12 boul. Industriel local 3",          # a list component, joined
-        "Me Paul Gagnon", "Paul Gagnon",        # a snapshot name only
+        "Me Paul Gagnon", "Paul Gagnon",        # opposing counsel
+        "Gagnon Paul", "987654", "pgagnon@example.com",
         "Mme Luce Roy", "Luce Roy",             # the client's mandataire
-        "123456",
     ):
         assert scan.fold_key(expected) in keys, expected
     # the mandataire was read in a SECOND bulk call, the linked ones first
-    assert sorted(calls[0]) == sorted([C1, C2, AV]) and calls[1] == [MD]
+    assert sorted(calls[0]) == sorted([C1, C2, AV, OC]) and calls[1] == [MD]
     # a three-letter surname alone is too common to check
     assert scan.fold_key("Roy") not in keys
 
@@ -758,6 +766,39 @@ def test_the_firm_s_own_details_are_left_out():
         assert scan.fold_key(firm_value) not in keys, firm_value
     # ...while a value that merely SHARES a word with the firm stays
     assert scan.fold_key("Tremblay c. Béton Nord") in keys
+
+
+def test_the_firm_s_own_contact_record_contributes_nothing():
+    """Revue de T5 — the lawyer's OWN record (linked as the client's lawyer)
+    used to leak its bar number, its personal cell and « Poirier Lavoie
+    Jason » into the list: not letterhead strings, so the firm exclusion
+    missed them, and every procedure whose signature block carries the bar
+    number would have been refused. The record is still READ (a missing one
+    still refuses), then skipped — recognised by its EXACT full name."""
+    fake, calls = _bulk(PARTIES)
+    with mock.patch.object(ids, "get_parties_bulk", fake):
+        found = ids.dossier_identifiers(DOSSIER, firm=FIRM)
+    keys = {scan.fold_key(f) for f in found}
+    for own in ("123456", "Poirier Lavoie Jason", "+15145550000",
+                "(514) 555-0000"):
+        assert scan.fold_key(own) not in keys, own
+    assert AV in calls[0]                       # read, never assumed
+    # opposing counsel's bar number, a lawyer's too, stays
+    assert scan.fold_key("987654") in keys
+    # a client merely SHARING the firm lawyer's surname is not the firm
+    homonym = {**PARTIES, C1: {**PARTIES[C1], "first_name": "Marc",
+                               "last_name": "Poirier Lavoie"}}
+    fake, _calls = _bulk(homonym)
+    with mock.patch.object(ids, "get_parties_bulk", fake):
+        keys = {scan.fold_key(f) for f in ids.dossier_identifiers(DOSSIER, firm=FIRM)}
+    assert scan.fold_key("Marc Poirier Lavoie") in keys
+    assert scan.fold_key("jean.tremblay@example.com") in keys
+    # and a firm record that cannot be read still refuses
+    missing = {k: v for k, v in PARTIES.items() if k != AV}
+    fake, _calls = _bulk(missing)
+    with mock.patch.object(ids, "get_parties_bulk", fake):
+        with pytest.raises(ids.IdentifiersUnavailable):
+            ids.dossier_identifiers(DOSSIER, firm=FIRM)
 
 
 def test_the_firm_defaults_to_the_cabinet_profile(monkeypatch):
