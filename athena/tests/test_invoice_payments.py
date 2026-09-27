@@ -58,7 +58,11 @@ class _Ref:
         return _Snap(self.store.get("doc"))
 
     def update(self, updates):
-        """Le chemin NON transactionnel — update_status écrit par ici."""
+        """Le chemin NON transactionnel. update_status y écrivait jusqu'au
+        2026-09-26 ; il écrit désormais par _Txn.update, comme
+        record_payment. Gardé : une écriture hors transaction qui
+        reviendrait remplirait quand même `applied`, et les assertions
+        « un refus a écrit » la verraient."""
         self.store.setdefault("applied", []).append(updates)
         self.store["doc"] = {**self.store["doc"], **updates}
 
