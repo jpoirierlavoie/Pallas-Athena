@@ -1484,8 +1484,18 @@ def create_inter_dossier_transfer(
 
         from_book = dict(from_dossier.get("trust_balance_by_client") or {})
         from_cleared = dict(from_dossier.get("trust_cleared_by_client") or {})
-        to_book = dict(to_dossier.get("trust_balance_by_client") or {})
-        to_cleared = dict(to_dossier.get("trust_cleared_by_client") or {})
+        # Between two clients of the SAME dossier there is ONE dossier doc:
+        # the two sides must share one pair of maps and ONE update. Two
+        # updates of the same document apply in order, and the second —
+        # built from the same original read — wrote the source client's
+        # balance back unchanged: the destination gained, the source never
+        # lost, and money appeared in the register.
+        same_dossier = from_dossier_id == to_dossier_id
+        if same_dossier:
+            to_book, to_cleared = from_book, from_cleared
+        else:
+            to_book = dict(to_dossier.get("trust_balance_by_client") or {})
+            to_cleared = dict(to_dossier.get("trust_cleared_by_client") or {})
 
         # Overdraft control on the source leg (a déboursé).
         ok, _reason = check_disbursement_allowed(int(from_cleared.get(from_client_id, 0)), amount)
@@ -1536,20 +1546,21 @@ def create_inter_dossier_transfer(
 
         from_book[from_client_id] = from_book_after
         from_cleared[from_client_id] = from_cleared_after
+        to_book[to_client_id] = to_book_after
+        to_cleared[to_client_id] = to_cleared_after
         txn.update(from_ref, {
             "trust_balance_by_client": from_book,
             "trust_cleared_by_client": from_cleared,
             "trust_balance": sum(int(v) for v in from_book.values()),
             **provenance.update_fields(now),
         })
-        to_book[to_client_id] = to_book_after
-        to_cleared[to_client_id] = to_cleared_after
-        txn.update(to_ref, {
-            "trust_balance_by_client": to_book,
-            "trust_cleared_by_client": to_cleared,
-            "trust_balance": sum(int(v) for v in to_book.values()),
-            **provenance.update_fields(now),
-        })
+        if not same_dossier:
+            txn.update(to_ref, {
+                "trust_balance_by_client": to_book,
+                "trust_cleared_by_client": to_cleared,
+                "trust_balance": sum(int(v) for v in to_book.values()),
+                **provenance.update_fields(now),
+            })
         result["legs"] = [leg_a, leg_b]
 
     try:

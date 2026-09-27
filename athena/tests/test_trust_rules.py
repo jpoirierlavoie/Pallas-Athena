@@ -25,6 +25,9 @@ antérieur (vérifié en le rétablissant, commit par commit) :
 4. **Pas de paiement d'honoraires sur une facture à provision** (D14). Son
    solde dû est déjà net de la provision : un paiement tiré du fidéicommis
    la compterait deux fois.
+5. **Un virement entre deux clients d'un même dossier** débite enfin la
+   source : les deux côtés partagent un seul document et une seule mise à
+   jour.
 
 Le banc est le faux Firestore partagé (``tests/_fake_firestore.py``) : le
 client, ses transactions et la boucle de reprise de ``transactional`` sont
@@ -741,3 +744,35 @@ def test_le_formulaire_dit_le_refus_de_la_provision(fake, client, monkeypatch):
     assert "compterait la provision deux fois" in resp.get_data(as_text=True)
     assert len(fake.peek_collection("trust_transactions")) == 1
     assert fake.peek_collection("admin_transactions") == {}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Un virement entre deux clients d'UN MÊME dossier garde ses deux côtés
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _second_client(fake) -> None:
+    doc = fake.peek("dossiers/dos1")
+    doc["client_ids"] = ["c1", "c3"]
+    doc["clients"] = [{"id": "c1", "name": "Jean Tremblay"},
+                      {"id": "c3", "name": "Luc Tremblay"}]
+    fake.seed("dossiers/dos1", doc)
+
+
+def test_un_virement_entre_deux_clients_du_meme_dossier_debite_la_source(fake, monkeypatch):
+    """Deux mises à jour du MÊME document dans une transaction s'appliquent
+    dans l'ordre : la seconde, bâtie sur la même lecture, réécrivait le
+    solde de la source inchangé. La destination gagnait, la source ne
+    perdait rien — de l'argent apparaissait au registre."""
+    _evening(monkeypatch)
+    _second_client(fake)
+    _funded(amount=100000, day=2)
+    _, errs = trust.create_inter_dossier_transfer(
+        "acc1", "dos1", "c1", "dos1", "c3", 40000, "instruction", "virement", ""
+    )
+    assert errs == []
+    doc = fake.peek("dossiers/dos1")
+    assert doc["trust_balance_by_client"] == {"c1": 60000, "c3": 40000}
+    assert doc["trust_cleared_by_client"] == {"c1": 60000, "c3": 40000}
+    assert doc["trust_balance"] == 100000
+    assert fake.peek("trust_accounts/acc1")["book_balance"] == 100000
