@@ -766,6 +766,20 @@ def test_the_concurrency_guard_catches_a_reader_without_an_etag_and_a_result_wit
 # test_mcp_output_schemas. The closure over-approximates (it follows every
 # module-level name a function mentions), so it can only ever flag MORE
 # writers, never hide one.
+#
+# Two indirections the closure follows since lot 1b (L6), because the plan
+# routes the protocol tools through a SERVICE and their task writes happen
+# inside a MODEL:
+#
+# * a `from services import X as Y` binding: `Y.fn` is followed into
+#   `services/X.py`'s own closure, with that module's model aliases;
+# * a MODEL function that writes a DAV-exposed record from another model
+#   module (`models/protocol.create_linked_tasks` creates tasks,
+#   `set_step_status` cascades into one) counts as a mutator of that
+#   record — derived from the models' source (`model_dav_writers`), never
+#   listed. Without both, a protocol tool that syncs tasks would look like
+#   « a sync that does not exist », and one that forgot to report the sync
+#   would pass.
 
 _DAV_SERIALIZER = re.compile(r"^[a-z_]+_to_v(card|todo|event|journal)$")
 _MUTATOR_VERB = re.compile(
@@ -817,11 +831,37 @@ def module_index(source: str) -> tuple[dict, dict]:
     return defs, aliases
 
 
-def reach(defs: dict, aliases: dict, start: str) -> tuple[set, set]:
+def service_aliases_of(source: str) -> dict:
+    """`from services import X as Y` bindings of a source: {Y: X}."""
+    out: dict = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ImportFrom) and node.module == "services":
+            for alias in node.names:
+                out[alias.asname or alias.name] = alias.name
+    return out
+
+
+def _service_source(module: str, services: "dict | None") -> str:
+    if services is not None and module in services:
+        return services[module]
+    return (_PACKAGE / "services" / f"{module}.py").read_text(encoding="utf-8")
+
+
+def reach(defs: dict, aliases: dict, start: str, *,
+          service_aliases: "dict | None" = None,
+          services: "dict | None" = None,
+          _visited: "set | None" = None) -> tuple[set, set]:
     """Every module-level name *start* can reach, and every
-    `(models module, attribute)` referenced on the way."""
+    `(models module, attribute)` referenced on the way.
+
+    With *service_aliases*, a `Y.fn` on a service binding is followed into
+    that service module's own closure (its names and model attributes are
+    merged in); *services* maps a service module to its source (tests),
+    the disk otherwise."""
     names: set = set()
     model_attrs: set = set()
+    service_aliases = service_aliases or {}
+    visited = _visited if _visited is not None else set()
     stack, seen = [start], set()
     while stack:
         current = stack.pop()
@@ -837,20 +877,115 @@ def reach(defs: dict, aliases: dict, start: str) -> tuple[set, set]:
                   and isinstance(sub.value, ast.Name)
                   and sub.value.id in aliases):
                 model_attrs.add((aliases[sub.value.id], sub.attr))
+            elif (isinstance(sub, ast.Attribute)
+                  and isinstance(sub.value, ast.Name)
+                  and sub.value.id in service_aliases):
+                module = service_aliases[sub.value.id]
+                if (module, sub.attr) in visited:
+                    continue
+                visited.add((module, sub.attr))
+                source = _service_source(module, services)
+                s_defs, s_aliases = module_index(source)
+                s_names, s_attrs = reach(
+                    s_defs, s_aliases, sub.attr,
+                    service_aliases=service_aliases_of(source),
+                    services=services, _visited=visited)
+                names |= s_names
+                model_attrs |= s_attrs
     return names, model_attrs
+
+
+def model_dav_writers(
+    exposed: set, sources: "dict | None" = None,
+) -> set:
+    """`(models module, function)` of every model function that writes a
+    DAV-exposed record OF ANOTHER MODULE — derived, transitively within its
+    module.
+
+    A function qualifies when it references a mutator (`_MUTATOR_VERB`)
+    bound from an exposed module: a bare name from `from models.<exposed>
+    import <mutator>` (module-level or, the house pattern for the
+    protocol↔task edge, inside the function), or `<alias>.<mutator>` on a
+    `from models import <exposed> as <alias>` binding. A function that
+    calls such a function of its own module qualifies too. *sources* maps a
+    module to its source (tests); the disk otherwise. An exposed module's
+    own functions are already mutators of their own record and are not
+    listed here."""
+    if sources is None:
+        sources = {
+            path.stem: path.read_text(encoding="utf-8")
+            for path in sorted((_PACKAGE / "models").glob("*.py"))
+        }
+    out: set = set()
+    for module, source in sorted(sources.items()):
+        if module in exposed:
+            continue
+        tree = ast.parse(source)
+        defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+        def _bindings(node) -> tuple[set, dict]:
+            bare, alias = set(), {}
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.ImportFrom):
+                    continue
+                mod = sub.module or ""
+                if mod.startswith("models.") and mod.split(".", 1)[1] in exposed:
+                    for a in sub.names:
+                        if _MUTATOR_VERB.match(a.name):
+                            bare.add(a.asname or a.name)
+                elif mod == "models":
+                    for a in sub.names:
+                        if a.name in exposed:
+                            alias[a.asname or a.name] = a.name
+            return bare, alias
+
+        top_bare, top_alias = _bindings(ast.Module(
+            body=[n for n in tree.body if isinstance(n, ast.ImportFrom)],
+            type_ignores=[]))
+        writers = set()
+        for name, fn in defs.items():
+            bare, alias = _bindings(fn)
+            bare |= top_bare
+            alias = {**top_alias, **alias}
+            for sub in ast.walk(fn):
+                if isinstance(sub, ast.Name) and sub.id in bare:
+                    writers.add(name)
+                elif (isinstance(sub, ast.Attribute)
+                      and isinstance(sub.value, ast.Name)
+                      and sub.value.id in alias
+                      and _MUTATOR_VERB.match(sub.attr)):
+                    writers.add(name)
+        changed = True
+        while changed:
+            changed = False
+            for name, fn in defs.items():
+                if name in writers:
+                    continue
+                if any(isinstance(sub, ast.Name) and sub.id in writers
+                       for sub in ast.walk(fn)):
+                    writers.add(name)
+                    changed = True
+        out |= {(module, name) for name in writers}
+    return out
 
 
 def dav_writer_violations(
     source: str, registry: dict, output_schemas: dict, write_tools,
-    exposed: set,
+    exposed: set, *, services: "dict | None" = None,
+    model_writers: "set | None" = None,
 ) -> list[str]:
     """Every breach of « DAV-writes ⇔ reports its CTag bump »."""
     defs, aliases = module_index(source)
+    svc = service_aliases_of(source)
+    if model_writers is None:
+        model_writers = model_dav_writers(exposed)
     out: list[str] = []
     for name in sorted(registry):
-        names, attrs = reach(defs, aliases, registry[name]["handler"])
+        names, attrs = reach(defs, aliases, registry[name]["handler"],
+                             service_aliases=svc, services=services)
         mutated = sorted(f"{m}.{a}" for m, a in attrs
-                         if m in exposed and _MUTATOR_VERB.match(a))
+                         if (m in exposed and _MUTATOR_VERB.match(a))
+                         or (m, a) in model_writers)
         is_write = name in write_tools
         declares = (_declares_property(output_schemas[name], "ctag_bumped")
                     and _declares_property(output_schemas[name], "dav_synced"))
@@ -971,6 +1106,108 @@ def _fixture_world():
                "phantom": reporting, "sneaky_read": plain}
     writes = frozenset({"good", "silent", "undeclared", "phantom"})
     return registry, outputs, writes
+
+
+def test_the_model_dav_writers_are_derived_and_not_vacuous():
+    """The protocol↔task edge: a protocol function that creates or
+    cascades into a task writes a DAV-exposed record, although the
+    protocol itself is not DAV-exposed."""
+    writers = model_dav_writers(dav_exposed_models())
+    assert {("protocol", "create_linked_tasks"),
+            ("protocol", "_sync_task_status"),
+            ("protocol", "set_step_status")} <= writers, writers
+    # A read, or a write of the protocol alone, never qualifies.
+    assert not {("protocol", "get_protocol"), ("protocol", "add_step"),
+                ("protocol", "update_step")} & writers
+
+
+_SERVICE_FIXTURE = '''
+from models import note as note_model
+from models import ledger as ledger_model
+
+
+def write_note(i):
+    return _inner(i)
+
+
+def _inner(i):
+    note_model.create_note({})
+
+
+def read_only(i):
+    return note_model.get_note(i)
+
+
+def via_model(i):
+    return ledger_model.cascade(i)
+'''
+
+_MODEL_FIXTURE = '''
+def cascade(i):
+    return _deeper(i)
+
+
+def _deeper(i):
+    from models.note import update_note
+    update_note(i, {})
+
+
+def harmless(i):
+    from models.note import get_note
+    return get_note(i)
+'''
+
+_SERVICE_HANDLERS = '''
+from services import svc as svc_service
+
+def bump_ctag(c): ...
+
+def via_service(args):
+    return run_write("via_service", args, lambda: _vs(args))
+
+def _vs(args):
+    svc_service.write_note(args)
+    bump_ctag("x")
+    return {}
+
+def via_service_silent(args):
+    return run_write("via_service_silent", args,
+                     lambda: svc_service.write_note(args))
+
+def via_service_read(args):
+    return run_write("via_service_read", args,
+                     lambda: svc_service.read_only(args))
+
+def via_model_cascade(args):
+    return run_write("via_model_cascade", args, lambda: _vm(args))
+
+def _vm(args):
+    svc_service.via_model(args)
+    bump_ctag("x")
+    return {}
+'''
+
+
+def test_the_dav_writer_guard_follows_services_and_model_cascades():
+    registry = {n: {"handler": n} for n in (
+        "via_service", "via_service_silent", "via_service_read",
+        "via_model_cascade")}
+    reporting = {"type": "object", "properties": {
+        "ctag_bumped": {"type": "boolean"}, "dav_synced": {"type": "boolean"}}}
+    plain = {"type": "object", "properties": {}}
+    outputs = {"via_service": reporting, "via_service_silent": plain,
+               "via_service_read": reporting, "via_model_cascade": reporting}
+    writers = model_dav_writers({"note"}, sources={"ledger": _MODEL_FIXTURE})
+    assert writers == {("ledger", "cascade"), ("ledger", "_deeper")}
+    found = dav_writer_violations(
+        _SERVICE_HANDLERS, registry, outputs, frozenset(registry), {"note"},
+        services={"svc": _SERVICE_FIXTURE}, model_writers=writers)
+    assert not any(v.startswith("via_service:") for v in found), found
+    assert not any(v.startswith("via_model_cascade:") for v in found), found
+    assert any(v.startswith("via_service_silent:") and "does not declare" in v
+               for v in found), found
+    assert any(v.startswith("via_service_read:")
+               and "a sync that does not exist" in v for v in found), found
 
 
 def test_the_dav_writer_guard_catches_what_it_claims():
