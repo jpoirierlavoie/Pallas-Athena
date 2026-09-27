@@ -27,7 +27,11 @@ from models.dav_ids import (  # noqa: F401 — RESOURCE_ID_MAX_LENGTH re-exporte
 from tz import MTL
 from security import sanitize
 from utils import deadlines, phases
-from utils.logging_setup import log_unexpected, sanitize_log_value
+from utils.logging_setup import (
+    log_protocol_event,
+    log_unexpected,
+    sanitize_log_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +370,41 @@ def list_urgent_tasks(cutoff: datetime, limit: int = 50) -> list[dict]:
         return []
 
 
+STEP_LINKED_MOVE_REFUSED = (
+    "Cette tâche est liée à une étape de protocole : elle reste dans le "
+    "dossier de ce protocole. Rien n'a été enregistré."
+)
+STEP_LINK_CHECK_FAILED = (
+    "Impossible de vérifier si cette tâche est liée à une étape de "
+    "protocole — réessayez. Rien n'a été enregistré."
+)
+
+
+def _step_link_refusal(task_id: str, dossier_id: Optional[str]) -> Optional[str]:
+    """Why this task may not change dossier, or None.
+
+    A task linked from a protocol step stays in that protocol's dossier:
+    moved away, the step no longer finds it where the connector's reports
+    look, while the cascade still drives it — one rule for the web form,
+    the phone (a jtx move) and the connector, so it lives here. The lookup
+    is STRICT: an unreadable store refuses the move rather than assuming
+    « not linked ».
+    """
+    from models.protocol import find_step_for_task
+
+    try:
+        found = find_step_for_task(task_id, dossier_id)
+    except Exception:
+        log_unexpected("task move: step link lookup failed", task_id=task_id)
+        return STEP_LINK_CHECK_FAILED
+    if found is None:
+        return None
+    log_protocol_event("task_move_refused", found[0].get("id", ""),
+                       outcome="refused", reason="tache_liee",
+                       task_id=task_id, step_id=found[1].get("id", ""))
+    return STEP_LINKED_MOVE_REFUSED
+
+
 def update_task(
     task_id: str, data: dict, *, expected_etag: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
@@ -377,12 +416,23 @@ def update_task(
     written — fires no protocol-step sync either. ``None`` (DAV PUT, the
     protocol cascade, a page rendered before its form carried an etag) is the
     unchanged single ``set()``.
+
+    A ``dossier_id`` that CHANGES the task's dossier is refused when the
+    task is linked from a protocol step (:func:`_step_link_refusal`, looked
+    up strictly) — the web form, a jtx move and the connector alike. A
+    status change then carries to that step (:func:`_sync_protocol_step`).
     """
     existing = get_task(task_id)
     if not existing:
         return None, ["Tâche introuvable."]
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR]
+    if "dossier_id" in data and (
+        (data.get("dossier_id") or "") != (existing.get("dossier_id") or "")
+    ):
+        refusal = _step_link_refusal(task_id, existing.get("dossier_id"))
+        if refusal:
+            return None, [refusal]
 
     merged = {**existing, **_sanitize_data(data)}
     phases.apply_sous_phase_default(merged)
@@ -432,7 +482,8 @@ def update_task(
     # Sync to protocol step if status changed
     new_status = merged.get("status", "")
     if old_status != new_status:
-        _sync_protocol_step(task_id, new_status)
+        _sync_protocol_step(task_id, new_status,
+                            dossier_id=merged.get("dossier_id"))
 
     return merged, []
 
@@ -520,61 +571,54 @@ def toggle_task_complete(task_id: str) -> tuple[Optional[dict], list[str]]:
 # ── Protocol sync ────────────────────────────────────────────────────────
 
 
-def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
-    """Sync a protocol step when its linked task status changes."""
-    if task_id in _SYNCING:
+# What a task's new status asks of the protocol step it is linked from.
+# « annulée » asks nothing: cancelling a task never touches its step (a
+# cancellation is not a completion, and it is not a reopening either).
+_STEP_TARGET_FOR_TASK = {
+    "terminée": "complété",
+    "à_faire": "à_venir",
+    "en_cours": "à_venir",
+}
+
+
+def _sync_protocol_step(
+    task_id: str, new_task_status: str, *, dossier_id: Optional[str] = None
+) -> None:
+    """Carry a task's new status to the protocol step it is linked from.
+
+    The step is found where the cascade can actually reach it
+    (``protocol.find_step_for_task``: every protocol of the task's dossier,
+    actif first, then the firm's actif protocols), and moved by
+    ``protocol.set_step_status`` — the ONE rule for a step's status, so the
+    task side obeys exactly what the step button obeys:
+
+    * a finished task completes its step (and may close the protocol, with
+      ``closed_by = "auto"``); a reopened one (à_faire / en_cours) reopens
+      a completed step — and, when the CASCADE had closed the protocol,
+      reactivates it, provided no other protocol of the dossier is actif;
+    * a step of a suspended protocol, or of one closed on purpose (or
+      before ``closed_by`` existed), does not follow: the model refuses and
+      logs it (``step_status_refused``). Before lot 1a a reopened task left
+      its step « complété » inside an auto-closed protocol, silently.
+
+    The task write has COMMITTED when this runs: nothing here may raise
+    back into it. A refusal is the model's own log line; an exception is an
+    ``unexpected`` ERROR (ids only). Both halves keep their loop guard
+    (this module's ``_SYNCING`` and the protocol's): the step's own
+    cascade back into this task finds it already in the target state.
+    """
+    target = _STEP_TARGET_FOR_TASK.get(new_task_status)
+    if target is None or task_id in _SYNCING:
         return
     _SYNCING.add(task_id)
     try:
-        from models.protocol import (
-            COLLECTION as PROTO_COLLECTION,
-            STEPS_SUBCOLLECTION,
-            _check_protocol_completion,
-        )
+        from models.protocol import find_step_for_task, set_step_status
 
-        # Search active protocols for a step linked to this task. Both
-        # filters are pushed server-side (each single-field, auto-indexed —
-        # no firestore.indexes.json entry needed): the old shape streamed
-        # EVERY protocol (closed ones accumulate for ever) plus every step
-        # of each active one, on every status change — web toggle, DAV
-        # VTODO PUT and MCP complete_task alike — and the common case (a
-        # task linked to no step) scanned everything to find nothing.
-        protocols = (
-            db.collection(PROTO_COLLECTION)
-            .where(filter=FieldFilter("status", "==", "actif"))
-            .stream()
-        )
-        for proto_doc in protocols:
-            steps_ref = db.collection(PROTO_COLLECTION).document(
-                proto_doc.id
-            ).collection(STEPS_SUBCOLLECTION)
-            linked = steps_ref.where(
-                filter=FieldFilter("linked_task_id", "==", task_id)
-            ).limit(1).stream()
-            for step_doc in linked:
-                step = step_doc.to_dict()
-                if step.get("linked_task_id") == task_id:
-                    now = datetime.now(timezone.utc)
-                    if new_task_status == "terminée" and step.get("status") != "complété":
-                        step_doc.reference.update({
-                            "status": "complété",
-                            "completed_date": now,
-                            **provenance.update_fields(now),
-                        })
-                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update(
-                            provenance.update_fields(now)
-                        )
-                        _check_protocol_completion(proto_doc.id)
-                    elif new_task_status in ("à_faire", "en_cours") and step.get("status") == "complété":
-                        step_doc.reference.update({
-                            "status": "à_venir",
-                            "completed_date": None,
-                            **provenance.update_fields(now),
-                        })
-                        db.collection(PROTO_COLLECTION).document(proto_doc.id).update(
-                            provenance.update_fields(now)
-                        )
-                    return  # Found and synced — done
+        found = find_step_for_task(task_id, dossier_id)
+        if found is None:
+            return
+        protocol, step = found
+        set_step_status(protocol.get("id", ""), step.get("id", ""), target)
     except Exception:
         # A sync failure must not break the task update (it has committed),
         # but it used to vanish with no trace at all — while complete_task

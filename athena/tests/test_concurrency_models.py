@@ -512,8 +512,10 @@ def test_a_stale_task_edit_fires_no_protocol_sync(db, monkeypatch):
     """Nothing written, so nothing to cascade: the step must not be
     completed on the strength of a status change that never landed."""
     synced = []
+    # Widened in lot 1a: update_task now also hands the task's dossier to
+    # the cascade (find_step_for_task searches it first).
     monkeypatch.setattr(task_model, "_sync_protocol_step",
-                        lambda tid, status: synced.append((tid, status)))
+                        lambda tid, status, **kw: synced.append((tid, status)))
     row_id = _task(db)
 
     _doc, errors = task_model.update_task(

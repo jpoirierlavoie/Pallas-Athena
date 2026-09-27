@@ -34,7 +34,7 @@ _SECRET = "Tremblay c. Lavoie — texte privilégié"
 
 # The cascade functions, by module. Any NEW cascade function joins here.
 _CASCADE = {
-    "task.py": ("_sync_protocol_step",),
+    "task.py": ("_sync_protocol_step", "_step_link_refusal"),
     "protocol.py": ("_sync_task_status", "_check_protocol_completion",
                     "set_step_status", "_reopen_blocker", "create_protocol",
                     "create_linked_tasks", "_link_task_to_step"),
@@ -50,9 +50,12 @@ def _fields(record) -> dict:
 
 
 def test_a_failed_step_sync_is_logged_with_ids_only(monkeypatch, caplog):
+    # Since lot 1a the task side finds the step through
+    # protocol.find_step_for_task, which reads the PROTOCOL module's client
+    # — so that is the one broken here (task_model.db is no longer read).
     broken = mock.MagicMock()
     broken.collection.side_effect = RuntimeError(_SECRET)
-    monkeypatch.setattr(task_model, "db", broken)
+    monkeypatch.setattr(protocol_model, "db", broken)
     with caplog.at_level(logging.INFO):
         task_model._sync_protocol_step("task-1", "terminée")   # never raises
     (record,) = _unexpected(caplog)
