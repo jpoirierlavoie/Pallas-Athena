@@ -1,6 +1,6 @@
 """Hearing / calendar routes — list, detail, create, edit, delete."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from markupsafe import escape
 
@@ -98,9 +98,47 @@ def _parse_int(value: str, default: int = 0) -> int:
         return default
 
 
+def _form_dates(hearing: dict | None) -> dict:
+    """The four date/time inputs of the hearing form, read in the convention
+    the hearing is STORED in — so that saving the form unchanged writes the
+    same slot back.
+
+    A timed hearing is an instant: its date and times are the Montréal ones.
+    An all-day hearing is a civil DATE stored at midnight UTC, whose end is
+    EXCLUSIVE (RFC 5545, what the phone and the Outlook mirror read): its
+    date is the UTC date — ``to_mtl`` would show the evening BEFORE, and the
+    form used to write that earlier date back, moving the event one day
+    earlier on every save — and « Date de fin » shows the LAST day, blank
+    for a one-day event. ``_form_data`` reads that field back the same way.
+    """
+    out = {"start_date": "", "start_time": "09:00",
+           "end_time": "10:00", "end_date": ""}
+    if not hearing:
+        return out
+    start = hearing.get("start_datetime")
+    end = hearing.get("end_datetime")
+    if not isinstance(start, datetime):
+        return out
+    if hearing.get("all_day"):
+        day = start.astimezone(timezone.utc).date()
+        out["start_date"] = day.isoformat()
+        if isinstance(end, datetime):
+            end_day = end.astimezone(timezone.utc).date()
+            if end_day - timedelta(days=1) > day:
+                out["end_date"] = (end_day - timedelta(days=1)).isoformat()
+        return out
+    local_start = to_mtl(start)
+    out["start_date"] = local_start.strftime("%Y-%m-%d")
+    out["start_time"] = local_start.strftime("%H:%M")
+    if isinstance(end, datetime):
+        out["end_time"] = to_mtl(end).strftime("%H:%M")
+    return out
+
+
 def _template_context() -> dict:
     """Return shared template context for hearing views."""
     return {
+        "form_dates": _form_dates,
         "hearing_type_labels": HEARING_TYPE_LABELS,
         "hearing_type_colors": HEARING_TYPE_COLORS,
         "hearing_title_suggestions": HEARING_TITLE_SUGGESTIONS,
@@ -160,7 +198,13 @@ def _form_data() -> dict:
 
     if all_day:
         start_dt = _parse_date(f.get("start_date", ""))
+        # « Date de fin » is the LAST day of the event (what _form_dates
+        # shows); storage keeps the EXCLUSIVE end the phone and the Outlook
+        # mirror read — the midnight after it. Blank → one day (the model's
+        # default end).
         end_dt = _parse_date(f.get("end_date", ""))
+        if end_dt is not None:
+            end_dt += timedelta(days=1)
     else:
         start_dt = _parse_datetime(f.get("start_date", ""), f.get("start_time", ""))
         end_dt = _parse_datetime(f.get("start_date", ""), f.get("end_time", ""))

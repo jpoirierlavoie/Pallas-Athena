@@ -175,33 +175,37 @@
       <label for="all_day" class="text-sm font-medium text-gray-700">Toute la journée</label>
     </div>
 
-    {# Date + Time row #}
+    {# Date + Time row. The values come from routes/hearings._form_dates,
+       which reads an all-day hearing in ITS convention (a UTC date, an
+       exclusive end shown as the last day) — never through to_mtl, which
+       showed the evening before and moved the event on every save. #}
+    {% set fd = form_dates(hearing) %}
     <div class="grid grid-cols-1 gap-4" :class="allDay ? 'md:grid-cols-2' : 'md:grid-cols-3'">
       <div>
         <label for="start_date" class="block text-sm font-medium text-gray-700 mb-1">Date *</label>
         <input type="date" id="start_date" name="start_date"
-               value="{{ (hearing.start_datetime|to_mtl).strftime('%Y-%m-%d') if hearing and hearing.start_datetime and hearing.start_datetime.strftime is defined else '' }}"
+               value="{{ fd.start_date }}"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       </div>
       <div x-show="!allDay"
            {% if hearing and hearing.all_day %}style="display: none"{% endif %}>
         <label for="start_time" class="block text-sm font-medium text-gray-700 mb-1">Heure de début</label>
         <input type="time" id="start_time" name="start_time"
-               value="{{ (hearing.start_datetime|to_mtl).strftime('%H:%M') if hearing and hearing.start_datetime and hearing.start_datetime.strftime is defined and not hearing.all_day else '09:00' }}"
+               value="{{ fd.start_time }}"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       </div>
       <div x-show="!allDay"
            {% if hearing and hearing.all_day %}style="display: none"{% endif %}>
         <label for="end_time" class="block text-sm font-medium text-gray-700 mb-1">Heure de fin</label>
         <input type="time" id="end_time" name="end_time"
-               value="{{ (hearing.end_datetime|to_mtl).strftime('%H:%M') if hearing and hearing.end_datetime and hearing.end_datetime.strftime is defined and not hearing.all_day else '10:00' }}"
+               value="{{ fd.end_time }}"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       </div>
       <div x-show="allDay"
            {% if not hearing or not hearing.all_day %}style="display: none"{% endif %}>
-        <label for="end_date" class="block text-sm font-medium text-gray-700 mb-1">Date de fin</label>
+        <label for="end_date" class="block text-sm font-medium text-gray-700 mb-1">Date de fin (dernier jour)</label>
         <input type="date" id="end_date" name="end_date"
-               value="{{ (hearing.end_datetime|to_mtl).strftime('%Y-%m-%d') if hearing and hearing.end_datetime and hearing.end_datetime.strftime is defined and hearing.all_day else '' }}"
+               value="{{ fd.end_date }}"
                class="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
       </div>
     </div>
