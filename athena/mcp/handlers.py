@@ -5839,6 +5839,15 @@ _HEARING_CANCELLED = (
     "calendrier Outlook est retirée au prochain cycle (10 minutes au plus), "
     "et le téléphone le montre annulé."
 )
+# A confirmed Bookings rendez-vous the CLIENT has since moved or cancelled
+# on the Bookings side (the sync records a divergence, never overwrites a
+# confirmed event): an edit here would build on a slot the client may no
+# longer hold. Said, never blocked — Réception is where it is resolved.
+_BOOKINGS_DIVERGENCE_UNSEEN = (
+    "Le client a déplacé ou annulé ce rendez-vous du côté de Bookings, et "
+    "l'écart n'a pas encore été traité : voyez la Réception (onglet « "
+    "Rendez-vous ») avant de vous fier à cette version."
+)
 
 
 def _read_hearing(hearing_id: str) -> dict:
@@ -6198,6 +6207,10 @@ def _hearing_edit_payload(
     warnings = payload["warnings"]
     if bookings:
         warnings.append(_BOOKINGS_NOT_UPDATED)
+        divergence = doc.get("bookings_divergence") or {}
+        if (isinstance(divergence, dict) and divergence.get("motif")
+                and not divergence.get("vu")):
+            warnings.append(_BOOKINGS_DIVERGENCE_UNSEEN)
     elif wrote and "status" in changed and doc.get("status") == "annulée":
         warnings.append(_HEARING_CANCELLED)
     if wrote:

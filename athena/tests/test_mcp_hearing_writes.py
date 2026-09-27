@@ -377,6 +377,24 @@ def test_a_confirmed_booking_is_edited_with_the_d10_warning_every_time(fake):
     assert handlers._BOOKINGS_NOT_UPDATED in again["warnings"]
 
 
+def test_an_unseen_bookings_divergence_is_said_never_blocked(fake):
+    """The client moved the confirmed rendez-vous on the Bookings side (the
+    sync records a divergence, never overwrites): the edit still lands, and
+    the result says to look at Réception first. A divergence already SEEN
+    is not repeated."""
+    _booking(fake, confirmation="", bookings_divergence={
+        "motif": "modifie", "detail": "", "vu": False})
+    payload = handlers.update_hearing({"hearing_id": "b1",
+                                       "location": "Bureau"})
+    assert _stored(fake, "b1")["location"] == "Bureau"
+    assert handlers._BOOKINGS_DIVERGENCE_UNSEEN in payload["warnings"]
+
+    _booking(fake, "b2", confirmation="", bookings_divergence={
+        "motif": "modifie", "detail": "", "vu": True})
+    seen = handlers.update_hearing({"hearing_id": "b2", "location": "Bureau"})
+    assert handlers._BOOKINGS_DIVERGENCE_UNSEEN not in seen["warnings"]
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 3. update_hearing — statut, notes, modalité
 # ══════════════════════════════════════════════════════════════════════
