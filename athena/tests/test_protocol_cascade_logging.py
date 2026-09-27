@@ -36,7 +36,8 @@ _SECRET = "Tremblay c. Lavoie — texte privilégié"
 _CASCADE = {
     "task.py": ("_sync_protocol_step",),
     "protocol.py": ("_sync_task_status", "_check_protocol_completion",
-                    "set_step_status"),
+                    "set_step_status", "_reopen_blocker", "create_protocol",
+                    "create_linked_tasks", "_link_task_to_step"),
 }
 
 
@@ -90,18 +91,26 @@ def test_a_failed_task_sync_is_logged_with_ids_only(monkeypatch, caplog):
 
 
 def test_a_failed_completion_check_is_logged_with_ids_only(monkeypatch, caplog):
-    monkeypatch.setattr(protocol_model, "get_protocol", lambda pid: {
-        "id": pid, "status": "actif",
-        "steps": [{"id": "s1", "status": "complété"}]})
-    broken = mock.MagicMock()
-    broken.collection.return_value.document.return_value.update.side_effect = (
-        RuntimeError(_SECRET))
-    monkeypatch.setattr(protocol_model, "db", broken)
+    """Rewritten in lot 1a: the completion check now decides and writes in
+    ONE transaction on the real client, so the store failure is modelled by
+    the shared fake Firestore — a commit hook that raises — instead of a
+    MagicMock whose ``update`` raised (the check no longer calls it)."""
+    from tests._fake_firestore import install
+
+    fake = install(monkeypatch, protocol_model)
+    fake.seed("protocols/proto-1", {"id": "proto-1", "status": "actif"})
+    fake.seed("protocols/proto-1/steps/s1", {"id": "s1", "status": "complété"})
+
+    def _down(_info):
+        raise RuntimeError(_SECRET)
+
+    fake.add_commit_hook(_down)
     with caplog.at_level(logging.INFO):
-        protocol_model._check_protocol_completion("proto-1")
+        assert protocol_model._check_protocol_completion("proto-1") is False
     (record,) = _unexpected(caplog)
     assert record.getMessage() == "protocol cascade: completion check failed"
     assert _fields(record) == {"event": "unexpected", "protocol_id": "proto-1"}
+    assert fake.peek("protocols/proto-1")["status"] == "actif"
 
 
 def _function(module: str, name: str) -> ast.FunctionDef:

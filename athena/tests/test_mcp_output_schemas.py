@@ -1712,29 +1712,34 @@ def _step_row_objects():
                 yield path, obj
 
 
-def test_step_rows_say_steps_are_unstamped_and_nothing_else_does():
+def test_step_rows_name_the_overdue_exception_and_nothing_else_does():
+    """Steps are stamped since lot 1a, so a step row's provenance keys read
+    like every other row's — with ONE difference, stated on step rows alone:
+    the step etag does not move on the deadline-derived « en_retard » stamp
+    a protocol page view writes (a page view must not invalidate the etag a
+    caller holds). The texts that said « not stamped yet » are gone: they
+    would now be false for every step written since."""
     rows = list(_step_row_objects())
     assert len(rows) >= 2, rows  # list_protocol_steps + get_agenda
     for path, obj in rows:
+        assert "« en_retard »" in obj["properties"]["etag"]["description"], path
         for key in _PROV_KEYS:
             text = obj["properties"][key]["description"]
-            assert "not stamped yet" in text, (path, key)
+            assert "not stamped yet" not in text, (path, key)
     step_paths = {path for path, _ in rows}
     for tool, schema in OUTPUT_SCHEMAS.items():
         for path, obj in _objects(schema, tool):
-            if path in step_paths:
+            if path in step_paths or "etag" not in obj["properties"]:
                 continue
-            for key in _PROV_KEYS:
-                text = obj["properties"].get(key, {}).get("description", "")
-                assert "not stamped yet" not in text, (path, key)
+            text = obj["properties"]["etag"].get("description", "")
+            assert "« en_retard »" not in text, (path, "etag")
 
 
-def test_steps_really_are_unstamped_while_their_rows_say_so(monkeypatch):
-    """The carve-out above is only true while it is true. A step written
-    through the real model (shared fake Firestore) under the connector
-    stores none of the four keys — its PROTOCOL is stamped instead — and its
-    row emits ''/null. The day steps gain an etag (plan lot 1), this test
-    fails, and the step-row texts must change with it."""
+def test_steps_are_stamped_and_their_rows_emit_it(monkeypatch):
+    """A step written through the real model (shared fake Firestore) under
+    the connector stores its etag and provenance — its PROTOCOL is stamped
+    too — and its row emits them. The one write that does NOT move the step
+    etag is the overdue stamp of a page view."""
     from datetime import date
 
     from models import provenance
@@ -1750,7 +1755,7 @@ def test_steps_really_are_unstamped_while_their_rows_say_so(monkeypatch):
     fake.seed("protocols/p1/steps/s1", {
         **protocol_model._default_step(), "id": "s1", "order": 1,
         "title": "Interrogatoire", "deadline_date": DATE_ONLY,
-        "created_at": DT, "updated_at": DT,
+        "created_at": DT, "updated_at": DT, "etag": "se0",
     })
     with provenance.writing_via("mcp", tool="t"):
         _, errors = protocol_model.update_step("p1", "s1", {"notes": "Suivi."})
@@ -1758,8 +1763,18 @@ def test_steps_really_are_unstamped_while_their_rows_say_so(monkeypatch):
 
     step = fake.peek("protocols/p1/steps/s1")
     assert step["notes"] == "Suivi."  # the write did land
-    assert not set(step) & set(_PROV_KEYS), step
+    assert step["etag"] not in ("", "se0")
+    assert step["updated_via"] == "mcp"
+    assert step["mcp_updated_at"] is not None
     assert fake.peek("protocols/p1")["updated_via"] == "mcp"
 
     row = handlers._step_row(step, date(2026, 9, 25))
-    assert {k: row[k] for k in _PROV_KEYS} == _LEGACY
+    assert row["etag"] == step["etag"]
+    assert row["updated_via"] == "mcp"
+    assert row["mcp_updated_at"] == tools.iso_mtl(step["mcp_updated_at"])
+
+    # The overdue stamp of a page view: status moves, the etag does not.
+    etag = step["etag"]
+    assert protocol_model.check_overdue_steps("p1") == 1  # DATE_ONLY is past
+    stored = fake.peek("protocols/p1/steps/s1")
+    assert stored["status"] == "en_retard" and stored["etag"] == etag

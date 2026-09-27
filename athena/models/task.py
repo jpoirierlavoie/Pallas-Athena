@@ -559,7 +559,7 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
                         step_doc.reference.update({
                             "status": "complété",
                             "completed_date": now,
-                            "updated_at": now,
+                            **provenance.update_fields(now),
                         })
                         db.collection(PROTO_COLLECTION).document(proto_doc.id).update(
                             provenance.update_fields(now)
@@ -569,7 +569,7 @@ def _sync_protocol_step(task_id: str, new_task_status: str) -> None:
                         step_doc.reference.update({
                             "status": "à_venir",
                             "completed_date": None,
-                            "updated_at": now,
+                            **provenance.update_fields(now),
                         })
                         db.collection(PROTO_COLLECTION).document(proto_doc.id).update(
                             provenance.update_fields(now)

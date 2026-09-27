@@ -194,7 +194,7 @@ def test_auto_created_task_inherits_step_phase(monkeypatch):
 
     monkeypatch.setattr(protocol_model, "db", _FakeRef())
 
-    protocol_model._auto_create_tasks_for_steps(
+    protocol_model.create_linked_tasks(
         "p-1",
         {"dossier_id": "d-1", "title": "Protocole", "dossier_file_number": "", "dossier_title": ""},
         [{"id": "s-1", "title": "Réponse", "deadline_date": None,

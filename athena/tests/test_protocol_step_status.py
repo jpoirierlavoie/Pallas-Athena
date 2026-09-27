@@ -144,7 +144,8 @@ def test_completing_a_step_completes_its_task_and_bumps_the_task_collection(fake
     # THE bump: the task is DAV-exposed, and the phone learns only through it.
     assert _ctag(fake) != "c0"
     assert outcome == {"changed": True, "task_id": "t1",
-                       "task_sync": "synced", "protocol_closed": False}
+                       "task_sync": "synced", "protocol_closed": False,
+                       "protocol_reopened": False}
 
 
 def test_reopening_a_step_reopens_a_done_task_and_bumps(fake):
@@ -178,7 +179,7 @@ def test_asking_for_the_state_the_step_is_in_writes_nothing(fake, stored, target
     step, errors, outcome = protocol_model.set_step_status(P, "s1", target)
     assert errors == [] and step["status"] == stored
     assert outcome == {"changed": False, "task_id": None, "task_sync": "none",
-                       "protocol_closed": False}
+                       "protocol_closed": False, "protocol_reopened": False}
     assert {p: fake.peek(p) for p in before} == before
 
 

@@ -114,12 +114,23 @@ def test_create_refuse_un_gabarit_cpc_sur_forum_administratif(monkeypatch):
 
 def test_create_accepte_le_gabarit_assorti(monkeypatch):
     """Le chemin nominal traverse la porte et échoue plus loin ou réussit —
-    jamais sur le régime. On intercepte la suite pour isoler la porte."""
+    jamais sur le régime. Un protocole actif déjà posé dans le dossier
+    arrête la création à la règle « un seul actif », donc PASSÉ la porte.
+
+    Réécrit au lot 1a : la règle « un seul actif » se vérifie désormais
+    DANS la transaction qui écrit, sur le vrai client (faux Firestore
+    partagé) — l'ancien remplacement de ``_get_active_protocols``, un
+    lecteur qui répondait ``[]`` sur toute erreur, ne vise plus rien."""
     import models.dossier as dmod
+    from tests._fake_firestore import install
+
+    fake = install(monkeypatch, pmod)
+    fake.seed("protocols/existing", {
+        "id": "existing", "dossier_id": "d1", "status": "actif",
+        "protocol_type": "cq_simplifié",
+    })
     monkeypatch.setattr(dmod, "get_dossier",
                         lambda did: _dossier("Cour du Québec"))
-    monkeypatch.setattr(pmod, "_get_active_protocols",
-                        lambda did: [{"id": "existing"}])
     proto, errors = pmod.create_protocol(
         dossier_id="d1",
         protocol_type="cq_simplifié",
@@ -129,3 +140,4 @@ def test_create_accepte_le_gabarit_assorti(monkeypatch):
     # Stopped by the one-active-protocol guard — i.e. PAST the regime gate.
     assert proto is None
     assert "protocole actif" in errors[0]
+    assert list(fake.peek_collection("protocols")) == ["existing"]

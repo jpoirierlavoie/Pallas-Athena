@@ -10,7 +10,7 @@ from utils.deadlines import compute_deadline as _judicial_deadline
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import db, provenance
+from models import concurrency, db, provenance
 from security import sanitize
 from utils.logging_setup import log_protocol_event, log_unexpected
 
@@ -85,6 +85,33 @@ STEP_STATUS_COLORS = {
     "complété": "bg-green-100 text-green-700",
     "en_retard": "bg-red-100 text-red-700",
 }
+
+# `closed_by` — WHO took a protocol out of « actif » (stamped with
+# `closed_at`, both cleared when it is reactivated). CLOSED_BY_AUTO means the
+# completion of its last step closed it (_check_protocol_completion); any
+# other value is the provenance path of a deliberate status change (« web »,
+# « mcp »…, models.provenance.VALID_VIA). `""` (absent on a legacy document)
+# = not recorded. Only CLOSED_BY_AUTO is ever reopened automatically — by
+# reopening one of its steps, or the task linked to one: a closure the
+# lawyer (or a protocol closed before this field existed) decided stays
+# closed until someone reactivates it on purpose.
+CLOSED_BY_AUTO = "auto"
+
+# The one-actif rule's refusals. Checked FAIL-CLOSED, inside the transaction
+# that writes: a read error is a refusal, never « none found ».
+ONE_ACTIVE_ERROR = (
+    "Ce dossier a déjà un protocole actif. "
+    "Complétez ou suspendez le protocole existant avant d'en créer un nouveau."
+)
+ACTIVE_CHECK_FAILED = (
+    "Impossible de vérifier les protocoles actifs de ce dossier — réessayez. "
+    "Rien n'a été enregistré."
+)
+OTHER_ACTIVE_ON_REOPEN = (
+    "Rouvrir cette étape rouvrirait son protocole, fermé automatiquement à "
+    "sa dernière étape — mais un autre protocole est actif dans ce dossier. "
+    "Rien n'a été modifié."
+)
 
 # ── Protocol Templates ──────────────────────────────────────────────────
 #
@@ -297,6 +324,8 @@ def _default_protocol() -> dict:
         "court": "",
         "notes": "",
         "status": "actif",
+        "closed_by": "",
+        "closed_at": None,
         "created_at": None,
         "updated_at": None,
         "etag": "",
@@ -327,6 +356,11 @@ def _default_step() -> dict:
         "sous_phase": "",
         "created_at": None,
         "updated_at": None,
+        # Rule 7, since lot 1a: every write to the step regenerates it —
+        # except check_overdue_steps' derived « en_retard » stamp, which a
+        # mere page view applies and which must not invalidate the etag a
+        # caller holds. '' on a step written before steps carried one.
+        "etag": "",
     }
 
 
@@ -464,20 +498,143 @@ def _compute_end_date(start_date: datetime, steps: list[dict]) -> datetime:
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def _get_active_protocols(dossier_id: str) -> list[dict]:
-    """Return all protocols with status 'actif' for a dossier."""
-    try:
-        query = db.collection(COLLECTION).where(
-            filter=FieldFilter("dossier_id", "==", dossier_id)
-        ).where(
-            filter=FieldFilter("status", "==", "actif")
+class _Refusal(Exception):
+    """A refusal decided inside a model transaction — nothing was written.
+
+    Raised from inside the ``@firestore.transactional`` body, so the real
+    decorator rolls the transaction back and re-raises it; the caller turns
+    it into its ``(None, messages)`` return and a typed log line carrying
+    the machine-stable ``reason`` (never the French text).
+    """
+
+    def __init__(self, messages, reason: str) -> None:
+        super().__init__(reason)
+        self.messages = [messages] if isinstance(messages, str) else list(messages)
+        self.reason = reason
+
+
+def _get_active_protocols_strict(
+    dossier_id: str,
+    *,
+    exclude_id: Optional[str] = None,
+    transaction=None,
+) -> list[dict]:
+    """The dossier's « actif » protocols — a read failure PROPAGATES.
+
+    The one-actif rule used to read through a helper that answered ``[]``
+    on ANY exception: a Firestore blip read as « no active protocol » and a
+    second one was minted. Every caller now turns an exception into a
+    refusal. Pass the caller's ``transaction`` so the query joins its read
+    set: a protocol activated between this read and the commit then aborts
+    the transaction (and its retry sees it) instead of slipping past.
+
+    Two equality filters, merged by Firestore from the automatic
+    single-field indexes — no composite index.
+    """
+    query = db.collection(COLLECTION).where(
+        filter=FieldFilter("dossier_id", "==", dossier_id)
+    ).where(
+        filter=FieldFilter("status", "==", "actif")
+    )
+    return [
+        snap.to_dict() or {}
+        for snap in query.stream(transaction=transaction)
+        if snap.id != exclude_id
+    ]
+
+
+def _step_linked_to(protocol_id: str, task_id: str) -> Optional[dict]:
+    """The step of *protocol_id* whose ``linked_task_id`` is *task_id*.
+
+    A collection-scoped equality on the step subcollection (automatic
+    index). Propagates read errors.
+    """
+    steps = (
+        db.collection(COLLECTION).document(protocol_id)
+        .collection(STEPS_SUBCOLLECTION)
+        .where(filter=FieldFilter("linked_task_id", "==", task_id))
+        .limit(1)
+        .stream()
+    )
+    for snap in steps:
+        step = dict(snap.to_dict() or {})
+        step.setdefault("id", snap.id)
+        return step
+    return None
+
+
+def _created_sort_key(proto: dict) -> float:
+    created = proto.get("created_at")
+    return -created.timestamp() if isinstance(created, datetime) else 0.0
+
+
+def find_step_for_task(
+    task_id: str, dossier_id: Optional[str]
+) -> Optional[tuple[dict, dict]]:
+    """``(protocol, step)`` for the step linked to *task_id*, or ``None``.
+
+    Searched in the task's own dossier first — EVERY protocol there, actif
+    first then newest, since a step of a protocol closed by the cascade
+    must still be found when its task is reopened — then, as a fallback,
+    every « actif » protocol of the firm: a task moved to another dossier
+    before moves of linked tasks were refused keeps its step in the old
+    dossier's protocol, and the cascade has always scanned the firm-wide
+    actif protocols to reach it. What this returns is therefore what the
+    cascade acts on — never a narrower guess.
+
+    The protocol returned is its document, without steps. PROPAGATES read
+    errors: callers decide between refusing (a move) and logging (a
+    cascade), and « not found » must never stand in for « unreadable ».
+    No collection-group query — so no fieldOverride, no composite index.
+    """
+    if not task_id:
+        return None
+    seen: set[str] = set()
+    if dossier_id:
+        snaps = list(
+            db.collection(COLLECTION)
+            .where(filter=FieldFilter("dossier_id", "==", dossier_id))
+            .stream()
         )
-        return [doc.to_dict() for doc in query.stream()]
-    except Exception:
-        return []
+        protos = sorted(
+            ((snap.id, snap.to_dict() or {}) for snap in snaps),
+            key=lambda item: (item[1].get("status") != "actif",
+                              _created_sort_key(item[1])),
+        )
+        for protocol_id, proto in protos:
+            seen.add(protocol_id)
+            step = _step_linked_to(protocol_id, task_id)
+            if step is not None:
+                return {**proto, "id": proto.get("id") or protocol_id}, step
+    active = (
+        db.collection(COLLECTION)
+        .where(filter=FieldFilter("status", "==", "actif"))
+        .stream()
+    )
+    for snap in active:
+        if snap.id in seen:
+            continue
+        step = _step_linked_to(snap.id, task_id)
+        if step is not None:
+            proto = snap.to_dict() or {}
+            return {**proto, "id": proto.get("id") or snap.id}, step
+    return None
 
 
 # ── CRUD ────────────────────────────────────────────────────────────────
+
+
+# What a caller may name on a new protocol — everything else is set here
+# (id, type, dossier, dates, steps) or server-owned (status starts « actif »,
+# closed_by/closed_at, the stamps). Refused, never dropped: a key outside
+# this list is a caller that believes it set something.
+_CREATE_FIELDS = frozenset({
+    "title", "notes", "court", "dossier_file_number", "dossier_title",
+})
+
+
+def _unknown_field_error(key: str, what: str) -> str:
+    return f"Le champ « {key} » {what} ne se modifie pas ainsi."
 
 
 def create_protocol(
@@ -487,7 +644,27 @@ def create_protocol(
     data: dict,
     auto_create_tasks: bool = False,
 ) -> tuple[Optional[dict], list[str]]:
-    """Create a protocol with auto-generated steps. Returns (doc, errors)."""
+    """Create a protocol with auto-generated steps. Returns (doc, errors).
+
+    The one-actif rule is checked INSIDE the transaction that writes the
+    protocol and its steps, on a query that joins the transaction's read
+    set, and FAILS CLOSED: a read error refuses (``ACTIVE_CHECK_FAILED``)
+    instead of reading as « no active protocol », and a protocol activated
+    between the check and the commit aborts it — the retry then sees it.
+    A new protocol is always « actif ».
+
+    Each step is stamped (``created_*``/``updated_*``/``etag``) like any
+    document. ``auto_create_tasks`` creates one linked task per step after
+    the commit (:func:`create_linked_tasks`); the returned steps carry the
+    links it made.
+    """
+    unknown = sorted(set(data) - _CREATE_FIELDS)
+    if unknown:
+        log_protocol_event("protocol_refused", "", outcome="refused",
+                           reason="champ_refuse", operation="create",
+                           dossier_id=dossier_id)
+        return None, [_unknown_field_error(unknown[0], "d'un protocole")]
+
     merged = {**_default_protocol(), **_sanitize_data(data)}
     merged["dossier_id"] = dossier_id
     merged["protocol_type"] = protocol_type
@@ -495,6 +672,9 @@ def create_protocol(
 
     errors = _validate_protocol(merged)
     if errors:
+        log_protocol_event("protocol_refused", "", outcome="refused",
+                           reason="validation", operation="create",
+                           dossier_id=dossier_id)
         return None, errors
 
     # Regime/forum coherence gate (PA-D03): a C.p.c. template whose court
@@ -503,15 +683,10 @@ def create_protocol(
     # risk, not a preference.
     regime = _regime_errors(dossier_id, protocol_type)
     if regime:
+        log_protocol_event("protocol_refused", "", outcome="refused",
+                           reason="regime", operation="create",
+                           dossier_id=dossier_id)
         return None, regime
-
-    # Check: only one active protocol per dossier
-    active_protocols = _get_active_protocols(dossier_id)
-    if active_protocols:
-        return None, [
-            "Ce dossier a déjà un protocole actif. "
-            "Complétez ou suspendez le protocole existant avant d'en créer un nouveau."
-        ]
 
     now = datetime.now(timezone.utc)
     protocol_id = str(uuid.uuid4())
@@ -522,8 +697,7 @@ def create_protocol(
     for tmpl in template_steps:
         step = {**_default_step(), **tmpl}
         step["id"] = str(uuid.uuid4())
-        step["created_at"] = now
-        step["updated_at"] = now
+        step.update(provenance.create_fields(now))
         if step["deadline_offset_days"] is not None:
             step["deadline_date"] = _compute_deadline(
                 start_date, step["deadline_offset_days"]
@@ -543,29 +717,49 @@ def create_protocol(
 
     merged.update({
         "id": protocol_id,
+        "status": "actif",
         **provenance.create_fields(now),
     })
 
-    # Batch write protocol + all steps
-    try:
-        batch = db.batch()
-        proto_ref = db.collection(COLLECTION).document(protocol_id)
-        batch.set(proto_ref, merged)
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
 
+    @firestore.transactional
+    def _create(txn) -> None:
+        # The read comes first (the real client refuses a transactional read
+        # after a staged write) and is the one-actif check itself.
+        try:
+            active = _get_active_protocols_strict(dossier_id, transaction=txn)
+        except Exception:
+            log_unexpected("protocol one-actif check failed",
+                           dossier_id=dossier_id)
+            raise _Refusal(ACTIVE_CHECK_FAILED, "lecture_impossible")
+        if active:
+            raise _Refusal(ONE_ACTIVE_ERROR, "protocole_actif_existant")
+        txn.set(proto_ref, merged)
         for step in step_docs:
-            step_ref = proto_ref.collection(STEPS_SUBCOLLECTION).document(
-                step["id"]
+            txn.set(
+                proto_ref.collection(STEPS_SUBCOLLECTION).document(step["id"]),
+                step,
             )
-            batch.set(step_ref, step)
 
-        batch.commit()
+    try:
+        _create(db.transaction())
+    except _Refusal as refusal:
+        log_protocol_event("protocol_refused", "", outcome="refused",
+                           reason=refusal.reason, operation="create",
+                           dossier_id=dossier_id)
+        return None, refusal.messages
     except Exception:
         log_unexpected("protocol write failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, protocol_id)
+    log_protocol_event("protocol_created", protocol_id,
+                       dossier_id=dossier_id, protocol_type=protocol_type,
+                       step_count=len(step_docs))
 
     # Auto-create linked tasks if requested
     if auto_create_tasks and step_docs:
-        _auto_create_tasks_for_steps(protocol_id, merged, step_docs)
+        create_linked_tasks(protocol_id, merged, step_docs)
 
     merged["steps"] = step_docs
     return merged, []
@@ -790,9 +984,8 @@ def add_step(
 
     merged.update({
         "id": step_id,
-        "created_at": now,
-        "updated_at": now,
         "date_confirmed": True,
+        **provenance.create_fields(now),
     })
 
     try:
@@ -841,7 +1034,7 @@ def update_step(
         return None, errors
 
     now = datetime.now(timezone.utc)
-    merged["updated_at"] = now
+    provenance.stamp_update(merged, now)
 
     # If user explicitly sets a date on CS protocol, mark as confirmed
     if "deadline_date" in data:
@@ -902,15 +1095,6 @@ def delete_step(
 STEP_STATUS_TARGETS: tuple[str, ...] = ("complété", "à_venir")
 
 
-class _StepRefusal(Exception):
-    """A set_step_status refusal found inside its transaction."""
-
-    def __init__(self, message: str, reason: str) -> None:
-        super().__init__(reason)
-        self.message = message
-        self.reason = reason
-
-
 def _step_already_at(status: str, target: str) -> bool:
     """True when a step in *status* already is what *target* asks for.
 
@@ -924,38 +1108,86 @@ def _step_already_at(status: str, target: str) -> bool:
     return status != "complété"
 
 
+def _inactive_protocol_error(status: str) -> str:
+    label = STATUS_LABELS.get(status, status).lower()
+    return (
+        f"Ce protocole est « {label} » : réactivez-le (Modifier le protocole "
+        "→ Statut « Actif ») avant de changer l'état de ses étapes. Rien n'a "
+        "été modifié."
+    )
+
+
+def _reopen_blocker(protocol: dict, protocol_id: str, txn) -> Optional[_Refusal]:
+    """Why an auto-closed protocol cannot be reopened now, or ``None``.
+
+    Only a protocol the CASCADE closed (``closed_by == CLOSED_BY_AUTO``)
+    reopens by itself; the one-actif rule then applies as everywhere, read
+    fail-closed inside the caller's transaction.
+    """
+    try:
+        others = _get_active_protocols_strict(
+            protocol.get("dossier_id") or "", exclude_id=protocol_id,
+            transaction=txn,
+        )
+    except Exception:
+        log_unexpected("protocol one-actif check failed",
+                       protocol_id=protocol_id)
+        return _Refusal(ACTIVE_CHECK_FAILED, "lecture_impossible")
+    if others:
+        return _Refusal(OTHER_ACTIVE_ON_REOPEN, "autre_protocole_actif")
+    return None
+
+
 def set_step_status(
-    protocol_id: str, step_id: str, target: str
+    protocol_id: str,
+    step_id: str,
+    target: str,
+    *,
+    expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], dict]:
     """Complete (``complété``) or reopen (``à_venir``) a step — never a toggle.
 
     Returns ``(step, errors, outcome)``. ``outcome`` reports what happened
     beyond the step — ``changed`` (False: the step already was *target*, and
     NOTHING was written or cascaded), ``task_id`` (the linked task, if any),
-    ``task_sync`` (:func:`_sync_task_status`'s word, or ``"none"``) and
-    ``protocol_closed`` (completing the last open step closes the protocol).
+    ``task_sync`` (:func:`_sync_task_status`'s word, or ``"none"``),
+    ``protocol_closed`` (completing the last open step closes the protocol)
+    and ``protocol_reopened`` (reopening a step of a protocol the cascade
+    had closed reactivates it).
 
     Why not :func:`complete_step`: it toggles, so a page rendered before the
     phone, a second tab or the connector changed the step does the OPPOSITE
     of what the lawyer clicked, and cascades that opposite into the linked
     task. Here the caller names the state it wants, and a step already in it
-    is a no-op — no etag churn, no cascade, no CTag bump.
+    is a no-op — no etag churn, no cascade, no CTag bump — whatever
+    ``expected_etag`` says: a request that changes nothing needs neither a
+    current version nor an open protocol.
 
-    The status write is a partial ``update()`` of ``status`` /
-    ``completed_date`` / ``updated_at`` (plus the protocol's stamp), decided
-    and staged in ONE transaction on the step it re-reads: a write landing
-    between the read and the commit aborts it, and the retry decides again
-    on the new state instead of overwriting it. The task cascade and the
-    completion check run after the commit — they follow a committed write,
-    so they report instead of raising (``outcome``), as they always have.
+    Otherwise, in this order, all of it decided and staged in ONE
+    transaction on the step and protocol it re-reads (a write landing in
+    between aborts it; the retry decides again on the new state):
 
-    No protocol-status gate here: a step of a completed or suspended
-    protocol changes as it always did. (Reopening an auto-closed protocol
-    is lot 1a.)
+    1. ``expected_etag`` (optional) must still be the step's etag;
+    2. the PROTOCOL gate — an « actif » protocol accepts both targets; a
+       protocol the cascade closed (``closed_by == CLOSED_BY_AUTO``)
+       accepts a reopen, which reactivates it; anything else (suspended, or
+       completed by a deliberate change or before ``closed_by`` existed) is
+       refused, naming how to reactivate it;
+    3. a reactivation must be feasible — no OTHER « actif » protocol in the
+       dossier, read fail-closed — or the request is refused BEFORE any
+       write: the step never lands open inside a closed protocol;
+    4. the step's partial ``update()`` (status, completed_date, its stamp
+       and etag) and the protocol's (its stamp, plus status « actif » and
+       cleared ``closed_by``/``closed_at`` on a reactivation) commit
+       together.
+
+    The task cascade and the completion check run after the commit — they
+    follow a committed write, so they report instead of raising
+    (``outcome``), as they always have.
     """
     outcome: dict = {
         "changed": False, "task_id": None, "task_sync": "none",
-        "protocol_closed": False,
+        "protocol_closed": False, "protocol_reopened": False,
     }
     if target not in STEP_STATUS_TARGETS:
         log_protocol_event("step_status_refused", protocol_id,
@@ -968,36 +1200,53 @@ def set_step_status(
     now = datetime.now(timezone.utc)
 
     @firestore.transactional
-    def _apply(txn) -> tuple[dict, str, bool]:
+    def _apply(txn) -> tuple[dict, str, bool, bool]:
         # Reads first: the real client refuses a transactional read after
         # a staged write.
         proto_snap = proto_ref.get(transaction=txn)
         step_snap = step_ref.get(transaction=txn)
         if not proto_snap.exists:
-            raise _StepRefusal("Protocole introuvable.", "protocole_introuvable")
+            raise _Refusal("Protocole introuvable.", "protocole_introuvable")
         if not step_snap.exists:
-            raise _StepRefusal("Étape introuvable.", "etape_introuvable")
+            raise _Refusal("Étape introuvable.", "etape_introuvable")
+        protocol = proto_snap.to_dict() or {}
         step = dict(step_snap.to_dict() or {})
         step.setdefault("id", step_id)
         before = step.get("status", "")
         if _step_already_at(before, target):
-            return step, before, False
+            return step, before, False, False
+        if not concurrency.matches(step, expected_etag):
+            raise _Refusal(concurrency.STALE_ETAG_ERROR, "stale_etag")
+        reopen = False
+        status = protocol.get("status", "")
+        if status != "actif":
+            if not (status == "complété" and target == "à_venir"
+                    and protocol.get("closed_by") == CLOSED_BY_AUTO):
+                raise _Refusal(_inactive_protocol_error(status),
+                               "protocole_non_actif")
+            blocker = _reopen_blocker(protocol, protocol_id, txn)
+            if blocker is not None:
+                raise blocker
+            reopen = True
         fields = {
             "status": target,
             "completed_date": now if target == "complété" else None,
-            "updated_at": now,
+            **provenance.update_fields(now),
         }
         txn.update(step_ref, fields)
-        txn.update(proto_ref, provenance.update_fields(now))
-        return {**step, **fields}, before, True
+        proto_fields = provenance.update_fields(now)
+        if reopen:
+            proto_fields.update(status="actif", closed_by="", closed_at=None)
+        txn.update(proto_ref, proto_fields)
+        return {**step, **fields}, before, True, reopen
 
     try:
-        step, before, changed = _apply(db.transaction())
-    except _StepRefusal as refusal:
+        step, before, changed, reopened = _apply(db.transaction())
+    except _Refusal as refusal:
         log_protocol_event("step_status_refused", protocol_id,
                            outcome="refused", reason=refusal.reason,
                            step_id=step_id)
-        return None, [refusal.message], outcome
+        return None, refusal.messages, outcome
     except Exception:
         log_unexpected("protocol step status write failed",
                        protocol_id=protocol_id, step_id=step_id)
@@ -1008,6 +1257,7 @@ def set_step_status(
     provenance.note_commit(COLLECTION, protocol_id)
 
     outcome["changed"] = True
+    outcome["protocol_reopened"] = reopened
     linked = step.get("linked_task_id")
     if linked:
         outcome["task_id"] = linked
@@ -1021,6 +1271,7 @@ def set_step_status(
         from_status=before, to_status=target,
         task_sync=outcome["task_sync"],
         protocol_closed=outcome["protocol_closed"],
+        protocol_reopened=reopened,
     )
     return step, [], outcome
 
@@ -1070,7 +1321,7 @@ def recompute_deadlines(
                     new_start_date, step["deadline_offset_days"]
                 )
                 step["deadline_date"] = new_deadline
-                step["updated_at"] = now
+                provenance.stamp_update(step, now)
 
                 step_ref = proto_ref.collection(
                     STEPS_SUBCOLLECTION
@@ -1319,49 +1570,96 @@ def get_protocol_summary(
 # ── Task sync helpers ───────────────────────────────────────────────────
 
 
-def _auto_create_tasks_for_steps(
-    protocol_id: str, protocol: dict, steps: list[dict]
-) -> None:
-    """Create linked tasks for each protocol step."""
+def _link_task_to_step(protocol_id: str, step_id: str, task_id: str) -> bool:
+    """Point a step at its linked task. True when the link committed.
+
+    A write to the step like any other: its stamp and etag move, and so
+    does the protocol's, in ONE batch. Never raises — the task it links has
+    already been created; a failed link is an orphan task, logged by ids.
+    """
+    now = datetime.now(timezone.utc)
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
     try:
-        from dav.sync import bump_ctag, collection_for
-        from models.task import create_task
+        batch = db.batch()
+        batch.update(
+            proto_ref.collection(STEPS_SUBCOLLECTION).document(step_id),
+            {"linked_task_id": task_id, **provenance.update_fields(now)},
+        )
+        batch.update(proto_ref, provenance.update_fields(now))
+        batch.commit()
+    except Exception:
+        log_unexpected("protocol linked task: step link failed",
+                       protocol_id=protocol_id, step_id=step_id,
+                       task_id=task_id)
+        return False
+    provenance.note_commit(COLLECTION, protocol_id)
+    return True
 
-        dossier_id = protocol.get("dossier_id")
 
-        for step in steps:
-            task_data = {
-                "title": step["title"],
-                "description": (
-                    f"Étape du protocole — {protocol.get('title', '')}"
-                ),
-                "dossier_id": dossier_id,
-                "dossier_file_number": protocol.get("dossier_file_number", ""),
-                "dossier_title": protocol.get("dossier_title", ""),
-                "due_date": step.get("deadline_date"),
-                "priority": "normale",
-                "status": "à_faire",
-                "category": "suivi",
-                # Phase O: the linked task inherits its step's annotation, so
-                # time logged against the task's phase matches the protocol.
-                "phase": step.get("phase", ""),
-                "sous_phase": step.get("sous_phase", ""),
-            }
-            task, errors = create_task(task_data)
-            if task:
-                # Bump per-dossier CTag so DavX5 picks up the new task
-                bump_ctag(collection_for(dossier_id))
-                # Link task to step
-                try:
-                    db.collection(COLLECTION).document(
-                        protocol_id
-                    ).collection(STEPS_SUBCOLLECTION).document(
-                        step["id"]
-                    ).update({"linked_task_id": task["id"]})
-                except Exception as exc:
-                    logger.warning("_auto_create_tasks_for_steps: link step %s → task failed: %s", step.get("id"), exc)
-    except Exception as exc:
-        logger.warning("_auto_create_tasks_for_steps failed for protocol %s: %s", protocol_id, exc)
+def create_linked_tasks(
+    protocol_id: str, protocol: dict, steps: list[dict]
+) -> dict:
+    """Create one linked task per step; return what happened.
+
+    ``{"created", "linked", "failed"}`` counts. Each step is its own
+    attempt: one outer ``try`` used to abort every remaining step on the
+    first exception, silently, leaving the rest of the protocol without its
+    tasks. A step that got its task has ``linked_task_id`` set in *steps*
+    (the caller's list), so a caller returning them shows the links.
+
+    The per-dossier CTag is bumped HERE, once per task created — a
+    documented in-model bump (the tasks are DAV-exposed and created behind
+    the caller's back), each guarded on its own: the task it announces has
+    committed.
+    """
+    from dav.sync import bump_ctag, collection_for
+    from models.task import create_task
+
+    dossier_id = protocol.get("dossier_id")
+    report = {"created": 0, "linked": 0, "failed": 0}
+    for step in steps:
+        task_data = {
+            "title": step["title"],
+            "description": (
+                f"Étape du protocole — {protocol.get('title', '')}"
+            ),
+            "dossier_id": dossier_id,
+            "dossier_file_number": protocol.get("dossier_file_number", ""),
+            "dossier_title": protocol.get("dossier_title", ""),
+            "due_date": step.get("deadline_date"),
+            "priority": "normale",
+            "status": "à_faire",
+            "category": "suivi",
+            # Phase O: the linked task inherits its step's annotation, so
+            # time logged against the task's phase matches the protocol.
+            "phase": step.get("phase", ""),
+            "sous_phase": step.get("sous_phase", ""),
+        }
+        try:
+            task, _errors = create_task(task_data)
+        except Exception:
+            log_unexpected("protocol linked task creation failed",
+                           protocol_id=protocol_id, step_id=step.get("id"))
+            task = None
+        if not task:
+            report["failed"] += 1
+            continue
+        report["created"] += 1
+        try:
+            bump_ctag(collection_for(dossier_id))
+        except Exception:
+            log_unexpected("protocol linked task CTag bump failed",
+                           protocol_id=protocol_id, task_id=task["id"])
+        if _link_task_to_step(protocol_id, step["id"], task["id"]):
+            report["linked"] += 1
+            step["linked_task_id"] = task["id"]
+    log_protocol_event(
+        "linked_tasks_created", protocol_id,
+        outcome="success" if not report["failed"] and
+        report["linked"] == report["created"] else "refused",
+        **report,
+    )
+    return report
 
 
 _SYNCING: set[str] = set()  # Circular sync guard
@@ -1422,7 +1720,7 @@ def _sync_task_status(
     One re-read is allowed; a second conflict reports ``"failed"``.
 
     The CTag bump lives HERE, not in a route — a documented in-model bump,
-    like :func:`_auto_create_tasks_for_steps`. This write is made behind the
+    like :func:`create_linked_tasks`. This write is made behind the
     caller's back on a DAV-exposed record: the web step route never bumped,
     so the phone never learned that the task was completed or reopened.
     Every caller of the cascade now bumps by construction. The bump is
@@ -1494,25 +1792,48 @@ def _sync_task_status(
 
 
 def _check_protocol_completion(protocol_id: str) -> bool:
-    """Auto-complete protocol if all steps are complete. True when it closed."""
-    protocol = get_protocol(protocol_id)
-    if not protocol:
-        return False
+    """Close an « actif » protocol whose steps are ALL complété (not only
+    the mandatory ones). True when it closed.
 
-    steps = protocol.get("steps", [])
-    if not steps:
-        return False
+    Decided and written in ONE transaction on the protocol and its steps as
+    they stand at commit: a step reopened between the read and the write
+    aborts it, and the retry leaves the protocol open — the old
+    read-then-update could close a protocol over a step that had just
+    reopened. The closure is stamped ``closed_by = CLOSED_BY_AUTO`` with
+    ``closed_at``: it is the one closure the cascade may undo by itself
+    (reopening a step or its linked task reactivates the protocol).
+    """
+    proto_ref = db.collection(COLLECTION).document(protocol_id)
+    now = datetime.now(timezone.utc)
 
-    all_complete = all(s.get("status") == "complété" for s in steps)
-    if all_complete and protocol.get("status") == "actif":
-        try:
-            now = datetime.now(timezone.utc)
-            db.collection(COLLECTION).document(protocol_id).update({
-                "status": "complété",
-                **provenance.update_fields(now),
-            })
-            return True
-        except Exception:
-            log_unexpected("protocol cascade: completion check failed",
-                           protocol_id=protocol_id)
-    return False
+    @firestore.transactional
+    def _close(txn) -> bool:
+        snap = proto_ref.get(transaction=txn)
+        if not snap.exists:
+            return False
+        if (snap.to_dict() or {}).get("status") != "actif":
+            return False
+        steps = [
+            s.to_dict() or {}
+            for s in proto_ref.collection(STEPS_SUBCOLLECTION).stream(
+                transaction=txn)
+        ]
+        if not steps or not all(s.get("status") == "complété" for s in steps):
+            return False
+        txn.update(proto_ref, {
+            "status": "complété",
+            "closed_by": CLOSED_BY_AUTO,
+            "closed_at": now,
+            **provenance.update_fields(now),
+        })
+        return True
+
+    try:
+        closed = _close(db.transaction())
+    except Exception:
+        log_unexpected("protocol cascade: completion check failed",
+                       protocol_id=protocol_id)
+        return False
+    if closed:
+        provenance.note_commit(COLLECTION, protocol_id)
+    return closed
