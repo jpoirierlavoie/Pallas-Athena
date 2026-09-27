@@ -448,7 +448,8 @@ def invoice_detail(invoice_id: str) -> str:
         method_labels=METHOD_LABELS,
         tx_status_labels=TX_STATUS_LABELS,
         return_to=request.args.get("return_to", ""),
-        # Rebond des actions de la fiche (statut, annulation) : leur refus —
+        # Rebond des actions de la fiche (statut, annulation, suppression) :
+        # leur refus —
         # ou ce qu'une annulation a laissé de côté — revient ici en bandeau.
         # htmx n'échange que les 2xx, et ces boutons sont des formulaires
         # pleine page : une redirection est la seule voie qui s'affiche.
