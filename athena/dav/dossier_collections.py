@@ -89,7 +89,11 @@ from models.task import (
     update_task,
     vtodo_to_task,
 )
-from utils.logging_setup import log_dav_operation, sanitize_log_value
+from utils.logging_setup import (
+    log_dav_operation,
+    log_unexpected,
+    sanitize_log_value,
+)
 from utils.tracing_setup import add_attributes, firestore_span, span
 
 logger = logging.getLogger(__name__)
@@ -814,11 +818,22 @@ def _read_existing(
     except Exception:
         if not valid_resource_id(resource_id):
             return None, _refused_create(dossier_id, 400, "nom_invalide")
-        return None, _read_unavailable(dossier_id)
+        return None, _read_unavailable(dossier_id, component, "existing")
 
 
-def _read_unavailable(dossier_id: str) -> Response:
-    """503 — the store could not say whether the resource exists."""
+def _read_unavailable(dossier_id: str, component: str, check: str) -> Response:
+    """503 — the store could not say whether the resource exists.
+
+    Called from inside the ``except`` of the failed strict read, so the
+    ERROR line carries the traceback: the fail-open readers this path
+    replaced at least logged the exception (a WARNING), and a bare INFO
+    ``dav_operation`` alone would make a persistent failure — a document
+    the migration helpers cannot read, not an outage — undiagnosable while
+    every phone edit of it answers 503. Ids and the component only, never
+    the resource name (it may embed an address).
+    """
+    log_unexpected("dav put strict read failed", component=component,
+                   check=check, dossier_id=dossier_id or None)
     log_dav_operation("put", "dossier", dossier_id=dossier_id or None,
                       status_code=503, reason="lecture_indisponible")
     resp = Response("Service Unavailable", status=503)
@@ -849,7 +864,7 @@ def _create_refusal(
             if other != component
         )
     except Exception:
-        return _read_unavailable(dossier_id)
+        return _read_unavailable(dossier_id, component, "other_component")
     if taken:
         return _refused_create(dossier_id, 412, "id_autre_composant")
     return None

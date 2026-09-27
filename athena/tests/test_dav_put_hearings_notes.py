@@ -31,6 +31,7 @@ déploiement peut vérifier ; le reste se vérifie au ``curl`` puis sur
 l'appareil (CLAUDE.md, composant nº 2).
 """
 
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -217,6 +218,27 @@ def test_a_phone_task_edit_during_a_read_failure_is_a_503_not_a_412(
     resp = _put(client, HREF, _vtodo())
     assert resp.status_code == 503
     assert fake.peek(f"tasks/{RID}") == before
+
+
+def test_a_failed_strict_read_is_an_error_line_never_silent(
+    fake, client, monkeypatch, caplog
+):
+    """The fail-open readers the PUT path replaced at least logged the
+    exception; the 503 must not swallow it into an INFO line alone, or a
+    stored document the read cannot migrate — every phone edit of it
+    answering 503 for ever — could not be told from an outage."""
+    fake.seed(f"hearings/{RID}", dict(_STORED_HEARING))
+    _fail_reads_of(monkeypatch, fake, f"hearings/{RID}")
+    with caplog.at_level(logging.ERROR, logger="pallas.unexpected"):
+        assert _put(client, HREF, _vevent()).status_code == 503
+    errors = [r for r in caplog.records
+              if r.name == "pallas.unexpected"
+              and "dav put strict read failed" in r.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].json_fields["component"] == "VEVENT"
+    assert errors[0].json_fields["check"] == "existing"
+    assert errors[0].json_fields["dossier_id"] == "d1"
+    assert RID not in errors[0].getMessage()
 
 
 def test_a_failed_read_of_another_component_blocks_the_create(

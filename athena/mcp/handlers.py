@@ -5322,8 +5322,10 @@ def _create_hearing_impl(args: dict) -> dict:
     notes_text = _clean_entity_text(notes_text, "notes")
 
     # EXPLICIT whitelist — `id`/`vevent_uid` must never be addressable
-    # (create_hearing HONOURS a caller-supplied id, the CalDAV-PUT
-    # affordance, which here would overwrite an existing event); status
+    # (create_hearing HONOURED a caller-supplied id with a set() until lot
+    # 1a, which here would have overwritten an existing event; it discards
+    # them now — only the DAV create's `dav_id` keyword names a document —
+    # and this whitelist stays as the belt); status
     # stays the model default « à_confirmer » and `confirmation` stays ""
     # (visible everywhere — this is not a Bookings import).
     data = {

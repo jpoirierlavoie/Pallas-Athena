@@ -4,10 +4,11 @@ A CalDAV/CardDAV client names a NEW resource in its URL
 (``PUT /dav/…/<name>.ics|.vcf``) and carries its own UID in the body. The
 server must store the object under BOTH, or the client's href 404s on every
 later GET/PUT and a copy with another UID syncs back down — a duplicate on
-the device. Two creators honour them through an explicit ``dav_id`` /
-``dav_uid`` keyword (``models.task.create_task``, lot 0b B3, and
-``models.partie.create_partie``, lot 0b B7), so the rule of what a client
-may choose lives HERE, once: a second copy per model would drift.
+the device. Four creators honour them through an explicit ``dav_id`` /
+``dav_uid`` keyword (``models.task.create_task``, lot 0b B3,
+``models.partie.create_partie``, lot 0b B7, ``models.hearing.create_hearing``
+and ``models.note.create_note``, lot 1a), so the rule of what a client may
+choose lives HERE, once: a second copy per model would drift.
 
 No Firestore here — pure, importable without the client.
 """
