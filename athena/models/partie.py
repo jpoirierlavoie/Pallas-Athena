@@ -790,9 +790,18 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
 
 
 def update_kyc_status(
-    partie_id: str, field: str, status: str, notes: str = ""
+    partie_id: str, field: str, status: str, notes: Optional[str] = None
 ) -> tuple[Optional[dict], list[str]]:
-    """Update identity_verified or conflict_check with auto-dated timestamp."""
+    """Update identity_verified or conflict_check with auto-dated timestamp.
+
+    *notes* is PRESENCE-GATED, like every partial update of this model:
+    ``None`` (the default) leaves the stored ``{field}_notes`` untouched;
+    a string — the empty one included — REPLACES it, so clearing the
+    notes is an explicit ``notes=""``. The default used to be ``""``, and
+    since ``update_partie`` merges ``{**existing, **data}`` before a
+    full-document ``set()``, a status change made without notes ERASED
+    the lawyer's compliance notes, in silence (lot 0b, 2026-09-27).
+    """
     if field not in ("identity_verified", "conflict_check"):
         return None, ["Champ invalide."]
 
@@ -804,10 +813,9 @@ def update_kyc_status(
     if status not in valid:
         return None, ["Statut invalide."]
 
-    update_data = {
-        field: status,
-        f"{field}_notes": sanitize(notes, max_length=2000),
-    }
+    update_data: dict = {field: status}
+    if notes is not None:
+        update_data[f"{field}_notes"] = sanitize(notes, max_length=2000)
     return update_partie(partie_id, update_data)
 
 

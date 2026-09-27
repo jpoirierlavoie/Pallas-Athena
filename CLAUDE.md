@@ -2255,7 +2255,7 @@ Every model exports the standard CRUD set. Module-specific additions:
 
 ### `models/partie.py`
 - `display_name(partie) -> str` — returns `organization_name` (legal name) for personnes morales; trade name (`trade_name`) is surfaced separately in the UI
-- `update_kyc_status(partie_id, field, status, notes)` — `field ∈ {"identity_verified", "conflict_check"}`, auto-stamps the corresponding `_date`
+- `update_kyc_status(partie_id, field, status, notes=None)` — `field ∈ {"identity_verified", "conflict_check"}`, auto-stamps the corresponding `_date`. `notes` is presence-gated: `None` keeps the stored `{field}_notes`, a string (even `""`) replaces it — the old `notes=""` default ERASED the compliance notes on every status change made without notes (fixed lot 0b, 2026-09-27)
 - `link_kyc_document(partie_id, document_id)` — appends to `kyc_document_ids`
 - `get_parties_bulk(ids) -> {id: doc}` (August 2026) — one `db.get_all` round-trip, no index; mirrors `dossier.get_dossiers_bulk` and **fails open to `{}`**. Written for the MCP coverage report's two deontological checks: the alternative (`list_parties(role_filter="client")`) **silently under-reports**, because `contact_role` belongs to the CONTACT, not to the dossier link, so a client recorded under another role vanishes from a regulatory check.
 - `MANDATAIRE_KIND_LABELS` — French display labels for the `kind` field on each mandataires entry (mandataire, tuteur, curateur, représentant_légal, autre)

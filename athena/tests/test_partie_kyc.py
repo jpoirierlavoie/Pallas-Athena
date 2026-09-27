@@ -151,3 +151,69 @@ def test_document_incoherent_pre_correctif_s_autorepare(monkeypatch):
         {"identity_verified": "non_vérifié"},
     )
     assert ecrit["identity_verified_date"] is None
+
+
+# ── update_kyc_status ne vide plus les notes de conformité (lot 0b) ──────
+#
+# Le défaut : ``notes: str = ""`` par défaut, toujours écrit. Comme
+# update_partie fusionne {**existing, **data} puis fait un set() du document
+# entier, un changement de statut SANS notes effaçait les notes du juriste.
+# Ces tests passent par le VRAI client Firestore (seul le serveur est faux) :
+# c'est le document STOCKÉ qui est relu, jamais un dict remis à un bouchon.
+
+import pytest  # noqa: E402
+
+from tests._fake_firestore import install  # noqa: E402
+
+
+@pytest.fixture
+def magasin(monkeypatch):
+    fake = install(monkeypatch, pm)
+    fake.seed("parties/p1", _partie(
+        identity_verified="non_vérifié",
+        identity_verified_notes="Pièce vue le 3 mars — permis de conduire.",
+        conflict_check="non_vérifié",
+        conflict_check_notes="Recherche au registre : aucun homonyme.",
+        etag="e0",
+    ))
+    return fake
+
+
+def test_un_statut_sans_notes_garde_les_notes(magasin):
+    """LE défaut : sur l'ancien code, ce changement de statut vidait les
+    notes (default ``""`` toujours écrit)."""
+    doc, erreurs = pm.update_kyc_status("p1", "identity_verified", "vérifié")
+    assert erreurs == []
+    stocke = magasin.peek("parties/p1")
+    assert stocke["identity_verified"] == "vérifié"
+    assert stocke["identity_verified_notes"] == (
+        "Pièce vue le 3 mars — permis de conduire."
+    )
+    # L'autre bloc n'est pas touché non plus.
+    assert stocke["conflict_check_notes"] == (
+        "Recherche au registre : aucun homonyme."
+    )
+    assert doc["identity_verified_notes"] == stocke["identity_verified_notes"]
+
+
+def test_des_notes_fournies_remplacent(magasin):
+    pm.update_kyc_status(
+        "p1", "conflict_check", "vérifié", notes="Aucun conflit (3 dossiers)."
+    )
+    assert magasin.peek("parties/p1")["conflict_check_notes"] == (
+        "Aucun conflit (3 dossiers)."
+    )
+
+
+def test_une_chaine_vide_efface_explicitement(magasin):
+    """Effacer reste possible — mais seulement en le DEMANDANT."""
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", notes="")
+    assert magasin.peek("parties/p1")["identity_verified_notes"] == ""
+
+
+def test_les_notes_fournies_sont_assainies(magasin):
+    pm.update_kyc_status(
+        "p1", "identity_verified", "vérifié", notes="<b>vu</b> " + "x" * 3000
+    )
+    notes = magasin.peek("parties/p1")["identity_verified_notes"]
+    assert "<b>" not in notes and len(notes) <= 2000
