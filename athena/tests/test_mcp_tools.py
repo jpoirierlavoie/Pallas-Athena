@@ -364,6 +364,33 @@ def test_write_tools_set_is_pinned():
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
 
+def test_edit_tools_set_is_pinned():
+    """The second tripwire beside WRITE_TOOLS (lot 1b, L8): EDIT_TOOLS is
+    what DERIVES destructiveHint, and the framework guards check it by
+    name prefix and by declared reason — neither notices a creator quietly
+    promoted, nor an edit whose reason was moved with it. A change here is
+    a change of what a client is told to confirm: make it on purpose."""
+    assert tools.EDIT_TOOLS == frozenset({
+        "record_document_analysis",
+        "update_partie", "update_dossier",
+        "update_time_entry", "update_expense",
+        "import_invoice",
+        "set_time_entry_phase", "set_expense_phase",
+        "set_time_entry_phase_bulk", "set_expense_phase_bulk",
+        "complete_task",
+        # Lot 1b — every agenda edit REPLACES a stored value (a field, a
+        # status, a note's body, a bloc of the théorie, a step's state);
+        # the lot's three creators (create_protocol, add_protocol_step,
+        # create_hearing_series) are not here.
+        "update_task", "reopen_task", "update_note", "edit_analyse",
+        "update_protocol", "update_protocol_step", "update_hearing",
+        # …and the decision on a Bookings request, whose refusal is the
+        # connector's one outbound effect.
+        "decide_rendez_vous",
+    })
+    assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
+
+
 def test_annotations_split_both_directions(monkeypatch):
     # Every switch ON: list_tool_descriptors() still applies the kill
     # switches, and MCP_COMPTABILITE_ENABLED defaults to FALSE — an
