@@ -547,6 +547,67 @@ def test_a_delete_whose_count_still_matches_proceeds(store):
     assert store.peek("documents/a")["folder_id"] is None
 
 
+def test_a_swap_that_keeps_the_count_is_refused_by_the_fingerprint(store):
+    """Review of T2 — FAILS with the counts alone: while the dialog shows
+    « 1 fichier », one file is moved OUT and another moved IN (two
+    connector calls). « 1 fichier » is still true, so the count check let
+    « Tout supprimer » destroy the newcomer, which the dialog never showed.
+    The fingerprint names WHICH records were announced."""
+    _seed_folder(store, "f1", "Pièces")
+    _seed_document(store, "annonce", "f1")
+    _seed_document(store, "ailleurs", None)
+    shown = folder.subtree_index("d1")["f1"]
+
+    store.external_write("documents/annonce", {
+        "id": "annonce", "dossier_id": "d1", "folder_id": None,
+        "display_name": "annonce", "category": "autre",
+    })
+    store.external_write("documents/ailleurs", {
+        "id": "ailleurs", "dossier_id": "d1", "folder_id": "f1",
+        "display_name": "ailleurs", "category": "autre",
+    })
+    live = folder.subtree_index("d1")["f1"]
+    assert (live["documents"], live["folders"]) == (shown["documents"], shown["folders"])
+
+    ok, message, rapport = folder.delete_folder(
+        "d1", "f1", contents="delete",
+        expected_documents=shown["documents"],
+        expected_folders=shown["folders"],
+        expected_fingerprint=shown["fingerprint"],
+    )
+
+    assert not ok and "a changé" in message
+    assert rapport == {"folders": [], "documents": [], "moved": 0}
+    assert store.peek("documents/ailleurs")["folder_id"] == "f1"
+    assert store.peek("folders/f1") is not None
+    assert _writes(store) == []
+
+
+def test_the_announced_fingerprint_lets_an_unchanged_delete_through(store):
+    """The dialog's fingerprint and the deletion's are derived by ONE helper
+    from the same two reads — an untouched subtree is never refused, and a
+    rename inside it (ids unchanged) is not a change."""
+    _seed_folder(store, "f1", "Pièces")
+    _seed_folder(store, "f2", "Annexes", "f1")
+    _seed_document(store, "a", "f1")
+    _seed_document(store, "b", "f2")
+    shown = folder.subtree_index("d1")["f1"]
+    assert len(shown["fingerprint"]) == 64
+    store.external_write("documents/b", {
+        "id": "b", "dossier_id": "d1", "folder_id": "f2",
+        "display_name": "b renommé", "category": "autre",
+    })
+
+    ok, message, rapport = folder.delete_folder(
+        "d1", "f1", contents="move",
+        expected_documents=2, expected_folders=1,
+        expected_fingerprint=shown["fingerprint"],
+    )
+
+    assert ok and message == "" and rapport["moved"] == 2
+    assert store.peek("folders/f1") is None and store.peek("folders/f2") is None
+
+
 def test_a_system_folder_can_still_be_deleted_and_comes_back_at_its_id(store):
     """Deleting stays the lawyer's call (nothing forbids it), and the next
     generation recreates the folder at the SAME deterministic id — the
@@ -669,7 +730,15 @@ def test_subtree_index_compte_le_sous_arbre_et_le_niveau(monkeypatch):
     assert index["f1"]["folders"] == 1
     # …mais la ligne n'affiche que le niveau : 1 sous-dossier + 1 fichier.
     assert index["f1"]["direct"] == 2
-    assert index["f2"] == {"direct": 2, "documents": 2, "folders": 0}
+    # Changé délibérément (revue de T2) : l'entrée porte aussi l'EMPREINTE
+    # des éléments annoncés, que le dialogue renvoie avec le décompte.
+    assert index["f2"] == {
+        "direct": 2, "documents": 2, "folders": 0,
+        "fingerprint": folder._subtree_fingerprint(["f2"], [{"id": "b"}, {"id": "c"}]),
+    }
+    assert index["f1"]["fingerprint"] == folder._subtree_fingerprint(
+        ["f1", "f2"], [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+    )
 
 
 @pytest.mark.parametrize("lecteur", ["_all_folders", "_all_documents"])

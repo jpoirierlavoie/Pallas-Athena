@@ -224,9 +224,33 @@ def test_le_decompte_annonce_est_transmis_au_modele(web, trail, monkeypatch):
                     "expected_folders": 4}]
 
 
+def test_l_empreinte_annoncee_est_transmise_au_modele(web, trail, monkeypatch):
+    """Revue de T2 : le décompte seul laisse passer un échange (un fichier
+    sorti, un autre entré) — le dialogue renvoie aussi l'EMPREINTE des
+    éléments annoncés, et c'est le modèle qui la compare
+    (tests/test_folders.py::test_a_swap_that_keeps_the_count_is_refused_by_the_fingerprint)."""
+    vus: list = []
+
+    def faux_delete(dossier_id, folder_id, **kwargs):
+        vus.append(kwargs)
+        return True, "", _rapport(folders=[{"id": folder_id, "name": "X"}])
+
+    monkeypatch.setattr(rd, "delete_folder", faux_delete)
+    empreinte = "0123456789abcdef" * 4
+    web.post("/documents/folders/f1/delete", data={
+        "dossier_id": "d1", "contents": "delete",
+        "expected_documents": "3", "expected_folders": "0",
+        "expected_fingerprint": empreinte,
+    })
+    assert vus == [{"contents": "delete", "expected_documents": 3,
+                    "expected_folders": 0, "expected_fingerprint": empreinte}]
+
+
 @pytest.mark.parametrize("champ, valeur", [
     ("expected_documents", "abc"), ("expected_documents", "-1"),
     ("expected_folders", "²"), ("expected_folders", "1" * 12),
+    ("expected_fingerprint", ""), ("expected_fingerprint", "ab" * 31),
+    ("expected_fingerprint", "AB" * 32), ("expected_fingerprint", "zz" * 32),
 ])
 def test_un_decompte_illisible_refuse_sans_rien_toucher(
     web, trail, monkeypatch, champ, valeur,
@@ -345,6 +369,16 @@ def test_les_deux_formulaires_renvoient_le_decompte_annonce(rendu):
     html = _browser(rendu, [_dossier_ligne()])
     assert html.count('name="expected_documents" value="23"') == 2
     assert html.count('name="expected_folders" value="4"') == 2
+
+
+def test_les_deux_formulaires_renvoient_l_empreinte_annoncee(rendu):
+    empreinte = "0123456789abcdef" * 4
+    html = _browser(rendu, [_dossier_ligne(_subtree_fingerprint=empreinte)])
+    assert html.count(f'name="expected_fingerprint" value="{empreinte}"') == 2
+    # Un index en échec n'a pas d'empreinte : le champ est omis (les zéros
+    # du décompte refusent déjà un dossier qui n'est pas vraiment vide).
+    html = _browser(rendu, [_dossier_ligne()])
+    assert 'name="expected_fingerprint"' not in html
 
 
 def test_un_dossier_vide_renvoie_un_decompte_nul(rendu):
@@ -488,3 +522,37 @@ def test_le_navigateur_marque_le_dossier_systeme_herite(web_reel):
     rd._attach_folder_counts(folders, "d1")
     flags = {f["id"]: f["_system"] for f in folders}
     assert flags == {"leg": True, "pc": False}
+
+
+def test_un_echange_pendant_le_dialogue_est_refuse_de_bout_en_bout(web_reel, monkeypatch):
+    """Revue de T2, sur la route ET le modèle réels : le navigateur annonce
+    « 1 fichier » ; pendant que le dialogue est ouvert, ce fichier sort et un
+    autre entre. Le décompte reste vrai — l'empreinte renvoyée par le
+    formulaire, elle, ne l'est plus, et rien n'est supprimé."""
+    client, store = web_reel
+    monkeypatch.setattr(rd, "record_deletion", lambda *a, **k: None)
+    base = {"dossier_id": "d1", "category": "autre"}
+    store.seed("folders/f1", {"id": "f1", "dossier_id": "d1", "name": "Pièces",
+                              "parent_folder_id": None})
+    store.seed("documents/annonce", {"id": "annonce", "folder_id": "f1", **base})
+    store.seed("documents/ailleurs", {"id": "ailleurs", "folder_id": None, **base})
+    folders = rd.list_folders("d1", parent_folder_id=None)
+    rd._attach_folder_counts(folders, "d1")
+    ligne = next(f for f in folders if f["id"] == "f1")
+
+    store.external_write("documents/annonce",
+                         {"id": "annonce", "folder_id": None, **base})
+    store.external_write("documents/ailleurs",
+                         {"id": "ailleurs", "folder_id": "f1", **base})
+
+    reponse = client.post("/documents/folders/f1/delete", data={
+        "dossier_id": "d1", "contents": "delete",
+        "expected_documents": str(ligne["_subtree_documents"]),
+        "expected_folders": str(ligne["_subtree_folders"]),
+        "expected_fingerprint": ligne["_subtree_fingerprint"],
+    }, headers={"HX-Request": "true"})
+
+    assert ligne["_subtree_documents"] == 1
+    assert "a changé depuis l'affichage" in _erreur(reponse)
+    assert store.peek("documents/ailleurs")["folder_id"] == "f1"
+    assert store.peek("folders/f1") is not None

@@ -112,6 +112,10 @@ def _attach_folder_counts(folders: list[dict], dossier_id: str) -> None:
         f["_item_count"] = counts.get("direct", 0)
         f["_subtree_documents"] = counts.get("documents", 0)
         f["_subtree_folders"] = counts.get("folders", 0)
+        # WHICH records the dialog announces, not only how many (review of
+        # T2): posted back, it refuses a swap the counts cannot see. Absent
+        # when the index failed — the zero counts already refuse then.
+        f["_subtree_fingerprint"] = counts.get("fingerprint", "")
         # « Projets » / « Reçus du portail » do not rename (lot 2A, T2) —
         # the menu hides the action; the model refuses it anyway. The
         # siblings are the context: a system folder sits at the root, and
@@ -1048,10 +1052,12 @@ def folder_delete_route(folder_id: str) -> str:
     folder_data = get_folder(dossier_id, folder_id)
     parent_id = folder_data.get("parent_folder_id") if folder_data else None
 
-    # Le décompte que le dialogue a ANNONCÉ (lot 2A, T2). Le modèle refuse
-    # si le sous-arbre ne le porte plus : le connecteur peut désormais
-    # déplacer des fichiers et des dossiers, et « Tout supprimer » ne doit
-    # jamais détruire ce qui a été glissé dedans depuis l'affichage. Absent
+    # Le décompte que le dialogue a ANNONCÉ (lot 2A, T2), et l'empreinte
+    # des éléments annoncés (revue de T2 : un fichier sorti et un autre
+    # entré laissent le décompte intact). Le modèle refuse si le sous-arbre
+    # ne les porte plus : le connecteur peut désormais déplacer des
+    # fichiers et des dossiers, et « Tout supprimer » ne doit jamais
+    # détruire ce qui a été glissé dedans depuis l'affichage. Absent
     # = une page rendue avant ce lot : aucune vérification (la règle de
     # routes/edit_conflict). Présent mais illisible = un POST fabriqué :
     # refus, rien n'est touché — en 2xx, la bannière du navigateur.
@@ -1123,10 +1129,14 @@ _COUNTS_MALFORMED = (
 )
 
 
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
 def _submitted_subtree_counts() -> tuple[dict, bool]:
-    """``({expected_documents?, expected_folders?}, malformed)`` from the
-    delete dialog. An absent field is left out (no check on it); a present
-    one must be a non-negative integer."""
+    """``({expected_documents?, expected_folders?, expected_fingerprint?},
+    malformed)`` from the delete dialog. An absent field is left out (no
+    check on it); a present count must be a non-negative integer, a present
+    fingerprint the 64 lowercase hex digits of a sha256."""
     expected: dict = {}
     for field in ("expected_documents", "expected_folders"):
         raw = request.form.get(field)
@@ -1136,6 +1146,12 @@ def _submitted_subtree_counts() -> tuple[dict, bool]:
         if not (raw.isascii() and raw.isdigit()) or len(raw) > 9:
             return {}, True
         expected[field] = int(raw)
+    raw = request.form.get("expected_fingerprint")
+    if raw is not None:
+        raw = raw.strip()
+        if len(raw) != 64 or not set(raw) <= _HEX_DIGITS:
+            return {}, True
+        expected["expected_fingerprint"] = raw
     return expected, False
 
 

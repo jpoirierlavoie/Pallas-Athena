@@ -34,6 +34,7 @@ Lot 2A, step T2 (2026-09-27) — hardened before the connector reaches it:
   :func:`ensure_system_folder`).
 """
 
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -435,17 +436,37 @@ def _descendant_ids(folder_id: str, children: dict) -> list[str]:
     return out
 
 
+def _subtree_fingerprint(folder_ids: Iterable[str], documents: Iterable[dict]) -> str:
+    """sha256 over the sorted folder ids and the sorted document ids of a
+    subtree — WHICH records the delete dialog announced, not just how many.
+
+    The counts alone miss a swap: one file moved out and another moved in
+    (two connector calls while the dialog is open) keep « 3 fichiers » true,
+    and « Tout supprimer » would destroy the newcomer, never shown. Ids only:
+    a rename inside the subtree changes nothing that the deletion acts on,
+    so it must not refuse. :func:`subtree_index` and :func:`delete_folder`
+    both derive it here, from the same two reads, so they cannot disagree.
+    """
+    folders_part = "\n".join(sorted(str(f or "") for f in folder_ids))
+    docs_part = "\n".join(sorted(str(d.get("id") or "") for d in documents))
+    return hashlib.sha256(
+        f"{folders_part}\x00{docs_part}".encode("utf-8")
+    ).hexdigest()
+
+
 def subtree_index(dossier_id: str) -> dict:
-    """``{folder_id: {"direct": n, "documents": n, "folders": n}}`` for EVERY
-    folder of the dossier, in TWO queries.
+    """``{folder_id: {"direct": n, "documents": n, "folders": n,
+    "fingerprint": sha256}}`` for EVERY folder of the dossier, in TWO
+    queries.
 
     ``direct`` is the one-level count the browser row already displays;
     ``documents`` / ``folders`` are the SUBTREE totals the delete dialog must
     announce — « 23 fichiers dans 4 sous-dossiers » is the whole guard rail
     the lawyer gets before an irreversible deletion, so it counts what will
     actually be destroyed, not just the top level. The dialog posts them
-    back, and :func:`delete_folder` refuses when the subtree no longer
-    matches them. Errors propagate.
+    back with ``fingerprint`` (:func:`_subtree_fingerprint` — which records,
+    not only how many), and :func:`delete_folder` refuses when the subtree
+    no longer matches them. Errors propagate.
     """
     folders = _all_folders(dossier_id)
     documents = _all_documents(dossier_id)
@@ -459,11 +480,12 @@ def subtree_index(dossier_id: str) -> dict:
     for f in folders:
         fid = f["id"]
         ids = _descendant_ids(fid, children)
-        doc_total = sum(len(docs_by_folder.get(i, [])) for i in ids)
+        subtree_docs = [d for i in ids for d in docs_by_folder.get(i, [])]
         index[fid] = {
             "direct": len(children.get(fid, [])) + len(docs_by_folder.get(fid, [])),
-            "documents": doc_total,
+            "documents": len(subtree_docs),
             "folders": len(ids) - 1,          # the subtree, target excluded
+            "fingerprint": _subtree_fingerprint(ids, subtree_docs),
         }
     return index
 
@@ -904,6 +926,7 @@ def delete_folder(
     contents: str = CONTENTS_MOVE,
     expected_documents: Optional[int] = None,
     expected_folders: Optional[int] = None,
+    expected_fingerprint: Optional[str] = None,
 ) -> tuple[bool, str, dict]:
     """Delete a folder and its whole subtree. ``contents`` decides the files.
 
@@ -924,7 +947,11 @@ def delete_folder(
     once the connector can move documents and folders, something may have
     been moved INTO the folder between the render and the click, and « Tout
     supprimer » would destroy it without it ever being shown. ``None``
-    asserts nothing (a page rendered before the dialog posted them). The
+    asserts nothing (a page rendered before the dialog posted them).
+    ``expected_fingerprint`` (review of T2) is the dialog's
+    :func:`_subtree_fingerprint`: the counts alone let a SWAP through — one
+    file moved out, another moved in, « 3 fichiers » still true — and the
+    newcomer would be destroyed unseen. The
     comparison is made on the same read the deletion then acts on; a write
     landing in the milliseconds between that read and the batched deletes
     is not covered — the deletion spans several commits and cannot be one
@@ -964,6 +991,10 @@ def delete_folder(
     if (
         (expected_documents is not None and expected_documents != len(documents))
         or (expected_folders is not None and expected_folders != sub_folders)
+        or (
+            expected_fingerprint is not None
+            and expected_fingerprint != _subtree_fingerprint(folder_ids, documents)
+        )
     ):
         return False, SUBTREE_CHANGED.format(
             documents=len(documents), ds="s" if len(documents) != 1 else "",

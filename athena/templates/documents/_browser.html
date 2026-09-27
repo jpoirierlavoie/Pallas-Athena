@@ -211,8 +211,10 @@
            titres). DEUX formulaires distincts plutôt que deux boutons
            « name= » dans un seul : le repli sans JS reste exact et rien ne
            dépend de l'inclusion du bouton soumetteur par HTMX. Chacun
-           RENVOIE le décompte annoncé (lot 2A, T2) : si le sous-arbre a
-           changé depuis — un fichier glissé dedans par le connecteur —, la
+           RENVOIE le décompte annoncé (lot 2A, T2) et l'empreinte des
+           éléments annoncés (revue de T2 — un fichier sorti et un autre
+           entré laissent le décompte intact) : si le sous-arbre a changé
+           depuis — un fichier glissé dedans par le connecteur —, la
            suppression est refusée et rien n'est touché. #}
         {% set nb_fichiers = f._subtree_documents or 0 %}
         {% set nb_sous_dossiers = f._subtree_folders or 0 %}
@@ -256,6 +258,7 @@
                   <input type="hidden" name="contents" value="move">
                   <input type="hidden" name="expected_documents" value="{{ nb_fichiers }}">
                   <input type="hidden" name="expected_folders" value="{{ nb_sous_dossiers }}">
+                  {% if f._subtree_fingerprint %}<input type="hidden" name="expected_fingerprint" value="{{ f._subtree_fingerprint }}">{% endif %}
                   <button type="submit"
                           class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
                     Déplacer les fichiers
@@ -272,6 +275,7 @@
                   <input type="hidden" name="contents" value="{{ 'delete' if nb_fichiers else 'move' }}">
                   <input type="hidden" name="expected_documents" value="{{ nb_fichiers }}">
                   <input type="hidden" name="expected_folders" value="{{ nb_sous_dossiers }}">
+                  {% if f._subtree_fingerprint %}<input type="hidden" name="expected_fingerprint" value="{{ f._subtree_fingerprint }}">{% endif %}
                   <button type="submit"
                           class="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
                     {% if nb_fichiers %}Tout supprimer{% else %}Supprimer{% endif %}
