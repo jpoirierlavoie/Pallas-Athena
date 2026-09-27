@@ -368,6 +368,29 @@ _ABORT_MESSAGES = {
     ),
     "compensation_future": "La date de compensation ne peut être dans le futur.",
     "compensation_erreur": "Erreur lors de la compensation. Veuillez réessayer.",
+    # The reconciliation lock floor (D14, 2026-09-25) — admin_ledger's
+    # wording, plus the period so the lawyer knows WHICH reconciliation.
+    "période_verrouillée": (
+        "Cette date tombe dans une période déjà conciliée (conciliation "
+        "complétée au {detail}) : une écriture datée ainsi ferait mentir cette "
+        "conciliation. Inscrivez l'écriture à une date postérieure au {detail} "
+        "et précisez la date réelle dans la description."
+    ),
+    "compensation_période_verrouillée": (
+        "La date de compensation tombe dans une période déjà conciliée "
+        "(conciliation complétée au {detail}) — elle réécrirait une preuve "
+        "close. Utilisez la date réelle du relevé (nécessairement postérieure)."
+    ),
+    "contre_passation_période_verrouillée": (
+        "Une conciliation complétée couvre déjà la date d'aujourd'hui "
+        "(conciliation au {detail}) : une contre-passation, toujours datée du "
+        "jour, ferait mentir cette conciliation. Réessayez demain."
+    ),
+    "virement_période_verrouillée": (
+        "Une conciliation complétée couvre déjà la date d'aujourd'hui "
+        "(conciliation au {detail}) : un virement, toujours daté du jour, "
+        "ferait mentir cette conciliation. Réessayez demain."
+    ),
 }
 
 
@@ -553,6 +576,42 @@ def update_account(account_id: str, data: dict) -> tuple[Optional[dict], list[st
 
 
 # ── Transaction assembly helpers ───────────────────────────────────────────
+
+
+def _read_lock_floor(account_id: str, txn=None) -> Optional[datetime]:
+    """``period_end`` of the account's latest COMPLETED reconciliation — the
+    lock floor. ``None`` when nothing was ever completed.
+
+    A copy of admin_ledger._read_lock_floor on ``trust_reconciliations``
+    (the house rule for the two registers: mirror, never share). Streams the
+    account's reconciliations — few, monthly — on the existing
+    ``(account_id, period_end DESC)`` composite, the one
+    :func:`list_reconciliations` already reads; runnable inside a
+    transaction, where the query's result set joins the read-set (a
+    reconciliation completed concurrently aborts the write). Read errors
+    propagate: a mutation must never proceed on an unknown floor.
+
+    Why every trust write needs it (D14, 2026-09-25): a completed
+    reconciliation is the monthly attestation of art. 41, re-provable at its
+    period_end only while nothing dated inside the period moves. An entry
+    created, a clear dated, a reversal or a transfer leg booked on or before
+    the floor changes the as-of book balance or the resurrection sets, and
+    the closed reconciliation silently stops re-proving."""
+    q = (
+        db.collection(RECONCILIATIONS_COLLECTION)
+        .where(filter=FieldFilter("account_id", "==", account_id))
+        .order_by("period_end", direction=firestore.Query.DESCENDING)
+    )
+    for snap in q.stream(transaction=txn):
+        r = snap.to_dict() or {}
+        if r.get("status") == "complétée":
+            return _as_utc(r.get("period_end"))
+    return None
+
+
+def _floor_label(floor: datetime) -> str:
+    """The floor as the register prints dates (YYYY-MM-DD, UTC calendar)."""
+    return floor.strftime("%Y-%m-%d")
 
 
 def _read_last_transaction(account_id: str, txn) -> Optional[dict]:
@@ -750,6 +809,7 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
             int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
         )
         last_tx = _read_last_transaction(account_id, txn)
+        lock_floor = _read_lock_floor(account_id, txn)
 
         dossier = None
         if dossier_ref is not None:
@@ -768,6 +828,8 @@ def create_transaction(data: dict) -> tuple[Optional[dict], list[str]]:
         # 2. GUARDS
         if account.get("status") != "actif":
             raise _TxnAbort("compte_fermé")
+        if lock_floor is not None and _as_utc(tx_date).date() <= lock_floor.date():
+            raise _TxnAbort("période_verrouillée", detail=_floor_label(lock_floor))
         if dossier_id is not None and client_id not in (dossier.get("client_ids") or []):
             raise _TxnAbort("client_hors_dossier")
         if last_tx is not None:
@@ -944,6 +1006,15 @@ def _clear_entries(
         if not acc_snap.exists:
             raise _TxnAbort("compte_introuvable")
         account = acc_snap.to_dict()
+        # A clear dated inside a completed reconciliation takes the entry
+        # OUT of that period's resurrection set (_list_cleared_after needs
+        # cleared_date > period_end): the closed reconciliation would stop
+        # re-proving, in silence. admin_ledger has refused it since 2026-08.
+        lock_floor = _read_lock_floor(account_id, txn)
+        if lock_floor is not None and cd.date() <= lock_floor.date():
+            raise _TxnAbort(
+                "compensation_période_verrouillée", detail=_floor_label(lock_floor)
+            )
 
         dossier_ids = {
             e["dossier_id"]
@@ -1025,6 +1096,11 @@ def clear_transaction(tx_id: str, cleared_date) -> tuple[Optional[dict], list[st
     reason_out: dict = {}
     cleared, failed = _clear_entries([tx_id], cleared_date, None, _reason_out=reason_out)
     if failed or not cleared:
+        log_trust_event(
+            "trust_transaction_refused", "refused", transaction_id=tx_id,
+            reason=reason_out.get("reason") or "compensation_invalide",
+            operation="clear",
+        )
         return None, [_clear_refusal_message(reason_out)]
     entry = cleared[0]
     log_trust_event(
@@ -1041,9 +1117,15 @@ def clear_transactions_bulk(
     ``(cleared_count, failed_ids)`` — on any failure ``(0, failed_ids)``.
     ``_reason_out`` receives the refusal's ``message`` (French) as well as
     its reason, for a route that must say why."""
+    ids = list(tx_ids)
     reason_out: dict = {}
-    cleared, failed = _clear_entries(list(tx_ids), cleared_date, None, _reason_out=reason_out)
+    cleared, failed = _clear_entries(ids, cleared_date, None, _reason_out=reason_out)
     if failed:
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            reason=reason_out.get("reason") or "compensation_invalide",
+            operation="clear", count=len(ids),
+        )
         if _reason_out is not None:
             _reason_out.update(reason_out)
             _reason_out["message"] = _clear_refusal_message(reason_out)
@@ -1070,6 +1152,7 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
 
     orig_ref = db.collection(TRANSACTIONS_COLLECTION).document(tx_id)
     now = datetime.now(timezone.utc)
+    today = _today_midnight_utc()
     rev_id = str(uuid.uuid4())
     rev_ref = db.collection(TRANSACTIONS_COLLECTION).document(rev_id)
     transaction = db.transaction()
@@ -1095,6 +1178,13 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         seq_current = (
             int((counter_snap.to_dict() or {}).get("seq", 0)) if counter_snap.exists else 0
         )
+        # The reversal is dated TODAY: refused while a completed
+        # reconciliation already covers today (its period_end is today).
+        lock_floor = _read_lock_floor(account_id, txn)
+        if lock_floor is not None and today.date() <= lock_floor.date():
+            raise _TxnAbort(
+                "contre_passation_période_verrouillée", detail=_floor_label(lock_floor)
+            )
 
         dossier_id = original.get("dossier_id")
         client_id = original.get("client_id")
@@ -1137,7 +1227,7 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         )
 
         reversal = _build_transaction_doc(
-            tx_id=rev_id, account_id=account_id, sequence=seq, date=_today_midnight_utc(),
+            tx_id=rev_id, account_id=account_id, sequence=seq, date=today,
             direction=rev_dir, amount=amount, purpose=REVERSAL_PURPOSE,
             method=original.get("method", ""), counterparty=original.get("counterparty", ""),
             dossier=None, dossier_id=dossier_id, client_id=client_id,
@@ -1178,6 +1268,10 @@ def reverse_transaction(tx_id: str, reason: str) -> tuple[Optional[dict], list[s
         with span("trust.transaction", direction="reversal", purpose=REVERSAL_PURPOSE, dossier_id=None):
             _reverse(transaction)
     except _TxnAbort as abort:
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            transaction_id=tx_id, reason=abort.reason, operation="reverse",
+        )
         return None, [_abort_message(abort.reason, abort.detail, "Contre-passation refusée.")]
     except Exception as exc:
         logger.error(
@@ -1252,9 +1346,16 @@ def create_inter_dossier_transfer(
             raise _TxnAbort("dossier_introuvable")
         from_dossier = f_snap.to_dict()
         to_dossier = t_snap.to_dict()
+        lock_floor = _read_lock_floor(account_id, txn)
 
         if account.get("status") != "actif":
             raise _TxnAbort("compte_fermé")
+        # Both legs are dated TODAY: refused while a completed
+        # reconciliation already covers today.
+        if lock_floor is not None and today.date() <= lock_floor.date():
+            raise _TxnAbort(
+                "virement_période_verrouillée", detail=_floor_label(lock_floor)
+            )
         if from_client_id not in (from_dossier.get("client_ids") or []):
             raise _TxnAbort("client_hors_dossier")
         if to_client_id not in (to_dossier.get("client_ids") or []):
@@ -1334,6 +1435,11 @@ def create_inter_dossier_transfer(
         with span("trust.transaction", direction="transfer", purpose="virement_inter_dossiers", dossier_id=from_dossier_id):
             _transfer(transaction)
     except _TxnAbort as abort:
+        log_trust_event(
+            "trust_transaction_refused", "refused",
+            account_id=account_id, dossier_id=from_dossier_id,
+            reason=abort.reason, operation="transfer",
+        )
         return None, [_abort_message(abort.reason, abort.detail, "Virement refusé.")]
     except Exception as exc:
         logger.error("inter-dossier transfer failed: %s", type(exc).__name__)
