@@ -23,6 +23,7 @@ from google.api_core.exceptions import AlreadyExists, NotFound
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from models import concurrency, dav_ids, db, provenance
+from models import revision as revision_model
 from security import sanitize
 from utils.logging_setup import log_unexpected, sanitize_log_value
 
@@ -351,8 +352,30 @@ def list_notes_recent(
         return []
 
 
+# The refusal when a write would move the « Théorie de la cause » out of its
+# dossier. ONE constant: routes/notes.py keeps its own identical guard (belt
+# and braces, tests/test_notes_general.py) and says the same words.
+ANALYSE_DOSSIER_LOCKED_ERROR = (
+    "La note d'analyse est liée à son dossier — le dossier ne peut pas être "
+    "modifié."
+)
+
+# A revision needs the guarded path: ``commit_document`` is atomic only with
+# an expected etag (``models/revision.py``). A caller asking for history
+# without naming the version it replaces is a programming error, refused
+# rather than written half-way.
+_REVISION_NEEDS_ETAG_ERROR = (
+    "Remplacement refusé : la version lue (etag) est requise pour conserver "
+    "la révision du texte remplacé."
+)
+
+
 def update_note(
-    note_id: str, data: dict, *, expected_etag: Optional[str] = None
+    note_id: str,
+    data: dict,
+    *,
+    expected_etag: Optional[str] = None,
+    revision: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing note. Returns (updated_doc, errors).
 
@@ -362,12 +385,53 @@ def update_note(
     a stale edit tab from erasing a block appended since it opened. ``None``
     (DAV PUT, a page rendered before its form carried an etag) is the
     unchanged single ``set()``.
+
+    ``revision`` (keyword-only): the ``models.revision`` field this write
+    replaces (``"content"``, ``"content:rewrite"``, ``"bloc:C"``…). When the
+    stored content actually changes, the WHOLE content it replaces is
+    snapshotted write-once into ``notes/{id}/revisions/`` in the SAME
+    transaction as the replacement (plan rule 4, D8): both commit or
+    neither does. It requires ``expected_etag`` (refused otherwise, nothing
+    written). The returned document then carries the snapshot's id under
+    ``_revision_id`` — a transient key, never stored. The snapshot holds
+    the whole previous content whatever the field names: a restore needs
+    nothing else. An unchanged content writes no snapshot.
+
+    The rules of the théorie de la cause live HERE, on every path — web,
+    DAV PUT, connector:
+
+    * ``is_analyse`` is never taken from *data*: an update can neither
+      demote the dossier's analyse note (a client stripping the X-property
+      only omits the key, but a hand-crafted ``false`` would not) nor
+      promote an ordinary note into a second one;
+    * the analyse note never leaves its dossier — neither for another one
+      nor for « Général » (:data:`ANALYSE_DOSSIER_LOCKED_ERROR`): a moved
+      analyse note is invisible in every app view;
+    * the analyse note stays dateless (``dateless`` is ignored for it). An
+      ORDINARY note keeps the DAV round trip ``vjournal_to_note`` feeds:
+      turned in jtx from a Note into a dated Journal entry (DTSTART added)
+      it becomes dated, and back.
     """
     existing = get_note(note_id)
     if not existing:
         return None, ["Note introuvable."]
     if not concurrency.matches(existing, expected_etag):
         return None, [concurrency.STALE_ETAG_ERROR]
+    if revision is not None and (
+        expected_etag is None
+        or revision not in revision_model.VALID_FIELDS
+        or revision == revision_model.DELETE_FIELD
+    ):
+        return None, [_REVISION_NEEDS_ETAG_ERROR]
+
+    data = dict(data)
+    data.pop("is_analyse", None)
+    if existing.get("is_analyse"):
+        data.pop("dateless", None)
+        if "dossier_id" in data and (data.get("dossier_id") or "") != (
+            existing.get("dossier_id") or ""
+        ):
+            return None, [ANALYSE_DOSSIER_LOCKED_ERROR]
 
     merged = {**existing, **_sanitize_data(data)}
 
@@ -378,11 +442,32 @@ def update_note(
     now = datetime.now(timezone.utc)
     provenance.stamp_update(merged, now)
 
+    extra_sets: list = []
+    revision_id = ""
+    previous_content = existing.get("content", "") or ""
+    if revision is not None and merged.get("content", "") != previous_content:
+        try:
+            rev_ref, rev_data = revision_model.build_revision(
+                parent_collection=COLLECTION,
+                parent_id=note_id,
+                field=revision,
+                previous_value=previous_content,
+                previous_etag=concurrency.etag_of(existing),
+                new_etag=merged["etag"],
+                now=now,
+            )
+        except revision_model.RevisionRefused:
+            log_unexpected("note revision refused", field=revision)
+            return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+        extra_sets.append((rev_ref, rev_data))
+        revision_id = rev_data["id"]
+
     try:
         concurrency.commit_document(
             db.collection(COLLECTION).document(note_id), merged,
             expected_etag=expected_etag,
             read_etag=concurrency.etag_of(existing),
+            extra_sets=extra_sets,
         )
     except concurrency.StaleWrite:
         return None, [concurrency.STALE_ETAG_ERROR]
@@ -393,21 +478,67 @@ def update_note(
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, note_id)
 
+    if revision_id:
+        return {**merged, "_revision_id": revision_id}, []
     return merged, []
 
 
 def delete_note(note_id: str) -> tuple[bool, str]:
-    """Delete a note. Returns (success, error_message)."""
+    """Delete a note. Returns (success, error_message).
+
+    The dossier's « Théorie de la cause » is never deleted bare: its content
+    is first snapshotted write-once into ``notes/{id}/revisions/`` (field
+    ``content:delete``), and the snapshot and the delete commit in ONE
+    transaction guarded by the etag just read — so the snapshot is exactly
+    what disappeared, and a delete racing an edit is refused
+    (``STALE_ETAG_ERROR``) instead of losing the edit unsnapshotted. The
+    revisions OUTLIVE the note: Firestore does not cascade, and nothing in
+    the application deletes them (the ``documents/{id}/analyses`` journal
+    doctrine), so a deleted analysis stays recoverable. Ordinary notes keep
+    the plain delete. Callers on every path — the web route and the DAV
+    DELETE — go through here, so neither can skip the snapshot.
+    """
     existing = get_note(note_id)
     if not existing:
         return False, "Note introuvable."
 
+    ref = db.collection(COLLECTION).document(note_id)
+    if existing.get("is_analyse"):
+        return _delete_analyse_note(ref, note_id, existing)
+
     try:
-        db.collection(COLLECTION).document(note_id).delete()
+        ref.delete()
         return True, ""
     except Exception:
         log_unexpected("note delete failed")
         return False, "Erreur lors de la suppression. Veuillez réessayer."
+
+
+def _delete_analyse_note(ref, note_id: str, existing: dict) -> tuple[bool, str]:
+    """Snapshot the analyse note's content, then delete it — atomically."""
+    etag = concurrency.etag_of(existing)
+    try:
+        rev_ref, rev_data = revision_model.build_revision(
+            parent_collection=COLLECTION,
+            parent_id=note_id,
+            field=revision_model.DELETE_FIELD,
+            previous_value=existing.get("content", "") or "",
+            previous_etag=etag,
+            new_etag="",
+            now=datetime.now(timezone.utc),
+        )
+        concurrency.commit_delete(
+            ref, expected_etag=etag, read_etag=etag,
+            extra_sets=[(rev_ref, rev_data)],
+        )
+    except concurrency.StaleWrite:
+        return False, concurrency.STALE_ETAG_ERROR
+    except concurrency.Vanished:
+        return False, "Note introuvable."
+    except Exception:
+        log_unexpected("analyse note delete failed")
+        return False, "Erreur lors de la suppression. Veuillez réessayer."
+    return True, ""
 
 
 def set_pinned(
@@ -671,6 +802,11 @@ Norme applicable : prépondérance des probabilités (art. 2804 C.c.Q.), sauf ex
 def get_analyse_note(dossier_id: str) -> Optional[dict]:
     """Return the dossier's single ``is_analyse`` note, or ``None``.
 
+    FOR DISPLAY ONLY. It flows through :func:`list_notes`, which swallows a
+    read error into ``[]``, so ``None`` may mean « the read failed », and a
+    duplicate resolves silently to the first match. A WRITE path that must
+    know whether the note exists uses :func:`find_analyse_note_strict`.
+
     Python scan over the per-dossier list (deliberately no
     ``.where("is_analyse", ...)`` — that would need a composite index
     deployed before the code).
@@ -682,46 +818,94 @@ def get_analyse_note(dossier_id: str) -> Optional[dict]:
 
 
 def has_analyse(dossier_id: str) -> bool:
-    """True when the dossier already has its « Théorie de la cause » note."""
+    """True when the dossier already has its « Théorie de la cause » note
+    (display helper — fail-open, see :func:`get_analyse_note`)."""
     return get_analyse_note(dossier_id) is not None
 
 
-def create_analyse_note(dossier_id: str) -> tuple[Optional[dict], list[str]]:
-    """Create the dossier's single analyse note, pre-seeded. IDEMPOTENT.
+class AnalyseLookupError(Exception):
+    """The analyse-note lookup could not answer: nothing may be written."""
 
-    Returns the existing note untouched when one is already there, so a
-    re-clicked init button never mints a second one. The CTag bump belongs
-    to the ROUTE (house rule) — never here.
 
-    The existence check runs on a DIRECT query that propagates read
-    failure (fail CLOSED): :func:`get_analyse_note` flows through
-    :func:`list_notes`, which swallows errors into ``[]`` — a transient
-    read failure would then look like « no analyse note yet » and this
-    function would seed a DUPLICATE over the lawyer's filled analysis.
+class AnalyseDuplicateError(AnalyseLookupError):
+    """The dossier holds more than one « Théorie de la cause » note."""
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+        super().__init__(f"{count} analyse notes")
+
+
+ANALYSE_DUPLICATE_ERROR = (
+    "Ce dossier compte plusieurs notes « Théorie de la cause » ; il ne doit y "
+    "en avoir qu'une. Rien n'a été créé ni modifié : gardez-en une seule "
+    "(les autres sont visibles au téléphone, dans jtx Board), puis "
+    "réessayez."
+)
+ANALYSE_READ_ERROR = "Erreur de lecture. Veuillez réessayer."
+
+
+def find_analyse_note_strict(dossier_id: str) -> Optional[dict]:
+    """The dossier's analyse note, read to FAIL CLOSED — for write paths.
+
+    ``None`` only when the store answered « there is none ». Raises
+    :class:`AnalyseLookupError` when the read fails, and
+    :class:`AnalyseDuplicateError` (a subclass) when there are several: a
+    write must never pick one of two analyses at random, nor seed a third
+    because a transient error read as « none yet ». One equality query on
+    ``dossier_id`` (automatic index), filtered in Python.
     """
+    if not dossier_id:
+        return None
     try:
-        existing: Optional[dict] = None
         query = db.collection(COLLECTION).where(
             filter=FieldFilter("dossier_id", "==", dossier_id)
         )
-        for doc in query.stream():
-            candidate = doc.to_dict()
-            if candidate.get("is_analyse"):
-                existing = candidate
-                break
-    except Exception:
+        rows = [snap.to_dict() or {} for snap in query.stream()]
+        found = [_migrate_category(r) for r in rows if r.get("is_analyse")]
+    except Exception as exc:
+        raise AnalyseLookupError("analyse lookup failed") from exc
+    if len(found) > 1:
+        raise AnalyseDuplicateError(len(found))
+    return found[0] if found else None
+
+
+def ensure_analyse_note(
+    dossier_id: str,
+) -> tuple[Optional[dict], list[str], bool]:
+    """The dossier's single analyse note, created pre-seeded if absent.
+
+    Returns ``(note, errors, created)``: ``created`` is True ONLY when this
+    call wrote the note, which is what lets the caller bump the CTag on an
+    actual creation and never on a « found » (the house rule keeps the bump
+    in the route). IDEMPOTENT: a re-clicked init button, or a replayed
+    connector call, finds the note and writes nothing.
+
+    Fails CLOSED through :func:`find_analyse_note_strict`: a read error or
+    a duplicate returns an error and writes nothing — the fail-open
+    :func:`get_analyse_note` would have read an outage as « no note yet »
+    and seeded a duplicate over the lawyer's filled analysis. The writer's
+    provenance (``created_via``) comes from ``models.provenance``'s context
+    — the request's blueprint, or the connector's ``writing_via`` — never
+    from an argument (Architecture Rule 5's lot-0a corollary: a caller never
+    sets it).
+    """
+    try:
+        existing = find_analyse_note_strict(dossier_id)
+    except AnalyseDuplicateError:
+        return None, [ANALYSE_DUPLICATE_ERROR], False
+    except AnalyseLookupError:
         log_unexpected("analyse existence check failed")
-        return None, ["Erreur de lecture. Veuillez réessayer."]
+        return None, [ANALYSE_READ_ERROR], False
     if existing:
-        return existing, []
+        return existing, [], False
 
     from models.dossier import get_dossier
 
-    dossier = get_dossier(dossier_id)
+    dossier = get_dossier(dossier_id) if dossier_id else None
     if not dossier:
-        return None, ["Dossier introuvable."]
+        return None, ["Dossier introuvable."], False
 
-    return create_note({
+    note, errors = create_note({
         "dossier_id": dossier_id,
         "dossier_file_number": dossier.get("file_number", ""),
         "dossier_title": dossier.get("title", ""),
@@ -732,6 +916,16 @@ def create_analyse_note(dossier_id: str) -> tuple[Optional[dict], list[str]]:
         "dateless": True,
         "is_analyse": True,
     })
+    return note, errors, bool(note is not None and not errors)
+
+
+def create_analyse_note(dossier_id: str) -> tuple[Optional[dict], list[str]]:
+    """``(note, errors)`` of :func:`ensure_analyse_note` — kept for callers
+    that do not need to know whether the note was created. It cannot tell
+    « found » from « created »: a caller that bumps a CTag uses
+    :func:`ensure_analyse_note`."""
+    note, errors, _created = ensure_analyse_note(dossier_id)
+    return note, errors
 
 
 # ── Summary ──────────────────────────────────────────────────────────────

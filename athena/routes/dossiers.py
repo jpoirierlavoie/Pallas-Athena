@@ -20,6 +20,7 @@ from models.audit_event import record_deletion
 from dav.sync import (
     bump_ctag,
     clear_tombstones,
+    collection_for,
     delete_sync_state,
     record_tombstones_bulk,
     remove_tombstone,
@@ -713,22 +714,29 @@ def dossier_analyse_init(dossier_id: str) -> str:
     """Create the dossier's « Théorie de la cause » note (idempotent).
 
     The CTag bump lives HERE, not in the model (house rule), and fires only
-    on an actual creation — a double-clicked button neither duplicates the
-    note nor bumps for nothing. Responds with the re-rendered Analyse tab
-    fragment (HTMX target #tab-content).
+    on an actual creation — ``ensure_analyse_note`` says which, so a
+    double-clicked button neither duplicates the note nor bumps for
+    nothing. Its lookup FAILS CLOSED: before lot 1a (L3) this route
+    pre-checked with the fail-open ``get_analyse_note``, and a read blip
+    looked like « no note yet ». Responds with the re-rendered Analyse tab
+    fragment (HTMX target #tab-content) — at 200 even on a refusal, since
+    htmx swaps no 4xx and the message would never show.
     """
-    from models.note import create_analyse_note, get_analyse_note
+    from models.note import ensure_analyse_note, get_analyse_note
 
     dossier = get_dossier(dossier_id)
     if not dossier:
-        return '<p class="text-red-600 text-sm">Dossier introuvable.</p>', 404
+        return '<p class="text-red-600 text-sm">Dossier introuvable.</p>', 200
 
-    note = get_analyse_note(dossier_id)
-    errors: list[str] = []
-    if note is None:
-        note, errors = create_analyse_note(dossier_id)
-        if note is not None and not errors:
-            bump_ctag(f"dossier:{dossier_id}")
+    note, errors, created = ensure_analyse_note(dossier_id)
+    if created:
+        bump_ctag(collection_for(dossier_id))
+    if note is None and errors:
+        # A refusal (a duplicate, a read error) must not render the empty
+        # state's « Aucune théorie de la cause » — false on a duplicate. The
+        # display reader (fail-open) shows what can be shown; the banner
+        # carries the refusal.
+        note = get_analyse_note(dossier_id)
 
     ctx = _template_context()
     ctx["dossier"] = dossier

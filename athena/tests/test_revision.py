@@ -1,7 +1,9 @@
 """Les instantanés de révision (règle 4 du plan) — ``models/revision.py``.
 
-Le module ne sert encore à personne : c'est la primitive du lot 1 (D8). On
-épingle donc sa DOCTRINE avant son premier appelant :
+Primitive du lot 1 (D8), livrée inerte au lot 0a. Ses appelants sont
+désormais ``models/note.py`` (``update_note(revision=…)`` et l'instantané que
+laisse la suppression de la théorie de la cause — lot 1a, étape L3). On
+épingle sa DOCTRINE :
 
 1. la forme — l'exception à la règle 7 (``created_at`` seul, ni
    ``updated_at`` ni ``etag``), la provenance tirée du contexte ;
@@ -12,7 +14,10 @@ Le module ne sert encore à personne : c'est la primitive du lot 1 (D8). On
 4. les lectures — la liste échoue OUVERT sur un index simple, la lecture
    d'une révision LÈVE ;
 5. aucun verbe ne modifie ni n'efface une révision, et aucun autre module
-   n'atteint la sous-collection par son nom.
+   n'atteint la sous-collection par son nom — la décision du lot 1 est de
+   les GARDER quand la note disparaît ;
+6. un appelant engage toujours la révision sur le chemin gardé
+   (``commit_document`` ou ``commit_delete``, avec un etag attendu).
 
 Le magasin est le faux partagé (``tests/_fake_firestore.py``) : le VRAI
 client, un serveur en mémoire qui tamponne les écritures transactionnelles.
@@ -103,7 +108,20 @@ def test_an_empty_previous_value_and_a_legacy_etag_are_legitimate():
 
 @pytest.mark.parametrize("field", rev.VALID_FIELDS)
 def test_every_declared_field_is_accepted(field):
-    assert _build(field=field)[1]["field"] == field
+    # A delete snapshot names no new version (rewritten deliberately with
+    # the field's arrival, lot 1a L3): its new_etag is empty.
+    new_etag = "" if field == rev.DELETE_FIELD else "e-new"
+    assert _build(field=field, new_etag=new_etag)[1]["field"] == field
+
+
+def test_a_delete_snapshot_names_no_new_version():
+    """No version follows a delete: an etag there would chain the snapshot
+    to a document that was never written — and an EMPTY one elsewhere means
+    the caller built the revision before stamping (see the refusals)."""
+    _, data = _build(field=rev.DELETE_FIELD, new_etag="")
+    assert data["new_etag"] == ""
+    with pytest.raises(rev.RevisionRefused):
+        _build(field=rev.DELETE_FIELD, new_etag="e-new")
 
 
 # ── 2. L'écriture passe par la transaction de l'appelant ──────────────────
@@ -350,9 +368,10 @@ def _reaches_the_subcollection(node: ast.AST) -> bool:
 
 
 def test_no_other_module_reaches_the_revisions_subcollection():
-    """The deletion of a note's revisions is Lot 1's DECISION (purge or keep
-    orphaned). Until it is taken and recorded, nothing may address the
-    subcollection except this module — so it cannot be taken by accident."""
+    """Lot 1 took the decision (lot 1a, L3; CLAUDE.md): a note's revisions
+    are KEPT when the note is deleted. Nothing but this module may address
+    the subcollection, so a purge can only come back as a new, deliberate
+    decision — never by accident."""
     offenders = []
     scanned = 0
     for path in ATHENA.rglob("*.py"):
@@ -397,9 +416,10 @@ def _cascades_blindly(node: ast.AST) -> bool:
 def test_no_module_cascades_into_subcollections_blindly():
     """Firestore does not cascade a document delete — but
     ``recursive_delete`` does, and a ``collections()`` walk enumerates every
-    subcollection. Either, pointed at a note, would take Lot 1's decision
-    (purge the revisions with the note, or keep them) by accident. None
-    exists today; the first one must come with that decision."""
+    subcollection. Either, pointed at a note, would silently undo Lot 1's
+    decision to KEEP the revisions of a deleted note (the théorie de la
+    cause even leaves one more on deletion). None exists; the first one
+    must come with a new decision."""
     offenders, scanned = [], 0
     for path in ATHENA.rglob("*.py"):
         rel = path.relative_to(ATHENA).as_posix()
@@ -432,13 +452,18 @@ def test_the_blind_cascade_sweep_catches_what_it_claims(snippet, flagged):
 # FIRST, one by one, then the document — so a replacement that fails there
 # would leave its revision behind, a history entry for a change that never
 # happened. The plan makes the etag REQUIRED for every content replacement;
-# this sweep makes that mechanical for the callers Lot 1 will add (none
-# exists yet — the test is armed, not vacuous: its snippets prove it).
+# this sweep makes that mechanical for every caller. ``commit_delete`` (lot
+# 1a, L3 — the snapshot a deleted théorie de la cause leaves) is its twin
+# and obeys the same rule: on its legacy path the snapshot would land
+# before a delete that may then fail.
+
+_GUARDED_COMMITS = ("commit_document", "commit_delete")
 
 
 def revision_caller_violations(source: str, label: str) -> list[str]:
     """Functions that call ``build_revision`` and either never reach
-    ``commit_document`` or reach it without a non-None ``expected_etag``."""
+    ``commit_document``/``commit_delete`` or reach one without a non-None
+    ``expected_etag``."""
     violations = []
     for fn in ast.walk(ast.parse(source)):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -452,14 +477,15 @@ def revision_caller_violations(source: str, label: str) -> list[str]:
 
         if not any(_named(c, "build_revision") for c in calls):
             continue
-        commits = [c for c in calls if _named(c, "commit_document")]
+        commits = [c for c in calls
+                   if any(_named(c, name) for name in _GUARDED_COMMITS)]
         if not commits:
             violations.append(f"{label}:{fn.name} builds a revision it never commits "
-                              "through commit_document")
+                              "through commit_document or commit_delete")
         for c in commits:
             etag = next((k.value for k in c.keywords if k.arg == "expected_etag"), None)
             if etag is None or (isinstance(etag, ast.Constant) and etag.value is None):
-                violations.append(f"{label}:{fn.name}:{c.lineno} commit_document "
+                violations.append(f"{label}:{fn.name}:{c.lineno} guarded commit "
                                   "without an expected_etag (legacy, non-atomic)")
     return violations
 
@@ -494,6 +520,14 @@ def test_every_revision_is_committed_on_the_guarded_path():
      "    r.set(data)\n",
      True),                                   # written on its own
     ("def f(ref, d):\n    commit_document(ref, d, expected_etag=None)\n", False),
+    ("def f(ref, e):\n"
+     "    r = revision.build_revision(**kw)\n"
+     "    concurrency.commit_delete(ref, expected_etag=e, extra_sets=[r])\n",
+     False),                                  # the delete snapshot, guarded
+    ("def f(ref):\n"
+     "    r = build_revision(**kw)\n"
+     "    commit_delete(ref, expected_etag=None, extra_sets=[r])\n",
+     True),                                   # ... on the legacy path
 ])
 def test_the_guarded_path_sweep_catches_what_it_claims(snippet, flagged):
     assert bool(revision_caller_violations(snippet, "snippet")) is flagged

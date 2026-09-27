@@ -41,6 +41,13 @@
     </div>
   </div>
 
+  {# A delete the model refused comes back here (routes/notes.note_delete). #}
+  {% if delete_error %}
+  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+    <p class="text-sm text-red-700">{{ delete_error }}</p>
+  </div>
+  {% endif %}
+
   {% set cat_colors = {
     'rencontre': 'bg-teal-100 text-teal-700',
     'consultation': 'bg-green-100 text-green-700',

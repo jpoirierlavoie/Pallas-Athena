@@ -20,9 +20,11 @@ from dav.sync import (
     record_tombstone,
     relocate_resource,
 )
+from models import concurrency
 from models.audit_event import record_deletion
 from security import safe_internal_redirect
 from models.note import (
+    ANALYSE_DOSSIER_LOCKED_ERROR,
     CATEGORY_LABELS,
     CONTENT_MAX_LENGTH,
     VALID_CATEGORIES,
@@ -236,7 +238,24 @@ def note_detail(note_id: str) -> str:
     ctx["gabarit_error"] = _GABARIT_ERRORS.get(
         request.args.get("gabarit_erreur", "")
     )
+    ctx["delete_error"] = _DELETE_ERRORS.get(
+        request.args.get("suppression_erreur", "")
+    )
     return render_template("notes/detail.html", **ctx)
+
+
+# A delete refused by the model comes back to the note with one of these
+# (a redirect, so the banner renders on a 2xx — never a silent return to
+# the list, where the note would still be standing unexplained).
+_DELETE_ERRORS = {
+    "modifiee": (
+        "Cette note a été modifiée entre-temps — dans l'application, sur le "
+        "téléphone ou par le connecteur. Elle n'a PAS été supprimée : "
+        "relisez-la, puis supprimez-la de nouveau si c'est toujours votre "
+        "intention."
+    ),
+    "erreur": "La note n'a pas pu être supprimée. Veuillez réessayer.",
+}
 
 
 # ── Impression via gabarit (kind « note », Phase H.3) ───────────────────
@@ -405,15 +424,14 @@ def note_update(note_id: str) -> str:
     # locks the picker, so a differing dossier_id can only come from a
     # hand-crafted POST. Moving (or clearing) it would break the
     # one-analyse-per-dossier invariant and strand the lawyer's analysis
-    # where no app view lists it.
+    # where no app view lists it. Since lot 1a (L3) the MODEL refuses it on
+    # every path (the DAV PUT included); this guard is kept, with the
+    # model's very words, as belt and braces.
     if not link_errors and existing_note.get("is_analyse") and (
         (data.get("dossier_id") or "")
         != (existing_note.get("dossier_id") or "")
     ):
-        link_errors = [
-            "La note d'analyse est liée à son dossier — le dossier ne peut "
-            "pas être modifié."
-        ]
+        link_errors = [ANALYSE_DOSSIER_LOCKED_ERROR]
 
     note, errors = (
         (None, link_errors) if link_errors
@@ -498,12 +516,23 @@ def note_delete(note_id: str) -> str:
         )
 
     target = safe_internal_redirect(return_to, url_for("notes.note_list"))
+    if not success and existing_note is not None:
+        # A refused delete goes BACK to the note with a banner. It used to
+        # return silently to the list, the note still standing; and since
+        # lot 1a (L3) the théorie de la cause can refuse a delete that races
+        # an edit (the snapshot must be of what disappears).
+        clean_return = safe_internal_redirect(return_to, "") if return_to else ""
+        target = url_for(
+            "notes.note_detail", note_id=note_id,
+            suppression_erreur=(
+                "modifiee" if concurrency.is_stale([error]) else "erreur"
+            ),
+            return_to=clean_return or None,
+        )
     if _is_htmx():
-        if success:
-            resp = redirect(target)
-            resp.headers["HX-Redirect"] = target
-            return resp
-        return f'<div class="text-red-600 text-sm">{escape(error)}</div>', 422
+        resp = redirect(target)
+        resp.headers["HX-Redirect"] = target
+        return resp
 
     return redirect(target)
 

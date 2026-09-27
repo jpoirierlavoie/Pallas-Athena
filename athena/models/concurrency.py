@@ -167,6 +167,38 @@ def commit_document(
     _run_checked(ref, str(expected_etag), read_etag, _stage)
 
 
+def commit_delete(
+    ref,
+    *,
+    expected_etag: Optional[str],
+    read_etag: Optional[str] = None,
+    extra_sets: Sequence[tuple[Any, dict]] = (),
+) -> None:
+    """Delete *ref*, guarded by the etag — the twin of :func:`commit_document`.
+
+    *extra_sets* commit with the delete or not at all on the guarded path:
+    the write-once snapshot of what disappears (``models/note.delete_note``
+    for the théorie de la cause) must never exist without the delete, nor
+    the delete without it. On the legacy path they are written first, then
+    the document is deleted.
+
+    Raises :class:`StaleWrite` or :class:`Vanished` on the guarded path;
+    any other exception is a store failure, left for the caller to log.
+    """
+    if expected_etag is None:
+        for extra_ref, data in extra_sets:
+            extra_ref.set(data)
+        ref.delete()
+        return
+
+    def _stage(txn) -> None:
+        for extra_ref, data in extra_sets:
+            txn.set(extra_ref, data)
+        txn.delete(ref)
+
+    _run_checked(ref, str(expected_etag), read_etag, _stage)
+
+
 def commit_fields(
     ref,
     fields: dict,

@@ -7,9 +7,16 @@ revisions/{uuid4}``. Nothing in the application could undo a replaced note
 until this module: the full-document ``set()`` models overwrite, and the
 previous text was gone.
 
-**Nothing calls this module yet.** It is the primitive Lot 1 builds on
-(D8: every replace requires the current etag AND keeps a revision). It
-ships early and inert so its doctrine is pinned before its first caller.
+Its callers live in ``models/note.py``: ``update_note(revision=…)`` (D8:
+every replacement of note prose requires the current etag AND keeps a
+revision — the connector's tools of lot 1b pass it) and ``delete_note``,
+which snapshots the « Théorie de la cause » before deleting it (lot 1a,
+step L3). The module shipped inert in lot 0a so that its doctrine was
+pinned before its first caller.
+
+A note revision always holds the note's WHOLE previous content, whatever
+``field`` names: ``field`` says what the write replaced (one bloc, the
+whole text), and a restore then needs nothing but the snapshot.
 
 How a revision is written — and why this module writes NOTHING itself
 ---------------------------------------------------------------------
@@ -28,8 +35,9 @@ Only the GUARDED branch is atomic: with ``expected_etag=None``,
 first, one by one, then the document — a replacement failing there would
 leave its revision behind. The plan makes the etag REQUIRED for every
 content replacement, and ``tests/test_revision.py`` refuses any caller that
-builds a revision without committing it through ``commit_document`` with a
-non-None ``expected_etag``.
+builds a revision without committing it through ``commit_document`` — or,
+for the snapshot a DELETE leaves, ``commit_delete`` — with a non-None
+``expected_etag``.
 
 The shape — a documented exception to Architecture Rule 7
 ---------------------------------------------------------
@@ -46,16 +54,20 @@ sweep (``tests/test_provenance.py``, which matches the literal key
 under the connector, the tool — so the history can say that a replacement
 was Claude's without trusting any caller to declare it.
 
-What this module deliberately does NOT decide
----------------------------------------------
-What happens to a note's revisions when the lawyer deletes the NOTE.
-Firestore does not cascade subcollections, so a revision outlives its
-parent unless someone removes it — and a revision carries the full prior
-text, which is privileged. That is Lot 1's decision (purge with the note,
-or keep them orphaned like the analyses journal), to be recorded in
-CLAUDE.md with it. Until then no code can delete a revision: the sweep in
-``tests/test_revision.py`` refuses any other module that reaches this
-subcollection by name, so the decision cannot be taken by accident.
+When the NOTE is deleted — the decision lot 1 had to take
+---------------------------------------------------------
+Its revisions are KEPT (lot 1a, step L3; recorded in CLAUDE.md). Firestore
+does not cascade subcollections, so a revision outlives its parent, and
+nothing in the application removes one — the ``documents/{id}/analyses``
+journal doctrine. The « Théorie de la cause » goes further: its deletion
+itself leaves a snapshot (field :data:`DELETE_FIELD`, ``new_etag`` empty —
+no version follows a delete), committed in the same transaction as the
+delete. A revision carries the full prior text, which is privileged: that
+is the price of « nothing replaced is lost », and it is why the sweep in
+``tests/test_revision.py`` still refuses any other module that reaches
+this subcollection by name, and any blind cascade (``recursive_delete``,
+a ``collections()`` walk) — a purge can only arrive as a new, deliberate
+decision.
 
 Reads
 -----
@@ -93,12 +105,15 @@ VALID_PARENT_COLLECTIONS: tuple[str, ...] = ("notes",)
 
 # What was replaced. ``content`` — a note's whole body; ``content:rewrite``
 # — the théorie de la cause rewritten in one piece; ``bloc:…`` — one bloc
-# of it (the heading block ``entete``, then A to H).
+# of it (the heading block ``entete``, then A to H); ``content:delete`` —
+# the note itself was deleted (the snapshot of the text that disappeared).
+DELETE_FIELD = "content:delete"
 VALID_FIELDS: tuple[str, ...] = (
     "content",
     "content:rewrite",
     "bloc:entete",
     *(f"bloc:{letter}" for letter in "ABCDEFGH"),
+    DELETE_FIELD,
 )
 
 # The keys a listing returns when it leaves the text out.
@@ -158,7 +173,9 @@ def build_revision(
     *previous_etag* is the etag of the version being replaced (``''`` for a
     legacy record written before Rule 7), *new_etag* the one the
     replacement stamps: together they chain a revision to the two versions
-    it separates. *now* must be timezone-aware (Architecture Rule 5).
+    it separates. For :data:`DELETE_FIELD` no version follows, so
+    *new_etag* must be ``''`` — and for every other field it must not be.
+    *now* must be timezone-aware (Architecture Rule 5).
 
     Raises :class:`RevisionRefused` — and stages nothing — on an unknown
     parent or field, an invalid id, a non-string value, or a value above
@@ -175,7 +192,11 @@ def build_revision(
         )
     if not isinstance(previous_etag, str) or not isinstance(new_etag, str):
         raise RevisionRefused("previous_etag and new_etag must be strings")
-    if not new_etag:
+    if field == DELETE_FIELD:
+        if new_etag:
+            # A delete writes no version: an etag here would claim one.
+            raise RevisionRefused("a delete snapshot names no new version")
+    elif not new_etag:
         # A replacement always stamps a fresh etag; an empty one means the
         # caller built the revision before stamping the document.
         raise RevisionRefused("new_etag must name the version written")

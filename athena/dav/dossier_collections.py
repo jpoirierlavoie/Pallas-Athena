@@ -67,10 +67,13 @@ from models.hearing import (
     update_hearing,
     vevent_to_hearing,
 )
+from models.concurrency import STALE_ETAG_ERROR
 from models.note import (
+    AnalyseDuplicateError,
+    AnalyseLookupError,
     create_note,
     delete_note,
-    get_analyse_note,
+    find_analyse_note_strict,
     get_note,
     get_note_strict,
     list_notes,
@@ -1155,13 +1158,23 @@ def _put_note(
     # théorie de la cause — jtx preserves unknown X-properties). is_analyse
     # is the app's one-per-dossier singleton: drop the flag on the
     # « Général » scope (an analyse note belongs to a dossier) and when the
-    # target dossier already has its analyse note — the resource is then
-    # stored as an ordinary dateless note instead of silently shadowing the
-    # existing analysis.
-    if data.get("is_analyse") and (
-        _is_general(dossier_id) or get_analyse_note(dossier_id)
-    ):
-        data.pop("is_analyse")
+    # target dossier already has its analyse note (or, corrupt, several) —
+    # the resource is then stored as an ordinary dateless note instead of
+    # silently shadowing the existing analysis. The lookup FAILS CLOSED
+    # (lot 1a, L3): the fail-open get_analyse_note read an outage as « no
+    # analyse note yet » and seeded a second one over the filled analysis.
+    # An unreadable dossier is a 503 the client retries, never a guess.
+    if data.get("is_analyse"):
+        keep = not _is_general(dossier_id)
+        if keep:
+            try:
+                keep = find_analyse_note_strict(dossier_id) is None
+            except AnalyseDuplicateError:
+                keep = False
+            except AnalyseLookupError:
+                return _read_unavailable(dossier_id, "VJOURNAL", "analyse")
+        if not keep:
+            data.pop("is_analyse")
     uid = data.pop("vjournal_uid", None)
     created, errors = create_note(data, dav_id=resource_id, dav_uid=uid)
     refused = _create_errors_response(
@@ -1226,6 +1239,14 @@ def delete_resource(dossier_id: str, resource_id: str) -> Response:
             return Response("Precondition Failed", status=412)
 
         success, error = delete_note(resource_id)
+        if not success and error == STALE_ETAG_ERROR:
+            # The théorie de la cause is deleted with a snapshot of its text
+            # under an etag guard (models/note.delete_note): an edit that
+            # landed since this request read it refuses the delete, and the
+            # client must re-sync before it can delete what it never saw.
+            log_dav_operation("delete", "dossier", dossier_id=dossier_id or None,
+                              status_code=412, reason="modifiee_entre_temps")
+            return Response("Precondition Failed", status=412)
         if not success:
             logger.error(
                 "Dossier DAV DELETE (note) failed for %s: %s",

@@ -634,6 +634,11 @@ def test_general_displayname_is_general(app, general_members):
 # ══════════════════════════════════════════════════════════════════════
 # PUT — the one-analyse-per-dossier singleton
 # ══════════════════════════════════════════════════════════════════════
+# Retargeted deliberately in lot 1a (L3): the create branch now asks the
+# FAIL-CLOSED models.note.find_analyse_note_strict (a read error is a 503,
+# tests/test_analyse_note_rules.py) instead of the fail-open
+# get_analyse_note, which read an outage as « no analyse note yet ». The
+# seam these tests patch moved with it; what they assert did not.
 
 _VJOURNAL_BODY = "BEGIN:VCALENDAR\nBEGIN:VJOURNAL\nEND:VJOURNAL\nEND:VCALENDAR"
 
@@ -670,7 +675,7 @@ def test_put_created_analyse_flag_dropped_when_dossier_already_has_one(
     analysis — the resource must land as an ordinary note instead."""
     seen = {}
     _put_analyse_setup(monkeypatch, seen)
-    monkeypatch.setattr(dc, "get_analyse_note", lambda d: {"id": "n-old"})
+    monkeypatch.setattr(dc, "find_analyse_note_strict", lambda d: {"id": "n-old"})
     resp = app.test_client().put(
         "/dav/dossier-d1/n-new.ics", headers=AUTH, data=_VJOURNAL_BODY
     )
@@ -683,7 +688,7 @@ def test_put_created_analyse_flag_kept_when_dossier_has_none(app, monkeypatch):
     keeps the flag (the paired DELETE then clears the source)."""
     seen = {}
     _put_analyse_setup(monkeypatch, seen)
-    monkeypatch.setattr(dc, "get_analyse_note", lambda d: None)
+    monkeypatch.setattr(dc, "find_analyse_note_strict", lambda d: None)
     resp = app.test_client().put(
         "/dav/dossier-d1/n-new.ics", headers=AUTH, data=_VJOURNAL_BODY
     )
@@ -695,11 +700,11 @@ def test_put_created_analyse_flag_dropped_on_the_general_scope(
     app, monkeypatch
 ):
     """An analyse note belongs to a dossier: flagged under « Général » it
-    would be invisible in every app view (get_analyse_note is per-dossier
+    would be invisible in every app view (the analyse lookup is per-dossier
     and the Notes lists exclude is_analyse)."""
     seen = {}
     _put_analyse_setup(monkeypatch, seen)
-    monkeypatch.setattr(dc, "get_analyse_note", lambda d: None)
+    monkeypatch.setattr(dc, "find_analyse_note_strict", lambda d: None)
     resp = app.test_client().put(
         "/dav/general/n-new.ics", headers=AUTH, data=_VJOURNAL_BODY
     )
