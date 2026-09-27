@@ -501,15 +501,24 @@ def _metadata_input(data: dict, keys: tuple[str, ...]) -> tuple[dict, list[str]]
     return out, errors
 
 
+TEXT_CHEVRONS_ERROR = (
+    "{label} : un passage entre chevrons serait retiré à l'enregistrement "
+    "— retirez les chevrons."
+)
+
+
 def _text_errors(label: str, value: str, limit: int) -> list[str]:
-    """Refuse what ``security.sanitize`` would alter — never alter it."""
+    """Refuse what ``security.sanitize`` would alter — never alter it.
+
+    The message names the chevrons in WORDS, never as « < … > »: a refusal
+    travels on ``?erreur=`` (Réception, the document page), and those pages
+    ``sanitize`` it before display — a literal ``<…>`` run in the message
+    was itself stripped, leaving « (« ») » where the explanation stood.
+    """
     if len(value) > limit:
         return [f"{label} : {limit} caractères au plus."]
     if sanitize(value, max_length=limit) != value:
-        return [
-            f"{label} : un passage entre chevrons (« < … > ») serait retiré "
-            "à l'enregistrement — retirez les chevrons."
-        ]
+        return [TEXT_CHEVRONS_ERROR.format(label=label)]
     return []
 
 
@@ -538,6 +547,27 @@ def _metadata_value_errors(fields: dict) -> list[str]:
                     )
             errors += list(dict.fromkeys(tag_errors))
     return errors
+
+
+def _record_metadata(metadata: Optional[dict]) -> tuple[dict, list[str]]:
+    """A new record's metadata: the whitelisted keys, typed, then checked."""
+    fields, errors = _metadata_input(metadata or {}, _RECORD_METADATA_KEYS)
+    if not errors:
+        errors = _metadata_value_errors(fields)
+    return fields, errors
+
+
+def record_metadata_errors(metadata: Optional[dict]) -> list[str]:
+    """What a new record's *metadata* would be refused for — PURE.
+
+    The exact rules :func:`_prepare_document_record` applies (shape, the
+    refusal of what ``sanitize`` would alter, the category vocabulary), and
+    nothing that needs I/O (the folder is checked at creation). The direct
+    upload form asks it BEFORE opening the resumable session: refused only
+    at finalization, the lawyer's display name or tags would cost the whole
+    upload, the staging object being consumed on refusal.
+    """
+    return _record_metadata(metadata)[1]
 
 
 def _portail_fields(portail: Optional[dict]) -> tuple[dict, list[str]]:
@@ -760,9 +790,7 @@ def _prepare_document_record(
         return None, [INVALID_DOCUMENT_ID]
     if category_source not in _POSABLE_CATEGORY_SOURCES:
         return None, ["Provenance de catégorie invalide."]
-    fields, errors = _metadata_input(metadata or {}, _RECORD_METADATA_KEYS)
-    if not errors:
-        errors = _metadata_value_errors(fields)
+    fields, errors = _record_metadata(metadata)
     portail_fields, portail_errors = _portail_fields(portail)
     errors += portail_errors
     if errors:
@@ -946,7 +974,10 @@ def ingest_blob_as_document(
             "ingest_blob failed for document %s: %s",
             document_id, type(exc).__name__,
         )
-        _delete_own_object(storage_path, created_generation)
+        # A concurrent finalization may have ADOPTED this very generation
+        # (its rewrite answered 412, the bytes were the same) and committed
+        # its record before this call's patch failed.
+        _delete_own_object_unreferenced(ref, storage_path, created_generation)
         if reserved:
             # The concurrent call that consumed the staging object may have
             # committed meanwhile — then this call's answer is its document.
@@ -975,7 +1006,14 @@ def ingest_blob_as_document(
             "ingest_blob failed for document %s: %s",
             document_id, type(exc).__name__,
         )
-        _delete_own_object(storage_path, created_generation)
+        # An error on a write does not prove it did not land: the commit
+        # may have gone through and only its answer been lost. The record
+        # then points at this copy, which must outlive the failure — and it
+        # IS this call's answer (reserved or fresh, the id is this upload's).
+        _delete_own_object_unreferenced(ref, storage_path, created_generation)
+        done = _read_ingested(ref, dossier_id, size)
+        if done is not None:
+            return done
         return None, [_INGEST_FAILED]
 
     return merged, []
@@ -1032,6 +1070,31 @@ def _same_object(dest, source) -> bool:
         if isinstance(mine, str) and isinstance(theirs, str) and mine and theirs:
             return hmac.compare_digest(mine, theirs)
     return False
+
+
+def _delete_own_object_unreferenced(ref, storage_path: str, generation) -> None:
+    """:func:`_delete_own_object`, unless a committed record points at it.
+
+    The generation guard proves the object is the one THIS call wrote — not
+    that nobody depends on it. Two failure branches can leave a committed
+    record behind this call's copy: a concurrent finalization that adopted
+    the generation and committed before this call's patch failed, and this
+    call's own ``create()`` whose commit landed while its answer was lost.
+    Deleting there left a document without its bytes, in silence. An
+    unreadable record keeps the object (fail closed): an orphan under the
+    canonical prefix costs storage, a record without bytes costs a document.
+    """
+    if generation is None:
+        return
+    try:
+        snap = ref.get()
+    except Exception:
+        log_unexpected("document ingest: rollback check unreadable",
+                       document_id=ref.id)
+        return
+    if snap.exists and (snap.to_dict() or {}).get("storage_path") == storage_path:
+        return
+    _delete_own_object(storage_path, generation)
 
 
 def _delete_own_object(storage_path: str, generation) -> None:
@@ -1118,20 +1181,22 @@ def upload_document(
         return None, ["Erreur lors du téléversement. Veuillez réessayer."]
 
     # Save metadata to Firestore — create(): a fresh id can only be CREATED.
+    ref = db.collection(COLLECTION).document(document_id)
     try:
-        db.collection(COLLECTION).document(document_id).create(merged)
+        ref.create(merged)
     except Exception as exc:
         logger.warning("upload_document failed for document %s: %s", document_id, type(exc).__name__)
-        # Attempt to clean up the uploaded file
-        try:
-            bucket = storage.bucket()
-            bucket.blob(storage_path).delete()
-        except Exception as cleanup_exc:
-            logger.warning(
-                "upload_document: storage rollback failed for document %s: %s",
-                document_id,
-                type(cleanup_exc).__name__,
-            )
+        # The id is fresh, so a record holding it can only be THIS call's —
+        # committed by an attempt whose answer was lost: the client retries
+        # a commit on ServiceUnavailable, and a retried create() answers
+        # AlreadyExists (revue de T1: with the old set() the retry simply
+        # rewrote the same record). Deleting the file then would leave the
+        # committed document without its bytes. Its record is the answer;
+        # the file is removed only when no record points at it.
+        _delete_own_object_unreferenced(ref, storage_path, blob.generation)
+        done = _read_ingested(ref, dossier_id, file_size)
+        if done is not None:
+            return done
         return None, ["Erreur lors du téléversement. Veuillez réessayer."]
 
     return merged, []

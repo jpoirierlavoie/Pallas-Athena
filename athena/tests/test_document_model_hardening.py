@@ -750,3 +750,193 @@ def test_no_document_writer_sets_a_whole_document_any_more():
                 # Only the journal entry: transaction.set(<analyses ref>, champ).
                 assert fn.name in ("record_analyse", "update_analyse"), fn.name
                 assert "ANALYSES_SUBCOLLECTION" in ast.unparse(node.args[0])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. Revue adversariale de T1 (2026-09-27) — chacun échoue sur 04722bb
+# ══════════════════════════════════════════════════════════════════════
+#
+# Two failure branches of ingest_blob_as_document deleted THIS call's
+# generation without asking whether a COMMITTED record pointed at it — its
+# docstring promised « never when a committed record references it ». The
+# refusal of « < … > » also wrote the chevrons into its own message, which
+# the pages that show a refusal on ?erreur= sanitize — stripping the
+# explanation itself.
+
+
+def _lose_the_answer_of_the_create(db, monkeypatch):
+    """The record's commit LANDS, then the call raises: the answer was lost
+    (a reset connection after the server committed)."""
+    server = db._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        response = real_commit(request, metadata=metadata, **kwargs)
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(
+                server._write_name(w).endswith(f"documents/{DOC_ID}")
+                for w in writes):
+            state["armed"] = False
+            raise RuntimeError("connection reset after the commit")
+        return response
+
+    monkeypatch.setattr(server, "commit", _commit)
+
+
+def test_a_record_commit_whose_answer_is_lost_keeps_its_bytes(
+    db, gcs, monkeypatch,
+):
+    source = _staged(gcs)
+    _lose_the_answer_of_the_create(db, monkeypatch)
+
+    got, errors = _ingest(source)
+
+    # The record committed: its bytes must survive, and it IS the answer.
+    stored = db.peek(f"documents/{DOC_ID}")
+    assert stored is not None and stored["storage_path"] == _CANONICAL
+    assert gcs.objects[_CANONICAL].data == PDF
+    assert errors == [] and got["id"] == DOC_ID
+
+
+def test_a_patch_failure_after_a_concurrent_adoption_keeps_its_bytes(
+    db, gcs, monkeypatch,
+):
+    """T1 wrote the copy; T2 (a second finalization of the same upload) got
+    412 on its rewrite, found the same bytes, ADOPTED them and committed its
+    record — then T1's patch failed. T1 used to delete the generation it
+    wrote: T2's committed document lost its bytes, in silence."""
+    from google.api_core.exceptions import ServiceUnavailable
+
+    from tests._fake_gcs import FakeBlob
+
+    source_t1 = _staged(gcs)
+    real_patch = FakeBlob.patch
+    calls = {"n": 0}
+
+    def _patch(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:                      # T1's patch
+            source_t2 = gcs.blob(_STAGING)
+            source_t2.reload()
+            adopted, errs = _ingest(source_t2)   # T2: 412 → adopt → commit
+            assert errs == [] and adopted["id"] == DOC_ID
+            raise ServiceUnavailable("503 patch")
+        return real_patch(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeBlob, "patch", _patch)
+
+    got, errors = _ingest(source_t1)
+
+    assert gcs.objects[_CANONICAL].data == PDF
+    assert db.peek(f"documents/{DOC_ID}")["storage_path"] == _CANONICAL
+    assert errors == [] and got["id"] == DOC_ID
+
+
+def test_an_unreadable_record_keeps_the_copy_on_rollback(db, gcs, monkeypatch):
+    """The check itself failing is not « nobody references it »: the copy
+    is kept (an orphan costs storage, a record without bytes a document)."""
+    source = _staged(gcs)
+
+    def _fail(info):
+        if any(p == f"documents/{DOC_ID}" for _op, p in info.ops):
+            raise RuntimeError("firestore down")
+
+    db.add_commit_hook(_fail)
+    server = db._fake_server
+    real_get = server.batch_get_documents
+    state = {"reads": 0}
+
+    def _get(request, metadata=None, **kwargs):
+        state["reads"] += 1
+        if state["reads"] > 1:        # the pre-read passes, the check fails
+            raise RuntimeError("firestore unreadable")
+        return real_get(request, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(server, "batch_get_documents", _get)
+
+    got, errors = _ingest(source)
+
+    assert got is None and errors == [doc._INGEST_FAILED]
+    assert gcs.objects[_CANONICAL].data == PDF
+
+
+def test_a_chevron_refusal_survives_the_pages_that_display_it():
+    """Réception and the document page sanitize ?erreur= before display. A
+    message quoting « < … > » had its own explanation stripped there."""
+    from security import sanitize
+
+    (message,) = doc._text_errors("Nom d'affichage", "Lettre <brouillon>", 300)
+    assert "chevrons" in message
+    assert sanitize(message, max_length=300) == message
+
+
+def test_record_metadata_errors_is_the_creators_judgement(db, gcs):
+    """The pure check the upload form runs BEFORE its first byte is exactly
+    the creator's: what one refuses, the other refuses."""
+    for metadata in ({"display_name": "Lettre <brouillon>"},
+                     {"display_name": "x" * 301},
+                     {"tags": ["t"] * 31},
+                     {"category": "inventée"},
+                     {"document_date": "15/07/2026"}):
+        errors = doc.record_metadata_errors(metadata)
+        assert errors, metadata
+        source = _staged(gcs)
+        got, creator_errors = doc.ingest_blob_as_document(
+            source, "d1", "2026-001", "piece.pdf", metadata, "u1")
+        assert got is None and creator_errors == errors, metadata
+    assert doc.record_metadata_errors(
+        {"display_name": "Lettre", "tags": ["a"], "category": "pièce",
+         "document_date": "2026-07-15"}) == []
+
+
+def _retry_after_a_lost_answer(db, monkeypatch):
+    """What the client's commit retry (ServiceUnavailable is retried) does
+    when the first attempt LANDED and only its answer was lost: the retry
+    re-sends the same create(), which the server now answers AlreadyExists.
+    The fake sits below the GAPIC retry wrapper, so the retry is played
+    here, verbatim."""
+    server = db._fake_server
+    real_commit = server.commit
+    state = {"armed": True}
+
+    def _commit(request, metadata=None, **kwargs):
+        writes = [getattr(w, "_pb", w) for w in request.get("writes") or []]
+        if state["armed"] and any(
+                "/documents/" in server._write_name(w) for w in writes):
+            state["armed"] = False
+            real_commit(request, metadata=metadata, **kwargs)   # it landed
+        return real_commit(request, metadata=metadata, **kwargs)  # the retry
+
+    monkeypatch.setattr(server, "commit", _commit)
+
+
+def test_a_generated_document_whose_create_was_retried_keeps_its_bytes(
+    db, gcs, monkeypatch,
+):
+    """upload_document switched from set() to create() in T1: a retried
+    commit, harmless with set(), now answers AlreadyExists — and the
+    rollback deleted the file under the committed record."""
+    _retry_after_a_lost_answer(db, monkeypatch)
+
+    got, errors = doc.upload_document(
+        "d1", "2026-001", io.BytesIO(PDF), "projet.pdf", len(PDF),
+        {"category": "correspondance"}, "u1")
+
+    assert errors == [], errors
+    stored = db.peek(f"documents/{got['id']}")
+    assert stored["storage_path"] == got["storage_path"]
+    assert gcs.objects[got["storage_path"]].data == PDF
+
+
+def test_an_ingestion_whose_create_was_retried_keeps_its_bytes(
+    db, gcs, monkeypatch,
+):
+    source = _staged(gcs)
+    _retry_after_a_lost_answer(db, monkeypatch)
+
+    got, errors = _ingest(source)
+
+    assert errors == [] and got["id"] == DOC_ID
+    assert gcs.objects[_CANONICAL].data == PDF
+    assert db.peek(f"documents/{DOC_ID}")["storage_path"] == _CANONICAL
