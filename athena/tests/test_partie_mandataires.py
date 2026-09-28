@@ -255,3 +255,64 @@ def test_the_form_path_sanitizes_and_caps_each_entry_s_notes(db):
     assert errors == []
     notes = _stored(db)["mandataires"][0]["notes"]
     assert "<b>" not in notes and len(notes) <= pm.MANDATAIRE_NOTES_MAX
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 5. Une aide ne réécrit jamais EN SILENCE le texte d'une AUTRE entrée
+# ══════════════════════════════════════════════════════════════════════
+#
+# Les aides reconstruisent la liste depuis le stocké et la sauvegardent par
+# update_partie — dont _normalize assainit les notes de CHAQUE entrée. Une
+# note antérieure au lot 4a (jamais assainie) portant des chevrons perdait
+# donc son texte quand on corrigeait une AUTRE représentation, et le
+# rapport ne parlait que de celle-là (revue adverse du lot 4a, étape 2).
+
+
+def _legacy_chevrons(db, *others):
+    """m1's stored notes predate the sanitation: a chevron pair. *others*
+    are written after it, as stored."""
+    stored = _stored(db)
+    db.external_write(f"parties/{db.represented}", {
+        **stored, "mandataires": [
+            {"id": "m1", "kind": "tuteur",
+             "notes": "Jugement <du 3 mars> rendu."}, *others]})
+    return _stored(db)
+
+
+_M2 = {"id": "m2", "kind": "curateur", "notes": ""}
+
+
+@pytest.mark.parametrize("call", ["add", "update", "remove"])
+def test_a_helper_never_strips_another_entry_s_legacy_notes(db, call):
+    """On f5033ec, correcting m2 turned m1's « Jugement <du 3 mars> rendu. »
+    into « Jugement  rendu. » — reported as changed:m2 only."""
+    if call == "add":
+        before = _legacy_chevrons(db)
+        doc, errors, report = pm.add_partie_mandataire(
+            db.represented, "m2", kind="curateur")
+    elif call == "update":
+        before = _legacy_chevrons(db, _M2)
+        doc, errors, report = pm.update_partie_mandataire(
+            db.represented, "m2", notes="Nommée le 5 mai.")
+    else:
+        before = _legacy_chevrons(db, _M2)
+        doc, errors, report = pm.remove_partie_mandataire(
+            db.represented, "m2")
+
+    assert doc is None and report["changed"] is False
+    assert len(errors) == 1 and "mandataire m1" in errors[0]
+    assert "Rien n'a été enregistré" in errors[0]
+    assert _stored(db) == before
+
+
+def test_the_legacy_entry_itself_can_be_corrected(db):
+    """The way out: correcting m1 names m1, so its NEW notes are vetted and
+    its old ones are not re-sanitized."""
+    _legacy_chevrons(db)
+
+    _doc, errors, report = pm.update_partie_mandataire(
+        db.represented, "m1", notes="Jugement du 3 mars rendu.")
+
+    assert errors == [] and report["changed"] is True
+    assert _stored(db)["mandataires"] == [
+        {"id": "m1", "kind": "tuteur", "notes": "Jugement du 3 mars rendu."}]

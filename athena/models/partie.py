@@ -1029,7 +1029,8 @@ def _mandataire_fitness_errors(
 #
 # The web form posts the whole ``mandataires`` list; the connector (lot 4b)
 # adds, corrects and removes ONE representation. These helpers build the
-# new list from the STORED one — every other entry written back as stored —
+# new list from the STORED one — every other entry written back as stored,
+# or the call refused when sanitation would alter one (_save_mandataires) —
 # and save it through update_partie, whose forward rule (_validate) and
 # reverse rule (_mandataire_fitness_errors) every path meets. They name the
 # refusal first where the forward rule would only say « Mandataire #2 ».
@@ -1095,8 +1096,32 @@ def _resolve_pair(
 
 def _save_mandataires(
     partie_id: str, existing: dict, entries: list[dict],
+    *, named: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], int]:
-    """Commit a rebuilt list, compare-and-set against the version read."""
+    """Commit a rebuilt list, compare-and-set against the version read.
+
+    Every entry but *named* (the one whose notes the caller supplied, and
+    which ``_clean_mandataire_notes`` already vetted) is written back AS
+    STORED — and ``_normalize`` sanitizes every entry's notes on the way.
+    A legacy note typed before lot 4a (no tag strip, no cap) that
+    sanitation would alter is therefore REFUSED here rather than stripped
+    in silence: correcting one representation must never rewrite
+    another's text behind the caller's back (the web form, which the
+    lawyer reads before saving, keeps sanitizing — the web's convention).
+    """
+    for entry in entries:
+        mid = str(entry.get("id") or "").strip()
+        if mid == named:
+            continue
+        stored = str(entry.get("notes") or "").strip()
+        if sanitize(stored, max_length=MANDATAIRE_NOTES_MAX) != stored:
+            return None, [
+                "Les notes enregistrées d'une autre représentation "
+                f"(mandataire {mid}) contiennent des chevrons (< >) ou "
+                f"dépassent {MANDATAIRE_NOTES_MAX} caractères : les "
+                "enregistrer de nouveau les modifierait. Corrigez d'abord "
+                "ces notes. Rien n'a été enregistré."
+            ], 0
     return _update_partie(
         partie_id, {"mandataires": entries}, concurrency.etag_of(existing)
     )
@@ -1157,7 +1182,8 @@ def add_partie_mandataire(
 
     new_entry = {"id": mandataire_id, "kind": kind, "notes": clean_notes}
     saved, errors, _journaled = _save_mandataires(
-        partie_id, existing, [dict(e) for e in entries] + [new_entry])
+        partie_id, existing, [dict(e) for e in entries] + [new_entry],
+        named=mandataire_id)
     if errors:
         return None, errors, report
     report["changed"] = True
@@ -1208,7 +1234,8 @@ def update_partie_mandataire(
         return existing, [], report
 
     entries[index] = {**entry, "kind": new_kind, "notes": new_notes}
-    saved, errors, _journaled = _save_mandataires(partie_id, existing, entries)
+    saved, errors, _journaled = _save_mandataires(
+        partie_id, existing, entries, named=mandataire_id)
     if errors:
         return None, errors, report
     report["changed"] = True
