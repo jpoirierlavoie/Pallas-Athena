@@ -206,7 +206,7 @@ def test_the_page_declares_no_const_auth(web):
     SyntaxError qui tue les DEUX blocs."""
     body = web.get("/parametres/securite").data.decode("utf-8")
     # Une DÉCLARATION, pas la mention qu'en fait le commentaire du gabarit.
-    assert not re.search(r"const\s+auth\s*=", body)
+    assert not re.search(r"\bconst\s+auth\s*=", body)
     assert "var athenaAuth = null;" in body
 
 
