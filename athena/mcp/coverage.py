@@ -25,9 +25,18 @@ connector writes (``create_protocol`` since lot 1b, ``record_signification``
 since July 2026) — but the connector never verifies an identity or a
 conflict, and a report that implied otherwise would invite a write this
 connector must never make.
+
+**A presumed check is an OPEN check** (D7, lot 4a). A status the connector
+inscribes is stored as presumed until the lawyer clicks « Confirmer » in the
+fiche (``utils/kyc``): it is not decided, so the two deontological checks
+keep reporting it — and their detail says how many of the open ones are
+such inscriptions, so the lawyer knows a confirmation, not a verification,
+is what is left.
 """
 
 from typing import Optional
+
+from utils import kyc
 
 MANQUEMENT = "manquement"
 SIGNALEMENT = "signalement"
@@ -41,8 +50,12 @@ CLOSED_STATUSES = ("fermé", "archivé")
 # mandate's literal rule (≠ vérifié) would raise a false manquement on it —
 # on a deontological check, which is where a false positive costs the most
 # credibility. « conflit_détecté » is likewise decided: the check WAS run.
-IDENTITY_DECIDED = ("vérifié", "exempté")
-CONFLICT_DECIDED = ("vérifié", "conflit_détecté")
+#
+# Re-exported from utils/kyc (pure — this module still imports no model).
+# These are the decided STATUSES; whether a check is decided also depends on
+# its provenance (kyc.is_decided — a presumed inscription is not).
+IDENTITY_DECIDED = kyc.DECIDED[kyc.FIELD_IDENTITY]
+CONFLICT_DECIDED = kyc.DECIDED[kyc.FIELD_CONFLICT]
 
 
 def _judicial(dossier: dict) -> bool:
@@ -176,30 +189,42 @@ def _valeur_absente(d: dict, ctx: dict) -> Optional[str]:
     )
 
 
+def _presumed_clause(unresolved: list, field: str) -> str:
+    """« — dont N inscrite(s) par Claude, à confirmer dans la fiche »."""
+    presumed = sum(1 for c in unresolved if kyc.is_presumed(c, field))
+    if not presumed:
+        return ""
+    return (
+        f" Dont {presumed} inscrite(s) par Claude — à confirmer dans la "
+        "fiche (« Confirmer »)."
+    )
+
+
 def _conflit_non_verifie(d: dict, ctx: dict) -> Optional[str]:
     unresolved = [
         c for c in ctx["clients_of"](d)
-        if c.get("conflict_check") not in CONFLICT_DECIDED
+        if not kyc.is_decided(c, kyc.FIELD_CONFLICT)
     ]
     if not unresolved:
         return None
     return (
         f"Vérification des conflits non faite pour {len(unresolved)} "
         "client(s). Obligation déontologique — à consigner dans la fiche du "
-        "contact."
+        "contact." + _presumed_clause(unresolved, kyc.FIELD_CONFLICT)
     )
 
 
 def _identite_non_verifiee(d: dict, ctx: dict) -> Optional[str]:
     unresolved = [
         c for c in ctx["clients_of"](d)
-        if c.get("identity_verified") not in IDENTITY_DECIDED
+        if not kyc.is_decided(c, kyc.FIELD_IDENTITY)
     ]
     if not unresolved:
         return None
     return (
         f"Identité non vérifiée pour {len(unresolved)} client(s). "
         "« Exempté » compte comme décidé — à consigner dans la fiche."
+        + _presumed_clause(unresolved, kyc.FIELD_IDENTITY)
     )
 
 

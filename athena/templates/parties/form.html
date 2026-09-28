@@ -477,6 +477,11 @@
             <option value="vérifié">Vérifié</option>
             <option value="exempté">Exempté</option>
           </select>
+          {% if (kyc_presumed or {}).get('identity_verified') %}
+          {# D7 — a Claude inscription stays presumed until « Confirmer » on
+             the fiche; re-saving it unchanged here keeps it presumed. #}
+          <p class="text-xs text-amber-700 mb-3">Inscrit par Claude — à confirmer depuis la fiche. Changer le statut ici vaut décision du juriste.</p>
+          {% endif %}
           <label class="block text-sm text-gray-700 mb-1">Notes</label>
           <textarea name="identity_verified_notes" rows="2"
                     class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ partie.identity_verified_notes if partie else '' }}</textarea>
@@ -492,6 +497,9 @@
             <option value="vérifié">Vérifié</option>
             <option value="conflit_détecté">Conflit détecté</option>
           </select>
+          {% if (kyc_presumed or {}).get('conflict_check') %}
+          <p class="text-xs text-amber-700 mb-3">Inscrit par Claude — à confirmer depuis la fiche. Changer le statut ici vaut décision du juriste.</p>
+          {% endif %}
           <label class="block text-sm text-gray-700 mb-1">Notes</label>
           <textarea name="conflict_check_notes" rows="2"
                     class="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ partie.conflict_check_notes if partie else '' }}</textarea>

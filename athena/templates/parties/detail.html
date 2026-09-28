@@ -309,70 +309,50 @@
   </div>
   {% endif %}
 
-  {# ── Compliance (only for clients) ───────────────────────────── #}
-  {% if partie.contact_role == 'client' %}
+  {# ── Compliance — a client, or a client of any dossier ─────────── #}
+  {# Shown for a contact whose role is « client » AND for any contact that
+     is a client of a dossier whatever its role (the coverage report checks
+     every dossier client). Everything is composed by the route
+     (`routes/parties._kyc_view`): the badge (AMBER « … (présumé) » for an
+     inscription Claude made and the lawyer has not confirmed — never the
+     green of a verified identity), the label, and the attribution line —
+     the signer's name is NEVER attached to a presumed inscription (D7). #}
+  {% if partie.contact_role == 'client' or is_dossier_client %}
   <div class="bg-white rounded-xl border border-gray-200 p-5 mt-4">
     <h2 class="text-sm font-semibold text-gray-900 mb-4">Conformité</h2>
-    {# `compliance_signer` est composé par la route (routes/parties.py) :
-       la valeur vient de settings/cabinet et le « Me » y est garanti. #}
-    {# Mois en français : strftime('%B') dépend de la locale du serveur (anglaise
-       sur App Engine), donc on mappe explicitement. Jour sans zéro initial. #}
-    {% set month_names = ['', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'] %}
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-      {# Identity verification #}
+      {% for check in [kyc_view.identite, kyc_view.conflit] %}
       <div>
-        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Identité</h3>
-        {% set id_badge = {
-          'non_vérifié': 'bg-orange-100 text-orange-700',
-          'vérifié': 'bg-green-100 text-green-700',
-          'exempté': 'bg-blue-100 text-blue-700'
-        } %}
-        {% set id_label = {
-          'non_vérifié': 'Non vérifié',
-          'vérifié': 'Vérifié',
-          'exempté': 'Exempté'
-        } %}
+        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">{{ 'Identité' if check.slug == 'identite' else "Conflit d'intérêts" }}</h3>
         <div class="flex flex-wrap items-center gap-2">
-          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ id_badge.get(partie.identity_verified, 'bg-gray-100 text-gray-600') }}">
-            {{ id_label.get(partie.identity_verified, partie.identity_verified) }}
+          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ check.badge }}">
+            {{ check.label }}
           </span>
-          {% if partie.identity_verified_date %}
-          {% set _d = partie.identity_verified_date|to_mtl %}
-          <span class="text-xs text-gray-500">le {{ _d.day }} {{ month_names[_d.month] }} {{ _d.year }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
+          {% if check.attribution %}
+          <span class="text-xs text-gray-500">{{ check.attribution }}</span>
           {% endif %}
         </div>
-        {% if partie.identity_verified_notes %}
-        <p class="text-xs text-gray-600 mt-1">{{ partie.identity_verified_notes }}</p>
+        {% if check.notes %}
+        <p class="text-xs text-gray-600 mt-1">{{ check.notes }}</p>
+        {% endif %}
+        {% if check.presumed %}
+        {# The ONE path that turns the inscription into the lawyer's
+           attestation. The etag says « I read THIS version »: a fiche that
+           changed since is refused, never confirmed unseen. #}
+        <form method="post"
+              action="{{ url_for('parties.kyc_confirm', partie_id=partie.id, check=check.slug) }}"
+              class="mt-2">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="expected_etag" value="{{ partie.etag or '' }}">
+          <button type="submit"
+                  class="inline-flex items-center justify-center px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+            Confirmer
+          </button>
+        </form>
         {% endif %}
       </div>
-
-      {# Conflict check #}
-      <div>
-        <h3 class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Conflit d'intérêts</h3>
-        {% set cc_badge = {
-          'non_vérifié': 'bg-orange-100 text-orange-700',
-          'vérifié': 'bg-green-100 text-green-700',
-          'conflit_détecté': 'bg-red-100 text-red-700'
-        } %}
-        {% set cc_label = {
-          'non_vérifié': 'Non vérifié',
-          'vérifié': 'Vérifié',
-          'conflit_détecté': 'Conflit détecté'
-        } %}
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="inline-flex px-2 py-0.5 text-xs font-medium rounded-full {{ cc_badge.get(partie.conflict_check, 'bg-gray-100 text-gray-600') }}">
-            {{ cc_label.get(partie.conflict_check, partie.conflict_check) }}
-          </span>
-          {% if partie.conflict_check_date %}
-          {% set _d = partie.conflict_check_date|to_mtl %}
-          <span class="text-xs text-gray-500">le {{ _d.day }} {{ month_names[_d.month] }} {{ _d.year }}{% if compliance_signer %} par {{ compliance_signer }}{% endif %}</span>
-          {% endif %}
-        </div>
-        {% if partie.conflict_check_notes %}
-        <p class="text-xs text-gray-600 mt-1">{{ partie.conflict_check_notes }}</p>
-        {% endif %}
-      </div>
+      {% endfor %}
     </div>
   </div>
   {% endif %}

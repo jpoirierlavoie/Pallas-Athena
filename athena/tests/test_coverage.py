@@ -251,3 +251,76 @@ def test_les_deux_controles_deontologiques_sont_des_manquements():
     saisie — la distinction que l'avocat a demandé de préserver."""
     for code in ("CONFLIT_NON_VERIFIE", "IDENTITE_NON_VERIFIEE"):
         assert coverage.SEVERITY_BY_CODE[code] == coverage.MANQUEMENT
+
+
+# ── D7 (lot 4a) : une inscription PRÉSUMÉE laisse le contrôle ouvert ────
+
+
+def _client(**over):
+    base = {"identity_verified": "vérifié", "conflict_check": "vérifié"}
+    base.update(over)
+    return base
+
+
+_PRESUMED_ID = dict(identity_verified_source="mcp",
+                    identity_verified_confirmed_at=None)
+_PRESUMED_CC = dict(conflict_check_source="mcp",
+                    conflict_check_confirmed_at=None)
+
+
+def _finding(view, ctx, code):
+    return next(f for f in coverage.run_checks(view, ctx) if f["code"] == code)
+
+
+def test_a_presumed_identity_keeps_the_check_open_and_says_why():
+    """LE risque de D7 : sans provenance, une inscription de Claude fermait
+    le contrôle déontologique comme une attestation du juriste."""
+    view = _d(client_ids=["p1"])
+    ctx = _ctx(active=["d1"], clients=[_client(**_PRESUMED_ID)])
+    finding = _finding(view, ctx, "IDENTITE_NON_VERIFIEE")
+    assert "Dont 1 inscrite(s) par Claude" in finding["detail"]
+    assert "CONFLIT_NON_VERIFIE" not in _codes(view, ctx)
+
+
+def test_a_presumed_conflict_check_keeps_the_check_open():
+    ctx = _ctx(active=["d1"], clients=[
+        _client(conflict_check="conflit_détecté", **_PRESUMED_CC),
+        _client(conflict_check="non_vérifié"),
+    ])
+    finding = _finding(_d(client_ids=["p1", "p2"]), ctx, "CONFLIT_NON_VERIFIE")
+    assert finding["detail"].startswith(
+        "Vérification des conflits non faite pour 2 client(s).")
+    assert "Dont 1 inscrite(s) par Claude" in finding["detail"]
+
+
+def test_a_confirmed_inscription_closes_the_check():
+    confirmed = _client(identity_verified="exempté",
+                        identity_verified_source="mcp",
+                        identity_verified_confirmed_at="2026-09-28")
+    assert "IDENTITE_NON_VERIFIEE" not in _codes(
+        _d(client_ids=["p1"]), _ctx(active=["d1"], clients=[confirmed]))
+
+
+def test_a_lawyer_decided_check_has_no_presumed_clause():
+    ctx = _ctx(clients=[_client(identity_verified="non_vérifié")])
+    finding = _finding(_d(client_ids=["p1"]), ctx, "IDENTITE_NON_VERIFIEE")
+    assert "Claude" not in finding["detail"]
+
+
+def test_the_decided_tuples_are_the_kyc_module_s():
+    from utils import kyc
+
+    assert coverage.IDENTITY_DECIDED == kyc.DECIDED[kyc.FIELD_IDENTITY]
+    assert coverage.CONFLICT_DECIDED == kyc.DECIDED[kyc.FIELD_CONFLICT]
+
+
+def test_coverage_still_imports_no_model():
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(coverage.__file__).read_text(encoding="utf-8"))
+    imported = {
+        (n.module or "") for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+    } | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
+         for a in n.names}
+    assert not {m for m in imported if m == "models" or m.startswith("models.")}

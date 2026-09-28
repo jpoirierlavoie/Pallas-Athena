@@ -18,6 +18,12 @@ défaut EST une suppression).
 
 Tests purs : modèle importé, Firestore bouchonné (motif de
 test_partie_naissance.py).
+
+Lot 4a (D7) — la PROVENANCE. Une transition de statut nomme désormais qui
+décide (``kyc_source`` : « juriste » | « mcp », SANS défaut) : les tests
+d'origine passent donc « juriste », la source du formulaire web — changement
+délibéré (une transition sans source est refusée). La seconde moitié du
+fichier épingle les règles de la provenance.
 """
 
 import os
@@ -47,8 +53,11 @@ def _partie(**over) -> dict:
     return base
 
 
-def _maj(monkeypatch, stocke: dict, data: dict) -> dict:
-    """Run update_partie against a stubbed store; return the written doc."""
+def _maj(monkeypatch, stocke: dict, data: dict, source: str = "juriste") -> dict:
+    """Run update_partie against a stubbed store; return the written doc.
+
+    Lot 4a: the lawyer's source by default — the web form's (changed
+    deliberately: a status transition without a source is now refused)."""
     monkeypatch.setattr(pm, "get_partie", lambda pid: dict(stocke))
     ecrit: dict = {}
 
@@ -61,7 +70,7 @@ def _maj(monkeypatch, stocke: dict, data: dict) -> dict:
             return _Doc()
 
     monkeypatch.setattr(pm, "db", mock.Mock(collection=lambda _n: _Col()))
-    _, erreurs = pm.update_partie("p1", data)
+    _, erreurs = pm.update_partie("p1", data, kyc_source=source)
     assert erreurs == []
     return ecrit
 
@@ -182,7 +191,8 @@ def magasin(monkeypatch):
 def test_un_statut_sans_notes_garde_les_notes(magasin):
     """LE défaut : sur l'ancien code, ce changement de statut vidait les
     notes (default ``""`` toujours écrit)."""
-    doc, erreurs = pm.update_kyc_status("p1", "identity_verified", "vérifié")
+    doc, erreurs = pm.update_kyc_status(
+        "p1", "identity_verified", "vérifié", source="juriste")
     assert erreurs == []
     stocke = magasin.peek("parties/p1")
     assert stocke["identity_verified"] == "vérifié"
@@ -198,7 +208,8 @@ def test_un_statut_sans_notes_garde_les_notes(magasin):
 
 def test_des_notes_fournies_remplacent(magasin):
     pm.update_kyc_status(
-        "p1", "conflict_check", "vérifié", notes="Aucun conflit (3 dossiers)."
+        "p1", "conflict_check", "vérifié", notes="Aucun conflit (3 dossiers).",
+        source="juriste",
     )
     assert magasin.peek("parties/p1")["conflict_check_notes"] == (
         "Aucun conflit (3 dossiers)."
@@ -207,13 +218,307 @@ def test_des_notes_fournies_remplacent(magasin):
 
 def test_une_chaine_vide_efface_explicitement(magasin):
     """Effacer reste possible — mais seulement en le DEMANDANT."""
-    pm.update_kyc_status("p1", "identity_verified", "vérifié", notes="")
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", notes="",
+                         source="juriste")
     assert magasin.peek("parties/p1")["identity_verified_notes"] == ""
 
 
 def test_les_notes_fournies_sont_assainies(magasin):
     pm.update_kyc_status(
-        "p1", "identity_verified", "vérifié", notes="<b>vu</b> " + "x" * 3000
+        "p1", "identity_verified", "vérifié", notes="<b>vu</b> " + "x" * 3000,
+        source="juriste",
     )
     notes = magasin.peek("parties/p1")["identity_verified_notes"]
     assert "<b>" not in notes and len(notes) <= 2000
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 4a (D7) — la provenance d'une vérification de conformité
+# ══════════════════════════════════════════════════════════════════════
+#
+# Une inscription de Claude (source « mcp ») reste PRÉSUMÉE jusqu'au
+# « Confirmer » du juriste ; une transition sans source est REFUSÉE (jamais
+# de défaut qui nommerait quelqu'un) ; seule une TRANSITION déplace la
+# provenance ; le modèle seul pose date, source et confirmation.
+
+import inspect  # noqa: E402
+
+from models import concurrency, provenance  # noqa: E402
+from utils import kyc  # noqa: E402
+
+
+def _stored(fake):
+    return fake.peek("parties/p1")
+
+
+def test_a_status_transition_without_a_source_is_refused(magasin):
+    """Fail closed: an omitted source must never stamp a Claude write as
+    the lawyer's attestation — there is no default to fall back on."""
+    before = _stored(magasin)
+    doc, erreurs = pm.update_partie("p1", {"identity_verified": "vérifié"})
+    assert doc is None and erreurs == [kyc.PROVENANCE_REQUIRED]
+    assert _stored(magasin) == before
+
+
+def test_an_unchanged_status_needs_no_source(magasin):
+    """The partial callers (Réception, CardDAV) and a form re-save carry
+    no transition: they are never refused for the missing source."""
+    _doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "non_vérifié", "email": "a@b.ca"})
+    assert erreurs == []
+
+
+def test_a_claude_inscription_is_presumed(magasin):
+    _doc, erreurs = pm.update_kyc_status(
+        "p1", "identity_verified", "vérifié", source="mcp")
+    assert erreurs == []
+    stored = _stored(magasin)
+    assert stored["identity_verified_source"] == "mcp"
+    assert stored["identity_verified_confirmed_at"] is None
+    assert stored["identity_verified_date"] is not None
+    assert kyc.is_presumed(stored, "identity_verified")
+    assert not kyc.is_decided(stored, "identity_verified")
+
+
+def test_a_web_resave_never_confirms_a_presumed_inscription(magasin):
+    """LE piège de D7 : le formulaire re-soumet TOUJOURS le statut. Si un
+    re-enregistrement valait décision, modifier un courriel confirmerait en
+    silence l'inscription de Claude."""
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
+    inscribed = _stored(magasin)["identity_verified_date"]
+
+    _doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "vérifié", "email": "a@b.ca"},
+        kyc_source="juriste")
+
+    assert erreurs == []
+    stored = _stored(magasin)
+    assert kyc.is_presumed(stored, "identity_verified")
+    assert stored["identity_verified_date"] == inscribed
+
+
+def test_a_web_status_change_is_the_lawyer_s_decision(magasin):
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
+
+    _doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "exempté"}, kyc_source="juriste")
+
+    assert erreurs == []
+    stored = _stored(magasin)
+    assert stored["identity_verified_source"] == "juriste"
+    assert kyc.is_decided(stored, "identity_verified")
+
+
+def test_non_verifie_clears_date_source_and_confirmation(magasin):
+    pm.update_kyc_status("p1", "conflict_check", "vérifié", source="mcp")
+    etag = _stored(magasin)["etag"]
+    pm.confirm_kyc_status("p1", "conflict_check", par="juriste",
+                          expected_etag=etag)
+
+    _doc, erreurs = pm.update_partie(
+        "p1", {"conflict_check": "non_vérifié"}, kyc_source="juriste")
+
+    assert erreurs == []
+    stored = _stored(magasin)
+    assert stored["conflict_check_date"] is None
+    assert stored["conflict_check_source"] == ""
+    assert stored["conflict_check_confirmed_at"] is None
+    assert stored["conflict_check_confirmed_by"] == ""
+
+
+def test_claude_can_never_change_the_lawyer_s_attestation(magasin):
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="juriste")
+    before = _stored(magasin)
+
+    for status, notes in (("exempté", None), ("non_vérifié", None),
+                          ("vérifié", "Ajout de Claude.")):
+        doc, erreurs = pm.update_kyc_status(
+            "p1", "identity_verified", status, notes=notes, source="mcp")
+        assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION], status
+    # …through update_partie too (the rule lives in the model).
+    doc, erreurs = pm.update_partie(
+        "p1", {"identity_verified": "exempté"}, kyc_source="mcp")
+    assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION]
+    assert _stored(magasin) == before
+
+
+def test_a_confirmed_inscription_is_the_lawyer_s_too(magasin):
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
+    pm.confirm_kyc_status("p1", "identity_verified", par="juriste",
+                          expected_etag=_stored(magasin)["etag"])
+    doc, erreurs = pm.update_kyc_status(
+        "p1", "identity_verified", "exempté", source="mcp")
+    assert doc is None and erreurs == [kyc.LAWYER_ATTESTATION]
+
+
+def test_claude_may_correct_its_own_presumed_inscription(magasin):
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
+    _doc, erreurs = pm.update_kyc_status(
+        "p1", "identity_verified", "exempté", source="mcp")
+    assert erreurs == []
+    assert kyc.is_presumed(_stored(magasin), "identity_verified")
+
+
+def test_a_payload_can_never_forge_the_provenance(magasin):
+    """_normalize drops every provenance key a caller sends — the web form,
+    a CardDAV PUT, the connector alike."""
+    _doc, erreurs = pm.update_partie("p1", {
+        "identity_verified": "vérifié",
+        "identity_verified_source": "juriste",
+        "identity_verified_confirmed_at": ANCIEN,
+        "identity_verified_confirmed_by": "juriste",
+        "identity_verified_date": ANCIEN,
+    }, kyc_source="mcp")
+    assert erreurs == []
+    stored = _stored(magasin)
+    assert stored["identity_verified_source"] == "mcp"
+    assert stored["identity_verified_confirmed_at"] is None
+    assert stored["identity_verified_date"] != ANCIEN
+    assert kyc.is_presumed(stored, "identity_verified")
+
+
+def test_update_kyc_status_has_no_default_source():
+    param = inspect.signature(pm.update_kyc_status).parameters["source"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty
+    with pytest.raises(ValueError):
+        pm.update_kyc_status("p1", "identity_verified", "vérifié",
+                             source="claude")
+
+
+def test_create_with_a_decided_status_stamps_the_date_and_the_source(
+    monkeypatch,
+):
+    """LE défaut d'origine : un contact CRÉÉ avec un statut décidé n'avait
+    pas de date — l'invariant date ⇔ décidé était faux dès la naissance."""
+    fake = install(monkeypatch, pm)
+    doc, erreurs = pm.create_partie({
+        "type": "individual", "contact_role": "client", "last_name": "Roy",
+        "identity_verified": "vérifié", "conflict_check": "non_vérifié",
+    }, kyc_source="juriste")
+    assert erreurs == []
+    stored = fake.peek(f"parties/{doc['id']}")
+    assert stored["identity_verified_date"] is not None
+    assert stored["identity_verified_source"] == "juriste"
+    assert stored["conflict_check_date"] is None
+
+    doc, erreurs = pm.create_partie({
+        "type": "individual", "contact_role": "client", "last_name": "Roy",
+        "identity_verified": "vérifié",
+    })
+    assert doc is None and erreurs == [kyc.PROVENANCE_REQUIRED]
+
+
+def test_a_carddav_put_keeps_a_presumed_inscription(magasin):
+    """CardDAV never carries a KYC key: a phone edit merges onto the stored
+    record and the presumed provenance survives."""
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
+    data = pm.vcard_to_partie(pm.partie_to_vcard(_stored(magasin)))
+    assert not set(data) & ({"identity_verified", "conflict_check"}
+                            | set(kyc.PROVENANCE_KEYS))
+
+    _doc, erreurs = pm.update_partie("p1", data)
+
+    assert erreurs == []
+    assert kyc.is_presumed(_stored(magasin), "identity_verified")
+
+
+# ── confirm_kyc_status ────────────────────────────────────────────────
+
+
+_CONFIRM_KEYS = {"identity_verified_confirmed_at",
+                 "identity_verified_confirmed_by",
+                 "updated_at", "etag", "updated_via"}
+
+
+def _presumed(fake):
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="mcp")
+    fake.reset_logs()
+    return _stored(fake)["etag"]
+
+
+def test_confirm_writes_only_its_keys_in_a_transaction(magasin):
+    etag = _presumed(magasin)
+    before = _stored(magasin)
+
+    doc, erreurs = pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste", expected_etag=etag)
+
+    assert erreurs == []
+    after = _stored(magasin)
+    moved = {k for k in set(before) | set(after)
+             if before.get(k) != after.get(k)}
+    # A partial update: nothing outside the confirmation and its stamp
+    # moves (``updated_via`` may keep its value — the same writer path).
+    assert moved <= _CONFIRM_KEYS
+    assert {"identity_verified_confirmed_at", "identity_verified_confirmed_by",
+            "etag", "updated_at"} <= moved
+    assert [c.ops for c in magasin.commits] == [(("update", "parties/p1"),)]
+    assert all(c.transaction is not None for c in magasin.commits)
+    assert after["identity_verified_confirmed_by"] == "juriste"
+    assert kyc.is_decided(after, "identity_verified")
+    assert doc["etag"] == after["etag"]
+
+
+def test_confirm_refuses_what_is_not_presumed(magasin):
+    etag = _stored(magasin)["etag"]
+    doc, erreurs = pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste", expected_etag=etag)
+    assert doc is None and erreurs == [pm.KYC_NOTHING_TO_CONFIRM]
+
+    pm.update_kyc_status("p1", "identity_verified", "vérifié", source="juriste")
+    etag = _stored(magasin)["etag"]
+    doc, erreurs = pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste", expected_etag=etag)
+    assert erreurs == [pm.KYC_NOTHING_TO_CONFIRM]
+
+
+def test_confirm_refuses_a_stale_or_missing_version(magasin):
+    _presumed(magasin)
+    before = _stored(magasin)
+    assert pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste", expected_etag="perimee",
+    )[1] == [concurrency.STALE_ETAG_ERROR]
+    assert pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste",
+    )[1] == [pm.KYC_CONFIRM_NEEDS_VERSION]
+    assert _stored(magasin) == before and magasin.commits == []
+
+
+def test_an_inscription_landing_after_the_page_is_never_confirmed_unseen(
+    magasin,
+):
+    """Claude re-inscribes between the render and the click: the page's
+    etag is stale, so the confirmation is refused."""
+    etag = _presumed(magasin)
+    pm.update_kyc_status("p1", "identity_verified", "exempté", source="mcp")
+
+    doc, erreurs = pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste", expected_etag=etag)
+
+    assert doc is None and erreurs == [concurrency.STALE_ETAG_ERROR]
+    assert kyc.is_presumed(_stored(magasin), "identity_verified")
+
+
+def test_the_connector_can_never_confirm(magasin):
+    etag = _presumed(magasin)
+    with provenance.writing_via("mcp", tool="record_kyc_status"):
+        doc, erreurs = pm.confirm_kyc_status(
+            "p1", "identity_verified", par="juriste", expected_etag=etag)
+    assert doc is None and erreurs == [pm.KYC_CONFIRM_APP_ONLY]
+    assert kyc.is_presumed(_stored(magasin), "identity_verified")
+
+
+def test_confirm_works_on_a_contact_with_an_invalid_legacy_field(magasin):
+    """A partial update, never the merged set(): a malformed legacy phone
+    (which _validate would refuse) cannot block a compliance confirmation."""
+    _presumed(magasin)
+    magasin.external_write("parties/p1", {**_stored(magasin),
+                                          "phone_cell": "pas un numéro"})
+    etag = _stored(magasin)["etag"]
+
+    _doc, erreurs = pm.confirm_kyc_status(
+        "p1", "identity_verified", par="juriste", expected_etag=etag)
+
+    assert erreurs == []
+    assert _stored(magasin)["phone_cell"] == "pas un numéro"

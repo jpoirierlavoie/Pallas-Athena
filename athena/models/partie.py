@@ -13,6 +13,7 @@ from google.api_core.exceptions import AlreadyExists
 from models import aggregation_values, concurrency, dav_ids, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
+from utils import kyc
 from utils.logging_setup import log_unexpected, sanitize_log_value
 from utils.validators import (
     apply_address_defaults,
@@ -53,8 +54,10 @@ VALID_PRONOUNS = (
     "they/them",
     "",
 )
-VALID_IDENTITY_STATUSES = ("non_vérifié", "vérifié", "exempté")
-VALID_CONFLICT_STATUSES = ("non_vérifié", "vérifié", "conflit_détecté")
+# The two compliance checks — vocabulary and provenance rules live in the
+# pure utils/kyc.py (D7, lot 4a), shared with mcp/coverage.py.
+VALID_IDENTITY_STATUSES = kyc.IDENTITY_STATUSES
+VALID_CONFLICT_STATUSES = kyc.CONFLICT_STATUSES
 
 # Contact-role display labels (French)
 ROLE_LABELS = {
@@ -133,14 +136,24 @@ def _default_doc() -> dict:
         # Legal identifiers
         "bar_number": "",
         "company_neq": "",
-        # KYC / Compliance
+        # KYC / Compliance. *_date is when the CURRENT decided status was
+        # inscribed; *_source who inscribed it ("juriste" | "mcp"; "" = the
+        # lawyer, every record before lot 4a); *_confirmed_* the lawyer's
+        # « Confirmer » of a Claude inscription (D7, utils/kyc.py). All
+        # model-owned: popped from every caller payload by _normalize.
         "identity_verified": "non_vérifié",
         "identity_verified_date": None,
         "identity_verified_notes": "",
+        "identity_verified_source": "",
+        "identity_verified_confirmed_at": None,
+        "identity_verified_confirmed_by": "",
         "kyc_document_ids": [],
         "conflict_check": "non_vérifié",
         "conflict_check_date": None,
         "conflict_check_notes": "",
+        "conflict_check_source": "",
+        "conflict_check_confirmed_at": None,
+        "conflict_check_confirmed_by": "",
         # Mandataires (list of {"id", "kind", "notes"})
         "mandataires": [],
         # Notes
@@ -385,6 +398,13 @@ def _normalize(data: dict) -> dict:
     for legacy_key in ("mandataire_id", "mandataire_kind", "mandataire_notes"):
         data.pop(legacy_key, None)
 
+    # The compliance provenance is the MODEL's to stamp (D7): a date, a
+    # source or a confirmation arriving in a payload — the web form, a
+    # CardDAV PUT, the connector — is dropped, never stored. Otherwise a
+    # caller could forge « confirmé par le juriste » onto a Claude write.
+    for key in kyc.PROVENANCE_KEYS:
+        data.pop(key, None)
+
     return data
 
 
@@ -434,6 +454,7 @@ def create_partie(
     *,
     dav_id: Optional[str] = None,
     dav_uid: Optional[str] = None,
+    kyc_source: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Validate, generate IDs, write to Firestore. Returns (doc, errors).
 
@@ -457,6 +478,12 @@ def create_partie(
     when it can be stored verbatim (``dav_ids.client_uid``), and is ignored
     without ``dav_id``. This is the documented Rule-6 exception for
     CardDAV-created contacts: their document id is the client's name.
+
+    ``kyc_source`` (keyword-only, NO default that names anyone): a contact
+    created with a DECIDED identity or conflict status needs it — the date
+    is stamped now and the source recorded (``utils.kyc``); without it such
+    a creation is refused. The web form passes ``"juriste"``; Réception,
+    CardDAV and the connector never carry a decided status.
     """
     data.pop("id", None)
     data.pop("vcard_uid", None)
@@ -470,6 +497,11 @@ def create_partie(
         return None, errors
 
     now = datetime.now(timezone.utc)
+    for field in kyc.FIELDS:
+        refusal = kyc.apply_status_transition(
+            merged, None, data, field, source=kyc_source, now=now)
+        if refusal:
+            return None, [refusal]
     partie_id = dav_id if dav_id is not None else str(uuid.uuid4())
     vcard_uid = (
         (dav_ids.client_uid(dav_uid) if dav_id is not None else None)
@@ -729,7 +761,11 @@ def list_parties_page(
 
 
 def update_partie(
-    partie_id: str, data: dict, *, expected_etag: Optional[str] = None
+    partie_id: str,
+    data: dict,
+    *,
+    expected_etag: Optional[str] = None,
+    kyc_source: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Update an existing partie. Returns (updated_doc, errors).
 
@@ -746,13 +782,25 @@ def update_partie(
     Every representation that leaves the ``mandataires`` list — the web
     form posts it whole — is journaled in ``audit_events`` (``mandataire``)
     after the commit (lot 4a).
+
+    ``kyc_source`` (keyword-only; ``"juriste"`` | ``"mcp"``) names who
+    decides when the payload CHANGES an identity or conflict status (D7,
+    ``utils.kyc.apply_status_transition``). There is deliberately NO
+    default naming anyone: a status transition without it is REFUSED
+    (fail closed), so an omission can never stamp a Claude write as the
+    lawyer's. An unchanged status — the web form re-submitting a presumed
+    value — needs no source and changes no provenance.
     """
-    doc, errors, _journaled = _update_partie(partie_id, data, expected_etag)
+    doc, errors, _journaled = _update_partie(
+        partie_id, data, expected_etag, kyc_source)
     return doc, errors
 
 
 def _update_partie(
-    partie_id: str, data: dict, guard: Optional[str]
+    partie_id: str,
+    data: dict,
+    guard: Optional[str],
+    kyc_source: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str], int]:
     """:func:`update_partie`'s body, plus the number of mandataire detaches
     journaled — which the mandataire helpers report. *guard* is the public
@@ -778,28 +826,19 @@ def _update_partie(
     now = datetime.now(timezone.utc)
     provenance.stamp_update(merged, now)
 
-    # KYC stamps: each *_date answers « when was this DECIDED », never
-    # « when was the field last touched ». Stamp only on a transition INTO
-    # a decided status (a downgrade used to re-stamp, leaving « non_vérifié »
-    # beside a fresh timestamp — the PA-D07 incoherence); force the date
-    # null whenever the submitted status is « non_vérifié », so the
-    # invariant date-present ⇔ status-decided self-heals pre-fix rows on
-    # their next KYC edit. Presence-gated: a partial update that does not
-    # carry the key never touches the date (on a full-document set,
-    # injecting a default IS a deletion). « conflit_détecté » counts as
-    # decided — the check WAS performed; its date is the check's date.
-    for field, decided in (
-        ("identity_verified", ("vérifié", "exempté")),
-        ("conflict_check", ("vérifié", "conflit_détecté")),
-    ):
-        if not data.get(field):
-            continue
-        date_key = f"{field}_date"
-        if data[field] in decided:
-            if data[field] != existing.get(field):
-                merged[date_key] = now
-        elif data[field] == "non_vérifié":
-            merged[date_key] = None
+    # KYC stamps (PA-D07, D7 — utils/kyc.apply_status_transition): each
+    # *_date answers « when was the CURRENT decided status inscribed »,
+    # never « when was the field last touched », and only a TRANSITION
+    # moves the provenance. « non_vérifié » clears date, source and
+    # confirmation, so the invariant date-present ⇔ status-decided
+    # self-heals pre-fix rows on their next KYC edit. Presence-gated: a
+    # partial update that does not carry the key never touches the check
+    # (on a full-document set, injecting a default IS a deletion).
+    for field in kyc.FIELDS:
+        refusal = kyc.apply_status_transition(
+            merged, existing, data, field, source=kyc_source, now=now)
+        if refusal:
+            return None, [refusal], 0
 
     try:
         concurrency.commit_document(
@@ -1264,7 +1303,13 @@ def delete_partie(partie_id: str) -> tuple[bool, str]:
 
 
 def update_kyc_status(
-    partie_id: str, field: str, status: str, notes: Optional[str] = None
+    partie_id: str,
+    field: str,
+    status: str,
+    notes: Optional[str] = None,
+    *,
+    source: str,
+    expected_etag: Optional[str] = None,
 ) -> tuple[Optional[dict], list[str]]:
     """Update identity_verified or conflict_check with auto-dated timestamp.
 
@@ -1275,22 +1320,112 @@ def update_kyc_status(
     since ``update_partie`` merges ``{**existing, **data}`` before a
     full-document ``set()``, a status change made without notes ERASED
     the lawyer's compliance notes, in silence (lot 0b, 2026-09-27).
-    """
-    if field not in ("identity_verified", "conflict_check"):
-        return None, ["Champ invalide."]
 
-    valid = (
-        VALID_IDENTITY_STATUSES
-        if field == "identity_verified"
-        else VALID_CONFLICT_STATUSES
-    )
-    if status not in valid:
+    *source* is a REQUIRED keyword with no default (D7): ``"juriste"`` or
+    ``"mcp"`` — an omission must never stamp a Claude write as the
+    lawyer's attestation. With ``"mcp"`` the status is PRESUMED until the
+    lawyer confirms it (:func:`confirm_kyc_status`), and ANY write —
+    status or notes — on a check the lawyer decided or confirmed is
+    refused (``kyc.LAWYER_ATTESTATION``). An invalid source is a
+    programming error and raises.
+    """
+    if source not in kyc.VALID_SOURCES:
+        raise ValueError(f"unknown KYC source: {source!r}")
+    if field not in kyc.FIELDS:
+        return None, ["Champ invalide."]
+    if status not in kyc.STATUSES[field]:
         return None, ["Statut invalide."]
+    if source == kyc.SOURCE_MCP:
+        existing = get_partie(partie_id)
+        if not existing:
+            return None, ["Contact introuvable."]
+        if kyc.is_decided(existing, field):
+            return None, [kyc.LAWYER_ATTESTATION]
 
     update_data: dict = {field: status}
     if notes is not None:
-        update_data[f"{field}_notes"] = sanitize(notes, max_length=2000)
-    return update_partie(partie_id, update_data)
+        update_data[kyc.notes_key(field)] = sanitize(notes, max_length=2000)
+    return update_partie(
+        partie_id, update_data, expected_etag=expected_etag, kyc_source=source)
+
+
+# The refusals of confirm_kyc_status — constants for the route.
+KYC_NOTHING_TO_CONFIRM = (
+    "Rien à confirmer : cette vérification n'est pas une inscription de "
+    "Claude en attente de confirmation."
+)
+KYC_CONFIRM_NEEDS_VERSION = (
+    "La version de la fiche est requise pour confirmer : rechargez la page, "
+    "puis confirmez de nouveau."
+)
+KYC_CONFIRM_APP_ONLY = (
+    "Une vérification de conformité ne se confirme que dans l'application."
+)
+
+
+def confirm_kyc_status(
+    partie_id: str,
+    field: str,
+    *,
+    par: str,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """The lawyer's « Confirmer » of a PRESUMED check (D7) — the ONE path
+    that turns a Claude inscription into the lawyer's attestation.
+
+    *expected_etag* is REQUIRED in fact (``None`` is refused with
+    :data:`KYC_CONFIRM_NEEDS_VERSION`): a confirmation says « I read THIS
+    version », so it may only land on the version the page showed. Also
+    refused: an unknown contact, a stale version, a check that is not
+    presumed (:data:`KYC_NOTHING_TO_CONFIRM`), and — structurally — the
+    connector as the writer (:data:`KYC_CONFIRM_APP_ONLY`): Claude can
+    never confirm its own inscription. *par* names who confirms.
+
+    The write is a PARTIAL ``update()`` of exactly the two confirmation
+    keys and the stamp, compare-and-set in a transaction
+    (``concurrency.commit_fields``) — never the merged ``set()``, so an
+    unrelated legacy invalid field (a malformed phone) cannot block a
+    compliance confirmation, and an inscription landing between the page
+    and the click can never be confirmed unseen. The route bumps the CTag.
+    """
+    if field not in kyc.FIELDS:
+        return None, ["Champ invalide."]
+    who = str(par or "").strip()
+    if not who:
+        raise ValueError("confirm_kyc_status needs the confirming party")
+    if provenance.current_via() == "mcp":
+        return None, [KYC_CONFIRM_APP_ONLY]
+    if expected_etag is None:
+        return None, [KYC_CONFIRM_NEEDS_VERSION]
+    existing = get_partie(partie_id)
+    if not existing:
+        return None, ["Contact introuvable."]
+    if not concurrency.matches(existing, expected_etag):
+        return None, [concurrency.STALE_ETAG_ERROR]
+    if not kyc.is_presumed(existing, field):
+        return None, [KYC_NOTHING_TO_CONFIRM]
+
+    now = datetime.now(timezone.utc)
+    fields = {
+        kyc.confirmed_at_key(field): now,
+        kyc.confirmed_by_key(field): who[:100],
+        **provenance.update_fields(now),
+    }
+    try:
+        concurrency.commit_fields(
+            db.collection(COLLECTION).document(partie_id), fields,
+            expected_etag=expected_etag,
+            read_etag=concurrency.etag_of(existing),
+        )
+    except concurrency.StaleWrite:
+        return None, [concurrency.STALE_ETAG_ERROR]
+    except concurrency.Vanished:
+        return None, ["Contact introuvable."]
+    except Exception:
+        log_unexpected("partie KYC confirmation failed")
+        return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
+    provenance.note_commit(COLLECTION, partie_id)
+    return {**existing, **fields}, []
 
 
 def link_kyc_document(

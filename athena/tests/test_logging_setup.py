@@ -798,7 +798,9 @@ def _observability_md() -> str:
     ["AuthEvent", "SecurityEvent", "SettingsEvent", "McpEvent",
      "InvoiceEvent", "ProtocolEvent",
      # Lot 4a: the DavX5 visibility events of services/dossier_dav.
-     "DossierEvent"],
+     "DossierEvent",
+     # Lot 4a (step 2): the contact family (the KYC confirmation).
+     "PartieEvent"],
 )
 def test_every_event_name_is_documented(nom_du_type):
     """`OBSERVABILITY.md` se déclare source de vérité (« read it before adding

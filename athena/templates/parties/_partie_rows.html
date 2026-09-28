@@ -19,9 +19,10 @@
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 mb-0.5">
         <span class="text-sm font-medium text-gray-900 truncate">{{ c._display_name }}</span>
-        {# Unverified identity indicator #}
-        {% if c.contact_role == 'client' and c.identity_verified == 'non_vérifié' %}
-        <span class="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="Identité non vérifiée"></span>
+        {# Open identity indicator — route-computed (`_kyc_open`): a
+           presumed Claude inscription is still open (D7). #}
+        {% if c._kyc_open %}
+        <span class="w-2 h-2 rounded-full bg-orange-400 flex-shrink-0" title="{{ 'Identité inscrite par Claude — à confirmer' if c._kyc_presumed else 'Identité non vérifiée' }}"></span>
         {% endif %}
       </div>
       <div class="flex items-center gap-2">

@@ -16,7 +16,12 @@ from flask import (
 from auth import login_required
 from utils.cabinet import cabinet_dict
 from dav.sync import bump_ctag, record_tombstone
+from models import concurrency
 from models.audit_event import record_deletion
+from tz import to_mtl
+from utils import kyc
+from utils.format_fr import format_date_fr
+from utils.logging_setup import log_partie_event
 from utils.template_fields import selected_address, selected_email
 from pagination import (
     PAGE_SIZE,
@@ -33,6 +38,7 @@ from models.partie import (
     ROLE_LABELS,
     VALID_CONTACT_ROLES,
     count_parties_page,
+    confirm_kyc_status,
     create_partie,
     delete_partie,
     display_name,
@@ -137,6 +143,13 @@ def _parse_mandataires_json(raw: str) -> list[dict[str, Any]]:
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
+def _kyc_presumed(partie: Optional[dict]) -> dict[str, bool]:
+    """``{field: presumed}`` from the STORED record — the edit form's note
+    beside each select (a re-rendered form holds the submitted values, which
+    carry no provenance, so the caller passes the stored record)."""
+    return {field: kyc.is_presumed(partie, field) for field in kyc.FIELDS}
+
+
 def _hydrate_mandataires(entries: Optional[list]) -> list[dict[str, Any]]:
     """Resolve each `{id, kind, notes}` entry to include the partie's display name.
 
@@ -219,9 +232,16 @@ def partie_list() -> str:
             total=total,
         )
 
-    # Attach display names (page rows only)
+    # Attach display names (page rows only) and the identity dot: a client
+    # whose identity is not DECIDED — a presumed Claude inscription counts
+    # as open (D7), which the template alone could not know.
     for p in parties:
         p["_display_name"] = display_name(p)
+        p["_kyc_open"] = (
+            p.get("contact_role") == "client"
+            and not kyc.is_decided(p, kyc.FIELD_IDENTITY)
+        )
+        p["_kyc_presumed"] = kyc.is_presumed(p, kyc.FIELD_IDENTITY)
 
     if _is_htmx():
         return render_template(
@@ -315,6 +335,82 @@ def _compliance_signer() -> str:
     return f"Me {nom}"
 
 
+# The two checks, by their URL slug (the « Confirmer » route) and field.
+_KYC_CHECKS = (("identite", kyc.FIELD_IDENTITY),
+               ("conflit", kyc.FIELD_CONFLICT))
+_KYC_FIELD_BY_SLUG = dict(_KYC_CHECKS)
+_KYC_BADGES = {
+    "non_vérifié": "bg-orange-100 text-orange-700",
+    "vérifié": "bg-green-100 text-green-700",
+    "exempté": "bg-blue-100 text-blue-700",
+    "conflit_détecté": "bg-red-100 text-red-700",
+}
+# A presumed status is NOT decided: amber, never the green of a verified
+# identity — at a glance the fiche must not read as verified (D7).
+_KYC_PRESUMED_BADGE = "bg-amber-100 text-amber-700"
+
+
+def _kyc_day(value) -> str:
+    """« 25 septembre 2026 » in Montréal — ``""`` when there is no date
+    (a contact created with a decided status before lot 4a has none)."""
+    local = to_mtl(value) if value else None
+    return format_date_fr(local.date()) if local else ""
+
+
+def _kyc_view(partie: dict) -> dict:
+    """Per check: the badge, its label and the ATTRIBUTION line — composed
+    here, so the signer's name is never attached to a Claude inscription.
+
+    * presumed (inscribed by Claude, not confirmed): amber « … (présumé) »,
+      « inscrit par Claude le … — à confirmer », and the « Confirmer »
+      button;
+    * Claude's, confirmed: « confirmé le … par Me … (inscrit par Claude le
+      …) »;
+    * the lawyer's: « le … par Me … » (the text before lot 4a).
+    A missing date drops the date, never raises.
+    """
+    signer = _compliance_signer()
+    by = f" par {signer}" if signer else ""
+    view: dict = {}
+    for slug, field in _KYC_CHECKS:
+        status = kyc.stored_status(partie, field)
+        presumed = kyc.is_presumed(partie, field)
+        label = kyc.STATUS_LABELS.get(status, status)
+        badge = _KYC_BADGES.get(status, "bg-gray-100 text-gray-600")
+        if presumed:
+            label = f"{label} (présumé)"
+            badge = _KYC_PRESUMED_BADGE
+        inscribed = _kyc_day(partie.get(kyc.date_key(field)))
+        attribution = ""
+        if status in kyc.DECIDED[field]:
+            if presumed:
+                attribution = (
+                    f"inscrit par Claude le {inscribed} — à confirmer"
+                    if inscribed else "inscrit par Claude — à confirmer"
+                )
+            elif kyc.source_of(partie, field) == kyc.SOURCE_MCP:
+                confirmed = _kyc_day(partie.get(kyc.confirmed_at_key(field)))
+                attribution = (
+                    f"confirmé le {confirmed}{by}" if confirmed
+                    else f"confirmé{by}"
+                )
+                if inscribed:
+                    attribution += f" (inscrit par Claude le {inscribed})"
+            elif inscribed:
+                attribution = f"le {inscribed}{by}"
+        view[slug] = {
+            "slug": slug,
+            "field": field,
+            "status": status,
+            "label": label,
+            "badge": badge,
+            "presumed": presumed,
+            "attribution": attribution,
+            "notes": str(partie.get(kyc.notes_key(field)) or ""),
+        }
+    return view
+
+
 @parties_bp.route("/<partie_id>")
 @login_required
 def partie_detail(partie_id: str) -> str:
@@ -337,6 +433,14 @@ def partie_detail(partie_id: str) -> str:
     return render_template(
         "parties/detail.html",
         partie=partie,
+        # Conformité is shown for a contact whose role is « client » — and
+        # for any contact that is a CLIENT of a dossier whatever its role:
+        # the coverage report checks every dossier client, so the fiche
+        # must show what it checks.
+        is_dossier_client=any(
+            partie_id in (d.get("client_ids") or []) for d in dossiers
+        ),
+        kyc_view=_kyc_view(partie),
         # Signataire des vérifications de conformité. Le gabarit lisait
         # `config.FIRM_NAME` directement ; la valeur vit maintenant dans
         # settings/cabinet, et le libellé se compose ici (« le gabarit ne
@@ -347,7 +451,6 @@ def partie_detail(partie_id: str) -> str:
         # LECTURE, sans instantané au dossier — renommer le champ
         # réattribuerait donc toutes les attestations passées, ce qui est
         # précisément pourquoi il ne doit jamais pointer sur `organisation`.
-        compliance_signer=_compliance_signer(),
         # Bandeau d'arrivée : Réception redirige ICI après avoir créé ou mis à
         # jour une fiche depuis une ouverture du portail, et doit pouvoir dire
         # ce qui vient de se passer (« vérifiez et complétez », combien de
@@ -389,7 +492,8 @@ def partie_new() -> str:
 def partie_create() -> str:
     """Handle new partie form submission."""
     data = _form_data()
-    partie, errors = create_partie(data)
+    # The lawyer's form: a decided status set here is HIS attestation (D7).
+    partie, errors = create_partie(data, kyc_source=kyc.SOURCE_JURISTE)
 
     if errors:
         return render_template(
@@ -399,6 +503,7 @@ def partie_create() -> str:
             role_labels=ROLE_LABELS,
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
+            kyc_presumed=_kyc_presumed(None),
         )
 
     bump_ctag("parties")
@@ -431,6 +536,7 @@ def partie_edit(partie_id: str) -> str:
         role_labels=ROLE_LABELS,
         mandataires=_hydrate_mandataires(partie.get("mandataires")),
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
+        kyc_presumed=_kyc_presumed(partie),
     )
 
 
@@ -440,7 +546,12 @@ def partie_update(partie_id: str) -> str:
     """Handle edit form submission."""
     expected = edit_conflict.submitted_etag()
     data = _form_data()
-    partie, errors = update_partie(partie_id, data, expected_etag=expected)
+    # The lawyer's form (D7): a CHANGED status becomes his decision; an
+    # unchanged one — a presumed Claude inscription re-submitted by an
+    # unrelated save — keeps its provenance. Only « Confirmer » confirms.
+    partie, errors = update_partie(
+        partie_id, data, expected_etag=expected,
+        kyc_source=kyc.SOURCE_JURISTE)
 
     if errors:
         errors, conflict, data["etag"] = edit_conflict.resolve_refusal(
@@ -458,6 +569,7 @@ def partie_update(partie_id: str) -> str:
             role_labels=ROLE_LABELS,
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
+            kyc_presumed=_kyc_presumed(get_partie(partie_id)),
         )
 
     bump_ctag("parties")
@@ -470,6 +582,49 @@ def partie_update(partie_id: str) -> str:
         return resp
 
     return redirect(url_for("parties.partie_detail", partie_id=partie_id))
+
+
+# ── Conformité : « Confirmer » une inscription présumée (D7) ─────────────
+
+
+@parties_bp.route("/<partie_id>/conformite/<check>/confirmer", methods=["POST"])
+@login_required
+def kyc_confirm(partie_id: str, check: str) -> Response:
+    """The lawyer confirms a check Claude INSCRIBED (presumed until now).
+
+    A plain form POST (CSRF enforced by the blueprint) carrying the etag the
+    fiche was rendered from — a confirmation says « I read THIS version »,
+    so an inscription that changed since is refused, never confirmed
+    unseen. Answered by a redirect to the fiche, always in 2xx after it:
+    ``?message=`` on success, ``?erreur=`` (the model's French refusal) on
+    refusal. The contact's etag moves, so the ``parties`` CTag is bumped
+    (DavX5's next If-Match PUT would 412 otherwise).
+    """
+    field = _KYC_FIELD_BY_SLUG.get(check)
+    if field is None or not partie_id.strip():
+        return redirect(url_for("parties.partie_list"))
+    expected = edit_conflict.submitted_etag()
+    _doc, errors = confirm_kyc_status(
+        partie_id, field, par=kyc.SOURCE_JURISTE, expected_etag=expected)
+    if errors:
+        if errors == ["Contact introuvable."]:
+            return redirect(url_for("parties.partie_list"))
+        erreur = (
+            "La fiche a changé depuis son affichage — rien n'a été confirmé. "
+            "Relisez-la, puis confirmez de nouveau."
+            if concurrency.is_stale(errors) else " ".join(errors)
+        )
+        target = url_for("parties.partie_detail", partie_id=partie_id,
+                         erreur=erreur)
+    else:
+        bump_ctag("parties")
+        log_partie_event("kyc_confirmed", partie_id, field=field)
+        target = url_for("parties.partie_detail", partie_id=partie_id,
+                         message="Vérification confirmée.")
+    resp = redirect(target)
+    if _is_htmx():
+        resp.headers["HX-Redirect"] = target
+    return resp
 
 
 # ── Delete ────────────────────────────────────────────────────────────────

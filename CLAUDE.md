@@ -507,6 +507,10 @@ Direct deps beyond the original core set: `google-cloud-logging`, the OpenTeleme
 │   │   │                           # contrôle des conflits — propose, ne tranche JAMAIS
 │   │   ├── courriel.py             # Outbound email via Graph sendMail (saveToSentItems: true)
 │   │   ├── validators.py           # Phone (E.164), email, postal code normalization, address defaults
+│   │   ├── kyc.py                  # D7 (lot 4a, pur) : vocabulaires identité / conflits,
+│   │   │                           # provenance (juriste | mcp), is_presumed / is_decided,
+│   │   │                           # apply_status_transition — partagé par models/partie
+│   │   │                           # et mcp/coverage (qui n'importe aucun modèle)
 │   │   ├── export_csv.py           # CSV export helper (UTF-8 BOM)
 │   │   ├── export_pdf.py           # reportlab-based PDF export
 │   │   ├── admin_journal_pdf.py    # « Journal de caisse — compte d'administration » (août 2026):
@@ -967,14 +971,29 @@ overwrites it.
     "bar_number": str,                    # For lawyers
     "company_neq": str,                   # Quebec NEQ for organizations
 
-    # KYC (only relevant when contact_role == "client")
+    # KYC (shown for contact_role == "client" AND for any client of a
+    # dossier — the coverage report checks every dossier client)
     "identity_verified": "non_vérifié" | "vérifié" | "exempté",
-    "identity_verified_date": datetime | None,
+    "identity_verified_date": datetime | None,   # when the CURRENT decided
+                                          # status was INSCRIBED (a timestamp;
+                                          # model-stamped, never supplied)
     "identity_verified_notes": str,
+    # Provenance (D7, lot 4a — utils/kyc.py; all model-owned, popped from
+    # every caller payload). "" / absent source = the lawyer (every record
+    # before lot 4a). A decided status with source "mcp" and no
+    # confirmed_at is PRESUMED: shown amber « Vérifié (présumé) » /
+    # « inscrit par Claude — à confirmer », and NOT decided for the
+    # coverage report, until the lawyer's « Confirmer ».
+    "identity_verified_source": "" | "juriste" | "mcp",
+    "identity_verified_confirmed_at": datetime | None,
+    "identity_verified_confirmed_by": str,        # "juriste"
     "kyc_document_ids": list[str],        # References to documents collection
     "conflict_check": "non_vérifié" | "vérifié" | "conflit_détecté",
     "conflict_check_date": datetime | None,
     "conflict_check_notes": str,
+    "conflict_check_source": "" | "juriste" | "mcp",   # same provenance
+    "conflict_check_confirmed_at": datetime | None,
+    "conflict_check_confirmed_by": str,
 
     # Mandataires (representations: mandate, tutorship, curatorship, …)
     # A partie may have any number of mandataires. Each entry's `id` must
@@ -2256,10 +2275,11 @@ All UI routes require `@login_required` (in `auth.py`). DAV routes use `@dav_aut
 | `/parties/<id>/edit` | GET | Edit form |
 | `/parties/<id>` | POST | Edit submit. Since lot 0b a role or type change that would break a representation (the contact is someone's mandataire) re-renders the form at 200 with a message naming the represented contact |
 | `/parties/<id>/delete` | POST | Delete (with FK safety check). A refusal redirects back to the contact's page with `?erreur=` (red banner) — never to the list, which read as a success |
+| `/parties/<id>/conformite/<check>/confirmer` | POST | **D7 (lot 4a)** — `check` ∈ `identite` \| `conflit`. The lawyer's « Confirmer » of a PRESUMED check (a status Claude inscribed): `models.partie.confirm_kyc_status`, etag required (the fiche's `expected_etag`), then `bump_ctag("parties")` and `log_partie_event("kyc_confirmed")`. Always a redirect to the fiche: `?message=` on success, `?erreur=` on a refusal (stale fiche, nothing presumed, missing version). An unknown `check` or contact → the list. CSRF enforced (the blueprint is not exempt) |
 | `/parties/export/csv` | GET | CSV export |
 | `/parties/export/pdf` | GET | PDF export |
 
-> KYC fields (`identity_verified`, `conflict_check`, KYC notes) are edited **inline through the regular party form** today. The model exposes `update_kyc_status` and `link_kyc_document` helpers, but no dedicated `/parties/<id>/kyc/*` routes are wired up yet.
+> KYC fields (`identity_verified`, `conflict_check`, KYC notes) are edited **inline through the regular party form**, which passes `kyc_source="juriste"`: a CHANGED status is the lawyer's decision, an unchanged one keeps its provenance (a presumed inscription stays presumed through an unrelated save). The fiche's Conformité card is composed by `routes/parties._kyc_view` (badge, label, attribution — the signer's name is never attached to a presumed inscription; a decided status without a date renders without one); the only dedicated route is the « Confirmer » above. `link_kyc_document` has no route.
 
 ### `dossiers.py` — `/dossiers/*`
 
@@ -2686,7 +2706,9 @@ Every model exports the standard CRUD set. Module-specific additions:
 
 ### `models/partie.py`
 - `display_name(partie) -> str` — returns `organization_name` (legal name) for personnes morales; trade name (`trade_name`) is surfaced separately in the UI
-- `update_kyc_status(partie_id, field, status, notes=None)` — `field ∈ {"identity_verified", "conflict_check"}`, auto-stamps the corresponding `_date`. `notes` is presence-gated: `None` keeps the stored `{field}_notes`, a string (even `""`) replaces it — the old `notes=""` default ERASED the compliance notes on every status change made without notes (fixed lot 0b, 2026-09-27)
+- `update_kyc_status(partie_id, field, status, notes=None, *, source, expected_etag=None)` — `field ∈ {"identity_verified", "conflict_check"}`, auto-stamps the corresponding `_date`. `notes` is presence-gated: `None` keeps the stored `{field}_notes`, a string (even `""`) replaces it — the old `notes=""` default ERASED the compliance notes on every status change made without notes (fixed lot 0b, 2026-09-27). **`source` is a REQUIRED keyword with no default (D7, lot 4a)** — `"juriste"` or `"mcp"` (anything else raises): an omission must never stamp a Claude write as the lawyer's. With `"mcp"` the status is PRESUMED, and ANY write — status or notes — on a check the lawyer decided or confirmed is refused (`kyc.LAWYER_ATTESTATION`)
+- **KYC provenance (D7, lot 4a — `utils/kyc.py`)** — `update_partie(..., kyc_source=None)` and `create_partie(..., kyc_source=None)` apply `kyc.apply_status_transition` per check: only a status TRANSITION moves the provenance (date now, `*_source`, confirmation cleared); a transition WITHOUT a source is refused (`kyc.PROVENANCE_REQUIRED`, fail closed — the partial callers Réception/CardDAV never carry a status, and the web form passes `"juriste"`); an `"mcp"` transition over a lawyer-decided or confirmed status is refused; « non_vérifié » clears date, source and confirmation (the PA-D07 self-heal); a creation with a decided status now stamps its date (it had none). `_normalize` POPS every provenance key a caller sends (`kyc.PROVENANCE_KEYS`: the dates, sources and confirmations), so no payload can forge « confirmé par le juriste ». `VALID_IDENTITY_STATUSES`/`VALID_CONFLICT_STATUSES` are re-exports of `utils.kyc`
+- `confirm_kyc_status(partie_id, field, *, par, expected_etag=None) -> (doc, errors)` (D7) — the ONE path that turns a presumed inscription into the lawyer's attestation. `expected_etag` is required in fact (`None` → `KYC_CONFIRM_NEEDS_VERSION`: a confirmation says « I read THIS version »); refused on a stale version, on a check that is not presumed (`KYC_NOTHING_TO_CONFIRM`), and when the connector is the writer (`KYC_CONFIRM_APP_ONLY` — `provenance.current_via() == "mcp"`: Claude can never confirm). A PARTIAL `update()` of the two confirmation keys and the stamp through `concurrency.commit_fields` (transactional compare-and-set), never the merged `set()` — a legacy invalid field cannot block it. The route bumps the CTag
 - `link_kyc_document(partie_id, document_id)` — appends to `kyc_document_ids`
 - `index_by_email_strict() -> {address: partie}` (lot 1a, L4) — one strict stream of the collection (errors propagate), `email` then `email_work`, lower-cased on both sides; on a shared address the most recently updated contact wins — the precedence Réception's scan over `list_parties()` always had. The Bookings rendez-vous card and its confirmation both read it, so the contact a card names is the contact a confirmation links — unless a contact sharing that address is EDITED between the render and the click: precedence is by `updated_at`, so the confirmation then links the new winner while the checkbox named the old one (the hearing's etag does not cover contacts; nothing posted is trusted, by design, so nothing can catch it)
 - `get_parties_bulk(ids) -> {id: doc}` (August 2026) — one `db.get_all` round-trip, no index; mirrors `dossier.get_dossiers_bulk` and **fails open to `{}`**. Written for the MCP coverage report's two deontological checks: the alternative (`list_parties(role_filter="client")`) **silently under-reports**, because `contact_role` belongs to the CONTACT, not to the dossier link, so a client recorded under another role vanishes from a regulatory check.
@@ -3434,6 +3456,7 @@ Note content is stored as Markdown. Rendered via `markdown.markdown(content, ext
 - **Documents blueprint isn't nested under dossiers.** Routes live at `/documents/...` and the dossier scope is passed as `?dossier_id=…` (GET) or as a form field (POST). When linking from a dossier tab, always include `dossier_id` in the URL.
 - **Hearings prefix is `/audiences`**, not `/agenda`. Internal `url_for()` calls must use the `hearings.*` blueprint.
 - **Dossier `clients` and `opposing_parties` are arrays**, not single FKs. Code reading legacy `client_id` must go through `_migrate_parties` (already applied in `get_dossier`/`list_dossiers`).
+- **A KYC status says WHO decided — and neither a re-save, a payload nor a default may change that** (D7, lot 4a). A decided identity or conflict check is an attestation the fiche renders « le … par Me … » and the coverage report treats as done; until lot 4a nothing recorded its author. Four rules now hold it, all in `utils/kyc.apply_status_transition`, and each closes a SILENT misattribution: (1) the web form re-submits BOTH statuses on every save, so only a TRANSITION moves provenance — an unchanged presumed value stays presumed, or editing a phone number would confirm Claude's inscription; (2) a transition must name its source and there is NO default anywhere (`update_kyc_status(source=)` is required, `update_partie`/`create_partie` refuse a transition with `kyc_source=None`) — a default of « juriste » would let any future caller that forgets it stamp a Claude write as the lawyer's; (3) `_normalize` pops every provenance key a payload carries, so « confirmé » cannot be forged; (4) only `confirm_kyc_status` confirms — etag required, refused under `writing_via("mcp")`. The signer's name is composed at READ from settings (`_compliance_signer`), so it is attached in the route and NEVER to a presumed entry; a presumed status is AMBER, never the green of a verified identity. `*_date` stays the inscription timestamp (rendered through `to_mtl`), `*_confirmed_at` sits beside it.
 - **A party-link rule must read the ARRAYS, never the `client_ids` mirror — and a client who has EVER had trust funds on a dossier cannot leave it** (lot 4a). `update_dossier` merges `{**existing, **data}`, the web form posts only `clients`/`opposing_parties`, and `_rebuild_party_mirrors` recomputes the mirrors only AFTER `_validate`: a guard comparing `existing["client_ids"]` with `merged["client_ids"]` compares the old mirror with itself and never fires — which is how removing a client with trust history went unguarded, stranding the funds (`models/trust.py` then refuses every entry `client_hors_dossier`, and the carte-client loses the name). « Ever », not « currently »: a zero balance still leaves a permanent register that must go on naming its client. The cross-side rule (one contact client AND adverse) is GROW-ONLY for the same reason every presence-gated rule is: the model re-validates the whole record on every save, and a hard rule would lock a legacy duplicate out of editing. Tests that prove these rules post the arrays alone, as the form does.
 - **`dossier.role` is DERIVED — never edit it by hand** (July 2026). The source of truth is `clients[].roles`; `_derive_role` recomputes the dossier-level field on every save (first role of the first client that has one), so a hand edit is silently overwritten. It exists only for the gabarits: `{{dossier.role}}`, `role_feminin`, `role_label`, and — **only as a FALLBACK since September 2026** — the demandeur/défendeur intitulé positions. Those positions used to resolve ONLY for a dossier-level `role` of plain demandeur/défendeur, leaving every other value unresolved (measured: 11 of 70 production dossiers, 16 %). They now read **each party's own `roles`** across both sides, so a dossier whose overall role is blank or « intervenant » resolves fine, and a « mis en cause » is no longer enumerated as a défendeur. The dossier-level swap survives for ONE case, and it is load-bearing: when **no entry on a side carries any role** — 42 of 130 production party entries predate the July-2026 rework and were never back-filled — the whole side is used, exactly as before. A side where SOME entry is tagged is taken at its word (an untagged co-client there is the confrère, not a second defendant). ⚠ Corollary the practitioner accepted: when a side has roles but NONE is the one asked for, the placeholder is unresolved and prints `[CHAMP MANQUANT : …]` — a bankruptcy whose adverse parties are `intimé`/`mis en cause`/`requérant` genuinely has no défendeur (2026-011), and the loud marker beats naming an intimé as one. The legacy dossier-level role is seeded into `clients[0].roles` on read (once); `utils/template_fields.py`'s `_ROLE_LABEL`/`_ROLE_FEMININ` mirror `PARTY_ROLE_LABELS` by hand and are pinned equal by test — « autre » deliberately has no feminine form.
 - **The taxonomy SUGGESTS a délai; it never sets one.** `taxonomie.Action.prescription_type` prefills the Prescription dropdown **only on a user action-change** — never on load, or opening an existing dossier would silently overwrite the delay the lawyer confirmed. It is `""` wherever the source's delay is not a single clean period, and those `""`s are load-bearing, not gaps: **FAI-01**'s « 6 mois » is a *retrospective eligibility window* (the acte de faillite must fall in the 6 months **preceding** the application), so suggesting it would compute a deadline that means nothing; RCV-05/COR-06 differ by regime; CJP-* are « délai raisonnable ». Never "fill in" a blank `prescription_type` without re-reading the source row.

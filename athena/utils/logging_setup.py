@@ -476,6 +476,7 @@ _PALLAS_HEARING = logging.getLogger("pallas.hearing")
 _PALLAS_SETTINGS = logging.getLogger("pallas.settings")
 _PALLAS_INVOICE = logging.getLogger("pallas.invoice")
 _PALLAS_PROTOCOL = logging.getLogger("pallas.protocol")
+_PALLAS_PARTIE = logging.getLogger("pallas.partie")
 
 
 AuthEvent = Literal[
@@ -544,6 +545,12 @@ HearingSeriesEvent = Literal[
     "series_created",
     "series_deleted",
     "series_unlinked",
+]
+# Contacts (lot 4a). A compliance confirmation turns a Claude inscription
+# into the lawyer's attestation (D7) — the one KYC act worth a trace of its
+# own. IDs and field names only: never a name, a note or a status text.
+PartieEvent = Literal[
+    "kyc_confirmed",
 ]
 DavOperation = Literal[
     "propfind",
@@ -851,6 +858,24 @@ def log_dossier_event(
         **extra,
     }
     _emit(_PALLAS_DOSSIER, level, event, fields)
+
+
+def log_partie_event(
+    event: PartieEvent,
+    partie_id: str,
+    **extra: Any,
+) -> None:
+    """Emit a contact event at INFO — ids and field names only.
+
+    The redaction filter scrubs emails, phones and postal codes, but NOT a
+    name or a note: never pass one here.
+    """
+    fields: dict[str, Any] = {
+        "event": event,
+        "partie_id": partie_id,
+        **extra,
+    }
+    _emit(_PALLAS_PARTIE, logging.INFO, event, fields)
 
 
 def log_hearing_series_event(

@@ -80,6 +80,20 @@ _MORALE = dict(
 )
 
 
+def _kyc_view(partie: dict) -> dict:
+    """The Conformité block's view, composed by the ROUTE's own helper
+    (lot 4a, D7 — the template no longer composes a badge or an
+    attribution). Widened deliberately: the fiche now needs it. The signer
+    is pinned so no settings read happens."""
+    from unittest import mock
+
+    with mock.patch("google.cloud.firestore.Client"):
+        import routes.parties as parties_routes
+    with mock.patch.object(parties_routes, "_compliance_signer",
+                           lambda: "Me Test"):
+        return parties_routes._kyc_view(partie)
+
+
 def _fiche(env, partie: dict) -> str:
     with env.test_request_context("/parties/p1"):
         from flask import render_template
@@ -87,6 +101,7 @@ def _fiche(env, partie: dict) -> str:
         return render_template(
             "parties/detail.html", partie=partie, dossiers=[], mandataires=[],
             mandataire_kind_labels={}, role_labels={}, type_labels={},
+            kyc_view=_kyc_view(partie), is_dossier_client=False,
         )
 
 

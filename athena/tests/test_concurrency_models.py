@@ -130,6 +130,16 @@ def _partie_with_mandataire(db):
     return doc["id"]
 
 
+def _presumed_partie(db):
+    """A contact whose identity Claude inscribed — presumed until the
+    lawyer's « Confirmer » (D7)."""
+    pid = _partie(db)
+    _doc, errors = partie_model.update_kyc_status(
+        pid, "identity_verified", "vérifié", source="mcp")
+    assert errors == [], errors
+    return pid
+
+
 def _mandataire_ids(stored):
     return [e["id"] for e in stored.get("mandataires") or []]
 
@@ -258,6 +268,18 @@ _CASES = {
                                  lambda i, **kw: partie_model.remove_partie_mandataire(
                                      i, "m1", **kw)[:2],
                                  "mandataires", []),
+    # Lot 4a (step 2, D7): the lawyer's KYC write (the plain update_partie
+    # path) and the « Confirmer » of a Claude inscription (a partial
+    # update() of its two keys, etag REQUIRED — its own tests below).
+    "update_kyc_status": ("parties", _partie,
+                          lambda i, **kw: partie_model.update_kyc_status(
+                              i, "identity_verified", "vérifié",
+                              source="juriste", **kw),
+                          "identity_verified", "vérifié"),
+    "confirm_kyc_status": ("parties", _presumed_partie,
+                           lambda i, **kw: partie_model.confirm_kyc_status(
+                               i, "identity_verified", par="juriste", **kw),
+                           "identity_verified_confirmed_by", "juriste"),
     "update_time_entry": ("timeentries", _time_entry,
                           lambda i, **kw: time_entry_model.update_time_entry(
                               i, {"description": "Révision"}, **kw),
@@ -330,6 +352,8 @@ _GETTERS = {
     "add_partie_mandataire": (partie_model, "get_partie"),
     "update_partie_mandataire": (partie_model, "get_partie"),
     "remove_partie_mandataire": (partie_model, "get_partie"),
+    "update_kyc_status": (partie_model, "get_partie"),
+    "confirm_kyc_status": (partie_model, "get_partie"),
     "update_time_entry": (time_entry_model, "get_time_entry"),
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entry"),
@@ -375,14 +399,18 @@ _CONTENT_REVISED_WITHOUT_ETAG = {"update_note"}
 _SELF_GUARDED = {"update_dossier_party", "remove_dossier_party",
                  "add_partie_mandataire", "update_partie_mandataire",
                  "remove_partie_mandataire"}
+# Lot 4a (step 2, D7): a compliance confirmation says « I read THIS
+# version » — without an etag it is refused, nothing written. Its write is
+# a partial update() of the two confirmation keys and the stamp.
+_ETAG_REQUIRED = {"confirm_kyc_status"}
 _LEGACY_WITHOUT_ETAG = sorted(
     set(_CASES) - _RACE_AT_COMMIT - _CONTENT_REVISED_WITHOUT_ETAG
-    - _SELF_GUARDED)
+    - _SELF_GUARDED - _ETAG_REQUIRED)
 
 
 def _write_kind(case):
     """The op a case's guarded write stages on its own document."""
-    if case.startswith("set_") or case in _DOCUMENT_PARTIAL | _MOVES:
+    if case.startswith("set_") or case in _DOCUMENT_PARTIAL | _MOVES | _ETAG_REQUIRED:
         return "update"
     return "set"
 
@@ -682,6 +710,19 @@ def test_without_an_etag_a_link_helper_refuses_a_write_after_its_read(
     stored = db.peek(path)
     assert stored["etag"] == "e-rival" and stored["rival"] is True
     assert db.commits == []
+
+
+@pytest.mark.parametrize("case", sorted(_ETAG_REQUIRED),
+                         ids=sorted(_ETAG_REQUIRED))
+def test_without_an_etag_a_confirmation_is_refused(db, case):
+    row_id, path, edit = _setup(db, case)
+    before = db.peek(path)
+
+    doc, errors = edit(row_id)
+
+    assert doc is None
+    assert errors == [partie_model.KYC_CONFIRM_NEEDS_VERSION]
+    assert db.peek(path) == before and db.commits == []
 
 
 def test_without_an_etag_a_note_edit_that_keeps_its_content_is_legacy(db):
