@@ -554,6 +554,10 @@ def test_a_rename_without_a_recorded_source_is_said_unchecked(world):
         "accepted": [], "unused_accept": 0}
     assert any("contrôlé contre AUCUN dossier" in w for w in result["warnings"])
     assert world["db"].peek(f"doc_templates/{tid}")["name"] == "Lettre Tremblay"
+    # An acceptance with nothing checked is said to be ignored.
+    again = _update(world, name="Lettre Tremblay 2",
+                    accept_residual=["Tremblay"])
+    assert any("`accept_residual` ignoré" in w for w in again["warnings"])
 
 
 def test_a_rename_is_checked_against_the_source_dossier_and_the_texts_say_so(

@@ -13419,6 +13419,10 @@ def _checked_rename(template: dict, name: str, accept: list[str],
             "s'imprime dans le nom de chaque document tiré de ce gabarit : "
             "jamais le nom d'une partie."
         )
+        if accept:
+            warnings.append(
+                "`accept_residual` ignoré : aucun dossier source n'a été "
+                "contrôlé, il n'y avait rien à accepter.")
     elif check.missing_dossier_ids:
         warnings.append(
             f"{len(check.missing_dossier_ids)} dossier(s) source enregistré(s) "
