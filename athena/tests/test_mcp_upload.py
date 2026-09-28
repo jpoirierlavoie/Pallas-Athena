@@ -837,6 +837,39 @@ def test_a_replacement_installs_a_new_version_and_keeps_the_old(world):
     assert done["entity"]["version"] == 2
 
 
+def test_the_active_template_s_file_can_be_replaced_and_the_consent_says_so(world):
+    """Review of T9: the consent screen promised « Le gabarit actif des
+    notes d'honoraires et des notes ne change jamais sans vous » — yet a
+    replacement through the ticket installs a new FILE for that very
+    template, printed at once on every invoice note. What Claude never does
+    is DESIGNATE it (D11). The behaviour, then the words that describe it."""
+    data = _docx("Note : {{facture.numero}}")
+    tpl, errors = tpl_model.create_template(
+        io.BytesIO(data), "n.docx", len(data),
+        {"name": "Note d'honoraires", "category": "autre",
+         "kind": "note_honoraires"}, UID)
+    assert errors == []
+    active, errors = tpl_model.set_active_template(
+        tpl["id"], par="juriste", expected_etag=None)
+    assert errors == [] and tpl_model.is_active(active)
+    new = _docx("Note v2 : {{facture.numero}}")
+    opened = handlers.begin_upload({
+        "purpose": "gabarit", "template_mode": "replace",
+        "template_id": tpl["id"], "expected_version": 1, "filename": "n.docx",
+        "size_bytes": len(new), "md5_base64": _md5(new)})
+    assert any("ACTIF" in w for w in opened["warnings"])
+    _put(world, opened, new)
+    done = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
+    assert done["entity"]["version"] == 2 and done["entity"]["active"] is True
+    assert tpl_model.get_active_template("note_honoraires")["id"] == tpl["id"]
+    consent = (_ATHENA / "templates" / "mcp" / "families"
+               / "_files.html").read_text(encoding="utf-8")
+    flat = " ".join(consent.split())
+    assert "change jamais sans vous" not in flat
+    assert "nouvelle version du fichier de ce gabarit actif" in flat
+    assert "<strong>désigne</strong> jamais le gabarit actif" in flat
+
+
 def test_a_replayed_replacement_reports_what_it_did_not_what_came_after(world):
     """Review of T9: the replay rebuilt « replaced_version » from the
     template's CURRENT version, so a later replacement (v2 → v3) made the

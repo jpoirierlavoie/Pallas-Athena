@@ -2044,10 +2044,16 @@ Notes:
   2. **Pilot on a scratch dossier** before relying on it: ask Claude to
      compute the size and MD5 of an attached PDF, `begin_upload`, PUT,
      `finalize_upload` — the document appears in the dossier, its category
-     « présumée » if one was given. Then check the refusals: a deliberately
-     WRONG `md5_base64` must be refused at finalize (« empreinte MD5 »), the
-     staging object gone (`gcloud storage ls gs://<bucket>/staging/<uid>/mcp/`
-     — read-only); a ticket left more than an hour must answer « expiré ».
+     « présumée » if one was given. Then check the refusals: with a deliberately
+     WRONG `md5_base64`, NO file may enter — either the service itself
+     refuses the PUT (the declared MD5 travels in the session's initiation
+     metadata; the repo cannot prove GCS enforces it, so this is what the
+     pilot establishes) and `finalize_upload` then answers « Aucun fichier
+     n'a encore été reçu », or the PUT lands and `finalize_upload` refuses
+     it (« empreinte MD5 ») with the staging object gone
+     (`gcloud storage ls gs://<bucket>/staging/<uid>/mcp/` — read-only).
+     Both are a pass; a document in the dossier is a failure. Note which
+     one happened. A ticket left more than an hour must answer « expiré ».
      For a gabarit, upload a letter FROM a dossier with `dossier_id`: its
      parties' names must be refused by name until accepted
      (`accept_residual`, a new ticket). **Manual Word check** (Change Impact
