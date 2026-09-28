@@ -10,6 +10,7 @@ and the syntax rules that govern them.
 > - **Field catalog, flat aliases, manual & passthrough fields** → [`athena/utils/template_fields.py`](athena/utils/template_fields.py)
 > - **Note-d'honoraires context (`facture.*`, rows, conditions)** → [`athena/utils/invoice_docx.py`](athena/utils/invoice_docx.py)
 > - **Note-print context (`note.*`) + markdown→Word conversion** → [`athena/utils/note_docx.py`](athena/utils/note_docx.py) / [`athena/utils/markdown_docx.py`](athena/utils/markdown_docx.py)
+> - **Templatizing a finished letter (§8)** → [`athena/utils/docx_templatize.py`](athena/utils/docx_templatize.py)
 >
 > If you add or rename a catalog field, alias, manual field, region, or
 > condition in those files, **update this document to match.**
@@ -532,6 +533,72 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
 
 ---
 
+## 8. Turning a finished letter into a gabarit (templatizing — lot 2B)
+
+A letter already written for ONE matter can become a firm-wide gabarit: each
+text that belongs to that matter — a name, a file number, an address — is
+replaced by the field that fills it for every future matter. Through the
+connector it takes two calls, and nothing is written until the second.
+
+1. **`preview_templatize`** (a read) — the stored `.docx` (from
+   `list_documents`) and a list of `{literal, placeholder}` pairs. It returns,
+   for each pair, how many times the literal would be replaced **part by part**
+   (body, headers, footers), what it would **leave in place**, the field's
+   **class** (auto — the application fills it; manual — prompted; passthrough
+   — left for Word, which is also where a **misspelt** catalog name lands), and
+   the identifiers of the source dossier — and the literals themselves — that
+   would **remain** in the result. Never the letter's text.
+2. **Adjust and preview again** until `ready_to_create`: add a pair for each
+   variant still listed, correct a field name that classifies passthrough.
+3. **`create_template`** with the same `substitutions`, each carrying
+   `expected_occurrences` = the count the preview reported (`substituted`).
+   One count that differs refuses the **whole** call — the letter may have
+   changed since, or a pair was edited — and nothing is created.
+
+### Rules that bite (templatizing)
+
+- **Matching is case-SENSITIVE.** « Jean Tremblay » in a sentence and
+  « JEAN TREMBLAY » in a heading are TWO pairs, and the heading's takes an
+  ALL-CAPS field name — `{{CLIENT.NOM_COMPLET}}` — which is also what prints
+  the new client's name in capitals (the §1 rule). The check after the
+  substitutions is NOT case-sensitive: the heading forgotten is caught, and
+  named.
+- **Whole words only**, and the **longest literal first**: « Jean Tremblay »
+  claims its range before « Tremblay » alone can. Non-breaking and narrow
+  spaces, curly apostrophes and Unicode hyphens (U+2010, U+2011) match their
+  plain forms; nothing else is folded.
+- **A literal Word split across runs is found whole** — a bold first name
+  followed by a surname in another proofing language is one literal. That is
+  exactly the case the fill engine's own run healing cannot handle, and why
+  templatizing never relies on it.
+- **Only the body, headers and footers are rewritten** — the parts the fill
+  engine fills. An occurrence in a footnote, an endnote, a comment or the
+  document properties is COUNTED and left in place (a field planted there
+  would never fill); so is one inside a Word field's result (Word regenerates
+  it), inside a content control bound to data, one a soft or non-breaking
+  hyphen interrupts, and one inside a `{{…}}` the letter already holds. Each
+  is listed by the preview; remove it in Word, or — for the document
+  properties — ask for `scrub_properties`, which empties them BEFORE the
+  substitutions are counted.
+- **Refused sources:** tracked changes (accept or reject them in Word first),
+  comments (delete them), a « Strict Open XML » file (save it as an ordinary
+  « Document Word (.docx) »), a malformed or oversized file.
+- **What remains is refused.** The result — not the letter — is checked
+  against the source dossier's parties, numbers and addresses and against every
+  literal you asked to replace; a residue refuses unless the lawyer accepts it
+  by name (`accept_residual`). One exception, stated: a literal whose words
+  all sit inside a field NAME of the result (« Nom complet » replaced by
+  `{{client.nom_complet}}`) is not checked — the check reads text, and would
+  otherwise flag the very field that replaced it.
+- **The check reads names, numbers and addresses — never the rest of the
+  letter.** A sentence that tells the first client's story is still there:
+  read the new gabarit before relying on it.
+- **The letter itself is never modified**: the gabarit is a new file, under a
+  neutral file name (the gabarit's own name, never the letter's), recording
+  the dossier it came from.
+
+---
+
 ## Quick behavioral recap
 
 - Person names render **bare by default**; use the `…_avec_civilite` twin when
@@ -541,3 +608,5 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
   fails.
 - Blank auto field → `[CHAMP MANQUANT : …]`; blank manual field →
   `[À COMPLÉTER : …]`; passthrough → raw `{{name}}`.
+- Templatizing (§8) is **case-sensitive**, whole words, all or nothing, and
+  refused while anything of the source dossier remains.

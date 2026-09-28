@@ -2229,6 +2229,77 @@ Notes:
   to designate AND to undesignate. D18: a category the lawyer chose or
   confirmed (`category_set_by_lawyer: true` on `list_documents`) is never
   replaced — report the disagreement to him instead.
+- **Lot 2B — turning a finished letter into a gabarit through the connector
+  (ONE consent train: branch `mcp-ecriture-lot2b` — with lot 2A and any
+  earlier lot of that stack not yet deployed — in ONE push, then the PILOT
+  on ONE real letter).** One new READ tool, `preview_templatize`, and one new
+  argument, `create_template`'s `substitutions` — no new family, no index, no
+  dependency, no Tailwind class, no `cron.yaml` change, nothing DAV-exposed.
+  A new read reaches the token in force the moment it deploys, and the
+  consent text changes (« transformé en gabarit »), so this is a consent
+  train, never an ordinary deploy. **In this order:**
+  1. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
+     claude.ai** — BEFORE pushing. `MCP_WRITE_ENABLED` stays `"true"` (no
+     token exists to abuse; re-consenting while it is `"false"` yields a
+     read-only grant without a word).
+  2. **Push the lot as ONE deploy** (Cloud Build runs the suite as the gate).
+  3. **Re-add the connector and READ the « Gérer vos gabarits » block before
+     ticking** « Autoriser les écritures »: a document « tel quel, ou
+     transformé en gabarit » (a COPY, all or nothing, each replacement counted
+     in advance), checked « tel qu'il sera enregistré, les textes que Claude
+     a demandé de remplacer compris », and « relisez un gabarit transformé
+     avant de vous en servir » — the check reads names, numbers and
+     addresses, never the rest of the text. Then `tools/list`: **71** tools
+     (29 read, 42 write), `preview_templatize` present on a read-only grant
+     too (it writes nothing), `create_template` listing `substitutions`. The
+     byte budget is the deploy gate's `tests/test_mcp_descriptor_budget.py`
+     (about 209 KB of its 280 KB cap).
+  4. **The pilot — ONE real letter, in a real dossier** (Change Impact item
+     3: no test can see Word's repair prompt, and only a real letter has a
+     real letterhead). Pick a finished `.docx` the practice wrote — no
+     tracked changes, no comments (accept, reject and delete them in Word
+     first, then file it again) — with the client's name in the body AND in
+     a header or footer if possible.
+     a. **Preview.** Ask Claude to templatize it: it calls
+        `preview_templatize` with the pairs it proposes (the client's name,
+        the file number, the court number, the addresses…). Read the rows:
+        each `substituted` count must match what the letter really holds,
+        `in_non_target_parts` names a footnote or the document properties,
+        and `leak_scan.residues` lists what would stay — an ALL-CAPS heading
+        the pairs missed shows up here as the literal itself (`origin:
+        substitution`).
+     b. **Adjust**, preview again, until `ready_to_create: true` (with
+        `scrub_properties: true` if the properties carry the client's name).
+     c. **Create** (`create_template`, the same pairs, each
+        `expected_occurrences` = its `substituted`). Try one deliberately
+        WRONG count first: it must be refused « rien n'a été écrit » and
+        « Gabarits » must show nothing new.
+     d. **Open the template in Word** (Gabarits → the new template →
+        « Télécharger le gabarit »): it opens WITHOUT a repair prompt, the
+        letterhead, fonts and headers are intact, and each replaced text now
+        reads `{{…}}` — in the body, the header and the footer.
+     e. **Fill it for ANOTHER dossier** (« Générer depuis un gabarit » on
+        that dossier, or `fill_gabarit`), open the result in Word WITHOUT repair, and read
+        it whole: the other client's name, file number and address are where
+        the first ones were — and **nothing of the source client remains**:
+        not in the body, not in a header or footer, not in a footnote, not
+        in Fichier › Informations (the document properties).
+     f. The source letter is unchanged in its dossier (same size, same
+        date). If anything is wrong, delete the template in the application
+        (the connector cannot delete) and note what the preview missed.
+
+  Then update BOTH copies of the claude.ai skill `pallas-athena` the same
+  day. What lot 2B makes false there: every « 70 outils » (now 71: 29 + 42),
+  and any sentence saying a document becomes a gabarit only « tel quel » or
+  that turning a letter into a gabarit must be done in Word. Add: the
+  workflow — `preview_templatize` FIRST, adjust, then `create_template` with
+  each `expected_occurrences` = `substituted`; matching is case-SENSITIVE
+  (an ALL-CAPS variant is its own pair, with an ALL-CAPS field name); the
+  field names are those `list_templates` shows for an existing gabarit (a
+  misspelt one classifies « passthrough »); what stays in footnotes, field
+  results and document properties is never replaced; a residue is accepted
+  only on the lawyer's word; and the lawyer reads the new gabarit before it
+  serves — the check never reads the rest of the letter's text.
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —
