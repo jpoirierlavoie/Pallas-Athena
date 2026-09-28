@@ -338,6 +338,28 @@ def test_le_message_dit_les_fichiers_que_le_stockage_n_a_pas_effaces(
     assert len(trail) == 3          # chaque entité reste journalisée
 
 
+def test_un_refus_apres_la_phase_des_fichiers_dit_aussi_les_orphelins(
+    web, trail, monkeypatch,
+):
+    """Revue des correctifs du lot 2A : les fichiers partent, puis la
+    transaction des dossiers refuse (un classement concurrent). Le compte
+    des fichiers que le stockage n'a pas pu effacer ne paraissait que sur
+    la bannière de SUCCÈS ; la bannière d'erreur le taisait. ÉCHOUE sur
+    l'ancienne route."""
+    rapport = _rapport(documents=[{"id": "a", "display_name": "R",
+                                   "category": "autre"}])
+    rapport["orphaned_files"] = 1
+    monkeypatch.setattr(rd, "delete_folder", lambda *a, **k: (
+        False, "Le contenu de ce dossier a changé pendant la suppression.",
+        rapport))
+    reponse = web.post("/documents/folders/f1/delete",
+                       data={"dossier_id": "d1", "contents": "delete"})
+    erreur = _erreur(reponse)
+    assert "a changé pendant la suppression" in erreur
+    assert "Le stockage n'a pas pu effacer 1 fichier" in erreur
+    assert len(trail) == 1          # le document détruit reste journalisé
+
+
 # ── Le dialogue, rendu RÉELLEMENT ──────────────────────────────────────────
 
 

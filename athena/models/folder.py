@@ -1040,6 +1040,21 @@ def _subtree_now(
     return record, ids, members
 
 
+def _refusal_message(message: str, contents: str, done: int) -> str:
+    """A refusal of the documents or the folder phase, saying what the
+    committed chunks ALREADY did (not undone). :data:`SUBTREE_CHANGED_DURING`
+    carries the phrase in its slot; any other refusal — the subtree
+    re-read failing after files were already moved or deleted — gets it
+    appended (review of the fixups of lot 2A: « Impossible de lire… » alone
+    hid that some files were already gone)."""
+    if message == SUBTREE_CHANGED_DURING:
+        return message.format(done=_done_phrase(contents, done))
+    if done:
+        return (f"{message} {_done_phrase(contents, done)}Le dossier a été "
+                "conservé, avec tout ce qu'il contient encore.")
+    return message
+
+
 def _done_phrase(contents: str, count: int) -> str:
     """What the documents phase already did before a refusal — said, since
     it is not undone (each committed chunk stands)."""
@@ -1200,9 +1215,7 @@ def delete_folder(
             _apply_chunk(db.transaction())
         except _Refused as refusal:
             done = len(supprimes) if contents == CONTENTS_DELETE else moved
-            message = refusal.errors[0]
-            if message == SUBTREE_CHANGED_DURING:
-                message = message.format(done=_done_phrase(contents, done))
+            message = _refusal_message(refusal.errors[0], contents, done)
             return False, message, {
                 "folders": [], "documents": supprimes, "moved": moved,
                 "orphaned_files": orphans,
@@ -1243,9 +1256,7 @@ def delete_folder(
         _drop_folders(db.transaction())
     except _Refused as refusal:
         done = len(supprimes) if contents == CONTENTS_DELETE else moved
-        message = refusal.errors[0]
-        if message == SUBTREE_CHANGED_DURING:
-            message = message.format(done=_done_phrase(contents, done))
+        message = _refusal_message(refusal.errors[0], contents, done)
         return False, message, {
             "folders": [], "documents": supprimes, "moved": moved,
             "orphaned_files": orphans,

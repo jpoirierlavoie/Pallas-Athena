@@ -1156,3 +1156,31 @@ def test_chaque_ecriture_destructive_relit_le_sous_arbre_dans_sa_transaction(
     for commit in store.commits:
         if any(p.startswith(("documents/", "folders/")) for _k, p in commit.ops):
             assert commit.transaction is not None
+
+
+def test_une_relecture_impossible_apres_les_fichiers_dit_ce_qui_est_deja_fait(
+    store, monkeypatch,
+):
+    """Revue des correctifs du lot 2A : les fichiers sont déplacés (lot
+    commis), puis la relecture de la phase des dossiers échoue. La bannière
+    ne disait que « Impossible de lire… » — elle dit désormais que 3
+    fichiers avaient déjà été déplacés, et que le dossier est conservé."""
+    _arbre(store, monkeypatch)
+    real = folder._subtree_now
+    calls = []
+
+    def _flaky(dossier_id, folder_id, transaction):
+        calls.append(1)
+        if len(calls) > 1:
+            raise folder._Refused(
+                ["Impossible de lire le contenu du dossier. Réessayez."])
+        return real(dossier_id, folder_id, transaction)
+
+    monkeypatch.setattr(folder, "_subtree_now", _flaky)
+    ok, err, rapport = folder.delete_folder("d1", "f1", contents="move")
+    assert not ok
+    assert err.startswith("Impossible de lire le contenu du dossier.")
+    assert "3 fichiers avaient déjà été déplacés vers le dossier parent" in err
+    assert "Le dossier a été conservé" in err
+    assert rapport["moved"] == 3 and rapport["folders"] == []
+    assert store.peek("folders/f1") is not None

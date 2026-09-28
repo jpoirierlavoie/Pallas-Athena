@@ -1125,6 +1125,10 @@ def folder_delete_route(folder_id: str) -> str:
         )
 
     message = _folder_delete_message(rapport) if success else ""
+    if not success and error and _orphan_phrase(rapport):
+        # A refusal AFTER the files phase (the folder records' transaction
+        # saw a change) still owes what the store could not erase.
+        error = f"{error} {_orphan_phrase(rapport)}"
 
     target = url_for(
         "documents.document_list", dossier_id=dossier_id,
@@ -1195,25 +1199,36 @@ def _folder_delete_message(rapport: dict) -> str:
             f" — {deplaces} fichier{'s' if deplaces != 1 else ''} "
             f"déplacé{'s' if deplaces != 1 else ''} vers le dossier parent"
         )
-    orphelins = int(rapport.get("orphaned_files", 0) or 0)
+    orphelins = _orphan_phrase(rapport)
     if orphelins:
-        # Correctifs du lot 2A : les ENREGISTREMENTS partent d'abord, dans la
-        # transaction qui relit le sous-arbre ; un fichier que le stockage a
-        # refusé d'effacer ensuite n'est plus référencé par rien — dit, pour
-        # qu'une suppression voulue complète ne se lise pas comme telle.
-        if orphelins == 1:
-            phrase += (
-                ". Le stockage n'a pas pu effacer 1 fichier : il n'est plus "
-                "accessible dans l'application, mais ses octets restent en "
-                "stockage"
-            )
-        else:
-            phrase += (
-                f". Le stockage n'a pas pu effacer {orphelins} fichiers : ils "
-                "ne sont plus accessibles dans l'application, mais leurs "
-                "octets restent en stockage"
-            )
+        phrase += ". " + orphelins.rstrip(".")
     return phrase
+
+
+def _orphan_phrase(rapport: dict) -> str:
+    """« Le stockage n'a pas pu effacer N fichier(s)… » — ``""`` sans
+    orphelin.
+
+    Correctifs du lot 2A : les ENREGISTREMENTS partent d'abord, dans la
+    transaction qui relit le sous-arbre ; un fichier que le stockage a
+    refusé d'effacer ensuite n'est plus référencé par rien — dit, pour
+    qu'une suppression voulue complète ne se lise pas comme telle. Sur le
+    succès comme sur un refus survenu APRÈS la phase des fichiers (revue
+    des correctifs : la bannière d'erreur le taisait)."""
+    orphelins = int(rapport.get("orphaned_files", 0) or 0)
+    if not orphelins:
+        return ""
+    if orphelins == 1:
+        return (
+            "Le stockage n'a pas pu effacer 1 fichier : il n'est plus "
+            "accessible dans l'application, mais ses octets restent en "
+            "stockage."
+        )
+    return (
+        f"Le stockage n'a pas pu effacer {orphelins} fichiers : ils ne sont "
+        "plus accessibles dans l'application, mais leurs octets restent en "
+        "stockage."
+    )
 
 
 # ── Folder tree API (for move modal) ─────────────────────────────────────
