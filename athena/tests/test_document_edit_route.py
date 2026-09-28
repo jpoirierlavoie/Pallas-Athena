@@ -355,6 +355,43 @@ def test_a_refused_move_is_shown_on_the_detail_page(client, db):
     assert "Le dossier de destination est introuvable." in page
 
 
+def test_a_move_from_a_stale_page_is_refused_and_moves_nothing(client, db):
+    """Critique de complétude du lot 2A : la fenêtre « Déplacer vers… » de la
+    fiche ne portait AUCUN etag, alors que la route le transmettait déjà au
+    modèle. Depuis que le connecteur reclasse un document (update_document,
+    move_documents), une fiche restée ouverte le renvoyait en silence là où
+    elle l'avait vu. Échoue sur le gabarit d'avant (aucun champ rendu : le
+    POST repris de la page ne portait aucune version)."""
+    _seed(db, file_type="application/zip", filename="lot.zip")
+    for fid, name, order in (("fA", "A", 0), ("fB", "B", 1)):
+        db.seed(f"folders/{fid}", {
+            "id": fid, "dossier_id": "d1", "name": name,
+            "parent_folder_id": None, "order": order, "etag": f"e-{fid}",
+            "created_at": DT, "updated_at": DT})
+    html = client.get("/documents/doc1").get_data(as_text=True)
+    form = html[html.index('action="/documents/doc1/move"'):]
+    form = form[:form.index("</form>")]
+    rendered = _ETAG.findall(form)
+    assert rendered == ["e0"]
+
+    # Meanwhile the connector refiles the document into « A ».
+    db.external_write(PATH, {**db.peek(PATH), "folder_id": "fA",
+                             "etag": "e-claude"})
+    resp = client.post("/documents/doc1/move", data={
+        "target_folder_id": "fB", "expected_etag": rendered[0]})
+    assert resp.status_code == 302             # a 2xx-bound bounce (htmx rule)
+    assert db.peek(PATH)["folder_id"] == "fA"  # nothing moved
+    page = html_module.unescape(
+        client.get(resp.headers["Location"]).get_data(as_text=True))
+    assert "Il n'a PAS été déplacé" in page
+
+    # The page re-read carries the new version: the move then goes through.
+    resp = client.post("/documents/doc1/move", data={
+        "target_folder_id": "fB", "expected_etag": "e-claude"})
+    assert "erreur" not in resp.headers["Location"]
+    assert db.peek(PATH)["folder_id"] == "fB"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Balayages
 # ══════════════════════════════════════════════════════════════════════

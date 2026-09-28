@@ -824,10 +824,23 @@ def document_update(document_id: str) -> str:
 # ── Move document ─────────────────────────────────────────────────────────
 
 
+_MOVE_STALE = (
+    "Ce document a été modifié depuis l'affichage de la page — reclassé ou "
+    "renommé ailleurs, par exemple par le connecteur. Il n'a PAS été "
+    "déplacé : vérifiez son dossier de classement ci-dessous, puis "
+    "déplacez-le de nouveau."
+)
+
+
 @documents_bp.route("/<document_id>/move", methods=["POST"])
 @login_required
 def document_move(document_id: str) -> str:
-    """Move a document to a different folder."""
+    """Move a document to a different folder.
+
+    The modal carries the version the page showed (plan rule 11, lot 2A):
+    since the connector refiles documents (update_document, move_documents),
+    a detail page left open must not send one back, unseen, to where it
+    was. A stale move is refused on the page's 2xx-bound bounce."""
     doc = get_document(document_id)
     if not doc:
         if _is_htmx():
@@ -841,6 +854,8 @@ def document_move(document_id: str) -> str:
         dossier_id, document_id, target_folder_id,
         expected_etag=edit_conflict.submitted_etag(),
     )
+    if concurrency.is_stale(errors):
+        errors = [_MOVE_STALE]
 
     if _is_htmx():
         if errors:

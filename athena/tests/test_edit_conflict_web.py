@@ -1318,7 +1318,14 @@ def test_a_stale_confirm_confirms_nothing_and_says_so(client, db, dossier_id):
     assert before["category_source"] == "analyse"   # still « présumée »
     shown_after = client.get(resp.headers["Location"]).get_data(as_text=True)
     assert "Rien n'a été confirmé" in html_module.unescape(shown_after)
-    assert _etags(shown_after) == [RIVAL_ETAG]      # the new version, to read
+    # The new version, to read — on the confirm form AND on the page's
+    # other form that carries one, the move modal (completeness critic of
+    # lot 2A: the modal carries the page's version too, so this pin reads
+    # FORMS, where it used to count the page's single etag field).
+    form = shown_after[shown_after.index(
+        f'action="/documents/{doc_id}/analyse/confirmer"'):]
+    assert _etags(form[:form.index("</form>")]) == [RIVAL_ETAG]
+    assert set(_etags(shown_after)) == {RIVAL_ETAG}
 
 
 def test_a_fresh_confirm_confirms_under_the_lawyers_name(client, db, dossier_id):
