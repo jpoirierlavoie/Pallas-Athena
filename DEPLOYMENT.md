@@ -182,7 +182,7 @@ and cannot reach the singleton.
 | `FIRM_STREET`, `FIRM_UNIT`, `FIRM_CITY`, `FIRM_POSTAL_CODE` | ○ | `""` | Address, in the app's own six-suffix shape |
 | `FIRM_PROVINCE` | ○ | `QC` | ⚠ The only non-empty default here, and it disagrees with the convention every contact address in the app follows (`Québec`, spelled out). `_seed_from_env` migrates it through `apply_address_defaults`, so the stored profile is correct — but a reader of `app.yaml` sees `QC` |
 | `FIRM_PHONE`, `FIRM_FAX`, `FIRM_EMAIL` | ○ | `""` | Phones are stored **E.164**; `cabinet_dict()` renders the local form |
-| `GST_NUMBER`, `QST_NUMBER` | ○ | `""` | ⚠ Read at invoice creation and **snapshotted per invoice**. There is no `update_invoice`, so setting them here (or in « Paramètres ») affects **future invoices only** |
+| `GST_NUMBER`, `QST_NUMBER` | ○ | `""` | ⚠ Read at invoice creation and **snapshotted per invoice** — nothing rewrites them on an existing invoice (a brouillon's correction, lot 3a, reaches its notes, terms, due date and billing address only), so setting them here (or in « Paramètres ») affects **future invoices only**. **Since lot 3a a NEW invoice charging GST or QST under an EMPTY number is REFUSED**, on the web form as through the connector — fill both in « Paramètres → Profil du cabinet » before deploying it (§15 « Lot 3 », step 1) |
 
 #### Integrations — Microsoft Graph, Bookings, Outlook mirror
 
@@ -1297,6 +1297,13 @@ gcloud firestore fields ttls update expire_at --collection-group=oauth_tokens --
   organisation must allow code-execution network egress to
   `storage.googleapis.com` (§15 « Lot 2A », step 7). Without it the tickets
   open, every PUT fails, and they expire unused: nothing is ever filed.
+- **An invoice the connector issues consumes a REAL number** (lot 3b,
+  plan D3): `create_invoice` takes the year's next `YYYY-F###` inside the
+  invoice's own transaction — a refusal consumes none, a success one for
+  ever, voided or not. Never smoke-test it: §15 « Lot 3 », step 7, verifies
+  a deploy with `preview_invoice` and no-op calls, and says how to check
+  that `counters/invoices-{year}.seq` advances by exactly one per invoice
+  really issued.
 - The consent screen has room for a **second, separate box**, « Autoriser la
   comptabilité » (scope `athena:comptabilite`). It appears only when
   `MCP_WRITE_ENABLED` and `MCP_COMPTABILITE_ENABLED` are both `true` **and**
@@ -2304,6 +2311,169 @@ Notes:
   the upload ticket never templatizes; the preview's rows count from 0 while
   its French messages number from 1; and the lawyer reads the new gabarit
   before it serves — the check never reads the rest of the letter's text.
+- **Lot 3 — billing through the connector (3a: an ordinary release; 3b:
+  ONE consent train — branch `mcp-ecriture-lot3`, with lot 2B and any
+  earlier lot of that stack not yet deployed, in ONE push).** 3a is the
+  model, service and web half and changes no MCP surface: one plan for
+  issuing an invoice (`plan_invoice`) with its issuance rules, the
+  brouillon correction (`/factures/<id>/brouillon`), the move of an
+  un-invoiced time entry or disbursement to another dossier, the note
+  d'honoraires as ONE generation (`services/note_honoraires.py`), and the
+  budget's transactional version counter. 3b adds five tools — two reads,
+  `preview_invoice` and `get_budget`, and the BILL family, `create_invoice`,
+  `update_invoice`, `create_budget_version` —, `dossier_id` (the move) on
+  `update_time_entry` / `update_expense`, and `source: invoice_note` on
+  `create_document`. No index to deploy (single-field equalities and keyed
+  reads only), no dependency, no Tailwind class, no `cron.yaml` change, no
+  `firestore.rules` change (`counters/budget-{dossier_id}` falls under the
+  deny-all), nothing DAV-exposed. The scope is frozen at issuance and the
+  two new READ tools reach the token in force the moment they deploy, so 3b
+  is a consent train, never an ordinary deploy. **In this order:**
+  1. **The firm's GST and QST registration numbers — BEFORE deploying 3a.**
+     Open « Paramètres → Profil du cabinet » and check both are filled.
+     From 3a on the MODEL refuses a NEW invoice that charges GST or QST
+     under an EMPTY number — on the web « Nouvelle facture » form as through
+     the connector (« Le numéro d'inscription TPS du cabinet est vide… »).
+     Invoices already issued are untouched: their numbers were snapshotted
+     at issuance and nothing rewrites them.
+  2. **`python -m scripts.verify_admin_integrity` is clean** (read-only —
+     the environment of the T3 designation recipe above: ADC, inline
+     variables, never `ENV=production`). Check n° 8 above all: every
+     invoice's recorded `amount_paid` is backed by the register. The void
+     (web « Annuler » and, from 3b, the connector's `update_invoice` with
+     status « annulée ») refuses an invoice on which a payment stands, read
+     from `amount_paid` AND the standing admin and trust entries; a drift
+     the report names is an invoice whose void would be judged on figures
+     the lawyer does not see — decide it by hand first.
+  3. **3a may go alone as an ordinary release** once every earlier lot of
+     the stack is deployed; otherwise its commits ride in step 5's push —
+     they change no MCP surface, so the order below is unchanged. Web
+     checks after it, none of which burns a number: on any brouillon,
+     « Modifier le brouillon » then « Enregistrer » WITHOUT changing a field
+     returns to the sheet and writes nothing (the no-op); « Note
+     d'honoraires (Word) » on an existing, non-annulée invoice files its note
+     in « Projets », and it must open in Word WITHOUT repair (Change Impact
+     item 3 — the fill now runs in `services/note_honoraires.py`). Never
+     test « Créer » on « Nouvelle facture »: a success takes a real number.
+  4. **`python -m scripts.revoke_mcp_tokens`, and remove the connector in
+     claude.ai** — BEFORE pushing 3b. `MCP_WRITE_ENABLED` stays `"true"`: no
+     token exists to abuse, and re-consenting while it is `"false"` yields a
+     read-only grant without a word.
+  5. **Push the lot as ONE deploy** (Cloud Build runs the suite as the
+     gate). Pushing 3b's commits one by one would put the new tools under
+     the old consent text.
+  6. **Re-add the connector and READ the new screen before ticking**
+     « Autoriser les écritures »: the read paragraph now names the budgets;
+     a « Facturer » paragraph (a NEW invoice, always a brouillon, only
+     billable un-invoiced entries of one dossier, after a preview whose
+     total must match exactly — and **it consumes the year's next number
+     for ever, even if voided**; its entries are frozen, their phase aside,
+     until voided), « Tenir une facture » (**only a brouillon is
+     corrected**; marking « envoyée » **sends nothing** and is undone only
+     by a void; a void needs a reason and is refused while a payment is
+     recorded), « Budgets » (a NEW version, refused when a newer one was
+     saved; every version kept, the proof of what the client was told);
+     the CORRECT paragraph (an entry may be moved to another dossier), the
+     IMPORT paragraph (« annulez la facture — ici ou dans l'application »)
+     and the FILES paragraph (the Word note d'honoraires). In the « jamais »
+     list: « envoyer une facture à qui que ce soit », « marquer une facture
+     payée », « écarter en silence une entrée … nommée », and still
+     « supprimer » and « inscrire ou encaisser un paiement » — while
+     « changer le statut d'une facture ou l'annuler » and « émettre un
+     nouveau numéro de facture » are GONE. Then check `tools/list`: **76**
+     tools (31 read, 45 write), `preview_invoice` and `get_budget` present
+     on a read-only grant too, and `MCP_WRITE_ENABLED=false` hiding the 45
+     writes — the three BILL tools among them — while keeping those two
+     reads. The byte budget is the deploy gate's
+     `tests/test_mcp_descriptor_budget.py` (about 221 KB of its 280 KB cap;
+     `update_partie` still the largest, 7.8 KB of 8).
+  7. **The smoke test burns NO number** (Change Impact item 1 — and the
+     lawyer's books: every successful `create_invoice` takes the year's
+     next `YYYY-F###` for ever, and a void leaves a visible hole in the
+     « Journal des honoraires »). First read the year's counter —
+     read-only, ADC, the year being TODAY's in Montréal; « absent » means
+     no invoice was numbered this year yet:
+
+     ```bash
+     cd athena
+     export GOOGLE_CLOUD_PROJECT=$PROJECT
+     python -c "import sys; from google.cloud import firestore; d = firestore.Client(project='$PROJECT').document('counters/invoices-' + sys.argv[1]).get(); print(d.to_dict() if d.exists else 'absent')" 2026
+     ```
+
+     Then, through Claude:
+     a. `preview_invoice` on a dossier with unbilled work: `ready: true`
+        and a total, or `refusals` saying exactly why (a blank tax number
+        here means step 1 was skipped). Nothing is written.
+     b. `create_invoice` with that selection and `expected_total_cents`
+        deliberately **one cent off**: refused, the gap named, « Rien n'a été
+        créé » — and the counter unchanged. This proves the allocation sits
+        inside the transaction without consuming anything.
+     c. `get_invoice` on an existing `envoyée` invoice: an `etag` and its
+        `connector_transitions`; then `update_invoice` with `status:
+        "envoyée"` — its CURRENT status — and that etag: `outcome:
+        "unchanged"`, nothing written.
+     d. `get_budget` on a dossier that has a budget, then
+        `create_budget_version` with the `base_version` returned, `mode:
+        "merge"` and one line equal to a stored one: `outcome: "unchanged"`,
+        nothing written (a new version is permanent — the budget is
+        append-only).
+     e. `create_document` with `source: "invoice_note"` on an existing,
+        non-annulée invoice: ONE note filed in « Projets » — its object in
+        the bucket under `users/<the practice's uid>/…`, never
+        `users/unknown/` (the Cloud Storage console shows it; no tool output
+        carries a path) — which opens in Word WITHOUT repair; the same call
+        again returns it (`reused: true`, `created: false`) instead of
+        filing a second. (This
+        one does write a document — delete it in the application if it is
+        not wanted.)
+     f. Re-read the counter: it must be exactly what it was.
+
+     The promotion `brouillon → envoyée` (`update_invoice`) is undone only
+     by a void: run it ONLY on an invoice the lawyer has chosen to promote
+     anyway — an imported brouillon of the IMP-07 backlog, typically — and
+     name it before the call. And when the lawyer really issues an invoice
+     through `create_invoice`, re-read the counter after it: `seq` must have
+     advanced by **exactly one** (a refusal never moves it; a success always
+     does, once).
+
+  Then update BOTH copies of the claude.ai skill `pallas-athena` the same
+  day. What lot 3 makes false there (on top of the lot 1, 2A and 2B lists
+  above): every « 71 outils » (now 76: 31 + 45); SKILL.md « Aucun des … outils
+  n'expose de `dry_run`, de `preview` ni d'équivalent » — still no `dry_run`,
+  but `preview_invoice` (like `preview_templatize`) is a READ that computes
+  exactly what its write would do; « Les écritures qu'aucun outil ne fait :
+  … changer le statut d'une facture, enregistrer un paiement ou annuler une
+  facture … Tout cela passe par l'application » — the status and the void
+  are `update_invoice` now, the payment alone stays in the application;
+  `references/comptabilite.md` §1 « le seul retour est l'annulation de la
+  facture dans l'application » and §7 rule 5 « La facture atterrit en
+  brouillon et y reste. Le connecteur ne change aucun statut de facture »;
+  `references/outils.md` — `complete_task` « seul changement de statut »
+  (false since lot 1 already), family C « aucune de ces écritures n'est
+  annulable par le connecteur » (an invoice it issues, it voids), family G
+  listing reads only, `import_invoice` « atterrit en brouillon et y
+  reste », and the row « Changer le statut d'une facture, enregistrer un
+  paiement, annuler une facture — Impossible ici »; README « ne change
+  aucun statut de facture ». Incomplete rather than false, to extend the
+  same day: « Remplace ce qu'on nomme » lacks `update_invoice` (a
+  brouillon only) and the moves; « Le mur de la facturation » should say
+  that a void (`update_invoice`, status « annulée », refused while a
+  payment stands) releases the entries; `references/vocabulaires.md`'s
+  invoice statuses should say which ones `update_invoice` sets (envoyée,
+  en_retard, annulée — never payée, never back to brouillon) and that
+  `create_budget_version` refuses ADM and HOR. Add: the two-step
+  `preview_invoice` → `create_invoice` (the SAME selection, its total as
+  `expected_total_cents`, an `idempotency_key` always, the lawyer's
+  confirmation first — the number is consumed for ever); `update_invoice`'s
+  discipline (one change a call, the etag from `get_invoice`, `en_retard`
+  only past the due date, a `void_reason` on every void, a payment reversed
+  first — in « Fidéicommis » or « Administration », as the refusal says);
+  the note d'honoraires by `create_document` source `invoice_note`
+  (`regenerate` only on the lawyer's word); `get_budget` →
+  `create_budget_version` (`base_version`, `merge` keeping what a line does
+  not name, `replace` making the lines the whole budget); and the move of
+  an un-invoiced entry by `update_time_entry` / `update_expense` with
+  `dossier_id` (its amount and phase kept, both budgets moving).
 - **Cold starts:** `min_instances: 0` (in `app.yaml`) trades a cold start for
   zero standing cost; set `1` to eliminate it (one always-on F2).
 - **Dependencies:** edit `athena/requirements.in`, then re-lock —

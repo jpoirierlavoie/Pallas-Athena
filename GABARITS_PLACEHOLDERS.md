@@ -341,7 +341,7 @@ A passthrough name is also what **Claude** may write, through the connector's
 
 | Argument | What it is | Limits |
 |---|---|---|
-| `template_id` | The gabarit. **Kind « gabarit » only** — a « Note d'honoraires » or « Note (impression) » template is refused: they have their own flows (the invoice's « Note d'honoraires (Word) » in the application; the connector's `create_document` for a note print, §7) | — |
+| `template_id` | The gabarit. **Kind « gabarit » only** — a « Note d'honoraires » or « Note (impression) » template is refused: they have their own flows (the invoice's « Note d'honoraires (Word) » in the application, or the connector's `create_document` with `source: invoice_note` — lot 3b; the connector's `create_document` with `source: markdown` for a note print, §7) | — |
 | `dossier_id` | **Required.** Its data fills every auto field, and the document is saved as a NEW document in ITS « Projets » folder — **always there**, never another folder, never a download | — |
 | `client_id` / `adverse_id` | The « client » / « adverse » slots — a party **on that dossier**, needed when the dossier has several and the gabarit reads the slot (never guessed, never the first one by default) | — |
 | `destinataire_id` | The « destinataire » slot — any contact; no default | — |
@@ -402,7 +402,9 @@ by a `markdown: true` bloc — give that paragraph an ordinary style.
 
 ## 6. Note d'honoraires only (`kind="note_honoraires"`)
 
-The invoice's « Note d'honoraires (Word) » fills the template of this type
+The invoice's « Note d'honoraires (Word) » — and, since lot 3b, the
+connector's `create_document` with `source: invoice_note`, which runs the
+SAME generation (`services/note_honoraires.py`) — fills the template of this type
 that is **designated as active** on its page (« Désigner comme gabarit
 actif ») — never simply the most recent one (lot 2A, 2026-09-27); with none
 designated, generation refuses and says so.
