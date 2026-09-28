@@ -28,9 +28,11 @@ document's file, never ``notes_internes``; since lot 2A T9 an uploaded
 file, filed as a NEW document under the id its ticket reserved),
 ``folders`` (lot 2A T7: created, renamed, moved — never a system folder;
 T8: « Projets » created on first use by a generation), ``doc_templates``
-(lot 2A T9, through the upload ticket only: a template created, or a NEW
-version of one with its write-once ``versions`` entry — never its « actif »
-designation), ``mcp_upload_tickets`` (the ticket's own record) and
+(lot 2A T9 through the upload ticket, T10 from a stored document —
+``create_template``/``update_template``: a template created, its metadata
+corrected, or a NEW version of its file with its write-once ``versions``
+entry — never its « actif » designation), ``mcp_upload_tickets`` (the
+ticket's own record) and
 ``dossiers``. Storage is written only by those creators — and, for the
 upload ticket, by ``models/upload_ticket``, which holds every Storage verb
 on its staging object (the session opened for the sandbox's PUT; the
@@ -143,9 +145,10 @@ from utils import (
     storage_identity, taxonomie,
 )
 from utils.cabinet import cabinet_dict
-from utils.docx_fill import extract_placeholders
+from utils.docx_fill import extract_placeholders, validate_template
 from utils.docx_leak_scan import (
     LeakScanError,
+    fold_key,
     scan_identifiers,
     scrub_core_properties,
     text_residues,
@@ -11656,31 +11659,34 @@ def _clean_upload_md5(raw: Any) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
-def _clean_accept_residual(raw: Any) -> list[str]:
+def _clean_accept_residual(raw: Any, nothing: str = _NOTHING_OPENED) -> list[str]:
+    """The lawyer's accepted residues, cleaned — or a refusal ending on
+    *nothing* (« Rien n'a été ouvert. » for a ticket; the T10 template
+    tools pass their own)."""
     if raw is None:
         return []
     if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
         raise ToolArgumentError(
-            f"`accept_residual` doit être une liste de textes. {_NOTHING_OPENED}")
+            f"`accept_residual` doit être une liste de textes. {nothing}")
     if len(raw) > upload_ticket_model.MAX_LIST_ITEMS:
         raise ToolArgumentError(
             f"`accept_residual` : {upload_ticket_model.MAX_LIST_ITEMS} "
-            f"identifiants au plus. {_NOTHING_OPENED}"
+            f"identifiants au plus. {nothing}"
         )
     cleaned: list[str] = []
     for position, item in enumerate(raw, start=1):
         text = item.strip()
         where = f"`accept_residual` (n° {position})"
         if not text:
-            raise ToolArgumentError(f"{where} est vide. {_NOTHING_OPENED}")
+            raise ToolArgumentError(f"{where} est vide. {nothing}")
         if len(text) > 200 or not _survives_storage(text, 201):
             raise ToolArgumentError(
                 f"{where} : 200 caractères au plus, sans chevrons. "
-                f"{_NOTHING_OPENED}"
+                f"{nothing}"
             )
         if text in cleaned:
             raise ToolArgumentError(
-                f"{where} figure déjà dans la liste. {_NOTHING_OPENED}")
+                f"{where} figure déjà dans la liste. {nothing}")
         cleaned.append(text)
     return cleaned
 
@@ -12260,7 +12266,9 @@ def _already_filed(holder: _UploadHolder) -> Optional[dict]:
     return None
 
 
-def _residue_parts(parts) -> str:
+def _residue_part_labels(parts) -> list[str]:
+    """Where a residue was found, in the application user's words — each
+    label once, in archive order."""
     labels: list[str] = []
     for part in parts:
         label = next((fr for prefix, fr in _PART_LABELS_FR
@@ -12269,13 +12277,19 @@ def _residue_parts(parts) -> str:
             label = "liens" if part.endswith(".rels") else "autre partie"
         if label not in labels:
             labels.append(label)
-    return ", ".join(labels)
+    return labels
 
 
-def _residue_refusal(scan) -> str:
-    """The refusal naming each residue — identifier, where, how often. The
+def _residue_parts(parts) -> str:
+    return ", ".join(_residue_part_labels(parts))
+
+
+def _residue_listing(scan) -> tuple[str, str]:
+    """``(listing, scrub hint)`` of a scan's residues — identifier, where,
+    how often, the first :data:`_RESIDUES_LISTED_MAX` of them. The
     identifiers are the DOSSIER's own data (get_dossier reads them), never
-    content the caller sent; accept_residual must name them exactly."""
+    content the caller sent; accept_residual must name them exactly. Shared
+    by the upload ticket's refusal and the T10 template tools'."""
     listed = []
     for residue in scan.residues[:_RESIDUES_LISTED_MAX]:
         listed.append(
@@ -12289,10 +12303,17 @@ def _residue_refusal(scan) -> str:
         " Dans les propriétés du document, scrub_properties true les efface."
         if docprops else ""
     )
+    return f"{'; '.join(listed)}{tail}", scrub
+
+
+def _residue_refusal(scan) -> str:
+    """The upload ticket's refusal naming each residue (see
+    :func:`_residue_listing`)."""
+    listing, scrub = _residue_listing(scan)
     return (
         "Le fichier nomme encore le dossier dont il est tiré — un gabarit "
         "vaut pour tout le cabinet, et ceci s'imprimerait dans chaque "
-        f"document futur : {'; '.join(listed)}{tail}. Le fichier a été refusé "
+        f"document futur : {listing}. Le fichier a été refusé "
         f"et effacé ; {_NOTHING_FILED} Retirez-les du document (ou remplacez-"
         "les par des champs {{…}}), ou — SEULEMENT si le juriste accepte "
         f"chacun d'eux — {_NEW_TICKET} en les listant, tels qu'écrits ici, "
@@ -12740,3 +12761,655 @@ _TEMPLATE_RETRYABLE_ERRORS = frozenset({
     doc_template_model.READ_ERROR,
     doc_template_model.VERSION_IN_PROGRESS_ERROR,
 })
+
+
+# ── create_template / update_template (WRITE) — templates from a stored .docx
+#
+# Plan D5 (interpretation A) and D11, lot 2A T10. A Word document ALREADY in
+# a dossier becomes a firm-wide gabarit — a new one, or a new VERSION of an
+# existing one — its bytes UNCHANGED, bar the opt-in scrub of its core
+# document properties. Turning its literals into {{…}} fields is lot 2B.
+#
+# The leak scan is NOT optional here, as it is for an upload ticket that
+# names no dossier: a stored document names its own dossier, and its file is
+# always checked against it, fail CLOSED — an unreadable dossier, party or
+# package refuses, never « nothing found ». Everything is judged BEFORE the
+# template model is reached, so a refusal writes nothing at all.
+#
+# The template model owns the rest: the metadata whitelist (it has no
+# designation key — the « actif » designation is never touched, D11), the
+# create-only v{N} object, the write-once version entry that KEEPS the
+# previous file, the kind guard on the designated template, the commit note.
+# The source document is only READ (NEVER « document »). Templates and
+# documents are not DAV-exposed: no CTag anywhere here.
+
+_TEMPLATE_SUBJECT = "Ce gabarit a été modifié"
+_NOTHING_MODIFIED = "Rien n'a été modifié."
+_TEMPLATE_METADATA_KEYS = ("name", "description", "category", "kind")
+# The arguments of a FILE replacement. Refused beside metadata — two
+# gestures, two calls: a version event is not a record edit (the upload
+# ticket's replace mode draws the same line) — and without a source, where
+# they would be silently ignored.
+_TEMPLATE_FILE_KEYS = ("source_document_id", "expected_version",
+                       "accept_residual", "scrub_properties")
+_TEMPLATE_UNKNOWN = (
+    "`template_id` : aucun gabarit ne porte cet identifiant — prenez-le dans "
+    f"list_templates. {_NOTHING_MODIFIED}"
+)
+_TEMPLATE_CATEGORY_REFUSED = (
+    "`category` : un gabarit est « procédure », « correspondance » ou "
+    "« autre » — sa propre taxonomie, jamais celle des documents."
+)
+_DROPPED_FIELDS_LISTED_MAX = 20
+
+
+def _log_template_write(event: str, **fields: Any) -> None:
+    """``template_uploaded`` / ``template_updated`` with ``source="mcp"`` —
+    ids only when id-shaped, counts and names of FIELDS; never a template
+    name, a file name or an identifier. Never raises: it follows the
+    commit, where a raise would report a written template as a failure."""
+    try:
+        from utils.logging_setup import log_template_event
+
+        clean = {k: v for k, v in fields.items() if v is not None}
+        for key in ("template_id", "dossier_id", "source_document_id"):
+            if key in clean:
+                clean[key] = loggable_id(clean[key])
+                if clean[key] is None:
+                    del clean[key]
+        log_template_event(event, source="mcp", **clean)
+    except Exception:
+        from utils.logging_setup import log_unexpected
+
+        log_unexpected("mcp template logging failed", exc_info=False)
+
+
+def _template_source_too_large(nothing: str) -> ToolArgumentError:
+    return ToolArgumentError(
+        "`source_document_id` : ce document dépasse 10 Mo, la taille maximale "
+        f"d'un gabarit. {nothing}"
+    )
+
+
+def _template_source(document_id: str, nothing: str) -> tuple[dict, str, list]:
+    """The stored .docx a template is taken from, its dossier id and that
+    dossier's identifiers — each read fail CLOSED, and all of it BEFORE a
+    byte is downloaded (the size gate runs on the stored metadata).
+
+    The identifiers are those of the document's OWN dossier, never one the
+    caller names: a file's residue is the matter it was written for."""
+    unknown = (
+        "`source_document_id` : document introuvable. Prenez son identifiant "
+        f"dans list_documents. {nothing}"
+    )
+    if not document_model.is_addressable_id(document_id):
+        raise ToolArgumentError(unknown)
+    try:
+        src = document_model.get_document_strict(document_id)
+    except Exception:
+        raise ToolArgumentError(
+            f"Lecture du document source impossible — réessayez. {nothing}")
+    if src is None:
+        raise ToolArgumentError(unknown)
+    filename = str(src.get("filename") or "")
+    if src.get("file_type") != _DOCX_MIME or not filename.lower().endswith(".docx"):
+        raise ToolArgumentError(
+            "`source_document_id` : un gabarit est un document Word (.docx) — "
+            f"celui-ci est d'un autre format. {nothing}"
+        )
+    try:
+        declared = int(src.get("file_size") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > doc_template_model.MAX_TEMPLATE_SIZE:
+        raise _template_source_too_large(nothing)
+    dossier_id = str(src.get("dossier_id") or "")
+    if not dossier_id:
+        raise ToolArgumentError(
+            "Le document source n'est rattaché à aucun dossier : ses "
+            "identifiants ne peuvent pas être contrôlés, et un gabarit n'est "
+            f"jamais enregistré sans ce contrôle. {nothing}"
+        )
+    dossier = dossier_model.get_dossier(dossier_id)
+    if dossier is None:
+        raise ToolArgumentError(
+            "Le dossier du document source est introuvable ou illisible pour "
+            "le moment : ses identifiants ne peuvent pas être contrôlés. "
+            f"{nothing} Réessayez dans un instant."
+        )
+    try:
+        identifiers = identifiers_service.dossier_identifiers(dossier)
+    except identifiers_service.IdentifiersUnavailable:
+        raise ToolArgumentError(
+            "Le contrôle des identifiants n'a pas pu lire toutes les parties "
+            f"du dossier du document source. {nothing} Réessayez dans un "
+            "instant."
+        )
+    return src, dossier_id, identifiers
+
+
+def _template_source_bytes(document_id: str, nothing: str) -> bytes:
+    """The source document's bytes, bounded at a template's 10 MB (re-checked
+    on the byte count: stale metadata must not smuggle a larger file in)."""
+    data, why = document_model.get_document_bytes(
+        document_id, max_bytes=doc_template_model.MAX_TEMPLATE_SIZE)
+    if data is not None:
+        return data
+    if why == "too_large":
+        raise _template_source_too_large(nothing)
+    if why == "no_storage_path":
+        raise ToolArgumentError(
+            "Ce document n'a pas de fichier enregistré : rien à reprendre "
+            f"comme gabarit. {nothing}"
+        )
+    raise ToolArgumentError(
+        "Le fichier du document source est introuvable ou illisible pour le "
+        f"moment — réessayez. {nothing}"
+    )
+
+
+def _template_name_accepted(name: str, identifiers: list, accept: list[str],
+                            nothing: str) -> tuple[str, ...]:
+    """A NEW template's name, against the source dossier's identifiers —
+    the review of T9's rule: the name is not in the package the scan reads,
+    yet it prints into the name of every document generated from it, for
+    every future client, and it is the template's file name too. Returns
+    the identifiers accepted there; refuses the others, naming them — the
+    dossier's own data — never quoting the name the caller sent."""
+    try:
+        found = text_residues(name, identifiers, accept=accept)
+    except LeakScanError as exc:
+        raise ToolArgumentError(f"{exc} {nothing}")
+    if found.residues:
+        listed = "; ".join(
+            f"« {r} »" for r in found.residues[:_RESIDUES_LISTED_MAX])
+        more = len(found.residues) - _RESIDUES_LISTED_MAX
+        tail = f" — et {more} autre(s)" if more > 0 else ""
+        raise ToolArgumentError(
+            "Le nom du gabarit (`name`) nomme encore le dossier du document "
+            f"source : {listed}{tail}. Ce nom s'imprimerait dans le nom de "
+            "chaque document tiré de ce gabarit, pour tout le cabinet. "
+            "Donnez-lui un nom neutre — ou, SEULEMENT si le juriste accepte "
+            "chacun d'eux, listez-les, tels qu'écrits ici, dans "
+            f"accept_residual. {nothing}",
+            reason="template_residue",
+        )
+    return tuple(found.accepted)
+
+
+def _template_file_checked(
+    data: bytes, identifiers: list, accept: list[str], *, scrub: bool,
+    dossier_id: str, name_accepted: tuple[str, ...], nothing: str,
+) -> tuple[bytes, Optional[list[str]], dict, list[str]]:
+    """The file as it will be stored: validated as a template, scrubbed when
+    asked, then scanned against the source dossier — fail CLOSED. Returns
+    ``(data, scrubbed, report, warnings)``; every accepted residue is
+    echoed, by name, in the warnings (plan: the acceptance is visible where
+    it lands)."""
+    validation = validate_template(data)
+    if validation.errors:
+        raise ToolArgumentError(f"{' '.join(validation.errors)} {nothing}")
+    scrubbed: Optional[list[str]] = None
+    if scrub:
+        try:
+            result = scrub_core_properties(data)
+        except LeakScanError as exc:
+            raise ToolArgumentError(f"{exc} {nothing}")
+        data, scrubbed = result.data, list(result.emptied)
+    try:
+        scan = scan_identifiers(data, identifiers, accept=accept)
+    except LeakScanError as exc:
+        raise ToolArgumentError(f"{exc} {nothing}")
+    if scan.residues:
+        listing, scrub_hint = _residue_listing(scan)
+        raise ToolArgumentError(
+            "Le fichier nomme encore le dossier du document dont il est tiré "
+            "— un gabarit vaut pour tout le cabinet, et ceci s'imprimerait "
+            f"dans chaque document futur : {listing}. {nothing} Retirez-les "
+            "du fichier dans Word (ou remplacez-les par des champs "
+            "{{…}}), versez-le de nouveau au dossier et reprenez-le — ou, "
+            "SEULEMENT si le juriste accepte chacun d'eux, rappelez en les "
+            f"listant, tels qu'écrits ici, dans accept_residual.{scrub_hint}",
+            reason="template_residue",
+        )
+    name_keys = {fold_key(s) for s in name_accepted}
+    unused = [a for a in scan.unused_accept if fold_key(a) not in name_keys]
+    report = {
+        "performed": True,
+        "dossier_id": dossier_id,
+        "accepted": len(scan.accepted),
+        "accepted_residues": [
+            {"identifier": r.identifier, "count": r.count,
+             "where": _residue_part_labels(r.parts)}
+            for r in scan.accepted
+        ],
+        "accepted_in_name": list(name_accepted),
+        "unused_accept": len(unused),
+        "skipped": len(scan.skipped),
+        "parts_scanned": len(scan.parts_scanned),
+    }
+    warnings = [
+        f"« {r.identifier} » reste dans le gabarit ({r.count} fois : "
+        f"{_residue_parts(r.parts)}), accepté : il s'imprimera dans chaque "
+        "document tiré de ce gabarit, pour tout client."
+        for r in scan.accepted
+    ]
+    warnings += [
+        f"« {s} » reste dans le NOM du gabarit, accepté : il s'imprimera dans "
+        "le nom de chaque document tiré de ce gabarit."
+        for s in name_accepted
+    ]
+    if unused:
+        # A stale acceptance is harmless — any residue present would have
+        # refused above — but the caller believes something is accepted
+        # that is not there.
+        warnings.append(
+            f"{len(unused)} entrée(s) d'accept_residual ne correspondent à "
+            "aucun identifiant trouvé."
+        )
+    return data, scrubbed, report, warnings
+
+
+def _source_protection_warning(src: dict) -> list[str]:
+    """A qualified-privileged source — the scan read names and numbers,
+    never the TEXT, which now serves every client."""
+    level = (src.get("analyse") or {}).get("niveau_protection")
+    if not isinstance(level, int) or isinstance(level, bool) or level < 1:
+        return []
+    return [
+        f"Le document source est qualifié « {_NIVEAU_LABELS_FR.get(level, '')} » "
+        f"(niveau {level}) : le contrôle n'a porté que sur les noms, numéros "
+        "et adresses de son dossier, jamais sur le texte — qui vaudra "
+        "désormais pour tout le cabinet. Relisez-le."
+    ]
+
+
+def _special_kind_file_warnings(kind: str, placeholders: list[str]) -> list[str]:
+    """A note-print template with nowhere to print a note: once designated,
+    every « Imprimer (Word) » and create_document markdown would be
+    refused (the same exact-name check)."""
+    if kind == "note" and RICH_FIELD not in placeholders:
+        return [
+            "Ce gabarit « Note (impression) » ne porte pas "
+            f"« {{{{{RICH_FIELD}}}}} » (écrit exactement ainsi) : désigné "
+            "actif, il n'aurait nulle part où imprimer le texte d'une note."
+        ]
+    return []
+
+
+def _never_active_warning(kind: str) -> list[str]:
+    if kind not in doc_template_model.SPECIAL_KINDS:
+        return []
+    return [
+        "Ce gabarit de type « "
+        f"{doc_template_model.KIND_LABELS.get(kind, kind)} » n'est PAS le "
+        "gabarit actif : seul le juriste le désigne, dans l'application "
+        "(Gabarits)."
+    ]
+
+
+def _clean_scrub_flag(args: dict, nothing: str) -> bool:
+    scrub = args.get("scrub_properties", False)
+    if not isinstance(scrub, bool):
+        raise ToolArgumentError(f"`scrub_properties` est vrai ou faux. {nothing}")
+    return scrub
+
+
+# ── create_template ─────────────────────────────────────────────────────
+
+def create_template(args: dict) -> dict:
+    return run_write("create_template", args,
+                     lambda: _create_template_impl(args))
+
+
+def _create_template_impl(args: dict) -> dict:
+    nothing = _NOTHING_CREATED
+    source_id = str(args.get("source_document_id") or "").strip()
+    name = _clean_entity_text(args.get("name") or "", "name",
+                              limit=doc_template_model.NAME_MAX)
+    if not name:
+        raise ToolArgumentError(
+            f"`name` est requis : le nom du nouveau gabarit. {nothing}")
+    description = _clean_entity_text(
+        args.get("description") or "", "description",
+        limit=doc_template_model.DESCRIPTION_MAX)
+    category = args.get("category")
+    if category not in doc_template_model.VALID_CATEGORIES:
+        raise ToolArgumentError(f"{_TEMPLATE_CATEGORY_REFUSED} {nothing}")
+    kind = args.get("kind") or "gabarit"
+    if kind not in doc_template_model.VALID_KINDS:
+        raise ToolArgumentError(f"`kind` : valeur hors vocabulaire. {nothing}")
+    accept = _clean_accept_residual(args.get("accept_residual"), nothing)
+    scrub = _clean_scrub_flag(args, nothing)
+
+    # Everything judged before the template model is reached — in the
+    # order that downloads nothing a cheaper check would have refused.
+    src, dossier_id, identifiers = _template_source(source_id, nothing)
+    name_accepted = _template_name_accepted(name, identifiers, accept, nothing)
+    try:
+        uid = storage_identity.owner_uid()      # fail closed, before the bytes
+    except storage_identity.StorageIdentityUnavailable:
+        raise ToolArgumentError(_STORAGE_UNAVAILABLE)
+    data = _template_source_bytes(source_id, nothing)
+    data, scrubbed, leak, warnings = _template_file_checked(
+        data, identifiers, accept, scrub=scrub, dossier_id=dossier_id,
+        name_accepted=name_accepted, nothing=nothing)
+
+    # The template's OWN name as its file name — never the source's
+    # (« Lettre à M. Tremblay.docx »), which the scan never reads.
+    template, errors = doc_template_model.create_template(
+        io.BytesIO(data), _neutral_template_filename(name), len(data),
+        {"name": name, "description": description, "category": category,
+         "kind": kind},
+        uid,
+    )
+    if template is None:
+        raise ToolArgumentError(f"{' '.join(errors)} {nothing}")
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    placeholders = _template_placeholders(template)
+    warnings += _never_active_warning(kind)
+    warnings += _special_kind_file_warnings(kind, placeholders)
+    warnings += _template_file_warnings(template)
+    warnings += _source_protection_warning(src)
+    _log_template_write(
+        "template_uploaded", template_id=template.get("id"),
+        dossier_id=dossier_id, source_document_id=source_id,
+        placeholder_count=len(placeholders),
+        warning_count=len(template.get("validation_warnings") or []),
+        accepted_residue_count=(
+            len(leak["accepted_residues"]) + len(name_accepted)),
+        scrubbed=bool(scrubbed),
+    )
+    return {
+        "created": True,
+        "entity_type": "template",
+        "entity": _template_row(template),
+        "source_document_id": source_id,
+        "leak_scan": leak,
+        "scrubbed_properties": scrubbed,
+        "warnings": warnings,
+    }
+
+
+# ── update_template ─────────────────────────────────────────────────────
+
+def update_template(args: dict) -> dict:
+    return run_write("update_template", args,
+                     lambda: _update_template_impl(args))
+
+
+def _template_edit_payload(
+    template: dict, *, mode: str, changed: list[str], warnings: list[str],
+    source_document_id: Optional[str] = None, file_replaced: bool = False,
+    replaced_version: Optional[int] = None, leak_scan: Optional[dict] = None,
+    scrubbed: Optional[list[str]] = None,
+) -> dict:
+    return {
+        "updated": True,
+        "mode": mode,
+        "entity_type": "template",
+        "entity": _template_row(template),
+        "changed_fields": changed,
+        "source_document_id": source_document_id,
+        "file_replaced": file_replaced,
+        "replaced_version": replaced_version,
+        "leak_scan": leak_scan,
+        "scrubbed_properties": scrubbed,
+        "warnings": warnings,
+    }
+
+
+def _active_kind_refusal(template: dict) -> ToolArgumentError:
+    """The model's rule (``ACTIVE_KIND_CHANGE_ERROR``), in the connector's
+    words: the change would silently drop the lawyer's designation."""
+    kind = template.get("kind") or ""
+    label = doc_template_model.ACTIVE_KIND_NAMES.get(kind, kind)
+    return ToolArgumentError(
+        f"`kind` refusé : ce gabarit est le gabarit ACTIF des « {label} ». "
+        "Changer son type lui retirerait en silence sa désignation, et "
+        "l'application n'aurait plus de gabarit de ce type à remplir. Seul le "
+        "juriste désigne un autre gabarit actif, dans l'application "
+        "(Gabarits) — ensuite seulement le type de celui-ci peut changer. "
+        f"{_NOTHING_MODIFIED}"
+    )
+
+
+def _update_template_impl(args: dict) -> dict:
+    template_id = str(args.get("template_id") or "").strip()
+    if not document_model.is_addressable_id(template_id):
+        raise ToolArgumentError(_TEMPLATE_UNKNOWN)
+    try:
+        template = doc_template_model.get_template(template_id, strict=True)
+    except doc_template_model.TemplateReadError:
+        raise ToolArgumentError(f"{TEMPLATE_READ_ERROR} {_NOTHING_MODIFIED}")
+    if template is None:
+        raise ToolArgumentError(_TEMPLATE_UNKNOWN)
+    metadata = [k for k in _TEMPLATE_METADATA_KEYS if k in args]
+    file_args = [k for k in _TEMPLATE_FILE_KEYS if k in args]
+    if metadata and file_args:
+        raise ToolArgumentError(
+            "Deux corrections distinctes, en deux appels : les métadonnées ("
+            + ", ".join(f"`{k}`" for k in metadata)
+            + ") ou un nouveau fichier ("
+            + ", ".join(f"`{k}`" for k in file_args)
+            + ") — un nouveau fichier ne change pas les métadonnées du "
+            f"gabarit. {_NOTHING_MODIFIED}"
+        )
+    if not metadata and not file_args:
+        raise ToolArgumentError(
+            "Rien à corriger : nommez au moins name, description, category ou "
+            "kind — ou, pour un nouveau fichier, source_document_id et "
+            f"expected_version. {_NOTHING_MODIFIED}"
+        )
+    if file_args and "source_document_id" not in args:
+        raise ToolArgumentError(
+            ", ".join(f"`{k}`" for k in file_args)
+            + " ne s'applique qu'à un nouveau fichier : passez aussi "
+            "source_document_id (le .docx du dossier) et expected_version. "
+            f"{_NOTHING_MODIFIED}"
+        )
+    if metadata:
+        return _update_template_metadata(args, template_id, template)
+    return _replace_template_file(args, template_id, template)
+
+
+_ALREADY_STORED = (
+    "Toutes les valeurs envoyées étaient déjà enregistrées : rien n'a été "
+    "modifié."
+)
+
+
+def _update_template_metadata(args: dict, template_id: str, template: dict) -> dict:
+    nothing = _NOTHING_MODIFIED
+    # EXPLICIT whitelist, presence-based: an absent key is left alone. The
+    # model reads the same four keys and nothing else — no designation, no
+    # path, no version can ride in.
+    data: dict[str, Any] = {}
+    if "name" in args:
+        name = _clean_entity_text(args.get("name") or "", "name",
+                                  limit=doc_template_model.NAME_MAX)
+        if not name:
+            raise ToolArgumentError(
+                "« name » ne peut pas être vide : un gabarit porte toujours "
+                f"un nom. {nothing}")
+        data["name"] = name
+    if "description" in args:
+        data["description"] = _clean_entity_text(
+            args.get("description") or "", "description",
+            limit=doc_template_model.DESCRIPTION_MAX)
+    if "category" in args:
+        if args.get("category") not in doc_template_model.VALID_CATEGORIES:
+            raise ToolArgumentError(f"{_TEMPLATE_CATEGORY_REFUSED} {nothing}")
+        data["category"] = args["category"]
+    if "kind" in args:
+        if args.get("kind") not in doc_template_model.VALID_KINDS:
+            raise ToolArgumentError(
+                f"`kind` : valeur hors vocabulaire. {nothing}")
+        data["kind"] = args["kind"]
+
+    # What would CHANGE — the model's own comparison, so a value already
+    # stored is not a change here either.
+    diff = doc_template_model._changed_metadata(template, data)
+    changed = [k for k in _TEMPLATE_METADATA_KEYS if k in diff]
+    if not changed:
+        return _template_edit_payload(
+            template, mode="metadata", changed=[], warnings=[_ALREADY_STORED])
+    expected = _expected_etag(
+        args, template, tool="update_template", subject=_TEMPLATE_SUBJECT)
+    if "kind" in changed and doc_template_model.is_active(template):
+        raise _active_kind_refusal(template)
+
+    updated, errors, wrote = doc_template_model.update_template(
+        template_id, data, expected_etag=expected)
+    _raise_if_stale(
+        errors, tool="update_template", subject=_TEMPLATE_SUBJECT,
+        reread=lambda: doc_template_model.get_template(template_id),
+    )
+    if errors:
+        if "kind" in data and any("gabarit actif" in e for e in errors):
+            # The designation landed between the read and the commit.
+            raise _active_kind_refusal(
+                doc_template_model.get_template(template_id) or template)
+        raise ToolArgumentError(f"{' '.join(errors)} {nothing}")
+    if not wrote:
+        # Another writer stored these very values meanwhile.
+        return _template_edit_payload(
+            updated, mode="metadata", changed=[], warnings=[_ALREADY_STORED])
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    warnings: list[str] = []
+    if "kind" in changed:
+        warnings += _never_active_warning(data["kind"])
+        warnings += _special_kind_file_warnings(
+            data["kind"], _template_placeholders(updated))
+    _log_template_write(
+        "template_updated", template_id=template_id, file_replaced=False,
+        version=int(updated.get("version") or 1), fields_changed=changed,
+    )
+    return _template_edit_payload(updated, mode="metadata", changed=changed,
+                                  warnings=warnings)
+
+
+def _template_version_moved(stored: int, expected: int) -> ToolArgumentError:
+    return ToolArgumentError(
+        f"Le gabarit est à la version {stored}, pas {expected} : une autre "
+        "version a été installée depuis votre lecture — ce fichier aurait "
+        "remplacé une version que personne n'a relue. Relisez-le "
+        "(list_templates avec template_id), puis rappelez avec la bonne "
+        f"expected_version. {_NOTHING_MODIFIED}",
+        reason="stale_etag",
+    )
+
+
+def _dropped_fields_warning(before: dict, after: dict) -> list[str]:
+    """Fields the previous version printed that the new file no longer has
+    — names of FIELDS, never values (list_templates shows them too)."""
+    kept = set(_template_placeholders(after))
+    dropped = [p for p in _template_placeholders(before) if p not in kept]
+    if not dropped:
+        return []
+    shown = ", ".join(
+        f"{{{{{p}}}}}" for p in dropped[:_DROPPED_FIELDS_LISTED_MAX])
+    more = len(dropped) - _DROPPED_FIELDS_LISTED_MAX
+    tail = f" — et {more} autre(s)" if more > 0 else ""
+    return [
+        f"{len(dropped)} champ(s) de la version précédente ne figurent plus "
+        f"dans le nouveau fichier : {shown}{tail} — ils ne s'imprimeront plus."
+    ]
+
+
+def _replace_template_file(args: dict, template_id: str, template: dict) -> dict:
+    nothing = _NOTHING_MODIFIED
+    expected_version = args.get("expected_version")
+    if (isinstance(expected_version, bool)
+            or not isinstance(expected_version, int) or expected_version < 1):
+        raise ToolArgumentError(
+            "`expected_version` est requis pour un nouveau fichier : la "
+            "version du gabarit telle que lue (list_templates, champ "
+            f"version). {nothing}"
+        )
+    stored_version = int(template.get("version") or 1)
+    if stored_version not in (expected_version, expected_version + 1):
+        # Refused before any byte moves. (One version AHEAD may be this very
+        # replacement, landed by a call whose answer was lost: decided once
+        # the bytes are known.)
+        raise _template_version_moved(stored_version, expected_version)
+    accept = _clean_accept_residual(args.get("accept_residual"), nothing)
+    scrub = _clean_scrub_flag(args, nothing)
+    source_id = str(args.get("source_document_id") or "").strip()
+    src, dossier_id, identifiers = _template_source(source_id, nothing)
+    data = _template_source_bytes(source_id, nothing)
+    data, scrubbed, leak, warnings = _template_file_checked(
+        data, identifiers, accept, scrub=scrub, dossier_id=dossier_id,
+        name_accepted=(), nothing=nothing)
+
+    digest = hashlib.sha256(data).hexdigest()
+    stored_sha = str(template.get("sha256") or "")
+    if stored_sha and hmac.compare_digest(stored_sha, digest):
+        # The file in force IS these bytes — a replacement already landed
+        # (the answer of an earlier call lost), or nothing to replace: no
+        # version is installed, whatever version was expected.
+        warnings.append(
+            "Ce fichier est identique à la version en vigueur "
+            f"(v{stored_version}) : aucune nouvelle version n'a été créée."
+        )
+        return _template_edit_payload(
+            template, mode="file", changed=[], warnings=warnings,
+            source_document_id=source_id, leak_scan=leak, scrubbed=scrubbed)
+    if stored_version != expected_version:
+        raise _template_version_moved(stored_version, expected_version)
+    expected = _expected_etag(
+        args, template, tool="update_template", subject=_TEMPLATE_SUBJECT)
+
+    # The template's own name as the new version's file name — never the
+    # source document's.
+    updated, errors, changed = doc_template_model.update_template(
+        template_id, {}, io.BytesIO(data),
+        _neutral_template_filename(template.get("name", "")), len(data),
+        expected_etag=expected, expected_version=expected_version,
+    )
+    _raise_if_stale(
+        errors, tool="update_template", subject=_TEMPLATE_SUBJECT,
+        reread=lambda: doc_template_model.get_template(template_id),
+    )
+    if errors:
+        raise ToolArgumentError(f"{' '.join(errors)} {nothing}")
+    if not changed:
+        warnings.append(
+            "Ce fichier est identique à la version en vigueur : aucune "
+            "nouvelle version n'a été créée."
+        )
+        return _template_edit_payload(
+            updated, mode="file", changed=[], warnings=warnings,
+            source_document_id=source_id, leak_scan=leak, scrubbed=scrubbed)
+
+    # ── Committed: nothing below may refuse. ───────────────────────────
+    version = int(updated.get("version") or 1)
+    if doc_template_model.is_active(updated):
+        kind = updated.get("kind") or ""
+        warnings.append(
+            "Ce gabarit est le gabarit ACTIF des « "
+            f"{doc_template_model.ACTIVE_KIND_NAMES.get(kind, kind)} » : la "
+            f"version {version} s'imprime dès maintenant sur chaque document "
+            "de ce type. Sa désignation n'a pas changé."
+        )
+    warnings.append(
+        f"La version {expected_version} est conservée : le juriste peut la "
+        "rétablir dans l'application (Gabarits)."
+    )
+    warnings += _dropped_fields_warning(template, updated)
+    warnings += _special_kind_file_warnings(
+        updated.get("kind") or "gabarit", _template_placeholders(updated))
+    warnings += _template_file_warnings(updated)
+    warnings += _source_protection_warning(src)
+    _log_template_write(
+        "template_updated", template_id=template_id, file_replaced=True,
+        version=version, dossier_id=dossier_id, source_document_id=source_id,
+        accepted_residue_count=len(leak["accepted_residues"]),
+        scrubbed=bool(scrubbed),
+    )
+    return _template_edit_payload(
+        updated, mode="file", changed=["file"], warnings=warnings,
+        source_document_id=source_id, file_replaced=True,
+        replaced_version=expected_version, leak_scan=leak, scrubbed=scrubbed)

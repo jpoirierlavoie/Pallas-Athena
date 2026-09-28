@@ -335,17 +335,19 @@ FAMILIES: tuple[Family, ...] = (
         scope=SCOPE_WRITE,
         tools=("update_document", "move_documents", "manage_folder",
                "fill_gabarit", "create_document",
-               "begin_upload", "finalize_upload"),
+               "begin_upload", "finalize_upload",
+               "create_template", "update_template"),
         consent_template="mcp/families/_files.html",
         checkbox_summary_fr=(
             "classer un document (nom, date, étiquettes, dossier de "
             "classement, catégorie présumée), organiser les dossiers de "
             "classement (jamais les dossiers système), produire de "
             "nouveaux projets Word — depuis un gabarit, depuis un texte "
-            "rédigé par Claude, par copie d'un .docx du même dossier — et "
-            "téléverser un fichier, comme nouveau document ou comme gabarit "
-            "(nouveau, ou nouvelle version d'un gabarit, la précédente "
-            "conservée)"
+            "rédigé par Claude, par copie d'un .docx du même dossier —, "
+            "téléverser un fichier, comme nouveau document ou comme gabarit, "
+            "enregistrer comme gabarit un .docx déjà versé à un dossier et "
+            "corriger un gabarit (nom, description, catégorie, type, ou "
+            "nouvelle version de son fichier, la précédente conservée)"
         ),
         instructions_en=(
             "`update_document` REPLACES a document's filing fields you name "
@@ -382,7 +384,17 @@ FAMILIES: tuple[Family, ...] = (
             "a template taken from a dossier is refused while it still names "
             "that dossier's parties or numbers, when you name it in "
             "dossier_id — unless the lawyer accepts each residue. Refused or "
-            "expired bytes are discarded: they were never filed."
+            "expired bytes are discarded: they were never filed. "
+            "`create_template` registers a .docx ALREADY in a dossier as a "
+            "NEW template, its bytes unchanged, and `update_template` "
+            "corrects a template's name, description, category or kind — or "
+            "installs a stored .docx as a NEW version of its file (the one "
+            "in force kept, restorable in the application); a file taken "
+            "from a dossier document is ALWAYS checked against that "
+            "document's own dossier, and refused while it or the new "
+            "template's name still names its parties or numbers, unless "
+            "the lawyer accepts each residue. A special kind is never made "
+            "active, and the active template's kind never changes here."
         ),
     ),
 )
@@ -596,7 +608,10 @@ NEVERS: tuple[Never, ...] = (
         # reaches), and the two creators it reaches mint a fresh record and
         # write a NEW object, create-only (ingest's if_generation_match=0).
         # T9 (finalize_upload) files an upload the same way: a NEW document
-        # under the id its ticket reserved, never an existing one.
+        # under the id its ticket reserved, never an existing one. T10
+        # (create_template, update_template) only READS a stored document:
+        # its bytes are copied into a TEMPLATE object, the document's own
+        # record and object untouched (tests/test_mcp_template_writes.py).
         fr=(
             "modifier le <strong>fichier</strong> d'un document existant "
             "— un projet, une copie ou un fichier téléversé est toujours un "
@@ -643,7 +658,10 @@ NEVERS: tuple[Never, ...] = (
         # note-print template — printed on every client's invoice note —
         # stays the lawyer's gesture in the application: a special kind is
         # created NOT active, and a replacement never moves the
-        # designation (update_template writes only what changed).
+        # designation (update_template writes only what changed). T10's
+        # create_template / update_template tools keep both rules: the
+        # model's metadata whitelist has no designation key, and a kind
+        # change on the designated template is refused.
         fr=(
             "<strong>désigner le gabarit actif</strong> des notes "
             "d'honoraires ou de l'impression des notes — vous seul le "

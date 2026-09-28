@@ -290,7 +290,7 @@ def test_tool_result_envelope():
 def test_registry_shape():
     # Le seul compte en dur du fichier, et c'est voulu : un outil ajoute
     # sans qu'on y pense casse ici, et nulle part ailleurs.
-    assert len(tools.TOOLS) == 68  # 28 lectures + 40 ecritures
+    assert len(tools.TOOLS) == 70  # 28 lectures + 42 ecritures
     for name, spec in tools.TOOLS.items():
         schema = spec["input_schema"]
         assert schema["additionalProperties"] is False
@@ -333,6 +333,10 @@ _IDEMPOTENT_WRITES = frozenset({
     # and writes nothing — structurally, even without a key. NOT here:
     # begin_upload, whose second call without a key opens a second ticket.
     "finalize_upload",
+    # Lot 2A (T10). Values already stored — or a file identical to the
+    # version in force — write nothing (update_template). NOT here:
+    # create_template, whose second call registers a second template.
+    "update_template",
 })
 
 
@@ -382,6 +386,10 @@ def test_write_tools_set_is_pinned():
         # fichier exterieur verse comme NOUVEAU document ou comme gabarit
         # (nouveau, ou nouvelle version — la precedente conservee).
         "begin_upload", "finalize_upload",
+        # Lot 2A, etape T10 — GABARITS : enregistrer comme gabarit un .docx
+        # deja verse a un dossier, corriger un gabarit (metadonnees, ou
+        # nouvelle version de son fichier — la precedente conservee).
+        "create_template", "update_template",
     })
     assert tools.WRITE_TOOLS <= set(tools.TOOLS)
 
@@ -415,6 +423,9 @@ def test_edit_tools_set_is_pinned():
         # Lot 2A (T9) — its gabarit « replace » mode REPLACES the template
         # file in force (the previous version kept).
         "finalize_upload",
+        # Lot 2A (T10) — REPLACES a template's metadata or its file in force
+        # (the previous version kept); create_template replaces nothing.
+        "update_template",
     })
     assert tools.EDIT_TOOLS <= tools.WRITE_TOOLS
 

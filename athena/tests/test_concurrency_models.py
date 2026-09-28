@@ -55,6 +55,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import mcp.tools as tools
     import mcp.write_support as write_support
     from models import concurrency
+    from models import doc_template as doc_template_model
     from models import document as document_model
     from models import dossier as dossier_model
     from models import expense as expense_model
@@ -714,9 +715,11 @@ def _e2e_db(monkeypatch):
     # hearing_model too (lot 1b, L7): update_hearing and decide_rendez_vous
     # write calendar events through their model.
     # folder_model too (lot 2A, T7): manage_folder reads and writes the
-    # filing tree through its model.
+    # filing tree through its model. doc_template_model too (lot 2A, T10):
+    # update_template reads and writes the template through its model.
     return install(monkeypatch, *_MODULES, protocol_model, revision_model,
-                   hearing_model, folder_model, dav_sync, write_support)
+                   hearing_model, folder_model, doc_template_model, dav_sync,
+                   write_support)
 
 
 def _closed_task(db):
@@ -794,6 +797,19 @@ def _folder(db):
                           "action": "rename"}
 
 
+def _template(db):
+    """A gabarit record as the template model stores it (a metadata edit
+    touches no Storage object, so none is planted)."""
+    db.seed("doc_templates/tpl1", {
+        **doc_template_model._default_doc(), "id": "tpl1", "name": "Lettre",
+        "category": "correspondance", "kind": "gabarit",
+        "filename": "lettre.docx", "file_size": 10, "sha256": "0" * 64,
+        "storage_path": "users/kX9pQ2rT7vW1yZ3bD5fH8jL0nP4s/templates/tpl1/v1/"
+                        "lettre.docx",
+        "created_at": DT, "updated_at": DT, "etag": "e0"})
+    return "tpl1"
+
+
 # tool → (collection, factory, id key, arguments, (field, stored value))
 _HANDLER_CASES = {
     "update_partie": ("parties", _partie, "partie_id",
@@ -843,6 +859,10 @@ _HANDLER_CASES = {
                         ("display_name", "Mise en demeure")),
     "manage_folder": ("folders", _folder, None,
                       {"name": "Expertises"}, ("name", "Expertises")),
+    # Lot 2A (T10) — a template's metadata (its file path is the lot's own
+    # tests: tests/test_mcp_template_writes.py).
+    "update_template": ("doc_templates", _template, "template_id",
+                        {"name": "Lettre révisée"}, ("name", "Lettre révisée")),
 }
 _E2E = pytest.mark.parametrize("tool", sorted(_HANDLER_CASES),
                                ids=sorted(_HANDLER_CASES))
@@ -885,6 +905,7 @@ _HANDLER_GETTERS = {
     "decide_rendez_vous": (hearing_model, "get_hearing_strict"),
     "update_document": (document_model, "get_document_strict"),
     "manage_folder": (folder_model, "list_dossier_folders"),
+    "update_template": (doc_template_model, "get_template"),
 }
 
 

@@ -1252,6 +1252,64 @@ def _template_ref(*, nullable: bool = False) -> dict:
     return schema
 
 
+# ── Lot 2A (T10) — TEMPLATES from a stored document ─────────────────────
+
+
+def _template_leak_report(*, nullable: bool = False) -> dict:
+    """The identifier check of a file taken from a stored document — ALWAYS
+    performed, against that document's OWN dossier (unlike an upload
+    ticket's, which runs only when the caller names a dossier).
+
+    ``accepted_residues`` names each identifier the lawyer accepted: the
+    dossier's own data, which the caller has just listed in
+    ``accept_residual`` — echoed so the acceptance is visible where it
+    lands, never the text around it."""
+    schema = _obj({
+        "performed": {
+            "type": "boolean", "enum": [True],
+            "description": (
+                "Always true: a file taken from a dossier document is "
+                "always checked against that document's dossier."),
+        },
+        "dossier_id": _str(
+            "The source document's dossier — the one checked."),
+        "accepted": _int(
+            "Identifiers found in the FILE and accepted (accept_residual)."),
+        "accepted_residues": _arr(_obj({
+            "identifier": _str(
+                "As a refusal names it — the dossier's own spelling."),
+            "count": _int("Its occurrences in the file."),
+            "where": _arr(_str(
+                "French: corps, en-tête, pied de page, propriétés du "
+                "document…")),
+        }), "Each accepted identifier: it WILL print in every document "
+            "generated from the template."),
+        "accepted_in_name": _arr(_str(
+            "An identifier accepted in the NEW template's name "
+            "(create_template only; [] otherwise).")),
+        "unused_accept": _int(
+            "accept_residual entries matching nothing found."),
+        "skipped": _int("Identifiers too short to check."),
+        "parts_scanned": _int(),
+    }, required=["performed", "dossier_id", "accepted", "accepted_residues",
+                 "accepted_in_name", "unused_accept", "skipped",
+                 "parts_scanned"])
+    if nullable:
+        schema["type"] = ["object", "null"]
+        schema["description"] = "null on a metadata edit (no file read)."
+    return schema
+
+
+def _scrubbed_properties() -> dict:
+    return {
+        "type": ["array", "null"], "items": _str(),
+        "description": (
+            "The document properties emptied (scrub_properties): their "
+            "NAMES, never their values; [] = nothing to empty; null = not "
+            "asked (or a metadata edit)."),
+    }
+
+
 OUTPUT_SCHEMAS: dict[str, dict] = {
     "get_agenda": _obj({
         "window": _obj({
@@ -3236,4 +3294,50 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             }, description="purpose gabarit: the template as stored."),
         ],
     },
+    # Lot 2A (T10) — explicit `required` lists: every key below is emitted
+    # on every call (null where it does not apply), so a strict client can
+    # rely on each.
+    "create_template": _obj({
+        "created": {"type": "boolean", "enum": [True]},
+        "entity_type": {"type": "string", "enum": ["template"]},
+        "entity": _template_summary(),
+        "source_document_id": _str(
+            "The stored document the file was taken from — never modified."),
+        "leak_scan": _template_leak_report(),
+        "scrubbed_properties": _scrubbed_properties(),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }, required=["created", "entity_type", "entity", "source_document_id",
+                 "leak_scan", "scrubbed_properties", "warnings",
+                 "idempotent_replay"]),
+    "update_template": _obj({
+        "updated": {"type": "boolean", "enum": [True]},
+        "mode": {
+            "type": "string", "enum": ["metadata", "file"],
+            "description": (
+                "metadata = name/description/category/kind; file = a new "
+                "version of the file from source_document_id."),
+        },
+        "entity_type": {"type": "string", "enum": ["template"]},
+        "entity": _template_summary(),
+        "changed_fields": _arr(_str(
+            "name | description | category | kind | file. [] = everything "
+            "sent was already stored: nothing was written.")),
+        "source_document_id": _nstr(
+            "file: the stored document the new version was taken from — "
+            "never modified. null on a metadata edit."),
+        "file_replaced": _bool(
+            "true = a NEW version of the file was installed by this call."),
+        "replaced_version": _nint(
+            "file: the version this call replaced — KEPT, restorable in the "
+            "application; null when nothing was installed (a metadata edit, "
+            "or a file identical to the version in force)."),
+        "leak_scan": _template_leak_report(nullable=True),
+        "scrubbed_properties": _scrubbed_properties(),
+        "warnings": _arr(_str(), "French; empty when clean."),
+        **_write_protocol_keys(),
+    }, required=["updated", "mode", "entity_type", "entity",
+                 "changed_fields", "source_document_id", "file_replaced",
+                 "replaced_version", "leak_scan", "scrubbed_properties",
+                 "warnings", "idempotent_replay"]),
 }

@@ -676,6 +676,10 @@ def test_the_reach_is_derived_and_not_vacuous():
             ("document", "ingest_blob_as_document"),
             ("doc_template", "create_template"),
             ("doc_template", "update_template")} <= reach["finalize_upload"]
+    # Lot 2A (T10): the template writes from a stored document — the
+    # gabarit edit form (etag since T3) covers the record they rewrite.
+    assert ("doc_template", "create_template") in reach["create_template"]
+    assert ("doc_template", "update_template") in reach["update_template"]
     # Every write tool reaches at least one mutator: a handler the walker
     # cannot follow would otherwise vanish from the map in silence.
     assert all(reach.values()), [t for t, r in reach.items() if not r]

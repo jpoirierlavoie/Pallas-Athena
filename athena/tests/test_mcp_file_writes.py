@@ -636,11 +636,15 @@ def test_the_files_family_and_its_promises():
     # (tests/test_mcp_generation.py pins the behaviour).
     # T9 adds the upload ticket (begin_upload / finalize_upload): an upload
     # is filed as a NEW document too, so the « document » NEVER holds.
+    # T10 adds the template writes (create_template / update_template): the
+    # source document is only READ, so the « document » NEVER holds again
+    # (tests/test_mcp_template_writes.py pins the behaviour).
     family = next(f for f in disclosure.FAMILIES if f.key == "files")
     assert set(family.tools) == {"update_document", "move_documents",
                                  "manage_folder", "fill_gabarit",
                                  "create_document", "begin_upload",
-                                 "finalize_upload"}
+                                 "finalize_upload", "create_template",
+                                 "update_template"}
     text = endpoint.INSTRUCTIONS
     assert "FILES: " in text and "PRESUMED" in text
     assert "« Projets »" in text and "notes_internes" in text

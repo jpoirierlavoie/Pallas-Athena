@@ -2605,3 +2605,81 @@ def test_finalize_upload_conforms_on_every_branch(monkeypatch):
     gabarit_replay = handlers.finalize_upload({"ticket_id": opened["ticket_id"]})
     _conforms("finalize_upload", gabarit_replay)
     assert gabarit_replay["leak_scan"] is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lot 2A (T10) — the templates taken from a stored document
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _seed_leaky_source(fake, bucket):
+    """A stored .docx still carrying the dossier's file number."""
+    import io
+    import zipfile
+
+    from models import document as document_model
+
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats'
+            '.org/package/2006/content-types"><Default Extension="xml" '
+            'ContentType="application/xml"/></Types>'))
+        zf.writestr("word/document.xml", (
+            f'<?xml version="1.0"?><w:document {w}><w:body><w:p><w:r>'
+            "<w:t>Dossier 2026-001 : {{objet_lettre}}</w:t></w:r></w:p>"
+            "</w:body></w:document>"))
+    data = buf.getvalue()
+    path = "users/uid-conformance/dossiers/d1/documents/leaky/l.docx"
+    bucket.put(path, data)
+    fake.seed("documents/leaky", {
+        **document_model._default_doc(), "id": "leaky", "dossier_id": "d1",
+        "dossier_file_number": "2026-001", "display_name": "L",
+        "filename": "l.docx",
+        "file_type": document_model.EXTENSION_MIME_TYPES[".docx"],
+        "file_size": len(data), "storage_path": path,
+        "category": "correspondance", "category_source": "juriste",
+        "created_at": DT, "updated_at": DT, "etag": "e-leaky"})
+
+
+def test_create_template_conforms_clean_scrubbed_and_with_residues(monkeypatch):
+    fake, _ids = _generation_world(monkeypatch)
+    from models import doc_template as tpl_model
+
+    clean = handlers.create_template({
+        "source_document_id": "src", "name": "Modèle", "category": "autre"})
+    _conforms("create_template", clean)
+    assert clean["scrubbed_properties"] is None
+    scrubbed = handlers.create_template({
+        "source_document_id": "src", "name": "Modèle bis", "category": "autre",
+        "kind": "note", "scrub_properties": True})
+    _conforms("create_template", scrubbed)
+    assert scrubbed["scrubbed_properties"] == []
+    _seed_leaky_source(fake, tpl_model.storage.bucket())
+    accepted = handlers.create_template({
+        "source_document_id": "leaky", "name": "Modèle ter",
+        "category": "correspondance", "accept_residual": ["2026-001"]})
+    _conforms("create_template", accepted)
+    assert accepted["leak_scan"]["accepted_residues"][0]["identifier"] == "2026-001"
+
+
+def test_update_template_conforms_in_both_modes_and_on_no_ops(monkeypatch):
+    _fake, ids = _generation_world(monkeypatch)
+    tid = ids["gabarit"]
+    metadata = handlers.update_template({"template_id": tid, "name": "Renommé"})
+    _conforms("update_template", metadata)
+    assert metadata["mode"] == "metadata" and metadata["leak_scan"] is None
+    unchanged = handlers.update_template({"template_id": tid, "name": "Renommé"})
+    _conforms("update_template", unchanged)
+    assert unchanged["changed_fields"] == []
+    replaced = handlers.update_template({
+        "template_id": tid, "source_document_id": "src", "expected_version": 1,
+        "scrub_properties": True})
+    _conforms("update_template", replaced)
+    assert replaced["file_replaced"] is True and replaced["replaced_version"] == 1
+    identical = handlers.update_template({
+        "template_id": tid, "source_document_id": "src", "expected_version": 1})
+    _conforms("update_template", identical)
+    assert identical["file_replaced"] is False
+    assert identical["replaced_version"] is None

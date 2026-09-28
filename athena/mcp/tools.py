@@ -775,6 +775,10 @@ EDIT_TOOLS: frozenset[str] = frozenset({
     # application). Its document branch replaces nothing; one tool carries
     # one hint, and under-warning is the wrong side (review of lot 2).
     "finalize_upload",
+    # Lot 2A (T10) — update_template REPLACES a template's name,
+    # description, category or kind (none kept), or its file in force (the
+    # previous version KEPT, restorable). create_template replaces nothing.
+    "update_template",
 })
 
 # Writes with an effect OUTSIDE the practice's own records — a message a
@@ -938,6 +942,9 @@ TEMPLATE_NAME_MAX_CHARS = 120                      # models.doc_template.NAME_MA
 TEMPLATE_DESCRIPTION_MAX_CHARS = 2_000             # models.doc_template.DESCRIPTION_MAX
 _UPLOAD_PURPOSES = ["document", "gabarit"]
 _TEMPLATE_MODES = ["create", "replace"]
+# Lot 2A (T10) — a template's etag is on its list_templates row (list mode
+# and detail mode alike: both render _template_summary).
+_TEMPLATE_ETAG_READERS = ("list_templates",)
 _CONTACT_ROLES = [
     "client", "partie_adverse", "avocat_adverse", "témoin",
     "expert", "huissier", "notaire", "autre",
@@ -5342,6 +5349,176 @@ TOOLS: dict[str, dict] = {
             "transaction — and a ticket is claimed transactionally: one "
             "finalizer at a time, with no etag to pass."
         ),
+    },
+    # ── Lot 2A (T10) — TEMPLATES from a document already in a dossier ───
+    # Interpretation A (plan D5): the stored .docx is registered UNCHANGED
+    # (bar the opt-in core-properties scrub). Turning its literals into
+    # {{…}} fields is lot 2B's preview_templatize / substitutions.
+    "create_template": {
+        "title": "Enregistrer un document comme gabarit",
+        "description": (
+            "WRITE — registers a Word document ALREADY in a dossier (.docx, "
+            "10 MB at most, id from list_documents) as a NEW firm-wide "
+            "template, its bytes unchanged — scrub_properties first empties "
+            "the file's title, subject, author, last editor and description. "
+            "Refused while the file or `name` still carries the source "
+            "dossier's names, numbers or addresses: each residue is named; "
+            "list it in accept_residual ONLY on the lawyer's word, and every "
+            "accepted one is echoed back. A special kind (note_honoraires, "
+            "note) is created NOT active: only the lawyer designates the "
+            "active one, in the application. The source document is never "
+            "modified. Fields Word fragmented come back in "
+            "entity.validation_warnings."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_document_id": _id(
+                    "The stored .docx (UUIDv4), from list_documents. Its "
+                    "OWN dossier is the one checked."
+                ),
+                "name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": TEMPLATE_NAME_MAX_CHARS,
+                    "description": (
+                        "Its name, in French — printed in the name of every "
+                        "document generated from it, so checked like the "
+                        "file. Never a client's name."
+                    ),
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": TEMPLATE_DESCRIPTION_MAX_CHARS,
+                    "description": "What it is for, in French.",
+                },
+                "category": {
+                    "type": "string", "enum": _TEMPLATE_CATEGORIES,
+                    "description": "The template's OWN category.",
+                },
+                "kind": {
+                    "type": "string", "enum": _TEMPLATE_KINDS,
+                    "description": (
+                        "Default « gabarit ». A special kind is created NOT "
+                        "active."
+                    ),
+                },
+                "accept_residual": {
+                    "type": "array",
+                    "maxItems": UPLOAD_ACCEPT_MAX_ITEMS,
+                    "items": {
+                        "type": "string", "minLength": 1,
+                        "maxLength": UPLOAD_ACCEPT_MAX_CHARS,
+                        "description": (
+                            "One identifier exactly as a refusal named it."
+                        ),
+                    },
+                    "description": (
+                        "Residues the LAWYER accepts to keep in a firm-wide "
+                        "template."
+                    ),
+                },
+                "scrub_properties": {
+                    "type": "boolean",
+                    "description": (
+                        "Empty the file's document properties first "
+                        "(default false)."
+                    ),
+                },
+                **_write_protocol_props(),
+            },
+            "required": ["source_document_id", "name", "category"],
+            "additionalProperties": False,
+        },
+        "handler": "create_template",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+    },
+    "update_template": {
+        "title": "Corriger un gabarit",
+        "annotations": {
+            # Values already stored — or a file identical to the version in
+            # force — write nothing: a repeat is a no-op.
+            "idempotentHint": True,
+        },
+        "description": (
+            "WRITE — corrects ONE template, in one of two calls. METADATA: "
+            "name, description, category, kind — an omitted field is "
+            "untouched; the kind of the ACTIVE template of a special kind "
+            "cannot change. Or a new FILE: source_document_id (a .docx "
+            "already in a dossier) + expected_version from list_templates — "
+            "installed as a NEW version, the one in force KEPT and "
+            "restorable in the application; refused while the file names "
+            "the source dossier (accept_residual on the lawyer's word only). "
+            "A new file for the active template prints at once on every "
+            "document of its kind. Never changes which template is active. "
+            "Values or a file already stored write nothing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "template_id": _id(
+                    "The template (UUIDv4), from list_templates."
+                ),
+                "name": {
+                    "type": "string", "minLength": 1,
+                    "maxLength": TEMPLATE_NAME_MAX_CHARS,
+                    "description": "Metadata: its new name, in French.",
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": TEMPLATE_DESCRIPTION_MAX_CHARS,
+                    "description": "Metadata: what it is for; \"\" clears it.",
+                },
+                "category": {
+                    "type": "string", "enum": _TEMPLATE_CATEGORIES,
+                    "description": "Metadata: the template's OWN category.",
+                },
+                "kind": {
+                    "type": "string", "enum": _TEMPLATE_KINDS,
+                    "description": (
+                        "Metadata: a special kind is never made active here."
+                    ),
+                },
+                "source_document_id": _id(
+                    "File: the stored .docx (UUIDv4, list_documents) whose "
+                    "bytes become the new version."
+                ),
+                "expected_version": {
+                    "type": "integer", "minimum": 1,
+                    "description": (
+                        "File: REQUIRED — the version as read; refused if "
+                        "another version landed since."
+                    ),
+                },
+                "accept_residual": {
+                    "type": "array",
+                    "maxItems": UPLOAD_ACCEPT_MAX_ITEMS,
+                    "items": {
+                        "type": "string", "minLength": 1,
+                        "maxLength": UPLOAD_ACCEPT_MAX_CHARS,
+                        "description": (
+                            "One identifier exactly as a refusal named it."
+                        ),
+                    },
+                    "description": "File: residues the LAWYER accepts to keep.",
+                },
+                "scrub_properties": {
+                    "type": "boolean",
+                    "description": (
+                        "File: empty the file's document properties first."
+                    ),
+                },
+                **_expected_etag_prop(_TEMPLATE_ETAG_READERS),
+                **_write_protocol_props(),
+            },
+            "required": ["template_id"],
+            "additionalProperties": False,
+        },
+        "handler": "update_template",
+        "scope": SCOPE_WRITE,
+        "idempotency": IDEMPOTENCY_OPTIONAL,
+        "concurrency": CONCURRENCY_OPTIONAL,
+        "etag_readers": _TEMPLATE_ETAG_READERS,
     },
 }
 
