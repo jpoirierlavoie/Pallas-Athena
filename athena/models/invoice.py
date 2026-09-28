@@ -1,16 +1,29 @@
 """Invoice Firestore CRUD, tax computation, and line-item management.
 
-``create_invoice`` has two branches. The ordinary one allocates a
-year-sequential number from the transactional counter. The IMPORT branch
-(keyword-only arguments, unreachable from ``request.form``) keeps a number
-the previous system already issued, never touches the counter, and refuses
-rather than write anything it cannot reconcile — a book of account is
-complete or it is wrong.
+``create_invoice`` has two branches. The ordinary one — the GENERATED path —
+allocates a year-sequential number from the transactional counter. The
+IMPORT branch (keyword-only arguments, unreachable from ``request.form``)
+keeps a number the previous system already issued, never touches the
+counter, and refuses rather than write anything it cannot reconcile — a book
+of account is complete or it is wrong.
+
+Everything ``create_invoice`` decides before its transaction lives in ONE
+function, :func:`plan_invoice` — the source selection, the refusals, the
+totals, the issuance checks and the warnings — so that a preview of an
+invoice (the connector's read tool, lot 3b) and the write can never drift:
+the retired ``dry_run`` doubled every write into two model calls that the
+handlers had to keep in step by hand, and that is exactly the drift this
+shape removes.
+
+A brouillon is corrected by :func:`update_invoice_draft` — notes, payment
+terms, due date and a fresh billing-address snapshot, never a money figure
+or a line item.
 """
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
@@ -57,6 +70,17 @@ class _VoidRefused(Exception):
 
     ``reason`` is the machine-stable code the observability event carries;
     the French sentence is ``str(exc)``.
+    """
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class _DraftRefused(Exception):
+    """Refusal raised inside the draft-edit transaction (aborts, never writes).
+
+    ``reason`` is the machine-stable code the observability event carries.
     """
 
     def __init__(self, message: str, reason: str) -> None:
@@ -668,6 +692,450 @@ def _adjustment_line_item(adjustment: dict) -> tuple[Optional[dict], list[str]]:
     }, []
 
 
+# ── The plan of an invoice: every decision taken before the transaction ─
+
+
+@dataclass
+class InvoicePlan:
+    """What an invoice built from these sources would be — computed, never
+    written.
+
+    Returned by :func:`plan_invoice` WHETHER OR NOT the invoice may be
+    issued: a refused plan still carries what it could compute (the skip
+    reason of every source, the lines retained so far) so that a preview can
+    show WHY, from the same computation the write runs.
+
+    * ``skipped`` — ``{source id: French reason}``, one entry per source
+      that cannot become a line (missing, already billed and on which
+      invoice, another dossier's, non-billable on the generated path);
+    * ``errors`` — the refusals, in French; empty means ``create_invoice``
+      proceeds to its number and its transaction. ``refusal_reason`` is the
+      machine-stable code of the first one, for the observability event;
+    * ``warnings`` — true facts the caller should SHOW, never refusals (the
+      number's year differs from the invoice date's; a provision supplied on
+      the generated path was ignored).
+    """
+
+    line_items: list[dict] = field(default_factory=list)
+    valid_entry_ids: list[str] = field(default_factory=list)
+    valid_expense_ids: list[str] = field(default_factory=list)
+    # etag captured at pre-read time; the transaction re-checks it so a
+    # concurrent content edit (hours/amount) aborts instead of snapshotting
+    # a stale value into the line items.
+    expected_etags: dict[str, str] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)
+    totals: dict = field(default_factory=dict)
+    retainer_applied: int = 0
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    refusal_reason: str = ""
+
+    def refuse(self, errors: list[str], reason: str) -> "InvoicePlan":
+        self.errors = list(errors)
+        self.refusal_reason = reason
+        return self
+
+
+#: Where the firm's GST/QST registration numbers are entered — named by
+#: every refusal that needs them, so the lawyer knows the one fix.
+SETTINGS_TAX_NUMBERS_PATH = "« Paramètres → Profil du cabinet »"
+
+
+def number_year_warning(invoice_date: object, number: str) -> str:
+    """'' unless *number* is one of OUR sequence numbers (« YYYY-F… ») whose
+    year is not the year of *invoice_date*.
+
+    The number follows the Montréal year of the day the invoice is ISSUED
+    (``today_mtl``), never its date — the documented doctrine, and the only
+    one that keeps a year's fee-journal sequence contiguous. So an invoice
+    dated 31 December and issued on 2 January carries the NEW year's number.
+    That is correct, and surprising: this sentence says it before the
+    invoice is sent. A number from another system (an import) is not ours to
+    comment on, and is never flagged.
+
+    String operations only, no pattern — pure, and linear by construction.
+    """
+    number = (number or "").strip()
+    if not (len(number) >= 6 and number[:4].isdigit() and number[4:6] == "-F"):
+        return ""
+    when = invoice_date.date() if isinstance(invoice_date, datetime) else invoice_date
+    if not isinstance(when, date) or str(when.year) == number[:4]:
+        return ""
+    return (
+        f"La facture est datée de {when.year}, mais son numéro suit l'année "
+        f"de son émission ({number[:4]}-F…) : un numéro de facture suit "
+        "toujours l'année où la facture est créée, jamais sa date. Vérifiez "
+        "la date avant d'envoyer la facture."
+    )
+
+
+def _calendar_day(value: object) -> Optional[date]:
+    """The UTC calendar date of a date-only field (stored at midnight UTC)."""
+    if isinstance(value, datetime):
+        return (value.astimezone(timezone.utc) if value.tzinfo else value).date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def issuance_refusals(
+    merged: dict,
+    totals: dict,
+    *,
+    generated: bool,
+    client: Optional[dict],
+) -> list[tuple[str, str]]:
+    """What forbids ISSUING this invoice to its client — pure.
+
+    Returns ``[(French refusal, machine reason), …]``; empty means none.
+    *client* is the partie ``merged["client_id"]`` names, as READ by the
+    caller (``None`` when the id names nothing on file, or is blank).
+
+    On BOTH paths:
+
+    * a ``client_id`` that names no contact on file. The billing address is
+      FROZEN on the invoice, so a snapshot of a client that does not resolve
+      is a blank address on a document the client will hold. (An imported
+      invoice for a dossier that genuinely has NO client stays possible: the
+      previous system issued it, and it is reproduced, not reissued.)
+
+    On the GENERATED path only — an invoice this application issues today:
+
+    * no client at all: an invoice is issued TO a client;
+    * a blank client name, or a billing address the caller could not
+      snapshot (its name is empty — ``billing_address_from`` always fills it
+      from a contact on file, so an empty one means the caller's own read of
+      the contact failed);
+    * taxes charged under an EMPTY registration number. The numbers are
+      snapshotted from the firm profile and never rewritten (there is no
+      update of a money figure on an invoice), and CLAUDE.md records 50+
+      invoices issued with blank numbers before the profile could hold
+      them. Checked per tax, and only when that tax is actually charged: a
+      wholly non-taxable invoice needs neither;
+    * a due date before the invoice date.
+
+    The import path reproduces historical paper verbatim and is spared
+    those four: its numbers, due dates and client are what was sent.
+    """
+    out: list[tuple[str, str]] = []
+    client_id = str(merged.get("client_id") or "").strip()
+    if client_id and client is None:
+        out.append((
+            "Le client du dossier est introuvable : l'adresse de facturation, "
+            "figée sur la facture, serait vide. Corrigez les parties du "
+            "dossier, puis recréez la facture. Rien n'a été créé.",
+            "client_introuvable",
+        ))
+    if not generated:
+        return out
+    if not client_id:
+        out.append((
+            "Le dossier n'a aucun client : une facture ne s'émet qu'au client "
+            "d'un dossier. Ajoutez le client au dossier, puis recréez la "
+            "facture. Rien n'a été créé.",
+            "aucun_client",
+        ))
+    elif client is not None:
+        if not str(merged.get("client_name") or "").strip():
+            out.append((
+                "Le nom du client du dossier est vide : il s'imprime sur la "
+                "facture et au journal des honoraires. Corrigez la fiche du "
+                "dossier, puis recréez la facture. Rien n'a été créé.",
+                "nom_client_vide",
+            ))
+        billing = merged.get("billing_address") or {}
+        if not str(billing.get("name") or "").strip():
+            out.append((
+                "L'adresse de facturation du client n'a pas pu être établie "
+                "(lecture de sa fiche impossible) : rien n'a été créé. "
+                "Réessayez dans un instant.",
+                "adresse_non_etablie",
+            ))
+    for amount_key, number_key, label, reason in (
+        ("gst_amount", "gst_number", "TPS", "numero_tps_vide"),
+        ("qst_amount", "qst_number", "TVQ", "numero_tvq_vide"),
+    ):
+        if (int(totals.get(amount_key) or 0) > 0
+                and not str(merged.get(number_key) or "").strip()):
+            out.append((
+                f"Le numéro d'inscription {label} du cabinet est vide : une "
+                f"facture qui porte la {label} doit l'indiquer. Saisissez-le "
+                f"dans {SETTINGS_TAX_NUMBERS_PATH}, puis recréez la facture. "
+                "Rien n'a été créé.",
+                reason,
+            ))
+    invoice_day = _calendar_day(merged.get("date"))
+    due_day = _calendar_day(merged.get("due_date"))
+    if invoice_day and due_day and due_day < invoice_day:
+        out.append((
+            f"La date d'échéance ({due_day.isoformat()}) précède la date de la "
+            f"facture ({invoice_day.isoformat()}). Rien n'a été créé.",
+            "echeance_anterieure",
+        ))
+    return out
+
+
+def _read_client_strict(client_id: str) -> Optional[dict]:
+    """The contact *client_id* names, or ``None`` when none is on file.
+
+    RAISES on a read failure — never the fail-open ``get_partie``, whose
+    ``None`` on an outage would read as « this client does not exist » and
+    refuse, or worse, as a contact whose address is blank. Through this
+    module's own client, so the store an invoice is written to is the store
+    its client is checked in.
+    """
+    from models import partie as partie_model
+
+    snap = db.collection(partie_model.COLLECTION).document(client_id).get()
+    return (snap.to_dict() or {}) if snap.exists else None
+
+
+def plan_invoice(
+    dossier_id: str,
+    entry_ids: list[str],
+    expense_ids: list[str],
+    merged: dict,
+    *,
+    generated: bool,
+    require_all_sources: bool,
+    adjustment: Optional[dict] = None,
+    expected_total: Optional[int] = None,
+) -> InvoicePlan:
+    """Everything ``create_invoice`` decides before its transaction — ONE
+    implementation, so a preview and the write cannot drift.
+
+    *merged* is the invoice document as the caller's whitelisted data built
+    it (``_CREATE_DATA_KEYS``, defaults applied). *generated* — the invoice
+    gets a number of our own sequence (``create_invoice`` without
+    ``invoice_number``); ``False`` is the historical import. Reads the
+    sources and the client; writes nothing, allocates nothing.
+
+    In order, the first refusal wins (its error list is returned as a
+    whole), exactly as ``create_invoice`` always refused:
+
+    1. the invoice fields (``_validate``) and an empty selection;
+    2. each source is read; one that cannot become a line is SKIPPED with
+       its reason — missing or unreadable, already billed (the reason names
+       the invoice, so a stale selection points at what billed it),
+       another dossier's, and, on the generated path, NON-BILLABLE: time the
+       lawyer marked « non facturable » has no amount and must never print
+       its hours on a client's invoice (a legacy entry that predates the
+       flag carries no key and stays billable). A historical import may
+       reproduce such a 0 $ line and keeps it;
+    3. with *require_all_sources*, a duplicated id or ANY skipped source
+       refuses, naming each offender by reason — without it the skip is
+       silent (no caller of the application passes False any more);
+    4. no line left; a malformed *adjustment*;
+    5. *expected_total* — exact, never a tolerance;
+    6. the provision: on the GENERATED path it is forced to 0 — a provision
+       is applied later, by a « paiement d'honoraires » drawn on the trust
+       account, and deducting it here too would count the same money twice
+       (the provision trap of 2026-08-17); a non-zero value supplied there
+       is ignored and said so in ``warnings``. On the import path it is kept
+       and bounded to ``[0, total]``;
+    7. the issuance checks (:func:`issuance_refusals`), the client being
+       read STRICTLY — a read that fails refuses, it never passes.
+
+    Warnings: the number's year versus the invoice date's
+    (:func:`number_year_warning`, on the generated path — the number will
+    be of the current Montréal year).
+    """
+    from models.time_entry import get_time_entry
+    from models.expense import get_expense
+
+    plan = InvoicePlan()
+    entry_ids = list(entry_ids or [])
+    expense_ids = list(expense_ids or [])
+
+    errors = _validate(merged)
+    if not entry_ids and not expense_ids:
+        errors.append("Sélectionnez au moins une entrée de temps ou une dépense.")
+    if errors:
+        return plan.refuse(errors, "validation")
+
+    # Build line items from selected sources. A source that is missing,
+    # already invoiced, owned by a different dossier or (generated path)
+    # non-billable is SKIPPED — only the sources that actually become line
+    # items get flipped to invoiced. Why each was dropped is kept even
+    # when require_all_sources is off, so the reason is computed once, in
+    # the one place that actually knows it.
+    for eid in entry_ids:
+        entry = get_time_entry(eid)
+        if not entry:
+            # get_time_entry swallows a read failure into None, so the model
+            # genuinely cannot tell a deleted entry from an unreadable one.
+            # Say both rather than assert the wrong one.
+            plan.skipped[eid] = "introuvable ou illisible"
+            continue
+        if entry.get("invoiced"):
+            billed_on = entry.get("invoice_id") or ""
+            plan.skipped[eid] = (
+                f"déjà facturée (facture {billed_on})" if billed_on
+                else "déjà facturée"
+            )
+            continue
+        if entry.get("dossier_id") != dossier_id:
+            plan.skipped[eid] = "rattachée à un autre dossier"
+            continue
+        if generated and entry.get("billable") is False:
+            plan.skipped[eid] = "non facturable"
+            continue
+        plan.valid_entry_ids.append(eid)
+        plan.expected_etags[eid] = entry.get("etag", "")
+        plan.line_items.append({
+            **_default_line_item(),
+            "id": str(uuid.uuid4()),
+            "type": "fee",
+            "source_id": eid,
+            "date": entry.get("date"),
+            "description": entry.get("description", ""),
+            "hours": entry.get("hours", 0),
+            "rate": entry.get("rate", 0),
+            "amount": entry.get("amount", 0),
+            "taxable": True,
+        })
+
+    for eid in expense_ids:
+        expense = get_expense(eid)
+        if not expense:
+            plan.skipped[eid] = "introuvable ou illisible"
+            continue
+        if expense.get("invoiced"):
+            billed_on = expense.get("invoice_id") or ""
+            plan.skipped[eid] = (
+                f"déjà facturé (facture {billed_on})" if billed_on
+                else "déjà facturé"
+            )
+            continue
+        if expense.get("dossier_id") != dossier_id:
+            plan.skipped[eid] = "rattaché à un autre dossier"
+            continue
+        plan.valid_expense_ids.append(eid)
+        plan.expected_etags[eid] = expense.get("etag", "")
+        plan.line_items.append({
+            **_default_line_item(),
+            "id": str(uuid.uuid4()),
+            "type": "expense",
+            "source_id": eid,
+            "date": expense.get("date"),
+            "description": expense.get("description", ""),
+            "hours": None,
+            "rate": None,
+            "amount": expense.get("amount", 0),
+            "taxable": expense.get("taxable", True),
+        })
+
+    if require_all_sources:
+        # A repeated id appends two identical line items and doubles the fee:
+        # the build loops above do not dedupe, and the web form cannot
+        # produce a duplicate.
+        for label, ids in (
+            ("time_entry_ids", entry_ids),
+            ("expense_ids", expense_ids),
+        ):
+            seen: set[str] = set()
+            dupes: set[str] = set()
+            for source_id in ids:
+                if source_id in seen:
+                    dupes.add(source_id)
+                seen.add(source_id)
+            if dupes:
+                return plan.refuse([
+                    f"`{label}` contient des identifiants en double : "
+                    + ", ".join(sorted(dupes))
+                    + ". Chaque source ne peut être facturée qu'une fois."
+                ], "ids_en_double")
+        if plan.skipped:
+            grouped: dict[str, list[str]] = {}
+            for sid, reason in plan.skipped.items():
+                grouped.setdefault(reason, []).append(sid)
+            details = " ; ".join(
+                f"{reason} : {', '.join(sorted(ids))}"
+                for reason, ids in sorted(grouped.items())
+            )
+            return plan.refuse([
+                f"Sources inutilisables (rien n'a été écrit) — {details}."
+            ], "sources_inutilisables")
+
+    if not plan.line_items:
+        return plan.refuse(["Aucune entrée valide sélectionnée."], "aucune_ligne")
+
+    if adjustment is not None:
+        adjustment_item, adjustment_errors = _adjustment_line_item(adjustment)
+        if adjustment_errors:
+            return plan.refuse(adjustment_errors, "ajustement")
+        plan.line_items.append(adjustment_item)
+
+    totals = compute_totals(plan.line_items)
+    plan.totals = totals
+
+    if expected_total is not None:
+        if not isinstance(expected_total, int) or isinstance(expected_total, bool):
+            return plan.refuse(
+                ["`expected_total` doit être un entier de cents."], "total_attendu"
+            )
+        if expected_total != totals["total"]:
+            gap = totals["total"] - expected_total
+            supplied = len(entry_ids) + len(expense_ids)
+            return plan.refuse([
+                f"Le total reconstitué ({totals['total']} ¢) ne correspond "
+                f"pas au total attendu ({expected_total} ¢) — écart "
+                f"{gap:+d} ¢. Calculé : honoraires {totals['subtotal_fees']} ¢, "
+                f"déboursés {totals['subtotal_expenses']} ¢, "
+                f"TPS {totals['gst_amount']} ¢, TVQ {totals['qst_amount']} ¢, "
+                f"sur {len(plan.line_items)} ligne(s) retenue(s) pour {supplied} "
+                "source(s) fournie(s). Aucune facture n'a été créée."
+            ], "total_attendu")
+
+    retainer_applied = merged.get("retainer_applied", 0)
+    if generated:
+        if retainer_applied not in (0, None, False):
+            plan.warnings.append(
+                "La provision indiquée n'a pas été déduite : sur une facture "
+                "émise ici, une provision s'impute APRÈS l'envoi, par un "
+                "« paiement d'honoraires » tiré du fidéicommis — la déduire "
+                "aussi à la création compterait deux fois le même argent."
+            )
+        plan.retainer_applied = 0
+    else:
+        # Retainer must stay within [0, total] so amount_due can never go
+        # negative.
+        if (
+            not isinstance(retainer_applied, int)
+            or isinstance(retainer_applied, bool)
+            or retainer_applied < 0
+            or retainer_applied > totals["total"]
+        ):
+            return plan.refuse([
+                "La provision appliquée doit être comprise entre 0 $ et le "
+                "total de la facture."
+            ], "provision_hors_bornes")
+        plan.retainer_applied = retainer_applied
+
+    client_id = str(merged.get("client_id") or "").strip()
+    client = None
+    if client_id:
+        try:
+            client = _read_client_strict(client_id)
+        except Exception:
+            log_unexpected("plan_invoice: client read failed")
+            return plan.refuse([
+                "Impossible de vérifier le client du dossier (lecture "
+                "impossible). Rien n'a été créé : réessayez dans un instant."
+            ], "client_illisible")
+    refusals = issuance_refusals(merged, totals, generated=generated, client=client)
+    if refusals:
+        return plan.refuse([m for m, _ in refusals], refusals[0][1])
+
+    if generated:
+        warning = number_year_warning(
+            merged.get("date"), f"{today_mtl().strftime('%Y')}-F"
+        )
+        if warning:
+            plan.warnings.append(warning)
+    return plan
+
+
 # ── CRUD ─────────────────────────────────────────────────────────────────
 
 
@@ -684,15 +1152,25 @@ def create_invoice(
 ) -> tuple[Optional[dict], list[str]]:
     """Create an invoice with line items from selected time entries and expenses.
 
-    Sources that are missing, already invoiced, or that belong to another
-    dossier are **skipped in silence** unless *require_all_sources*. The
+    Every decision taken before the write — the source selection, the
+    refusals, the totals, the issuance checks — is :func:`plan_invoice`'s,
+    called with this call's own flags; a refused plan is returned as the
+    error list and NOTHING is read beyond it (no counter, no number). The
     invoice document, all line items, and the invoiced=True flips for the
-    retained sources are committed in a single Firestore transaction that
-    re-reads each source, so a concurrent invoicing aborts the whole creation
-    (no orphan invoices, no double-billing). Returns (invoice, errors).
+    retained sources are then committed in a single Firestore transaction
+    that re-reads each source, so a concurrent invoicing aborts the whole
+    creation (no orphan invoices, no double-billing). Returns (invoice,
+    errors).
 
-    The four keyword-only arguments serve the historical import and all
-    default to today's behaviour, so the web form path is unchanged:
+    Without ``invoice_number`` this is the GENERATED path: the invoice this
+    application issues today, which :func:`plan_invoice` holds to the
+    issuance rules (a client that exists, its billing address, the firm's
+    tax numbers, a due date not before the date, no NON-BILLABLE time, and
+    NO provision — ``retainer_applied`` is forced to 0). Its number follows
+    the Montréal year of today (:func:`number_year_warning` names the case
+    where that is not the year of its date).
+
+    The four keyword-only arguments serve the historical import:
 
     * *invoice_number* — a number carried over from the previous system. The
       year counter is then **never read and never advanced**; without it the
@@ -703,10 +1181,13 @@ def create_invoice(
       retained-versus-supplied source count. No tolerance: one cent of
       silent drift is how a book of account starts lying.
     * *require_all_sources* — turn the silent skip into a refusal naming every
-      offender. This lives HERE and not only in a caller because the skip
-      happens in the pre-read loop below: a skipped id never enters
+      offender. This lives in the model and not only in a caller because the
+      skip happens in the pre-read: a skipped id never enters
       ``source_refs``, so ``_SourceConflictError`` can never catch it and a
-      caller's pre-flight is a TOCTOU snapshot the model may not honour.
+      caller's pre-flight is a TOCTOU snapshot the model may not honour. The
+      web form passes it too since lot 3a: a stale selection (an entry
+      billed or moved in another tab) is refused by name instead of
+      producing a silently shorter invoice.
     * *adjustment* — a named, caller-justified extra line item (see
       ``_adjustment_line_item``) for a legacy total the lines cannot
       reconstruct.
@@ -720,8 +1201,8 @@ def create_invoice(
     payment state is forced (``brouillon``, nothing paid): an invoice is born
     unpaid, and only the accounting register may say otherwise.
     """
-    from models.time_entry import COLLECTION as TE_COLLECTION, get_time_entry
-    from models.expense import COLLECTION as EXP_COLLECTION, get_expense
+    from models.time_entry import COLLECTION as TE_COLLECTION
+    from models.expense import COLLECTION as EXP_COLLECTION
 
     merged = {
         **_default_doc(),
@@ -730,156 +1211,27 @@ def create_invoice(
         ),
     }
 
-    errors = _validate(merged)
-    if not selected_entry_ids and not selected_expense_ids:
-        errors.append("Sélectionnez au moins une entrée de temps ou une dépense.")
-    if errors:
-        return None, errors
+    plan = plan_invoice(
+        dossier_id, selected_entry_ids, selected_expense_ids, merged,
+        generated=invoice_number is None,
+        require_all_sources=require_all_sources,
+        adjustment=adjustment,
+        expected_total=expected_total,
+    )
+    if plan.errors:
+        log_invoice_event("invoice_refused", "", outcome="refused",
+                          operation="create", reason=plan.refusal_reason,
+                          dossier_id=dossier_id)
+        return None, plan.errors
 
     now = datetime.now(timezone.utc)
     invoice_id = str(uuid.uuid4())
-
-    # Build line items from selected sources. Skip any source that is
-    # missing, already invoiced, or owned by a different dossier — only the
-    # sources that actually become line items get flipped to invoiced.
-    line_items: list[dict] = []
-    valid_entry_ids: list[str] = []
-    valid_expense_ids: list[str] = []
-    # etag captured at pre-read time; the transaction re-checks it so a
-    # concurrent content edit (hours/amount) aborts instead of snapshotting
-    # a stale value into the line items.
-    expected_etags: dict[str, str] = {}
-    # Why each id was dropped, for the require_all_sources refusal. Kept even
-    # when that flag is off so the reason is computed once, in the one place
-    # that actually knows it.
-    skipped: dict[str, str] = {}
-
-    for eid in selected_entry_ids:
-        entry = get_time_entry(eid)
-        if not entry:
-            # get_time_entry swallows a read failure into None, so the model
-            # genuinely cannot tell a deleted entry from an unreadable one.
-            # Say both rather than assert the wrong one.
-            skipped[eid] = "introuvable ou illisible"
-            continue
-        if entry.get("invoiced"):
-            skipped[eid] = "déjà facturée"
-            continue
-        if entry.get("dossier_id") != dossier_id:
-            skipped[eid] = "rattachée à un autre dossier"
-            continue
-        valid_entry_ids.append(eid)
-        expected_etags[eid] = entry.get("etag", "")
-        line_items.append({
-            **_default_line_item(),
-            "id": str(uuid.uuid4()),
-            "type": "fee",
-            "source_id": eid,
-            "date": entry.get("date"),
-            "description": entry.get("description", ""),
-            "hours": entry.get("hours", 0),
-            "rate": entry.get("rate", 0),
-            "amount": entry.get("amount", 0),
-            "taxable": True,
-        })
-
-    for eid in selected_expense_ids:
-        expense = get_expense(eid)
-        if not expense:
-            skipped[eid] = "introuvable ou illisible"
-            continue
-        if expense.get("invoiced"):
-            skipped[eid] = "déjà facturé"
-            continue
-        if expense.get("dossier_id") != dossier_id:
-            skipped[eid] = "rattaché à un autre dossier"
-            continue
-        valid_expense_ids.append(eid)
-        expected_etags[eid] = expense.get("etag", "")
-        line_items.append({
-            **_default_line_item(),
-            "id": str(uuid.uuid4()),
-            "type": "expense",
-            "source_id": eid,
-            "date": expense.get("date"),
-            "description": expense.get("description", ""),
-            "hours": None,
-            "rate": None,
-            "amount": expense.get("amount", 0),
-            "taxable": expense.get("taxable", True),
-        })
-
-    if require_all_sources:
-        # A repeated id appends two identical line items and doubles the fee:
-        # the build loops above do not dedupe, and the web form cannot
-        # produce a duplicate, so this is an import-only guard.
-        for label, ids in (
-            ("time_entry_ids", selected_entry_ids),
-            ("expense_ids", selected_expense_ids),
-        ):
-            seen: set[str] = set()
-            dupes: set[str] = set()
-            for source_id in ids:
-                if source_id in seen:
-                    dupes.add(source_id)
-                seen.add(source_id)
-            if dupes:
-                return None, [
-                    f"`{label}` contient des identifiants en double : "
-                    + ", ".join(sorted(dupes))
-                    + ". Chaque source ne peut être facturée qu'une fois."
-                ]
-        if skipped:
-            grouped: dict[str, list[str]] = {}
-            for sid, reason in skipped.items():
-                grouped.setdefault(reason, []).append(sid)
-            details = " ; ".join(
-                f"{reason} : {', '.join(sorted(ids))}"
-                for reason, ids in sorted(grouped.items())
-            )
-            return None, [
-                f"Sources inutilisables (rien n'a été écrit) — {details}."
-            ]
-
-    if not line_items:
-        return None, ["Aucune entrée valide sélectionnée."]
-
-    if adjustment is not None:
-        adjustment_item, adjustment_errors = _adjustment_line_item(adjustment)
-        if adjustment_errors:
-            return None, adjustment_errors
-        line_items.append(adjustment_item)
-
-    # Compute totals
-    totals = compute_totals(line_items)
-
-    if expected_total is not None:
-        if not isinstance(expected_total, int) or isinstance(expected_total, bool):
-            return None, ["`expected_total` doit être un entier de cents."]
-        if expected_total != totals["total"]:
-            gap = totals["total"] - expected_total
-            supplied = len(selected_entry_ids) + len(selected_expense_ids)
-            return None, [
-                f"Le total reconstitué ({totals['total']} ¢) ne correspond "
-                f"pas au total attendu ({expected_total} ¢) — écart "
-                f"{gap:+d} ¢. Calculé : honoraires {totals['subtotal_fees']} ¢, "
-                f"déboursés {totals['subtotal_expenses']} ¢, "
-                f"TPS {totals['gst_amount']} ¢, TVQ {totals['qst_amount']} ¢, "
-                f"sur {len(line_items)} ligne(s) retenue(s) pour {supplied} "
-                "source(s) fournie(s). Aucune facture n'a été créée."
-            ]
-
-    # Retainer must stay within [0, total] so amount_due can never go negative.
-    retainer_applied = merged.get("retainer_applied", 0)
-    if (
-        not isinstance(retainer_applied, int)
-        or isinstance(retainer_applied, bool)
-        or retainer_applied < 0
-        or retainer_applied > totals["total"]
-    ):
-        return None, [
-            "La provision appliquée doit être comprise entre 0 $ et le total de la facture."
-        ]
+    line_items = plan.line_items
+    valid_entry_ids = plan.valid_entry_ids
+    valid_expense_ids = plan.valid_expense_ids
+    expected_etags = plan.expected_etags
+    totals = plan.totals
+    retainer_applied = plan.retainer_applied
 
     # Resolve the number LAST, so every refusal above happens before the
     # counter is touched. On the imported branch it is never touched at all.
@@ -907,6 +1259,9 @@ def create_invoice(
     else:
         resolved_number, number_errors = _clean_imported_number(invoice_number)
         if number_errors:
+            log_invoice_event("invoice_refused", "", outcome="refused",
+                              operation="create", reason="numero_importe_refuse",
+                              dossier_id=dossier_id)
             return None, number_errors
 
     merged.update({
@@ -998,10 +1353,16 @@ def create_invoice(
     try:
         _txn_create(transaction)
     except _SourceConflictError:
+        log_invoice_event("invoice_refused", "", outcome="refused",
+                          operation="create", reason="source_modifiee",
+                          dossier_id=dossier_id)
         return None, [
             "Certaines entrées sélectionnées ont été modifiées ou facturées entre-temps. Veuillez réessayer."
         ]
     except _DuplicateNumberError as exc:
+        log_invoice_event("invoice_refused", "", outcome="refused",
+                          operation="create", reason="numero_existant",
+                          dossier_id=dossier_id)
         return None, [
             f"Le numéro de facture « {exc} » existe déjà dans Pallas Athéna. "
             "Une facture importée conserve son numéro d'origine : vérifiez "
@@ -1017,6 +1378,12 @@ def create_invoice(
         log_unexpected("create_invoice: transaction failed")
         return None, ["Erreur lors de la sauvegarde. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, invoice_id)
+    log_invoice_event(
+        "invoice_created", invoice_id,
+        dossier_id=dossier_id,
+        source_count=len(valid_entry_ids) + len(valid_expense_ids),
+        generated_number=invoice_number is None,
+    )
 
     return merged, []
 
@@ -1707,6 +2074,278 @@ def void_invoice(
     if errors:
         return False, errors[0]
     return True, ""
+
+
+# ── Draft corrections ────────────────────────────────────────────────────
+
+#: The fields a brouillon may correct — and nothing else. No money figure,
+#: no line item, no client, no number: those are what the invoice IS, and
+#: changing one means voiding it and issuing a new one.
+DRAFT_FIELDS = ("notes", "payment_terms", "due_date")
+#: The connector's import caps (``mcp/handlers._import_invoice_impl``), so a
+#: brouillon correctable on one surface is correctable on the other.
+DRAFT_NOTES_MAX_LENGTH = 1500
+DRAFT_PAYMENT_TERMS_MAX_LENGTH = 500
+
+
+def draft_edit_refusal(invoice: dict) -> str:
+    """'' when *invoice* is a brouillon, else why it cannot be corrected.
+
+    The one sentence, shown by the web form before it renders and by
+    :func:`update_invoice_draft` inside its transaction.
+    """
+    status = invoice.get("status", "")
+    if status == "brouillon":
+        return ""
+    if status == "annulée":
+        return "Cette facture est annulée : elle ne se modifie plus."
+    label = STATUS_LABELS.get(status, status)
+    if status == "payée":
+        return (
+            f"Seul un brouillon se modifie : cette facture est « {label} »."
+        )
+    return (
+        f"Seul un brouillon se modifie : cette facture est « {label} ». Une "
+        "facture émise ne se corrige qu'en l'annulant — possible tant "
+        "qu'aucun paiement n'y est inscrit —, puis en en émettant une "
+        "nouvelle."
+    )
+
+
+class _DraftInvalid(Exception):
+    """A changed value the draft refuses (raised in the transaction)."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__("; ".join(errors))
+        self.errors = errors
+
+
+def _draft_text_errors(
+    text: str, *, label: str, cap: int, required: bool,
+) -> list[str]:
+    """Why a CHANGED draft text is refused rather than altered — [] if fine.
+
+    ``sanitize`` truncates and deletes angle-bracket runs in silence; on a
+    document the client receives, a note that loses « < b et b > » with a
+    success message is worse than a refusal. So the length is checked first,
+    and the value must come out of ``sanitize`` unchanged.
+    """
+    if required and not text:
+        return [f"{label} ne peuvent pas être vides."]
+    if len(text) > cap:
+        return [
+            f"{label} dépassent {cap} caractères ({len(text)}) : elles ne "
+            "sont jamais tronquées — raccourcissez-les."
+        ]
+    if sanitize(text, max_length=cap) != text:
+        return [
+            f"{label} contiennent un passage entre chevrons (< … >) qui serait "
+            "supprimé à l'enregistrement : retirez les chevrons."
+        ]
+    return []
+
+
+def _parse_draft_due_date(value: object) -> tuple[Optional[datetime], list[str]]:
+    """A due date as the date-only convention stores it: midnight UTC."""
+    if isinstance(value, datetime):
+        day = _calendar_day(value)
+    elif isinstance(value, date):
+        day = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            day = datetime.strptime(value.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return None, ["La date d'échéance est invalide (AAAA-MM-JJ attendu)."]
+    else:
+        return None, ["La date d'échéance est requise."]
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc), []
+
+
+# {field: (French label, cap, required)} — the two draft texts.
+_DRAFT_TEXT_RULES = {
+    "notes": ("Les notes", DRAFT_NOTES_MAX_LENGTH, False),
+    "payment_terms": (
+        "Les conditions de paiement", DRAFT_PAYMENT_TERMS_MAX_LENGTH, True),
+}
+
+
+def update_invoice_draft(
+    invoice_id: str,
+    changes: dict,
+    *,
+    expected_etag: Optional[str],
+    refresh_billing_address: bool = False,
+) -> tuple[Optional[dict], list[str], list[str]]:
+    """Correct a BROUILLON — ``(invoice, errors, changed_fields)``.
+
+    There was no way to fix a draft at all: a typo in its notes, a wrong due
+    date, a client who moved before the invoice left — each could only be
+    « fixed » by voiding the draft, which retires its number for ever.
+
+    *changes* holds any of :data:`DRAFT_FIELDS`, by PRESENCE (an absent key
+    leaves the field alone):
+
+    * ``notes`` — at most :data:`DRAFT_NOTES_MAX_LENGTH` characters; ``''``
+      clears them;
+    * ``payment_terms`` — at most :data:`DRAFT_PAYMENT_TERMS_MAX_LENGTH`;
+      ``''`` is refused (they print on the invoice);
+    * ``due_date`` — a ``datetime``/``date`` or ``'YYYY-MM-DD'``, never
+      before the invoice date.
+
+    Text is stripped; a CHANGED value that is over-long, or that
+    ``sanitize`` would alter, is REFUSED — never truncated or stripped. A
+    value EQUAL to the stored one is not a change and is not re-judged: the
+    web form resubmits every field, and a brouillon written before these
+    caps (web notes went to 2 000 characters) must stay correctable in its
+    other fields. Any other key is refused by name. With
+    *refresh_billing_address*, the frozen billing address is re-snapshotted
+    from the invoice's client as it is on file NOW (``billing_address_from``,
+    the one builder) — read inside the transaction; a client that does not
+    resolve, or a read that fails, refuses: an address is never blanked.
+
+    ONE Firestore transaction, every read before the write:
+
+    1. the invoice (missing → refused); it must still be a brouillon;
+    2. the client, when refreshing;
+    3. the fields that actually CHANGE are computed, and only they are
+       judged (the texts; the due date against the invoice date). When
+       none changes, nothing is written and the stored invoice is returned
+       with ``changed_fields == []``. This comes BEFORE the etag check on
+       purpose: a replay of a save that already succeeded (a double
+       submit, a retried call) is a no-op, not a false conflict;
+    4. *expected_etag* — the version the caller read — must be the stored
+       one (``None`` asserts nothing: a page rendered before its form
+       carried an etag). Required as a KEYWORD: every caller states what it
+       read, even when that is « nothing »;
+    5. a PARTIAL ``update()`` of the changed keys plus the provenance stamp.
+       Never the merged full-document ``set()``: no money figure, no line
+       item, no status is even reachable from here.
+
+    The third member of the return deviates from the house ``(doc,
+    errors)`` convention on purpose (the ``set_*_phase`` precedent): a
+    caller must tell « applied » from « already so » without re-deriving it.
+    """
+    changes = dict(changes or {})
+    unknown = sorted(k for k in changes if k not in DRAFT_FIELDS)
+    if unknown:
+        return None, [
+            "Champ non modifiable sur un brouillon : " + ", ".join(unknown)
+            + ". Seuls les notes, les conditions de paiement, la date "
+            "d'échéance et l'adresse de facturation se corrigent."
+        ], []
+    if not changes and not refresh_billing_address:
+        return None, ["Aucune modification demandée."], []
+
+    wanted: dict = {}
+    errors: list[str] = []
+    for key, (label, _cap, _required) in _DRAFT_TEXT_RULES.items():
+        if key not in changes:
+            continue
+        if not isinstance(changes[key], str):
+            errors.append(f"{label} : une chaîne de caractères est attendue.")
+        else:
+            wanted[key] = changes[key].strip()
+    if "due_date" in changes:
+        due, errs = _parse_draft_due_date(changes["due_date"])
+        errors += errs
+        wanted["due_date"] = due
+    if errors:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="draft", reason="validation")
+        return None, errors, []
+
+    from models import partie as partie_model
+
+    ref = db.collection(COLLECTION).document(invoice_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, list[str]]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _DraftRefused("Facture introuvable.", "introuvable")
+        invoice = snap.to_dict() or {}
+        refusal = draft_edit_refusal(invoice)
+        if refusal:
+            raise _DraftRefused(refusal, "pas_un_brouillon")
+
+        target = dict(wanted)
+        if refresh_billing_address:
+            client_id = str(invoice.get("client_id") or "").strip()
+            if not client_id:
+                raise _DraftRefused(
+                    "Cette facture n'a pas de client : aucune adresse de "
+                    "facturation à rafraîchir.",
+                    "aucun_client",
+                )
+            client_snap = (
+                db.collection(partie_model.COLLECTION).document(client_id)
+                .get(transaction=transaction)
+            )
+            if not client_snap.exists:
+                raise _DraftRefused(
+                    "Le client de la facture est introuvable : l'adresse de "
+                    "facturation ne peut pas être rafraîchie. Rien n'a été "
+                    "enregistré.",
+                    "client_introuvable",
+                )
+            target["billing_address"] = billing_address_from(
+                client_snap.to_dict() or {}
+            )
+
+        changed = sorted(k for k, v in target.items() if invoice.get(k) != v)
+        invalid: list[str] = []
+        for key in changed:
+            if key in _DRAFT_TEXT_RULES:
+                label, cap, required = _DRAFT_TEXT_RULES[key]
+                invalid += _draft_text_errors(
+                    target[key], label=label, cap=cap, required=required)
+        if "due_date" in changed:
+            invoice_day = _calendar_day(invoice.get("date"))
+            due_day = _calendar_day(target["due_date"])
+            if invoice_day and due_day < invoice_day:
+                invalid.append(
+                    f"La date d'échéance ({due_day.isoformat()}) précède la "
+                    f"date de la facture ({invoice_day.isoformat()})."
+                )
+        if invalid:
+            raise _DraftInvalid(invalid)
+        if not changed:
+            return invoice, []
+        if not concurrency.matches(invoice, expected_etag):
+            raise concurrency.StaleWrite()
+        updates = {k: target[k] for k in changed}
+        updates.update(provenance.update_fields(datetime.now(timezone.utc)))
+        transaction.update(ref, updates)
+        return {**invoice, **updates}, changed
+
+    try:
+        doc, changed = _apply(db.transaction())
+    except concurrency.StaleWrite:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="draft", reason="stale_etag")
+        return None, [concurrency.STALE_ETAG_ERROR], []
+    except _DraftInvalid as invalid:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="draft", reason="validation")
+        return None, list(invalid.errors), []
+    except _DraftRefused as refusal:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="draft", reason=refusal.reason)
+        return None, [str(refusal)], []
+    except Exception:
+        log_unexpected("invoice draft update failed")
+        return None, [
+            "Erreur lors de l'enregistrement du brouillon. Rien n'a été "
+            "enregistré : réessayez."
+        ], []
+    if changed:
+        provenance.note_commit(COLLECTION, invoice_id)
+        log_invoice_event(
+            "invoice_draft_updated", invoice_id,
+            fields_changed=changed,
+            billing_refreshed="billing_address" in changed,
+        )
+    return doc, [], changed
 
 
 def delete_invoice(invoice_id: str) -> tuple[bool, str]:

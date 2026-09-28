@@ -669,6 +669,10 @@ def test_create_invoice_force_l_etat_de_paiement(fake):
     naissait « payée », avec 402,41 $ inscrits sur aucun registre.)"""
     _source(fake, "timeentries", "te1", invoiced=False, invoice_id=None,
             hours=1.0, rate=30000, billable=True)
+    # The client is on file: since lot 3a create_invoice reads it strictly,
+    # on the import path too, and refuses one that does not resolve.
+    fake.seed("parties/p1", {"id": "p1", "type": "individual",
+                             "first_name": "Jean", "last_name": "T"})
     invoice, errors = invoice_model.create_invoice(
         "d1", ["te1"], [],
         {"dossier_id": "d1", "date": WHEN, "client_id": "p1",

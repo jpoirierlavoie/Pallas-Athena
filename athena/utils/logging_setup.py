@@ -686,9 +686,13 @@ AdminLedgerOutcome = Literal["success", "refused", "failure"]
 # and a void — the two operations that decide whether an invoice's hours can
 # be billed again — left NO trace at all. IDs, statuses, counts and machine
 # reasons only: never an invoice number, an amount, a client name.
+# Lot 3a (2026-09-28) adds the creation and the draft correction — the two
+# writes that decide what an invoice says before it leaves.
 InvoiceEvent = Literal[
+    "invoice_created",
     "invoice_status_changed",
     "invoice_voided",
+    "invoice_draft_updated",
     "invoice_refused",
 ]
 InvoiceOutcome = Literal["success", "refused"]

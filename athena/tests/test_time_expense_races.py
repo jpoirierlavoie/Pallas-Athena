@@ -166,13 +166,23 @@ def _invoice_during_next_write(db, kind) -> dict:
             return
         remove()  # one shot — the invoice's own commit must not re-enter
         entries, expenses = cfg["invoice_args"]()
+        # What the web form sends (lot 3a): the dossier's client on file,
+        # its frozen address, the firm's tax numbers — the generated path
+        # refuses to issue without them (models.invoice.issuance_refusals).
         invoice, errors = invoice_model.create_invoice(
             DOSSIER, entries, expenses,
-            {"dossier_id": DOSSIER, "date": WHEN},
+            {"dossier_id": DOSSIER, "date": WHEN,
+             "client_id": "p1", "client_name": "Jean Tremblay",
+             "billing_address": {"name": "Jean Tremblay"},
+             "gst_number": "123456789 RT0001",
+             "qst_number": "1234567890 TQ0001"},
         )
         assert errors == [], errors
         holder["invoice"] = invoice
 
+    # The rival's client, on file before anything runs (lot 3a).
+    db.seed("parties/p1", {"id": "p1", "type": "individual",
+                           "first_name": "Jean", "last_name": "Tremblay"})
     remove = db.add_commit_hook(_hook)
     return holder
 

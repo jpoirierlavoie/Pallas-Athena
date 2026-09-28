@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Modifier le brouillon {{ invoice.invoice_number }} — Pallas Athena{% endblock %}
+
+{# Correction d'un BROUILLON (lot 3a) : notes, conditions de paiement, date
+   d'échéance, et un nouvel instantané de l'adresse de facturation depuis la
+   fiche du client. Jamais un montant ni une ligne : ce sont eux qui FONT la
+   facture, et les changer revient à l'annuler pour en émettre une autre.
+   Toutes les classes ci-dessous sont recopiées de invoices/create.html et
+   invoices/detail.html — déjà compilées (tests/test_invoice_draft.py le
+   vérifie contre static/vendor/app.*.css). #}
+
+{% block content %}
+{# Importé DANS le bloc : un test qui ne rend que ce bloc ne verrait pas un
+   import de niveau racine (components/_edit_conflict.html). #}
+{% from "components/_edit_conflict.html" import etag_field, conflict_banner %}
+<div class="max-w-3xl mx-auto px-4 py-6">
+
+  <a href="{{ url_for('invoices.invoice_detail', invoice_id=invoice.id) }}"
+     class="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 mb-6">
+    {{ ms('chevron_left', 16) }}
+    Facture {{ invoice.invoice_number }}
+  </a>
+
+  <div class="flex items-center gap-3 mb-1">
+    <h1 class="text-xl font-semibold text-gray-900">Modifier le brouillon {{ invoice.invoice_number }}</h1>
+    {% if invoice.created_via == 'mcp' %}
+    <span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">créée par Claude</span>
+    {% endif %}
+  </div>
+  <p class="text-sm text-gray-500 mb-6">{{ invoice.client_name }}</p>
+
+  {{ conflict_banner(conflict) }}
+
+  {% if errors %}
+  <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+    {% for err in errors %}
+    <p class="text-red-600 text-sm">{{ err }}</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('invoices.invoice_draft_update', invoice_id=invoice.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {{ etag_field(form) }}
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-4">Échéance</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <p class="block text-xs font-medium text-gray-700 mb-1">Date de la facture</p>
+          <p class="text-sm text-gray-900">{{ invoice.date.strftime('%Y-%m-%d') if invoice.date and invoice.date.strftime is defined else '—' }}</p>
+        </div>
+        <div>
+          <label for="due_date" class="block text-xs font-medium text-gray-700 mb-1">Date d'échéance</label>
+          <input type="date" id="due_date" name="due_date" value="{{ form.due_date }}"
+                 class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2" required>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-4">Notes et conditions</h2>
+      <div class="space-y-4">
+        <div>
+          <label for="notes" class="block text-xs font-medium text-gray-700 mb-1">Notes ({{ notes_max }} caractères au plus)</label>
+          <textarea id="notes" name="notes" rows="3"
+                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2"
+                    placeholder="Notes imprimées sur la facture">{{ form.notes }}</textarea>
+        </div>
+        <div>
+          <label for="payment_terms" class="block text-xs font-medium text-gray-700 mb-1">Conditions de paiement ({{ payment_terms_max }} caractères au plus)</label>
+          <textarea id="payment_terms" name="payment_terms" rows="2"
+                    class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">{{ form.payment_terms }}</textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+      <h2 class="text-sm font-semibold text-gray-900 mb-2">Adresse de facturation</h2>
+      {% set addr = invoice.billing_address or {} %}
+      <p class="text-sm text-gray-900 mb-3">
+        {% if addr.name or addr.street or addr.city %}
+        {% if addr.name %}{{ addr.name }}<br>{% endif %}
+        {% if addr.street %}{{ addr.street }}{% if addr.unit %}, {{ addr.unit }}{% endif %}<br>{% endif %}
+        {% if addr.city %}{{ addr.city }}{% if addr.province %} ({{ addr.province }}){% endif %} {{ addr.postal_code }}{% endif %}
+        {% else %}—{% endif %}
+      </p>
+      <label class="flex items-center gap-3 text-sm text-gray-700 cursor-pointer">
+        <input type="checkbox" name="refresh_billing_address"
+               {% if form.refresh_billing_address %}checked{% endif %}
+               class="w-4 h-4 text-indigo-600 border-gray-300 rounded">
+        Rafraîchir l'adresse de facturation depuis la fiche du client
+      </label>
+    </div>
+
+    <p class="text-xs text-gray-500 mb-6">
+      Les montants et les lignes d'une facture ne se modifient pas : pour les
+      changer, annulez la facture, puis émettez-en une nouvelle.
+    </p>
+
+    <div class="flex justify-end gap-3">
+      <a href="{{ url_for('invoices.invoice_detail', invoice_id=invoice.id) }}"
+         class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50">
+        Abandonner les modifications
+      </a>
+      <button type="submit"
+              class="px-6 py-2 text-sm font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">
+        Enregistrer le brouillon
+      </button>
+    </div>
+  </form>
+
+</div>
+{% endblock %}

@@ -2,6 +2,7 @@
 
 import io
 from datetime import datetime, timezone
+from typing import Optional
 
 from flask import (
     Blueprint,
@@ -26,8 +27,10 @@ from pagination import (
 from security import safe_internal_redirect, sanitize
 from utils import storage_identity
 from utils.cabinet import cabinet_dict
-from utils.format_fr import format_rate_fr, parse_cents_or_none
+from utils.format_fr import format_rate_fr
 from models.invoice import (
+    DRAFT_NOTES_MAX_LENGTH,
+    DRAFT_PAYMENT_TERMS_MAX_LENGTH,
     STATUS_LABELS,
     VALID_STATUSES,
     available_transitions,
@@ -36,11 +39,15 @@ from models.invoice import (
     count_invoices_page,
     create_invoice,
     delete_invoice,
+    draft_edit_refusal,
     expense_split,
+    get_invoice,
     get_invoice_with_items,
     list_invoices,
     list_invoices_page,
     list_line_items,
+    number_year_warning,
+    update_invoice_draft,
     update_status,
     void_invoice_report,
 )
@@ -81,18 +88,6 @@ _is_htmx = is_htmx
 
 
 _parse_date = parse_date_input
-
-
-def _parse_cents(value: str) -> int:
-    """Parse a dollar string (e.g., '250.00') into integer cents; 0 when
-    blank/invalid (the retainer field's historical contract).
-
-    Via utils.format_fr — the old local copy did ``float(...) * 100``,
-    the one money parser in the tree violating the integer-cents/Decimal
-    house rule (audit 2026-08-26). NaN/Infinity now fail Decimal
-    quantization and land on 0 as before.
-    """
-    return parse_cents_or_none(value) or 0
 
 
 def _template_context() -> dict:
@@ -331,9 +326,18 @@ def invoice_create() -> str:
             billing_address = billing_address_from(client_partie)
 
     # The tax numbers are SNAPSHOTTED onto the invoice at creation and never
-    # rewritten (there is no update_invoice) — an invoice reads back under
-    # the numbers it was issued with. Only their source changed: the
-    # settings/cabinet singleton instead of Config.FIRM_*.
+    # rewritten (a draft correction reaches no money figure and no tax
+    # number) — an invoice reads back under the numbers it was issued with.
+    # Only their source changed: the settings/cabinet singleton instead of
+    # Config.FIRM_*. The model refuses to issue an invoice charging a tax
+    # under an EMPTY number (models.invoice.issuance_refusals).
+    #
+    # No provision (retainer_applied) is sent: an invoice issued here is
+    # born with none — a provision is applied after sending, by a
+    # « paiement d'honoraires » drawn on the trust account — and the model
+    # forces it to 0 on this path whatever arrives. The form's provision
+    # field (rendered only under a `retainer_balance` nothing ever wrote)
+    # went with it.
     _cab = cabinet_dict()
 
     data = {
@@ -347,13 +351,18 @@ def invoice_create() -> str:
         "due_date": _parse_date(f.get("due_date", "")),
         "notes": f.get("notes", "").strip(),
         "payment_terms": f.get("payment_terms", "").strip(),
-        "retainer_applied": _parse_cents(f.get("retainer_applied", "")),
         "gst_number": _cab.get("gst_number", ""),
         "qst_number": _cab.get("qst_number", ""),
     }
 
+    # require_all_sources: a selection that went stale while the page was
+    # open (an entry billed in another tab, moved, deleted — or marked
+    # non-billable) is REFUSED by name. Without it the model skipped such a
+    # source in silence and issued a shorter invoice than the one the page
+    # showed.
     invoice, errors = create_invoice(
-        dossier_id, selected_entry_ids, selected_expense_ids, data
+        dossier_id, selected_entry_ids, selected_expense_ids, data,
+        require_all_sources=True,
     )
 
     if errors:
@@ -374,9 +383,19 @@ def invoice_create() -> str:
         return render_template("invoices/create.html", **ctx)
 
     # On success, prefer the caller's URL when supplied (e.g. dossier hub) so the
-    # user lands back where they started rather than on the invoice detail.
+    # user lands back where they started rather than on the invoice detail —
+    # unless there is something to SAY about the invoice just created: its
+    # number follows the year of today, not of its date, and the lawyer
+    # learns that on the invoice's own sheet, before sending it.
     fallback = url_for("invoices.invoice_detail", invoice_id=invoice["id"])
     target = safe_internal_redirect(return_to, fallback)
+    warning = number_year_warning(
+        invoice.get("date"), invoice.get("invoice_number", "")
+    )
+    if warning:
+        target = url_for(
+            "invoices.invoice_detail", invoice_id=invoice["id"], message=warning
+        )
     if _is_htmx():
         resp = redirect(target)
         resp.headers["HX-Redirect"] = target
@@ -450,6 +469,9 @@ def invoice_detail(invoice_id: str) -> str:
         paiements=paiements,
         method_labels=METHOD_LABELS,
         tx_status_labels=TX_STATUS_LABELS,
+        # A brouillon is corrected on its own page (notes, terms, due date,
+        # billing address) — never its figures.
+        can_edit_draft=not draft_edit_refusal(invoice),
         return_to=request.args.get("return_to", ""),
         # Rebond des actions de la fiche (statut, annulation, suppression) :
         # leur refus —
@@ -460,6 +482,107 @@ def invoice_detail(invoice_id: str) -> str:
         message=sanitize(request.args.get("message", ""), max_length=2000),
     )
     return render_template("invoices/detail.html", **ctx)
+
+
+# ── Draft correction ────────────────────────────────────────────────────
+
+
+def _draft_form_values(invoice: dict) -> dict:
+    """The form as the STORED brouillon fills it — the due date as the
+    date input wants it, formatted here (date-only: strftime, never to_mtl).
+    """
+    due = invoice.get("due_date")
+    return {
+        "id": invoice.get("id", ""),
+        "etag": invoice.get("etag") or "",
+        "notes": invoice.get("notes", "") or "",
+        "payment_terms": invoice.get("payment_terms", "") or "",
+        "due_date": due.strftime("%Y-%m-%d") if hasattr(due, "strftime") else "",
+        "refresh_billing_address": False,
+    }
+
+
+def _render_draft_form(
+    invoice: dict,
+    form: dict,
+    *,
+    errors: Optional[list[str]] = None,
+    conflict: Optional[dict] = None,
+) -> str:
+    ctx = _template_context()
+    ctx.update(
+        invoice=invoice,
+        form=form,
+        errors=errors or [],
+        conflict=conflict,
+        notes_max=DRAFT_NOTES_MAX_LENGTH,
+        payment_terms_max=DRAFT_PAYMENT_TERMS_MAX_LENGTH,
+    )
+    return render_template("invoices/draft_form.html", **ctx)
+
+
+@invoices_bp.route("/<invoice_id>/brouillon")
+@login_required
+def invoice_draft_edit(invoice_id: str) -> str:
+    """The correction form of a brouillon — notes, terms, due date, and a
+    fresh snapshot of the client's billing address. Never its figures."""
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return redirect(url_for("invoices.invoice_list"))
+    refusal = draft_edit_refusal(invoice)
+    if refusal:
+        return _back_to_detail(invoice_id, erreur=refusal)
+    return _render_draft_form(invoice, _draft_form_values(invoice))
+
+
+@invoices_bp.route("/<invoice_id>/brouillon", methods=["POST"])
+@login_required
+def invoice_draft_update(invoice_id: str) -> str:
+    """Save a brouillon correction, guarded by the version the page showed.
+
+    A refusal re-renders at 200 with the SUBMITTED values (full-page form;
+    htmx only swaps a 2xx): a stale save with the amber banner and the
+    CURRENT etag, a validation error with the submitted one
+    (``routes/edit_conflict``). A draft that stopped being one in the
+    meantime — sent from another tab — sends the lawyer back to its sheet
+    with the reason: there is nothing left to correct here.
+    """
+    expected = edit_conflict.submitted_etag()
+    f = request.form
+    changes = {
+        "notes": f.get("notes", ""),
+        "payment_terms": f.get("payment_terms", ""),
+        "due_date": f.get("due_date", ""),
+    }
+    refresh = f.get("refresh_billing_address") == "on"
+    _doc, errors, _changed = update_invoice_draft(
+        invoice_id, changes,
+        expected_etag=expected, refresh_billing_address=refresh,
+    )
+    if not errors:
+        return _back_to_detail(invoice_id)
+
+    errors, conflict, etag = edit_conflict.resolve_refusal(
+        errors,
+        submitted=expected,
+        reread=lambda: get_invoice(invoice_id),
+        compare_url=url_for("invoices.invoice_detail", invoice_id=invoice_id),
+    )
+    current = get_invoice(invoice_id)
+    if not current:
+        return redirect(url_for("invoices.invoice_list"))
+    refusal = draft_edit_refusal(current)
+    if refusal:
+        return _back_to_detail(invoice_id, erreur=refusal)
+    form = {
+        "id": invoice_id,
+        "etag": etag,
+        "notes": changes["notes"],
+        "payment_terms": changes["payment_terms"],
+        "due_date": changes["due_date"],
+        "refresh_billing_address": refresh,
+    }
+    return _render_draft_form(current, form, errors=errors, conflict=conflict)
 
 
 # ── Note d'honoraires (Word) — Phase H.2 ────────────────────────────────

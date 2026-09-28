@@ -52,6 +52,7 @@ with mock.patch("google.cloud.firestore.Client"):
     from models import dossier as dossier_model
     from models import expense as expense_model
     from models import hearing as hearing_model
+    from models import invoice as invoice_model
     from models import note as note_model
     from models import partie as partie_model
     from models import protocol as protocol_model
@@ -61,6 +62,7 @@ with mock.patch("google.cloud.firestore.Client"):
     import routes.documents as documents_routes
     import routes.dossiers as dossiers_routes
     import routes.hearings as hearings_routes
+    import routes.invoices as invoices_routes
     import routes.notes as notes_routes
     import routes.parties as parties_routes
     import routes.protocols as protocols_routes
@@ -123,7 +125,8 @@ def client(db):
                documents_routes.documents_bp, notes_routes.notes_bp,
                tasks_routes.tasks_bp, protocols_routes.protocols_bp,
                hearings_routes.hearings_bp,
-               doc_templates_routes.doc_templates_bp):
+               doc_templates_routes.doc_templates_bp,
+               invoices_routes.invoices_bp):
         app.register_blueprint(bp)
     c = app.test_client()
     with c.session_transaction() as s:
@@ -364,6 +367,24 @@ def _doc_template_form(dossier_id, description, *, name="Lettre"):
             "category": "correspondance", "kind": "gabarit"}
 
 
+def _seed_invoice(db, dossier_id):
+    db.seed("invoices/inv1", {
+        **invoice_model._default_doc(), "id": "inv1",
+        "invoice_number": "2026-F001", "dossier_id": dossier_id,
+        "client_id": "p1", "client_name": "Jean Tremblay",
+        "date": DT, "due_date": datetime(2026, 4, 3, tzinfo=UTC),
+        "status": "brouillon", "notes": "Premier",
+        "created_at": DT, "updated_at": DT, "etag": "e-inv-1",
+    })
+    return "inv1"
+
+
+def _invoice_draft_form(dossier_id, notes, *,
+                        payment_terms="Payable dans les 30 jours."):
+    return {"notes": notes, "payment_terms": payment_terms,
+            "due_date": "2026-04-03"}
+
+
 CASES = [
     FormCase(
         "partie", "partie", "parties", _seed_partie,
@@ -467,6 +488,17 @@ CASES = [
         lambda d, m: _doc_template_form(d, m, name=""),
         "description", "SOUMIS-7Q4",
     ),
+    # Lot 3a: the brouillon correction form (/factures/<id>/brouillon) — the
+    # one web page that edits an invoice. import_invoice writes invoices; the
+    # connector's own invoice edits are lot 3b.
+    FormCase(
+        "invoice_draft", "invoice", "invoices", _seed_invoice,
+        lambda i: f"/factures/{i}/brouillon",
+        lambda i: f"/factures/{i}/brouillon",
+        None, _invoice_draft_form,
+        lambda d, m: _invoice_draft_form(d, m, payment_terms=""),
+        "notes", "SOUMIS-7Q4",
+    ),
     FormCase(
         "protocol_step", "protocol", "protocols", _seed_protocol_step,
         lambda i: f"/protocoles/{i.split('/')[0]}",
@@ -492,11 +524,11 @@ def _path(case: FormCase, record_id: str) -> str:
 # shrinks: every entry must still be reached by a connector write (below),
 # and the plan requires this dict to be EMPTY by Lot 5.
 PENDING: dict[str, str] = {
-    # import_invoice creates an invoice (and flips its sources). The web
-    # form that edits an invoice — the draft form /factures/<id>/brouillon
-    # — is Lot 3a's (plan, Lot 3 : « Web etags on the time, expense, draft
-    # and budget forms »).
-    "invoice": "Lot 3",
+    # Empty since lot 3a: the invoice — import_invoice writes one — got its
+    # web edit form, the brouillon correction page (/factures/<id>/brouillon,
+    # the « invoice_draft » case above). The plan requires this dict to stay
+    # EMPTY: a new entity the connector edits needs its form, its INLINE
+    # entry, or its NO_WEB_FORM reason.
 }
 _LOTS = ("Lot 1", "Lot 2", "Lot 3", "Lot 4", "Lot 5")
 

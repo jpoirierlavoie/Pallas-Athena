@@ -195,7 +195,13 @@ TODAY = date(2026, 6, 15)
 
 @pytest.fixture
 def store(monkeypatch):
-    s = {"invoices": {}, "counters": {}, "timeentries": {}, "expenses": {}}
+    # Le client du dossier est SUR FICHE (lot 3a) : create_invoice lit
+    # désormais strictement la partie que `client_id` nomme, sur les deux
+    # chemins, et le chemin généré exige un client, son adresse figée et
+    # les numéros de taxe du cabinet (models.invoice.issuance_refusals).
+    s = {"invoices": {}, "counters": {}, "timeentries": {}, "expenses": {},
+         "parties": {"p1": {"id": "p1", "type": "individual",
+                            "first_name": "Jean", "last_name": "Tremblay"}}}
     db = _DB(s)
     monkeypatch.setattr(invoice, "db", db)
     monkeypatch.setattr(invoice, "firestore", _FS)
@@ -258,7 +264,19 @@ def _disb(store, xid, *, amount=5000, taxable=True, dossier_id=DOSSIER, invoiced
 
 
 def _data(**over):
-    base = {"dossier_id": DOSSIER, "date": datetime(2019, 11, 8, tzinfo=UTC)}
+    """Ce qu'un appelant réel envoie : le dossier, la date, le client SUR
+    FICHE avec son adresse figée, et les numéros de taxe du cabinet. Sans
+    eux, le chemin GÉNÉRÉ refuse d'émettre depuis le lot 3a — l'import
+    d'une facture sans client, lui, reste permis et a son propre test
+    (tests/test_invoice_issuance.py)."""
+    base = {
+        "dossier_id": DOSSIER, "date": datetime(2019, 11, 8, tzinfo=UTC),
+        "client_id": "p1", "client_name": "Jean Tremblay",
+        "billing_address": {"name": "Jean Tremblay", "street": "",
+                            "unit": "", "city": "", "province": "QC",
+                            "postal_code": ""},
+        "gst_number": "123456789 RT0001", "qst_number": "1234567890 TQ0001",
+    }
     base.update(over)
     return base
 
@@ -411,7 +429,9 @@ def test_une_source_manquante_facturee_ou_etrangere_est_refusee_avec_son_motif(s
 
 
 def test_sans_le_drapeau_une_source_inutilisable_reste_escamotee(store):
-    """Le comportement historique du chemin web, inchangé."""
+    """Le comportement du modèle SANS le drapeau, inchangé. (Ce n'est plus
+    celui du chemin web : depuis le lot 3a le formulaire passe
+    require_all_sources=True — tests/test_invoice_issuance.py.)"""
     ok = _entry(store, "e1")
     _entry(store, "e2", invoiced=True)
     doc, errors = _create(store, entries=[ok, "e2"])
@@ -598,9 +618,14 @@ def test_un_etag_source_modifie_avorte_toute_la_creation(store, monkeypatch):
 
 
 def test_la_provision_hors_bornes_reste_refusee(store):
+    """Sur le chemin de l'IMPORT, où la provision de l'ancien système est
+    conservée. (Réécrit au lot 3a : le test passait par le chemin généré,
+    où la provision est désormais FORCÉE à 0 — voir
+    tests/test_invoice_issuance.py.)"""
     e = _entry(store, "e1")
     for bad in (-1, 51740):
-        doc, errors = _create(store, entries=[e], data=_data(retainer_applied=bad))
+        doc, errors = _create(store, entries=[e], invoice_number="2019-F014",
+                              data=_data(retainer_applied=bad))
         assert doc is None
         assert "provision" in errors[0]
 

@@ -865,6 +865,10 @@ def test_the_invoice_source_flips_carry_the_writer(monkeypatch):
         "hours": 1.0, "rate": 30000, "amount": 30000, "billable": True,
         "invoiced": False, "invoice_id": None, "etag": "e0",
     })
+    # The client the import names is on file: since lot 3a create_invoice
+    # reads it strictly on both paths and refuses one that does not resolve.
+    fake.seed("parties/p1", {"id": "p1", "type": "individual",
+                             "last_name": "Jean"})
     with provenance.writing_via("mcp", tool="import_invoice"):
         invoice, errors = invoice_model.create_invoice(
             "d1", ["te1"], [],

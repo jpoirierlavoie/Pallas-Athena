@@ -54,6 +54,10 @@ def fake(monkeypatch):
     # test de retard du 2026-08-11) : le numéro lit today_mtl, pas
     # datetime.now, et ce gel est ce que pinne test_millesime_de_montreal.
     monkeypatch.setattr(invoice, "today_mtl", lambda: date(2026, 6, 15))
+    # Le client du dossier, SUR FICHE (lot 3a) : le chemin généré refuse
+    # d'émettre sans lui (models.invoice.issuance_refusals).
+    f.seed("parties/p1", {"id": "p1", "type": "individual",
+                          "first_name": "Jean", "last_name": "Tremblay"})
     return f
 
 
@@ -67,11 +71,21 @@ def _entry(fake, eid: str, *, etag: str = "e0") -> str:
     return eid
 
 
+# Ce qu'envoie le formulaire web : le client, son adresse figée, les
+# numéros de taxe du cabinet — sans eux le chemin généré refuse depuis le
+# lot 3a (tests/test_invoice_issuance.py épingle chacun de ces refus).
+_ISSUED = {
+    "dossier_id": DOSSIER, "date": WHEN,
+    "client_id": "p1", "client_name": "Jean Tremblay",
+    "billing_address": {"name": "Jean Tremblay", "street": "", "unit": "",
+                        "city": "", "province": "QC", "postal_code": ""},
+    "gst_number": "123456789 RT0001", "qst_number": "1234567890 TQ0001",
+}
+
+
 def _create(fake, eid: str = ""):
     eid = eid or _entry(fake, f"te-{uuid.uuid4().hex[:8]}")
-    return invoice.create_invoice(
-        DOSSIER, [eid], [], {"dossier_id": DOSSIER, "date": WHEN},
-    )
+    return invoice.create_invoice(DOSSIER, [eid], [], dict(_ISSUED))
 
 
 def _number(fake) -> str:

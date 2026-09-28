@@ -23,6 +23,14 @@
       {{ 'Retour' if return_to else 'Factures' }}
     </a>
     <div class="flex items-center gap-2">
+      {# Un brouillon se corrige sur sa propre page (lot 3a) : notes,
+         conditions, échéance, adresse — jamais un montant ni une ligne. #}
+      {% if can_edit_draft %}
+      <a href="{{ url_for('invoices.invoice_draft_edit', invoice_id=invoice.id) }}"
+         class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Modifier le brouillon
+      </a>
+      {% endif %}
       {% if invoice.status != 'annulée' %}
       <button type="button"
               hx-post="{{ url_for('invoices.invoice_note_docx', invoice_id=invoice.id) }}"
@@ -125,6 +133,12 @@
     <span class="text-xs px-2 py-0.5 rounded-full {{ status_colors.get(invoice.status, 'bg-gray-100 text-gray-600') }}">
       {{ status_labels.get(invoice.status, invoice.status) }}
     </span>
+    {# La provenance de la CRÉATION (created_via) — pas de la dernière
+       écriture : une facture créée par le connecteur le reste, même après
+       une correction faite ici. #}
+    {% if invoice.created_via == 'mcp' %}
+    <span class="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-600">créée par Claude</span>
+    {% endif %}
   </div>
   <p class="text-sm text-gray-500 mb-6">{{ invoice.client_name }}</p>
 

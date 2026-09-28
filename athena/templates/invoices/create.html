@@ -88,14 +88,11 @@
                  placeholder="Auto : +30 jours"
                  class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
         </div>
-        {% if dossier.retainer_balance and dossier.retainer_balance > 0 %}
-        <div>
-          <label class="block text-xs font-medium text-gray-700 mb-1">Provision à appliquer ($)</label>
-          <input type="text" name="retainer_applied" value=""
-                 placeholder="Solde : {{ dossier.retainer_balance | cents_fr }}"
-                 class="w-full text-sm border border-gray-300 rounded-lg px-3 py-2">
-        </div>
-        {% endif %}
+        {# Aucune provision ici (lot 3a) : une facture émise naît sans
+           provision — elle s'impute après l'envoi, par un « paiement
+           d'honoraires » tiré du fidéicommis, et le modèle force 0 sur ce
+           chemin. Le champ qui vivait ici ne s'affichait jamais (il
+           dépendait d'un `retainer_balance` que rien n'écrit). #}
       </div>
     </div>
 
