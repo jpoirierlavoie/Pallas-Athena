@@ -92,6 +92,22 @@
       Désigné le {{ (template.active_designated_at|to_mtl).strftime('%Y-%m-%d') }}.
       {%- endif %}
     </p>
+    {#- Le geste inverse (correctifs du lot 2A) — la version affichée voyage
+        avec le bouton ; ensuite AUCUN gabarit du type n'est désigné. #}
+    <form method="POST" class="mt-2"
+          action="{{ url_for('doc_templates.template_deactivate', template_id=template.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {{ etag_field(template) }}
+      <button type="submit"
+              class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+        Retirer la désignation
+      </button>
+      <p class="text-xs text-gray-500 mt-1">
+        Aucun gabarit « {{ active_kind_name }} » ne sera plus désigné : la
+        génération de ce type sera refusée jusqu'à ce que vous en désigniez
+        un autre.
+      </p>
+    </form>
   </div>
   {% else %}
   <div class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">

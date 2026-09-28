@@ -744,16 +744,21 @@ NEVERS: tuple[Never, ...] = (
         # create_template / update_template tools keep both rules: the
         # model's metadata whitelist has no designation key, and a kind
         # change on the designated template is refused.
+        # Fixups of lot 2A: the lawyer can now also WITHDRAW a designation
+        # (web « Retirer la désignation », clear_active_template) — forbidden
+        # to the connector alike: undesignating the note-d'honoraires
+        # template makes every invoice note refuse.
         fr=(
             "<strong>désigner le gabarit actif</strong> des notes "
-            "d'honoraires ou de l'impression des notes — vous seul le "
-            "faites, dans l'application"
+            "d'honoraires ou de l'impression des notes, ni en retirer la "
+            "désignation — vous seul le faites, dans l'application"
         ),
         en=(
             "It never designates the ACTIVE note-d'honoraires or note-print "
-            "template: only the lawyer does, in the application."
+            "template, nor withdraws that designation: only the lawyer does, "
+            "in the application."
         ),
-        forbidden=("set_active_template",),
+        forbidden=("set_active_template", "clear_active_template"),
     ),
 )
 

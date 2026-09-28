@@ -293,6 +293,53 @@ def test_get_active_template_only_knows_the_special_kinds(store):
         tpl.get_active_template("gabarit")
 
 
+# ── Retirer la désignation (correctifs du lot 2A) ─────────────────────────
+
+
+def test_withdrawing_the_designation_leaves_the_kind_undesignated(store):
+    """The inverse gesture the critic of lot 2A found missing: a lone active
+    template could only stop being printed by designating another or by
+    deleting it. Withdrawn → none designated, and the reader says so (no
+    recency fallback ever picks it up again)."""
+    db, _ = store
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    etag = db.peek(f"doc_templates/{tid}")["etag"]
+    doc, errors = tpl.clear_active_template(tid, expected_etag=etag)
+    assert errors == []
+    stored = db.peek(f"doc_templates/{tid}")
+    assert not set(tpl.ACTIVE_FIELDS) & set(stored)
+    assert stored["etag"] != etag and doc["etag"] == stored["etag"]
+    assert tpl.get_active_template("note_honoraires") is None
+    assert not tpl.is_active(stored)
+
+
+def test_a_stale_withdrawal_withdraws_nothing(store):
+    db, _ = store
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    before = db.peek(f"doc_templates/{tid}")
+    doc, errors = tpl.clear_active_template(tid, expected_etag="périmé")
+    assert errors == [concurrency.STALE_ETAG_ERROR]
+    assert db.peek(f"doc_templates/{tid}") == before
+
+
+def test_withdrawing_a_template_that_is_not_active_is_refused(store):
+    db, _ = store
+    a, b = _create("A"), _create("B")
+    tpl.set_active_template(a, par="j", expected_etag=None)
+    before = db.peek(f"doc_templates/{b}")
+    doc, errors = tpl.clear_active_template(b, expected_etag=None)
+    assert errors == [tpl.NOT_ACTIVE_ERROR]
+    assert db.peek(f"doc_templates/{b}") == before
+    assert _holders(db, "note_honoraires") == [a]      # A keeps its designation
+
+
+def test_withdrawing_an_unknown_template_is_refused(store):
+    doc, errors = tpl.clear_active_template("inconnu", expected_etag=None)
+    assert errors == [tpl.NOT_FOUND_ERROR]
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 2. Balayage : seul le juriste désigne
 # ══════════════════════════════════════════════════════════════════════
@@ -330,6 +377,18 @@ def test_only_the_web_route_and_the_migration_script_designate():
             if path.relative_to(_ATHENA).as_posix() == "mcp/disclosure.py":
                 continue
             assert "set_active_template" not in path.read_text(encoding="utf-8"), path
+
+
+def test_only_the_web_route_withdraws_a_designation():
+    """Withdrawing is the lawyer's gesture too (D11): ONE web route calls
+    it, and no connector module nor service it reaches ever names it — the
+    ``active_template`` NEVER lists it beside ``set_active_template``."""
+    assert _calls_of("clear_active_template") == {"routes/doc_templates.py": 1}
+    for package in ("mcp", "services"):
+        for path in (_ATHENA / package).rglob("*.py"):
+            if path.relative_to(_ATHENA).as_posix() == "mcp/disclosure.py":
+                continue
+            assert "clear_active_template" not in path.read_text(encoding="utf-8"), path
 
 
 def test_no_reader_selects_by_recency_any_more():
@@ -511,6 +570,80 @@ def test_a_double_tap_on_designate_does_not_say_designate_it_again(store, web):
     assert "déjà le gabarit actif" in page and "rien n&#39;a été modifié" in page
     assert "désignez-le de nouveau" not in page
     assert _holders(db, "note_honoraires") == [tid]
+
+
+def test_the_active_template_offers_to_withdraw_with_the_version_shown(
+    store, web
+):
+    db, _ = store
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    html = web.get(f"/gabarits/{tid}").get_data(as_text=True)
+    assert "Retirer la désignation" in html
+    assert f"/gabarits/{tid}/retirer-designation" in html
+    assert db.peek(f"doc_templates/{tid}")["etag"] in _ETAG_INPUT.findall(html)
+    # An undesignated template offers « Désigner », never « Retirer ».
+    other = _create("B")
+    assert "Retirer la désignation" not in web.get(
+        f"/gabarits/{other}").get_data(as_text=True)
+
+
+def test_withdrawing_from_the_page_withdraws_and_says_generation_refuses(
+    store, web
+):
+    db, _ = store
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    etag = db.peek(f"doc_templates/{tid}")["etag"]
+    resp = web.post(f"/gabarits/{tid}/retirer-designation",
+                    data={"expected_etag": etag})
+    assert resp.status_code == 302
+    assert _holders(db, "note_honoraires") == []
+    page = web.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "n&#39;est plus le gabarit actif des « Note d&#39;honoraires »" in page
+    assert "cette génération est refusée" in page
+    assert "Désigner comme gabarit actif" in page
+    assert ">Actif<" not in page
+
+
+def test_a_stale_withdrawal_button_withdraws_nothing_and_says_why(store, web):
+    db, _ = store
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    resp = web.post(f"/gabarits/{tid}/retirer-designation",
+                    data={"expected_etag": "11111111-2222-4333-8444-555555555555"})
+    assert _holders(db, "note_honoraires") == [tid]
+    page = web.get(resp.headers["Location"]).get_data(as_text=True)
+    assert "n&#39;a PAS été retirée" in page
+
+
+def test_a_double_tap_on_withdraw_says_nothing_changed(store, web):
+    db, _ = store
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    etag = db.peek(f"doc_templates/{tid}")["etag"]
+    first = web.post(f"/gabarits/{tid}/retirer-designation",
+                     data={"expected_etag": etag})
+    assert "message=" in first.headers["Location"]
+    second = web.post(f"/gabarits/{tid}/retirer-designation",
+                      data={"expected_etag": etag})
+    assert "erreur=" not in second.headers["Location"]
+    page = web.get(second.headers["Location"]).get_data(as_text=True)
+    assert "déjà plus le gabarit actif" in page
+    assert _holders(db, "note_honoraires") == []
+
+
+def test_after_a_withdrawal_the_invoice_note_names_the_fix(store, invoice_web):
+    """End to end on the store: the designation withdrawn, the invoice note
+    refuses and says to designate one — the banner's promise."""
+    db, _ = store
+    web, events = invoice_web
+    tid = _create()
+    tpl.set_active_template(tid, par="j", expected_etag=None)
+    tpl.clear_active_template(tid, expected_etag=None)
+    resp = web.post("/factures/i1/note-docx", headers={"HX-Request": "true"})
+    assert "désignez-en un dans Gabarits" in resp.get_data(as_text=True)
+    assert events == [("generation_failed", {"reason": "no_note_template"})]
 
 
 def test_a_failed_delete_says_so_on_the_page(store, web):

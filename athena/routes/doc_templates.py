@@ -43,6 +43,7 @@ from models.doc_template import (
     VALID_CATEGORIES,
     VALID_KINDS,
     TemplateReadError,
+    clear_active_template,
     create_template,
     delete_template,
     get_active_template,
@@ -126,6 +127,10 @@ def _detail_redirect(template_id: str, *, message: str = "",
 _ACTIVATE_STALE = (
     "Ce gabarit a été modifié depuis l'affichage de la page. Rien n'a été "
     "désigné : relisez-le ci-dessous, puis désignez-le de nouveau."
+)
+_WITHDRAW_STALE = (
+    "Ce gabarit a été modifié depuis l'affichage de la page. Sa désignation "
+    "n'a PAS été retirée : relisez-le ci-dessous, puis recommencez."
 )
 _RESTORE_STALE = (
     "Ce gabarit a été modifié depuis l'affichage de la page. Rien n'a été "
@@ -455,6 +460,46 @@ def template_activate(template_id: str) -> Response:
     return _detail_redirect(template_id, message=(
         f"Ce gabarit est désormais le gabarit actif des "
         f"« {ACTIVE_KIND_NAMES.get(kind, kind)} »."
+    ))
+
+
+@doc_templates_bp.route("/<template_id>/retirer-designation", methods=["POST"])
+@login_required
+def template_deactivate(template_id: str) -> Response:
+    """Retire la désignation « actif » de ce gabarit (D11, correctifs du
+    lot 2A).
+
+    Le geste inverse de « Désigner », et comme lui le SEUL chemin vers
+    ``clear_active_template`` : le connecteur ne l'atteint jamais. Avant lui,
+    un gabarit actif ne cessait de s'imprimer qu'en en désignant un autre ou
+    en le supprimant. Après lui, AUCUN gabarit du type n'est désigné et la
+    génération de ce type est refusée — la bannière le dit. Le bouton porte
+    l'etag de la version affichée ; un refus voyage sur une redirection vers
+    la fiche.
+    """
+    expected = edit_conflict.submitted_etag()
+    template, errors = clear_active_template(template_id, expected_etag=expected)
+    if errors:
+        if concurrency.is_stale(errors):
+            # A double tap: the first withdrew, the second is stale. When
+            # the template no longer IS the designation, say that nothing
+            # changed rather than « recommencez ».
+            current = get_template(template_id)
+            if current and not is_active(current):
+                return _detail_redirect(template_id, message=(
+                    "Ce gabarit n'est déjà plus le gabarit actif de son "
+                    "type : rien n'a été modifié."
+                ))
+            errors = [_WITHDRAW_STALE]
+        return _detail_redirect(template_id, erreur=errors[0])
+    kind = template.get("kind", "")
+    log_template_event("template_deactivated", template_id=template_id,
+                       kind=kind)
+    name = ACTIVE_KIND_NAMES.get(kind, kind)
+    return _detail_redirect(template_id, message=(
+        f"Ce gabarit n'est plus le gabarit actif des « {name} ». Aucun "
+        f"gabarit « {name} » n'est désigné : cette génération est refusée "
+        "jusqu'à ce que vous en désigniez un autre."
     ))
 
 

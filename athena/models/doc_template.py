@@ -37,7 +37,9 @@ Three rules since T3, each closing a silent defect:
   note d'honoraires and the note print — ONE template is DESIGNATED by the
   lawyer (``active_for`` = the kind, ``active_designated_at``,
   ``active_designated_by``), through :func:`set_active_template`, whose
-  only callers are the web route and the one-shot migration script.
+  only callers are the web route and the one-shot migration script — and
+  withdrawn only by him too (:func:`clear_active_template`, web only,
+  fixups of lot 2A).
   :func:`get_active_template` reads that designation and nothing else: no
   recency fallback. Before T3 the « most recently updated » template of the
   kind won, so ANY edit — a description tweak — silently switched the
@@ -113,7 +115,8 @@ ACTIVE_KIND_NAMES = {
 }
 
 # The designation fields. Deliberately NOT in _default_doc: absent means
-# « never designated », and only set_active_template writes them.
+# « never designated », and only set_active_template writes them (and
+# clear_active_template removes them).
 ACTIVE_FIELDS = ("active_for", "active_designated_at", "active_designated_by")
 
 # The only metadata a caller can set — on create and on update alike.
@@ -970,6 +973,65 @@ def set_active_template(
         return None, [SAVE_ERROR]
     for doc_id in written:
         provenance.note_commit(COLLECTION, doc_id)
+    return doc, []
+
+
+NOT_ACTIVE_ERROR = (
+    "Ce gabarit n'est pas le gabarit actif de son type : il n'y a aucune "
+    "désignation à retirer."
+)
+
+
+def clear_active_template(
+    template_id: str, *, expected_etag: Optional[str]
+) -> tuple[Optional[dict], list[str]]:
+    """Withdraw the « actif » designation of *template_id* (D11).
+
+    The lawyer's act, like :func:`set_active_template` — the web route is
+    its ONLY caller (a source sweep pins it; the ``active_template`` NEVER
+    keeps it out of the connector). Before it, the only way for a lone
+    active template to stop being printed was to designate another or to
+    delete it (completeness critic of lot 2A). Afterwards NO template of the
+    kind is designated, and its generation REFUSES (« désignez-en un ») —
+    never a recency fallback.
+
+    ``expected_etag`` — the version the button was rendered from (``None``:
+    no check). A template that is not the designation of its kind refuses
+    (:data:`NOT_ACTIVE_ERROR`) and writes nothing. The read, the checks and
+    the partial update share ONE transaction.
+    """
+    ref = db.collection(COLLECTION).document(template_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> dict:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused([NOT_FOUND_ERROR])
+        target = snap.to_dict() or {}
+        if not concurrency.matches(target, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        if not is_active(target):
+            raise _Refused([NOT_ACTIVE_ERROR])
+        now = datetime.now(timezone.utc)
+        stamps = provenance.update_fields(now)
+        transaction.update(ref, {
+            "active_for": firestore.DELETE_FIELD,
+            "active_designated_at": firestore.DELETE_FIELD,
+            "active_designated_by": firestore.DELETE_FIELD,
+            **stamps,
+        })
+        cleared = {k: v for k, v in target.items() if k not in ACTIVE_FIELDS}
+        cleared.update(stamps)
+        return cleared
+
+    try:
+        doc = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors
+    except Exception:
+        log_unexpected("template designation withdrawal failed")
+        return None, [SAVE_ERROR]
+    provenance.note_commit(COLLECTION, template_id)
     return doc, []
 
 
