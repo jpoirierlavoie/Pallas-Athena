@@ -575,6 +575,14 @@ def test_consent_page_discloses_write_and_no_longer_claims_read_only(client, fak
     assert "marquer envoyée n'envoie rien au client" in flat
     assert "marquer une facture <strong>payée</strong>" in flat
     assert "<strong>envoyer</strong> une facture à qui que ce soit" in flat
+    # Lot 3b (the text step): what the lawyer must know before ticking —
+    # only a brouillon is corrected, a created invoice freezes its sources
+    # until voided, every budget version is kept as proof, and the READ
+    # grant now covers budgets (get_budget).
+    assert "<strong>seul un brouillon se corrige</strong>" in flat
+    assert "figés — sauf leur phase du litige — jusqu'à son annulation" in flat
+    assert "la preuve de ce qui a été annoncé au client, et quand" in flat
+    assert "facturation, budgets et <strong>soldes en fidéicommis</strong>" in flat
     # The repair path exists and must be named: voiding releases every
     # source. The old copy called the freeze permanent, which was false.
     assert "<strong>annulez la facture</strong> — ici ou dans l'application" in flat

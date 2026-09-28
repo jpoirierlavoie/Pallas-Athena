@@ -233,6 +233,14 @@ def test_initialize_shape(client):
     assert "It never marks an invoice payée" in instructions
     assert "never changes an invoice's status" not in instructions
     assert "It never allocates an invoice number" not in instructions
+    # Lot 3b (the text step): the BILL paragraph states what the consent
+    # screen states — only a brouillon is corrected (an issued invoice is
+    # voided and reissued), the sources an invoice bills freeze until a
+    # void, and each budget version is kept as the proof of what the client
+    # was told.
+    assert "ONLY a brouillon" in instructions
+    assert "frozen, their phase aside, until a void" in instructions
+    assert "the proof of what the client was told, and when" in instructions
     # Lot 0a (disclosure step): the text is ASSEMBLED from mcp/disclosure,
     # and three things it used to say were false. Voiding does NOT free the
     # number; complete_task does not reopen; the family count is derived.

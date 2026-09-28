@@ -78,8 +78,10 @@ def _travail_non_facture_sur_dossier_ferme(ctx: dict) -> Optional[str]:
         f"{len(stranded)} entrée(s) ou déboursé(s) non facturé(s) sur un "
         "dossier fermé — la signature d'une reprise interrompue avant sa "
         "facture. Ils gonflent aussi le total des heures non facturées du "
-        "cabinet, qui ne filtre pas sur le statut du dossier. Facturez-les "
-        "ou supprimez-les dans l'application."
+        "cabinet, qui ne filtre pas sur le statut du dossier. Reprenez la "
+        "facture d'origine qui les portait (import_invoice), ou "
+        "supprimez-les dans l'application — create_invoice leur donnerait "
+        "un NOUVEAU numéro de l'année, consommé définitivement."
     )
 
 
@@ -108,8 +110,11 @@ def _total_ne_correspond_pas_aux_postes(ctx: dict) -> Optional[str]:
         "Le sous-total stocké et la somme des postes divergent sur : "
         + ", ".join(offenders)
         + ". Ne recalculez pas en silence — la facture a été émise sous le "
-        "montant stocké ; annulez-la et refaites-la dans l'application si "
-        "elle est fausse."
+        "montant stocké. Si elle est fausse : annulez-la (update_invoice, "
+        "status « annulée », ou dans l'application — refusé tant qu'un "
+        "paiement y est inscrit), puis refaites-la ; une facture REPRISE ne "
+        "se reprend sous le même numéro qu'une fois la facture annulée "
+        "supprimée dans l'application."
     )
 
 
@@ -162,7 +167,8 @@ def _entrees_possiblement_en_double(ctx: dict) -> Optional[str]:
         "date, la même description et le même montant. Une reprise relancée "
         "après l'expiration de la clé d'idempotence (24 h) produit exactement "
         "cela. Un doublon NON FACTURÉ se supprime dans l'application ; une "
-        "fois facturé, il faut d'abord y annuler la facture."
+        "fois facturé, il faut d'abord annuler la facture (update_invoice, "
+        "status « annulée », ou dans l'application)."
     )
 
 

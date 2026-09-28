@@ -68,8 +68,12 @@ def test_un_dossier_propre_ne_declenche_rien():
 
 
 def test_chaque_detail_renvoie_a_l_application():
-    """Un constat est une OBSERVATION : le connecteur ne peut ni supprimer un
-    doublon, ni annuler une facture, ni la sortir du brouillon."""
+    """Un constat est une OBSERVATION : le connecteur ne supprime rien — un
+    doublon ne s'efface que dans l'application. Réécrit délibérément au lot
+    3b : il ANNULE et PROMEUT désormais une facture (update_invoice), si
+    bien que « ni annuler une facture, ni la sortir du brouillon » était
+    devenu faux ; chaque détail nomme encore l'application, où la
+    suppression reste la seule voie."""
     ctx = _ctx(
         dossier={"id": "d1", "status": "fermé", "closed_date": None},
         time_entries=[_entry("e1"), _entry("e2")],
@@ -79,7 +83,38 @@ def test_chaque_detail_renvoie_a_l_application():
     assert findings
     for f in findings:
         assert f["detail"]
-        assert "application" in f["detail"].lower() or "facturez" in f["detail"].lower()
+        assert "application" in f["detail"].lower()
+
+
+def test_les_details_nomment_la_voie_du_connecteur_quand_elle_existe():
+    """Lot 3b : un détail qui dit « annulez la facture » ou « promouvez-la »
+    nomme update_invoice — le laisser entendre « dans l'application
+    seulement » serait faux ; et IMP-01 dirige vers la facture d'ORIGINE
+    (import_invoice), jamais vers create_invoice, qui donnerait au travail
+    d'une reprise un numéro vivant de l'année, consommé pour toujours."""
+    ctx = _ctx(
+        dossier={"id": "d1", "status": "fermé", "closed_date": "x"},
+        time_entries=[_entry("e1"), _entry("e2")],
+    )
+    imp01 = {f["code"]: f for f in ia.run_checks(ctx)}["IMP-01"]["detail"]
+    assert "import_invoice" in imp01
+    assert "NOUVEAU numéro" in imp01
+    assert "Facturez-les" not in imp01
+
+    drafts = _ctx(invoices=[_invoice(status="brouillon")])
+    assert "update_invoice" in {
+        f["code"]: f for f in ia.run_checks(drafts)}["IMP-07"]["detail"]
+
+    mismatch = _ctx(invoices=[_invoice(subtotal=45000, items=[
+        {"id": "li1", "source_id": "e1", "amount": 40000}])])
+    imp02 = {f["code"]: f for f in ia.run_checks(mismatch)}["IMP-02"]["detail"]
+    assert "update_invoice" in imp02
+    assert "tant qu'un paiement y est inscrit" in imp02
+
+    twins = _ctx(time_entries=[_entry("e1"), _entry("e2")])
+    imp04 = {f["code"]: f for f in ia.run_checks(twins)}["IMP-04"]["detail"]
+    assert "update_invoice" in imp04
+    assert "y annuler" not in imp04
 
 
 # ── IMP-01 ────────────────────────────────────────────────────────────────

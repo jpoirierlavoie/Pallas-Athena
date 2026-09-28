@@ -858,8 +858,18 @@ def test_le_refus_nomme_la_vraie_voie_de_retour(billing):
     """void_invoice, dans l'application, libère chaque source. Dire que rien
     n'est possible serait faux."""
     billing["entry"]["invoiced"] = True
-    with pytest.raises(tools.ToolArgumentError, match="annulez la facture"):
+    with pytest.raises(tools.ToolArgumentError, match="annulez la facture") as refused:
         handlers.update_time_entry({"time_entry_id": "e1", "hours": 2.0})
+    # Lot 3b (the text step): the connector voids too, a void is refused
+    # while a payment stands — so the way round it is named —, and the
+    # number stays on the voided invoice: « jamais réattribué » alone was
+    # the counter's promise, not an imported number's (free again once the
+    # lawyer deletes the voided invoice).
+    message = str(refused.value)
+    assert "update_invoice" in message
+    assert "contre-passez-le d'abord" in message
+    assert "reste attaché à la facture annulée" in message
+    assert "jamais réattribué" not in message
 
 
 def test_omettre_billable_ne_refacture_pas(billing):

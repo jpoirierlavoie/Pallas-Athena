@@ -423,6 +423,8 @@ def test_a_special_kinds_own_fields_are_never_reported_as_blocs_to_write(store):
     assert payload["template"]["flow_count"] == 1
     assert payload["template"]["bloc_count"] == 0
     assert any("Imprimer (Word)" in w for w in payload["warnings"])
+    assert any("create_document (source « markdown »)" in w
+               for w in payload["warnings"])
     row = handlers.list_templates({"kind": "note"})["items"][0]
     assert (row["bloc_count"], row["flow_count"]) == (0, 1)
     _conforms("list_templates", payload)
@@ -483,6 +485,10 @@ def test_a_note_honoraires_preview_mirrors_the_invoice_flow(store):
     assert "ne remplit jamais le(s) créneau(x) client" in text
     assert "viennent du client de la facture" in text
     assert "s'imprimeraient" not in text          # the gabarit wording is not its
+    # Lot 3b (the text step): the invoice note is filed by create_document
+    # too — naming the application's button alone sent the caller to a
+    # surface it cannot reach.
+    assert "create_document (source « invoice_note »)" in text
     _conforms("list_templates", payload)
     # The invoice's client, named: the destinataire resolves — never a value.
     named = handlers.list_templates(

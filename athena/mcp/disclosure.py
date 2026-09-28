@@ -330,10 +330,15 @@ FAMILIES: tuple[Family, ...] = (
             "sources of one dossier, with the preview's total as "
             "expected_total_cents (any difference refuses) and an "
             "idempotency_key (required). It CONSUMES the year's next "
-            "number (AAAA-F###) for ever: a void never gives it back. "
+            "number (AAAA-F###) for ever: a void never gives it back. The "
+            "sources it bills are frozen, their phase aside, until a void "
+            "releases them. "
             "`update_invoice` makes ONE change a call against the invoice's "
-            "etag (`get_invoice`): correct a brouillon's notes, payment "
-            "terms, due date or billing address; set a status — brouillon → "
+            "etag (`get_invoice`): correct a brouillon — ONLY a brouillon; an "
+            "issued invoice is corrected by voiding it and issuing a new one "
+            "— its notes, payment terms, due date or billing address, never "
+            "an amount, a line, its client or its number; set a status — "
+            "brouillon → "
             "envoyée, envoyée ↔ en_retard (only past its due date) — which "
             "SENDS NOTHING to anyone, a promotion being undone only by a "
             "void; or void it (status annulée, with a void_reason), which "
@@ -344,7 +349,8 @@ FAMILIES: tuple[Family, ...] = (
             "force and its base_version; `create_budget_version` records a "
             "NEW version — replace or merge — refused when a newer one was "
             "saved since; it becomes the reference budget, whose estimate "
-            "is a client document, and every earlier version is kept."
+            "is a client document, and every earlier version is kept, "
+            "unchanged — the proof of what the client was told, and when."
         ),
     ),
     Family(

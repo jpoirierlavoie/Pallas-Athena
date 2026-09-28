@@ -177,6 +177,16 @@ KNOWN_FALSE_CLAIMS: tuple[str, ...] = (
     "it never allocates an invoice number",
     "never sets an invoice status",
     "l'annulation dans l'application est la seule voie",
+    # Lot 3b, the text step: the phrasings of the same falsified promises
+    # that stood on the consent screen, in INSTRUCTIONS or in a schema
+    # (review of lot 3) — the connector voids an invoice, promotes a
+    # brouillon, and complete_task is one status change among several.
+    "rien ne s'annule depuis le connecteur",
+    "plus rien ici ne pourra les modifier",
+    "is the only status change here",
+    "never promoted here",
+    "atterrit en brouillon et y reste",
+    "lands in brouillon and stays there",
 )
 KNOWN_FALSE_PATTERNS: tuple[str, ...] = (
     # Review of T11: NO template may be designated (a fresh store, or before
@@ -756,3 +766,46 @@ def test_complete_task_describes_the_refusal_it_now_makes():
     assert "never reopens a closed task" in desc
     assert "REFUSED" in desc
     assert "complete_task" in tools.EDIT_TOOLS
+
+
+def test_the_lot_3b_texts_say_what_billing_does():
+    """Lot 3b (the text step). Every surface a client model or the lawyer
+    reads says the BILL rules the code enforces — and none of the phrases
+    the lot made false survives (KNOWN_FALSE_CLAIMS above):
+
+    * a created invoice CONSUMES the year's next number for ever;
+    * only a BROUILLON is corrected — an issued invoice is voided, then a
+      new one issued;
+    * a void is REFUSED while a payment stands, and never gives the number
+      back;
+    * marking envoyée sends nothing, and « payée » is never set here;
+    * a budget version is kept, unchanged, as the proof of what the client
+      was told;
+    * an import lands in brouillon, and update_invoice (not import_invoice)
+      promotes it.
+    """
+    from mcp.output_schemas import OUTPUT_SCHEMAS
+
+    billing = next(f for f in disclosure.FAMILIES if f.key == "billing")
+    assert billing.tools == ("create_invoice", "update_invoice",
+                             "create_budget_version")
+    assert "preview_invoice" in billing.instructions_en   # a read, named
+    assert "get_budget" in billing.instructions_en        # a read, named
+    for fragment in ("CONSUMES the year's next number", "ONLY a brouillon",
+                     "REFUSED while a payment stands", "SENDS NOTHING",
+                     "the proof of what the client was told"):
+        assert fragment in billing.instructions_en, fragment
+    keys = {n.key for n in disclosure.NEVERS}
+    assert {"payment", "invoice_paid", "invoice_send", "invoice_sources"} <= keys
+
+    desc = {name: spec["description"] for name, spec in tools.TOOLS.items()}
+    assert "consumed FOR EVER" in desc["create_invoice"]
+    assert "a brouillon only" in desc["update_invoice"]
+    assert "REFUSED while a payment stands" in desc["update_invoice"]
+    assert "Never payée" in desc["update_invoice"]
+    assert "MARKED sent" in desc["list_invoices"]
+    assert "proof of what the client was told" in desc["create_budget_version"]
+    assert "promote it with update_invoice" in desc["import_invoice"]
+    import_status = OUTPUT_SCHEMAS["import_invoice"]["properties"]["entity"][
+        "properties"]["status"]["description"]
+    assert "update_invoice does" in import_status

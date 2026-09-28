@@ -356,6 +356,21 @@ def test_the_special_kinds_are_filled_by_their_own_flows(world):
     assert "create_document" in message and "fill_gabarit ne remplit" in message
 
 
+def test_a_note_honoraires_template_is_pointed_to_create_document_invoice_note(world):
+    """Lot 3b (the text step): the note d'honoraires is filed by
+    create_document (source invoice_note) as well as by the application's
+    button — a refusal naming the button alone was false on this surface."""
+    template, errors = tpl_model.create_template(
+        io.BytesIO(NOTE_TEMPLATE), "honoraires.docx", len(NOTE_TEMPLATE),
+        {"name": "Note d'honoraires", "category": "autre",
+         "kind": "note_honoraires"}, UID)
+    assert errors == [], errors
+    message = _refused(handlers.fill_gabarit,
+                       {"template_id": template["id"], "dossier_id": "d1"})
+    assert "« invoice_note »" in message and "invoice_id" in message
+    assert "fill_gabarit ne remplit" in message
+
+
 def test_an_unreadable_template_store_is_never_introuvable(world, monkeypatch):
     def _boom(*_a, **_k):
         raise tpl_model.TemplateReadError("t")

@@ -1997,8 +1997,9 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
                     "names."),
                 "flow_fields": _arr(_str(), (
                     "note / note_honoraires only: filled by the kind's own "
-                    "flow in the application (the note print, the invoice "
-                    "note) — never by hand. [] for a gabarit.")),
+                    "flow — create_document (source markdown for a note, "
+                    "invoice_note for an invoice note) or the application's "
+                    "own buttons — never by hand. [] for a gabarit.")),
                 "versions": {
                     "type": ["array", "null"],
                     "items": _obj({
@@ -2448,7 +2449,8 @@ OUTPUT_SCHEMAS: dict[str, dict] = {
             "label": _str("The invoice number."),
             "invoice_number": _str("The number the previous system issued."),
             "date": _nstr("YYYY-MM-DD, the ORIGINAL date."),
-            "status": _str("Always « brouillon » — never promoted here."),
+            "status": _str("Always « brouillon »: import_invoice never "
+                           "promotes it — update_invoice does."),
             "legacy_ref": _str(),
             **_money("subtotal_fees"),
             **_money("subtotal_expenses"),

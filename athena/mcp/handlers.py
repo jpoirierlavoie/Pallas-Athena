@@ -14,9 +14,11 @@ backed by a sweep of this module's syntax tree (tests/test_mcp_disclosure).
 Restating either here is how they drifted before. The writable collections
 are ``notes`` (with their write-once ``revisions`` subcollection, lot 1b),
 ``tasks``, ``hearings``, ``protocols`` (with their ``steps`` subcollection,
-lot 1b), ``timeentries``, ``expenses``, ``parties``, ``invoices`` (with its
-``lineitems`` subcollection, and the ``invoiced`` flips import_invoice
-causes on the two billing collections), ``documents`` (since lot 2A T7
+lot 1b), ``timeentries``, ``expenses`` (since lot 3b also MOVED to another
+dossier while un-invoiced — ``models/billing_move``), ``parties``,
+``invoices`` (with its ``lineitems`` subcollection, and the ``invoiced``
+flips import_invoice and — since lot 3b — create_invoice cause on the two
+billing collections, which a void releases), ``documents`` (since lot 2A T7
 its filing fields — display name, date, tags, folder and a PRESUMED
 category set outside any analysis —, plus its ``analyse`` cache, the
 DERIVED ``category`` and an append-only ``analyses`` journal entry; and
@@ -25,7 +27,8 @@ on the active note template, a copy within its own dossier — with their
 bytes in Storage, written through ``services/gabarits`` and
 ``models/document`` (a new object, create-only); never an existing
 document's file, never ``notes_internes``; since lot 2A T9 an uploaded
-file, filed as a NEW document under the id its ticket reserved),
+file, filed as a NEW document under the id its ticket reserved; since lot
+3b an invoice's note d'honoraires, through ``services/note_honoraires``),
 ``folders`` (lot 2A T7: created, renamed, moved — never a system folder;
 T8: « Projets » created on first use by a generation), ``doc_templates``
 (lot 2A T9 through the upload ticket, T10 from a stored document —
@@ -1867,11 +1870,19 @@ _FLOW_PREFIXES = {
     "note": ("note.",),
     "note_honoraires": ("facture.", "h.", "d."),
 }
+# Each flow runs on BOTH surfaces — the application's button and the
+# connector's create_document (lot 2A: source « markdown »; lot 3b: source
+# « invoice_note ») — so neither is named alone.
 _FLOW_SOURCES_FR = {
-    "note": "Imprimer (Word) d'une note : les champs note.* viennent de la note",
+    "note": (
+        "une note — « Imprimer (Word) » dans l'application, ou "
+        "create_document (source « markdown ») : les champs note.* viennent "
+        "de la note ou du texte fourni"
+    ),
     "note_honoraires": (
-        "la facture, dans l'application : les champs facture.* et les lignes "
-        "viennent de la facture, le destinataire de son client"
+        "la facture — create_document (source « invoice_note »), ou « Note "
+        "d'honoraires (Word) » dans l'application : les champs facture.* et "
+        "les lignes viennent de la facture, le destinataire de son client"
     ),
 }
 # The party slots each SPECIAL kind's own flow fills — and no other:
@@ -2138,14 +2149,14 @@ def _template_detail(args: dict) -> dict:
         if doc_template_model.is_active(template):
             warnings.append(
                 f"Gabarit ACTIF des « {name} » : c'est celui que "
-                "l'application remplit. Seul le juriste change cette "
-                "désignation, dans l'application."
+                "l'application et create_document remplissent. Seul le "
+                "juriste change cette désignation, dans l'application."
             )
         else:
             warnings.append(
-                f"Ce gabarit n'est PAS le gabarit actif des « {name} » : "
-                "l'application ne s'en sert pas tant que le juriste ne l'a "
-                "pas désigné."
+                f"Ce gabarit n'est PAS le gabarit actif des « {name} » : ni "
+                "l'application ni create_document ne s'en servent tant que "
+                "le juriste ne l'a pas désigné."
             )
     read_slots = set(classification.slots_required)
     usable = read_slots if flow_slots is None else read_slots & set(flow_slots)
@@ -4756,8 +4767,9 @@ def _refuse_if_invoiced(row: dict, kind: str) -> None:
         "(set_time_entry_phase, set_expense_phase). Pour la libérer : "
         "annulez la facture (update_invoice avec status « annulée », ou "
         "dans l'application), possible tant qu'aucun paiement n'y est "
-        "inscrit — ses entrées et déboursés redeviennent modifiables ; son "
-        "numéro, lui, n'est jamais réattribué."
+        "inscrit — sinon, contre-passez-le d'abord dans l'application ; ses "
+        "entrées et déboursés redeviennent alors modifiables, et son "
+        "numéro, lui, reste attaché à la facture annulée."
     )
 
 
@@ -6440,8 +6452,14 @@ def _void_invoice(args: dict, invoice: dict) -> dict:
     written = report["invoice"]
     number = written.get("invoice_number", "")
     warnings = [
+        # « Never reassigned » is the YEAR COUNTER's promise. A number the
+        # previous system issued (import_invoice) is another matter: it is
+        # free again once the lawyer deletes the voided invoice in the
+        # application — so the sentence says which promise it makes.
         f"Le numéro {number} reste attaché à la facture annulée : il n'est "
-        "jamais réattribué à une autre facture.",
+        "jamais réattribué par la numérotation de l'année (un numéro repris "
+        "de l'ancien système ne redevient disponible que si le juriste "
+        "supprime la facture annulée dans l'application).",
     ]
     released = (len(report.get("released_time_entry_ids") or [])
                 + len(report.get("released_expense_ids") or []))
@@ -11810,8 +11828,9 @@ _NOTHING_GENERATED = "Rien n'a été généré."
 _NOTHING_CREATED = "Rien n'a été créé."
 _GABARIT_FLOWS_FR = {
     "note_honoraires": (
-        "se remplit depuis la facture, dans l'application (« Note "
-        "d'honoraires (Word) »)"
+        "se remplit depuis la facture — utilisez create_document (source "
+        "« invoice_note », avec invoice_id), ou « Note d'honoraires "
+        "(Word) » dans l'application"
     ),
     "note": (
         "imprime une note, dans l'application — pour mettre en forme un "

@@ -538,7 +538,13 @@ def test_a_void_releases_the_sources_keeps_the_number_and_its_reason(world):
     assert payload["released_time_entry_ids"] == ["e1"]
     assert payload["released_expense_ids"] == ["x1"]
     assert world.peek("timeentries/e1")["invoiced"] is False
-    assert any("jamais réattribué" in w for w in payload["warnings"])
+    assert any("jamais réattribué par la numérotation de l'année" in w
+               for w in payload["warnings"])
+    # Lot 3b (the text step): « never reassigned » is the COUNTER's promise;
+    # an imported number is free again once the voided invoice is deleted
+    # in the application — the warning says which promise it makes.
+    assert any("un numéro repris de l'ancien système" in w
+               for w in payload["warnings"])
     # The next invoice takes F002: the voided one kept its number.
     assert _issued(world, time_entry_ids=["e2"], expense_ids=[])[
         "invoice_number"] == "2026-F002"
