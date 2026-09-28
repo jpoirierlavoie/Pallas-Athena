@@ -326,6 +326,23 @@ def test_the_edit_form_says_the_status_is_presumed(client, db):
         f"/parties/{lawyer}/edit").get_data(as_text=True)
 
 
+def test_the_edit_form_offers_conformite_to_a_dossier_client(client, db):
+    """A dossier client whose contact role is not « client »: the fiche
+    shows its Conformité, so the form must let the lawyer decide it."""
+    pid = _seed(db, contact_role="autre", **PRESUMED)
+    db.seed("dossiers/d1", {"id": "d1", "file_number": "2026-001",
+                            "title": "T", "status": "actif",
+                            "clients": [{"id": pid, "name": "Jean Tremblay"}],
+                            "client_ids": [pid]})
+    html = client.get(f"/parties/{pid}/edit").get_data(as_text=True)
+    assert "isDossierClient: true," in html
+    assert "contactRole === 'client' || isDossierClient" in html
+
+    other = _seed(db, pid="p2", contact_role="autre")
+    assert "isDossierClient: false," in client.get(
+        f"/parties/{other}/edit").get_data(as_text=True)
+
+
 def test_the_new_contact_form_renders_without_a_stored_record(client, db):
     assert client.get("/parties/new").status_code == 200
 

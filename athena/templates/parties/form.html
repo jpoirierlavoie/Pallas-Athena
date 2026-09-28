@@ -12,6 +12,7 @@
        prefix: '{{ (partie.prefix if partie else '') }}',
        identityVerified: '{{ (partie.identity_verified if partie else 'non_vérifié') }}',
        conflictCheck: '{{ (partie.conflict_check if partie else 'non_vérifié') }}',
+       isDossierClient: {{ 'true' if is_dossier_client else 'false' }},
        selfId: '',
        mandataires: [],
        mandataireKindLabels: {},
@@ -462,8 +463,11 @@
       <div id="mandataire-results"></div>
     </div>
 
-    {# ═══ Section 6 — Conformité (clients only) ══════════════════ #}
-    <div x-show="contactRole === 'client'" class="bg-white rounded-xl border border-gray-200 p-5" x-cloak>
+    {# ═══ Section 6 — Conformité ══════════════════════════════════ #}
+    {# A client — or a client of a dossier whatever its role (lot 4a): the
+       coverage report checks every dossier client, and the fiche shows
+       their Conformité card, so the form must let the lawyer decide it. #}
+    <div x-show="contactRole === 'client' || isDossierClient" class="bg-white rounded-xl border border-gray-200 p-5" x-cloak>
       <h2 class="text-sm font-semibold text-gray-900 mb-4">Conformité</h2>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -143,6 +143,19 @@ def _parse_mandataires_json(raw: str) -> list[dict[str, Any]]:
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
+def _is_dossier_client(partie_id: str) -> bool:
+    """Is this contact a CLIENT of at least one dossier (whatever its
+    role)? The coverage report checks every dossier client, so the fiche
+    and the form show their Conformité. Display only: the lister fails open
+    (an outage hides the card, never writes anything)."""
+    if not partie_id:
+        return False
+    return any(
+        partie_id in (d.get("client_ids") or [])
+        for d in list_dossiers_for_partie(partie_id)
+    )
+
+
 def _kyc_presumed(partie: Optional[dict]) -> dict[str, bool]:
     """``{field: presumed}`` from the STORED record — the edit form's note
     beside each select (a re-rendered form holds the submitted values, which
@@ -537,6 +550,7 @@ def partie_edit(partie_id: str) -> str:
         mandataires=_hydrate_mandataires(partie.get("mandataires")),
         mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
         kyc_presumed=_kyc_presumed(partie),
+        is_dossier_client=_is_dossier_client(partie_id),
     )
 
 
@@ -570,6 +584,7 @@ def partie_update(partie_id: str) -> str:
             mandataires=_hydrate_mandataires(data.get("mandataires")),
             mandataire_kind_labels=MANDATAIRE_KIND_LABELS,
             kyc_presumed=_kyc_presumed(get_partie(partie_id)),
+            is_dossier_client=_is_dossier_client(partie_id),
         )
 
     bump_ctag("parties")
