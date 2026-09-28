@@ -352,7 +352,10 @@ A passthrough name is also what **Claude** may write, through the connector's
   (`blocs_demoted`).
 - **A bloc or a manual value can never contain `{{` or `}}`** — the engine
   would read `{{dossier.demandeur}}` inside it as a field and print the
-  dossier's data there. It is refused, not escaped.
+  dossier's data there. It is refused, not escaped. A **Markdown** bloc (and
+  `create_document`'s Markdown) is judged once FORMATTED too: a `\{` escape or
+  a `&#123;` / `&lbrace;` character reference prints a brace, so a text that
+  would print `{{…}}` is refused as well.
 - A bloc Claude does not write stays `{{name}}` for Word, and the result says
   which (`blocs_left_verbatim`, read back from the produced file — a field
   Word fragmented is listed there too).
@@ -483,7 +486,10 @@ and **markdown tables as real Word tables** (bordered, header row shaded,
   `{{note.titre}}`, saved as a NEW document in « Projets » (the web print stays
   a download). Only the template the lawyer designated **active** is used —
   none designated, it refuses; and where `{{note.contenu}}` cannot take
-  formatting it REFUSES rather than store a document full of Markdown sigils.
+  formatting it REFUSES rather than store a document full of Markdown sigils;
+  where it is not in the BODY at all (only in a header or footer, or split by
+  Word), it refuses too — read back from the produced file — rather than store
+  a document without the text.
   A drafted text has no note category nor modification date:
   `{{note.categorie}}` and `{{note.date_maj}}` print empty there.
 

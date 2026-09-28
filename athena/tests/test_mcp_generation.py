@@ -615,6 +615,77 @@ def test_a_markdown_document_is_refused_before_anything_is_written(world, over, 
     _nothing_generated(world, before)
 
 
+@pytest.mark.parametrize("markdown", [
+    r"Voir \{\{dossier.titre\}\} ci-dessus",
+    "Voir &#123;&#123;dossier.titre&#125;&#125;",
+    "[lien](https://a/&#123;&#123;dossier.titre&#125;&#125;)",
+])
+def test_a_markdown_body_that_prints_sigils_once_formatted_is_refused(world, markdown):
+    """Regression (review of T8): no « {{ » in the raw text, one in the
+    formatted text — and the note template's {{dossier.titre}} scalar pass
+    printed the dossier's title there. Measured on the old code: the stored
+    body read « Voir Tremblay c. Alpha ci-dessus »."""
+    before = _documents(world["db"])
+    message = _refused(handlers.create_document, {
+        "source": "markdown", "dossier_id": "d1", "title": "T",
+        "markdown": markdown})
+    assert "une fois mis en forme" in message and markdown not in message
+    _nothing_generated(world, before)
+
+
+def test_a_markdown_bloc_that_prints_sigils_once_formatted_is_refused(world):
+    before = _documents(world["db"])
+    message = _refused(handlers.fill_gabarit, {
+        "template_id": world["gabarit"], "dossier_id": "d1", "client_id": "c1",
+        "blocs": [{"nom": "CONCLUSIONS", "markdown": True,
+                   "contenu": r"Voir \{\{client.nom_complet\}\}"}]})
+    assert "une fois mis en forme" in message
+    _nothing_generated(world, before)
+
+
+def test_a_markdown_text_the_formatter_cannot_convert_is_refused(world):
+    """Regression (review of T8): past the formatter's nesting ceiling the
+    body was demoted and the refusal told the lawyer to fix a TEMPLATE that
+    is fine; a bloc was stored as raw Markdown under the same diagnosis."""
+    nested = "\n".join(("  " * i) + "- x" for i in range(40))
+    before = _documents(world["db"])
+    message = _refused(handlers.create_document, {
+        "source": "markdown", "dossier_id": "d1", "title": "T",
+        "markdown": nested})
+    assert "ne peut pas être mis en forme" in message
+    assert "corriger le gabarit" not in message
+    message = _refused(handlers.fill_gabarit, {
+        "template_id": world["gabarit"], "dossier_id": "d1", "client_id": "c1",
+        "blocs": [{"nom": "CONCLUSIONS", "contenu": nested, "markdown": True}]})
+    assert "ne peut pas être mis en forme" in message
+    _nothing_generated(world, before)
+
+
+@pytest.mark.parametrize("body, header", [
+    (_p("{{note.titre}}"), _p("{{note.contenu}}")),          # header only
+    (_p("{{note.titre}}")
+     + "<w:p><w:r><w:t>{{note.</w:t></w:r><w:r><w:br/></w:r>"
+       "<w:r><w:t>contenu}}</w:t></w:r></w:p>", ""),       # split by Word
+])
+def test_a_body_the_template_never_prints_is_refused_never_stored_empty(
+    world, monkeypatch, body, header,
+):
+    """Regression (review of T8): {{note.contenu}} outside the body, or
+    split by Word, is neither formatted nor demoted — the old code stored a
+    document WITHOUT Claude's text and answered « created », no warning."""
+    data = _docx(body, header=header)
+    template = dict(world["db"].peek(f"doc_templates/{world['note']}"))
+    template["placeholders"] = ["note.titre", "note.contenu"]
+    monkeypatch.setattr(tpl_model, "get_active_template", lambda _k: template)
+    monkeypatch.setattr(tpl_model, "template_file_bytes", lambda _t: data)
+    before = _documents(world["db"])
+    message = _refused(handlers.create_document,
+                       {"source": "markdown", "dossier_id": "d1",
+                        "title": "T", "markdown": "Le texte rédigé."})
+    assert "CORPS du document" in message
+    _nothing_generated(world, before)
+
+
 def test_an_autolink_alone_is_normalized_not_refused(world):
     result = _markdown(world, markdown="Voir <https://canlii.ca/t/x>.")
     texts = " ".join(_text(p) for p in _paragraphs(

@@ -528,6 +528,52 @@ _CONTROL_CHARS = frozenset(
 _NOTHING = "Rien n'a été généré."
 
 
+def markdown_problem(text: str) -> str:
+    """The reason code a MARKDOWN text is refused for once FORMATTED, or
+    ``""`` — judged on the very OOXML the fill engine would splice.
+
+    * ``sigils`` — the formatted XML holds « {{ » or « }} » although the
+      source may not: a Markdown backslash escape (``\\{``) and an HTML
+      character reference (``&#123;``, ``&lbrace;`` — in the text or in a
+      link's URL, which the formatter prints after the link) both render as
+      a brace. The engine's passes after the rich one rescan that XML and
+      would read ``{{dossier.titre}}`` there as a field to fill with the
+      dossier's data (review of lot 2A T8 — the raw-text check alone was
+      bypassed). The engine matches a placeholder on CONTIGUOUS raw XML
+      (``docx_fill._name_pattern``), and no OOXML markup ever carries a
+      brace, so a brace pair anywhere in this XML is exactly the danger.
+    * ``unformattable`` — the formatter refuses the text itself (nesting
+      past its ceiling). Filled anyway, the text would be demoted to raw
+      Markdown under a message blaming the TEMPLATE's paragraph.
+
+    The seed paragraph/run properties are the host's in the real fill; they
+    carry no text, so the default seed judges the same characters.
+    """
+    from utils.markdown_docx import markdown_to_ooxml  # lazy — pure module
+
+    try:
+        ooxml = markdown_to_ooxml(text)
+    except Exception:
+        return "unformattable"
+    if "{{" in ooxml or "}}" in ooxml:
+        return "sigils"
+    return ""
+
+
+def _refuse_markdown(problem: str, where: str, *, field: str) -> GenerationRefused:
+    if problem == "unformattable":
+        return GenerationRefused("markdown_unformattable", (
+            f"{where} ne peut pas être mis en forme (imbrication de listes "
+            "ou de citations trop profonde) : simplifiez-le, ou envoyez-le "
+            f"sans markdown. {_NOTHING}"), field=field)
+    return GenerationRefused("value_refused", (
+        f"{where} produirait « {{{{ » ou « }}}} » une fois mis en forme (une "
+        "accolade échappée « \\{ » ou une entité « &#123; » donne une "
+        "accolade) : l'application le lirait comme un champ à remplir et y "
+        f"imprimerait des données du dossier. Retirez-les. {_NOTHING}"),
+        field=field)
+
+
 @dataclass(frozen=True)
 class ConnectorValues:
     """What a connector fill hands the engine, and what it can report —
@@ -604,7 +650,10 @@ def values_for_connector(
     given twice, or both as a bloc and as a manual field (``bloc_conflict``);
     a manual value outside its option list (``manual_option_invalid``); a
     text past its ceiling (``value_too_long``); an empty text, a text
-    carrying ``{{``/``}}`` or a control character (``value_refused``).
+    carrying ``{{``/``}}`` or a control character, or a Markdown bloc whose
+    FORMATTED text would carry them (``value_refused`` —
+    :func:`markdown_problem`); a Markdown bloc the formatter cannot convert
+    (``markdown_unformattable``).
     Positions in the messages are 1-based; a supplied name is never quoted
     unless it IS a placeholder of the template.
 
@@ -661,8 +710,13 @@ def values_for_connector(
         problem = _text_problem(text, BLOC_MAX_CHARS)
         if problem:
             raise _refuse_text(problem, where, BLOC_MAX_CHARS, field=name)
+        markdown = bool((entry or {}).get("markdown", False))
+        if markdown:
+            problem = markdown_problem(text)
+            if problem:
+                raise _refuse_markdown(problem, where, field=name)
         total += len(text.replace("\r\n", "\n"))
-        supplied[name] = (text, bool((entry or {}).get("markdown", False)))
+        supplied[name] = (text, markdown)
     if total > BLOCS_TOTAL_MAX_CHARS:
         raise GenerationRefused("value_too_long", (
             f"`blocs` : {total} caractères au total, au-delà de "

@@ -11106,6 +11106,27 @@ def _clean_generated_text(raw: Any, field: str, limit: int, *,
             f"`{field}` contient un caractère de contrôle invisible : "
             f"retirez-le. {_NOTHING_CREATED}"
         )
+    if markdown:
+        # Judged once FORMATTED too (review of T8): « \{\{ » and « &#123; »
+        # carry no « {{ » here yet print one, which the engine's later
+        # passes would fill with the dossier's data; and a text the
+        # formatter refuses would be stored as raw Markdown under a message
+        # blaming the template.
+        problem = gabarit_service.markdown_problem(text)
+        if problem == "unformattable":
+            raise ToolArgumentError(
+                f"`{field}` ne peut pas être mis en forme (imbrication de "
+                "listes ou de citations trop profonde) : simplifiez-le. "
+                f"{_NOTHING_CREATED}"
+            )
+        if problem:
+            raise ToolArgumentError(
+                f"`{field}` produirait « {{{{ » ou « }}}} » une fois mis en "
+                "forme (une accolade échappée « \\{ » ou une entité "
+                "« &#123; » donne une accolade) : le gabarit les lirait "
+                "comme un champ à remplir et y imprimerait des données du "
+                f"dossier. Retirez-les. {_NOTHING_CREATED}"
+            )
     return text
 
 
@@ -11192,6 +11213,22 @@ def _create_markdown_document(args: dict) -> dict:
             "dans son paragraphe (ou ce paragraphe porte un saut de "
             "section). Le juriste doit corriger le gabarit. "
             f"{_NOTHING_CREATED}"
+        )
+    # The body must be IN the produced file (review of T8). The engine
+    # formats `{{note.contenu}}` in the body only: placed in a header or
+    # footer alone, or split by Word, it is neither formatted nor demoted —
+    # it stays literal, and the document would have been stored WITHOUT the
+    # text Claude wrote, reported « created ». Read back, never predicted.
+    left = _left_in_document(filled)
+    if left is None or RICH_FIELD in left:
+        _log_generation("generation_failed", source, reason="rich_not_placed",
+                        template_id=template_id, dossier_id=dossier_id)
+        raise ToolArgumentError(
+            "Le texte n'a pas pu être imprimé sur le gabarit « Note "
+            f"(impression) » actif : « {{{{{RICH_FIELD}}}}} » doit figurer "
+            "dans le CORPS du document, seul dans son paragraphe et tapé "
+            "d'un seul trait (ni en en-tête, ni en pied de page). Le juriste "
+            f"doit corriger le gabarit. {_NOTHING_CREATED}"
         )
 
     presumed = category is not None

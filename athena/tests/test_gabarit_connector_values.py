@@ -138,6 +138,34 @@ def test_a_text_carrying_placeholder_sigils_is_refused(text):
     assert exc.reason == "value_refused"
 
 
+@pytest.mark.parametrize("text", [
+    r"Voir \{\{dossier.titre\}\} ci-dessus",            # Markdown escapes
+    "Voir &#123;&#123;dossier.titre&#125;&#125;",        # numeric references
+    "Voir &lbrace;&lbrace;dossier.titre&rbrace;&rbrace;",  # named references
+    "[lien](https://a/&#123;&#123;dossier.titre&#125;&#125;)",  # in a URL
+])
+def test_a_markdown_bloc_that_would_print_sigils_once_formatted_is_refused(text):
+    """Regression (review of T8): the raw text carries no « {{ », so the
+    raw check let it through — but the formatter prints one (a backslash
+    escape, a character reference, a link's URL printed after the link),
+    and the engine's later passes filled it with the dossier's data."""
+    assert "{{" not in text and "}}" not in text
+    exc = _refused(blocs=[{"nom": "FAITS", "contenu": text, "markdown": True}])
+    assert exc.reason == "value_refused" and "mis en forme" in exc.message
+    assert text not in exc.message
+    # The same text as PLAIN prints literally — an escape stays an escape.
+    assert _values(blocs=[{"nom": "FAITS", "contenu": text}]).values["FAITS"] == text
+
+
+def test_a_markdown_bloc_the_formatter_cannot_convert_is_refused():
+    """Regression (review of T8): nesting past the formatter's ceiling was
+    demoted to raw Markdown, under a warning blaming the TEMPLATE."""
+    nested = "\n".join(("  " * i) + "- x" for i in range(40))
+    exc = _refused(blocs=[{"nom": "FAITS", "contenu": nested, "markdown": True}])
+    assert exc.reason == "markdown_unformattable"
+    assert gc.markdown_problem("**gras** et [lien](https://a/b)") == ""
+
+
 def test_blank_control_and_oversized_texts_are_refused_never_repaired():
     assert _refused(blocs=[{"nom": "FAITS", "contenu": "  \n "}]).reason == (
         "value_refused")
