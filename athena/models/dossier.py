@@ -1200,16 +1200,34 @@ def list_dossiers(
         if sort_by == "file_number":
             results.sort(key=lambda d: d.get("file_number", ""), reverse=True)
         else:
-            # Default: opened_date, newest first
-            results.sort(
-                key=lambda d: d.get("opened_date")
-                or datetime.min.replace(tzinfo=timezone.utc),
-                reverse=True,
-            )
+            # Default: opened_date, newest first — same-day ties by creation.
+            results.sort(key=_newest_opened_first_key, reverse=True)
 
         return results
     except Exception:
         return []
+
+
+def _newest_opened_first_key(dossier: dict) -> tuple[datetime, float]:
+    """Sort key for « newest opened first » in the PYTHON-sorted lists
+    (:func:`list_dossiers`, :func:`list_dossiers_for_partie`).
+
+    ``opened_date`` is DATE-ONLY since lot 4a (midnight UTC), so two
+    dossiers opened the same day tie on it — and a stable sort then kept
+    the stream order, the document-id order of random UUIDs: the partie's
+    fiche and the dossier search listed a day's dossiers shuffled, where
+    the old timestamp stamps had kept them chronological. ``created_at``
+    (a true timestamp on every document, Rule 7) breaks the tie. The
+    cursor-paginated list orders in Firestore on ``(opened_date, id)`` and
+    cannot take this key without a new index (documented).
+    """
+    opened = (dossier.get("opened_date")
+              or datetime.min.replace(tzinfo=timezone.utc))
+    created = dossier.get("created_at")
+    # As a number, so a missing or malformed created_at sorts last instead
+    # of raising a TypeError the fail-open caller would turn into « [] ».
+    tie = created.timestamp() if hasattr(created, "timestamp") else 0.0
+    return opened, tie
 
 
 def _page_query(status_filter: Optional[str] = None) -> "firestore.Query":
@@ -1717,10 +1735,9 @@ def list_dossiers_for_partie(partie_id: str) -> list[dict]:
                 if d.get("id") not in seen:
                     seen.add(d["id"])
                     results.append(d)
-        results.sort(
-            key=lambda d: d.get("opened_date") or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
-        )
+        # Newest opened first, same-day ties by creation (date-only
+        # opened_date since lot 4a — see _newest_opened_first_key).
+        results.sort(key=_newest_opened_first_key, reverse=True)
         return results
     except Exception:
         return []

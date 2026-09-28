@@ -113,3 +113,46 @@ def test_reopening_clears_the_closing_date(db):
     dossier_model.update_dossier(did, {"status": "fermé"})
     dossier_model.update_dossier(did, {"status": "actif"})
     assert db.peek(f"dossiers/{did}")["closed_date"] is None
+
+
+# ── Même jour d'ouverture : l'ordre chronologique survit (revue 4a) ────────
+#
+# Une date SEULE fait se lier deux dossiers ouverts le même jour. Les listes
+# triées EN PYTHON (fiche d'un contact, recherche de dossiers, exports) les
+# rendaient alors dans l'ordre du flux — l'ordre des identifiants, des UUID
+# au hasard —, là où l'ancien horodatage les gardait chronologiques.
+# `created_at` (un vrai horodatage, règle 7) départage. Les identifiants sont
+# choisis pour que l'ordre du flux (croissant) soit l'INVERSE de l'ordre de
+# création : sans le départage, le test échoue.
+
+_SAME_DAY = datetime(2026, 9, 28, tzinfo=UTC)
+
+
+@pytest.fixture
+def same_day(monkeypatch):
+    fake = install(monkeypatch, dossier_model)
+    for rid, created in (
+        ("a0000000-0000-4000-8000-000000000001",
+         datetime(2026, 9, 28, 13, 0, tzinfo=UTC)),   # créé en premier
+        ("b0000000-0000-4000-8000-000000000002",
+         datetime(2026, 9, 28, 18, 0, tzinfo=UTC)),   # créé ensuite
+    ):
+        fake.seed(f"dossiers/{rid}", {
+            "id": rid, "file_number": rid[:4], "title": "T",
+            "status": "actif", "opened_date": _SAME_DAY,
+            "created_at": created,
+            "clients": [{"id": "p1", "name": "Jean Tremblay", "roles": []}],
+            "client_ids": ["p1"], "opposing_parties": [],
+            "opposing_party_ids": [], "avocat_ids": [],
+        })
+    return ["b0000000-0000-4000-8000-000000000002",
+            "a0000000-0000-4000-8000-000000000001"]
+
+
+def test_same_day_dossiers_list_newest_created_first(same_day):
+    assert [d["id"] for d in dossier_model.list_dossiers()] == same_day
+
+
+def test_same_day_dossiers_of_a_partie_list_newest_created_first(same_day):
+    rows = dossier_model.list_dossiers_for_partie("p1")
+    assert [d["id"] for d in rows] == same_day

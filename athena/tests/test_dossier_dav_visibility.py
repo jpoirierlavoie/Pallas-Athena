@@ -644,6 +644,21 @@ def test_every_status_is_classified_the_same_by_discovery_the_collection_and_the
     assert advertised and advertised != {d["id"] for d in dossiers}
 
 
+def test_every_active_status_is_a_valid_status():
+    """The root PROPFIND asks ``list_dossiers(status_filter=s)`` for each
+    active status, and ``list_dossiers`` IGNORES a filter that is not in
+    ``VALID_STATUSES`` — it then returns EVERY dossier. A status added to
+    ACTIVE_DOSSIER_STATUSES but not to the model's vocabulary would make
+    discovery advertise the whole firm, closed dossiers included, with no
+    error; the parity test above iterates VALID_STATUSES only and cannot
+    see it (revue 4a)."""
+    assert dav_sync.ACTIVE_DOSSIER_STATUSES
+    assert set(dav_sync.ACTIVE_DOSSIER_STATUSES) <= set(
+        dossier_model.VALID_STATUSES)
+    assert len(set(dav_sync.ACTIVE_DOSSIER_STATUSES)) == len(
+        dav_sync.ACTIVE_DOSSIER_STATUSES)
+
+
 def test_no_hand_typed_active_status_tuple_survives_on_the_dav_paths():
     """The literal (« actif », « en_attente ») lived in the route, the DAV
     reader and six handler sites; it must now be read from dav.sync. AST
