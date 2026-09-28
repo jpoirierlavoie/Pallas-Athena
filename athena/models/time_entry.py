@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, concurrency, db, provenance
+from models import aggregation_values, billing_move, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -431,6 +431,13 @@ def update_time_entry(
     regenerates the etag.
 
     A key of :data:`_PROTECTED_ON_UPDATE` in *data* is ignored.
+
+    A ``dossier_id`` that differs from the stored one MOVES the entry, by
+    the rule :func:`move_time_entry` applies (``models.billing_move``, lot
+    3a): the target dossier is re-read inside this transaction — missing,
+    the save is refused — and the two label snapshots are taken from that
+    read, whatever labels *data* carries. The edit form has always
+    reassigned an entry; it now does so by the connector's rule.
     """
     changes = {
         key: value for key, value in _sanitize_data(data).items()
@@ -453,6 +460,17 @@ def update_time_entry(
             raise _Refused(["Impossible de modifier une entrée déjà facturée."])
 
         merged = {**existing, **changes}
+        # A CHANGED dossier is a move, and a move follows ONE rule
+        # (models/billing_move): the target is re-read in THIS transaction
+        # and its labels come from that read — never from the caller's
+        # copy, resolved outside any transaction. A blank target is left to
+        # _validate (« Un dossier doit être associé… »).
+        target = str(merged.get("dossier_id") or "").strip()
+        if target and target != str(existing.get("dossier_id") or ""):
+            fields = billing_move.target_fields(transaction, ref, target)
+            if fields is None:
+                raise _Refused([billing_move.TARGET_NOT_FOUND])
+            merged.update(fields)
         merged["amount"] = _compute_entry_amount(
             merged.get("hours", 0), merged.get("rate", 0),
             bool(merged.get("billable")),
@@ -476,6 +494,86 @@ def update_time_entry(
     provenance.note_commit(COLLECTION, entry_id)
 
     return merged, []
+
+
+MOVE_INVOICED_ERROR = (
+    "Impossible de déplacer une entrée déjà facturée : annulez d'abord la "
+    "facture qui la porte — l'annulation libère ses entrées —, puis "
+    "déplacez-la. Rien n'a été déplacé."
+)
+
+
+def move_time_entry(
+    entry_id: str,
+    to_dossier: dict,
+    *,
+    from_dossier_id: str,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """File an UN-INVOICED time entry under another dossier (lot 3a).
+
+    Returns ``(doc, errors, moved)`` — the ``set_time_entry_phase``
+    triple: ``moved`` is False, with no error, when the entry already sits
+    in the target (a replay writes nothing).
+
+    ONE transaction, reads first, checks in this order:
+
+    1. the entry — missing → refused;
+    2. invoiced → refused (void the invoice first: it releases its sources);
+    3. already in the target dossier → nothing written, ``moved=False``.
+       Before the next two checks on purpose, so a replay after success is
+       a no-op rather than a false conflict;
+    4. the stored dossier is not *from_dossier_id* → refused, naming the
+       dossier the entry IS in: an optimistic confirmation of the caller's
+       view, independent of the etag;
+    5. *expected_etag* given and stale → ``[STALE_ETAG_ERROR]``;
+    6. the target re-read through the transaction — missing → refused.
+
+    Then a PARTIAL ``update()`` of :data:`models.billing_move.LABEL_KEYS`
+    plus the write's provenance stamp, and nothing else: hours, rate,
+    amount, description and the PHASE stay as stored (phases are orthogonal
+    to the dossier). *to_dossier* is the dossier record the caller resolved;
+    only its ``id`` is trusted, its labels are re-read.
+    """
+    to_id = billing_move.target_id(to_dossier)
+    if not to_id:
+        return None, [billing_move.TARGET_REQUIRED], False
+    if not billing_move.is_addressable(entry_id):
+        return None, ["Entrée de temps introuvable."], False
+    ref = db.collection(COLLECTION).document(entry_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Entrée de temps introuvable."])
+        existing = snap.to_dict() or {}
+        if existing.get("invoiced"):
+            raise _Refused([MOVE_INVOICED_ERROR])
+        stored = str(existing.get("dossier_id") or "")
+        if stored == to_id:
+            return existing, False
+        if stored != str(from_dossier_id or "").strip():
+            raise _Refused([billing_move.from_mismatch_error(existing)])
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        fields = billing_move.target_fields(transaction, ref, to_id)
+        if fields is None:
+            raise _Refused([billing_move.TARGET_NOT_FOUND])
+        written = {**fields, **provenance.update_fields(datetime.now(timezone.utc))}
+        transaction.update(ref, written)
+        return {**existing, **written}, True
+
+    try:
+        doc, moved = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors, False
+    except Exception:
+        log_unexpected("time entry move failed")
+        return None, ["Erreur lors du déplacement. Veuillez réessayer."], False
+    if moved:
+        provenance.note_commit(COLLECTION, entry_id)
+    return doc, [], moved
 
 
 def get_time_entries_bulk(entry_ids: list[str]) -> dict[str, dict]:

@@ -10,7 +10,10 @@ que le connecteur écrit déjà et dont les formulaires web recevront l'etag —
 plus ``document.confirmer_analyse`` (le bouton « Confirmer » d'une analyse).
 Le lot 2A (étape T1, 2026-09-27) en ajoute deux : ``document.move_document``
 et ``document.confirmer_categorie`` (le « Confirmer » d'une catégorie posée
-par Claude, D15).
+par Claude, D15). Le lot 3a (étape 2, 2026-09-28) en ajoute deux :
+``time_entry.move_time_entry`` et ``expense.move_expense`` (le déplacement
+d'une ligne non facturée vers un autre dossier), qui ne lisent QUE dans leur
+transaction et n'écrivent qu'un ``update()`` partiel.
 
 Chacun tourne ici au-dessus du faux Firestore partagé (le client est le
 vrai), et l'on relit ce qui est STOCKÉ. Pour chacun :
@@ -135,6 +138,19 @@ def _task(db):
     return doc["id"]
 
 
+def _time_entry_to_move(db):
+    """A time entry in « d1 », and the dossier « d2 » it moves to."""
+    db.seed("dossiers/d2", {"id": "d2", "file_number": "2026-002",
+                            "title": "Gagnon c. Roy"})
+    return _time_entry(db)
+
+
+def _expense_to_move(db):
+    db.seed("dossiers/d2", {"id": "d2", "file_number": "2026-002",
+                            "title": "Gagnon c. Roy"})
+    return _expense(db)
+
+
 def _document(db, **over):
     doc = {**document_model._default_doc(), "id": "doc1",
            "dossier_id": "d1", "display_name": "Lettre", "category": "autre",
@@ -189,6 +205,16 @@ _CASES = {
                           lambda i, **kw: expense_model.set_expense_phase(
                               i, "", "INT-01", **kw)[:2],
                           "sous_phase", "INT-01"),
+    # Lot 3a (step 2): the triple return — « moved » is not this
+    # harness's concern either.
+    "move_time_entry": ("timeentries", _time_entry_to_move,
+                        lambda i, **kw: time_entry_model.move_time_entry(
+                            i, {"id": "d2"}, from_dossier_id="d1", **kw)[:2],
+                        "dossier_id", "d2"),
+    "move_expense": ("expenses", _expense_to_move,
+                     lambda i, **kw: expense_model.move_expense(
+                         i, {"id": "d2"}, from_dossier_id="d1", **kw)[:2],
+                     "dossier_id", "d2"),
     "update_note": ("notes", _note,
                     lambda i, **kw: note_model.update_note(
                         i, {"content": "Second jet."}, **kw),
@@ -234,6 +260,8 @@ _GETTERS = {
     "update_expense": (expense_model, "get_expense"),
     "set_time_entry_phase": (time_entry_model, "get_time_entry"),
     "set_expense_phase": (expense_model, "get_expense"),
+    "move_time_entry": (time_entry_model, "get_time_entry"),
+    "move_expense": (expense_model, "get_expense"),
     "update_note": (note_model, "get_note"),
     "update_task": (task_model, "get_task"),
     "update_metadata": (document_model, "get_document"),
@@ -256,7 +284,10 @@ _READS_ONLY_IN_TRANSACTION = {"update_time_entry", "update_expense"}
 # confirmer_categorie join with this lot.
 _DOCUMENT_PARTIAL = {"update_metadata", "update_analyse", "confirmer_analyse",
                      "move_document", "confirmer_categorie"}
-_RACE_AT_COMMIT = _READS_ONLY_IN_TRANSACTION | _DOCUMENT_PARTIAL
+# Lot 3a (step 2): the two moves read only inside their transaction and
+# write a PARTIAL update() of the dossier link and its stamp.
+_MOVES = {"move_time_entry", "move_expense"}
+_RACE_AT_COMMIT = _READS_ONLY_IN_TRANSACTION | _DOCUMENT_PARTIAL | _MOVES
 # D17 (2026-09-27): a note whose CONTENT changes keeps a revision on every
 # path, so even without an etag its write is the guarded transaction that
 # carries the snapshot (the model guards on the version it read). Its case
@@ -269,7 +300,7 @@ _LEGACY_WITHOUT_ETAG = sorted(
 
 def _write_kind(case):
     """The op a case's guarded write stages on its own document."""
-    if case.startswith("set_") or case in _DOCUMENT_PARTIAL:
+    if case.startswith("set_") or case in _DOCUMENT_PARTIAL | _MOVES:
         return "update"
     return "set"
 
@@ -484,6 +515,30 @@ def test_without_an_etag_a_document_write_is_partial_and_transactional(
     assert db.commits and all(c.transaction is not None for c in db.commits)
     assert ("update", path) in db.commits[-1].ops
     assert ("set", path) not in db.commits[-1].ops
+    assert db.reads and all(r.transactional for r in db.reads)
+    assert doc["etag"] == stored["etag"] != "e-rival"
+
+
+@pytest.mark.parametrize("case", sorted(_MOVES), ids=sorted(_MOVES))
+def test_without_an_etag_a_move_is_partial_and_transactional(db, case):
+    """Lot 3a (step 2): a move never takes a legacy path. Without an etag
+    the version is not consulted — the rival etag does not refuse it —, but
+    the read, the invoiced check and the partial write share ONE
+    transaction, and the rival's OTHER field survives."""
+    row_id, path, edit = _setup(db, case)
+    db.external_write(path, {**db.peek(path), "etag": "e-rival",
+                             "description": "Écrit ailleurs"})
+    db.reset_logs()
+
+    doc, errors = edit(row_id)
+
+    assert errors == [], errors
+    stored = db.peek(path)
+    assert stored["dossier_id"] == "d2"
+    assert stored["dossier_file_number"] == "2026-002"
+    assert stored["description"] == "Écrit ailleurs"
+    assert [c.ops for c in db.commits] == [(("update", path),)]
+    assert all(c.transaction is not None for c in db.commits)
     assert db.reads and all(r.transactional for r in db.reads)
     assert doc["etag"] == stored["etag"] != "e-rival"
 

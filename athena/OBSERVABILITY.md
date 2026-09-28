@@ -366,6 +366,8 @@ Messages of lot 2A, step T9 (2026-09-27), the upload ticket (`begin_upload`, `fi
 
 Messages of lot 2A, step T10 (2026-09-28), the template writes (`create_template`, `update_template`): « mcp template logging failed » (no field — a `template_uploaded`/`template_updated` line could not be emitted after the write; the template stands and the call still succeeds). The source document's dossier read, its parties' read (the identifier builder, fail closed) and its byte download refuse the call without a line of their own beyond `mcp_write_refused` (`argument_refused`): a transient read and a missing file read alike « réessayez », and nothing is written. Never a template name, a file name, a residue nor a placeholder value.
 
+Messages of lot 3a, step 2 (2026-09-28), the billing rows' move: « time entry move failed » / « expense move failed » (no field — `models/time_entry.move_time_entry` / `models/expense.move_expense` could not run their transaction, the entry's read, the target dossier's read or the partial write; nothing was written, the caller got « Erreur lors du déplacement. Veuillez réessayer. »). A REFUSED move — invoiced, already elsewhere, target missing, stale version — is a French error, never a line here. The web edit form's reassignment of a dossier goes through the same rule inside « time entry write failed » / « expense write failed ». IDs only.
+
 ## Adding a new event type
 
 1. Extend the relevant `Literal` in `utils/logging_setup.py` (or add a new helper for a new domain).

@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from models import aggregation_values, concurrency, db, provenance
+from models import aggregation_values, billing_move, concurrency, db, provenance
 from pagination import PAGE_SIZE, decode_cursor, encode_cursor
 from security import sanitize
 from utils import phases
@@ -384,6 +384,9 @@ def update_expense(
     stale one returns ``[STALE_ETAG_ERROR]`` and writes nothing; ``None``
     asserts nothing about the version. The amount stays caller-set, never
     recomputed. A key of :data:`_PROTECTED_ON_UPDATE` in *data* is ignored.
+    A CHANGED ``dossier_id`` moves the disbursement by
+    :func:`move_expense`'s rule (``models.billing_move``): the target
+    re-read in this transaction, its labels taken from that read.
     """
     changes = {
         key: value for key, value in _sanitize_data(data).items()
@@ -405,6 +408,14 @@ def update_expense(
             raise _Refused(["Impossible de modifier une dépense déjà facturée."])
 
         merged = {**existing, **changes}
+        # A CHANGED dossier is a move: models/billing_move's rule (see the
+        # twin in time_entry.update_time_entry).
+        target = str(merged.get("dossier_id") or "").strip()
+        if target and target != str(existing.get("dossier_id") or ""):
+            fields = billing_move.target_fields(transaction, ref, target)
+            if fields is None:
+                raise _Refused([billing_move.TARGET_NOT_FOUND])
+            merged.update(fields)
         phases.apply_sous_phase_default(merged)
         errors = _validate(merged)
         if errors:
@@ -424,6 +435,69 @@ def update_expense(
     provenance.note_commit(COLLECTION, expense_id)
 
     return merged, []
+
+
+MOVE_INVOICED_ERROR = (
+    "Impossible de déplacer une dépense déjà facturée : annulez d'abord la "
+    "facture qui la porte — l'annulation libère ses déboursés —, puis "
+    "déplacez-la. Rien n'a été déplacé."
+)
+
+
+def move_expense(
+    expense_id: str,
+    to_dossier: dict,
+    *,
+    from_dossier_id: str,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str], bool]:
+    """File an UN-INVOICED disbursement under another dossier (lot 3a).
+
+    The twin of ``time_entry.move_time_entry`` — read that docstring: the
+    same ``(doc, errors, moved)`` triple, the same six checks in the same
+    order inside ONE transaction, the same partial ``update()`` of
+    :data:`models.billing_move.LABEL_KEYS` plus the provenance stamp. The
+    amount, the category, the taxable flag and the phase stay as stored.
+    """
+    to_id = billing_move.target_id(to_dossier)
+    if not to_id:
+        return None, [billing_move.TARGET_REQUIRED], False
+    if not billing_move.is_addressable(expense_id):
+        return None, ["Dépense introuvable."], False
+    ref = db.collection(COLLECTION).document(expense_id)
+
+    @firestore.transactional
+    def _apply(transaction) -> tuple[dict, bool]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise _Refused(["Dépense introuvable."])
+        existing = snap.to_dict() or {}
+        if existing.get("invoiced"):
+            raise _Refused([MOVE_INVOICED_ERROR])
+        stored = str(existing.get("dossier_id") or "")
+        if stored == to_id:
+            return existing, False
+        if stored != str(from_dossier_id or "").strip():
+            raise _Refused([billing_move.from_mismatch_error(existing)])
+        if not concurrency.matches(existing, expected_etag):
+            raise _Refused([concurrency.STALE_ETAG_ERROR])
+        fields = billing_move.target_fields(transaction, ref, to_id)
+        if fields is None:
+            raise _Refused([billing_move.TARGET_NOT_FOUND])
+        written = {**fields, **provenance.update_fields(datetime.now(timezone.utc))}
+        transaction.update(ref, written)
+        return {**existing, **written}, True
+
+    try:
+        doc, moved = _apply(db.transaction())
+    except _Refused as refusal:
+        return None, refusal.errors, False
+    except Exception:
+        log_unexpected("expense move failed")
+        return None, ["Erreur lors du déplacement. Veuillez réessayer."], False
+    if moved:
+        provenance.note_commit(COLLECTION, expense_id)
+    return doc, [], moved
 
 
 def get_expenses_bulk(expense_ids: list[str]) -> dict[str, dict]:
