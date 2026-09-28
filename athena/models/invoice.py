@@ -1811,6 +1811,28 @@ def update_status(
 ) -> tuple[bool, str]:
     """Transition an invoice to a new status. Returns (success, error).
 
+    :func:`update_status_report` for a caller that needs only the verdict —
+    the historical signature, kept for the web route and the scripts.
+    """
+    _doc, errors = update_status_report(
+        invoice_id, new_status, expected_etag=expected_etag)
+    if errors:
+        return False, errors[0]
+    return True, ""
+
+
+def update_status_report(
+    invoice_id: str,
+    new_status: str,
+    *,
+    expected_etag: Optional[str] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """Transition an invoice to a new status — ``(invoice, errors)``.
+
+    The invoice returned is the one WRITTEN (its new etag included), so a
+    caller that hands the version back — the connector's
+    ``update_invoice`` (lot 3b) — never re-reads it after the commit.
+
     « annulée » is refused FIRST, before anything is read: a bare status
     write left every time entry and disbursement flagged invoiced for good
     (``void_invoice`` then refused « déjà annulée » and ``delete_invoice``
@@ -1828,12 +1850,12 @@ def update_status(
     if new_status == "annulée":
         log_invoice_event("invoice_refused", invoice_id, outcome="refused",
                           operation="status", reason="annulation_par_statut")
-        return False, VOID_BY_STATUS_REFUSED
+        return None, [VOID_BY_STATUS_REFUSED]
 
     ref = db.collection(COLLECTION).document(invoice_id)
 
     @firestore.transactional
-    def _apply(transaction) -> str:
+    def _apply(transaction) -> tuple[str, dict]:
         snap = ref.get(transaction=transaction)
         if not snap.exists:
             raise _StatusRefused("Facture introuvable.", "introuvable")
@@ -1862,37 +1884,73 @@ def update_status(
                 f"« {STATUS_LABELS.get(new_status, new_status)} » non permise."
             )
 
-        transaction.update(ref, {
+        updates = {
             "status": new_status,
             **provenance.update_fields(datetime.now(timezone.utc)),
-        })
-        return current
+        }
+        transaction.update(ref, updates)
+        return current, {**invoice, **updates}
 
     try:
-        previous = _apply(db.transaction())
+        previous, written = _apply(db.transaction())
     except concurrency.StaleWrite:
         log_invoice_event("invoice_refused", invoice_id, outcome="refused",
                           operation="status", reason="stale_etag")
-        return False, concurrency.STALE_ETAG_ERROR
+        return None, [concurrency.STALE_ETAG_ERROR]
     except _StatusRefused as refusal:
         log_invoice_event("invoice_refused", invoice_id, outcome="refused",
                           operation="status", reason=refusal.reason)
-        return False, str(refusal)
+        return None, [str(refusal)]
     except Exception:
         log_unexpected("invoice status update failed")
-        return False, "Erreur. Veuillez réessayer."
+        return None, ["Erreur. Veuillez réessayer."]
     provenance.note_commit(COLLECTION, invoice_id)
     log_invoice_event("invoice_status_changed", invoice_id,
                       from_status=previous, to_status=new_status)
-    return True, ""
+    return written, []
+
+
+#: The ceiling of a void's stated reason — refused beyond, never truncated.
+VOID_REASON_MAX_LENGTH = 500
+
+
+def invalid_void_reason(reason: object) -> list[str]:
+    """Why a void's *reason* is refused rather than altered — ``[]`` if fine.
+
+    It is stored on the invoice and shown on its sheet; ``sanitize`` would
+    truncate it and delete a « < … > » run in silence, so both are refused
+    first (the draft texts' rule). ``''`` is fine: the web form states none.
+    """
+    if not isinstance(reason, str):
+        return ["Le motif de l'annulation doit être un texte."]
+    if len(reason) > VOID_REASON_MAX_LENGTH:
+        return [
+            f"Le motif de l'annulation dépasse {VOID_REASON_MAX_LENGTH} "
+            f"caractères ({len(reason)}) : il n'est jamais tronqué — "
+            "raccourcissez-le."
+        ]
+    if sanitize(reason, max_length=VOID_REASON_MAX_LENGTH) != reason:
+        return [
+            "Le motif de l'annulation contient un passage entre chevrons "
+            "(< … >) qui serait supprimé à l'enregistrement : retirez les "
+            "chevrons."
+        ]
+    return []
 
 
 def void_invoice_report(
     invoice_id: str,
     *,
     expected_etag: Optional[str] = None,
+    reason: str = "",
 ) -> tuple[Optional[dict], list[str]]:
     """Void an invoice — status « annulée » — and release its sources.
+
+    *reason* — why it is voided — is stored as ``void_reason`` beside
+    ``voided_at``, the instant of the void (lot 3b: the connector's void
+    demands one; the web form states none, ``''``). It is judged before
+    anything is read (:func:`invalid_void_reason`): over-long or carrying a
+    « < … > » run, it is REFUSED, never truncated.
 
     Returns ``(report, errors)``. The report::
 
@@ -1937,6 +1995,13 @@ def void_invoice_report(
     """
     from models.time_entry import COLLECTION as TE_COLLECTION
     from models.expense import COLLECTION as EXP_COLLECTION
+
+    reason_errors = invalid_void_reason(reason)
+    if reason_errors:
+        log_invoice_event("invoice_refused", invoice_id, outcome="refused",
+                          operation="void", reason="motif_invalide")
+        return None, reason_errors
+    reason = reason.strip()
 
     invoice_ref = db.collection(COLLECTION).document(invoice_id)
 
@@ -2081,7 +2146,12 @@ def void_invoice_report(
                 "invoice_id": None,
                 **provenance.update_fields(now),
             })
-        stamp = {"status": "annulée", **provenance.update_fields(now)}
+        stamp = {
+            "status": "annulée",
+            "void_reason": reason,
+            "voided_at": now,
+            **provenance.update_fields(now),
+        }
         transaction.update(invoice_ref, stamp)
         for key in report:
             report[key].sort()

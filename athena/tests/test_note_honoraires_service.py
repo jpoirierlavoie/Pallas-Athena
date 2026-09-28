@@ -261,6 +261,27 @@ def test_an_identical_note_is_returned_not_filed_twice(store, events):
     assert events == []                             # nothing done, nothing said
 
 
+def test_the_caller_is_named_in_the_provenance_and_the_note_says_what_it_printed(
+    store,
+):
+    """Lot 3b: the connector passes generated_by — the « par Claude
+    (connecteur) » its INSTRUCTIONS promise every document it generates
+    carries — and reads back the invoice printed and the folder the note
+    landed in (none on a reuse: the filed document names its own)."""
+    db, _bucket, _template = store
+    note = _generate(generated_by="par Claude (connecteur)")
+    stored = _documents(db)[note.document["id"]]
+    assert stored["genere_depuis"] == (
+        "Générée depuis la facture 2026-F031 par Claude (connecteur)")
+    assert note.invoice["invoice_number"] == "2026-F031"
+    assert note.folder["system_role"] == "projets"
+    assert stored["folder_id"] == note.folder["id"]
+
+    again = _generate()
+    assert again.reused is True and again.folder is None
+    assert again.invoice["id"] == "i1"
+
+
 def test_regenerate_files_a_new_note(store):
     db, _bucket, _template = store
     first = _generate()

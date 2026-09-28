@@ -377,3 +377,24 @@ def test_journal_rows_skip_the_line_items_read_on_fee_only_invoices(monkeypatch)
     assert (rows[0]["debours_tx"], rows[0]["debours_ntx"]) == (0, 0)
     assert (rows[1]["debours_tx"], rows[1]["debours_ntx"]) == (4000, 1500)
     assert rows[1]["debours_tx"] + rows[1]["debours_ntx"] == 5500
+
+
+# ── Lot 3b: the reason a void recorded is on the sheet ──────────────────────
+
+
+def test_a_voided_invoice_shows_the_reason_its_void_recorded():
+    """The connector's void (update_invoice) demands a reason and stores it
+    as void_reason: the lawyer must be able to read it where he reads the
+    invoice. Autoescaped like every value of the sheet."""
+    html = _render(invoice={"status": "annulée",
+                            "void_reason": "Facturée au <mauvais> dossier."},
+                   transitions=())
+    assert "Motif de l'annulation" in html
+    assert "Facturée au &lt;mauvais&gt; dossier." in html
+
+
+def test_no_reason_block_without_a_reason_or_before_a_void():
+    assert "Motif de l'annulation" not in _render(
+        invoice={"status": "annulée", "void_reason": ""}, transitions=())
+    assert "Motif de l'annulation" not in _render(
+        invoice={"void_reason": "Reste d'un brouillon."})

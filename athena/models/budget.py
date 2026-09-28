@@ -498,6 +498,15 @@ def _list_budget_versions_strict(
     return rows
 
 
+def list_budget_versions_strict(dossier_id: str) -> list[dict]:
+    """All versions, newest first — PROPAGATES a read error. The public
+    door of :func:`_list_budget_versions_strict` for a caller outside this
+    module that must tell « no budget » from « unreadable »: the
+    connector's ``get_budget`` and ``create_budget_version`` (lot 3b), whose
+    answer a write — or a client quote — is based on."""
+    return _list_budget_versions_strict(dossier_id)
+
+
 def list_budget_versions(dossier_id: str) -> list[dict]:
     """All versions of a dossier's budget, newest first — FAILS OPEN to
     ``[]`` (the history page, the Budget tab, the form's seed: display

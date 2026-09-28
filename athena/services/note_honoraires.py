@@ -145,6 +145,11 @@ class NoteGeneree:
     fingerprint: str
     reused: bool = False
     counts: dict = field(default_factory=dict)
+    #: The invoice printed, as read (lot 3b: the connector names it).
+    invoice: dict = field(default_factory=dict)
+    #: The folder the note landed in — ``None`` when it was REUSED (the
+    #: caller reads the filed document's own ``folder_id``).
+    folder: Optional[dict] = None
 
 
 def assemble_note_values(template: dict, ctx) -> dict[str, str]:
@@ -205,6 +210,7 @@ def generer_note_honoraires(
     regenerate: bool = False,
     resolve_uid: Optional[Callable[[], str]] = None,
     today: Optional[date] = None,
+    generated_by: str = "",
 ) -> NoteGeneree:
     """Generate *invoice_id*'s note d'honoraires into « Projets ».
 
@@ -213,6 +219,10 @@ def generer_note_honoraires(
     even when an identical one exists; *resolve_uid* — how the Storage uid
     is obtained, called once the note is filled (step 8) — defaults to
     ``storage_identity.owner_uid``; *today* defaults to Montréal's.
+    *generated_by* — who asked, appended to the document's provenance
+    (``genere_depuis``): the connector passes « par Claude (connecteur) »,
+    the phrase its INSTRUCTIONS promise every document it generates
+    carries; the web passes nothing (lot 3b).
     """
     try:
         invoice, items = get_invoice_with_items_strict(invoice_id)
@@ -282,7 +292,7 @@ def generer_note_honoraires(
                     and existing.get("dossier_id") == dossier_id):
                 return NoteGeneree(document=existing, template=template,
                                    fingerprint=fingerprint, reused=True,
-                                   counts=counts)
+                                   counts=counts, invoice=invoice)
 
     docx_bytes = template_file_bytes(template)
     if docx_bytes is None:
@@ -318,7 +328,7 @@ def generer_note_honoraires(
     try:
         # Found by its ROLE, at its deterministic id (lot 2A, T2): a failure
         # REFUSES, never a save at the dossier root.
-        doc, _folder = save_generated(
+        doc, landed = save_generated(
             dossier={"id": dossier_id,
                      "file_number": invoice.get("dossier_file_number", "")},
             filled=filled,
@@ -326,7 +336,11 @@ def generer_note_honoraires(
             display_name=display,
             filename=out_name,
             category="correspondance",
-            genere_depuis=f"Générée depuis la facture {invoice_number}".strip(),
+            genere_depuis=" ".join(
+                part for part in (
+                    f"Générée depuis la facture {invoice_number}".strip(),
+                    generated_by.strip(),
+                ) if part),
             tags=("note_honoraires",),
             generated_from_invoice={"invoice_id": invoice_id,
                                     "fingerprint": fingerprint},
@@ -339,4 +353,5 @@ def generer_note_honoraires(
                        dossier_id=dossier_id, saved_document_id=doc["id"],
                        invoice_id=invoice_id, source="facture", **counts)
     return NoteGeneree(document=doc, template=template,
-                       fingerprint=fingerprint, reused=False, counts=counts)
+                       fingerprint=fingerprint, reused=False, counts=counts,
+                       invoice=invoice, folder=landed)

@@ -400,6 +400,16 @@
   </div>
   {% endif %}
 
+  {# ── Motif de l'annulation (lot 3b) ────────────────────────────
+     Posé par l'annulation du connecteur (update_invoice) ; l'annulation
+     depuis cette fiche n'en demande pas, et n'affiche donc rien ici. #}
+  {% if invoice.status == 'annulée' and invoice.void_reason %}
+  <div class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+    <h2 class="text-sm font-semibold text-gray-900 mb-2">Motif de l'annulation</h2>
+    <p class="text-sm text-gray-700 whitespace-pre-line">{{ invoice.void_reason }}</p>
+  </div>
+  {% endif %}
+
   {# ── Notes ─────────────────────────────────────────────────── #}
   {% if invoice.notes %}
   <div class="bg-white rounded-xl border border-gray-200 p-5">
